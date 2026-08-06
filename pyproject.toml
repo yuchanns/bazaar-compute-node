@@ -1,7 +1,7 @@
 [project]
 name = "bazaar-compute-node"
 version = "0.1.0"
-description = "Agent runtime for Bazaar Compute Node."
+description = "Computer Node connecting an Agent Runtime and a Channel."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

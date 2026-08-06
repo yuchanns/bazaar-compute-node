@@ -9,7 +9,7 @@ from . import __version__
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bcn",
-        description="Agent runtime for Bazaar Compute Node.",
+        description="Computer Node connecting an Agent Runtime and a Channel.",
     )
     parser.add_argument(
         "--version",
