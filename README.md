@@ -1,7 +1,5 @@
 # Bazaar Compute Node
 
-企业内部 Agent runtime 的 Python 基础项目。
-
 ## 本地开发
 
 项目使用 uv 管理 Python 环境和依赖。源码 checkout 后可以直接运行：
