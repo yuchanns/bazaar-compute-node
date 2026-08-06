@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from .models import ApprovalRequest
+from .models import ApprovalRequest, ApprovalResult
+
+
+class IApprovalHandler(Protocol):
+    """Neutral callback used by a runtime adapter for approval requests."""
+
+    async def request_approval(
+        self, request: ApprovalRequest, *, timeout: float
+    ) -> ApprovalResult:
+        """Route one request to the current Channel approval policy."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -12,6 +12,7 @@ from .models import (
     OutboundMessage,
     RuntimeEvent,
     RuntimeSession,
+    RuntimeTurn,
 )
 
 
@@ -49,6 +50,10 @@ class IStorageTransaction(Protocol):
         """Load one runtime process session by local id."""
         ...
 
+    async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
+        """Load one runtime turn by local id."""
+        ...
+
     async def get_consumer_cursor(self, bcn_session_id: str) -> ConsumerCursor | None:
         """Load the session-scoped delivery and inbox snapshot cursor."""
         ...
@@ -79,6 +84,10 @@ class IStorageTransaction(Protocol):
 
     async def save_runtime_session(self, session: RuntimeSession) -> None:
         """Persist a validated runtime process state transition."""
+        ...
+
+    async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
+        """Persist a validated runtime turn state transition."""
         ...
 
     async def append_inbound_message(self, message: InboundMessage) -> None:

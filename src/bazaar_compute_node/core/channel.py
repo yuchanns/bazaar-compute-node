@@ -4,8 +4,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
+from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
-from .models import ApprovalRequest, ApprovalResult, InboundMessage, OutboundMessage
+from .models import InboundMessage, OutboundMessage
 from .outcomes import ProviderCallResult
 
 
@@ -31,14 +32,8 @@ class ChannelDeliveryReceipt:
             )
 
 
-class IApproval(Protocol):
+class IApproval(IApprovalHandler, Protocol):
     """Channel-owned approval policy for one bcn session."""
-
-    async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
-    ) -> ApprovalResult:
-        """Return a decision or propagate cancellation/timeout to the caller."""
-        ...
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
+from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
 from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
 from .outcomes import ProviderCallResult
@@ -49,6 +50,7 @@ class IRuntime(IAsyncLifecycle, Protocol):
         session: RuntimeSession,
         turn: RuntimeTurn,
         input_text: str,
+        approval_handler: IApprovalHandler,
         *,
         timeout: float,
     ) -> IRuntimeTurnStream:
