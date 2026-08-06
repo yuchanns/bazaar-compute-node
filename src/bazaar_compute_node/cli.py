@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections.abc import Sequence
 
 from . import __version__
@@ -19,11 +20,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+async def async_main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     parser.parse_args(argv)
     parser.print_help()
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return asyncio.run(async_main(argv))
 
 
 if __name__ == "__main__":
