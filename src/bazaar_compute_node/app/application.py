@@ -5,14 +5,13 @@ import os
 import signal
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from uuid import uuid4
 
 from ..core.channel import IChannel
 from ..core.lifecycle import TimeoutBudget
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
 from ..core.runtime import IRuntime, RuntimeCommandContext
-from ..core.storage import IStorage
+from ..core.storage import IStorage, NodeIdentity
 from .command import CommandDispatcher, SessionCommandService
 from .daemon import (
     new_runtime_metadata,
@@ -38,7 +37,7 @@ class NodeApplication:
         data_dir: Path,
         endpoint_path: Path | None = None,
         node_id: str = "bcn-node",
-        workspace_uuid: str | None = None,
+        workspace_id: str | None = None,
         storage_slug: str = "dummy",
         audit_slug: str = "dummy",
         runtime_metadata_path: Path | None = None,
@@ -71,13 +70,14 @@ class NodeApplication:
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
         self.orchestrator = SessionOrchestrator(
             node_id=node_id,
-            workspace_uuid=workspace_uuid or str(uuid4()),
+            workspace_id=workspace_id,
             channel=self.channel,
             runtime=self.runtime,
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
             runtime_slug=runtime_slug,
+            on_node_initialized=self._ensure_workspace,
         )
         self.command_service = SessionCommandService(
             self.orchestrator,
@@ -149,9 +149,20 @@ class NodeApplication:
         for signum in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(signum, self._stopped.set)
-            except (NotImplementedError, RuntimeError):
+            except NotImplementedError, RuntimeError:
                 pass
         await self._stopped.wait()
+
+    async def _ensure_workspace(self, identity: NodeIdentity) -> None:
+        workspace_dir = self.data_dir / "workspaces" / identity.workspace_id
+        await asyncio.to_thread(
+            workspace_dir.mkdir,
+            parents=True,
+            exist_ok=True,
+            mode=0o700,
+        )
+        if os.name != "nt":
+            await asyncio.to_thread(workspace_dir.chmod, 0o700)
 
     def _adapter_context(self) -> Mapping[str, object]:
         return {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from typing import Protocol
 
 from .lifecycle import IAsyncLifecycle
@@ -14,6 +15,20 @@ from .models import (
     RuntimeSession,
     RuntimeTurn,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NodeIdentity:
+    """Stable node and shared workspace identity returned by storage."""
+
+    node_id: str
+    workspace_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node_id, str) or not self.node_id:
+            raise ValueError("node_id must be a non-empty string")
+        if not isinstance(self.workspace_id, str) or not self.workspace_id:
+            raise ValueError("workspace_id must be a non-empty string")
 
 
 class IStorageTransaction(Protocol):
@@ -109,6 +124,15 @@ class IStorageTransaction(Protocol):
 
 class IStorage(IAsyncLifecycle, Protocol):
     """Provider-neutral storage lifecycle and explicit transaction factory."""
+
+    async def initialize(
+        self,
+        *,
+        node_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> NodeIdentity:
+        """Load or create node identity after storage startup."""
+        ...
 
     def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
         """Open an explicit transaction owned by the caller."""

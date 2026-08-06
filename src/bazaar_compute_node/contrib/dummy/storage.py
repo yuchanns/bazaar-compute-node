@@ -5,6 +5,7 @@ from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from types import TracebackType
 from typing import Self
+from uuid import uuid7
 
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
@@ -17,7 +18,7 @@ from ...core.models import (
     RuntimeSession,
     RuntimeTurn,
 )
-from ...core.storage import IStorage, IStorageTransaction
+from ...core.storage import IStorage, IStorageTransaction, NodeIdentity
 
 
 class DummyStorage(IStorage, IAsyncLifecycle):
@@ -32,6 +33,7 @@ class DummyStorage(IStorage, IAsyncLifecycle):
         self.inbound_messages: dict[str, list[InboundMessage]] = {}
         self.outbound_messages: dict[str, OutboundMessage] = {}
         self.runtime_events: list[RuntimeEvent] = []
+        self.node_identity: NodeIdentity | None = None
         self.started = False
         self.stopped = False
         self._lock = asyncio.Lock()
@@ -42,6 +44,25 @@ class DummyStorage(IStorage, IAsyncLifecycle):
 
     async def stop(self, *, timeout: float) -> None:
         self.stopped = True
+
+    async def initialize(
+        self,
+        *,
+        node_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> NodeIdentity:
+        identity = self.node_identity
+        if identity is None:
+            identity = NodeIdentity(
+                node_id=node_id or "dummy-node",
+                workspace_id=workspace_id or str(uuid7()),
+            )
+        elif node_id is not None and identity.node_id != node_id:
+            raise ValueError("requested node_id does not match dummy identity")
+        elif workspace_id is not None and identity.workspace_id != workspace_id:
+            raise ValueError("requested workspace_id does not match dummy identity")
+        self.node_identity = identity
+        return identity
 
     def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
         return _DummyStorageTransaction(self)

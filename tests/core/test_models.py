@@ -37,7 +37,7 @@ def make_bcn_session() -> BcnSession:
     return BcnSession(
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
-        workspace_uuid="workspace-1",
+        workspace_id="workspace-1",
         state=BcnSessionState.CREATED,
         created_at_ms=1,
         updated_at_ms=1,
@@ -50,7 +50,7 @@ def make_runtime_session() -> RuntimeSession:
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
         runtime_slug="dummy",
-        workspace_uuid="workspace-1",
+        workspace_id="workspace-1",
         process_state=RuntimeProcessState.STARTING,
         created_at_ms=1,
         updated_at_ms=1,

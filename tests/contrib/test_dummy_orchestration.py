@@ -24,6 +24,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.storage import NodeIdentity
 
 
 def make_message(
@@ -72,7 +73,7 @@ async def make_node() -> tuple[
     audit = DummyAudit()
     orchestrator = SessionOrchestrator(
         node_id="node-1",
-        workspace_uuid="workspace-1",
+        workspace_id="workspace-1",
         channel=channel,
         runtime=runtime,
         storage=storage,
@@ -83,6 +84,36 @@ async def make_node() -> tuple[
     runtime.command_service = orchestrator
     await orchestrator.start(timeout=1)
     return orchestrator, channel, runtime, storage, audit
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_initializes_storage_identity_before_runtime() -> None:
+    channel = DummyChannel()
+    runtime = DummyRuntime()
+    storage = DummyStorage()
+    audit = DummyAudit()
+    seen: list[NodeIdentity] = []
+
+    async def on_node_initialized(identity: NodeIdentity) -> None:
+        assert not runtime.started
+        seen.append(identity)
+
+    orchestrator = SessionOrchestrator(
+        channel=channel,
+        runtime=runtime,
+        storage=storage,
+        audit=audit,
+        timeout_budget=make_budget(),
+        on_node_initialized=on_node_initialized,
+    )
+    await orchestrator.start(timeout=1)
+    try:
+        assert storage.node_identity is not None
+        assert seen == [storage.node_identity]
+        assert runtime.started
+        assert channel.started
+    finally:
+        await orchestrator.stop(timeout=1)
 
 
 async def wait_until(predicate: object) -> None:
@@ -307,8 +338,8 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
 
         assert first.state is RuntimeTurnState.COMPLETED
         assert second.state is RuntimeTurnState.COMPLETED
-        assert storage.bcn_sessions["bcn-a"].workspace_uuid == "workspace-1"
-        assert storage.bcn_sessions["bcn-b"].workspace_uuid == "workspace-1"
+        assert storage.bcn_sessions["bcn-a"].workspace_id == "workspace-1"
+        assert storage.bcn_sessions["bcn-b"].workspace_id == "workspace-1"
         assert set(storage.inbound_messages) == {"bcn-a", "bcn-b"}
         assert {
             event.correlation.bcn_session_id

@@ -6,7 +6,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from typing import NoReturn
-from uuid import uuid4
+from uuid import uuid7
 
 from .app.command import format_message_time
 from .app.transport import LocalCommandClient
@@ -78,7 +78,7 @@ async def _request(
     elif args.command == "send":
         request["target"] = args.target
         request["body"] = body if body is not None else ""
-        request["command_id"] = f"bcc-{uuid4().hex}"
+        request["command_id"] = f"bcc-{uuid7().hex}"
 
     response = await LocalCommandClient.request(endpoint, request)
     if response.get("ok") is not True:

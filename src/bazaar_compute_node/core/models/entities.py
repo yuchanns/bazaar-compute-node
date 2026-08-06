@@ -76,7 +76,7 @@ class ChannelSession:
 class BcnSession:
     bcn_session_id: str
     channel_session_id: str
-    workspace_uuid: str
+    workspace_id: str
     state: BcnSessionState
     created_at_ms: int
     updated_at_ms: int
@@ -87,7 +87,7 @@ class BcnSession:
     def __post_init__(self) -> None:
         _validate_text(self.bcn_session_id, "bcn_session_id")
         _validate_text(self.channel_session_id, "channel_session_id")
-        _validate_text(self.workspace_uuid, "workspace_uuid")
+        _validate_text(self.workspace_id, "workspace_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if self.last_activity_at_ms is not None:
@@ -117,7 +117,7 @@ class RuntimeSession:
     bcn_session_id: str
     channel_session_id: str
     runtime_slug: str
-    workspace_uuid: str
+    workspace_id: str
     process_state: RuntimeProcessState
     created_at_ms: int
     updated_at_ms: int
@@ -135,7 +135,7 @@ class RuntimeSession:
         _validate_text(self.bcn_session_id, "bcn_session_id")
         _validate_text(self.channel_session_id, "channel_session_id")
         _validate_text(self.runtime_slug, "runtime_slug")
-        _validate_text(self.workspace_uuid, "workspace_uuid")
+        _validate_text(self.workspace_id, "workspace_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if self.process_id is not None and self.process_id < 0:

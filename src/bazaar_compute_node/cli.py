@@ -19,9 +19,11 @@ from .app.daemon import (
 )
 from .app.registry import AdapterFactories, AdapterRegistry, ProviderLoadError
 from .app.transport import LocalCommandClient
+from .core.paths import resolve_data_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
+    default_data_dir = resolve_data_dir()
     parser = argparse.ArgumentParser(
         prog="bcn",
         description="Runtime-agnostic computer node daemon for agents and channels.",
@@ -44,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        help="Persistent node root; defaults to ~/.bcn.",
+        help=f"Persistent node root (default: {default_data_dir}).",
     )
     parser.add_argument(
         "--endpoint",
@@ -60,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _data_dir(args: argparse.Namespace) -> Path:
-    return (args.data_dir or Path.home() / ".bcn").expanduser()
+    return resolve_data_dir(args.data_dir)
 
 
 def _endpoint_path(args: argparse.Namespace, data_dir: Path) -> Path:

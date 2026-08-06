@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from stat import S_IMODE
+
+import aiosqlite
+import pytest
+
+from bazaar_compute_node.contrib.storage_sqlite import (
+    MigrationChecksumError,
+    SqliteDatabase,
+)
+from bazaar_compute_node.contrib.storage_sqlite.migrations import SCHEMA_MIGRATION
+from bazaar_compute_node.core.paths import resolve_data_dir
+
+
+@pytest.mark.asyncio
+async def test_sqlite_bootstrap_persists_node_and_workspace_state(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "node"
+    database = SqliteDatabase(data_dir)
+
+    await database.start(timeout=2)
+    try:
+        identity = await database.initialize(node_id="node-1")
+        first_state = database.node_state
+        assert first_state.node_id == "node-1"
+        assert first_state.schema_version == 1
+        assert identity.workspace_id == first_state.workspace_id
+        assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
+
+        async with database.transaction() as transaction:
+            tables = await transaction.fetchall(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            )
+            indexes = await transaction.fetchall(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
+            )
+            inbound_columns = await transaction.fetchall(
+                "PRAGMA table_info(inbound_messages)"
+            )
+            outbound_columns = await transaction.fetchall(
+                "PRAGMA table_info(outbound_messages)"
+            )
+            journal_mode = await transaction.fetchone("PRAGMA journal_mode")
+            busy_timeout = await transaction.fetchone("PRAGMA busy_timeout")
+
+        assert {row["name"] for row in tables} == {
+            "bcn_sessions",
+            "channel_sessions",
+            "consumer_cursors",
+            "inbound_messages",
+            "node_state",
+            "outbound_messages",
+            "runtime_events",
+            "runtime_sessions",
+            "runtime_turns",
+            "schema_migrations",
+        }
+        assert {row["name"] for row in indexes} == {
+            "idx_inbound_channel_received",
+            "idx_inbound_seq",
+            "idx_inbound_session_seq",
+            "idx_outbound_session_created",
+            "idx_outbound_state_created",
+            "idx_runtime_events_created",
+            "idx_runtime_events_name_seq",
+            "idx_runtime_events_session_seq",
+            "idx_runtime_sessions_state",
+            "idx_runtime_turns_session_state",
+        }
+        inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
+        outbound_primary_keys = {row["name"]: row["pk"] for row in outbound_columns}
+        assert inbound_primary_keys["message_id"] == 1
+        assert inbound_primary_keys["seq"] == 0
+        assert outbound_primary_keys["outbound_message_id"] == 1
+        assert journal_mode is not None
+        assert busy_timeout is not None
+        assert journal_mode[0] == "wal"
+        assert busy_timeout[0] == 5_000
+        if os.name != "nt":
+            assert S_IMODE(database.data_dir.stat().st_mode) == 0o700
+            assert S_IMODE(database.database_path.stat().st_mode) == 0o600
+    finally:
+        await database.stop(timeout=2)
+
+    restarted = SqliteDatabase(data_dir)
+    await restarted.start(timeout=2)
+    try:
+        restarted_identity = await restarted.initialize(node_id="node-1")
+        assert restarted_identity.workspace_id == first_state.workspace_id
+        assert restarted.workspace_id == first_state.workspace_id
+        assert restarted.node_state.created_at_ms == first_state.created_at_ms
+    finally:
+        await restarted.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_transaction_rolls_back_and_commits_ddl(tmp_path: Path) -> None:
+    database = SqliteDatabase(tmp_path / "node")
+    await database.start(timeout=2)
+    try:
+        with pytest.raises(RuntimeError, match="rollback"):
+            async with database.transaction() as transaction:
+                await transaction.execute("CREATE TABLE rollback_probe (value TEXT)")
+                raise RuntimeError("rollback")
+
+        async with database.transaction() as transaction:
+            rollback_probe = await transaction.fetchone(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'rollback_probe'"
+            )
+        assert rollback_probe is None
+
+        async with database.transaction() as transaction:
+            await transaction.execute("CREATE TABLE commit_probe (value TEXT)")
+
+        async with database.transaction() as transaction:
+            commit_probe = await transaction.fetchone(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'commit_probe'"
+            )
+        assert commit_probe is not None
+        assert commit_probe["name"] == "commit_probe"
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_migration_checksum_mismatch_fails_closed(tmp_path: Path) -> None:
+    data_dir = tmp_path / "node"
+    database = SqliteDatabase(data_dir)
+    await database.start(timeout=2)
+    await database.stop(timeout=2)
+
+    async with aiosqlite.connect(data_dir / "bcn.sqlite3") as connection:
+        await connection.execute(
+            "UPDATE schema_migrations SET checksum = ? WHERE version = ?",
+            ("tampered", 1),
+        )
+        await connection.commit()
+
+    restarted = SqliteDatabase(data_dir)
+    with pytest.raises(MigrationChecksumError):
+        await restarted.start(timeout=2)
+    assert not restarted.is_started
+
+
+def test_resolve_data_dir_prefers_explicit_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BCN_DATA_DIR", str(tmp_path / "environment"))
+    assert resolve_data_dir(tmp_path / "custom") == tmp_path / "custom"
+    assert resolve_data_dir() == (tmp_path / "environment").resolve()
+
+
+def test_sqlite_schema_keeps_business_constraints_out_of_ddl() -> None:
+    schema = re.sub(
+        r"--[^\n]*",
+        "",
+        "\n".join(SCHEMA_MIGRATION.statements),
+    ).upper()
+    for forbidden in (
+        r"\bNOT NULL\b",
+        r"\bDEFAULT\b",
+        r"\bCHECK\b",
+        r"\bUNIQUE\b",
+        r"\bFOREIGN KEY\b",
+    ):
+        assert re.search(forbidden, schema) is None

@@ -3,8 +3,10 @@ name = "bazaar-compute-node"
 version = "0.1.0"
 description = "Runtime-agnostic computer node daemon for agents and channels."
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.14"
+dependencies = [
+    "aiosqlite>=0.20.0",
+]
 
 [project.scripts]
 bcn = "bazaar_compute_node.cli:main"

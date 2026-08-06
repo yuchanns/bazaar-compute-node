@@ -34,7 +34,7 @@ from ..models import (
 from ..observability import IAudit, LogLevel
 from ..outcomes import ProviderCallStatus
 from ..runtime import IRuntime, IRuntimeTurnStream
-from ..storage import IStorage
+from ..storage import IStorage, NodeIdentity
 
 
 def _current_time_ms() -> int:
@@ -67,8 +67,8 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
     def __init__(
         self,
         *,
-        node_id: str,
-        workspace_uuid: str,
+        node_id: str | None = None,
+        workspace_id: str | None = None,
         channel: IChannel,
         runtime: IRuntime,
         storage: IStorage,
@@ -77,16 +77,21 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         runtime_slug: str = "dummy",
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
+        on_node_initialized: Callable[[NodeIdentity], Awaitable[None]] | None = None,
     ) -> None:
         for value, field_name in (
             (node_id, "node_id"),
-            (workspace_uuid, "workspace_uuid"),
             (runtime_slug, "runtime_slug"),
         ):
-            if not isinstance(value, str) or not value:
+            if value is not None and (not isinstance(value, str) or not value):
                 raise ValueError(f"{field_name} must be a non-empty string")
+        if workspace_id is not None and (
+            not isinstance(workspace_id, str) or not workspace_id
+        ):
+            raise ValueError("workspace_id must be a non-empty string")
         self._node_id = node_id
-        self._workspace_uuid = workspace_uuid
+        self._workspace_id = workspace_id
+        self._on_node_initialized = on_node_initialized
         self._channel = channel
         self._runtime = runtime
         self._storage = storage
@@ -104,6 +109,18 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         self._stopping = False
         self._shutdown_errors: list[str] = []
 
+    @property
+    def node_id(self) -> str:
+        if self._node_id is None:
+            raise RuntimeError("node identity has not been initialized")
+        return self._node_id
+
+    @property
+    def workspace_id(self) -> str:
+        if self._workspace_id is None:
+            raise RuntimeError("node identity has not been initialized")
+        return self._workspace_id
+
     async def start(self, *, timeout: float) -> None:
         if self._started:
             return
@@ -111,6 +128,14 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             raise RuntimeError("session orchestrator is stopping")
         await self._storage.start(timeout=timeout)
         try:
+            identity = await self._storage.initialize(
+                node_id=self._node_id,
+                workspace_id=self._workspace_id,
+            )
+            self._node_id = identity.node_id
+            self._workspace_id = identity.workspace_id
+            if self._on_node_initialized is not None:
+                await self._on_node_initialized(identity)
             await self._runtime.start(timeout=timeout)
             await self._channel.start(timeout=timeout)
         except BaseException:
@@ -139,7 +164,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             receive_task.cancel()
             try:
                 await asyncio.wait_for(receive_task, timeout=timeout)
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError, asyncio.CancelledError:
                 self._shutdown_errors.append("channel.receive: shutdown timeout")
         self._receive_task = None
 
@@ -376,7 +401,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = CorrelationContext(
-                        node_id=self._node_id,
+                        node_id=self.node_id,
                         channel_slug=channel_session.channel_slug,
                         channel_session_id=channel_session.channel_session_id,
                         bcn_session_id=bcn_session_id,
@@ -401,7 +426,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = CorrelationContext(
-                        node_id=self._node_id,
+                        node_id=self.node_id,
                         channel_slug=channel_session.channel_slug,
                         channel_session_id=channel_session.channel_session_id,
                         bcn_session_id=bcn_session_id,
@@ -427,7 +452,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = CorrelationContext(
-                        node_id=self._node_id,
+                        node_id=self.node_id,
                         channel_slug=channel_session.channel_slug,
                         channel_session_id=channel_session.channel_session_id,
                         bcn_session_id=bcn_session_id,
@@ -560,7 +585,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 bcn_session = BcnSession(
                     bcn_session_id=message.bcn_session_id,
                     channel_session_id=channel_session.channel_session_id,
-                    workspace_uuid=self._workspace_uuid,
+                    workspace_id=self.workspace_id,
                     state=BcnSessionState.CREATED,
                     created_at_ms=now_ms,
                     updated_at_ms=now_ms,
@@ -568,7 +593,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 await transaction.save_bcn_session(bcn_session)
             elif (
                 bcn_session.channel_session_id != channel_session.channel_session_id
-                or bcn_session.workspace_uuid != self._workspace_uuid
+                or bcn_session.workspace_id != self.workspace_id
             ):
                 raise ValueError("inbound bcn session binding does not match")
 
@@ -586,7 +611,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     bcn_session_id=bcn_session.bcn_session_id,
                     channel_session_id=channel_session.channel_session_id,
                     runtime_slug=self._runtime_slug,
-                    workspace_uuid=self._workspace_uuid,
+                    workspace_id=self.workspace_id,
                     process_state=RuntimeProcessState.STARTING,
                     created_at_ms=now_ms,
                     updated_at_ms=now_ms,
@@ -596,7 +621,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 runtime_session.bcn_session_id != bcn_session.bcn_session_id
                 or runtime_session.channel_session_id
                 != channel_session.channel_session_id
-                or runtime_session.workspace_uuid != self._workspace_uuid
+                or runtime_session.workspace_id != self.workspace_id
             ):
                 raise ValueError("runtime session binding does not match")
 
@@ -677,7 +702,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 updated_runtime.bcn_session_id != context.bcn_session.bcn_session_id
                 or updated_runtime.channel_session_id
                 != context.channel_session.channel_session_id
-                or updated_runtime.workspace_uuid != self._workspace_uuid
+                or updated_runtime.workspace_id != self.workspace_id
             ):
                 raise ValueError("runtime provider returned a mismatched session")
             runtime_session = updated_runtime
@@ -747,7 +772,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 event_name="approval.decided",
                 state=RuntimeEventState.COMPLETED,
                 correlation=CorrelationContext(
-                    node_id=self._node_id,
+                    node_id=self.node_id,
                     channel_slug=context.channel_session.channel_slug,
                     channel_session_id=context.channel_session.channel_session_id,
                     bcn_session_id=context.bcn_session.bcn_session_id,
@@ -920,7 +945,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         turn: RuntimeTurn,
     ) -> CorrelationContext:
         return CorrelationContext(
-            node_id=self._node_id,
+            node_id=self.node_id,
             channel_slug=context.channel_session.channel_slug,
             channel_session_id=context.channel_session.channel_session_id,
             bcn_session_id=context.bcn_session.bcn_session_id,

@@ -142,8 +142,8 @@ provider SDK types。
 App Server 不引入 provider SDK 或 JSON-RPC 第三方封装：使用标准库 `asyncio` subprocess/stream、
 `json` 和 adapter-local protocol types，避免 experimental wire schema 和 SDK 版本绑定进入
 core。CLI、model、日志、correlation、ID、重试状态机分别使用标准库
-`argparse`、`dataclasses`/`typing`、`logging`、`contextvars`、`uuid`/`secrets`；不为这些能力
-增加第三方依赖。
+`argparse`、`dataclasses`/`typing`、`logging`、`contextvars`、`uuid`/`secrets`；本地生成的
+UUID 统一使用 RFC 9562 UUIDv7，不为这些能力增加第三方依赖。
 
 #### 3.1.3 Development dependencies
 
@@ -160,11 +160,12 @@ core。CLI、model、日志、correlation、ID、重试状态机分别使用标�
 
 ### 4.1 节点和 workspace
 
-启动时由 storage 初始化或读取唯一的 `workspace_uuid`：
+启动时由业务层生成并由 storage 初始化或读取唯一的 UUIDv7 `workspace_id`；storage adapter
+不重复承担 UUIDv7 格式校验：
 
 ```text
 data_dir:   platform user data directory for bcn
-workspace:  ~/.bcn/workspaces/{workspace_uuid}/
+workspace:  ~/.bcn/workspaces/{workspace_id}/
 database:   persistent SQLite database under data_dir
 ```
 
@@ -174,12 +175,16 @@ database:   persistent SQLite database under data_dir
 ```text
 ~/.bcn/
 ├── bin/                       # persistent bcc wrappers
-├── workspaces/{uuid}/         # shared agent workspace
+├── workspaces/{uuidv7}/       # shared agent workspace
 └── ...                        # SQLite data and other persistent node state
 ```
 
 临时目录只用于 IPC endpoint metadata 和生命周期临时文件；`bcc` wrapper 本身必须位于
 `~/.bcn/bin/`，以便 node 重启后仍能复用并由所有 runtime session 使用。
+
+业务启动阶段只依赖 core `IStorage` port 的 `initialize`，由注入的 storage implementation
+读取或创建 node identity；业务层随后根据返回的 `workspace_id` 创建 workspace directory。
+core/application 不执行 SQLite SQL，也不依赖 SQLite-specific migration objects。
 
 ### 4.2 SQLite schema 设计
 
@@ -187,6 +192,8 @@ database:   persistent SQLite database under data_dir
 类名可以在 Code 模式调整，但字段职责、约束和状态边界固定如下：
 
 - ID 使用 UUID 或 provider opaque ID 的 `TEXT`；不把 provider ID 当作本地主键。
+- 消息域的本地 `message_id` 与 `outbound_message_id` 使用 RFC 9562 UUIDv7 的 `TEXT`
+  primary key；由 repository 负责生成和格式校验，provider message ID 仍只是普通关联字段。
 - 本地时间使用 UTC Unix milliseconds 的 `INTEGER`，字段统一使用 `_at_ms` 后缀；展示层
   再格式化为 canonical time。
 - 本地序列使用 `INTEGER`；`inbound_messages.seq` 和 `runtime_events.event_seq` 分别是
@@ -197,6 +204,9 @@ database:   persistent SQLite database under data_dir
 - 所有状态值、必填字段、默认值、关联关系和去重规则都由 core/application/repository
   校验；SQLite schema 只声明字段与物理行身份，不承载业务约束。未知 provider 状态不能
   折叠成失败。
+- migration 的表创建语法属于 `contrib/storage_sqlite` 的 adapter-private 实现；storage
+  port 只暴露启动、初始化和 repository 操作。替换存储时替换注入的 implementation 及其
+  schema 初始化，不把 SQLite DDL 抽象成业务层的通用表创建 API。
 
 关系可以先固定为以下形态：
 
@@ -249,7 +259,7 @@ CREATE TABLE node_state (
     -- Cached version of the migration ledger.
     schema_version INTEGER,
     -- UUID of the shared workspace used by all runtime sessions.
-    workspace_uuid TEXT,
+    workspace_id TEXT,
     -- Creation time of the node state.
     created_at_ms INTEGER,
     -- Last update time of node metadata or schema cache.
@@ -293,7 +303,7 @@ CREATE TABLE bcn_sessions (
     -- Application-managed association to a channel session.
     channel_session_id TEXT,
     -- UUID of the shared workspace used by this session.
-    workspace_uuid TEXT,
+    workspace_id TEXT,
     -- Application-managed bcn session lifecycle state.
     state TEXT,
     -- Creation time of the bcn session.
@@ -330,6 +340,8 @@ CREATE TABLE runtime_sessions (
     last_exit_code INTEGER,
     -- Creation time of the runtime session record.
     created_at_ms INTEGER,
+    -- Last update time of runtime process state or metadata.
+    updated_at_ms INTEGER,
     -- Process start time.
     started_at_ms INTEGER,
     -- Process stop time.
@@ -539,9 +551,9 @@ CREATE TABLE schema_migrations (
 
 #### 4.2.2 约束、索引与非表状态
 
-- DDL 只保留用于物理行定位的 `INTEGER PRIMARY KEY` 或本地 identity primary key；不把它们
-  当作跨表关联、业务唯一性或状态校验。应用层必须在写入前校验 required fields、ID 格式
-  和对象归属。
+- DDL 只保留用于物理行定位的 `INTEGER PRIMARY KEY`、本地 identity primary key 或消息
+  UUIDv7 primary key；不把它们当作跨表关联、业务唯一性或状态校验。应用层必须在写入前
+  校验 required fields、ID 格式和对象归属。
 - `channel_sessions` 的逻辑查找键是
   `(channel_slug, provider_conversation_key, provider_thread_key)`。没有 thread 的 provider
   identity 由 adapter 规范化为空字符串或显式 sentinel；repository 在 session lock 内
@@ -552,8 +564,9 @@ CREATE TABLE schema_migrations (
 - 同一 runtime session 同时最多一个 `starting/running/unknown/reconciling` turn 是
   application state machine 的不变量。repository 在事务内检查 active turn，再插入或更新
   turn；`provider_turn_id` 只是对账键，不作为本地 turn 主键。
-- `inbound_messages.seq` 是 node-local monotonic sequence；append-only 语义下不做 delete，
-  因此 node 重启后继续递增。provider 去重逻辑键是
+- `inbound_messages.message_id` 是 repository 生成的 UUIDv7 primary key；`seq` 仍是独立的
+  node-local monotonic sequence，用于 cursor/snapshot 边界并建立普通索引。append-only
+  语义下不做 delete，因此 node 重启后继续递增。provider 去重逻辑键是
   `(channel_slug, provider_message_id)`，由 adapter/repository 在同一事务中检查，不能只按
   provider message id 全局去重。
 - `outbound_messages` 记录的是 send command attempt，而不只是已经送达的 provider message。
@@ -644,8 +657,9 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
 ### 5.1 启动
 
 1. 解析 `--channel` 与 `--runtime`，拒绝未知或不兼容的 adapter slug。
-2. 解析跨平台 data directory，打开 SQLite，执行 migrations。
-3. 读取或生成唯一 workspace UUID，创建共享 workspace。
+2. 解析跨平台 data directory，通过注入的 storage port 启动持久化实现；SQLite adapter 在
+   自己的实现内部执行 migrations。
+3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
 4. 启动本地 command service，确保 `~/.bcn/bin/` 下存在平台对应的 `bcc` wrapper，
    并把该稳定目录加入每个 runtime 子进程的 PATH。为每个 runtime 子进程注入
    `BCN_SESSION_ID=<bcn_session_id>`，让同一个 wrapper 能路由到正确的 session。
@@ -979,10 +993,12 @@ session mapping 和显式事务语义。
 
 #### Task 2A：data directory、workspace 和 migration foundation
 
-- 实现 data-dir resolver、node identity、共享 workspace UUID 初始化和 workspace 创建；
-  workspace 位于稳定 data directory，不把业务状态放进临时目录。
+- 扩展 storage port 的 node initialization，SQLite implementation 实现 node identity 和共享
+  workspace UUID 的持久化；workspace path 由业务启动阶段创建，位于稳定 data directory，
+  不把业务状态放进临时目录。
 - 建立 migration ledger、checksum/application-level version check、WAL、busy timeout 和
-  显式 transaction helper；启动时发现同一 version 的 name/checksum 不一致必须 fail closed。
+  显式 transaction helper；SQLite migration DDL 保持在 adapter-private 实现内，启动时发现
+  同一 version 的 name/checksum 不一致必须 fail closed。
 - 创建 4.2 中的 tables、column comments 和普通查询索引；DDL 不使用 domain `NOT NULL`、
   `DEFAULT`、`CHECK`、`UNIQUE` 或 `FOREIGN KEY`，primary row identity 也不代替业务关联。
 
@@ -1002,7 +1018,7 @@ association invariant tests。
 #### Task 2C：message log、cursor 和 inbox snapshot repository
 
 - 实现 `inbound_messages` append-only log、node-local seq、provider-level application dedupe、
-  `consumer_cursors` 和独立 inbox snapshot。
+  repository-generated UUIDv7 message IDs、`consumer_cursors` 和独立 inbox snapshot。
 - 固定 `check` 推进 delivered cursor、`read` 不推进 cursor、两者都更新 snapshot 的事务
   语义；snapshot seq 与 delivery cursor 不混用。
 - 在显式事务与 session lock 下验证重复 inbound、并发 check/read、provider message id
