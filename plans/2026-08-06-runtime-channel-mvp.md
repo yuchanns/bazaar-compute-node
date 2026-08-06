@@ -32,8 +32,9 @@ bcn --channel wecom --runtime codex
 
 `--channel` 和 `--runtime` 是 composition root 的 adapter slug。CLI 在启动 node 前完成
 参数解析和 capability 校验，再加载对应的 Channel 与 Agent Runtime contrib。首版一个
-进程选择一组 channel/runtime；该组合内部仍支持多个 bcn session 并发。Dummy pair 只用于
-测试和开发 composition，不作为默认生产入口。
+进程选择一组 channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 先提供
+`dummy/dummy` 开发入口完成小闭环；真实 provider 组合在后续 phase 接入，不把 Dummy
+作为默认生产入口。
 
 首版必须满足以下产品语义：
 
@@ -877,10 +878,11 @@ stderr 日志用于实时堆栈，不把一次 logger 输出当成唯一事实�
 
 依赖：无。产出：async application entrypoint、lifecycle skeleton 和真实进程 smoke check。
 
-### Phase 1：core contracts
+### Phase 1：core contracts 与 Dummy 可运行闭环
 
-目标：建立不依赖 provider、SQLite 或具体 transport 的 domain contract 和 session
-orchestration 骨架。
+目标：建立不依赖真实 provider 或 SQLite 的 domain contract、session orchestration、Dummy
+adapter 和最小可运行应用闭环；在进入真实持久化和 provider adapter 前，先用 `dummy/dummy`
+验证从 inbound 到 runtime turn、`bcc` command 和 outbound 的完整路径。
 
 #### Task 1A：domain model 与状态边界
 
@@ -917,18 +919,47 @@ orchestration 骨架。
 
 #### Task 1D：Dummy adapters 与 core orchestration harness
 
-- 在 `contrib/dummy` 中分别实现 Dummy Channel 与 Dummy Agent Runtime，驱动真实 core
-  contract、session routing、approval callback 和状态转换；Dummy 不得反向成为 core 依赖。
+- 在 `contrib/dummy` 中实现内存 Dummy Storage、Dummy Channel 与 Dummy Agent Runtime；
+  Dummy 事务必须支持提交/回滚，不能把测试状态写进 SQLite 或 provider adapter。
+- 实现 core session orchestration，驱动真实 contract、session routing、approval callback
+  和状态转换；Dummy 不得反向成为 core 依赖。Orchestration 必须允许 Channel inbound
+  触发 runtime reminder，并由 runtime adapter 回调 command service，而不是只在测试中
+  直接调用 core 方法。
 - 测试正常 inbound、turn completion、outbound delivery、provider failure、unknown turn、
   fresh-check refusal 和 graceful cancellation。
 - 测试多个 session 的 cursor、turn、workspace identity 和 correlation 不串线。
 
 依赖：Task 1C 的 approval/audit/correlation contract。产出：不导入真实 provider 的 core
-contract/orchestration 测试套件。
+orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters。
 
-Phase 验收：core 在没有 provider import 的情况下，由 Dummy adapters 驱动完成 session
-routing、状态迁移、错误分类和 approval/audit correlation；并发测试能够证明 session
-边界，不依赖 SQLite constraint。
+#### Task 1E：Dummy composition、command service 与 `bcc` 小闭环
+
+- 在 `app/cli` 建立最小 composition root，解析 `--channel dummy --runtime dummy`，组装
+  Dummy Storage、Dummy Channel、Dummy Agent Runtime、core orchestration 和 command service；
+  未知或不兼容组合必须在启动前失败，服务必须能被真实 async process 启停。
+- 暴露 session-scoped `check`/`read`/`send` command service，并提供最小本机 command
+  transport；transport 只传递 core command/result，不泄露 adapter/provider 对象。
+- 生成可执行的 `bcc` wrapper，让 Dummy runtime 使用 `BCN_SESSION_ID` 调用 command service；
+  先覆盖当前开发平台的本机路径，同时保留跨平台 transport seam，生产级 Windows/Unix
+  hardening 后置到 Phase 3。
+- Dummy Channel 提供受控 inbound 注入和 outbound/approval 观察接口；Dummy Runtime 提供
+  受控 turn script，能够在 turn 内实际执行 `bcc message check/read/send`，并把 command
+  结果继续驱动后续 runtime 行为。
+- 以真实进程启动 `bcn --channel dummy --runtime dummy`，验证
+  `Dummy Channel → core orchestration → Dummy Storage → Dummy Runtime → bcc command service
+  → Dummy Channel` 的全链路，以及多 session 的 check/read/send、approval、fresh-check
+  refusal、provider failure、unknown turn 和 graceful shutdown；这一步不依赖 SQLite 或
+  真实 provider。
+
+依赖：Task 1D。产出：可启动的 Dummy node、最小 command service、`bcc` wrapper 和小闭环
+integration tests。
+
+Phase 验收：`bcn --channel dummy --runtime dummy` 能在没有 provider import 和 SQLite
+constraint 的情况下启动；从 Dummy Channel 注入 inbound 后，Dummy Storage 能观察到持久
+记录，Dummy Runtime 能在 turn 内实际调用 `bcc` command 并收到结果，最终 outbound 能回到
+Dummy Channel。整条链路完成 session routing、状态迁移、错误分类、approval/audit
+correlation 以及 `bcc` check/read/send，多 session 不串线，退出时能清理 runtime、command
+service 和 storage。
 
 ### Phase 2：SQLite 与 workspace
 
@@ -986,26 +1017,29 @@ Phase 验收：真实临时 SQLite 文件验证 workspace UUID 重启复用、mi
 turn application invariant、runtime event append-only，以及显式事务下的多 session 并发；不
 以 SQLite DDL 拒绝非法行作为验收依据。
 
-### Phase 3：local command service 与 bcc
+### Phase 3：production local command service 与 bcc
 
-目标：把 core 的 session-scoped 能力暴露给 runtime 子进程，完成可审阅的本地 IPC、持久
-wrapper 和三类 message command。
+目标：在 Phase 1 Dummy 小闭环的 command contract 基础上，接入 SQLite-backed session
+state，完成可审阅的跨平台本地 IPC、持久 wrapper 和三类 message command。
 
 #### Task 3A：composition root 与 command service lifecycle
 
-- 让 `app/cli` 暴露 `--channel`、`--runtime`，在 composition root 将 slug 映射到 contrib
-  factory；未知或不兼容 slug 在启动前清晰失败。
-- 建立 command service 的启动、停止、health/error boundary 和 session-scoped dispatch；
+- 将 Phase 1 的 Dummy composition 扩展为真实 storage/channel/runtime 的 adapter factory，
+  让 `app/cli` 暴露完整的 `--channel`、`--runtime` 组合；未知或不兼容 slug 在启动前清晰
+  失败。
+- 完善 command service 的启动、停止、health/error boundary 和 session-scoped dispatch；
   service 只调用 core ports，不把 provider SDK 对象返回给 wrapper。
 - 固定一个 node process 可服务多个 bcn session，但每个 command 必须经过 session binding
   校验。
 
-依赖：Phase 2。产出：composition root、command service lifecycle 和 dispatch contract。
+依赖：Phase 1 的 Dummy composition 与 Phase 2 的 SQLite/workspace。产出：production
+composition root、command service lifecycle 和 dispatch contract。
 
 #### Task 3B：local IPC、wrapper 和 session binding
 
-- Unix 使用 Unix domain socket，Windows 使用 named pipe 或等价本机 IPC；loopback fallback
-  只允许随机 capability token、loopback bind 和受限 endpoint metadata。
+- 将 Phase 1 的开发 transport 替换或升级为 Unix domain socket、Windows named pipe 或等价
+  本机 IPC；loopback fallback 只允许随机 capability token、loopback bind 和受限 endpoint
+  metadata。
 - 将 POSIX `bcc` 与 Windows `bcc.ps1` 持久化到 `~/.bcn/bin/`，为每个 runtime process
   注入 PATH 和 `BCN_SESSION_ID`；wrapper 不携带宿主凭据和管理能力。
 - command service 端校验 IPC client binding、environment session id 和 bcn/runtime mapping，
@@ -1229,7 +1263,7 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
 ## 11. Code 模式入口条件
 
 进入 Code 模式前需要确认本计划本身，无需再次选择子方案。若直接按当前最优路径实施，
-第一批代码先完成 Task 0，再覆盖 Phase 1 和 Phase 2：先建立 async application bootstrap、
-core contracts、SQLite migrations、唯一
-workspace 初始化和三方 session binding；完成后再接 local command service，避免先写
-provider-specific runtime 逻辑造成核心模型返工。
+第一批代码先完成 Task 0，再完成 Phase 1 的 Dummy Storage、core orchestration、Dummy
+composition、command service 和 `bcc` 小闭环；确认闭环可运行后再接 Phase 2 的 SQLite
+workspace 持久化，随后将同一 command contract 扩展到 production local IPC 和真实
+provider adapter，避免 provider-specific runtime 逻辑造成核心模型返工。
