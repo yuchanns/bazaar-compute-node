@@ -21,6 +21,7 @@ from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import IRuntime, IRuntimeTurnStream
 
 CommandScript = Callable[[ICommandService, str], Awaitable[None]]
+CommandRunner = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +41,13 @@ class DummyTurnPlan:
 class DummyRuntime(IRuntime):
     """Deterministic runtime that can execute a command script inside a turn."""
 
-    def __init__(self, command_service: ICommandService | None = None) -> None:
+    def __init__(
+        self,
+        command_service: ICommandService | None = None,
+        default_command_runner: CommandRunner | None = None,
+    ) -> None:
         self.command_service = command_service
+        self.default_command_runner = default_command_runner
         self.started = False
         self.stopped = False
         self.started_sessions: list[RuntimeSession] = []
@@ -253,6 +259,13 @@ class _DummyTurnStream(IRuntimeTurnStream):
                 self.runtime.command_service,
                 self.session.bcn_session_id,
             )
+        elif (
+            not self.command_done
+            and self.plan.command_script is None
+            and self.runtime.default_command_runner is not None
+        ):
+            self.command_done = True
+            await self.runtime.default_command_runner(self.session.bcn_session_id)
         if self.plan.raise_error is not None and not self.error_raised:
             self.error_raised = True
             raise RuntimeError(self.plan.raise_error)

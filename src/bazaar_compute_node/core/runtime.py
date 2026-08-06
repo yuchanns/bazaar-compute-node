@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
 from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
 from .outcomes import ProviderCallResult
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCommandContext:
+    """Generic command capability made available to a runtime adapter."""
+
+    run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
 
 
 class IRuntimeTurnStream(Protocol):
