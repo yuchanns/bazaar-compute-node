@@ -1,7 +1,7 @@
 [project]
 name = "bazaar-compute-node"
 version = "0.1.0"
-description = "Computer Node connecting an Agent Runtime and a Channel."
+description = "Runtime-agnostic computer node daemon for agents and channels."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
