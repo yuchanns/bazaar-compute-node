@@ -1,13 +1,56 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from time import time_ns
 from typing import Any, cast
+
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    _ERROR_ACCESS_DENIED = 5
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _STILL_ACTIVE = 259
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _open_process = _kernel32.OpenProcess
+    _open_process.argtypes = (
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    )
+    _open_process.restype = wintypes.HANDLE
+    _get_exit_code_process = _kernel32.GetExitCodeProcess
+    _get_exit_code_process.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    _get_exit_code_process.restype = wintypes.BOOL
+    _close_handle = _kernel32.CloseHandle
+    _close_handle.argtypes = (wintypes.HANDLE,)
+    _close_handle.restype = wintypes.BOOL
+
+    def _process_is_alive_windows(pid: int) -> bool:
+        handle = _open_process(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+        try:
+            exit_code = wintypes.DWORD()
+            if not _get_exit_code_process(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == _STILL_ACTIVE
+        finally:
+            _close_handle(handle)
+
+else:
+
+    def _process_is_alive_windows(pid: int) -> bool:
+        raise RuntimeError("Windows process probing is unavailable on this platform")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +155,8 @@ def remove_runtime_metadata(path: Path, *, pid: int | None = None) -> None:
 def process_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _process_is_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
