@@ -826,102 +826,298 @@ stderr 日志用于实时堆栈，不把一次 logger 输出当成唯一事实�
 
 ### Phase 1：core contracts
 
-- 定义 session、message、cursor、turn、delivery state 和 runtime event 的中立模型。
-- 定义 storage、runtime、channel（包含 approval）、command service port。
-- 定义中立 `ApprovalRequest`/`ApprovalDecision`，以及 runtime request id 到 Channel
-  approval handler 的关联规则。
-- 定义 `AuditEvent`、correlation context 和稳定 error kind；core 不依赖具体 logger。
-- 明确每个 port 的 async contract、取消语义、错误分类和生命周期。
-- 在 `contrib/dummy` 中分别实现 Dummy Channel 与 Dummy Agent Runtime，用于驱动 core
-  contract 和 session orchestration 验证；Dummy 不得反向成为 core 的依赖。
+目标：建立不依赖 provider、SQLite 或具体 transport 的 domain contract 和 session
+orchestration 骨架。
 
-验收：core 在没有 provider import 的情况下，由 `contrib/dummy` 实现驱动完成 session
-routing 和状态转换的纯逻辑测试。
+#### Task 1A：domain model 与状态边界
+
+- 定义 session、message、cursor、turn、delivery、approval 和 runtime event 的中立类型。
+- 为 session lifecycle、turn lifecycle、outbound delivery、fresh-check 和 unknown 状态
+  写出允许的状态迁移及终态语义；必填字段、默认值和关联关系由 model/repository 校验，
+  不下沉到 SQLite DDL。
+- 固定 ID、UTC milliseconds、local sequence、canonical target 和受控 metadata 的表示
+  规则，使后续 storage、runtime、channel adapter 使用同一份语义。
+
+依赖：无。产出：core domain types、状态迁移表和错误分类草案。
+
+#### Task 1B：ports、并发和生命周期契约
+
+- 定义 storage、runtime、channel、approval、command service 和 logger/audit 的 port；明确
+  async contract、取消语义、超时边界、provider call 的 unknown 结果和关闭顺序。
+- 明确同一 bcn session 的 command/turn/cursor 串行边界，以及不同 session 的隔离边界。
+- 固定 core 不依赖 provider SDK、SQLite driver、具体 logger 或 IPC implementation 的依赖
+  方向。
+
+依赖：Task 1A 的 domain model。产出：port interfaces、并发边界和生命周期契约。
+
+#### Task 1C：approval、audit 和 correlation contract
+
+- 定义中立 `ApprovalRequest`/`ApprovalDecision`，以及 runtime request id 到当前 Channel
+  approval handler 的关联规则。
+- 定义 `AuditEvent`、correlation context、稳定 `error_kind` 和敏感字段脱敏边界；异常
+  traceback 只作为受控摘要或引用，不让 provider payload 进入 core event。
+- 让 runtime、Channel、storage、IPC 和 command service 能够使用同一组 session/turn/request
+  correlation 字段。
+
+依赖：Task 1B 的 ports、并发和生命周期契约。产出：approval/audit/correlation contract 和
+错误边界。
+
+#### Task 1D：Dummy adapters 与 core orchestration harness
+
+- 在 `contrib/dummy` 中分别实现 Dummy Channel 与 Dummy Agent Runtime，驱动真实 core
+  contract、session routing、approval callback 和状态转换；Dummy 不得反向成为 core 依赖。
+- 测试正常 inbound、turn completion、outbound delivery、provider failure、unknown turn、
+  fresh-check refusal 和 graceful cancellation。
+- 测试多个 session 的 cursor、turn、workspace identity 和 correlation 不串线。
+
+依赖：Task 1C 的 approval/audit/correlation contract。产出：不导入真实 provider 的 core
+contract/orchestration 测试套件。
+
+Phase 验收：core 在没有 provider import 的情况下，由 Dummy adapters 驱动完成 session
+routing、状态迁移、错误分类和 approval/audit correlation；并发测试能够证明 session
+边界，不依赖 SQLite constraint。
 
 ### Phase 2：SQLite 与 workspace
 
-- 实现 data-dir resolver、唯一 workspace UUID 初始化和共享 workspace 创建。
-- 建立 migrations、WAL、busy timeout 和显式事务边界；不把 SQLite 约束语义当作 storage
-  port 的业务契约。
-- 按 4.2 的 schema 建立 `node_state`、`channel_sessions`、`bcn_sessions`、
-  `runtime_sessions`、`runtime_turns`、`inbound_messages`、`outbound_messages`、
-  `consumer_cursors`、`runtime_events` 和 `schema_migrations`，包括列注释、物理 row identity
-  和普通查询索引；业务不变量由 core/application/repository 实现。
-- 实现 inbound cursor、provider id 去重、runtime 三方映射和 outbound audit repository；
-  repository 层明确哪些表 append-only，哪些状态允许 transition，禁止用通用 update 绕过
-  状态机。
-- 实现独立的 delivery cursor 与 inbox snapshot，保证 `check`/`read` 记录观察边界而不
-  混淆消息是否已交付。
-- 实现 `runtime_events` append-only repository，并保持事件 seq 与 message/turn 状态边界
-  独立。
+目标：提供可替换 storage port 的首个 SQLite contrib，实现计划 4.2 的字段、日志、cursor、
+session mapping 和显式事务语义。
 
-验收：使用真实临时 SQLite 文件验证重启复用 workspace UUID、重复 inbound 不重复入库、
-check 推进 cursor、read 不推进 cursor、两者更新 snapshot、pending/sent/failed 状态正确，
-且 snapshot 与 delivery cursor 独立持久化；同时验证三方绑定、provider id application-level
-dedupe、active turn 并发不变量、migration checksum mismatch fail-closed、runtime event 只能
-追加，以及 unknown/rejected outbound 不会被误写成 failed/sent。并发测试必须证明这些不变量
-在显式事务和 repository lock 下成立，而不是依赖 SQLite DDL 拒绝非法行。
+#### Task 2A：data directory、workspace 和 migration foundation
+
+- 实现 data-dir resolver、node identity、共享 workspace UUID 初始化和 workspace 创建；
+  workspace 位于稳定 data directory，不把业务状态放进临时目录。
+- 建立 migration ledger、checksum/application-level version check、WAL、busy timeout 和
+  显式 transaction helper；启动时发现同一 version 的 name/checksum 不一致必须 fail closed。
+- 创建 4.2 中的 tables、column comments 和普通查询索引；DDL 不使用 domain `NOT NULL`、
+  `DEFAULT`、`CHECK`、`UNIQUE` 或 `FOREIGN KEY`，primary row identity 也不代替业务关联。
+
+依赖：Phase 1。产出：可重复启动的 SQLite schema 与 migration bootstrap。
+
+#### Task 2B：session/workspace mapping repository
+
+- 实现 `node_state`、`channel_sessions`、`bcn_sessions` 和 `runtime_sessions` 的读写，
+  包括首次 inbound 的 get-or-create、workspace 绑定、三方 ID 关系和恢复时的 reconcile lookup。
+- 在 repository transaction/session lock 内实现一对一 binding、required field、ID format
+  和对象归属校验；重复逻辑 key 返回已有记录或明确冲突，不依赖 SQL unique/foreign key。
+- 让 session state transition 只能经过命名操作，禁止通用 update 绕过 state machine。
+
+依赖：Task 2A 的 migration/transaction foundation。产出：session/workspace repository 与
+association invariant tests。
+
+#### Task 2C：message log、cursor 和 inbox snapshot repository
+
+- 实现 `inbound_messages` append-only log、node-local seq、provider-level application dedupe、
+  `consumer_cursors` 和独立 inbox snapshot。
+- 固定 `check` 推进 delivered cursor、`read` 不推进 cursor、两者都更新 snapshot 的事务
+  语义；snapshot seq 与 delivery cursor 不混用。
+- 在显式事务与 session lock 下验证重复 inbound、并发 check/read、provider message id
+  冲突和跨 session 隔离。
+
+依赖：Task 2B 的 session/workspace repository。产出：message/cursor repository、snapshot
+semantics 和真实临时 SQLite tests。
+
+#### Task 2D：outbound、runtime turn 和 event repository
+
+- 实现 `outbound_messages` 的 pending/sent/failed/unknown/rejected/draft 记录，以及
+  `snapshot_seq`、`current_inbound_seq`、provider receipt 和 next action 审计字段。
+- 实现 `runtime_turns` 和 `runtime_events` repository；event 只允许 append，turn 状态只
+  允许合法 transition，错误事件即使 session 创建或 runtime 启动失败也能落库。
+- 关联字段保持普通字段，由 application/repository 校验；不要用 trigger 或 SQLite-specific
+  constraint 把 append-only 和 state machine 语义固化到 storage。
+
+依赖：Task 2C 的 message/cursor repository。产出：outbound/turn/event repository 和状态
+审计 tests。
+
+Phase 验收：真实临时 SQLite 文件验证 workspace UUID 重启复用、migration checksum fail-closed、
+重复 inbound 不重复入库、check/read/snapshot 语义、outbound unknown/rejected 边界、active
+turn application invariant、runtime event append-only，以及显式事务下的多 session 并发；不
+以 SQLite DDL 拒绝非法行作为验收依据。
 
 ### Phase 3：local command service 与 bcc
 
-- 让 `app/cli` 暴露 `--channel`、`--runtime`，并将 slug 映射到 contrib factory；未知 slug
-  在启动前以清晰错误退出。
-- 实现 session-scoped command dispatch 和本地 IPC transport。
-- 将平台 wrapper 注入稳定目录 `~/.bcn/bin/`，并将该目录加入 runtime 子进程 PATH：
-  Linux/macOS 使用可执行的 POSIX `bcc`；Windows 使用对应的 `bcc.ps1` 格式（必要时
-  另提供 Windows shell compatibility shim）。
-- 为每个 runtime 子进程设置 `BCN_SESSION_ID`，并在 command service 侧校验它与 IPC
-  client binding 一致。
-- 实现 `message check/read/send` 的参数校验、canonical text 序列化和错误标签。
-- 在 session command lock 内实现 `send` fresh check：snapshot 缺失或当前 inbound seq 更
-  新时，在 Channel 调用前拒绝并保存 draft；通过后才写 pending 并调用 Channel。
-- 记录 `bcc.command.started/completed`、fresh-check passed/failed 及失败事件，参数只保留
-  脱敏摘要和耗时。
+目标：把 core 的 session-scoped 能力暴露给 runtime 子进程，完成可审阅的本地 IPC、持久
+wrapper 和三类 message command。
 
-验收：真实启动的本地 runtime 子进程可以通过 wrapper 找到 bcc；不同 bcn session 的
-命令不会串读 cursor、snapshot 或 outbound target；有新 inbound 时 `send` 不触发
-Channel provider 调用，并返回稳定的 Error/Code/Draft saved/Next action；fresh check 通过
-后才允许进入 pending/send；provider 状态 unknown 与明确 failed 可区分。
+#### Task 3A：composition root 与 command service lifecycle
+
+- 让 `app/cli` 暴露 `--channel`、`--runtime`，在 composition root 将 slug 映射到 contrib
+  factory；未知或不兼容 slug 在启动前清晰失败。
+- 建立 command service 的启动、停止、health/error boundary 和 session-scoped dispatch；
+  service 只调用 core ports，不把 provider SDK 对象返回给 wrapper。
+- 固定一个 node process 可服务多个 bcn session，但每个 command 必须经过 session binding
+  校验。
+
+依赖：Phase 2。产出：composition root、command service lifecycle 和 dispatch contract。
+
+#### Task 3B：local IPC、wrapper 和 session binding
+
+- Unix 使用 Unix domain socket，Windows 使用 named pipe 或等价本机 IPC；loopback fallback
+  只允许随机 capability token、loopback bind 和受限 endpoint metadata。
+- 将 POSIX `bcc` 与 Windows `bcc.ps1` 持久化到 `~/.bcn/bin/`，为每个 runtime process
+  注入 PATH 和 `BCN_SESSION_ID`；wrapper 不携带宿主凭据和管理能力。
+- command service 端校验 IPC client binding、environment session id 和 bcn/runtime mapping，
+  防止跨 session 串读 cursor、snapshot 或 outbound target。
+
+依赖：Task 3A 的 service lifecycle。产出：跨平台本机 transport、wrapper 和 binding validation。
+
+#### Task 3C：check/read 查询与 canonical serializer
+
+- 实现 `bcc message check`、`bcc message read --target ... [--around ...]` 的参数解析、
+  session routing、cursor/snapshot 调用和 canonical text serializer。
+- 固定 stdout/stderr、退出码、sender identity、target、short/full message id、local seq、
+  threadId、replyTarget 和历史窗口边界；不把 provider SDK object 泄露给 runtime。
+- 以 Dummy Channel 和真实 SQLite repository 验证 check drain、read non-drain、snapshot
+  更新、无新消息输出和 target 定位错误。
+
+依赖：Task 3B 的 local IPC、wrapper 和 session binding。产出：check/read command contract
+和 golden text tests。
+
+#### Task 3D：send fresh-check safety gate 与 delivery command
+
+- 实现 `bcc message send --target ...` 的 stdin body、target validation、fresh-check、draft
+  保存、outbound audit 和 provider call ordering。
+- 在同一 session command lock 内比较 snapshot 与最新 inbound seq；snapshot 缺失或有新 inbound
+  时，provider call 前拒绝并返回稳定的 `Error`/`Code`/`Draft saved`/`Next action` 标签。
+- fresh-check 通过后才写 pending 并调用 Channel；区分 sent、queued、unknown 和明确 failed，
+  不把数据库写成功伪称 provider 已送达，也不允许 unknown 盲目重试。
+
+依赖：Task 3C 的 check/read command contract。产出：send safety gate、delivery state machine
+和 provider-call ordering tests。
+
+Phase 验收：真实本机 IPC 启动的 runtime 子进程能找到持久 wrapper；check/read/send 在多 session
+下不串线；新 inbound 或缺 snapshot 时 send 不触发 Channel provider call，并输出稳定 refusal；
+fresh-check 通过后才进入 pending/send，unknown 与明确 failed 可区分。
 
 ### Phase 4：Codex App Server adapter
 
-- 实现 async process supervisor、stdio JSONL reader/writer 和 request id routing。
-- 实现 initialize、thread start/resume、turn start、event stream、interrupt 和
-  turn completion。
-- 固定共享 workspace、可产生反向 approval request 的 Codex policy 和版本探测；审批决策
-  通过 Channel port 返回；隔离 SDK/CLI provider types。
-- 若官方 Python SDK 的 async facade 存在阻塞或版本耦合，则以同一协议 port 使用 native
-  `asyncio.create_subprocess_exec`；不得阻塞 event loop。
-- 记录 process、request、turn、approval 和 transport failure 事件；异常边界输出 traceback，
-  audit 只保存脱敏摘要或受控引用。
+目标：在 runtime contrib 中建立可恢复的异步 process/protocol adapter，并把双向 request、turn
+event 和 approval 转成 Phase 1 的中立 contract。
 
-验收：使用真实 Codex App Server CLI 完成一次 reminder -> bcc check -> bcc send；并发
-启动两个 session 时进程、thread、workspace 和 SQLite 绑定互不混淆。
+#### Task 4A：process supervisor 与 JSONL transport
+
+- 实现 async subprocess supervisor、stdio JSONL reader/writer、启动/停止/EOF/parse failure
+  边界和 request id routing；不得阻塞 event loop。
+- 固定 runtime version probe、workspace/cwd 注入、子进程环境和 bounded shutdown；进程异常
+  必须带关联 session/runtime 事件。
+- 若 SDK async facade 存在阻塞或版本耦合，使用同一 runtime port 的 native
+  `asyncio.create_subprocess_exec`，隔离 provider types。
+
+依赖：Phase 3。产出：真实 process transport、supervisor lifecycle 和 failure classification。
+
+#### Task 4B：thread/turn protocol adapter
+
+- 实现 initialize、thread start/resume、turn start、event stream、interrupt 和 turn completion
+  的 provider protocol mapping。
+- 保存 provider thread/turn ids 与本地 runtime session/turn/client user message mapping；
+  `turn/completed` 是唯一权威本地终态，`error.willRetry=true` 不能提前结束 turn。
+- 将 provider event 转成中立 runtime event，保留必要 request/turn correlation，不把 provider
+  wire schema 传播到 core 或 Channel。
+
+依赖：Task 4A 的 process supervisor 与 JSONL transport。产出：thread/turn mapping、event
+normalization 和 protocol tests。
+
+#### Task 4C：approval bridge 与 runtime-facing bcc flow
+
+- 将 runtime 反向 approval request 转成 `ApprovalRequest`，交由当前 Channel port 决定，再
+  用原始 request id 回写 `ApprovalDecision`；一次 request 只允许一次 response。
+- 在 runtime process 中配置共享 workspace、稳定 PATH 和 `BCN_SESSION_ID`，使 reminder turn
+  能够调用 `bcc`，但不在 wire request 中伪造 transcript item。
+- 记录 process/request/turn/approval/transport event；异常只写脱敏摘要或受控 traceback 引用。
+
+依赖：Task 4B 的 thread/turn protocol adapter。产出：双向 approval bridge、reminder-to-bcc
+integration。
+
+Phase 验收：真实 runtime process 完成 initialize -> reminder -> bcc check -> bcc send；两个
+session 并发时 process、thread、workspace、turn 和 SQLite mapping 互不混淆；provider retry
+notification 不会错误终结本地 turn。
 
 ### Phase 5：WeCom adapter 与端到端编排
 
-- 接入真实 webhook/send client 和 provider credential boundary。
-- 在 Channel port 上实现 WeCom approval handler，当前对每个 approval request 永远返回
-  approved，并保留后续替换为人工策略的接口边界。
-- 完成 inbound normalization、session get-or-create、runtime dispatch 和 outbound
-  delivery audit。
-- 处理群聊 @ 限制、重复 webhook、reply/thread target 和 shutdown。
-- 记录 inbound received、approval decision 和 outbound pending/sent/failed 事件，保证
-  provider receipt 与本地 delivery 状态可关联。
+目标：接入首个真实 Channel contrib，把 provider identity、inbound、approval、outbound 和
+session routing 汇合为可运行的端到端路径。
 
-验收：真实测试 channel 中，首次消息创建 session，后续同一 channel session 复用同一
-Codex thread；另一个 conversation 同时运行时不共享 cursor、进程或 turn。
+#### Task 5A：provider identity、inbound normalization 与 dedupe
+
+- 接入真实 webhook/event reader，规范化 conversation/thread/reply/sender identity、message
+  type、provider time 和 canonical target。
+- 将重复 webhook、provider message id、群聊/单聊 target 和 thread/reply 语义映射到 Phase 2
+  的 application-level dedupe 与 channel session lookup。
+- 处理 provider credential boundary；凭据只通过受控本机环境注入，不进入 SQLite、wrapper
+  或日志。
+
+依赖：Phase 4。产出：真实 inbound normalization、dedupe 和 identity tests。
+
+#### Task 5B：outbound delivery 与 Channel approval policy
+
+- 实现 canonical target 到 provider send 的 mapping，返回 provider receipt/queued/unknown/
+  failed 的明确分类，并把本地 outbound state 与 provider state 分开。
+- 在 Channel port 上实现当前 approval policy：每个 approval request 返回 approved；保留
+  后续替换为人工策略的接口，不把 runtime wire payload 暴露给 Channel。
+- 记录 inbound received、approval requested/decided、outbound pending/sent/failed/unknown
+  事件，保证 receipt 与本地 delivery 可关联。
+
+依赖：Task 5A 的 provider identity、inbound normalization 与 dedupe。产出：真实 provider
+send/approval adapter。
+
+#### Task 5C：session orchestration 与平台 delivery rules
+
+- 首次 inbound 创建 channel/bcn/runtime mapping，后续同一 conversation/thread 复用既有
+  session；不同 conversation 不能共享 cursor、process 或 turn。
+- 实现群聊重复 @、following、reply/thread target、shutdown stop-receive 和 provider delivery
+  limitation；未投递给 bot 的消息不能由本地 cursor 补回。
+- 将 runtime completion、Channel outbound 和 session state 的边界保持独立，不能用一个
+  boolean 表示整条链路成功。
+
+依赖：Task 5B 的 outbound delivery 与 Channel approval policy。产出：session orchestration、
+平台规则和真实测试 channel flow。
+
+Phase 验收：真实测试 channel 中首次消息创建 session，后续消息复用同一 runtime thread；
+两个 conversation 并发运行时不共享 cursor/process/turn；重复 webhook、approval、fresh-
+check refusal、provider receipt 和 outbound audit 均可解释。
 
 ### Phase 6：恢复与运维边界
 
-- 加入 process restart、unknown turn、thread read reconciliation、overload backoff
-  和 graceful shutdown。
-- 完成日志脱敏、运行事件查询和 error classification；恢复过程写入可追踪的 recovery
-  event，不泄露凭据。
-- 补充版本不兼容和数据库 migration 的启动失败提示。
+目标：处理进程、provider、SQLite 和 node 重启后的不确定状态，并形成可诊断的运维闭环。
 
-验收：在真实 App Server 进程被终止、node 重启、重复 inbound 和 Channel send 失败的
-场景下，状态可解释、不会静默丢消息，也不会无证据重复执行已完成 turn。
+#### Task 6A：process restart、turn reconciliation 与 unknown handling
+
+- 子进程 EOF、协议解析失败或异常退出时，将 active local turn 标记为 unknown，不猜测为
+  failed/completed；按退避策略重启并重新 initialize。
+- 使用 `thread/read(includeTurns=true)` 或等价 runtime reconciliation 查询 provider 状态，
+  将可确认的 completed/failed/recoverable 结果落回本地；不可判断的 turn 保留 unknown 和
+  可审计 next action。
+- provider send 状态不确定时禁止自动重复执行不可逆 outbound；明确失败才转 failed，可
+  恢复项必须经过 fresh-check 和显式 retry policy。
+
+依赖：Phase 5。产出：restart/reconciliation state machine 与 failure tests。
+
+#### Task 6B：backoff、overload 与 graceful shutdown
+
+- 分离 process restart backoff、provider retry、command timeout 和 shutdown timeout；同一
+  session 的退避不能阻塞其他 session。
+- graceful shutdown 先停止接收新 inbound，再 bounded flush IPC/SQLite、完成可安全终止的
+  runtime cleanup；超时留下可恢复状态和 recovery event。
+- 对启动、runtime、Channel、SQLite、IPC 和 approval failure 定义 stable error kind、用户
+  可执行 next action 和日志 correlation。
+
+依赖：Task 6A 的 process restart、turn reconciliation 与 unknown handling。产出：backoff/
+shutdown behavior 和 operational error contract。
+
+#### Task 6C：诊断、版本与 migration 运维面
+
+- 完成实时 stderr 日志、SQLite `runtime_events` 查询、traceback redaction、correlation
+  filtering 和运行状态对账；日志不得泄露凭据、完整正文或未脱敏 provider payload。
+- 补充 runtime/provider version mismatch、migration checksum mismatch、schema corruption
+  和 data directory 权限错误的 fail-closed 启动提示。
+- 验证 append-only event、session isolation、restart history 和 recovery event 的可查询性，
+  为未来 telemetry exporter 保留边界但不依赖远程 backend。
+
+依赖：Task 6B 的 backoff、overload 与 graceful shutdown。产出：运维诊断、启动失败信息和
+recovery audit。
+
+Phase 验收：在真实 runtime process 被终止、node 重启、重复 inbound、provider send 失败、
+unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢消息，也不会无证据重复执行
+已完成 turn；日志与 runtime event 能按 session/turn/request 还原故障路径。
 
 ## 9. 验证原则
 
