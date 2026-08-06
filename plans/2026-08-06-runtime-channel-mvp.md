@@ -24,17 +24,22 @@ WeCom inbound
     -> outbound channel delivery and audit
 ```
 
-首版由 CLI 负责选择 adapter 组合，启动入口为：
+首版由 CLI 负责选择 adapter 组合，后台启动入口为：
 
 ```bash
-bcn --channel wecom --runtime codex
+bcn start --channel wecom --runtime codex
+bcn stop
+bcn restart
 ```
 
 `--channel` 和 `--runtime` 是 composition root 的 adapter slug。CLI 在启动 node 前完成
-参数解析和 capability 校验，再加载对应的 Channel 与 Agent Runtime contrib。首版一个
-进程选择一组 channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 先提供
-`dummy/dummy` 开发入口完成小闭环；真实 provider 组合在后续 phase 接入，不把 Dummy
-作为默认生产入口。
+参数解析，并通过 Python package entry point 动态加载被选择的 Channel、Agent Runtime、
+Storage 和 Audit contrib；未选择或未安装的 provider 不会被 import。首版一个进程选择一组
+channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 先提供 `dummy/dummy`
+开发入口完成小闭环；真实 provider 组合在后续 phase 接入，不把 Dummy 作为默认生产入口。
+兼容地直接执行 `bcn --channel ... --runtime ...` 等价于 `bcn start --channel ... --runtime ...`。
+`bcn` daemon 将运行态元数据、控制 endpoint 和日志保存在持久化 data directory，运行进程
+在后台维护，`stop`/`restart` 通过本机 command transport 做优雅生命周期控制。
 
 首版必须满足以下产品语义：
 
@@ -932,11 +937,16 @@ adapter 和最小可运行应用闭环；在进入真实持久化和 provider ad
 依赖：Task 1C 的 approval/audit/correlation contract。产出：不导入真实 provider 的 core
 orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters。
 
-#### Task 1E：Dummy composition、command service 与 `bcc` 小闭环
+#### Task 1E：动态 composition、daemon lifecycle、command service 与 `bcc` 小闭环
 
-- 在 `app/cli` 建立最小 composition root，解析 `--channel dummy --runtime dummy`，组装
-  Dummy Storage、Dummy Channel、Dummy Agent Runtime、core orchestration 和 command service；
-  未知或不兼容组合必须在启动前失败，服务必须能被真实 async process 启停。
+- 在 `app/cli` 建立通用 composition root，解析 adapter slug，并通过 Python entry point
+  动态加载 provider factory；`app` 不包含 `DummyNode` 或任何 provider-specific Node 类，
+  新增 provider 只需安装 contrib package 并注册 entry point。未知、未安装或不兼容组合
+  必须在启动前失败。
+- 提供 `bcn start`、`bcn stop`、`bcn restart` 的 daemon lifecycle；start 将 foreground
+  runner 脱离当前终端并持久化 PID/endpoint/组合元数据，stop 通过本机 command transport
+  发送 shutdown，restart 复用已持久化组合配置。foreground runner 只作为内部进程和真实
+  integration test seam，不改变 daemon 默认行为。
 - 暴露 session-scoped `check`/`read`/`send` command service，并提供最小本机 command
   transport；transport 只传递 core command/result，不泄露 adapter/provider 对象。
 - 生成可执行的 `bcc` wrapper，让 Dummy runtime 使用 `BCN_SESSION_ID` 调用 command service；
@@ -945,7 +955,8 @@ orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters
 - Dummy Channel 提供受控 inbound 注入和 outbound/approval 观察接口；Dummy Runtime 提供
   受控 turn script，能够在 turn 内实际执行 `bcc message check/read/send`，并把 command
   结果继续驱动后续 runtime 行为。
-- 以真实进程启动 `bcn --channel dummy --runtime dummy`，验证
+- 以真实进程执行 `bcn start --channel dummy --runtime dummy`，验证 daemon ready、stop 和
+  restart，再通过其本机 endpoint 验证
   `Dummy Channel → core orchestration → Dummy Storage → Dummy Runtime → bcc command service
   → Dummy Channel` 的全链路，以及多 session 的 check/read/send、approval、fresh-check
   refusal、provider failure、unknown turn 和 graceful shutdown；这一步不依赖 SQLite 或
@@ -954,12 +965,12 @@ orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters
 依赖：Task 1D。产出：可启动的 Dummy node、最小 command service、`bcc` wrapper 和小闭环
 integration tests。
 
-Phase 验收：`bcn --channel dummy --runtime dummy` 能在没有 provider import 和 SQLite
-constraint 的情况下启动；从 Dummy Channel 注入 inbound 后，Dummy Storage 能观察到持久
-记录，Dummy Runtime 能在 turn 内实际调用 `bcc` command 并收到结果，最终 outbound 能回到
-Dummy Channel。整条链路完成 session routing、状态迁移、错误分类、approval/audit
-correlation 以及 `bcc` check/read/send，多 session 不串线，退出时能清理 runtime、command
-service 和 storage。
+Phase 验收：`bcn start --channel dummy --runtime dummy` 只加载选中的 Dummy entry point，
+在不依赖 SQLite 的情况下进入后台 ready；从 Dummy Channel 注入 inbound 后，Dummy Storage
+能观察到持久记录，Dummy Runtime 能在 turn 内实际调用 `bcc` command 并收到结果，最终
+outbound 能回到 Dummy Channel。`bcn stop` 和 `bcn restart` 能通过本机控制面完成优雅
+生命周期，多 session 不串线，退出时能清理 runtime、command service、storage 和运行态
+元数据。
 
 ### Phase 2：SQLite 与 workspace
 
