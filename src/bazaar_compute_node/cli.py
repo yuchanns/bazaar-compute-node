@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--endpoint",
         type=Path,
-        help="Unix socket path for the local command transport.",
+        help="Local command endpoint path on Unix; Windows uses loopback TCP.",
     )
     parser.add_argument(
         "--foreground",

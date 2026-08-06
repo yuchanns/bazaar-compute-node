@@ -4,12 +4,25 @@ import asyncio
 import json
 import os
 import secrets
+import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
+StreamPair = tuple[asyncio.StreamReader, asyncio.StreamWriter]
+
+
+if sys.platform == "win32":
+
+    async def _open_unix_connection(path: str) -> StreamPair:
+        raise ValueError(f"Unix command endpoints are not supported on Windows: {path}")
+
+else:
+
+    async def _open_unix_connection(path: str) -> StreamPair:
+        return await asyncio.open_unix_connection(path)
 
 
 class LocalCommandServer:
@@ -43,7 +56,7 @@ class LocalCommandServer:
         if self._server is not None:
             return
 
-        if os.name == "nt":
+        if sys.platform == "win32":
             self._capability = secrets.token_urlsafe(24)
             self._server = await asyncio.start_server(
                 self._handle_client,
@@ -175,7 +188,7 @@ class LocalCommandClient:
         parsed = urlsplit(endpoint)
         request = dict(payload)
         if parsed.scheme == "unix":
-            reader, writer = await asyncio.open_unix_connection(parsed.path)
+            reader, writer = await _open_unix_connection(parsed.path)
         elif parsed.scheme == "tcp":
             query = parse_qs(parsed.query)
             token_values = query.get("token")

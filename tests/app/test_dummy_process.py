@@ -14,12 +14,14 @@ from bazaar_compute_node.app.daemon import read_runtime_metadata
 from bazaar_compute_node.app.transport import LocalCommandClient
 
 
-async def wait_for_endpoint(endpoint: Path) -> None:
+async def wait_for_runtime_endpoint(data_dir: Path) -> str:
+    metadata_path = data_dir / "runtime.json"
     for _ in range(200):
-        if endpoint.exists():
-            return
+        metadata = read_runtime_metadata(metadata_path)
+        if metadata is not None:
+            return metadata.endpoint
         await asyncio.sleep(0.01)
-    raise AssertionError("dummy node did not create its local command endpoint")
+    raise AssertionError("dummy node did not publish runtime metadata")
 
 
 async def request_with_retry(
@@ -140,8 +142,8 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
-        await wait_for_endpoint(endpoint_path)
-        endpoint = f"unix://{endpoint_path}"
+        endpoint = await wait_for_runtime_endpoint(data_dir)
+        assert endpoint.startswith("tcp://" if os.name == "nt" else "unix://")
         for session_id in ("bcn-a", "bcn-b"):
             response = await request_with_retry(
                 endpoint,
@@ -215,9 +217,10 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
-        await wait_for_endpoint(endpoint_path)
+        endpoint = await wait_for_runtime_endpoint(data_dir)
         first_metadata = read_runtime_metadata(data_dir / "runtime.json")
         assert first_metadata is not None
+        assert endpoint == first_metadata.endpoint
         environment = os.environ.copy()
         source_root = str(Path(__file__).parents[2] / "src")
         environment["PYTHONPATH"] = os.pathsep.join(
