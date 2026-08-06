@@ -110,6 +110,46 @@ src/bazaar_compute_node/
 具体包名可以在 Code 模式开始时按仓库惯例调整，但不能反转依赖方向或让 core import
 provider SDK types。
 
+### 3.1 Async runtime 与外部依赖
+
+#### 3.1.1 Async loop
+
+- 全链路使用 Python 标准库 `asyncio`；CLI 的同步 console entrypoint 只在 composition root
+  调用一次 `asyncio.run(async_main(...))`，下层 coroutine 使用
+  `asyncio.get_running_loop()`，不自行创建或持有 event loop。
+- 使用 Python 默认 event loop policy：Unix 使用 `SelectorEventLoop`，Windows 使用
+  `ProactorEventLoop`。不在 MVP 强制引入 `uvloop`，避免破坏 Windows subprocess/IPC 的
+  同一套语义。
+- runtime process 使用 `asyncio.create_subprocess_exec`；stdio/JSONL、IPC、HTTP、timeout、
+  cancellation 和 session lock 都使用 asyncio 原生 awaitable。同步阻塞调用只能位于明确的
+  storage 或 executor boundary，不能阻塞主 event loop。
+- 每个 bcn session 的 command、cursor、turn 和 outbound safety gate 仍按既定 session lock
+  串行化；async loop 负责 node 内 I/O multiplexing，不改变业务状态机的串行顺序。
+
+#### 3.1.2 Runtime dependencies
+
+| 用途 | 外部库 | 作用域与规则 |
+| --- | --- | --- |
+| SQLite async adapter | `aiosqlite` | 仅由 `contrib/storage_sqlite` 使用；通过每个 connection 的共享 worker thread 将 SQLite 操作移出主 loop。MVP 使用 long-lived connection、显式 transaction 和 repository lock，不引入 connection pool。 |
+| Channel HTTP client/server | `aiohttp` | 仅由 `contrib/wecom` 使用；同时承载 webhook server 与 provider HTTP client，复用 application-scoped `ClientSession`，统一 timeout、TLS、response classification 和 shutdown。 |
+
+App Server 不引入 provider SDK 或 JSON-RPC 第三方封装：使用标准库 `asyncio` subprocess/stream、
+`json` 和 adapter-local protocol types，避免 experimental wire schema 和 SDK 版本绑定进入
+core。CLI、model、日志、correlation、ID、重试状态机分别使用标准库
+`argparse`、`dataclasses`/`typing`、`logging`、`contextvars`、`uuid`/`secrets`；不为这些能力
+增加第三方依赖。
+
+#### 3.1.3 Development dependencies
+
+- `pytest`：测试 runner。
+- `pytest-asyncio`：async core、repository、IPC、runtime 和 Channel adapter 测试；每个
+  async test 使用受控 event loop，不共享生产 loop 状态。
+- `ruff`：格式化和静态检查基线，版本由 uv lock 固定。
+
+以下不进入 MVP dependency set：`uvloop`、`anyio`/`trio`、SQLAlchemy、Pydantic、`orjson`、
+`tenacity`、FastAPI/Starlette 和 App Server provider SDK。只有出现明确的协议、性能或类型
+校验需求，并完成真实 adapter 验证后，才单独引入对应库。
+
 ## 4. 核心数据模型与 SQLite
 
 ### 4.1 节点和 workspace
@@ -824,6 +864,19 @@ stderr 日志用于实时堆栈，不把一次 logger 输出当成唯一事实�
 
 ## 8. 实施顺序
 
+### Task 0：async application bootstrap
+
+- 保留参数解析、help 和 version 等纯同步 CLI 行为；同步 console entrypoint 只负责解析参数，
+  然后把正常运行路径交给一次 `asyncio.run(async_main(...))`。
+- 建立最小 async application lifecycle：startup、bounded shutdown、取消传播和资源清理由
+  composition root 统一负责；下层模块不得自行创建或持有 event loop。
+- 此步不接入真实 Channel、runtime、SQLite 或 IPC，只提供后续 adapter 可以依赖的 async
+  生命周期边界。
+- 使用真实 packaged process 验证 `bcn --help`、正常退出和 SIGINT 路径，确保入口改造不
+  破坏现有命令行为。
+
+依赖：无。产出：async application entrypoint、lifecycle skeleton 和真实进程 smoke check。
+
 ### Phase 1：core contracts
 
 目标：建立不依赖 provider、SQLite 或具体 transport 的 domain contract 和 session
@@ -1176,6 +1229,7 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
 ## 11. Code 模式入口条件
 
 进入 Code 模式前需要确认本计划本身，无需再次选择子方案。若直接按当前最优路径实施，
-第一批代码只覆盖 Phase 1 和 Phase 2：先建立 core contracts、SQLite migrations、唯一
+第一批代码先完成 Task 0，再覆盖 Phase 1 和 Phase 2：先建立 async application bootstrap、
+core contracts、SQLite migrations、唯一
 workspace 初始化和三方 session binding；完成后再接 local command service，避免先写
 provider-specific runtime 逻辑造成核心模型返工。
