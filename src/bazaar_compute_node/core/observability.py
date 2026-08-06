@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from .models import RuntimeEvent
+if TYPE_CHECKING:
+    from .audit import AuditEvent
 
 
 class LogLevel(StrEnum):
@@ -36,6 +37,6 @@ class ILogger(Protocol):
 class IAudit(Protocol):
     """Durable append-only operational event boundary."""
 
-    async def append(self, event: RuntimeEvent, *, timeout: float) -> None:
+    async def append(self, event: AuditEvent, *, timeout: float) -> None:
         """Persist one event; cancellation must propagate to the caller."""
         ...
