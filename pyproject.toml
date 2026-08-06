@@ -9,6 +9,21 @@ dependencies = []
 [project.scripts]
 bcn = "bazaar_compute_node.cli:main"
 
+[project.entry-points."bazaar_compute_node.channels"]
+dummy = "bazaar_compute_node.contrib.dummy.plugin:create_channel"
+
+[project.entry-points."bazaar_compute_node.runtimes"]
+dummy = "bazaar_compute_node.contrib.dummy.plugin:create_runtime"
+
+[project.entry-points."bazaar_compute_node.storages"]
+dummy = "bazaar_compute_node.contrib.dummy.plugin:create_storage"
+
+[project.entry-points."bazaar_compute_node.audits"]
+dummy = "bazaar_compute_node.contrib.dummy.plugin:create_audit"
+
+[project.entry-points."bazaar_compute_node.controls"]
+dummy = "bazaar_compute_node.contrib.dummy.plugin:create_control"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
