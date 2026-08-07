@@ -10,19 +10,29 @@ from typing import cast
 
 import pytest
 
-from bazaar_compute_node.app.daemon import read_runtime_metadata
-from bazaar_compute_node.app.transport import LocalCommandClient
+from bazaar_compute_node.app.transport import (
+    LocalCommandClient,
+    local_endpoint_for_path,
+)
 from bazaar_compute_node.core.paths import resolve_data_dir
 
 
-async def wait_for_runtime_endpoint(data_dir: Path) -> str:
-    metadata_path = data_dir / "runtime.json"
+async def wait_for_runtime_endpoint(endpoint_path: Path) -> str:
+    endpoint = local_endpoint_for_path(endpoint_path)
     for _ in range(200):
-        metadata = read_runtime_metadata(metadata_path)
-        if metadata is not None:
-            return metadata.endpoint
+        response: Mapping[str, object] | None = None
+        try:
+            response = await LocalCommandClient.request(
+                endpoint,
+                {"kind": "control", "operation": "health"},
+                timeout=1,
+            )
+        except Exception:  # noqa: BLE001
+            response = None
+        if response is not None and response.get("ok") is True:
+            return endpoint
         await asyncio.sleep(0.01)
-    raise AssertionError("dummy node did not publish runtime metadata")
+    raise AssertionError("dummy node did not publish its local endpoint")
 
 
 async def request_with_retry(
@@ -65,7 +75,14 @@ def start_dummy_process(
     tmp_path: Path,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     endpoint = tmp_path / "node.sock"
+    endpoint_text = endpoint.as_posix()
     data_dir = resolve_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "config.toml").write_text(
+        f'[node]\nchannel = "dummy"\nruntime = "dummy"\n'
+        f'storage = "dummy"\nendpoint = "{endpoint_text}"\n',
+        encoding="utf-8",
+    )
     environment = os.environ.copy()
     source_root = str(Path(__file__).parents[2] / "src")
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -141,8 +158,8 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
-        endpoint = await wait_for_runtime_endpoint(data_dir)
-        assert endpoint.startswith("tcp://" if os.name == "nt" else "unix://")
+        endpoint = await wait_for_runtime_endpoint(endpoint_path)
+        assert endpoint.startswith("pipe://" if os.name == "nt" else "unix://")
         for session_id in ("bcn-a", "bcn-b"):
             response = await request_with_retry(
                 endpoint,
@@ -205,7 +222,7 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
             process.stderr.close()
 
     assert not endpoint_path.exists()
-    assert not (data_dir / "runtime.json").exists()
+    assert not (data_dir / "runtime.lock").exists()
     if os.name == "nt":
         assert not (data_dir / "bin" / "bcc.cmd").exists()
         assert not (data_dir / "bin" / "bcc.ps1").exists()
@@ -214,17 +231,14 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
 
 
 @pytest.mark.asyncio
-async def test_daemon_restart_reuses_persisted_adapter_selection(
+async def test_daemon_restart_uses_persisted_configuration(
     tmp_path: Path,
 ) -> None:
     process, endpoint_path, data_dir = start_dummy_process(tmp_path)
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
-        endpoint = await wait_for_runtime_endpoint(data_dir)
-        first_metadata = read_runtime_metadata(data_dir / "runtime.json")
-        assert first_metadata is not None
-        assert endpoint == first_metadata.endpoint
+        endpoint = await wait_for_runtime_endpoint(endpoint_path)
         environment = os.environ.copy()
         source_root = str(Path(__file__).parents[2] / "src")
         environment["PYTHONPATH"] = os.pathsep.join(
@@ -244,17 +258,10 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
             check=False,
         )
         assert restart_process.returncode == 0, restart_process.stderr
-        second_metadata = read_runtime_metadata(data_dir / "runtime.json")
-        assert second_metadata is not None
-        assert second_metadata.channel_slug == "dummy"
-        assert second_metadata.runtime_slug == "dummy"
-        if os.name == "nt":
-            assert second_metadata.endpoint.startswith("tcp://127.0.0.1:")
-        else:
-            assert second_metadata.endpoint == first_metadata.endpoint
-        assert second_metadata.pid != first_metadata.pid
+        response_endpoint = await wait_for_runtime_endpoint(endpoint_path)
+        assert response_endpoint == endpoint
         response = await request_with_retry(
-            second_metadata.endpoint,
+            response_endpoint,
             {"kind": "control", "operation": "status"},
         )
         assert response.get("ok") is True
@@ -267,4 +274,4 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
             process.stderr.close()
 
     assert not endpoint_path.exists()
-    assert not (data_dir / "runtime.json").exists()
+    assert not (data_dir / "runtime.lock").exists()

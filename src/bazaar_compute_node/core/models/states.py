@@ -57,6 +57,7 @@ class RuntimeEventState(StrEnum):
     STARTED = "started"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     UNKNOWN = "unknown"
 
 
@@ -224,11 +225,13 @@ RUNTIME_EVENT_TRANSITIONS: Mapping[RuntimeEventState, frozenset[RuntimeEventStat
         {
             RuntimeEventState.COMPLETED,
             RuntimeEventState.FAILED,
+            RuntimeEventState.CANCELLED,
             RuntimeEventState.UNKNOWN,
         }
     ),
     RuntimeEventState.COMPLETED: frozenset(),
     RuntimeEventState.FAILED: frozenset(),
+    RuntimeEventState.CANCELLED: frozenset(),
     RuntimeEventState.UNKNOWN: frozenset(
         {RuntimeEventState.COMPLETED, RuntimeEventState.FAILED}
     ),

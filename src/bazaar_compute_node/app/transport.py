@@ -8,10 +8,22 @@ import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 StreamPair = tuple[asyncio.StreamReader, asyncio.StreamWriter]
+
+
+def local_endpoint_for_path(endpoint_path: Path) -> str:
+    """Return the stable local endpoint represented by one configured path."""
+
+    path = endpoint_path.expanduser()
+    if sys.platform == "win32":
+        from .windows_pipe import named_pipe_endpoint
+
+        return named_pipe_endpoint(path)
+    return f"unix://{path}"
 
 
 if sys.platform == "win32":
@@ -39,11 +51,12 @@ class LocalCommandServer:
         self._server: asyncio.AbstractServer | None = None
         self._unix_path: Path | None = None
         self._unix_identity: tuple[int, int] | None = None
+        self._windows_server: Any | None = None
         self._capability: str | None = None
         self._endpoint: str | None = None
 
     def set_handler(self, handler: RequestHandler) -> None:
-        if self._server is not None:
+        if self._server is not None or self._windows_server is not None:
             raise RuntimeError("local command server handler is already active")
         self._handler = handler
 
@@ -54,23 +67,19 @@ class LocalCommandServer:
         return self._endpoint
 
     async def start(self) -> None:
-        if self._server is not None:
+        if self._server is not None or self._windows_server is not None:
             return
 
         if sys.platform == "win32":
-            self._capability = secrets.token_urlsafe(24)
-            self._server = await asyncio.start_server(
-                self._handle_client,
-                host="127.0.0.1",
-                port=0,
+            from .windows_pipe import WindowsNamedPipeServer
+
+            windows_server = WindowsNamedPipeServer(
+                self._dispatch,
+                endpoint_path=self._endpoint_path,
             )
-            sockets = self._server.sockets
-            if not sockets:
-                raise RuntimeError("local command server did not expose a socket")
-            address = sockets[0].getsockname()
-            self._endpoint = (
-                f"tcp://127.0.0.1:{address[1]}?{urlencode({'token': self._capability})}"
-            )
+            await windows_server.start()
+            self._windows_server = windows_server
+            self._endpoint = windows_server.endpoint
             return
 
         path = self._endpoint_path
@@ -94,6 +103,14 @@ class LocalCommandServer:
         self._endpoint = f"unix://{path}"
 
     async def stop(self) -> None:
+        windows_server = self._windows_server
+        self._windows_server = None
+        if windows_server is not None:
+            await windows_server.stop()
+            self._endpoint = None
+            self._capability = None
+            return
+
         server = self._server
         self._server = None
         self._endpoint = None
@@ -122,20 +139,7 @@ class LocalCommandServer:
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 raise TypeError("request must be a JSON object")
-            if self._handler is None:
-                raise RuntimeError("local command server is not ready")
-            if self._capability is not None:
-                capability = payload.pop("capability", None)
-                if capability != self._capability:
-                    response: Mapping[str, object] = {
-                        "ok": False,
-                        "code": "LOCAL_AUTH_FAILED",
-                        "error": "local command capability is invalid",
-                    }
-                else:
-                    response = await self._handler(payload)
-            else:
-                response = await self._handler(payload)
+            response = await self._dispatch(payload)
         except asyncio.CancelledError:
             raise
         except json.JSONDecodeError as error:
@@ -169,6 +173,19 @@ class LocalCommandServer:
             except OSError:
                 pass
 
+    async def _dispatch(self, payload: dict[str, object]) -> Mapping[str, object]:
+        if self._handler is None:
+            raise RuntimeError("local command server is not ready")
+        if self._capability is not None:
+            capability = payload.pop("capability", None)
+            if capability != self._capability:
+                return {
+                    "ok": False,
+                    "code": "LOCAL_AUTH_FAILED",
+                    "error": "local command capability is invalid",
+                }
+        return await self._handler(payload)
+
 
 class LocalCommandClient:
     """Open a fresh local connection for each command."""
@@ -194,6 +211,14 @@ class LocalCommandClient:
     ) -> Mapping[str, object]:
         parsed = urlsplit(endpoint)
         request = dict(payload)
+        if parsed.scheme == "pipe":
+            if sys.platform != "win32":
+                raise ValueError(
+                    "Windows named pipe endpoints are not supported on this platform"
+                )
+            from .windows_pipe import request_named_pipe
+
+            return await asyncio.to_thread(request_named_pipe, endpoint, payload)
         if parsed.scheme == "unix":
             reader, writer = await _open_unix_connection(parsed.path)
         elif parsed.scheme == "tcp":

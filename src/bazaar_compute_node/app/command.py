@@ -132,9 +132,7 @@ class CommandDispatchError(ValueError):
 
 
 ControlHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
-SessionBindingValidator = Callable[
-    [str, Mapping[str, object]], Awaitable[None]
-]
+SessionBindingValidator = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 
 class CommandDispatcher:
@@ -183,7 +181,9 @@ class CommandDispatcher:
             pass
         current_task = asyncio.current_task()
         pending = tuple(
-            task for task in self._in_flight if task is not current_task and not task.done()
+            task
+            for task in self._in_flight
+            if task is not current_task and not task.done()
         )
         for task in pending:
             task.cancel()

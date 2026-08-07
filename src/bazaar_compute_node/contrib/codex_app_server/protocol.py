@@ -72,6 +72,10 @@ class JsonlRemoteError(JsonlTransportError):
         )
 
 
+class CodexAppServerProtocolError(ValueError):
+    """The Codex App Server response does not match its provider contract."""
+
+
 def validate_message(payload: Mapping[str, object]) -> JsonlMessage:
     """Copy a mapping into the transport's provider-local message shape."""
 
@@ -85,6 +89,7 @@ def is_request_id(value: object) -> bool:
 
 
 __all__ = [
+    "CodexAppServerProtocolError",
     "JsonlMessage",
     "JsonlProcessExited",
     "JsonlProcessNotRunning",

@@ -245,6 +245,35 @@ class JsonlProcessSupervisor:
         async with asyncio.timeout(timeout):
             await self._write_message(payload)
 
+    async def respond(
+        self,
+        request_id: JsonlRequestId,
+        *,
+        result: Mapping[str, object] | None = None,
+        error: Mapping[str, object] | None = None,
+        timeout: float,
+    ) -> None:
+        """Write one response to a provider-initiated JSON-RPC request."""
+
+        if not is_request_id(request_id):
+            raise TypeError("request_id must be an integer or string")
+        if result is not None and error is not None:
+            raise ValueError("a JSONL response cannot contain both result and error")
+        if result is None and error is None:
+            result = {}
+        if result is not None and not isinstance(result, Mapping):
+            raise TypeError("result must be a mapping or None")
+        if error is not None and not isinstance(error, Mapping):
+            raise TypeError("error must be a mapping or None")
+        payload: JsonlMessage = {"id": request_id}
+        if result is not None:
+            payload["result"] = dict(result)
+        else:
+            payload["error"] = dict(error or {})
+        _validate_timeout(timeout)
+        async with asyncio.timeout(timeout):
+            await self._write_message(payload)
+
     async def receive(self, *, timeout: float | None = None) -> JsonlMessage:
         if timeout is None:
             item = await self._incoming.get()
@@ -341,7 +370,7 @@ class JsonlProcessSupervisor:
                         await result
         except asyncio.CancelledError:
             raise
-        except (ConnectionError, OSError):
+        except ConnectionError, OSError:
             return
 
     async def _watch_process(self, process: asyncio.subprocess.Process) -> None:
@@ -519,7 +548,7 @@ def _terminate_process(process: asyncio.subprocess.Process) -> None:
             process.terminate()
         else:
             process.send_signal(signal.SIGTERM)
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError, OSError:
         return
 
 
@@ -528,7 +557,7 @@ def _kill_process(process: asyncio.subprocess.Process) -> None:
         return
     try:
         process.kill()
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError, OSError:
         return
 
 

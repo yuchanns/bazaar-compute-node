@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .approval import IApprovalHandler
+from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
 from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
 from .outcomes import ProviderCallResult
@@ -16,6 +17,9 @@ class RuntimeCommandContext:
 
     run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]] | None = None
+    node_id: str = "bcn-node"
+    runtime_options: Mapping[str, str] = field(default_factory=dict)
+    client_info: ClientInfo = CLIENT_INFO
 
 
 class IRuntimeTurnStream(Protocol):

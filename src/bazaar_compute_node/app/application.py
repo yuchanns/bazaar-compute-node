@@ -21,11 +21,6 @@ from .command import (
     CommandDispatchError,
     SessionCommandService,
 )
-from .daemon import (
-    new_runtime_metadata,
-    remove_runtime_metadata,
-    write_runtime_metadata,
-)
 from .registry import AdapterFactories
 from .transport import LocalCommandServer
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
@@ -45,19 +40,17 @@ class NodeApplication:
         endpoint_path: Path | None = None,
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
+        runtime_options: Mapping[str, str] | None = None,
         storage_slug: str = "dummy",
         audit_slug: str = "dummy",
-        runtime_metadata_path: Path | None = None,
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
         self.data_dir = resolve_data_dir()
         self.channel_slug = channel_slug
         self.runtime_slug = runtime_slug
+        self.runtime_options = dict(runtime_options or {})
         self.storage_slug = storage_slug
         self.audit_slug = audit_slug
-        self.runtime_metadata_path = (
-            runtime_metadata_path or self.data_dir / "runtime.json"
-        ).expanduser()
         self.timeout_budget = timeout_budget or TimeoutBudget(
             startup_seconds=5,
             provider_call_seconds=5,
@@ -77,6 +70,8 @@ class NodeApplication:
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
             environment_for_session=self._runtime_environment,
+            node_id=node_id,
+            runtime_options=self.runtime_options,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
         self.orchestrator = SessionOrchestrator(
@@ -131,20 +126,6 @@ class NodeApplication:
         self._started = True
         self._stopped.clear()
         self.command_dispatcher.start_accepting()
-        try:
-            write_runtime_metadata(
-                self.runtime_metadata_path,
-                new_runtime_metadata(
-                    endpoint=self.endpoint,
-                    channel_slug=self.channel_slug,
-                    runtime_slug=self.runtime_slug,
-                    storage_slug=self.storage_slug,
-                    audit_slug=self.audit_slug,
-                ),
-            )
-        except BaseException:
-            await self.stop()
-            raise
 
     async def stop(self) -> None:
         if not self._started:
@@ -177,10 +158,6 @@ class NodeApplication:
                         self._cleanup_bcc_wrapper()
                     finally:
                         self._stopped.set()
-                        remove_runtime_metadata(
-                            self.runtime_metadata_path,
-                            pid=os.getpid(),
-                        )
 
     def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path

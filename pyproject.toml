@@ -16,6 +16,7 @@ dummy = "bazaar_compute_node.contrib.dummy.plugin:create_channel"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
 dummy = "bazaar_compute_node.contrib.dummy.plugin:create_runtime"
+codex = "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime"
 
 [project.entry-points."bazaar_compute_node.storages"]
 dummy = "bazaar_compute_node.contrib.dummy.plugin:create_storage"
@@ -26,6 +27,7 @@ dummy = "bazaar_compute_node.contrib.dummy.plugin:create_audit"
 
 [project.entry-points."bazaar_compute_node.controls"]
 dummy = "bazaar_compute_node.contrib.dummy.plugin:create_control"
+"dummy+codex" = "bazaar_compute_node.contrib.dummy.plugin:create_control"
 
 [dependency-groups]
 dev = [

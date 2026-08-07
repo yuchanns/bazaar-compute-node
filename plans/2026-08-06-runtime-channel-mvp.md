@@ -38,8 +38,9 @@ Storage 和 Audit contrib；未选择或未安装的 provider 不会被 import�
 channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 先提供 `dummy/dummy`
 开发入口完成小闭环；真实 provider 组合在后续 phase 接入，不把 Dummy 作为默认生产入口。
 兼容地直接执行 `bcn --channel ... --runtime ...` 等价于 `bcn start --channel ... --runtime ...`。
-`bcn` daemon 将运行态元数据、控制 endpoint 和日志保存在持久化 data directory，运行进程
-在后台维护，`stop`/`restart` 通过本机 command transport 做优雅生命周期控制。
+`bcn` daemon 将配置、SQLite 运行态和日志保存在持久化 data directory，运行进程在后台
+维护，`stop`/`restart` 通过本机 command transport 和稳定 endpoint 做优雅生命周期控制；
+不额外保存 PID、JSON 或 lock discovery 文件。
 
 首版必须满足以下产品语义：
 
@@ -959,8 +960,9 @@ orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters
   新增 provider 只需安装 contrib package 并注册 entry point。未知、未安装或不兼容组合
   必须在启动前失败。
 - 提供 `bcn start`、`bcn stop`、`bcn restart` 的 daemon lifecycle；start 将 foreground
-  runner 脱离当前终端并持久化 PID/endpoint/组合元数据，stop 通过本机 command transport
-  发送 shutdown，restart 复用已持久化组合配置。foreground runner 只作为内部进程和真实
+  runner 脱离当前终端并复用持久化组合配置与稳定本机 endpoint，stop 通过本机 command
+  transport 发送 shutdown，restart 复用同一配置。Unix 使用 socket 文件，Windows 使用
+  per-user named pipe 与 named mutex，不额外持久化 PID/lock 文件。foreground runner 只作为内部进程和真实
   integration test seam，不改变 daemon 默认行为。
 - 暴露 session-scoped `check`/`read`/`send` command service，并提供最小本机 command
   transport；transport 只传递 core command/result，不泄露 adapter/provider 对象。
@@ -1128,6 +1130,16 @@ event 和 approval 转成 Phase 1 的中立 contract。
   `turn/completed` 是唯一权威本地终态，`error.willRetry=true` 不能提前结束 turn。
 - 将 provider event 转成中立 runtime event，保留必要 request/turn correlation，不把 provider
   wire schema 传播到 core 或 Channel。
+- production 通过固定 `$HOME/.bcn/config.toml` 的 `[node]`/`[runtime]` 表及 CLI 覆盖值选择
+  channel、runtime、storage、audit、model 和 effort；CLI 覆盖 config，storage/audit 缺省为
+  `sqlite`/`dummy`，channel/runtime 仍无值时才报错。model/effort 都未设置时省略对应
+  provider 参数，交给 provider 默认值。测试场景显式固定 `gpt-5.6-luna` 与 `effort=max`，
+  不得将测试选择写死在 production runtime/client。Unix 使用 socket endpoint；Windows 使用
+  per-user named pipe 与 named mutex，不保存 PID/lock 文件或运行 provider 元数据。
+- 真实场景验证不只断言 wire response：使用自然语言驱动真实 turn，验证同一 thread 的自然
+  follow-up、跨进程 resume 后的自然 follow-up、两个真实 process 的交错 event stream、interrupt，
+  以及 `error.willRetry=true` 保持非终态。不得断言模型的精确回答文本；应观察 provider/local
+  thread-turn id、event 顺序、session correlation、resume history 和 terminal state。
 
 依赖：Task 4A 的 process supervisor 与 JSONL transport。产出：thread/turn mapping、event
 normalization 和 protocol tests。
@@ -1143,9 +1155,15 @@ normalization 和 protocol tests。
 依赖：Task 4B 的 thread/turn protocol adapter。产出：双向 approval bridge、reminder-to-bcc
 integration。
 
-Phase 验收：真实 runtime process 完成 initialize -> reminder -> bcc check -> bcc send；两个
-session 并发时 process、thread、workspace、turn 和 SQLite mapping 互不混淆；provider retry
-notification 不会错误终结本地 turn。
+Phase 验收：真实 runtime process 使用 `model=gpt-5.6-luna`、`effort=max` 完成 initialize ->
+reminder -> bcc check -> bcc send；自然对话场景验证 agent 会根据真实消息决定 check/read/send，
+而不是机械执行固定 transcript。第二条真实 inbound 在第一次 check 完成后、第一次 send 前
+到达时，必须触发 fresh-check refusal；agent 重新 check/read 后，若上下文不冲突则继续发送
+兼容结果，若上下文冲突则重新思考并发送不同结果。验证 canonical target、stdin body、draft、
+fresh-check state、provider receipt 和 audit，而不是精确回答文本。两个 session 并发时
+process、thread、workspace、turn 和 SQLite mapping 互不混淆；provider retry notification
+不错误终结本地 turn。不得用 fake/mock/httptest、直接写 SQLite 或生产注入制造这些场景；第二
+条 inbound 必须从实际 Channel 入站路径进入。
 
 ### Phase 5：WeCom adapter 与端到端编排
 

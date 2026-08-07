@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from bazaar_compute_node.cli import async_main, build_parser, main
+from bazaar_compute_node.cli import (
+    _apply_runtime_configuration,
+    _daemon_command,
+    async_main,
+    build_parser,
+    main,
+)
 from bazaar_compute_node.core.paths import resolve_data_dir
 
 
@@ -43,11 +50,108 @@ def test_cli_rejects_data_dir_override() -> None:
 
 
 def test_cli_defaults_to_sqlite_storage() -> None:
-    args = build_parser().parse_args(
-        ["run", "--channel", "dummy", "--runtime", "dummy"]
-    )
+    parser = build_parser()
+    args = parser.parse_args(["run", "--channel", "dummy", "--runtime", "dummy"])
+    _apply_runtime_configuration(args, parser)
 
     assert args.storage == "sqlite"
+
+
+def test_cli_accepts_optional_runtime_model_and_effort() -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--channel",
+            "codex",
+            "--runtime",
+            "codex",
+            "--model",
+            "gpt-5.6-luna",
+            "--effort",
+            "max",
+        ]
+    )
+
+    assert args.model == "gpt-5.6-luna"
+    assert args.effort == "max"
+
+
+def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "start",
+            "--channel",
+            "codex",
+            "--runtime",
+            "codex",
+            "--model",
+            "gpt-5.6-luna",
+            "--effort",
+            "max",
+        ]
+    )
+    _apply_runtime_configuration(args, parser)
+
+    command = _daemon_command(args, tmp_path)
+
+    assert command[-4:] == [
+        "--model",
+        "gpt-5.6-luna",
+        "--effort",
+        "max",
+    ]
+
+
+def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.toml").write_text(
+        '[node]\nchannel = "config-channel"\nruntime = "config-runtime"\n'
+        'storage = "config-storage"\naudit = "config-audit"\n'
+        'endpoint = "config.sock"\n\n'
+        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n',
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    config_args = parser.parse_args(["run"])
+    _apply_runtime_configuration(config_args, parser)
+    assert config_args.channel == "config-channel"
+    assert config_args.runtime == "config-runtime"
+    assert config_args.storage == "config-storage"
+    assert config_args.audit == "config-audit"
+    assert config_args.endpoint == Path("config.sock")
+    assert config_args.model == "config-model"
+    assert config_args.effort == "config-effort"
+
+    flag_args = parser.parse_args(
+        [
+            "run",
+            "--channel",
+            "codex",
+            "--runtime",
+            "codex",
+            "--storage",
+            "flag-storage",
+            "--audit",
+            "flag-audit",
+            "--endpoint",
+            "flag.sock",
+            "--model",
+            "flag-model",
+            "--effort",
+            "flag-effort",
+        ]
+    )
+    _apply_runtime_configuration(flag_args, parser)
+
+    assert flag_args.model == "flag-model"
+    assert flag_args.effort == "flag-effort"
+    assert flag_args.channel == "codex"
+    assert flag_args.runtime == "codex"
+    assert flag_args.storage == "flag-storage"
+    assert flag_args.audit == "flag-audit"
+    assert flag_args.endpoint == Path("flag.sock")
 
 
 def test_help_works_in_a_real_process() -> None:

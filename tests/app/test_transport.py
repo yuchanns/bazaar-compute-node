@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from bazaar_compute_node.app.transport import LocalCommandClient, LocalCommandServer
+from bazaar_compute_node.app.transport import (
+    LocalCommandClient,
+    LocalCommandServer,
+    local_endpoint_for_path,
+)
 
 
 @pytest.mark.asyncio
@@ -33,11 +38,27 @@ async def test_local_transport_authenticates_and_restricts_tcp_fallback(
     await server.start()
     try:
         endpoint = server.endpoint
+        assert endpoint == local_endpoint_for_path(tmp_path / "bcn.sock")
+        if sys.platform == "win32":
+            assert endpoint.startswith("pipe://")
+        else:
+            assert endpoint.startswith("unix://")
         response = await LocalCommandClient.request(
             endpoint,
             {"kind": "control", "operation": "health"},
         )
         assert response["ok"] is True
+        if endpoint.startswith("pipe://"):
+            responses = await asyncio.gather(
+                *(
+                    LocalCommandClient.request(
+                        endpoint,
+                        {"kind": "control", "operation": "health"},
+                    )
+                    for _ in range(4)
+                )
+            )
+            assert all(item["ok"] is True for item in responses)
         if endpoint.startswith("tcp://"):
             endpoint_without_query, query = endpoint.split("?", maxsplit=1)
             with pytest.raises(ValueError, match="capability token"):

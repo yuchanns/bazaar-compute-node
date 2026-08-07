@@ -74,7 +74,6 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
     endpoint = node.endpoint
     try:
         if os.name != "nt":
-            assert (data_dir / "runtime.json").stat().st_mode & 0o777 == 0o600
             assert (data_dir / "bin").stat().st_mode & 0o777 == 0o700
             assert (data_dir / "bin" / "bcc").stat().st_mode & 0o777 == 0o700
         health = await LocalCommandClient.request(

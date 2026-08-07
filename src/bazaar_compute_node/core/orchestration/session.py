@@ -883,6 +883,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 if event.state in {
                     RuntimeEventState.COMPLETED,
                     RuntimeEventState.FAILED,
+                    RuntimeEventState.CANCELLED,
                     RuntimeEventState.UNKNOWN,
                 }:
                     observed_terminal = True
@@ -942,13 +943,28 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 target_state = RuntimeTurnState.COMPLETED
             elif event.state is RuntimeEventState.FAILED:
                 target_state = RuntimeTurnState.FAILED
+            elif event.state is RuntimeEventState.CANCELLED:
+                target_state = RuntimeTurnState.CANCELLED
             else:
                 target_state = RuntimeTurnState.UNKNOWN
+            provider_turn_id = event.metadata.get("provider_turn_id")
+            if provider_turn_id is not None and (
+                not isinstance(provider_turn_id, str) or not provider_turn_id
+            ):
+                raise ValueError("runtime event provider_turn_id is invalid")
+            if (
+                provider_turn_id is not None
+                and current_turn.provider_turn_id is not None
+                and current_turn.provider_turn_id != provider_turn_id
+            ):
+                raise ValueError("runtime event provider turn correlation mismatch")
             error_kind = event.error_kind
             if event.state is RuntimeEventState.FAILED and error_kind is None:
                 error_kind = ErrorKind.PROVIDER_FAILED.value
             if event.state is RuntimeEventState.UNKNOWN and error_kind is None:
                 error_kind = ErrorKind.PROVIDER_UNKNOWN.value
+            if event.state is RuntimeEventState.CANCELLED and error_kind is None:
+                error_kind = ErrorKind.CANCELLED.value
             updated_turn = current_turn.transition_to(
                 target_state,
                 at_ms=event.created_at_ms,
@@ -956,17 +972,23 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 error_message=event.error_message,
                 latest_event_name=event.event_name,
             )
+            if provider_turn_id is not None:
+                updated_turn = replace(
+                    updated_turn,
+                    provider_turn_id=provider_turn_id,
+                )
             await transaction.save_runtime_turn(updated_turn)
         try:
             audit_kind = ErrorKind(event.error_kind) if event.error_kind else None
         except ValueError:
             audit_kind = ErrorKind.INTERNAL
+        audit_error_message = event.error_message if audit_kind else None
         await self._append_audit(
             event_name=event.event_name,
             state=event.state,
-            correlation=self._turn_correlation(message, context, turn),
+            correlation=self._turn_correlation(message, context, updated_turn),
             error_kind=audit_kind,
-            error_message=event.error_message,
+            error_message=audit_error_message,
         )
         return updated_turn
 
@@ -1007,6 +1029,8 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             state=(
                 RuntimeEventState.COMPLETED
                 if state is RuntimeTurnState.COMPLETED
+                else RuntimeEventState.CANCELLED
+                if state is RuntimeTurnState.CANCELLED
                 else RuntimeEventState.FAILED
                 if state is not RuntimeTurnState.UNKNOWN
                 else RuntimeEventState.UNKNOWN
