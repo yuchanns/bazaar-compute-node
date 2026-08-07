@@ -16,7 +16,7 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
     MIGRATIONS,
     SCHEMA_MIGRATION,
 )
-from bazaar_compute_node.core.paths import resolve_data_dir
+from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 
 
 @pytest.mark.asyncio
@@ -225,6 +225,18 @@ def test_resolve_data_dir_prefers_explicit_path(
     monkeypatch.setenv("BCN_DATA_DIR", str(tmp_path / "environment"))
     assert resolve_data_dir(tmp_path / "custom") == tmp_path / "custom"
     assert resolve_data_dir() == (tmp_path / "environment").resolve()
+
+
+def test_default_workspace_uses_the_home_bcn_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BCN_DATA_DIR", raising=False)
+
+    assert resolve_data_dir() == (Path.home() / ".bcn").resolve()
+    assert (
+        resolve_workspace_dir("workspace-1")
+        == (Path.home() / ".bcn" / "workspaces" / "workspace-1").resolve()
+    )
 
 
 def test_sqlite_schema_keeps_business_constraints_out_of_ddl() -> None:

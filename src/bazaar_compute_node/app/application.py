@@ -13,6 +13,7 @@ from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
+from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage, NodeIdentity
 from .command import (
@@ -201,7 +202,7 @@ class NodeApplication:
 
     async def _ensure_workspace(self, identity: NodeIdentity) -> None:
         self._identity = identity
-        workspace_dir = self.data_dir / "workspaces" / identity.workspace_id
+        workspace_dir = resolve_workspace_dir(identity.workspace_id, self.data_dir)
         await asyncio.to_thread(
             workspace_dir.mkdir,
             parents=True,
