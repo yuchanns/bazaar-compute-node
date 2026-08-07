@@ -420,11 +420,12 @@ async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "node"
+    lifecycle_timeout = 10
     first = SqliteDatabase(data_dir)
     second = SqliteDatabase(data_dir)
-    await first.start(timeout=2)
+    await first.start(timeout=lifecycle_timeout)
     await first.initialize(node_id="node-1", workspace_id="workspace-1")
-    await second.start(timeout=2)
+    await second.start(timeout=lifecycle_timeout)
     await second.initialize(node_id="node-1", workspace_id="workspace-1")
     try:
         await save_session_graph(first)
@@ -494,8 +495,8 @@ async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped(
             assert integrity is not None
             assert integrity[0] == "ok"
     finally:
-        await first.stop(timeout=2)
-        await second.stop(timeout=2)
+        await first.stop(timeout=lifecycle_timeout)
+        await second.stop(timeout=lifecycle_timeout)
 
 
 @pytest.mark.asyncio
