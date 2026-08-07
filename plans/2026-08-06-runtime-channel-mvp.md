@@ -938,6 +938,25 @@ adapter 和最小可运行应用闭环；在进入真实持久化和 provider ad
 依赖：Task 1B 的 ports、并发和生命周期契约。产出：approval/audit/correlation contract 和
 错误边界。
 
+#### Task 1F：agent lifecycle state machine 与 tick contract
+
+- 在 core 定义统一 `AgentState`：`created`、`starting`、`idle`、`working`、压缩开始、
+  压缩中、压缩结束、`stopping`、`stopped`、`failed`、`unknown`、`reconciling`；明确
+  每个状态的持久化语义、终态语义和 unknown 不确定性边界。
+- 提供纯 transition reducer 和中立 tick/signal contract；同一 session 的重复 tick 必须
+  幂等，非法迁移必须 fail closed；runtime/channel 无法识别的活动状态统一 fallback 到
+  `working`，不允许 runtime 或 Channel adapter 自己定义 agent 状态。
+- 由 `SessionOrchestrator` 作为 agent state 的唯一 writer：session creation 驱动
+  `created -> starting`，runtime 启动确认进入 `idle`，active turn 进入 `working`，turn
+  terminal event 回到 `idle`，停止、失败和恢复分别进入对应状态；压缩阶段独立记录，工具
+  调用解析后的 operation/arguments/status 只进入 audit log，不扩张 agent lifecycle state。
+- 先用 Dummy orchestration 验证正常 lifecycle、failure、unknown/reconcile、stop 和
+  runtime/channel 交错 tick；不在本 Task 引入 provider-specific state 或新的 storage 实现。
+
+执行顺序：Task 1C 之后、Task 1D 之前。依赖：Task 1A 的 domain model、Task 1B 的 lifecycle
+port 和 Task 1C 的 correlation contract。后续由 Phase 2 持久化、Phase 5 Channel tick 和
+Phase 6 restart/reconciliation 消费与扩展。
+
 #### Task 1D：Dummy adapters 与 core orchestration harness
 
 - 在 `contrib/dummy` 中实现内存 Dummy Storage、Dummy Channel 与 Dummy Agent Runtime；
@@ -950,7 +969,7 @@ adapter 和最小可运行应用闭环；在进入真实持久化和 provider ad
   fresh-check refusal 和 graceful cancellation。
 - 测试多个 session 的 cursor、turn、workspace identity 和 correlation 不串线。
 
-依赖：Task 1C 的 approval/audit/correlation contract。产出：不导入真实 provider 的 core
+依赖：Task 1F 的 agent lifecycle state machine、approval/audit/correlation contract。产出：不导入真实 provider 的 core
 orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters。
 
 #### Task 1E：动态 composition、daemon lifecycle、command service 与 `bcc` 小闭环

@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+
+from ..audit import AuditEvent, ErrorKind
+from ..command import SessionNotFoundError
+from ..concurrency import ISessionConcurrency
+from ..correlation import CorrelationContext
+from ..lifecycle import TimeoutBudget
+from ..models import AgentTick, BcnSession, RuntimeEventState
+from ..observability import IAudit, LogLevel
+from ..storage import IStorage, IStorageTransaction
+
+
+class SessionAuditRecorder:
+    """Write sanitized session audit events with one shared policy."""
+
+    _FORBIDDEN_TOOL_ARGUMENTS = frozenset(
+        {
+            "access_token",
+            "api_key",
+            "authorization",
+            "body",
+            "cookie",
+            "credential",
+            "payload",
+            "raw_payload",
+            "secret",
+            "token",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        sink: IAudit,
+        timeout_budget: TimeoutBudget,
+        clock: Callable[[], int],
+    ) -> None:
+        self._sink = sink
+        self._timeout_budget = timeout_budget
+        self._clock = clock
+
+    async def append(
+        self,
+        *,
+        event_name: str,
+        state: RuntimeEventState,
+        correlation: CorrelationContext,
+        error_kind: ErrorKind | None = None,
+        error_message: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        await self._sink.append(
+            AuditEvent(
+                event_name=event_name,
+                state=state,
+                created_at_ms=self._clock(),
+                correlation=correlation,
+                level=LogLevel.ERROR if error_kind else LogLevel.INFO,
+                error_kind=error_kind,
+                error_message=error_message,
+                metadata=metadata or {},
+            ),
+            timeout=self._timeout_budget.command_seconds,
+        )
+
+    async def append_tool(
+        self,
+        *,
+        operation: str,
+        status: str,
+        state: RuntimeEventState,
+        correlation: CorrelationContext,
+        arguments: Mapping[str, object],
+        error_kind: ErrorKind | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        safe_arguments = {
+            key: value
+            for key, value in arguments.items()
+            if key.casefold() not in self._FORBIDDEN_TOOL_ARGUMENTS
+        }
+        await self.append(
+            event_name=f"tool.{operation}.{status}",
+            state=state,
+            correlation=correlation,
+            error_kind=error_kind,
+            error_message=error_message,
+            metadata={
+                "kind": "tool_call",
+                "operation": operation,
+                "status": status,
+                "arguments": safe_arguments,
+            },
+        )
+
+
+class SessionStateWriter:
+    """Serialize agent ticks and keep the in-process session cache current."""
+
+    def __init__(
+        self,
+        *,
+        storage: IStorage,
+        concurrency: ISessionConcurrency,
+        bcn_sessions: dict[str, BcnSession],
+    ) -> None:
+        self._storage = storage
+        self._concurrency = concurrency
+        self._bcn_sessions = bcn_sessions
+
+    async def apply(self, bcn_session_id: str, tick: AgentTick) -> BcnSession:
+        async with self._concurrency.for_session(bcn_session_id):
+            return await self.apply_locked(bcn_session_id, tick)
+
+    async def apply_locked(self, bcn_session_id: str, tick: AgentTick) -> BcnSession:
+        async with self._storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(bcn_session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
+            return await self.apply_in_transaction(transaction, bcn_session, tick)
+
+    async def apply_in_transaction(
+        self,
+        transaction: IStorageTransaction,
+        bcn_session: BcnSession,
+        tick: AgentTick,
+    ) -> BcnSession:
+        updated = bcn_session.apply_tick(tick)
+        if updated is not bcn_session:
+            await transaction.save_bcn_session(updated)
+        self._bcn_sessions[updated.bcn_session_id] = updated
+        return updated

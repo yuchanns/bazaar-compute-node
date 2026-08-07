@@ -10,8 +10,11 @@ import pytest_asyncio
 
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.models import (
+    AgentSignal,
+    AgentState,
+    AgentTick,
+    AgentTickSource,
     BcnSession,
-    BcnSessionState,
     ChannelSession,
     ChannelSessionState,
     ConsumerCursor,
@@ -59,7 +62,7 @@ def make_bcn_session(
     bcn_session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
     workspace_id: str = "workspace-1",
-    state: BcnSessionState = BcnSessionState.CREATED,
+    state: AgentState = AgentState.CREATED,
     updated_at_ms: int = 100,
 ) -> BcnSession:
     return BcnSession(
@@ -197,6 +200,41 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
             )
     finally:
         await restarted.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_bcn_session_persists_idle_state(
+    database: SqliteDatabase,
+) -> None:
+    await save_session_graph(database)
+    async with database.transaction() as transaction:
+        session = await transaction.get_bcn_session("bcn-1")
+        assert session is not None
+        session = session.apply_tick(
+            AgentTick(
+                source=AgentTickSource.SESSION,
+                signal=AgentSignal.START_REQUESTED,
+                observed_at_ms=101,
+            )
+        )
+        await transaction.save_bcn_session(session)
+
+    async with database.transaction() as transaction:
+        session = await transaction.get_bcn_session("bcn-1")
+        assert session is not None
+        session = session.apply_tick(
+            AgentTick(
+                source=AgentTickSource.RUNTIME,
+                signal=AgentSignal.START_CONFIRMED,
+                observed_at_ms=102,
+            )
+        )
+        await transaction.save_bcn_session(session)
+
+    async with database.transaction() as transaction:
+        session = await transaction.get_bcn_session("bcn-1")
+        assert session is not None
+        assert session.state is AgentState.IDLE
 
 
 @pytest.mark.asyncio

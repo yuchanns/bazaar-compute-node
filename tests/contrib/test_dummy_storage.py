@@ -4,8 +4,8 @@ import pytest
 
 from bazaar_compute_node.contrib.dummy import DummyStorage
 from bazaar_compute_node.core.models import (
+    AgentState,
     BcnSession,
-    BcnSessionState,
     ChannelSession,
     ChannelSessionState,
 )
@@ -28,7 +28,7 @@ async def test_dummy_storage_transaction_rolls_back_on_error() -> None:
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
         workspace_id="workspace-1",
-        state=BcnSessionState.CREATED,
+        state=AgentState.CREATED,
         created_at_ms=1,
         updated_at_ms=1,
     )

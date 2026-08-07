@@ -1,10 +1,9 @@
 """SQLite storage foundation for persistent node state."""
 
-from .database import (
+from .database import NodeIdentityError, SqliteDatabase
+from .migrations import (
     MigrationChecksumError,
     MigrationError,
-    NodeIdentityError,
-    SqliteDatabase,
 )
 
 __all__ = [

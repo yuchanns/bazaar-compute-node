@@ -5,14 +5,15 @@ from dataclasses import dataclass, field, replace
 from typing import Self
 
 from .states import (
-    BCN_SESSION_TRANSITIONS,
+    AGENT_STATE_TRANSITIONS,
     CHANNEL_SESSION_TRANSITIONS,
     FRESH_CHECK_TRANSITIONS,
     OUTBOUND_DELIVERY_TRANSITIONS,
     RUNTIME_PROCESS_TRANSITIONS,
     RUNTIME_TURN_TRANSITIONS,
+    AgentState,
+    AgentTick,
     ApprovalDecision,
-    BcnSessionState,
     ChannelSessionState,
     FreshCheckState,
     OutboundDeliveryState,
@@ -20,6 +21,7 @@ from .states import (
     RuntimeProcessState,
     RuntimeTurnState,
     ensure_transition,
+    reduce_agent_tick,
 )
 
 Metadata = Mapping[str, object]
@@ -77,7 +79,7 @@ class BcnSession:
     bcn_session_id: str
     channel_session_id: str
     workspace_id: str
-    state: BcnSessionState
+    state: AgentState
     created_at_ms: int
     updated_at_ms: int
     last_activity_at_ms: int | None = None
@@ -95,13 +97,13 @@ class BcnSession:
         if self.stopped_at_ms is not None:
             _validate_non_negative(self.stopped_at_ms, "stopped_at_ms")
 
-    def transition_to(self, state: BcnSessionState, *, updated_at_ms: int) -> Self:
+    def transition_to(self, state: AgentState, *, updated_at_ms: int) -> Self:
         _validate_non_negative(updated_at_ms, "updated_at_ms")
-        ensure_transition("bcn_session", self.state, state, BCN_SESSION_TRANSITIONS)
+        ensure_transition("bcn_session", self.state, state, AGENT_STATE_TRANSITIONS)
         if state is self.state:
             return self
         stopped_at_ms = (
-            updated_at_ms if state is BcnSessionState.STOPPED else self.stopped_at_ms
+            updated_at_ms if state is AgentState.STOPPED else self.stopped_at_ms
         )
         return replace(
             self,
@@ -109,6 +111,12 @@ class BcnSession:
             updated_at_ms=updated_at_ms,
             stopped_at_ms=stopped_at_ms,
         )
+
+    def apply_tick(self, tick: AgentTick) -> Self:
+        """Apply one core lifecycle tick through the pure agent reducer."""
+
+        target = reduce_agent_tick(self.state, tick)
+        return self.transition_to(target, updated_at_ms=tick.observed_at_ms)
 
 
 @dataclass(frozen=True, slots=True)

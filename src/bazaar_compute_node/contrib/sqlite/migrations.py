@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
+from time import monotonic_ns, time_ns
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .repository import SqliteTransaction
+
+
+def _current_time_ms() -> int:
+    return time_ns() // 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +24,14 @@ class Migration:
     def checksum(self) -> str:
         content = "\n".join(self.statements).encode("utf-8")
         return sha256(content).hexdigest()
+
+
+class MigrationError(RuntimeError):
+    """The database cannot be safely brought to the application schema."""
+
+
+class MigrationChecksumError(MigrationError):
+    """A migration ledger entry no longer matches the application migration."""
 
 
 SCHEMA_MIGRATION = Migration(
@@ -419,3 +437,86 @@ MIGRATIONS: tuple[Migration, ...] = (
     SESSION_MAPPING_INDEX_MIGRATION,
     MESSAGE_LOG_INDEX_MIGRATION,
 )
+
+
+async def apply_migrations(
+    transaction: SqliteTransaction,
+    *,
+    clock: Callable[[], int] = _current_time_ms,
+) -> int:
+    """Apply the ordered migration ledger inside the caller's transaction."""
+
+    ledger_exists = (
+        await transaction.fetchone(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'schema_migrations'"
+        )
+        is not None
+    )
+    applied_rows = []
+    if ledger_exists:
+        applied_rows = await transaction.fetchall(
+            "SELECT version, migration_name, checksum "
+            "FROM schema_migrations ORDER BY version"
+        )
+        known_versions = {migration.version for migration in MIGRATIONS}
+        unknown_versions = {
+            int(row["version"])
+            for row in applied_rows
+            if int(row["version"]) not in known_versions
+        }
+        if unknown_versions:
+            raise MigrationError(
+                "database contains unknown migration versions: "
+                + ", ".join(str(version) for version in sorted(unknown_versions))
+            )
+
+    applied_by_version = {int(row["version"]): row for row in applied_rows}
+    preexisting_ledger = ledger_exists
+    latest_version = 0
+    missing_version = False
+    for migration in MIGRATIONS:
+        row = applied_by_version.get(migration.version)
+        if row is None:
+            missing_version = True
+            continue
+        if missing_version:
+            raise MigrationError(
+                "migration ledger contains a later version after a missing "
+                f"version before {migration.version}"
+            )
+        if (
+            row["migration_name"] != migration.name
+            or row["checksum"] != migration.checksum
+        ):
+            raise MigrationChecksumError(
+                f"migration {migration.version} does not match its ledger entry"
+            )
+        latest_version = migration.version
+
+    if preexisting_ledger and latest_version == 0:
+        raise MigrationError(
+            f"migration ledger is missing version {MIGRATIONS[0].version}"
+        )
+
+    for migration in MIGRATIONS:
+        if migration.version <= latest_version:
+            continue
+        started_at_ns = monotonic_ns()
+        for statement in migration.statements:
+            await transaction.execute(statement)
+        await transaction.execute(
+            "INSERT INTO schema_migrations "
+            "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                migration.version,
+                migration.name,
+                migration.checksum,
+                clock(),
+                (monotonic_ns() - started_at_ns) // 1_000_000,
+            ),
+        )
+        latest_version = migration.version
+
+    return latest_version

@@ -5,11 +5,7 @@ import asyncio
 import pytest
 
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
-from bazaar_compute_node.core.lifecycle import (
-    SHUTDOWN_ORDER,
-    ShutdownStage,
-    TimeoutBudget,
-)
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 
 
@@ -51,15 +47,6 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
     assert unknown.status is ProviderCallStatus.UNKNOWN
     with pytest.raises(ValueError, match="error_kind"):
         ProviderCallResult(status=ProviderCallStatus.FAILED)
-
-
-def test_shutdown_order_keeps_runtime_cleanup_before_storage_close() -> None:
-    assert SHUTDOWN_ORDER == (
-        ShutdownStage.STOP_ACCEPTING_INBOUND,
-        ShutdownStage.STOP_RUNTIME_SESSIONS,
-        ShutdownStage.DRAIN_COMMANDS_AND_AUDIT,
-        ShutdownStage.CLOSE_STORAGE,
-    )
 
 
 @pytest.mark.asyncio

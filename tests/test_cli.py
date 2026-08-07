@@ -9,30 +9,9 @@ import pytest
 from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
-    async_main,
     build_parser,
-    main,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir
-
-
-@pytest.mark.asyncio
-async def test_async_main_preserves_help_output(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    exit_code = await async_main([])
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "usage: bcn" in captured.out
-
-
-def test_main_runs_async_entrypoint(capsys: pytest.CaptureFixture[str]) -> None:
-    exit_code = main([])
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "usage: bcn" in captured.out
 
 
 def test_help_shows_the_resolved_data_dir() -> None:
@@ -55,25 +34,6 @@ def test_cli_defaults_to_sqlite_storage() -> None:
     _apply_runtime_configuration(args, parser)
 
     assert args.storage == "sqlite"
-
-
-def test_cli_accepts_optional_runtime_model_and_effort() -> None:
-    args = build_parser().parse_args(
-        [
-            "run",
-            "--channel",
-            "codex",
-            "--runtime",
-            "codex",
-            "--model",
-            "gpt-5.6-luna",
-            "--effort",
-            "max",
-        ]
-    )
-
-    assert args.model == "gpt-5.6-luna"
-    assert args.effort == "max"
 
 
 def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:

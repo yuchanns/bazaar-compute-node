@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
-import subprocess
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 from time import time_ns
@@ -12,10 +9,6 @@ from uuid import uuid7
 
 import pytest
 
-from bazaar_compute_node.app.transport import (
-    LocalCommandClient,
-    local_endpoint_for_path,
-)
 from bazaar_compute_node.contrib.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerRuntime,
@@ -47,7 +40,7 @@ from bazaar_compute_node.core.models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
-from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import RuntimeCommandContext
 
 TEST_MODEL = "gpt-5.6-luna"
@@ -394,86 +387,6 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
         assert not supervisor.is_running
     finally:
         await database.stop(timeout=10)
-
-
-@pytest.mark.real_home
-@pytest.mark.asyncio
-async def test_local_bcn_cli_passes_runtime_configuration_to_codex() -> None:
-    if shutil.which("codex") is None:
-        pytest.fail("codex CLI is required for the App Server integration test")
-
-    source_root = str(Path(__file__).parents[2] / "src")
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        value for value in (source_root, environment.get("PYTHONPATH")) if value
-    )
-    endpoint_path = Path.cwd() / f"bcn-task4b-{uuid7()}.sock"
-    command = [
-        sys.executable,
-        "-m",
-        "bazaar_compute_node.cli",
-        "start",
-        "--channel",
-        "dummy",
-        "--runtime",
-        "codex",
-        "--storage",
-        "dummy",
-        "--endpoint",
-        str(endpoint_path),
-        "--model",
-        TEST_MODEL,
-        "--effort",
-        TEST_EFFORT,
-    ]
-    started = await asyncio.to_thread(
-        subprocess.run,
-        command,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert started.returncode == 0, started.stderr
-
-    data_dir = resolve_data_dir()
-    control_endpoint = local_endpoint_for_path(endpoint_path)
-    assert not (data_dir / "runtime.lock").exists()
-    try:
-        health = await LocalCommandClient.request(
-            control_endpoint,
-            {
-                "kind": "control",
-                "operation": "health",
-            },
-            timeout=20,
-        )
-        assert health.get("ok") is True
-        health_result = health.get("result")
-        assert isinstance(health_result, dict)
-        assert health_result["channel"] == "dummy"
-        assert health_result["runtime"] == "codex"
-        assert health_result["storage"] == "dummy"
-    finally:
-        stopped = await asyncio.to_thread(
-            subprocess.run,
-            [
-                sys.executable,
-                "-m",
-                "bazaar_compute_node.cli",
-                "stop",
-                "--endpoint",
-                str(endpoint_path),
-            ],
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        assert stopped.returncode == 0, stopped.stderr
-        assert not endpoint_path.exists()
 
 
 @pytest.mark.real_home

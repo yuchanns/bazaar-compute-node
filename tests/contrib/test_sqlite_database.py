@@ -219,7 +219,6 @@ def test_resolve_data_dir_uses_the_home_bcn_root() -> None:
 
 
 def test_default_workspace_uses_the_home_bcn_root() -> None:
-    assert resolve_data_dir() == (Path.home() / ".bcn").resolve()
     assert (
         resolve_workspace_dir("workspace-1")
         == (Path.home() / ".bcn" / "workspaces" / "workspace-1").resolve()

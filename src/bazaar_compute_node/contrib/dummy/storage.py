@@ -10,8 +10,8 @@ from uuid import uuid7
 
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
+    AgentState,
     BcnSession,
-    BcnSessionState,
     ChannelSession,
     ChannelSessionState,
     ConsumerCursor,
@@ -260,7 +260,7 @@ class _DummyStorageTransaction(IStorageTransaction):
         self._storage.channel_sessions[session.channel_session_id] = session
 
     async def save_bcn_session(self, session: BcnSession) -> None:
-        if not isinstance(session.state, BcnSessionState):
+        if not isinstance(session.state, AgentState):
             raise TypeError("bcn session state is invalid")
         self._require_workspace(session.workspace_id)
         if session.channel_session_id not in self._storage.channel_sessions:

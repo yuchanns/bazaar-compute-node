@@ -15,8 +15,11 @@ from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
+    AgentSignal,
+    AgentState,
+    AgentTick,
+    AgentTickSource,
     ApprovalRequest,
-    BcnSessionState,
     InboundMessage,
     OutboundDeliveryState,
     RuntimeEventState,
@@ -82,7 +85,7 @@ async def make_node() -> tuple[
         timeout_budget=make_budget(),
         runtime_slug="dummy",
     )
-    runtime.command_service = orchestrator
+    runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
     return orchestrator, channel, runtime, storage, audit
 
@@ -142,7 +145,7 @@ async def test_dummy_channel_storage_runtime_turn_path() -> None:
         )
 
         assert storage.inbound_messages["bcn-1"] == [message]
-        assert storage.bcn_sessions["bcn-1"].state is BcnSessionState.RUNNING
+        assert storage.bcn_sessions["bcn-1"].state is AgentState.IDLE
         assert (
             storage.runtime_sessions["runtime-bcn-1"].process_state
             is RuntimeProcessState.RUNNING
@@ -159,16 +162,15 @@ async def test_dummy_channel_storage_runtime_turn_path() -> None:
 
 @pytest.mark.asyncio
 async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
-    orchestrator, channel, runtime, storage, _audit = await make_node()
+    orchestrator, channel, runtime, storage, audit = await make_node()
 
     async def command_script(commands: ICommandService, bcn_session_id: str) -> None:
-        checked = await commands.check(bcn_session_id, timeout=1)
+        checked = await commands.check(bcn_session_id)
         if not checked.messages:
             raise AssertionError("command did not observe the inbound message")
         history = await commands.read(
             bcn_session_id,
             target=checked.messages[0].canonical_target,
-            timeout=1,
         )
         if not history.messages:
             raise AssertionError("history command did not observe the inbound message")
@@ -178,7 +180,6 @@ async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
             target=checked.messages[0].canonical_target,
             body="runtime-generated reply",
             created_at_ms=2,
-            timeout=1,
         )
         if outbound.state is not OutboundDeliveryState.SENT:
             raise AssertionError("command did not deliver the outbound message")
@@ -196,6 +197,23 @@ async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
         assert len(channel.sent_messages) == 1
         assert storage.cursors["bcn-1"].delivered_through_seq == 1
         assert storage.outbound_messages
+        tool_events = [
+            event for event in audit.events if event.metadata.get("kind") == "tool_call"
+        ]
+        assert {event.metadata["operation"] for event in tool_events} == {
+            "bcc.message.check",
+            "bcc.message.read",
+            "bcc.message.send",
+        }
+        send_events = [
+            event
+            for event in tool_events
+            if event.metadata["operation"] == "bcc.message.send"
+        ]
+        assert send_events[-1].metadata["status"] == "sent"
+        send_arguments = send_events[-1].metadata["arguments"]
+        assert isinstance(send_arguments, dict)
+        assert "body" not in send_arguments
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -207,11 +225,10 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
-        history = await orchestrator.read(
+        history = await orchestrator.command_service.read(
             "bcn-1",
             target="#dummy:bcn-1",
             limit=1,
-            timeout=1,
         )
         assert [message.seq for message in history.messages] == [1]
         assert history.snapshot_seq == 1
@@ -220,7 +237,7 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
         assert storage.cursors["bcn-1"].delivered_through_seq == 0
         assert storage.cursors["bcn-1"].inbox_snapshot_seq == 1
 
-        checked = await orchestrator.check("bcn-1", timeout=1)
+        checked = await orchestrator.command_service.check("bcn-1")
         assert [message.seq for message in checked.messages] == [1]
         assert checked.snapshot_seq == 1
         assert checked.delivered_through_seq == 1
@@ -228,12 +245,11 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
 
         await channel.inject(make_message(seq=2))
         await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
-        around = await orchestrator.read(
+        around = await orchestrator.command_service.read(
             "bcn-1",
             target="#dummy:bcn-1",
             around_message_id=storage.inbound_messages["bcn-1"][1].message_id,
             limit=1,
-            timeout=1,
         )
         assert [message.seq for message in around.messages] == [2]
         assert storage.cursors["bcn-1"].delivered_through_seq == 1
@@ -268,6 +284,7 @@ async def test_runtime_failure_and_unknown_stream_are_persisted() -> None:
                 is RuntimeTurnState.UNKNOWN
             )
         )
+        assert storage.bcn_sessions["bcn-1"].state is AgentState.UNKNOWN
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -309,39 +326,36 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
-        rejected_without_snapshot = await orchestrator.send(
+        rejected_without_snapshot = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-before-check",
             target="#dummy:bcn-1",
             body="reply",
             created_at_ms=2,
-            timeout=1,
         )
         assert rejected_without_snapshot.state is OutboundDeliveryState.REJECTED
         assert not channel.send_attempts
 
-        checked = await orchestrator.check("bcn-1", timeout=1)
+        checked = await orchestrator.command_service.check("bcn-1")
         assert checked.messages
-        delivered = await orchestrator.send(
+        delivered = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-after-check",
             target="#dummy:bcn-1",
             body="reply",
             created_at_ms=3,
-            timeout=1,
         )
         assert delivered.state is OutboundDeliveryState.SENT
         assert len(channel.send_attempts) == 1
 
         await channel.inject(make_message(seq=2))
         await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
-        stale = await orchestrator.send(
+        stale = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-stale",
             target="#dummy:bcn-1",
             body="reply",
             created_at_ms=4,
-            timeout=1,
         )
         assert stale.state is OutboundDeliveryState.REJECTED
         assert len(channel.send_attempts) == 1
@@ -356,13 +370,12 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
-        invalid_target = await orchestrator.send(
+        invalid_target = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-invalid-target",
             target="#dummy:missing",
             body="reply",
             created_at_ms=2,
-            timeout=1,
         )
         assert invalid_target.state is OutboundDeliveryState.REJECTED
         assert invalid_target.error_kind == "target_not_replyable"
@@ -372,20 +385,19 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             event.event_name == "bcc.send.target.failed" for event in audit.events
         )
 
-        await orchestrator.check("bcn-1", timeout=1)
+        await orchestrator.command_service.check("bcn-1")
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.QUEUED,
                 value=ChannelDeliveryReceipt(provider_receipt_ref="queue-1"),
             )
         )
-        queued = await orchestrator.send(
+        queued = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-queued",
             target="#dummy:bcn-1",
             body="queued reply",
             created_at_ms=3,
-            timeout=1,
         )
         assert queued.state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
@@ -398,13 +410,12 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 error_message="delivery outcome is unknown",
             )
         )
-        unknown = await orchestrator.send(
+        unknown = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-unknown",
             target="#dummy:bcn-1",
             body="unknown reply",
             created_at_ms=4,
-            timeout=1,
         )
         assert unknown.state is OutboundDeliveryState.UNKNOWN
         assert unknown.next_action == "reconcile channel delivery before retrying"
@@ -416,13 +427,12 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 error_message="provider rejected delivery",
             )
         )
-        failed = await orchestrator.send(
+        failed = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-failed",
             target="#dummy:bcn-1",
             body="failed reply",
             created_at_ms=5,
-            timeout=1,
         )
         assert failed.state is OutboundDeliveryState.FAILED
         assert len(channel.send_attempts) == 3
@@ -443,6 +453,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     runtime.queue_turn_plan(DummyTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
+    assert storage.bcn_sessions["bcn-1"].state is AgentState.WORKING
 
     await orchestrator.stop(timeout=1)
     result = await asyncio.gather(task, return_exceptions=True)
@@ -456,6 +467,61 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     assert runtime.stopped
     assert channel.stopped
     assert storage.stopped
+    assert storage.bcn_sessions["bcn-1"].state is AgentState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -> None:
+    orchestrator, channel, _runtime, storage, _audit = await make_node()
+    try:
+        await channel.inject(make_message())
+        await wait_until(
+            lambda: (
+                storage.bcn_sessions.get("bcn-1") is not None
+                and storage.bcn_sessions["bcn-1"].state is AgentState.IDLE
+            )
+        )
+
+        started_tick = AgentTick(
+            source=AgentTickSource.CHANNEL,
+            signal=AgentSignal.TURN_STARTED,
+            observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
+        )
+        started = await asyncio.gather(
+            orchestrator.tick("bcn-1", started_tick),
+            orchestrator.tick("bcn-1", started_tick),
+        )
+        assert {session.state for session in started} == {AgentState.WORKING}
+
+        completed_tick = AgentTick(
+            source=AgentTickSource.RUNTIME,
+            signal=AgentSignal.TURN_COMPLETED,
+            observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
+        )
+        completed = await asyncio.gather(
+            orchestrator.tick("bcn-1", completed_tick),
+            orchestrator.tick("bcn-1", completed_tick),
+        )
+        assert {session.state for session in completed} == {AgentState.IDLE}
+
+        for signal, expected in (
+            (AgentSignal.COMPACTION_STARTED, AgentState.COMPACTION_STARTING),
+            (AgentSignal.COMPACTION_IN_PROGRESS, AgentState.COMPACTING),
+            (AgentSignal.COMPACTION_COMPLETED, AgentState.COMPACTION_COMPLETED),
+            (AgentSignal.WORKING_OBSERVED, AgentState.WORKING),
+        ):
+            current = storage.bcn_sessions["bcn-1"]
+            updated = await orchestrator.tick(
+                "bcn-1",
+                AgentTick(
+                    source=AgentTickSource.RUNTIME,
+                    signal=signal,
+                    observed_at_ms=current.updated_at_ms,
+                ),
+            )
+            assert updated.state is expected
+    finally:
+        await orchestrator.stop(timeout=1)
 
 
 @pytest.mark.asyncio
@@ -504,6 +570,7 @@ async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
             storage.runtime_sessions["runtime-bcn-1"].process_state
             is RuntimeProcessState.FAILED
         )
+        assert storage.bcn_sessions["bcn-1"].state is AgentState.FAILED
         assert not channel.sent_messages
     finally:
         await orchestrator.stop(timeout=1)

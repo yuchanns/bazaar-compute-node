@@ -19,7 +19,6 @@ from ..core.storage import IStorage, NodeIdentity
 from .command import (
     CommandDispatcher,
     CommandDispatchError,
-    SessionCommandService,
 )
 from .registry import AdapterFactories
 from .transport import LocalCommandServer
@@ -85,10 +84,7 @@ class NodeApplication:
             runtime_slug=runtime_slug,
             on_node_initialized=self._ensure_workspace,
         )
-        self.command_service = SessionCommandService(
-            self.orchestrator,
-            self.timeout_budget,
-        )
+        self.command_service = self.orchestrator.command_service
         control_handler = None
         if factories.control is not None:
             control_handler = factories.control(self._adapter_context())

@@ -7,13 +7,10 @@ from time import time_ns
 
 from ..core.command import (
     ICommandService,
-    MessageCheckResult,
-    MessageReadResult,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import InboundMessage, OutboundMessage
-from ..core.orchestration import SessionOrchestrator
 
 
 def serialize_inbound(message: InboundMessage) -> dict[str, object]:
@@ -59,60 +56,6 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "error_message": message.error_message,
         "next_action": message.next_action,
     }
-
-
-class SessionCommandService(ICommandService):
-    """Application boundary that exposes only session-scoped core commands."""
-
-    def __init__(
-        self,
-        orchestrator: SessionOrchestrator,
-        timeout_budget: TimeoutBudget,
-    ) -> None:
-        self._orchestrator = orchestrator
-        self._timeout_budget = timeout_budget
-
-    async def check(self, bcn_session_id: str, *, timeout: float) -> MessageCheckResult:
-        return await self._orchestrator.check(
-            bcn_session_id,
-            timeout=min(timeout, self._timeout_budget.command_seconds),
-        )
-
-    async def read(
-        self,
-        bcn_session_id: str,
-        *,
-        target: str,
-        around_message_id: str | None = None,
-        limit: int = 100,
-        timeout: float,
-    ) -> MessageReadResult:
-        return await self._orchestrator.read(
-            bcn_session_id,
-            target=target,
-            around_message_id=around_message_id,
-            limit=limit,
-            timeout=min(timeout, self._timeout_budget.command_seconds),
-        )
-
-    async def send(
-        self,
-        *,
-        bcn_session_id: str,
-        command_id: str,
-        target: str,
-        body: str,
-        created_at_ms: int,
-        timeout: float,
-    ) -> OutboundMessage:
-        return await self._orchestrator.send(
-            bcn_session_id=bcn_session_id,
-            command_id=command_id,
-            target=target,
-            body=body,
-            created_at_ms=created_at_ms,
-            timeout=min(timeout, self._timeout_budget.command_seconds),
-        )
 
 
 class CommandDispatchError(ValueError):
@@ -204,7 +147,8 @@ class CommandDispatcher:
         try:
             kind = request.get("kind")
             if kind == "command":
-                return await self._dispatch_command(request)
+                async with asyncio.timeout(self._timeout_budget.command_seconds):
+                    return await self._dispatch_command(request)
             if kind == "control" and self._control_handler is not None:
                 result = await self._control_handler(request)
                 return {"ok": True, "result": dict(result)}
@@ -271,10 +215,7 @@ class CommandDispatcher:
             await self._session_binding_validator(session_id, request)
 
         if command == "check":
-            result = await self._service.check(
-                session_id,
-                timeout=self._timeout_budget.command_seconds,
-            )
+            result = await self._service.check(session_id)
             return {
                 "ok": True,
                 "result": {
@@ -307,7 +248,6 @@ class CommandDispatcher:
                 target=target,
                 around_message_id=around_message_id,
                 limit=limit,
-                timeout=self._timeout_budget.command_seconds,
             )
             return {
                 "ok": True,
@@ -350,7 +290,6 @@ class CommandDispatcher:
                 target=target,
                 body=body,
                 created_at_ms=created_at_ms,
-                timeout=self._timeout_budget.command_seconds,
             )
             return {
                 "ok": True,

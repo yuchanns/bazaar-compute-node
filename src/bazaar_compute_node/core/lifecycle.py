@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from math import isfinite
 from typing import Protocol
 
@@ -29,21 +28,6 @@ class TimeoutBudget:
                 or value <= 0
             ):
                 raise ValueError(f"{field_name} must be a finite positive number")
-
-
-class ShutdownStage(StrEnum):
-    STOP_ACCEPTING_INBOUND = "stop_accepting_inbound"
-    STOP_RUNTIME_SESSIONS = "stop_runtime_sessions"
-    DRAIN_COMMANDS_AND_AUDIT = "drain_commands_and_audit"
-    CLOSE_STORAGE = "close_storage"
-
-
-SHUTDOWN_ORDER: tuple[ShutdownStage, ...] = (
-    ShutdownStage.STOP_ACCEPTING_INBOUND,
-    ShutdownStage.STOP_RUNTIME_SESSIONS,
-    ShutdownStage.DRAIN_COMMANDS_AND_AUDIT,
-    ShutdownStage.CLOSE_STORAGE,
-)
 
 
 class IAsyncLifecycle(Protocol):

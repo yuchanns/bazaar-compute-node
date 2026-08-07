@@ -1,72 +1,44 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from time import time_ns
 
-from ..approval import ApprovalBinding
-from ..audit import AuditEvent, ErrorKind
+from ..audit import ErrorKind
 from ..channel import IChannel
-from ..command import (
-    ICommandService,
-    MessageCheckResult,
-    MessageReadResult,
-    SessionNotFoundError,
-)
+from ..command import SessionNotFoundError
 from ..concurrency import ISessionConcurrency, SessionLockRegistry
-from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
-    ApprovalRequest,
-    ApprovalResult,
+    AgentSignal,
+    AgentState,
+    AgentTick,
+    AgentTickSource,
     BcnSession,
-    BcnSessionState,
     ChannelSession,
     ChannelSessionState,
     ConsumerCursor,
-    FreshCheckState,
     InboundMessage,
-    OutboundDeliveryState,
-    OutboundMessage,
-    RuntimeEvent,
-    RuntimeEventState,
     RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
 )
-from ..observability import IAudit, LogLevel
+from ..observability import IAudit
 from ..outcomes import ProviderCallStatus
-from ..runtime import IRuntime, IRuntimeTurnStream
+from ..runtime import IRuntime
 from ..storage import IStorage, NodeIdentity
+from .command import SessionCommandService
+from .services import SessionAuditRecorder, SessionStateWriter
+from .turn import SessionContext, SessionTurnCoordinator
 
 
 def _current_time_ms() -> int:
     return time_ns() // 1_000_000
 
 
-@dataclass(frozen=True, slots=True)
-class _SessionContext:
-    channel_session: ChannelSession
-    bcn_session: BcnSession
-    runtime_session: RuntimeSession
-
-
-class _ApprovalHandler:
-    def __init__(
-        self,
-        callback: Callable[[ApprovalRequest, float], Awaitable[ApprovalResult]],
-    ) -> None:
-        self._callback = callback
-
-    async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
-    ) -> ApprovalResult:
-        return await self._callback(request, timeout)
-
-
-class SessionOrchestrator(ICommandService, IAsyncLifecycle):
+class SessionOrchestrator(IAsyncLifecycle):
     """Route one Channel composition through provider-neutral core contracts."""
 
     def __init__(
@@ -100,13 +72,42 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         self._channel = channel
         self._runtime = runtime
         self._storage = storage
-        self._audit_sink = audit
         self._timeout_budget = timeout_budget
         self._runtime_slug = runtime_slug
         self._concurrency = concurrency or SessionLockRegistry()
         self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}
         self._bcn_sessions: dict[str, BcnSession] = {}
+        self._audit = SessionAuditRecorder(
+            sink=audit,
+            timeout_budget=timeout_budget,
+            clock=self._clock,
+        )
+        self._state_writer = SessionStateWriter(
+            storage=storage,
+            concurrency=self._concurrency,
+            bcn_sessions=self._bcn_sessions,
+        )
+        self._command_service = SessionCommandService(
+            channel=channel,
+            storage=storage,
+            audit=self._audit,
+            provider_call_timeout=timeout_budget.provider_call_seconds,
+            concurrency=self._concurrency,
+            node_id=lambda: self.node_id,
+            clock=self._clock,
+        )
+        self._turns = SessionTurnCoordinator(
+            channel=channel,
+            runtime=runtime,
+            storage=storage,
+            audit=self._audit,
+            state_writer=self._state_writer,
+            timeout_budget=timeout_budget,
+            concurrency=self._concurrency,
+            node_id=lambda: self.node_id,
+            clock=self._clock,
+        )
         self._active_tasks: set[asyncio.Task[RuntimeTurn]] = set()
         self._turn_in_flight: dict[str, asyncio.Event] = {}
         self._receive_task: asyncio.Task[None] | None = None
@@ -125,6 +126,10 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         if self._workspace_id is None:
             raise RuntimeError("node identity has not been initialized")
         return self._workspace_id
+
+    @property
+    def command_service(self) -> SessionCommandService:
+        return self._command_service
 
     async def start(self, *, timeout: float) -> None:
         if self._started:
@@ -221,15 +226,26 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         task.add_done_callback(self._forget_task)
         return task
 
+    async def tick(self, bcn_session_id: str, tick: AgentTick) -> BcnSession:
+        """Apply one serialized lifecycle observation to a bcn session."""
+
+        if not bcn_session_id:
+            raise ValueError("bcn_session_id must be a non-empty string")
+        return await self._state_writer.apply(bcn_session_id, tick)
+
     async def handle_inbound(self, message: InboundMessage) -> RuntimeTurn:
         """Persist one inbound message and drive one runtime turn to an outcome."""
 
         lock = self._concurrency.for_session(message.bcn_session_id)
+        finish_state: RuntimeTurnState | None = None
+        finish_error_kind: ErrorKind | None = None
+        finish_error_message: str | None = None
         while True:
+            wait_for: asyncio.Event | None = None
             async with lock:
                 completion = self._turn_in_flight.get(message.bcn_session_id)
                 if completion is not None:
-                    pass
+                    wait_for = completion
                 else:
                     context = await self._prepare_session(message)
                     message, turn, is_new = await self._record_inbound_and_turn(
@@ -248,378 +264,54 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                         context.runtime_session.process_state
                         is not RuntimeProcessState.RUNNING
                     ):
-                        if (
-                            context.runtime_session.process_state
+                        finish_state = (
+                            RuntimeTurnState.UNKNOWN
+                            if context.runtime_session.process_state
                             is RuntimeProcessState.UNKNOWN
-                        ):
-                            return await self._finish_turn(
-                                turn,
-                                RuntimeTurnState.UNKNOWN,
-                                error_kind=ErrorKind.PROVIDER_UNKNOWN,
-                                error_message="runtime session start outcome is unknown",
-                                correlation=self._turn_correlation(
-                                    message, context, turn
-                                ),
-                            )
-                        return await self._finish_turn(
-                            turn,
-                            RuntimeTurnState.FAILED,
-                            error_kind=ErrorKind.PROVIDER_FAILED,
-                            error_message="runtime session failed to start",
-                            correlation=self._turn_correlation(message, context, turn),
+                            else RuntimeTurnState.FAILED
                         )
-                    completion = asyncio.Event()
-                    self._turn_in_flight[message.bcn_session_id] = completion
+                        finish_error_kind = (
+                            ErrorKind.PROVIDER_UNKNOWN
+                            if finish_state is RuntimeTurnState.UNKNOWN
+                            else ErrorKind.PROVIDER_FAILED
+                        )
+                        finish_error_message = (
+                            "runtime session start outcome is unknown"
+                            if finish_state is RuntimeTurnState.UNKNOWN
+                            else "runtime session failed to start"
+                        )
+                        self._turn_in_flight[message.bcn_session_id] = asyncio.Event()
+                        break
+                    bcn_session = await self._state_writer.apply_locked(
+                        message.bcn_session_id,
+                        AgentTick(
+                            source=AgentTickSource.CHANNEL,
+                            signal=AgentSignal.TURN_STARTED,
+                            observed_at_ms=self._clock(),
+                        ),
+                    )
+                    context = replace(context, bcn_session=bcn_session)
+                    self._turn_in_flight[message.bcn_session_id] = asyncio.Event()
                     break
-            await completion.wait()
+            if wait_for is not None:
+                await wait_for.wait()
 
         try:
-            return await self._run_turn(message, context, turn)
+            if finish_state is not None:
+                return await self._turns.finish_turn(
+                    turn,
+                    finish_state,
+                    error_kind=finish_error_kind,
+                    error_message=finish_error_message,
+                    correlation=self._turns.turn_correlation(message, context, turn),
+                    bcn_session_id=context.bcn_session.bcn_session_id,
+                )
+            return await self._turns.run_turn(message, context, turn)
         finally:
             async with lock:
                 completion = self._turn_in_flight.pop(message.bcn_session_id, None)
                 if completion is not None:
                     completion.set()
-
-    async def check(self, bcn_session_id: str, *, timeout: float) -> MessageCheckResult:
-        async with self._concurrency.for_session(bcn_session_id):
-            async with self._storage.transaction() as transaction:
-                if await transaction.get_bcn_session(bcn_session_id) is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
-                latest_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
-                messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
-                    after_seq=cursor.delivered_through_seq,
-                )
-                now_ms = self._clock()
-                cursor = replace(
-                    cursor,
-                    delivered_through_seq=latest_seq,
-                    inbox_snapshot_seq=latest_seq,
-                    inbox_snapshot_source="check",
-                    inbox_snapshot_at_ms=now_ms,
-                    last_check_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_consumer_cursor(cursor)
-            return MessageCheckResult(
-                messages=messages,
-                snapshot_seq=latest_seq,
-                delivered_through_seq=latest_seq,
-            )
-
-    async def read(
-        self,
-        bcn_session_id: str,
-        *,
-        target: str,
-        around_message_id: str | None = None,
-        limit: int = 100,
-        timeout: float,
-    ) -> MessageReadResult:
-        if not target:
-            raise ValueError("target must be a non-empty string")
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        async with self._concurrency.for_session(bcn_session_id):
-            async with self._storage.transaction() as transaction:
-                if await transaction.get_bcn_session(bcn_session_id) is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
-                messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
-                    target=target,
-                    around_message_id=around_message_id,
-                    limit=limit,
-                )
-                latest_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
-                now_ms = self._clock()
-                cursor = replace(
-                    cursor,
-                    inbox_snapshot_seq=latest_seq,
-                    inbox_snapshot_source="read",
-                    inbox_snapshot_at_ms=now_ms,
-                    last_read_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_consumer_cursor(cursor)
-            return MessageReadResult(
-                messages=messages,
-                snapshot_seq=latest_seq,
-                first_seq=messages[0].seq if messages else None,
-                last_seq=messages[-1].seq if messages else None,
-            )
-
-    async def send(
-        self,
-        *,
-        bcn_session_id: str,
-        command_id: str,
-        target: str,
-        body: str,
-        created_at_ms: int,
-        timeout: float,
-    ) -> OutboundMessage:
-        if not command_id:
-            raise ValueError("command_id must be a non-empty string")
-        if not target:
-            raise ValueError("target must be a non-empty string")
-        outbound_id = f"outbound-{bcn_session_id}-{command_id}"
-        async with self._concurrency.for_session(bcn_session_id):
-            async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(bcn_session_id)
-                if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
-                channel_session = await transaction.get_channel_session(
-                    bcn_session.channel_session_id
-                )
-                if channel_session is None:
-                    raise ValueError(
-                        f"unknown channel session: {bcn_session.channel_session_id}"
-                    )
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
-                current_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
-                target_messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
-                    target=target,
-                    limit=1,
-                )
-                outbound = OutboundMessage(
-                    outbound_message_id=outbound_id,
-                    command_id=command_id,
-                    bcn_session_id=bcn_session_id,
-                    channel_session_id=channel_session.channel_session_id,
-                    target=target,
-                    body=body,
-                    state=OutboundDeliveryState.DRAFT,
-                    fresh_check_state=FreshCheckState.REQUIRED,
-                    created_at_ms=created_at_ms,
-                )
-                outbound = await transaction.save_outbound_message(outbound)
-                outbound_id = outbound.outbound_message_id
-                rejection_event_name = "bcc.send.fresh_check.failed"
-                if not target_messages:
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.TARGET_NOT_REPLYABLE.value,
-                        error_message=(
-                            f"Thread target is not found or is not replyable: {target}"
-                        ),
-                        next_action=(
-                            "Run `bcc message read` or `bcc message check` for this "
-                            "target to verify whether the message already landed; "
-                            "retry only after stable verification."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = CorrelationContext(
-                        node_id=self.node_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
-                        bcn_session_id=bcn_session_id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.TARGET_NOT_REPLYABLE
-                    rejection_event_name = "bcc.send.target.failed"
-                elif cursor.inbox_snapshot_seq is None:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.FAILED,
-                        snapshot_seq=None,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.FRESH_CHECK_REQUIRED.value,
-                        error_message=(
-                            "No inbox snapshot is available; outbound send was refused."
-                        ),
-                        next_action=(
-                            "Run `bcc message check` or `bcc message read` before "
-                            "retrying."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = CorrelationContext(
-                        node_id=self.node_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
-                        bcn_session_id=bcn_session_id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.FRESH_CHECK_REQUIRED
-                elif current_seq > cursor.inbox_snapshot_seq:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.FAILED,
-                        snapshot_seq=cursor.inbox_snapshot_seq,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.FRESH_CHECK_FAILED.value,
-                        error_message=(
-                            "New inbound message(s) arrived after the latest inbox "
-                            "snapshot; outbound send was refused."
-                        ),
-                        next_action=(
-                            "Run `bcc message check` to read the new messages, then "
-                            "retry `bcc message send` if still appropriate."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = CorrelationContext(
-                        node_id=self.node_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
-                        bcn_session_id=bcn_session_id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.FRESH_CHECK_FAILED
-                else:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.PASSED,
-                        snapshot_seq=cursor.inbox_snapshot_seq,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.PENDING,
-                        at_ms=self._clock(),
-                    )
-                    outbound = replace(
-                        outbound,
-                        provider_attempted_at_ms=self._clock(),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = CorrelationContext(
-                        node_id=self.node_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
-                        bcn_session_id=bcn_session_id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.STARTED
-                    audit_kind = None
-
-            if outbound.state is OutboundDeliveryState.REJECTED:
-                await self._append_audit(
-                    event_name=rejection_event_name,
-                    state=audit_state,
-                    correlation=audit_context,
-                    error_kind=audit_kind,
-                    error_message=outbound.error_message,
-                )
-                return outbound
-
-            await self._append_audit(
-                event_name="bcc.send.fresh_check.passed",
-                state=RuntimeEventState.COMPLETED,
-                correlation=audit_context,
-            )
-            await self._append_audit(
-                event_name="channel.outbound.pending",
-                state=RuntimeEventState.STARTED,
-                correlation=audit_context,
-            )
-            try:
-                provider_result = await self._channel.send(
-                    outbound, timeout=self._timeout_budget.provider_call_seconds
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001
-                provider_result = None
-                provider_error = error
-            else:
-                provider_error = None
-
-            attempted_at_ms = outbound.provider_attempted_at_ms or self._clock()
-            outbound = replace(outbound, provider_attempted_at_ms=attempted_at_ms)
-            if provider_result is None:
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.UNKNOWN,
-                    at_ms=self._clock(),
-                    error_kind=ErrorKind.PROVIDER_UNKNOWN.value,
-                    error_message=str(provider_error),
-                    next_action="reconcile channel delivery before retrying",
-                )
-                terminal_kind = ErrorKind.PROVIDER_UNKNOWN
-                terminal_state = RuntimeEventState.UNKNOWN
-            elif provider_result.status is ProviderCallStatus.CONFIRMED:
-                receipt = provider_result.value
-                if receipt is None:
-                    raise ValueError("confirmed channel delivery has no receipt")
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.SENT,
-                    at_ms=self._clock(),
-                    provider_message_id=receipt.provider_message_id,
-                    provider_receipt_ref=receipt.provider_receipt_ref,
-                )
-                terminal_kind = None
-                terminal_state = RuntimeEventState.COMPLETED
-            elif provider_result.status is ProviderCallStatus.QUEUED:
-                receipt = provider_result.value
-                if receipt is None:
-                    raise ValueError("queued channel delivery has no receipt")
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.QUEUED,
-                    at_ms=self._clock(),
-                    provider_message_id=receipt.provider_message_id,
-                    provider_receipt_ref=receipt.provider_receipt_ref,
-                )
-                terminal_kind = None
-                terminal_state = RuntimeEventState.STARTED
-            elif provider_result.status is ProviderCallStatus.FAILED:
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.FAILED,
-                    at_ms=self._clock(),
-                    error_kind=provider_result.error_kind
-                    or ErrorKind.PROVIDER_FAILED.value,
-                    error_message=provider_result.error_message,
-                )
-                terminal_kind = ErrorKind.PROVIDER_FAILED
-                terminal_state = RuntimeEventState.FAILED
-            else:
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.UNKNOWN,
-                    at_ms=self._clock(),
-                    error_kind=provider_result.error_kind
-                    or ErrorKind.PROVIDER_UNKNOWN.value,
-                    error_message=provider_result.error_message,
-                    next_action="reconcile channel delivery before retrying",
-                )
-                terminal_kind = ErrorKind.PROVIDER_UNKNOWN
-                terminal_state = RuntimeEventState.UNKNOWN
-
-            async with self._storage.transaction() as transaction:
-                await transaction.save_outbound_message(outbound)
-            await self._append_audit(
-                event_name=f"channel.outbound.{outbound.state.value}",
-                state=terminal_state,
-                correlation=audit_context,
-                error_kind=terminal_kind,
-                error_message=outbound.error_message,
-            )
-            return outbound
 
     async def _receive_loop(self) -> None:
         async for message in self._channel.receive():
@@ -632,7 +324,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         if not task.cancelled():
             task.exception()
 
-    async def _prepare_session(self, message: InboundMessage) -> _SessionContext:
+    async def _prepare_session(self, message: InboundMessage) -> SessionContext:
         async with self._storage.transaction() as transaction:
             channel_session = await transaction.find_channel_session(
                 channel_slug=message.channel_slug,
@@ -660,7 +352,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     bcn_session_id=message.bcn_session_id,
                     channel_session_id=channel_session.channel_session_id,
                     workspace_id=self.workspace_id,
-                    state=BcnSessionState.CREATED,
+                    state=AgentState.CREATED,
                     created_at_ms=now_ms,
                     updated_at_ms=now_ms,
                 )
@@ -703,10 +395,10 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             self._runtime_sessions[runtime_session.agent_runtime_session_id] = (
                 runtime_session
             )
-            return _SessionContext(channel_session, bcn_session, runtime_session)
+            return SessionContext(channel_session, bcn_session, runtime_session)
 
     async def _record_inbound_and_turn(
-        self, message: InboundMessage, context: _SessionContext
+        self, message: InboundMessage, context: SessionContext
     ) -> tuple[InboundMessage, RuntimeTurn, bool]:
         async with self._storage.transaction() as transaction:
             existing_turn = await transaction.get_runtime_turn(
@@ -742,18 +434,74 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             await transaction.save_runtime_turn(turn)
         return message, turn, True
 
-    async def _ensure_runtime_session(
-        self, context: _SessionContext
-    ) -> _SessionContext:
+    async def _ensure_runtime_session(self, context: SessionContext) -> SessionContext:
         runtime_session = context.runtime_session
+        bcn_session = context.bcn_session
         if runtime_session.process_state is RuntimeProcessState.RUNNING:
-            return context
+            if bcn_session.state is AgentState.CREATED:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.SESSION,
+                        signal=AgentSignal.START_REQUESTED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
+            if bcn_session.state is AgentState.STARTING:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.RUNTIME,
+                        signal=AgentSignal.START_CONFIRMED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
+            elif bcn_session.state is AgentState.RECONCILING:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.RECOVERY,
+                        signal=AgentSignal.RECONCILE_CONFIRMED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
+            return replace(context, bcn_session=bcn_session)
         if runtime_session.process_state is RuntimeProcessState.STARTING:
+            if bcn_session.state is AgentState.CREATED:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.SESSION,
+                        signal=AgentSignal.START_REQUESTED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
             provider_result = await self._runtime.start_session(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         elif runtime_session.process_state is RuntimeProcessState.UNKNOWN:
+            if bcn_session.state not in {
+                AgentState.UNKNOWN,
+                AgentState.RECONCILING,
+            }:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.RUNTIME,
+                        signal=AgentSignal.UNKNOWN,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
+            if bcn_session.state is AgentState.UNKNOWN:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.RECOVERY,
+                        signal=AgentSignal.RECONCILE_REQUESTED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
             runtime_session = runtime_session.transition_process_to(
                 RuntimeProcessState.RECONCILING,
                 updated_at_ms=self._clock(),
@@ -765,6 +513,15 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         elif runtime_session.process_state is RuntimeProcessState.RECONCILING:
+            if bcn_session.state is AgentState.UNKNOWN:
+                bcn_session = await self._state_writer.apply_locked(
+                    bcn_session.bcn_session_id,
+                    AgentTick(
+                        source=AgentTickSource.RECOVERY,
+                        signal=AgentSignal.RECONCILE_REQUESTED,
+                        observed_at_ms=self._clock(),
+                    ),
+                )
             provider_result = await self._runtime.resume_session(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
@@ -785,15 +542,36 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             ):
                 raise ValueError("runtime provider returned a mismatched session")
             runtime_session = updated_runtime
-            bcn_session = context.bcn_session
-            if bcn_session.state is BcnSessionState.CREATED:
-                bcn_session = bcn_session.transition_to(
-                    BcnSessionState.RUNNING,
-                    updated_at_ms=now_ms,
-                )
             async with self._storage.transaction() as transaction:
+                current_bcn = await transaction.get_bcn_session(
+                    context.bcn_session.bcn_session_id
+                )
+                if current_bcn is None:
+                    raise SessionNotFoundError(
+                        f"unknown bcn session: {context.bcn_session.bcn_session_id}"
+                    )
+                if current_bcn.state is AgentState.STARTING:
+                    current_bcn = await self._state_writer.apply_in_transaction(
+                        transaction,
+                        current_bcn,
+                        AgentTick(
+                            source=AgentTickSource.RUNTIME,
+                            signal=AgentSignal.START_CONFIRMED,
+                            observed_at_ms=now_ms,
+                        ),
+                    )
+                elif current_bcn.state is AgentState.RECONCILING:
+                    current_bcn = await self._state_writer.apply_in_transaction(
+                        transaction,
+                        current_bcn,
+                        AgentTick(
+                            source=AgentTickSource.RECOVERY,
+                            signal=AgentSignal.RECONCILE_CONFIRMED,
+                            observed_at_ms=now_ms,
+                        ),
+                    )
                 await transaction.save_runtime_session(runtime_session)
-                await transaction.save_bcn_session(bcn_session)
+                bcn_session = current_bcn
         else:
             target_state = (
                 RuntimeProcessState.FAILED
@@ -806,291 +584,69 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 error_kind=provider_result.error_kind,
                 error_message=provider_result.error_message,
             )
-            bcn_session = context.bcn_session
-            if bcn_session.state in {BcnSessionState.CREATED, BcnSessionState.RUNNING}:
-                bcn_session = bcn_session.transition_to(
-                    BcnSessionState.FAILED,
-                    updated_at_ms=now_ms,
-                )
             async with self._storage.transaction() as transaction:
+                current_bcn = await transaction.get_bcn_session(
+                    context.bcn_session.bcn_session_id
+                )
+                if current_bcn is None:
+                    raise SessionNotFoundError(
+                        f"unknown bcn session: {context.bcn_session.bcn_session_id}"
+                    )
+                current_bcn = await self._state_writer.apply_in_transaction(
+                    transaction,
+                    current_bcn,
+                    AgentTick(
+                        source=AgentTickSource.RUNTIME,
+                        signal=(
+                            AgentSignal.FAILED
+                            if target_state is RuntimeProcessState.FAILED
+                            else AgentSignal.UNKNOWN
+                        ),
+                        observed_at_ms=now_ms,
+                        error_kind=provider_result.error_kind,
+                        error_message=provider_result.error_message,
+                    ),
+                )
                 await transaction.save_runtime_session(runtime_session)
-                await transaction.save_bcn_session(bcn_session)
+                bcn_session = current_bcn
 
         self._runtime_sessions[runtime_session.agent_runtime_session_id] = (
             runtime_session
         )
         self._bcn_sessions[bcn_session.bcn_session_id] = bcn_session
-        return _SessionContext(context.channel_session, bcn_session, runtime_session)
-
-    async def _run_turn(
-        self,
-        message: InboundMessage,
-        context: _SessionContext,
-        turn: RuntimeTurn,
-    ) -> RuntimeTurn:
-        binding = ApprovalBinding(
-            request_id="pending",
-            bcn_session_id=context.bcn_session.bcn_session_id,
-            channel_session_id=context.channel_session.channel_session_id,
-            agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
-            turn_id=turn.turn_id,
-        )
-        turn_correlation = self._turn_correlation(message, context, turn)
-
-        async def request_approval(
-            request: ApprovalRequest, *, timeout: float
-        ) -> ApprovalResult:
-            request_id = request.request_id
-            current_binding = replace(binding, request_id=request_id)
-            if not current_binding.matches(request):
-                raise ValueError("runtime approval request correlation mismatch")
-            result = await self._channel.request_approval(request, timeout=timeout)
-            if result.request_id != request_id:
-                raise ValueError("channel approval result correlation mismatch")
-            await self._append_audit(
-                event_name="approval.decided",
-                state=RuntimeEventState.COMPLETED,
-                correlation=CorrelationContext(
-                    node_id=self.node_id,
-                    channel_slug=context.channel_session.channel_slug,
-                    channel_session_id=context.channel_session.channel_session_id,
-                    bcn_session_id=context.bcn_session.bcn_session_id,
-                    agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
-                    turn_id=turn.turn_id,
-                    request_id=request_id,
-                    inbound_seq=message.seq,
-                ),
-                metadata={"decision": result.decision.value},
-            )
-            return result
-
-        stream: IRuntimeTurnStream | None = None
-        observed_terminal = False
-        try:
-            approval_handler = _ApprovalHandler(
-                lambda request, timeout: request_approval(request, timeout=timeout)
-            )
-            stream = await self._runtime.start_turn(
-                context.runtime_session,
-                turn,
-                f"[inbox notice session={context.bcn_session.bcn_session_id}]\n"
-                "Inbox update: 1 unread message. Use the message command to read it.",
-                approval_handler,
-                timeout=self._timeout_budget.provider_call_seconds,
-            )
-            async for event in stream:
-                turn = await self._apply_runtime_event(message, context, turn, event)
-                if event.state in {
-                    RuntimeEventState.COMPLETED,
-                    RuntimeEventState.FAILED,
-                    RuntimeEventState.CANCELLED,
-                    RuntimeEventState.UNKNOWN,
-                }:
-                    observed_terminal = True
-                    break
-            if not observed_terminal:
-                return await self._finish_turn(
-                    turn,
-                    RuntimeTurnState.UNKNOWN,
-                    error_kind=ErrorKind.PROVIDER_UNKNOWN,
-                    error_message="runtime stream ended without a terminal event",
-                    correlation=turn_correlation,
-                )
-            return turn
-        except asyncio.CancelledError:
-            await self._close_stream(stream)
-            await self._finish_turn(
-                turn,
-                RuntimeTurnState.CANCELLED,
-                error_kind=ErrorKind.CANCELLED,
-                error_message="runtime turn cancelled",
-                correlation=turn_correlation,
-            )
-            raise
-        except Exception as error:  # noqa: BLE001
-            await self._close_stream(stream)
-            return await self._finish_turn(
-                turn,
-                RuntimeTurnState.FAILED,
-                error_kind=ErrorKind.PROVIDER_FAILED,
-                error_message=str(error),
-                correlation=turn_correlation,
-            )
-        finally:
-            await self._close_stream(stream)
-
-    async def _close_stream(self, stream: IRuntimeTurnStream | None) -> None:
-        if stream is not None:
-            await stream.aclose()
-
-    async def _apply_runtime_event(
-        self,
-        message: InboundMessage,
-        context: _SessionContext,
-        turn: RuntimeTurn,
-        event: RuntimeEvent,
-    ) -> RuntimeTurn:
-        if event.turn_id is not None and event.turn_id != turn.turn_id:
-            raise ValueError("runtime event turn correlation mismatch")
-        async with self._storage.transaction() as transaction:
-            event = await transaction.append_runtime_event(event)
-            current_turn = await transaction.get_runtime_turn(turn.turn_id)
-            if current_turn is None:
-                raise ValueError(f"unknown runtime turn: {turn.turn_id}")
-            if event.state is RuntimeEventState.STARTED:
-                target_state = RuntimeTurnState.RUNNING
-            elif event.state is RuntimeEventState.COMPLETED:
-                target_state = RuntimeTurnState.COMPLETED
-            elif event.state is RuntimeEventState.FAILED:
-                target_state = RuntimeTurnState.FAILED
-            elif event.state is RuntimeEventState.CANCELLED:
-                target_state = RuntimeTurnState.CANCELLED
-            else:
-                target_state = RuntimeTurnState.UNKNOWN
-            provider_turn_id = event.metadata.get("provider_turn_id")
-            if provider_turn_id is not None and (
-                not isinstance(provider_turn_id, str) or not provider_turn_id
-            ):
-                raise ValueError("runtime event provider_turn_id is invalid")
-            if (
-                provider_turn_id is not None
-                and current_turn.provider_turn_id is not None
-                and current_turn.provider_turn_id != provider_turn_id
-            ):
-                raise ValueError("runtime event provider turn correlation mismatch")
-            error_kind = event.error_kind
-            if event.state is RuntimeEventState.FAILED and error_kind is None:
-                error_kind = ErrorKind.PROVIDER_FAILED.value
-            if event.state is RuntimeEventState.UNKNOWN and error_kind is None:
-                error_kind = ErrorKind.PROVIDER_UNKNOWN.value
-            if event.state is RuntimeEventState.CANCELLED and error_kind is None:
-                error_kind = ErrorKind.CANCELLED.value
-            updated_turn = current_turn.transition_to(
-                target_state,
-                at_ms=event.created_at_ms,
-                error_kind=error_kind,
-                error_message=event.error_message,
-                latest_event_name=event.event_name,
-            )
-            if provider_turn_id is not None:
-                updated_turn = replace(
-                    updated_turn,
-                    provider_turn_id=provider_turn_id,
-                )
-            await transaction.save_runtime_turn(updated_turn)
-        try:
-            audit_kind = ErrorKind(event.error_kind) if event.error_kind else None
-        except ValueError:
-            audit_kind = ErrorKind.INTERNAL
-        audit_error_message = event.error_message if audit_kind else None
-        await self._append_audit(
-            event_name=event.event_name,
-            state=event.state,
-            correlation=self._turn_correlation(message, context, updated_turn),
-            error_kind=audit_kind,
-            error_message=audit_error_message,
-        )
-        return updated_turn
-
-    async def _finish_turn(
-        self,
-        turn: RuntimeTurn,
-        state: RuntimeTurnState,
-        *,
-        error_kind: ErrorKind | None = None,
-        error_message: str | None = None,
-        correlation: CorrelationContext | None = None,
-    ) -> RuntimeTurn:
-        if turn.state in {
-            RuntimeTurnState.COMPLETED,
-            RuntimeTurnState.FAILED,
-            RuntimeTurnState.CANCELLED,
-        }:
-            return turn
-        async with self._storage.transaction() as transaction:
-            current_turn = await transaction.get_runtime_turn(turn.turn_id)
-            if current_turn is None:
-                raise ValueError(f"unknown runtime turn: {turn.turn_id}")
-            if current_turn.state in {
-                RuntimeTurnState.COMPLETED,
-                RuntimeTurnState.FAILED,
-                RuntimeTurnState.CANCELLED,
-            }:
-                return current_turn
-            current_turn = current_turn.transition_to(
-                state,
-                at_ms=self._clock(),
-                error_kind=error_kind.value if error_kind else None,
-                error_message=error_message,
-            )
-            await transaction.save_runtime_turn(current_turn)
-        await self._append_audit(
-            event_name=f"runtime.turn.{state.value}",
-            state=(
-                RuntimeEventState.COMPLETED
-                if state is RuntimeTurnState.COMPLETED
-                else RuntimeEventState.CANCELLED
-                if state is RuntimeTurnState.CANCELLED
-                else RuntimeEventState.FAILED
-                if state is not RuntimeTurnState.UNKNOWN
-                else RuntimeEventState.UNKNOWN
-            ),
-            correlation=correlation or CorrelationContext(turn_id=turn.turn_id),
-            error_kind=error_kind,
-            error_message=error_message,
-        )
-        return current_turn
-
-    def _turn_correlation(
-        self,
-        message: InboundMessage,
-        context: _SessionContext,
-        turn: RuntimeTurn,
-    ) -> CorrelationContext:
-        return CorrelationContext(
-            node_id=self.node_id,
-            channel_slug=context.channel_session.channel_slug,
-            channel_session_id=context.channel_session.channel_session_id,
-            bcn_session_id=context.bcn_session.bcn_session_id,
-            agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
-            turn_id=turn.turn_id,
-            inbound_seq=message.seq,
-            provider_thread_id=context.runtime_session.provider_thread_id,
-            provider_turn_id=turn.provider_turn_id,
-        )
-
-    async def _append_audit(
-        self,
-        *,
-        event_name: str,
-        state: RuntimeEventState,
-        correlation: CorrelationContext,
-        error_kind: ErrorKind | None = None,
-        error_message: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-    ) -> None:
-        await self._audit_sink.append(
-            AuditEvent(
-                event_name=event_name,
-                state=state,
-                created_at_ms=self._clock(),
-                correlation=correlation,
-                level=LogLevel.ERROR if error_kind else LogLevel.INFO,
-                error_kind=error_kind,
-                error_message=error_message,
-                metadata=metadata or {},
-            ),
-            timeout=self._timeout_budget.command_seconds,
-        )
+        return SessionContext(context.channel_session, bcn_session, runtime_session)
 
     async def _stop_runtime_session(
         self, runtime_session: RuntimeSession, *, timeout: float
     ) -> None:
+        async with self._concurrency.for_session(runtime_session.bcn_session_id):
+            await self._stop_runtime_session_locked(runtime_session, timeout=timeout)
+
+    async def _stop_runtime_session_locked(
+        self, runtime_session: RuntimeSession, *, timeout: float
+    ) -> None:
+        now_ms = self._clock()
         stopping = runtime_session.transition_process_to(
             RuntimeProcessState.STOPPING,
-            updated_at_ms=self._clock(),
+            updated_at_ms=now_ms,
         )
         async with self._storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(
+                runtime_session.bcn_session_id
+            )
+            if bcn_session is None:
+                raise SessionNotFoundError(
+                    f"unknown bcn session: {runtime_session.bcn_session_id}"
+                )
+            bcn_session = await self._state_writer.apply_in_transaction(
+                transaction,
+                bcn_session,
+                AgentTick(
+                    source=AgentTickSource.SESSION,
+                    signal=AgentSignal.STOP_REQUESTED,
+                    observed_at_ms=now_ms,
+                ),
+            )
             await transaction.save_runtime_session(stopping)
         try:
             result = await self._runtime.stop_session(stopping, timeout=timeout)
@@ -1125,4 +681,37 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             )
         self._runtime_sessions[stopped.agent_runtime_session_id] = stopped
         async with self._storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(stopped.bcn_session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(
+                    f"unknown bcn session: {stopped.bcn_session_id}"
+                )
+            agent_signal = (
+                AgentSignal.STOP_CONFIRMED
+                if result is not None and result.status is ProviderCallStatus.CONFIRMED
+                else AgentSignal.UNKNOWN
+                if stopped.process_state is RuntimeProcessState.UNKNOWN
+                else AgentSignal.FAILED
+            )
+            await self._state_writer.apply_in_transaction(
+                transaction,
+                bcn_session,
+                AgentTick(
+                    source=AgentTickSource.SESSION,
+                    signal=agent_signal,
+                    observed_at_ms=self._clock(),
+                    error_kind=(
+                        result.error_kind
+                        if result is not None
+                        else ErrorKind.PROVIDER_UNKNOWN.value
+                    )
+                    if agent_signal is not AgentSignal.STOP_CONFIRMED
+                    else None,
+                    error_message=(
+                        result.error_message if result is not None else str(stop_error)
+                    )
+                    if agent_signal is not AgentSignal.STOP_CONFIRMED
+                    else None,
+                ),
+            )
             await transaction.save_runtime_session(stopped)

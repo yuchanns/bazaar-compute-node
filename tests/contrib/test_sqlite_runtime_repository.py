@@ -10,8 +10,8 @@ import pytest_asyncio
 
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.models import (
+    AgentState,
     BcnSession,
-    BcnSessionState,
     ChannelSession,
     ChannelSessionState,
     FreshCheckState,
@@ -60,7 +60,7 @@ def make_bcn_session(
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
         workspace_id="workspace-1",
-        state=BcnSessionState.CREATED,
+        state=AgentState.CREATED,
         created_at_ms=100,
         updated_at_ms=100,
     )
