@@ -150,8 +150,8 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         )
         assert read_code == 0, read_stderr
         assert read_stderr == ""
-        assert read_stdout.startswith(
-            "Read window: 2 returned, seq 1-2, oldest to newest.\n"
+        assert read_stdout.splitlines()[0] == (
+            "Read window: 2 returned, seq 1-2, oldest to newest."
         )
         assert "threadId=provider-thread-a" in read_stdout
         assert "replyTarget=#dummy:bcn-a" in read_stdout
