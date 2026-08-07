@@ -388,6 +388,8 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     fresh_check_state=FreshCheckState.REQUIRED,
                     created_at_ms=created_at_ms,
                 )
+                outbound = await transaction.save_outbound_message(outbound)
+                outbound_id = outbound.outbound_message_id
                 if cursor.inbox_snapshot_seq is None:
                     outbound = outbound.record_fresh_check(
                         FreshCheckState.FAILED,
@@ -860,7 +862,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         if event.turn_id is not None and event.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         async with self._storage.transaction() as transaction:
-            await transaction.append_runtime_event(event)
+            event = await transaction.append_runtime_event(event)
             current_turn = await transaction.get_runtime_turn(turn.turn_id)
             if current_turn is None:
                 raise ValueError(f"unknown runtime turn: {turn.turn_id}")

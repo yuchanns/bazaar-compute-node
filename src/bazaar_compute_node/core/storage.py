@@ -121,12 +121,18 @@ class IStorageTransaction(Protocol):
         """Persist the session cursor and independent inbox snapshot."""
         ...
 
-    async def save_outbound_message(self, message: OutboundMessage) -> None:
-        """Persist an outbound draft or delivery state transition."""
+    async def get_outbound_message(
+        self, outbound_message_id: str
+    ) -> OutboundMessage | None:
+        """Load one outbound command attempt by local id."""
         ...
 
-    async def append_runtime_event(self, event: RuntimeEvent) -> None:
-        """Append an operational event without replacing earlier events."""
+    async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
+        """Persist a draft or delivery transition and return its canonical row."""
+        ...
+
+    async def append_runtime_event(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Append an operational event and return its canonical local sequence."""
         ...
 
 

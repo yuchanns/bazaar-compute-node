@@ -204,6 +204,7 @@ class DummyRuntime(IRuntime):
             event_name=f"runtime.turn.{state.value}",
             state=state,
             node_id="dummy-node",
+            runtime_slug=session.runtime_slug,
             bcn_session_id=session.bcn_session_id,
             agent_runtime_session_id=session.agent_runtime_session_id,
             turn_id=turn.turn_id,

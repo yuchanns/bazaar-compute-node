@@ -20,9 +20,16 @@ from ...core.models import (
     ChannelSession,
     ChannelSessionState,
     ConsumerCursor,
+    FreshCheckState,
     InboundMessage,
+    OutboundDeliveryState,
+    OutboundMessage,
+    RuntimeEvent,
+    RuntimeEventState,
     RuntimeProcessState,
     RuntimeSession,
+    RuntimeTurn,
+    RuntimeTurnState,
 )
 from ...core.paths import resolve_data_dir
 from ...core.storage import NodeIdentity
@@ -221,6 +228,16 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "bcn-to-runtime session binding",
         )
         return _runtime_session_from_row(row) if row is not None else None
+
+    async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
+        row = await self.fetchone(
+            "SELECT turn_id, agent_runtime_session_id, provider_turn_id, "
+            "client_user_message_id, state, started_at_ms, completed_at_ms, "
+            "last_event_name, error_kind, error_message, metadata_json "
+            "FROM runtime_turns WHERE turn_id = ?",
+            (turn_id,),
+        )
+        return _runtime_turn_from_row(row) if row is not None else None
 
     async def get_consumer_cursor(self, bcn_session_id: str) -> ConsumerCursor | None:
         row = await self.fetchone(
@@ -460,6 +477,324 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             ),
         )
 
+    async def get_outbound_message(
+        self, outbound_message_id: str
+    ) -> OutboundMessage | None:
+        row = await self.fetchone(
+            "SELECT outbound_message_id, command_id, bcn_session_id, "
+            "channel_session_id, target, body, state, fresh_check_state, "
+            "snapshot_seq, current_inbound_seq, provider_message_id, "
+            "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
+            "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
+            "next_action, metadata_json FROM outbound_messages "
+            "WHERE outbound_message_id = ?",
+            (outbound_message_id,),
+        )
+        return _outbound_message_from_row(row) if row is not None else None
+
+    async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
+        _validate_outbound_message_input(message)
+        bcn_session = await self.get_bcn_session(message.bcn_session_id)
+        if bcn_session is None:
+            raise ValueError(f"unknown bcn session: {message.bcn_session_id}")
+        channel_session = await self.get_channel_session(message.channel_session_id)
+        if channel_session is None:
+            raise ValueError(f"unknown channel session: {message.channel_session_id}")
+        if bcn_session.channel_session_id != message.channel_session_id:
+            raise ValueError("outbound message binding does not match bcn session")
+
+        existing = await self.get_outbound_message(message.outbound_message_id)
+        if existing is None:
+            canonical = replace(message, outbound_message_id=str(uuid7()))
+            _validate_outbound_insert(canonical)
+            await self.execute(
+                "INSERT INTO outbound_messages ("
+                "outbound_message_id, command_id, bcn_session_id, "
+                "channel_session_id, target, body, state, fresh_check_state, "
+                "snapshot_seq, current_inbound_seq, provider_message_id, "
+                "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
+                "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
+                "next_action, metadata_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    canonical.outbound_message_id,
+                    canonical.command_id,
+                    canonical.bcn_session_id,
+                    canonical.channel_session_id,
+                    canonical.target,
+                    canonical.body,
+                    canonical.state.value,
+                    canonical.fresh_check_state.value,
+                    canonical.snapshot_seq,
+                    canonical.current_inbound_seq,
+                    canonical.provider_message_id,
+                    canonical.provider_receipt_ref,
+                    canonical.created_at_ms,
+                    canonical.provider_attempted_at_ms,
+                    canonical.completed_at_ms,
+                    canonical.draft_saved_at_ms,
+                    canonical.error_kind,
+                    canonical.error_message,
+                    canonical.next_action,
+                    _encode_metadata(canonical.metadata),
+                ),
+            )
+            return canonical
+
+        if (
+            existing.command_id != message.command_id
+            or existing.bcn_session_id != message.bcn_session_id
+            or existing.channel_session_id != message.channel_session_id
+            or existing.target != message.target
+            or existing.body != message.body
+            or existing.created_at_ms != message.created_at_ms
+        ):
+            raise ValueError("outbound message identity cannot change")
+        canonical = _validate_outbound_update(existing, message)
+        await self.execute(
+            "UPDATE outbound_messages SET state = ?, fresh_check_state = ?, "
+            "snapshot_seq = ?, current_inbound_seq = ?, provider_message_id = ?, "
+            "provider_receipt_ref = ?, provider_attempted_at_ms = ?, "
+            "completed_at_ms = ?, draft_saved_at_ms = ?, error_kind = ?, "
+            "error_message = ?, next_action = ?, metadata_json = ? "
+            "WHERE outbound_message_id = ?",
+            (
+                canonical.state.value,
+                canonical.fresh_check_state.value,
+                canonical.snapshot_seq,
+                canonical.current_inbound_seq,
+                canonical.provider_message_id,
+                canonical.provider_receipt_ref,
+                canonical.provider_attempted_at_ms,
+                canonical.completed_at_ms,
+                canonical.draft_saved_at_ms,
+                canonical.error_kind,
+                canonical.error_message,
+                canonical.next_action,
+                _encode_metadata(canonical.metadata),
+                canonical.outbound_message_id,
+            ),
+        )
+        return canonical
+
+    async def append_runtime_event(self, event: RuntimeEvent) -> RuntimeEvent:
+        _validate_runtime_event_input(event)
+        existing_row = await self._fetch_one_or_conflict(
+            "SELECT event_seq, event_id, created_at_ms, level, event_name, state, "
+            "duration_ms, node_id, channel_slug, runtime_slug, "
+            "channel_session_id, bcn_session_id, agent_runtime_session_id, "
+            "turn_id, request_id, command_id, inbound_seq, outbound_message_id, "
+            "error_kind, error_type, error_message, traceback_ref, metadata_json "
+            "FROM runtime_events WHERE event_id = ? ORDER BY event_seq",
+            (event.event_id,),
+            "runtime event identity",
+        )
+        if existing_row is not None:
+            existing = _runtime_event_from_row(existing_row)
+            if _same_runtime_event_payload(existing, event):
+                return existing
+            raise ValueError(
+                "runtime event id is already bound to different event content"
+            )
+
+        await self._validate_runtime_event_references(event)
+        sequence_row = await self.fetchone(
+            "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_event_seq "
+            "FROM runtime_events"
+        )
+        if sequence_row is None:
+            raise RuntimeError("SQLite runtime event sequence query returned no row")
+        next_event_seq = _required_positive_int(
+            sequence_row["next_event_seq"], "next_event_seq"
+        )
+        canonical = replace(event, event_seq=next_event_seq)
+        await self.execute(
+            "INSERT INTO runtime_events ("
+            "event_seq, event_id, created_at_ms, level, event_name, state, "
+            "duration_ms, node_id, channel_slug, runtime_slug, "
+            "channel_session_id, bcn_session_id, agent_runtime_session_id, "
+            "turn_id, request_id, command_id, inbound_seq, outbound_message_id, "
+            "error_kind, error_type, error_message, traceback_ref, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                canonical.event_seq,
+                canonical.event_id,
+                canonical.created_at_ms,
+                canonical.level,
+                canonical.event_name,
+                canonical.state.value,
+                canonical.duration_ms,
+                canonical.node_id,
+                canonical.channel_slug,
+                canonical.runtime_slug,
+                canonical.channel_session_id,
+                canonical.bcn_session_id,
+                canonical.agent_runtime_session_id,
+                canonical.turn_id,
+                canonical.request_id,
+                canonical.command_id,
+                canonical.inbound_seq,
+                canonical.outbound_message_id,
+                canonical.error_kind,
+                canonical.error_type,
+                canonical.error_message,
+                canonical.traceback_ref,
+                _encode_metadata(canonical.metadata),
+            ),
+        )
+        return canonical
+
+    async def _validate_runtime_event_references(self, event: RuntimeEvent) -> None:
+        channel_session = None
+        if event.channel_session_id is not None:
+            channel_session = await self.get_channel_session(event.channel_session_id)
+            if channel_session is None:
+                raise ValueError(f"unknown channel session: {event.channel_session_id}")
+            if (
+                event.channel_slug is not None
+                and event.channel_slug != channel_session.channel_slug
+            ):
+                raise ValueError("runtime event channel binding does not match")
+
+        bcn_session = None
+        if event.bcn_session_id is not None:
+            bcn_session = await self.get_bcn_session(event.bcn_session_id)
+            if bcn_session is None:
+                raise ValueError(f"unknown bcn session: {event.bcn_session_id}")
+            if (
+                event.channel_session_id is not None
+                and bcn_session.channel_session_id != event.channel_session_id
+            ):
+                raise ValueError("runtime event bcn/channel binding does not match")
+            if channel_session is None:
+                channel_session = await self.get_channel_session(
+                    bcn_session.channel_session_id
+                )
+            if (
+                event.channel_slug is not None
+                and channel_session is not None
+                and event.channel_slug != channel_session.channel_slug
+            ):
+                raise ValueError("runtime event channel binding does not match")
+
+        runtime_session = None
+        if event.agent_runtime_session_id is not None:
+            runtime_session = await self.get_runtime_session(
+                event.agent_runtime_session_id
+            )
+            if runtime_session is None:
+                raise ValueError(
+                    f"unknown runtime session: {event.agent_runtime_session_id}"
+                )
+            if (
+                event.bcn_session_id is not None
+                and runtime_session.bcn_session_id != event.bcn_session_id
+            ):
+                raise ValueError("runtime event runtime/bcn binding does not match")
+            if (
+                event.channel_session_id is not None
+                and runtime_session.channel_session_id != event.channel_session_id
+            ):
+                raise ValueError("runtime event runtime/channel binding does not match")
+            if (
+                event.runtime_slug is not None
+                and runtime_session.runtime_slug != event.runtime_slug
+            ):
+                raise ValueError("runtime event runtime slug does not match")
+            if event.channel_slug is not None:
+                runtime_channel = await self.get_channel_session(
+                    runtime_session.channel_session_id
+                )
+                if (
+                    runtime_channel is not None
+                    and runtime_channel.channel_slug != event.channel_slug
+                ):
+                    raise ValueError("runtime event channel binding does not match")
+
+        if event.turn_id is not None:
+            turn = await self.get_runtime_turn(event.turn_id)
+            if turn is None:
+                raise ValueError(f"unknown runtime turn: {event.turn_id}")
+            if (
+                event.agent_runtime_session_id is not None
+                and turn.agent_runtime_session_id != event.agent_runtime_session_id
+            ):
+                raise ValueError("runtime event turn/runtime binding does not match")
+            if runtime_session is None:
+                runtime_session = await self.get_runtime_session(
+                    turn.agent_runtime_session_id
+                )
+            if (
+                event.bcn_session_id is not None
+                and runtime_session is not None
+                and runtime_session.bcn_session_id != event.bcn_session_id
+            ):
+                raise ValueError("runtime event turn/bcn binding does not match")
+            if runtime_session is not None:
+                if (
+                    event.channel_session_id is not None
+                    and runtime_session.channel_session_id != event.channel_session_id
+                ):
+                    raise ValueError(
+                        "runtime event turn/channel binding does not match"
+                    )
+                if (
+                    event.runtime_slug is not None
+                    and runtime_session.runtime_slug != event.runtime_slug
+                ):
+                    raise ValueError("runtime event turn/runtime slug does not match")
+                if event.channel_slug is not None:
+                    turn_channel = await self.get_channel_session(
+                        runtime_session.channel_session_id
+                    )
+                    if (
+                        turn_channel is not None
+                        and turn_channel.channel_slug != event.channel_slug
+                    ):
+                        raise ValueError(
+                            "runtime event turn/channel binding does not match"
+                        )
+
+        if event.outbound_message_id is not None:
+            outbound = await self.get_outbound_message(event.outbound_message_id)
+            if outbound is None:
+                raise ValueError(
+                    f"unknown outbound message: {event.outbound_message_id}"
+                )
+            if (
+                event.bcn_session_id is not None
+                and outbound.bcn_session_id != event.bcn_session_id
+            ):
+                raise ValueError("runtime event outbound/bcn binding does not match")
+            if (
+                event.channel_session_id is not None
+                and outbound.channel_session_id != event.channel_session_id
+            ):
+                raise ValueError(
+                    "runtime event outbound/channel binding does not match"
+                )
+            if event.channel_slug is not None:
+                outbound_channel = await self.get_channel_session(
+                    outbound.channel_session_id
+                )
+                if (
+                    outbound_channel is not None
+                    and outbound_channel.channel_slug != event.channel_slug
+                ):
+                    raise ValueError(
+                        "runtime event outbound/channel binding does not match"
+                    )
+
+        if event.inbound_seq is not None and event.bcn_session_id is not None:
+            row = await self.fetchone(
+                "SELECT 1 FROM inbound_messages WHERE bcn_session_id = ? AND seq = ?",
+                (event.bcn_session_id, event.inbound_seq),
+            )
+            if row is None:
+                raise ValueError(
+                    f"unknown inbound sequence for bcn session: {event.inbound_seq}"
+                )
+
     async def save_channel_session(self, session: ChannelSession) -> None:
         _validate_channel_session_input(session)
         existing = await self.get_channel_session(session.channel_session_id)
@@ -638,6 +973,87 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 session.agent_runtime_session_id,
             ),
         )
+
+    async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
+        _validate_runtime_turn_input(turn)
+        if await self.get_runtime_session(turn.agent_runtime_session_id) is None:
+            raise ValueError(
+                f"unknown runtime session: {turn.agent_runtime_session_id}"
+            )
+
+        existing = await self.get_runtime_turn(turn.turn_id)
+        if existing is None:
+            if turn.state is not RuntimeTurnState.STARTING:
+                raise ValueError("a new runtime turn must start in starting state")
+            await self._validate_active_runtime_turn(turn)
+            await self.execute(
+                "INSERT INTO runtime_turns ("
+                "turn_id, agent_runtime_session_id, provider_turn_id, "
+                "client_user_message_id, state, started_at_ms, completed_at_ms, "
+                "last_event_name, error_kind, error_message, metadata_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    turn.turn_id,
+                    turn.agent_runtime_session_id,
+                    turn.provider_turn_id,
+                    turn.client_user_message_id,
+                    turn.state.value,
+                    turn.started_at_ms,
+                    turn.completed_at_ms,
+                    turn.latest_event_name,
+                    turn.error_kind,
+                    turn.error_message,
+                    _encode_metadata(turn.metadata),
+                ),
+            )
+            return
+
+        if existing.agent_runtime_session_id != turn.agent_runtime_session_id:
+            raise ValueError("runtime turn binding cannot change")
+        if existing.started_at_ms != turn.started_at_ms:
+            raise ValueError("runtime turn start time cannot change")
+        canonical = _validate_runtime_turn_update(existing, turn)
+        await self._validate_active_runtime_turn(canonical)
+        await self.execute(
+            "UPDATE runtime_turns SET provider_turn_id = ?, "
+            "client_user_message_id = ?, state = ?, completed_at_ms = ?, "
+            "last_event_name = ?, error_kind = ?, error_message = ?, "
+            "metadata_json = ? WHERE turn_id = ?",
+            (
+                canonical.provider_turn_id,
+                canonical.client_user_message_id,
+                canonical.state.value,
+                canonical.completed_at_ms,
+                canonical.latest_event_name,
+                canonical.error_kind,
+                canonical.error_message,
+                _encode_metadata(canonical.metadata),
+                canonical.turn_id,
+            ),
+        )
+
+    async def _validate_active_runtime_turn(self, turn: RuntimeTurn) -> None:
+        active_states = tuple(
+            state.value
+            for state in (
+                RuntimeTurnState.STARTING,
+                RuntimeTurnState.RUNNING,
+                RuntimeTurnState.UNKNOWN,
+                RuntimeTurnState.RECONCILING,
+            )
+        )
+        placeholders = ", ".join("?" for _ in active_states)
+        rows = await self.fetchall(
+            "SELECT turn_id FROM runtime_turns "
+            "WHERE agent_runtime_session_id = ? AND state IN ("
+            + placeholders
+            + ") AND turn_id <> ? LIMIT 1",
+            (turn.agent_runtime_session_id, *active_states, turn.turn_id),
+        )
+        if rows:
+            raise ValueError(
+                f"runtime session already has an active turn: {rows[0]['turn_id']}"
+            )
 
     async def _fetch_one_or_conflict(
         self,
@@ -1050,6 +1466,28 @@ def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
     )
 
 
+def _runtime_turn_from_row(row: aiosqlite.Row) -> RuntimeTurn:
+    return RuntimeTurn(
+        turn_id=_required_text(row["turn_id"], "turn_id"),
+        agent_runtime_session_id=_required_text(
+            row["agent_runtime_session_id"], "agent_runtime_session_id"
+        ),
+        state=RuntimeTurnState(_required_text(row["state"], "runtime_turn.state")),
+        started_at_ms=_required_non_negative_int(row["started_at_ms"], "started_at_ms"),
+        provider_turn_id=_optional_text(row["provider_turn_id"], "provider_turn_id"),
+        client_user_message_id=_optional_text(
+            row["client_user_message_id"], "client_user_message_id"
+        ),
+        completed_at_ms=_optional_non_negative_int(
+            row["completed_at_ms"], "completed_at_ms"
+        ),
+        latest_event_name=_optional_text(row["last_event_name"], "last_event_name"),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
 def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
     return InboundMessage(
         seq=_required_non_negative_int(row["seq"], "seq"),
@@ -1090,6 +1528,87 @@ def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
     )
 
 
+def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
+    return OutboundMessage(
+        outbound_message_id=_required_text(
+            row["outbound_message_id"], "outbound_message_id"
+        ),
+        command_id=_required_text(row["command_id"], "command_id"),
+        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        channel_session_id=_required_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        target=_required_text(row["target"], "target"),
+        body=_string_value(row["body"], "body", allow_empty=True),
+        state=OutboundDeliveryState(
+            _required_text(row["state"], "outbound_message.state")
+        ),
+        fresh_check_state=FreshCheckState(
+            _required_text(
+                row["fresh_check_state"], "outbound_message.fresh_check_state"
+            )
+        ),
+        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
+        snapshot_seq=_optional_non_negative_int(row["snapshot_seq"], "snapshot_seq"),
+        current_inbound_seq=_optional_non_negative_int(
+            row["current_inbound_seq"], "current_inbound_seq"
+        ),
+        provider_message_id=_optional_text(
+            row["provider_message_id"], "provider_message_id"
+        ),
+        provider_receipt_ref=_optional_text(
+            row["provider_receipt_ref"], "provider_receipt_ref"
+        ),
+        provider_attempted_at_ms=_optional_non_negative_int(
+            row["provider_attempted_at_ms"], "provider_attempted_at_ms"
+        ),
+        completed_at_ms=_optional_non_negative_int(
+            row["completed_at_ms"], "completed_at_ms"
+        ),
+        draft_saved_at_ms=_optional_non_negative_int(
+            row["draft_saved_at_ms"], "draft_saved_at_ms"
+        ),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+        next_action=_optional_text(row["next_action"], "next_action"),
+        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
+def _runtime_event_from_row(row: aiosqlite.Row) -> RuntimeEvent:
+    return RuntimeEvent(
+        event_seq=_required_non_negative_int(row["event_seq"], "event_seq"),
+        event_id=_required_text(row["event_id"], "event_id"),
+        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
+        level=_required_text(row["level"], "level"),
+        event_name=_required_text(row["event_name"], "event_name"),
+        state=RuntimeEventState(_required_text(row["state"], "runtime_event.state")),
+        duration_ms=_optional_non_negative_int(row["duration_ms"], "duration_ms"),
+        node_id=_optional_text(row["node_id"], "node_id"),
+        channel_slug=_optional_text(row["channel_slug"], "channel_slug"),
+        runtime_slug=_optional_text(row["runtime_slug"], "runtime_slug"),
+        channel_session_id=_optional_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        bcn_session_id=_optional_text(row["bcn_session_id"], "bcn_session_id"),
+        agent_runtime_session_id=_optional_text(
+            row["agent_runtime_session_id"], "agent_runtime_session_id"
+        ),
+        turn_id=_optional_text(row["turn_id"], "turn_id"),
+        request_id=_optional_text(row["request_id"], "request_id"),
+        command_id=_optional_text(row["command_id"], "command_id"),
+        inbound_seq=_optional_non_negative_int(row["inbound_seq"], "inbound_seq"),
+        outbound_message_id=_optional_text(
+            row["outbound_message_id"], "outbound_message_id"
+        ),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_type=_optional_text(row["error_type"], "error_type"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+        traceback_ref=_optional_text(row["traceback_ref"], "traceback_ref"),
+        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
 def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
         bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
@@ -1120,6 +1639,340 @@ def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
 def _validate_inbound_message_input(message: InboundMessage) -> None:
     if not isinstance(message, InboundMessage):
         raise TypeError("message must be an InboundMessage")
+
+
+def _validate_runtime_turn_input(turn: RuntimeTurn) -> None:
+    if not isinstance(turn, RuntimeTurn):
+        raise TypeError("turn must be a RuntimeTurn")
+    if not isinstance(turn.state, RuntimeTurnState):
+        raise TypeError("runtime turn state is invalid")
+    for value, field_name in (
+        (turn.latest_event_name, "latest_event_name"),
+        (turn.error_kind, "error_kind"),
+        (turn.error_message, "error_message"),
+    ):
+        _validate_optional_input_text(value, field_name)
+    terminal_states = {
+        RuntimeTurnState.COMPLETED,
+        RuntimeTurnState.FAILED,
+        RuntimeTurnState.CANCELLED,
+    }
+    if turn.state in terminal_states:
+        if turn.completed_at_ms is None:
+            raise ValueError("terminal runtime turn requires completed_at_ms")
+        if turn.completed_at_ms < turn.started_at_ms:
+            raise ValueError("runtime turn completion cannot precede start")
+    elif turn.completed_at_ms is not None:
+        raise ValueError("non-terminal runtime turn cannot have completed_at_ms")
+
+
+def _validate_runtime_turn_update(
+    existing: RuntimeTurn,
+    incoming: RuntimeTurn,
+) -> RuntimeTurn:
+    for existing_value, incoming_value, field_name in (
+        (
+            existing.provider_turn_id,
+            incoming.provider_turn_id,
+            "provider_turn_id",
+        ),
+        (
+            existing.client_user_message_id,
+            incoming.client_user_message_id,
+            "client_user_message_id",
+        ),
+    ):
+        if (
+            existing_value is not None
+            and incoming_value is not None
+            and existing_value != incoming_value
+        ):
+            raise ValueError(f"runtime turn {field_name} cannot change")
+
+    if existing.state is incoming.state:
+        if existing.completed_at_ms != incoming.completed_at_ms:
+            raise ValueError("runtime turn completion time cannot change")
+        transitioned = existing
+    else:
+        at_ms = (
+            incoming.completed_at_ms
+            if incoming.completed_at_ms is not None
+            else incoming.started_at_ms
+        )
+        transitioned = existing.transition_to(
+            incoming.state,
+            at_ms=at_ms,
+            error_kind=incoming.error_kind,
+            error_message=incoming.error_message,
+            latest_event_name=incoming.latest_event_name,
+        )
+    return replace(
+        transitioned,
+        provider_turn_id=incoming.provider_turn_id or existing.provider_turn_id,
+        client_user_message_id=incoming.client_user_message_id
+        or existing.client_user_message_id,
+        latest_event_name=incoming.latest_event_name or transitioned.latest_event_name,
+        error_kind=incoming.error_kind or transitioned.error_kind,
+        error_message=incoming.error_message or transitioned.error_message,
+        metadata=incoming.metadata,
+    )
+
+
+def _validate_outbound_message_input(message: OutboundMessage) -> None:
+    if not isinstance(message, OutboundMessage):
+        raise TypeError("message must be an OutboundMessage")
+    if not isinstance(message.state, OutboundDeliveryState):
+        raise TypeError("outbound message state is invalid")
+    if not isinstance(message.fresh_check_state, FreshCheckState):
+        raise TypeError("outbound fresh-check state is invalid")
+    if not isinstance(message.body, str):
+        raise TypeError("outbound body must be a string")
+    for value, field_name in (
+        (message.provider_message_id, "provider_message_id"),
+        (message.provider_receipt_ref, "provider_receipt_ref"),
+        (message.error_kind, "error_kind"),
+        (message.error_message, "error_message"),
+        (message.next_action, "next_action"),
+    ):
+        _validate_optional_input_text(value, field_name)
+    if message.fresh_check_state is FreshCheckState.REQUIRED and (
+        message.snapshot_seq is not None or message.current_inbound_seq is not None
+    ):
+        raise ValueError("a required outbound fresh check cannot contain evidence")
+    if message.fresh_check_state is FreshCheckState.PASSED:
+        if message.snapshot_seq is None or message.current_inbound_seq is None:
+            raise ValueError("a passed outbound fresh check requires sequence bounds")
+        if message.current_inbound_seq > message.snapshot_seq:
+            raise ValueError(
+                "outbound current inbound sequence exceeds snapshot sequence"
+            )
+    if (
+        message.state
+        in {
+            OutboundDeliveryState.PENDING,
+            OutboundDeliveryState.SENT,
+            OutboundDeliveryState.FAILED,
+            OutboundDeliveryState.UNKNOWN,
+        }
+        and message.fresh_check_state is not FreshCheckState.PASSED
+    ):
+        raise ValueError("outbound delivery state requires a passed fresh check")
+    if (
+        message.state is OutboundDeliveryState.REJECTED
+        and message.fresh_check_state is FreshCheckState.PASSED
+    ):
+        raise ValueError("rejected outbound message cannot have a passed fresh check")
+    for value, field_name in (
+        (message.provider_attempted_at_ms, "provider_attempted_at_ms"),
+        (message.completed_at_ms, "completed_at_ms"),
+        (message.draft_saved_at_ms, "draft_saved_at_ms"),
+    ):
+        if value is not None and value < message.created_at_ms:
+            raise ValueError(f"outbound {field_name} cannot precede creation")
+    if message.state is OutboundDeliveryState.DRAFT and any(
+        value is not None
+        for value in (
+            message.provider_message_id,
+            message.provider_receipt_ref,
+            message.provider_attempted_at_ms,
+            message.completed_at_ms,
+            message.draft_saved_at_ms,
+        )
+    ):
+        raise ValueError("draft outbound message cannot contain delivery evidence")
+    if message.state is OutboundDeliveryState.PENDING and (
+        message.completed_at_ms is not None or message.draft_saved_at_ms is not None
+    ):
+        raise ValueError("pending outbound message cannot be terminal")
+    if message.state is OutboundDeliveryState.REJECTED and any(
+        value is not None
+        for value in (
+            message.provider_message_id,
+            message.provider_receipt_ref,
+            message.provider_attempted_at_ms,
+        )
+    ):
+        raise ValueError("rejected outbound message cannot contain provider evidence")
+    if (
+        message.state
+        in {
+            OutboundDeliveryState.SENT,
+            OutboundDeliveryState.FAILED,
+            OutboundDeliveryState.UNKNOWN,
+            OutboundDeliveryState.REJECTED,
+        }
+        and message.completed_at_ms is None
+    ):
+        raise ValueError("terminal outbound message requires completed_at_ms")
+    if (
+        message.state is OutboundDeliveryState.REJECTED
+        and message.draft_saved_at_ms is None
+    ):
+        raise ValueError("rejected outbound message requires draft_saved_at_ms")
+    if (
+        message.state is OutboundDeliveryState.SENT
+        and message.provider_message_id is None
+        and message.provider_receipt_ref is None
+    ):
+        raise ValueError("sent outbound message requires a provider receipt")
+
+
+def _validate_outbound_insert(message: OutboundMessage) -> None:
+    if message.state is not OutboundDeliveryState.DRAFT:
+        raise ValueError("a new outbound message must start in draft state")
+    if message.fresh_check_state is not FreshCheckState.REQUIRED:
+        raise ValueError("a new outbound draft requires a required fresh check")
+    if any(
+        value is not None
+        for value in (
+            message.provider_message_id,
+            message.provider_receipt_ref,
+            message.provider_attempted_at_ms,
+            message.completed_at_ms,
+            message.draft_saved_at_ms,
+        )
+    ):
+        raise ValueError("a new outbound draft cannot contain delivery timestamps")
+
+
+def _validate_outbound_update(
+    existing: OutboundMessage,
+    incoming: OutboundMessage,
+) -> OutboundMessage:
+    candidate = existing
+    sequence_changed = (
+        incoming.snapshot_seq != existing.snapshot_seq
+        or incoming.current_inbound_seq != existing.current_inbound_seq
+    )
+    fresh_state_changed = incoming.fresh_check_state is not existing.fresh_check_state
+    if existing.fresh_check_state is FreshCheckState.REQUIRED:
+        if fresh_state_changed or sequence_changed:
+            candidate = existing.record_fresh_check(
+                incoming.fresh_check_state,
+                snapshot_seq=incoming.snapshot_seq,
+                current_inbound_seq=incoming.current_inbound_seq,
+            )
+    elif fresh_state_changed or sequence_changed:
+        raise ValueError("outbound fresh-check evidence cannot change")
+
+    if candidate.state is incoming.state:
+        transitioned = candidate
+    else:
+        transitioned = candidate.transition_to(
+            incoming.state,
+            at_ms=_outbound_transition_time(incoming),
+            provider_message_id=incoming.provider_message_id,
+            provider_receipt_ref=incoming.provider_receipt_ref,
+            error_kind=incoming.error_kind,
+            error_message=incoming.error_message,
+            next_action=incoming.next_action,
+        )
+
+    if (
+        transitioned.completed_at_ms is not None
+        and incoming.completed_at_ms is not None
+        and transitioned.completed_at_ms != incoming.completed_at_ms
+    ):
+        raise ValueError("outbound completion time cannot change")
+    if (
+        transitioned.draft_saved_at_ms is not None
+        and incoming.draft_saved_at_ms is not None
+        and transitioned.draft_saved_at_ms != incoming.draft_saved_at_ms
+    ):
+        raise ValueError("outbound draft time cannot change")
+    return replace(
+        transitioned,
+        provider_message_id=_merge_optional_text(
+            transitioned.provider_message_id,
+            incoming.provider_message_id,
+            "provider_message_id",
+        ),
+        provider_receipt_ref=_merge_optional_text(
+            transitioned.provider_receipt_ref,
+            incoming.provider_receipt_ref,
+            "provider_receipt_ref",
+        ),
+        provider_attempted_at_ms=_merge_timestamp(
+            transitioned.provider_attempted_at_ms,
+            incoming.provider_attempted_at_ms,
+            "provider_attempted_at_ms",
+        ),
+        completed_at_ms=transitioned.completed_at_ms
+        if transitioned.completed_at_ms is not None
+        else incoming.completed_at_ms,
+        draft_saved_at_ms=transitioned.draft_saved_at_ms
+        if transitioned.draft_saved_at_ms is not None
+        else incoming.draft_saved_at_ms,
+        error_kind=incoming.error_kind or transitioned.error_kind,
+        error_message=incoming.error_message or transitioned.error_message,
+        next_action=incoming.next_action or transitioned.next_action,
+        metadata=incoming.metadata,
+    )
+
+
+def _outbound_transition_time(message: OutboundMessage) -> int:
+    return (
+        message.completed_at_ms
+        or message.draft_saved_at_ms
+        or message.provider_attempted_at_ms
+        or message.created_at_ms
+    )
+
+
+def _merge_optional_text(
+    existing: str | None,
+    incoming: str | None,
+    field_name: str,
+) -> str | None:
+    if existing is not None and incoming is not None and existing != incoming:
+        raise ValueError(f"outbound {field_name} cannot change")
+    return incoming or existing
+
+
+def _merge_timestamp(
+    existing: int | None,
+    incoming: int | None,
+    field_name: str,
+) -> int | None:
+    if existing is not None and incoming is not None and existing != incoming:
+        raise ValueError(f"outbound {field_name} cannot change")
+    return incoming if incoming is not None else existing
+
+
+def _validate_runtime_event_input(event: RuntimeEvent) -> None:
+    if not isinstance(event, RuntimeEvent):
+        raise TypeError("event must be a RuntimeEvent")
+    if not isinstance(event.state, RuntimeEventState):
+        raise TypeError("runtime event state is invalid")
+    for value, field_name in (
+        (event.node_id, "node_id"),
+        (event.channel_slug, "channel_slug"),
+        (event.runtime_slug, "runtime_slug"),
+        (event.channel_session_id, "channel_session_id"),
+        (event.bcn_session_id, "bcn_session_id"),
+        (event.agent_runtime_session_id, "agent_runtime_session_id"),
+        (event.turn_id, "turn_id"),
+        (event.request_id, "request_id"),
+        (event.command_id, "command_id"),
+        (event.outbound_message_id, "outbound_message_id"),
+        (event.error_kind, "error_kind"),
+        (event.error_type, "error_type"),
+        (event.error_message, "error_message"),
+        (event.traceback_ref, "traceback_ref"),
+    ):
+        _validate_optional_input_text(value, field_name)
+
+
+def _same_runtime_event_payload(
+    existing: RuntimeEvent,
+    incoming: RuntimeEvent,
+) -> bool:
+    return replace(existing, event_seq=incoming.event_seq) == incoming
+
+
+def _validate_optional_input_text(value: object, field_name: str) -> None:
+    if value is not None and (not isinstance(value, str) or not value):
+        raise ValueError(f"{field_name} must be a non-empty string when present")
 
 
 def _same_inbound_payload(

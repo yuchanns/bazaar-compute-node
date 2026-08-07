@@ -505,6 +505,7 @@ class RuntimeEvent:
     error_type: str | None = None
     error_message: str | None = None
     traceback_ref: str | None = None
+    runtime_slug: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
