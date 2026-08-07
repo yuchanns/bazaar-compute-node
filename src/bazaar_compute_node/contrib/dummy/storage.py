@@ -223,8 +223,8 @@ class _DummyStorageTransaction(IStorageTransaction):
                 raise ValueError(
                     f"message not found in requested history: {around_message_id}"
                 ) from error
-            half = max(limit // 2, 1)
-            start = max(around_index - half, 0)
+            before_count = limit // 2
+            start = max(around_index - before_count, 0)
             messages = messages[start : start + limit]
         else:
             messages = messages[:limit]

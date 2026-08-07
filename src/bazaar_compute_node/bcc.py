@@ -134,59 +134,177 @@ def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]
     return messages
 
 
+def _invalid_response(message: str) -> NoReturn:
+    raise BccCommandError(message, code="INVALID_RESPONSE")
+
+
+def _require_text(
+    message: Mapping[str, object],
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    value = message.get(field_name)
+    if not isinstance(value, str) or (not allow_empty and not value):
+        _invalid_response(
+            f"command response contains an invalid message {field_name}"
+        )
+    return value
+
+
+def _require_non_negative_int(
+    message: Mapping[str, object],
+    field_name: str,
+) -> int:
+    value = message.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _invalid_response(
+            f"command response contains an invalid message {field_name}"
+        )
+    return value
+
+
+def _require_result_sequence(result: Mapping[str, object], field_name: str) -> int:
+    value = result.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _invalid_response(f"command response contains an invalid {field_name}")
+    return value
+
+
+def _message_timestamp(message: Mapping[str, object]) -> int:
+    timestamp = message.get("provider_time_ms")
+    if timestamp is None:
+        timestamp = message.get("received_at_ms")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+        _invalid_response("command response contains an invalid message timestamp")
+    return timestamp
+
+
 def _format_message_timestamp(message: Mapping[str, object]) -> str:
-    timestamp = message.get("provider_time_ms") or message.get("received_at_ms")
-    if isinstance(timestamp, bool) or not isinstance(timestamp, int):
-        raise BccCommandError(
-            "command response contains an invalid message timestamp",
-            code="INVALID_RESPONSE",
-        )
-    return format_message_time(timestamp)
+    return format_message_time(_message_timestamp(message))
 
 
-def _render_check(result: Mapping[str, object]) -> None:
-    messages = _require_messages(result)
-    for message in messages:
-        print(
-            "[target={target} msg={message_id} time={time} type={message_type}] "
-            "@{sender}: {body}".format(
-                target=message["canonical_target"],
-                message_id=message["short_message_id"],
-                time=_format_message_timestamp(message),
-                message_type=message["message_type"],
-                sender=message["sender_display_name"],
-                body=message["body"],
+def _message_header_fields(message: Mapping[str, object]) -> tuple[str, ...]:
+    target = _require_text(message, "canonical_target")
+    message_id = _require_text(message, "message_id")
+    short_message_id = _require_text(message, "short_message_id")
+    if short_message_id != message_id[:8]:
+        _invalid_response("command response contains an inconsistent message id")
+    return (
+        target,
+        message_id,
+        short_message_id,
+        _format_message_timestamp(message),
+        _require_text(message, "message_type"),
+        _require_text(message, "sender_display_name"),
+        _require_text(message, "body", allow_empty=True),
+    )
+
+
+def _format_check_message(message: Mapping[str, object]) -> str:
+    (
+        target,
+        _message_id,
+        short_message_id,
+        timestamp,
+        message_type,
+        sender,
+        body,
+    ) = _message_header_fields(message)
+    return (
+        f"[target={target} msg={short_message_id} time={timestamp} "
+        f"type={message_type}] @{sender}: {body}"
+    )
+
+
+def _format_read_message(
+    message: Mapping[str, object],
+    *,
+    index: int,
+    count: int,
+) -> str:
+    (
+        target,
+        message_id,
+        _short_message_id,
+        timestamp,
+        message_type,
+        sender,
+        body,
+    ) = _message_header_fields(message)
+    fields = [
+        f"seq={_require_non_negative_int(message, 'seq')}",
+        f"msg={message_id}",
+        f"time={timestamp}",
+        f"type={message_type}",
+    ]
+    provider_thread_id = message.get("provider_thread_id")
+    if provider_thread_id is not None:
+        if not isinstance(provider_thread_id, str) or not provider_thread_id:
+            _invalid_response(
+                "command response contains an invalid message provider_thread_id"
             )
+        fields.append(f"threadId={provider_thread_id}")
+    fields.append(f"replyTarget={target}")
+    return f"[{index}/{count} {' '.join(fields)}] @{sender}: {body}"
+
+
+def serialize_check(result: Mapping[str, object]) -> str:
+    """Serialize one check result using the stable agent-facing text contract."""
+
+    snapshot_seq = _require_result_sequence(result, "snapshot_seq")
+    delivered_through_seq = _require_result_sequence(result, "delivered_through_seq")
+    if delivered_through_seq > snapshot_seq:
+        _invalid_response(
+            "command response contains an invalid check sequence boundary"
         )
-    if not messages:
-        print("No more new messages.")
+    messages = _require_messages(result)
+    lines = [_format_check_message(message) for message in messages]
+    if not lines:
+        lines.append("No more new messages.")
+    return "\n".join(lines)
 
 
-def _render_read(result: Mapping[str, object]) -> None:
+def serialize_read(result: Mapping[str, object]) -> str:
+    """Serialize one read result with history positioning fields."""
+
+    _require_result_sequence(result, "snapshot_seq")
     messages = _require_messages(result)
     first_seq = result.get("first_seq")
     last_seq = result.get("last_seq")
-    bounds = (
-        f"{first_seq}-{last_seq}"
-        if first_seq is not None and last_seq is not None
-        else "none-none"
+    if not messages:
+        if first_seq is not None or last_seq is not None:
+            _invalid_response("empty read response has sequence bounds")
+        bounds = "none-none"
+    else:
+        if (
+            isinstance(first_seq, bool)
+            or not isinstance(first_seq, int)
+            or first_seq < 0
+            or isinstance(last_seq, bool)
+            or not isinstance(last_seq, int)
+            or last_seq < first_seq
+        ):
+            _invalid_response("command response contains invalid read bounds")
+        first_message_seq = _require_non_negative_int(messages[0], "seq")
+        last_message_seq = _require_non_negative_int(messages[-1], "seq")
+        if first_seq != first_message_seq or last_seq != last_message_seq:
+            _invalid_response("command response read bounds do not match messages")
+        bounds = f"{first_seq}-{last_seq}"
+    lines = [f"Read window: {len(messages)} returned, seq {bounds}, oldest to newest."]
+    lines.extend(
+        _format_read_message(message, index=index, count=len(messages))
+        for index, message in enumerate(messages, start=1)
     )
-    print(f"Read window: {len(messages)} returned, seq {bounds}, oldest to newest.")
-    for index, message in enumerate(messages, start=1):
-        fields = [
-            f"seq={message['seq']}",
-            f"msg={message['message_id']}",
-            f"time={_format_message_timestamp(message)}",
-            f"type={message['message_type']}",
-        ]
-        if message.get("provider_thread_id") is not None:
-            fields.append(f"threadId={message['provider_thread_id']}")
-        if message.get("reply_to_provider_message_id") is not None:
-            fields.append(f"replyTarget={message['reply_to_provider_message_id']}")
-        print(
-            f"[{index}/{len(messages)} {' '.join(fields)}] "
-            f"@{message['sender_display_name']}: {message['body']}"
-        )
+    return "\n".join(lines)
+
+
+def _render_check(result: Mapping[str, object]) -> None:
+    print(serialize_check(result))
+
+
+def _render_read(result: Mapping[str, object]) -> None:
+    print(serialize_read(result))
 
 
 def _render_send(result: Mapping[str, object]) -> None:

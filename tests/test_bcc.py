@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import pytest
+
+from bazaar_compute_node.bcc import (
+    BccCommandError,
+    _print_error,
+    build_parser,
+    serialize_check,
+    serialize_read,
+)
+
+
+def message_payload(
+    *,
+    message_id: str = "0123456789abcdef0123456789abcdef",
+    seq: int = 7,
+    provider_time_ms: int | None = 1_700_000_000_000,
+    received_at_ms: int = 1_700_000_000_001,
+    target: str = "#work:parent123",
+    provider_thread_id: str | None = "provider-thread-1",
+) -> dict[str, object]:
+    return {
+        "seq": seq,
+        "message_id": message_id,
+        "short_message_id": message_id[:8],
+        "canonical_target": target,
+        "provider_time_ms": provider_time_ms,
+        "received_at_ms": received_at_ms,
+        "message_type": "human",
+        "sender_display_name": "sender",
+        "body": "message body",
+        "provider_thread_id": provider_thread_id,
+        "reply_to_provider_message_id": "provider-parent-1",
+    }
+
+
+def test_check_serializer_matches_canonical_text() -> None:
+    result = {
+        "messages": [message_payload()],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert serialize_check(result) == (
+        "[target=#work:parent123 msg=01234567 time=2023-11-14 22:13:20 "
+        "type=human] @sender: message body"
+    )
+
+
+def test_check_serializer_preserves_zero_provider_timestamp() -> None:
+    result = {
+        "messages": [
+            message_payload(provider_time_ms=0, received_at_ms=1_700_000_000_000)
+        ],
+        "snapshot_seq": 1,
+        "delivered_through_seq": 1,
+    }
+
+    assert "time=1970-01-01 00:00:00" in serialize_check(result)
+
+
+def test_empty_check_serializer_is_stable() -> None:
+    assert serialize_check(
+        {"messages": [], "snapshot_seq": 0, "delivered_through_seq": 0}
+    ) == "No more new messages."
+
+
+def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
+    result = {
+        "messages": [message_payload()],
+        "snapshot_seq": 9,
+        "first_seq": 7,
+        "last_seq": 7,
+    }
+
+    assert serialize_read(result) == (
+        "Read window: 1 returned, seq 7-7, oldest to newest.\n"
+        "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
+        "time=2023-11-14 22:13:20 type=human threadId=provider-thread-1 "
+        "replyTarget=#work:parent123] @sender: message body"
+    )
+
+
+def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
+    result = {
+        "messages": [message_payload(provider_thread_id=None)],
+        "snapshot_seq": 7,
+        "first_seq": 7,
+        "last_seq": 7,
+    }
+
+    output = serialize_read(result)
+    assert "threadId=" not in output
+    assert "replyTarget=#work:parent123" in output
+
+
+def test_serializer_rejects_inconsistent_response_fields() -> None:
+    message = message_payload()
+    message["short_message_id"] = "different"
+    result = {
+        "messages": [message],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    with pytest.raises(BccCommandError) as error:
+        serialize_check(result)
+
+    assert error.value.code == "INVALID_RESPONSE"
+
+
+def test_read_serializer_rejects_mismatched_window_bounds() -> None:
+    result = {
+        "messages": [message_payload(seq=7)],
+        "snapshot_seq": 7,
+        "first_seq": 6,
+        "last_seq": 7,
+    }
+
+    with pytest.raises(BccCommandError) as error:
+        serialize_read(result)
+
+    assert error.value.code == "INVALID_RESPONSE"
+
+
+def test_read_parser_accepts_history_positioning_arguments() -> None:
+    args = build_parser().parse_args(
+        [
+            "message",
+            "read",
+            "--target",
+            "#work:parent123",
+            "--around",
+            "0123456789abcdef0123456789abcdef",
+            "--limit",
+            "3",
+        ]
+    )
+
+    assert args.command == "read"
+    assert args.target == "#work:parent123"
+    assert args.around == "0123456789abcdef0123456789abcdef"
+    assert args.limit == 3
+
+
+def test_error_contract_is_stderr_only(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_error:
+        _print_error(
+            BccCommandError(
+                "history target is invalid",
+                code="INVALID_TARGET",
+                next_action="Run `bcc message read` with a valid target.",
+            )
+        )
+
+    captured = capsys.readouterr()
+    assert exit_error.value.code == 1
+    assert captured.out == ""
+    assert captured.err == (
+        "Error: history target is invalid\n"
+        "Code: INVALID_TARGET\n"
+        "Next action: Run `bcc message read` with a valid target.\n"
+    )

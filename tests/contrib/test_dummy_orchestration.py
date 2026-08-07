@@ -200,6 +200,48 @@ async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
+    orchestrator, channel, _runtime, storage, _audit = await make_node()
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+
+        history = await orchestrator.read(
+            "bcn-1",
+            target="#dummy:bcn-1",
+            limit=1,
+            timeout=1,
+        )
+        assert [message.seq for message in history.messages] == [1]
+        assert history.snapshot_seq == 1
+        assert history.first_seq == 1
+        assert history.last_seq == 1
+        assert storage.cursors["bcn-1"].delivered_through_seq == 0
+        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 1
+
+        checked = await orchestrator.check("bcn-1", timeout=1)
+        assert [message.seq for message in checked.messages] == [1]
+        assert checked.snapshot_seq == 1
+        assert checked.delivered_through_seq == 1
+        assert storage.cursors["bcn-1"].delivered_through_seq == 1
+
+        await channel.inject(make_message(seq=2))
+        await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
+        around = await orchestrator.read(
+            "bcn-1",
+            target="#dummy:bcn-1",
+            around_message_id=storage.inbound_messages["bcn-1"][1].message_id,
+            limit=1,
+            timeout=1,
+        )
+        assert [message.seq for message in around.messages] == [2]
+        assert storage.cursors["bcn-1"].delivered_through_seq == 1
+        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_runtime_failure_and_unknown_stream_are_persisted() -> None:
     orchestrator, channel, runtime, storage, _ = await make_node()
     try:
