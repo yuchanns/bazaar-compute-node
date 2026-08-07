@@ -126,7 +126,11 @@ def write_runtime_metadata(path: Path, metadata: RuntimeMetadata) -> None:
         json.dumps(metadata.as_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    if os.name != "nt":
+        os.chmod(temporary_path, 0o600)
     os.replace(temporary_path, path)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
 
 
 def read_runtime_metadata(path: Path) -> RuntimeMetadata | None:

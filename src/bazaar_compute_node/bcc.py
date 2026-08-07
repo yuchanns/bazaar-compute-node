@@ -65,10 +65,24 @@ async def _request(
             "BCN_SESSION_ID is not set",
             code="SESSION_REQUIRED",
         )
+    runtime_session_id = os.environ.get("BCN_RUNTIME_SESSION_ID")
+    if not runtime_session_id:
+        raise BccCommandError(
+            "BCN_RUNTIME_SESSION_ID is not set",
+            code="SESSION_BINDING_REQUIRED",
+        )
+    session_capability = os.environ.get("BCN_COMMAND_CAPABILITY")
+    if not session_capability:
+        raise BccCommandError(
+            "BCN_COMMAND_CAPABILITY is not set",
+            code="SESSION_BINDING_REQUIRED",
+        )
 
     request: dict[str, object] = {
         "kind": "command",
         "session_id": session_id,
+        "runtime_session_id": runtime_session_id,
+        "session_capability": session_capability,
         "command": args.command,
     }
     if args.command == "read":

@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
+import secrets
 import signal
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ..core.channel import IChannel
 from ..core.lifecycle import TimeoutBudget
+from ..core.models import RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage, NodeIdentity
-from .command import CommandDispatcher, SessionCommandService
+from .command import (
+    CommandDispatcher,
+    CommandDispatchError,
+    SessionCommandService,
+)
 from .daemon import (
     new_runtime_metadata,
     remove_runtime_metadata,
@@ -63,11 +70,14 @@ class NodeApplication:
         self.command_log: list[CommandRecord] = []
         self._wrapper_path: Path | None = None
         self._identity: NodeIdentity | None = None
+        self._session_capabilities: dict[str, str] = {}
+        self._runtime_session_ids: dict[str, str] = {}
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
             data_dir=self.data_dir,
+            environment_for_session=self._runtime_environment,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
         self.orchestrator = SessionOrchestrator(
@@ -92,6 +102,7 @@ class NodeApplication:
             self.command_service,
             timeout_budget=self.timeout_budget,
             control_handler=self._handle_control,
+            session_binding_validator=self._validate_session_binding,
         )
         self.command_server = LocalCommandServer(
             self.command_dispatcher,
@@ -107,6 +118,8 @@ class NodeApplication:
         if self._started:
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            self.data_dir.chmod(0o700)
         self._wrapper_path = install_bcc_wrapper(self.data_dir / "bin")
         await self.command_server.start()
         try:
@@ -212,6 +225,81 @@ class NodeApplication:
             raise ValueError("control operation is not supported")
         return await self._provider_control_handler(request)
 
+    async def _validate_session_binding(
+        self,
+        bcn_session_id: str,
+        request: Mapping[str, object],
+    ) -> None:
+        runtime_session_id = request.get("runtime_session_id")
+        session_capability = request.get("session_capability")
+        async with self.storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(bcn_session_id)
+            if bcn_session is None:
+                raise CommandDispatchError(
+                    "SESSION_NOT_FOUND",
+                    f"unknown bcn session: {bcn_session_id}",
+                )
+            runtime_session = await transaction.find_runtime_session(bcn_session_id)
+        if runtime_session is None or runtime_session_id != (
+            runtime_session.agent_runtime_session_id
+        ):
+            raise CommandDispatchError(
+                "SESSION_BINDING_FAILED",
+                "runtime session binding is invalid",
+            )
+        expected_capability = self._session_capabilities.get(bcn_session_id)
+        if (
+            expected_capability is None
+            or not isinstance(session_capability, str)
+            or not hmac.compare_digest(
+                session_capability.encode(), expected_capability.encode()
+            )
+        ):
+            raise CommandDispatchError(
+                "SESSION_BINDING_FAILED",
+                "session capability is invalid",
+            )
+
+    def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
+        self._runtime_session_ids[session.bcn_session_id] = (
+            session.agent_runtime_session_id
+        )
+        return self._build_command_environment(
+            session.bcn_session_id,
+            session.agent_runtime_session_id,
+        )
+
+    def _build_command_environment(
+        self,
+        bcn_session_id: str,
+        runtime_session_id: str,
+    ) -> dict[str, str]:
+        if not bcn_session_id:
+            raise ValueError("bcn_session_id must be a non-empty string")
+        if not runtime_session_id:
+            raise ValueError("runtime_session_id must be a non-empty string")
+        wrapper_path = self._wrapper_path
+        if wrapper_path is None:
+            raise RuntimeError("bcc wrapper is not installed")
+        session_capability = self._session_capabilities.setdefault(
+            bcn_session_id,
+            secrets.token_urlsafe(32),
+        )
+        wrapper_directory = str(wrapper_path.parent)
+        existing_path = os.environ.get("PATH") or os.defpath
+        environment = {
+            "PATH": os.pathsep.join((wrapper_directory, existing_path)),
+            "BCN_ENDPOINT": self.endpoint,
+            "BCN_SESSION_ID": bcn_session_id,
+            "BCN_RUNTIME_SESSION_ID": runtime_session_id,
+            "BCN_COMMAND_CAPABILITY": session_capability,
+        }
+        for name in ("PYTHONPATH", "SystemRoot"):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
+        return environment
+
     async def _run_runtime_command(
         self,
         bcn_session_id: str,
@@ -228,15 +316,13 @@ class NodeApplication:
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((bcn_session_id, tuple(arguments)))
-        environment = os.environ.copy()
-        environment["BCN_ENDPOINT"] = self.endpoint
-        environment["BCN_SESSION_ID"] = bcn_session_id
-        wrapper_directory = str(wrapper_path.parent)
-        existing_path = environment.get("PATH")
-        environment["PATH"] = (
-            wrapper_directory
-            if not existing_path
-            else os.pathsep.join((wrapper_directory, existing_path))
+        runtime_session_id = self._runtime_session_ids.get(
+            bcn_session_id,
+            f"runtime-{bcn_session_id}",
+        )
+        environment = self._build_command_environment(
+            bcn_session_id,
+            runtime_session_id,
         )
         process = await asyncio.create_subprocess_exec(
             str(wrapper_path),

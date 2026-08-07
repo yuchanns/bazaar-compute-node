@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -72,6 +73,10 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
     await node.start()
     endpoint = node.endpoint
     try:
+        if os.name != "nt":
+            assert (data_dir / "runtime.json").stat().st_mode & 0o777 == 0o600
+            assert (data_dir / "bin").stat().st_mode & 0o777 == 0o700
+            assert (data_dir / "bin" / "bcc").stat().st_mode & 0o777 == 0o700
         health = await LocalCommandClient.request(
             endpoint,
             {"kind": "control", "operation": "health"},
@@ -113,10 +118,37 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             "bcn-b",
         }
         assert len(runtime.started_turns) == 2
+
+        missing_capability = await LocalCommandClient.request(
+            endpoint,
+            {
+                "kind": "command",
+                "command": "check",
+                "session_id": "bcn-a",
+                "runtime_session_id": "runtime-bcn-a",
+            },
+        )
+        assert missing_capability["code"] == "SESSION_BINDING_FAILED"
+        cross_session_capability = await LocalCommandClient.request(
+            endpoint,
+            {
+                "kind": "command",
+                "command": "check",
+                "session_id": "bcn-b",
+                "runtime_session_id": "runtime-bcn-b",
+                "session_capability": node._session_capabilities["bcn-a"],
+            },
+        )
+        assert cross_session_capability["code"] == "SESSION_BINDING_FAILED"
     finally:
         await node.stop()
 
     assert not (tmp_path / "bcn.sock").exists()
+    if os.name == "nt":
+        assert (data_dir / "bin" / "bcc.cmd").exists()
+        assert (data_dir / "bin" / "bcc.ps1").exists()
+    else:
+        assert (data_dir / "bin" / "bcc").exists()
     persisted = SqliteDatabase(data_dir)
     await persisted.start(timeout=2)
     try:

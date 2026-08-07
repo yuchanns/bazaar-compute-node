@@ -132,6 +132,9 @@ class CommandDispatchError(ValueError):
 
 
 ControlHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
+SessionBindingValidator = Callable[
+    [str, Mapping[str, object]], Awaitable[None]
+]
 
 
 class CommandDispatcher:
@@ -143,10 +146,12 @@ class CommandDispatcher:
         *,
         timeout_budget: TimeoutBudget,
         control_handler: ControlHandler | None = None,
+        session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
         self._service = service
         self._timeout_budget = timeout_budget
         self._control_handler = control_handler
+        self._session_binding_validator = session_binding_validator
         self._accepting = False
         self._in_flight: set[asyncio.Task[object]] = set()
         self._drained = asyncio.Event()
@@ -262,6 +267,8 @@ class CommandDispatcher:
             raise CommandDispatchError(
                 "COMMAND_REQUIRED", "command must be a non-empty string"
             )
+        if self._session_binding_validator is not None:
+            await self._session_binding_validator(session_id, request)
 
         if command == "check":
             result = await self._service.check(

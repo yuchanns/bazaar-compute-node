@@ -38,6 +38,7 @@ class LocalCommandServer:
         self._endpoint_path = endpoint_path
         self._server: asyncio.AbstractServer | None = None
         self._unix_path: Path | None = None
+        self._unix_identity: tuple[int, int] | None = None
         self._capability: str | None = None
         self._endpoint: str | None = None
 
@@ -88,6 +89,8 @@ class LocalCommandServer:
         )
         os.chmod(path, 0o600)
         self._unix_path = path
+        path_stat = path.stat()
+        self._unix_identity = (path_stat.st_dev, path_stat.st_ino)
         self._endpoint = f"unix://{path}"
 
     async def stop(self) -> None:
@@ -100,8 +103,12 @@ class LocalCommandServer:
             await server.wait_closed()
         path = self._unix_path
         self._unix_path = None
-        if path is not None and path.exists():
-            path.unlink()
+        identity = self._unix_identity
+        self._unix_identity = None
+        if path is not None and identity is not None and path.exists():
+            path_stat = path.stat()
+            if (path_stat.st_dev, path_stat.st_ino) == identity:
+                path.unlink()
 
     async def _handle_client(
         self,
@@ -192,8 +199,14 @@ class LocalCommandClient:
         elif parsed.scheme == "tcp":
             query = parse_qs(parsed.query)
             token_values = query.get("token")
-            if not token_values:
+            if (
+                set(query) != {"token"}
+                or token_values is None
+                or len(token_values) != 1
+            ):
                 raise ValueError("TCP command endpoint has no capability token")
+            if parsed.hostname != "127.0.0.1":
+                raise ValueError("TCP command endpoint must use loopback")
             request["capability"] = token_values[0]
             if parsed.hostname is None or parsed.port is None:
                 raise ValueError("TCP command endpoint is invalid")
