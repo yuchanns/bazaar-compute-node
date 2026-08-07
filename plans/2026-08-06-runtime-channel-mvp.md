@@ -105,7 +105,7 @@ src/bazaar_compute_node/
 │   ├── ports/           # channel, runtime, storage, command service ports
 │   └── orchestration/   # session routing and per-session lifecycle
 ├── contrib/
-│   ├── storage_sqlite/  # SQLite schema, migrations and repositories
+│   ├── sqlite/          # SQLite schema, migrations and repositories
 │   ├── codex_app_server/# async App Server process and protocol adapter
 │   ├── wecom/           # WeCom webhook/send adapter and normalization
 │   └── dummy/           # deterministic Channel and Agent Runtime adapters for core checks
@@ -136,7 +136,7 @@ provider SDK types。
 
 | 用途 | 外部库 | 作用域与规则 |
 | --- | --- | --- |
-| SQLite async adapter | `aiosqlite` | 仅由 `contrib/storage_sqlite` 使用；通过每个 connection 的共享 worker thread 将 SQLite 操作移出主 loop。MVP 使用 long-lived connection、显式 transaction 和 repository lock，不引入 connection pool。 |
+| SQLite async adapter | `aiosqlite` | 仅由 `contrib/sqlite` 使用；通过每个 connection 的共享 worker thread 将 SQLite 操作移出主 loop。MVP 使用 long-lived connection、显式 transaction 和 repository lock，不引入 connection pool。 |
 | Channel HTTP client/server | `aiohttp` | 仅由 `contrib/wecom` 使用；同时承载 webhook server 与 provider HTTP client，复用 application-scoped `ClientSession`，统一 timeout、TLS、response classification 和 shutdown。 |
 
 App Server 不引入 provider SDK 或 JSON-RPC 第三方封装：使用标准库 `asyncio` subprocess/stream、
@@ -204,7 +204,7 @@ core/application 不执行 SQLite SQL，也不依赖 SQLite-specific migration o
 - 所有状态值、必填字段、默认值、关联关系和去重规则都由 core/application/repository
   校验；SQLite schema 只声明字段与物理行身份，不承载业务约束。未知 provider 状态不能
   折叠成失败。
-- migration 的表创建语法属于 `contrib/storage_sqlite` 的 adapter-private 实现；storage
+- migration 的表创建语法属于 `contrib/sqlite` 的 adapter-private 实现；storage
   port 只暴露启动、初始化和 repository 操作。替换存储时替换注入的 implementation 及其
   schema 初始化，不把 SQLite DDL 抽象成业务层的通用表创建 API。
 

@@ -371,4 +371,33 @@ SCHEMA_MIGRATION = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (SCHEMA_MIGRATION,)
+SESSION_MAPPING_INDEX_MIGRATION = Migration(
+    version=2,
+    name="session_mapping_indexes",
+    statements=(
+        """
+        -- Provider identity lookup used by channel session get-or-create.
+        CREATE INDEX idx_channel_sessions_provider_identity
+            ON channel_sessions (
+                channel_slug,
+                provider_conversation_key,
+                provider_thread_key
+            )
+        """,
+        """
+        -- Channel-to-bcn session lookup used during recovery reconciliation.
+        CREATE INDEX idx_bcn_sessions_channel
+            ON bcn_sessions (channel_session_id)
+        """,
+        """
+        -- Bcn-to-runtime session lookup used during process reconciliation.
+        CREATE INDEX idx_runtime_sessions_bcn
+            ON runtime_sessions (bcn_session_id)
+        """,
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (
+    SCHEMA_MIGRATION,
+    SESSION_MAPPING_INDEX_MIGRATION,
+)

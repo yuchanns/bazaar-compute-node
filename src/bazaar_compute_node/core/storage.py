@@ -59,10 +59,18 @@ class IStorageTransaction(Protocol):
         """Load one bcn session by local id."""
         ...
 
+    async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
+        """Find the bcn session bound to one channel session for recovery."""
+        ...
+
     async def get_runtime_session(
         self, agent_runtime_session_id: str
     ) -> RuntimeSession | None:
         """Load one runtime process session by local id."""
+        ...
+
+    async def find_runtime_session(self, bcn_session_id: str) -> RuntimeSession | None:
+        """Find the runtime session bound to one bcn session for recovery."""
         ...
 
     async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:

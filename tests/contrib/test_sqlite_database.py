@@ -8,11 +8,14 @@ from stat import S_IMODE
 import aiosqlite
 import pytest
 
-from bazaar_compute_node.contrib.storage_sqlite import (
+from bazaar_compute_node.contrib.sqlite import (
     MigrationChecksumError,
     SqliteDatabase,
 )
-from bazaar_compute_node.contrib.storage_sqlite.migrations import SCHEMA_MIGRATION
+from bazaar_compute_node.contrib.sqlite.migrations import (
+    MIGRATIONS,
+    SCHEMA_MIGRATION,
+)
 from bazaar_compute_node.core.paths import resolve_data_dir
 
 
@@ -28,7 +31,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 1
+        assert first_state.schema_version == 2
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -67,6 +70,9 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
             "idx_inbound_session_seq",
             "idx_outbound_session_created",
             "idx_outbound_state_created",
+            "idx_bcn_sessions_channel",
+            "idx_channel_sessions_provider_identity",
+            "idx_runtime_sessions_bcn",
             "idx_runtime_events_created",
             "idx_runtime_events_name_seq",
             "idx_runtime_events_session_seq",
@@ -148,6 +154,60 @@ async def test_sqlite_migration_checksum_mismatch_fails_closed(tmp_path: Path) -
     with pytest.raises(MigrationChecksumError):
         await restarted.start(timeout=2)
     assert not restarted.is_started
+
+
+@pytest.mark.asyncio
+async def test_sqlite_applies_new_migration_to_existing_v1_database(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "node"
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        for statement in SCHEMA_MIGRATION.statements:
+            await connection.execute(statement)
+        await connection.execute(
+            "INSERT INTO schema_migrations "
+            "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                SCHEMA_MIGRATION.version,
+                SCHEMA_MIGRATION.name,
+                SCHEMA_MIGRATION.checksum,
+                1,
+                0,
+            ),
+        )
+        await connection.commit()
+
+    database = SqliteDatabase(data_dir)
+    await database.start(timeout=2)
+    try:
+        async with database.transaction() as transaction:
+            migration_rows = await transaction.fetchall(
+                "SELECT version, migration_name, checksum "
+                "FROM schema_migrations ORDER BY version"
+            )
+            mapping_indexes = await transaction.fetchall(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND name IN (?, ?, ?) ORDER BY name",
+                (
+                    "idx_bcn_sessions_channel",
+                    "idx_channel_sessions_provider_identity",
+                    "idx_runtime_sessions_bcn",
+                ),
+            )
+        assert [row["version"] for row in migration_rows] == [1, 2]
+        assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
+        assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
+        assert {row["name"] for row in mapping_indexes} == {
+            "idx_bcn_sessions_channel",
+            "idx_channel_sessions_provider_identity",
+            "idx_runtime_sessions_bcn",
+        }
+    finally:
+        await database.stop(timeout=2)
 
 
 def test_resolve_data_dir_prefers_explicit_path(
