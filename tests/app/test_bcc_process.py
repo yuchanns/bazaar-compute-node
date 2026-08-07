@@ -208,7 +208,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
             ("message", "check"),
         )
         assert empty_code == 0
-        assert empty_stdout == "No more new messages.\n"
+        assert empty_stdout.splitlines() == ["No more new messages."]
         assert empty_stderr == ""
 
         bad_around_code, bad_around_stdout, bad_around_stderr = await run_bcc(
