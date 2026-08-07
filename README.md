@@ -15,7 +15,7 @@ uv run bcn --version
 
 ```bash
 uvx --from 'git+ssh://git@github.com/bazaar-compute-node/bcn@main' bcn start \
-  --channel dummy --runtime dummy
+  --channel dummy --runtime dummy --storage dummy
 ```
 
 后台进程可使用同一条命令关闭：

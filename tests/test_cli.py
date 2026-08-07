@@ -42,6 +42,14 @@ def test_help_shows_the_resolved_data_dir(
     ).replace("\n", "")
 
 
+def test_cli_defaults_to_sqlite_storage() -> None:
+    args = build_parser().parse_args(
+        ["run", "--channel", "dummy", "--runtime", "dummy"]
+    )
+
+    assert args.storage == "sqlite"
+
+
 def test_help_works_in_a_real_process() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "bazaar_compute_node.cli", "--help"],

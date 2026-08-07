@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
+from pathlib import Path
 from typing import Any, cast
 
 from ..core.channel import IChannel
@@ -19,7 +20,7 @@ CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
 ChannelFactory = Callable[[], IChannel]
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
-StorageFactory = Callable[[], IStorage]
+StorageFactory = Callable[[Path], IStorage]
 AuditFactory = Callable[[], IAudit]
 
 
@@ -47,15 +48,17 @@ class AdapterRegistry:
         storage_slug: str = "dummy",
         audit_slug: str = "dummy",
     ) -> AdapterFactories:
-        control = self._load_optional(
-            CONTROL_ENTRY_POINT_GROUP,
-            f"{channel_slug}+{runtime_slug}",
-        )
-        if control is None and channel_slug == runtime_slug:
+        control = None
+        if storage_slug == "dummy":
             control = self._load_optional(
                 CONTROL_ENTRY_POINT_GROUP,
-                channel_slug,
+                f"{channel_slug}+{runtime_slug}",
             )
+            if control is None and channel_slug == runtime_slug:
+                control = self._load_optional(
+                    CONTROL_ENTRY_POINT_GROUP,
+                    channel_slug,
+                )
         return AdapterFactories(
             channel=cast(
                 ChannelFactory,

@@ -58,14 +58,16 @@ class NodeApplication:
             shutdown_seconds=5,
         )
         self.channel: IChannel = factories.channel()
-        self.storage: IStorage = factories.storage()
+        self.storage: IStorage = factories.storage(self.data_dir)
         self.audit: IAudit = factories.audit()
         self.command_log: list[CommandRecord] = []
         self._wrapper_path: Path | None = None
+        self._identity: NodeIdentity | None = None
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
+            data_dir=self.data_dir,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
         self.orchestrator = SessionOrchestrator(
@@ -86,12 +88,13 @@ class NodeApplication:
         control_handler = None
         if factories.control is not None:
             control_handler = factories.control(self._adapter_context())
+        self.command_dispatcher = CommandDispatcher(
+            self.command_service,
+            timeout_budget=self.timeout_budget,
+            control_handler=self._handle_control,
+        )
         self.command_server = LocalCommandServer(
-            CommandDispatcher(
-                self.command_service,
-                timeout_budget=self.timeout_budget,
-                control_handler=self._handle_control,
-            ),
+            self.command_dispatcher,
             endpoint_path=endpoint_path,
         )
         self._provider_control_handler = control_handler
@@ -115,6 +118,7 @@ class NodeApplication:
             raise
         self._started = True
         self._stopped.clear()
+        self.command_dispatcher.start_accepting()
         try:
             write_runtime_metadata(
                 self.runtime_metadata_path,
@@ -132,17 +136,26 @@ class NodeApplication:
 
     async def stop(self) -> None:
         if not self._started:
+            await self.command_dispatcher.drain(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
             await self.command_server.stop()
             return
+        self._started = False
+        self.command_dispatcher.stop_accepting()
         try:
-            await self.orchestrator.stop(
+            await self.command_dispatcher.drain(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
         finally:
-            await self.command_server.stop()
-            self._started = False
-            self._stopped.set()
-            remove_runtime_metadata(self.runtime_metadata_path, pid=os.getpid())
+            try:
+                await self.orchestrator.stop(
+                    timeout=self.timeout_budget.shutdown_seconds,
+                )
+            finally:
+                await self.command_server.stop()
+                self._stopped.set()
+                remove_runtime_metadata(self.runtime_metadata_path, pid=os.getpid())
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()
@@ -154,6 +167,7 @@ class NodeApplication:
         await self._stopped.wait()
 
     async def _ensure_workspace(self, identity: NodeIdentity) -> None:
+        self._identity = identity
         workspace_dir = self.data_dir / "workspaces" / identity.workspace_id
         await asyncio.to_thread(
             workspace_dir.mkdir,
@@ -177,6 +191,20 @@ class NodeApplication:
     async def _handle_control(
         self, request: Mapping[str, object]
     ) -> Mapping[str, object]:
+        if request.get("operation") == "health":
+            identity = self._identity
+            return {
+                "started": self._started,
+                "accepting": self.command_dispatcher.accepting,
+                "channel": self.channel_slug,
+                "runtime": self.runtime_slug,
+                "storage": self.storage_slug,
+                "audit": self.audit_slug,
+                "node_id": identity.node_id if identity is not None else None,
+                "workspace_id": (
+                    identity.workspace_id if identity is not None else None
+                ),
+            }
         if request.get("operation") == "shutdown":
             self._stopped.set()
             return {"accepted": True, "operation": "shutdown"}

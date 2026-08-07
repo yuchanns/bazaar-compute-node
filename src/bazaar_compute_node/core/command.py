@@ -43,6 +43,10 @@ class MessageReadResult:
             raise ValueError("history sequence bounds are invalid")
 
 
+class SessionNotFoundError(ValueError):
+    """A command referenced a bcn session that is not persisted on this node."""
+
+
 class ICommandService(Protocol):
     """Session-scoped command surface used by the local wrapper."""
 

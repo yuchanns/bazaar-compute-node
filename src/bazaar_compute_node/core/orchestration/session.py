@@ -8,7 +8,12 @@ from time import time_ns
 from ..approval import ApprovalBinding
 from ..audit import AuditEvent, ErrorKind
 from ..channel import IChannel
-from ..command import ICommandService, MessageCheckResult, MessageReadResult
+from ..command import (
+    ICommandService,
+    MessageCheckResult,
+    MessageReadResult,
+    SessionNotFoundError,
+)
 from ..concurrency import ISessionConcurrency, SessionLockRegistry
 from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
@@ -279,6 +284,10 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
     async def check(self, bcn_session_id: str, *, timeout: float) -> MessageCheckResult:
         async with self._concurrency.for_session(bcn_session_id):
             async with self._storage.transaction() as transaction:
+                if await transaction.get_bcn_session(bcn_session_id) is None:
+                    raise SessionNotFoundError(
+                        f"unknown bcn session: {bcn_session_id}"
+                    )
                 cursor = await transaction.get_consumer_cursor(bcn_session_id)
                 if cursor is None:
                     cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
@@ -319,6 +328,10 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             raise ValueError("limit must be positive")
         async with self._concurrency.for_session(bcn_session_id):
             async with self._storage.transaction() as transaction:
+                if await transaction.get_bcn_session(bcn_session_id) is None:
+                    raise SessionNotFoundError(
+                        f"unknown bcn session: {bcn_session_id}"
+                    )
                 messages = await transaction.list_inbound_messages(
                     bcn_session_id,
                     target=target,
@@ -365,7 +378,9 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             async with self._storage.transaction() as transaction:
                 bcn_session = await transaction.get_bcn_session(bcn_session_id)
                 if bcn_session is None:
-                    raise ValueError(f"unknown bcn session: {bcn_session_id}")
+                    raise SessionNotFoundError(
+                        f"unknown bcn session: {bcn_session_id}"
+                    )
                 channel_session = await transaction.get_channel_session(
                     bcn_session.channel_session_id
                 )

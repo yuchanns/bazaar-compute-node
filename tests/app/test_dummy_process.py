@@ -80,6 +80,8 @@ def start_dummy_process(
             "dummy",
             "--runtime",
             "dummy",
+            "--storage",
+            "dummy",
             "--data-dir",
             str(data_dir),
             "--endpoint",

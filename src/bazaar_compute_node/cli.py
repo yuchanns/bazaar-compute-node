@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--channel")
     parser.add_argument("--runtime")
-    parser.add_argument("--storage", default="dummy")
+    parser.add_argument("--storage", default="sqlite")
     parser.add_argument("--audit", default="dummy")
     parser.add_argument(
         "--data-dir",

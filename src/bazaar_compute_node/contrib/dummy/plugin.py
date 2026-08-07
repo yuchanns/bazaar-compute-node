@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from ...core.channel import IChannel
 from ...core.observability import IAudit
@@ -33,7 +34,7 @@ def create_runtime(context: RuntimeCommandContext) -> IRuntime:
     return DummyRuntime(default_command_runner=run_default_commands)
 
 
-def create_storage() -> IStorage:
+def create_storage(_data_dir: Path) -> IStorage:
     return DummyStorage()
 
 

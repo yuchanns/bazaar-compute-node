@@ -5,7 +5,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from time import time_ns
 
-from ..core.command import ICommandService, MessageCheckResult, MessageReadResult
+from ..core.command import (
+    ICommandService,
+    MessageCheckResult,
+    MessageReadResult,
+    SessionNotFoundError,
+)
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import InboundMessage, OutboundMessage
 from ..core.orchestration import SessionOrchestrator
@@ -142,8 +147,55 @@ class CommandDispatcher:
         self._service = service
         self._timeout_budget = timeout_budget
         self._control_handler = control_handler
+        self._accepting = False
+        self._in_flight: set[asyncio.Task[object]] = set()
+        self._drained = asyncio.Event()
+        self._drained.set()
+
+    @property
+    def accepting(self) -> bool:
+        return self._accepting
+
+    def start_accepting(self) -> None:
+        self._accepting = True
+        self._drained.clear()
+
+    def stop_accepting(self) -> None:
+        self._accepting = False
+        if not self._in_flight:
+            self._drained.set()
+
+    async def drain(self, *, timeout: float) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        self.stop_accepting()
+        if not self._in_flight:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(self._drained.wait()), timeout)
+            return
+        except TimeoutError:
+            pass
+        current_task = asyncio.current_task()
+        pending = tuple(
+            task for task in self._in_flight if task is not current_task and not task.done()
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def __call__(self, request: Mapping[str, object]) -> Mapping[str, object]:
+        if not self._accepting:
+            return {
+                "ok": False,
+                "code": "SERVICE_NOT_READY",
+                "error": "command service is not accepting requests",
+            }
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._in_flight.add(current_task)
+            self._drained.clear()
         try:
             kind = request.get("kind")
             if kind == "command":
@@ -167,6 +219,18 @@ class CommandDispatcher:
             if error.next_action is not None:
                 response["next_action"] = error.next_action
             return response
+        except SessionNotFoundError as error:
+            return {
+                "ok": False,
+                "code": "SESSION_NOT_FOUND",
+                "error": str(error),
+            }
+        except TimeoutError as error:
+            return {
+                "ok": False,
+                "code": "COMMAND_TIMEOUT",
+                "error": str(error) or "command timed out",
+            }
         except ValueError as error:
             return {
                 "ok": False,
@@ -179,6 +243,11 @@ class CommandDispatcher:
                 "code": "COMMAND_FAILED",
                 "error": str(error),
             }
+        finally:
+            if current_task is not None:
+                self._in_flight.discard(current_task)
+                if not self._in_flight:
+                    self._drained.set()
 
     async def _dispatch_command(
         self, request: Mapping[str, object]

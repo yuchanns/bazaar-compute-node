@@ -19,6 +19,7 @@ dummy = "bazaar_compute_node.contrib.dummy.plugin:create_runtime"
 
 [project.entry-points."bazaar_compute_node.storages"]
 dummy = "bazaar_compute_node.contrib.dummy.plugin:create_storage"
+sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
 
 [project.entry-points."bazaar_compute_node.audits"]
 dummy = "bazaar_compute_node.contrib.dummy.plugin:create_audit"
