@@ -397,7 +397,25 @@ SESSION_MAPPING_INDEX_MIGRATION = Migration(
     ),
 )
 
+MESSAGE_LOG_INDEX_MIGRATION = Migration(
+    version=3,
+    name="message_log_indexes",
+    statements=(
+        """
+        -- Provider-scoped inbound deduplication lookup.
+        CREATE INDEX idx_inbound_provider_identity
+            ON inbound_messages (channel_slug, provider_message_id)
+        """,
+        """
+        -- Target-filtered history lookup for one bcn session.
+        CREATE INDEX idx_inbound_session_target_seq
+            ON inbound_messages (bcn_session_id, canonical_target, seq)
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
+    MESSAGE_LOG_INDEX_MIGRATION,
 )

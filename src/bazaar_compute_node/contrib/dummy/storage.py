@@ -331,21 +331,41 @@ class _DummyStorageTransaction(IStorageTransaction):
             raise ValueError("runtime turn binding cannot change")
         self._storage.runtime_turns[turn.turn_id] = turn
 
-    async def append_inbound_message(self, message: InboundMessage) -> None:
+    async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
         messages = self._storage.inbound_messages.setdefault(message.bcn_session_id, [])
+        provider_matches = [
+            existing
+            for session_messages in self._storage.inbound_messages.values()
+            for existing in session_messages
+            if (
+                existing.channel_slug == message.channel_slug
+                and existing.provider_message_id == message.provider_message_id
+            )
+        ]
+        if provider_matches:
+            existing = provider_matches[0]
+            if (
+                existing.bcn_session_id != message.bcn_session_id
+                or existing.channel_session_id != message.channel_session_id
+            ):
+                raise ValueError(
+                    "provider message id is already bound to another session"
+                )
+            if existing == message:
+                return existing
+            raise ValueError("duplicate provider message id has different content")
         for existing in messages:
             if existing.message_id == message.message_id:
                 if existing != message:
                     raise ValueError("duplicate message id has different content")
-                return
-            if existing.provider_message_id == message.provider_message_id:
-                raise ValueError("duplicate provider message id has different content")
+                return existing
         expected_seq = messages[-1].seq + 1 if messages else 1
         if message.seq != expected_seq:
             raise ValueError(
                 f"inbound sequence must be contiguous: expected {expected_seq}, got {message.seq}"
             )
         messages.append(message)
+        return message
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
         self._storage.cursors[cursor.bcn_session_id] = cursor

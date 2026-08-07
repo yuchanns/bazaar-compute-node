@@ -19,6 +19,8 @@ from ...core.models import (
     BcnSessionState,
     ChannelSession,
     ChannelSessionState,
+    ConsumerCursor,
+    InboundMessage,
     RuntimeProcessState,
     RuntimeSession,
 )
@@ -219,6 +221,244 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "bcn-to-runtime session binding",
         )
         return _runtime_session_from_row(row) if row is not None else None
+
+    async def get_consumer_cursor(self, bcn_session_id: str) -> ConsumerCursor | None:
+        row = await self.fetchone(
+            "SELECT bcn_session_id, delivered_through_seq, inbox_snapshot_seq, "
+            "inbox_snapshot_source, inbox_snapshot_at_ms, last_check_at_ms, "
+            "last_read_at_ms, updated_at_ms FROM consumer_cursors "
+            "WHERE bcn_session_id = ?",
+            (bcn_session_id,),
+        )
+        return _consumer_cursor_from_row(row) if row is not None else None
+
+    async def get_latest_inbound_seq(self, bcn_session_id: str) -> int:
+        row = await self.fetchone(
+            "SELECT COALESCE(MAX(seq), 0) AS latest_seq FROM inbound_messages "
+            "WHERE bcn_session_id = ?",
+            (bcn_session_id,),
+        )
+        if row is None:
+            raise RuntimeError("SQLite latest inbound sequence query returned no row")
+        return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
+
+    async def list_inbound_messages(
+        self,
+        bcn_session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+        around_message_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[InboundMessage, ...]:
+        _validate_non_empty_text(bcn_session_id, "bcn_session_id")
+        if after_seq is not None:
+            _validate_non_negative_int(after_seq, "after_seq")
+        if target is not None:
+            _validate_non_empty_text(target, "target")
+        if around_message_id is not None:
+            _validate_non_empty_text(around_message_id, "around_message_id")
+        _validate_positive_int(limit, "limit")
+
+        predicates = ["bcn_session_id = ?"]
+        parameters: list[object] = [bcn_session_id]
+        if after_seq is not None:
+            predicates.append("seq > ?")
+            parameters.append(after_seq)
+        if target is not None:
+            predicates.append("canonical_target = ?")
+            parameters.append(target)
+        where_clause = " AND ".join(predicates)
+
+        if around_message_id is None:
+            rows = await self.fetchall(
+                "SELECT seq, message_id, bcn_session_id, channel_session_id, "
+                "channel_slug, provider_message_id, provider_time_ms, "
+                "received_at_ms, sender_id, sender_display_name, message_type, "
+                "canonical_target, provider_thread_id, "
+                "reply_to_provider_message_id, body, provider_payload_ref, "
+                "metadata_json FROM inbound_messages "
+                f"WHERE {where_clause} ORDER BY seq LIMIT ?",
+                (*parameters, limit),
+            )
+            return tuple(_inbound_message_from_row(row) for row in rows)
+
+        anchor = await self.fetchone(
+            f"SELECT seq FROM inbound_messages WHERE {where_clause} AND message_id = ?",
+            (*parameters, around_message_id),
+        )
+        if anchor is None:
+            raise ValueError(
+                f"message not found in requested history: {around_message_id}"
+            )
+        anchor_seq = _required_non_negative_int(anchor["seq"], "anchor_seq")
+        count_row = await self.fetchone(
+            "SELECT COUNT(*) AS message_count FROM inbound_messages "
+            f"WHERE {where_clause}",
+            parameters,
+        )
+        if count_row is None:
+            raise RuntimeError("SQLite inbound history count query returned no row")
+        message_count = _required_non_negative_int(
+            count_row["message_count"], "message_count"
+        )
+        position_row = await self.fetchone(
+            "SELECT COUNT(*) AS anchor_position FROM inbound_messages "
+            f"WHERE {where_clause} AND seq <= ?",
+            (*parameters, anchor_seq),
+        )
+        if position_row is None:
+            raise RuntimeError("SQLite inbound anchor position query returned no row")
+        anchor_position = _required_positive_int(
+            position_row["anchor_position"], "anchor_position"
+        )
+        before_count = limit // 2
+        start_position = max(anchor_position - before_count, 1)
+        start_position = min(
+            start_position,
+            max(message_count - limit + 1, 1),
+        )
+        end_position = start_position + limit - 1
+
+        filtered_query = (
+            "SELECT seq, message_id, bcn_session_id, channel_session_id, "
+            "channel_slug, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender_id, sender_display_name, message_type, "
+            "canonical_target, provider_thread_id, "
+            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "metadata_json, ROW_NUMBER() OVER (ORDER BY seq) AS row_number "
+            "FROM inbound_messages "
+            f"WHERE {where_clause}"
+        )
+        rows = await self.fetchall(
+            "WITH filtered AS ("
+            + filtered_query
+            + ") SELECT seq, message_id, bcn_session_id, channel_session_id, "
+            "channel_slug, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender_id, sender_display_name, message_type, "
+            "canonical_target, provider_thread_id, "
+            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "metadata_json FROM filtered WHERE row_number BETWEEN ? AND ? "
+            "ORDER BY row_number",
+            (*parameters, start_position, end_position),
+        )
+        return tuple(_inbound_message_from_row(row) for row in rows)
+
+    async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
+        _validate_inbound_message_input(message)
+        bcn_session = await self.get_bcn_session(message.bcn_session_id)
+        if bcn_session is None:
+            raise ValueError(f"unknown bcn session: {message.bcn_session_id}")
+        channel_session = await self.get_channel_session(bcn_session.channel_session_id)
+        if channel_session is None:
+            raise ValueError(
+                f"unknown channel session: {bcn_session.channel_session_id}"
+            )
+        if (
+            message.channel_session_id != channel_session.channel_session_id
+            or message.channel_slug != channel_session.channel_slug
+        ):
+            raise ValueError("inbound message binding does not match channel session")
+
+        existing_row = await self._fetch_one_or_conflict(
+            "SELECT seq, message_id, bcn_session_id, channel_session_id, "
+            "channel_slug, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender_id, sender_display_name, message_type, "
+            "canonical_target, provider_thread_id, "
+            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "metadata_json FROM inbound_messages "
+            "WHERE channel_slug = ? AND provider_message_id = ? ORDER BY seq",
+            (message.channel_slug, message.provider_message_id),
+            "provider inbound identity",
+        )
+        if existing_row is not None:
+            existing = _inbound_message_from_row(existing_row)
+            if _same_inbound_payload(existing, message):
+                return existing
+            raise ValueError(
+                "provider message id is already bound to different inbound content"
+            )
+
+        sequence_row = await self.fetchone(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM inbound_messages"
+        )
+        if sequence_row is None:
+            raise RuntimeError("SQLite inbound sequence query returned no row")
+        next_seq = _required_positive_int(sequence_row["next_seq"], "next_seq")
+        canonical = replace(message, seq=next_seq, message_id=str(uuid7()))
+        await self.execute(
+            "INSERT INTO inbound_messages ("
+            "message_id, seq, bcn_session_id, channel_session_id, channel_slug, "
+            "provider_message_id, provider_time_ms, received_at_ms, sender_id, "
+            "sender_display_name, message_type, canonical_target, "
+            "provider_thread_id, reply_to_provider_message_id, body, "
+            "provider_payload_ref, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                canonical.message_id,
+                canonical.seq,
+                canonical.bcn_session_id,
+                canonical.channel_session_id,
+                canonical.channel_slug,
+                canonical.provider_message_id,
+                canonical.provider_time_ms,
+                canonical.received_at_ms,
+                canonical.sender_id,
+                canonical.sender_display_name,
+                canonical.message_type,
+                canonical.canonical_target,
+                canonical.provider_thread_id,
+                canonical.reply_to_provider_message_id,
+                canonical.body,
+                canonical.provider_payload_ref,
+                _encode_metadata(canonical.metadata),
+            ),
+        )
+        return canonical
+
+    async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
+        _validate_consumer_cursor_input(cursor)
+        if await self.get_bcn_session(cursor.bcn_session_id) is None:
+            raise ValueError(f"unknown bcn session: {cursor.bcn_session_id}")
+        latest_seq = await self.get_latest_inbound_seq(cursor.bcn_session_id)
+        _validate_cursor_bounds(cursor, latest_seq)
+        existing = await self.get_consumer_cursor(cursor.bcn_session_id)
+        if existing is not None:
+            _validate_consumer_cursor_update(existing, cursor)
+            await self.execute(
+                "UPDATE consumer_cursors SET delivered_through_seq = ?, "
+                "inbox_snapshot_seq = ?, inbox_snapshot_source = ?, "
+                "inbox_snapshot_at_ms = ?, last_check_at_ms = ?, "
+                "last_read_at_ms = ?, updated_at_ms = ? WHERE bcn_session_id = ?",
+                (
+                    cursor.delivered_through_seq,
+                    cursor.inbox_snapshot_seq,
+                    cursor.inbox_snapshot_source,
+                    cursor.inbox_snapshot_at_ms,
+                    cursor.last_check_at_ms,
+                    cursor.last_read_at_ms,
+                    cursor.updated_at_ms,
+                    cursor.bcn_session_id,
+                ),
+            )
+            return
+        await self.execute(
+            "INSERT INTO consumer_cursors ("
+            "bcn_session_id, delivered_through_seq, inbox_snapshot_seq, "
+            "inbox_snapshot_source, inbox_snapshot_at_ms, last_check_at_ms, "
+            "last_read_at_ms, updated_at_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                cursor.bcn_session_id,
+                cursor.delivered_through_seq,
+                cursor.inbox_snapshot_seq,
+                cursor.inbox_snapshot_source,
+                cursor.inbox_snapshot_at_ms,
+                cursor.last_check_at_ms,
+                cursor.last_read_at_ms,
+                cursor.updated_at_ms,
+            ),
+        )
 
     async def save_channel_session(self, session: ChannelSession) -> None:
         _validate_channel_session_input(session)
@@ -810,6 +1050,172 @@ def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
     )
 
 
+def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
+    return InboundMessage(
+        seq=_required_non_negative_int(row["seq"], "seq"),
+        message_id=_required_text(row["message_id"], "message_id"),
+        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        channel_session_id=_required_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        channel_slug=_required_text(row["channel_slug"], "channel_slug"),
+        provider_message_id=_required_text(
+            row["provider_message_id"], "provider_message_id"
+        ),
+        received_at_ms=_required_non_negative_int(
+            row["received_at_ms"], "received_at_ms"
+        ),
+        sender_id=_required_text(row["sender_id"], "sender_id"),
+        sender_display_name=_required_text(
+            row["sender_display_name"], "sender_display_name"
+        ),
+        message_type=_required_text(row["message_type"], "message_type"),
+        canonical_target=_required_text(row["canonical_target"], "canonical_target"),
+        body=_string_value(row["body"], "body", allow_empty=True),
+        provider_time_ms=_optional_non_negative_int(
+            row["provider_time_ms"], "provider_time_ms"
+        ),
+        provider_thread_id=_optional_string_value(
+            row["provider_thread_id"], "provider_thread_id", allow_empty=True
+        ),
+        reply_to_provider_message_id=_optional_string_value(
+            row["reply_to_provider_message_id"],
+            "reply_to_provider_message_id",
+            allow_empty=True,
+        ),
+        provider_payload_ref=_optional_string_value(
+            row["provider_payload_ref"], "provider_payload_ref", allow_empty=False
+        ),
+        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
+def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
+    return ConsumerCursor(
+        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        delivered_through_seq=_required_non_negative_int(
+            row["delivered_through_seq"], "delivered_through_seq"
+        ),
+        inbox_snapshot_seq=_optional_non_negative_int(
+            row["inbox_snapshot_seq"], "inbox_snapshot_seq"
+        ),
+        inbox_snapshot_source=_optional_string_value(
+            row["inbox_snapshot_source"],
+            "inbox_snapshot_source",
+            allow_empty=False,
+        ),
+        inbox_snapshot_at_ms=_optional_non_negative_int(
+            row["inbox_snapshot_at_ms"], "inbox_snapshot_at_ms"
+        ),
+        last_check_at_ms=_optional_non_negative_int(
+            row["last_check_at_ms"], "last_check_at_ms"
+        ),
+        last_read_at_ms=_optional_non_negative_int(
+            row["last_read_at_ms"], "last_read_at_ms"
+        ),
+        updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
+    )
+
+
+def _validate_inbound_message_input(message: InboundMessage) -> None:
+    if not isinstance(message, InboundMessage):
+        raise TypeError("message must be an InboundMessage")
+
+
+def _same_inbound_payload(
+    existing: InboundMessage,
+    incoming: InboundMessage,
+) -> bool:
+    return (
+        existing.bcn_session_id,
+        existing.channel_session_id,
+        existing.channel_slug,
+        existing.provider_message_id,
+        existing.provider_time_ms,
+        existing.sender_id,
+        existing.sender_display_name,
+        existing.message_type,
+        existing.canonical_target,
+        existing.body,
+        existing.provider_thread_id,
+        existing.reply_to_provider_message_id,
+        existing.provider_payload_ref,
+        existing.metadata,
+    ) == (
+        incoming.bcn_session_id,
+        incoming.channel_session_id,
+        incoming.channel_slug,
+        incoming.provider_message_id,
+        incoming.provider_time_ms,
+        incoming.sender_id,
+        incoming.sender_display_name,
+        incoming.message_type,
+        incoming.canonical_target,
+        incoming.body,
+        incoming.provider_thread_id,
+        incoming.reply_to_provider_message_id,
+        incoming.provider_payload_ref,
+        incoming.metadata,
+    )
+
+
+def _validate_consumer_cursor_input(cursor: ConsumerCursor) -> None:
+    if not isinstance(cursor, ConsumerCursor):
+        raise TypeError("cursor must be a ConsumerCursor")
+    source = cursor.inbox_snapshot_source
+    if source is not None and source not in {"check", "read"}:
+        raise ValueError("inbox_snapshot_source must be 'check' or 'read'")
+    if cursor.inbox_snapshot_seq is None:
+        if cursor.inbox_snapshot_source is not None:
+            raise ValueError("inbox snapshot source requires a snapshot sequence")
+        if cursor.inbox_snapshot_at_ms is not None:
+            raise ValueError("inbox snapshot time requires a snapshot sequence")
+    elif cursor.inbox_snapshot_at_ms is None:
+        raise ValueError("inbox snapshot sequence requires a snapshot time")
+
+
+def _validate_cursor_bounds(cursor: ConsumerCursor, latest_seq: int) -> None:
+    if cursor.delivered_through_seq > latest_seq:
+        raise ValueError("delivered cursor cannot exceed the latest inbound sequence")
+    if cursor.inbox_snapshot_seq is not None and cursor.inbox_snapshot_seq > latest_seq:
+        raise ValueError("inbox snapshot cannot exceed the latest inbound sequence")
+
+
+def _validate_consumer_cursor_update(
+    existing: ConsumerCursor,
+    incoming: ConsumerCursor,
+) -> None:
+    if incoming.updated_at_ms < existing.updated_at_ms:
+        raise ValueError("consumer cursor updated_at_ms cannot move backwards")
+    if incoming.delivered_through_seq < existing.delivered_through_seq:
+        raise ValueError("delivered cursor cannot move backwards")
+    if existing.inbox_snapshot_seq is not None and (
+        incoming.inbox_snapshot_seq is None
+        or incoming.inbox_snapshot_seq < existing.inbox_snapshot_seq
+    ):
+        raise ValueError("inbox snapshot cannot move backwards")
+    if (
+        incoming.inbox_snapshot_source == "read"
+        and incoming.delivered_through_seq != existing.delivered_through_seq
+    ):
+        raise ValueError("read snapshot cannot advance the delivered cursor")
+    for incoming_value, existing_value, field_name in (
+        (
+            incoming.inbox_snapshot_at_ms,
+            existing.inbox_snapshot_at_ms,
+            "inbox_snapshot_at_ms",
+        ),
+        (incoming.last_check_at_ms, existing.last_check_at_ms, "last_check_at_ms"),
+        (incoming.last_read_at_ms, existing.last_read_at_ms, "last_read_at_ms"),
+    ):
+        if (
+            incoming_value is not None
+            and existing_value is not None
+            and incoming_value < existing_value
+        ):
+            raise ValueError(f"{field_name} cannot move backwards")
+
+
 def _validate_channel_session_input(session: ChannelSession) -> None:
     if not isinstance(session.state, ChannelSessionState):
         raise TypeError("channel session state is invalid")
@@ -916,10 +1322,33 @@ def _required_text(value: object, field_name: str) -> str:
     return _string_value(value, field_name, allow_empty=False)
 
 
+def _validate_non_empty_text(value: object, field_name: str) -> None:
+    _required_text(value, field_name)
+
+
+def _validate_non_negative_int(value: object, field_name: str) -> None:
+    _required_non_negative_int(value, field_name)
+
+
+def _validate_positive_int(value: object, field_name: str) -> None:
+    _required_positive_int(value, field_name)
+
+
 def _optional_text(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     return _string_value(value, field_name, allow_empty=False)
+
+
+def _optional_string_value(
+    value: object,
+    field_name: str,
+    *,
+    allow_empty: bool,
+) -> str | None:
+    if value is None:
+        return None
+    return _string_value(value, field_name, allow_empty=allow_empty)
 
 
 def _string_value(value: object, field_name: str, *, allow_empty: bool) -> str:
@@ -933,6 +1362,13 @@ def _required_non_negative_int(value: object, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{field_name} must be a non-negative integer")
     return value
+
+
+def _required_positive_int(value: object, field_name: str) -> int:
+    result = _required_non_negative_int(value, field_name)
+    if result == 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return result
 
 
 def _optional_non_negative_int(value: object, field_name: str) -> int | None:

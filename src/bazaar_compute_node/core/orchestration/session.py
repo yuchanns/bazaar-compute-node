@@ -227,7 +227,9 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                     pass
                 else:
                     context = await self._prepare_session(message)
-                    turn, is_new = await self._record_inbound_and_turn(message, context)
+                    message, turn, is_new = await self._record_inbound_and_turn(
+                        message, context
+                    )
                     if not is_new or turn.state in {
                         RuntimeTurnState.COMPLETED,
                         RuntimeTurnState.FAILED,
@@ -633,13 +635,18 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
 
     async def _record_inbound_and_turn(
         self, message: InboundMessage, context: _SessionContext
-    ) -> tuple[RuntimeTurn, bool]:
-        turn_id = f"turn-{message.message_id}"
+    ) -> tuple[InboundMessage, RuntimeTurn, bool]:
         async with self._storage.transaction() as transaction:
+            existing_turn = await transaction.get_runtime_turn(
+                f"turn-{message.message_id}"
+            )
+            if existing_turn is not None:
+                return message, existing_turn, False
+            message = await transaction.append_inbound_message(message)
+            turn_id = f"turn-{message.message_id}"
             existing_turn = await transaction.get_runtime_turn(turn_id)
             if existing_turn is not None:
-                return existing_turn, False
-            await transaction.append_inbound_message(message)
+                return message, existing_turn, False
             now_ms = self._clock()
             channel_session = replace(
                 context.channel_session,
@@ -661,7 +668,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 client_user_message_id=message.message_id,
             )
             await transaction.save_runtime_turn(turn)
-        return turn, True
+        return message, turn, True
 
     async def _ensure_runtime_session(
         self, context: _SessionContext

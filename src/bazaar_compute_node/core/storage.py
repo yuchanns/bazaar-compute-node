@@ -113,8 +113,8 @@ class IStorageTransaction(Protocol):
         """Persist a validated runtime turn state transition."""
         ...
 
-    async def append_inbound_message(self, message: InboundMessage) -> None:
-        """Append one inbound message without rewriting its local sequence."""
+    async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
+        """Append or deduplicate one inbound message and return its canonical row."""
         ...
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:

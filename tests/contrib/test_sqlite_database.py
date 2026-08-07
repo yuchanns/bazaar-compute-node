@@ -31,7 +31,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 2
+        assert first_state.schema_version == 3
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -66,8 +66,10 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
         }
         assert {row["name"] for row in indexes} == {
             "idx_inbound_channel_received",
+            "idx_inbound_provider_identity",
             "idx_inbound_seq",
             "idx_inbound_session_seq",
+            "idx_inbound_session_target_seq",
             "idx_outbound_session_created",
             "idx_outbound_state_created",
             "idx_bcn_sessions_channel",
@@ -191,20 +193,26 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database(
             )
             mapping_indexes = await transaction.fetchall(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'index' AND name IN (?, ?, ?) ORDER BY name",
+                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?) ORDER BY name",
                 (
                     "idx_bcn_sessions_channel",
                     "idx_channel_sessions_provider_identity",
                     "idx_runtime_sessions_bcn",
+                    "idx_inbound_provider_identity",
+                    "idx_inbound_session_target_seq",
                 ),
             )
-        assert [row["version"] for row in migration_rows] == [1, 2]
+        assert [row["version"] for row in migration_rows] == [1, 2, 3]
         assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
         assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
+        assert migration_rows[2]["migration_name"] == MIGRATIONS[2].name
+        assert migration_rows[2]["checksum"] == MIGRATIONS[2].checksum
         assert {row["name"] for row in mapping_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_sessions_bcn",
+            "idx_inbound_provider_identity",
+            "idx_inbound_session_target_seq",
         }
     finally:
         await database.stop(timeout=2)
