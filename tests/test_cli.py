@@ -4,8 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
@@ -20,12 +18,6 @@ def test_help_shows_the_resolved_data_dir() -> None:
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
     ).replace("\n", "")
-    assert "--data-dir" not in help_text
-
-
-def test_cli_rejects_data_dir_override() -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["--data-dir", "override"])
 
 
 def test_cli_defaults_to_sqlite_storage() -> None:

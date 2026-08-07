@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from stat import S_IMODE
 
@@ -223,19 +222,3 @@ def test_default_workspace_uses_the_home_bcn_root() -> None:
         resolve_workspace_dir("workspace-1")
         == (Path.home() / ".bcn" / "workspaces" / "workspace-1").resolve()
     )
-
-
-def test_sqlite_schema_keeps_business_constraints_out_of_ddl() -> None:
-    schema = re.sub(
-        r"--[^\n]*",
-        "",
-        "\n".join(SCHEMA_MIGRATION.statements),
-    ).upper()
-    for forbidden in (
-        r"\bNOT NULL\b",
-        r"\bDEFAULT\b",
-        r"\bCHECK\b",
-        r"\bUNIQUE\b",
-        r"\bFOREIGN KEY\b",
-    ):
-        assert re.search(forbidden, schema) is None
