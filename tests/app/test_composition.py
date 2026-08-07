@@ -145,10 +145,11 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
 
     assert not (tmp_path / "bcn.sock").exists()
     if os.name == "nt":
-        assert (data_dir / "bin" / "bcc.cmd").exists()
-        assert (data_dir / "bin" / "bcc.ps1").exists()
+        assert not (data_dir / "bin" / "bcc.cmd").exists()
+        assert not (data_dir / "bin" / "bcc.ps1").exists()
     else:
-        assert (data_dir / "bin" / "bcc").exists()
+        assert not (data_dir / "bin" / "bcc").exists()
+    assert node._wrapper_path is None
     persisted = SqliteDatabase(data_dir)
     await persisted.start(timeout=2)
     try:

@@ -124,13 +124,20 @@ def test_outbound_delivery_requires_a_passed_fresh_check() -> None:
     )
     outbound = outbound.transition_to(OutboundDeliveryState.PENDING, at_ms=3)
     outbound = outbound.transition_to(
-        OutboundDeliveryState.SENT,
+        OutboundDeliveryState.QUEUED,
         at_ms=4,
+        provider_receipt_ref="queue-receipt-1",
+    )
+    assert outbound.state is OutboundDeliveryState.QUEUED
+    assert outbound.completed_at_ms is None
+    outbound = outbound.transition_to(
+        OutboundDeliveryState.SENT,
+        at_ms=5,
         provider_message_id="provider-message-1",
     )
 
     assert outbound.state is OutboundDeliveryState.SENT
-    assert outbound.completed_at_ms == 4
+    assert outbound.completed_at_ms == 5
 
 
 def test_approval_request_and_result_keep_the_same_request_id() -> None:

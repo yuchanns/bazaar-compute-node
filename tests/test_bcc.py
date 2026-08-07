@@ -8,6 +8,7 @@ from bazaar_compute_node.bcc import (
     build_parser,
     serialize_check,
     serialize_read,
+    serialize_send,
 )
 
 
@@ -61,9 +62,10 @@ def test_check_serializer_preserves_zero_provider_timestamp() -> None:
 
 
 def test_empty_check_serializer_is_stable() -> None:
-    assert serialize_check(
-        {"messages": [], "snapshot_seq": 0, "delivered_through_seq": 0}
-    ) == "No more new messages."
+    assert (
+        serialize_check({"messages": [], "snapshot_seq": 0, "delivered_through_seq": 0})
+        == "No more new messages."
+    )
 
 
 def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
@@ -120,6 +122,72 @@ def test_read_serializer_rejects_mismatched_window_bounds() -> None:
 
     with pytest.raises(BccCommandError) as error:
         serialize_read(result)
+
+    assert error.value.code == "INVALID_RESPONSE"
+
+
+def outbound_payload(
+    *,
+    state: str,
+    error_kind: str | None = None,
+    error_message: str | None = None,
+    next_action: str | None = None,
+    draft_saved_at_ms: int | None = None,
+) -> dict[str, object]:
+    return {
+        "state": state,
+        "target": "#work:parent123",
+        "outbound_message_id": "0123456789abcdef0123456789abcdef",
+        "error_kind": error_kind,
+        "error_message": error_message,
+        "next_action": next_action,
+        "draft_saved_at_ms": draft_saved_at_ms,
+    }
+
+
+def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
+    sent = {"outbound": outbound_payload(state="sent")}
+    queued = {"outbound": outbound_payload(state="queued")}
+
+    assert serialize_send(sent) == (
+        "Message sent to #work:parent123. Message ID: 0123456789abcdef0123456789abcdef"
+    )
+    assert serialize_send(queued) == (
+        "Message queued to #work:parent123. "
+        "Message ID: 0123456789abcdef0123456789abcdef"
+    )
+
+
+def test_send_serializer_maps_refusal_to_stable_error_contract() -> None:
+    result = {
+        "outbound": outbound_payload(
+            state="rejected",
+            error_kind="fresh_check_failed",
+            error_message="New inbound message(s) arrived after the latest inbox snapshot; outbound send was refused.",
+            next_action="Run `bcc message check` before retrying.",
+            draft_saved_at_ms=10,
+        )
+    }
+
+    with pytest.raises(BccCommandError) as error:
+        serialize_send(result)
+
+    assert error.value.code == "SEND_FRESH_CHECK_FAILED"
+    assert error.value.draft_saved is True
+    assert error.value.next_action == "Run `bcc message check` before retrying."
+
+
+def test_send_serializer_rejects_malformed_delivery_response() -> None:
+    with pytest.raises(BccCommandError) as error:
+        serialize_send(
+            {
+                "outbound": outbound_payload(
+                    state="rejected",
+                    error_kind="target_not_replyable",
+                    error_message="target rejected",
+                )
+            }
+        )
 
     assert error.value.code == "INVALID_RESPONSE"
 

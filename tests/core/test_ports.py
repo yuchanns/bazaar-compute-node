@@ -38,6 +38,12 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
     )
     assert confirmed.value == "receipt"
 
+    queued = ProviderCallResult(
+        status=ProviderCallStatus.QUEUED,
+        value="queue-receipt",
+    )
+    assert queued.status is ProviderCallStatus.QUEUED
+
     unknown = ProviderCallResult(
         status=ProviderCallStatus.UNKNOWN,
         error_kind="transport_eof",

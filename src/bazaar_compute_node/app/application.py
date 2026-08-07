@@ -27,7 +27,7 @@ from .daemon import (
 )
 from .registry import AdapterFactories
 from .transport import LocalCommandServer
-from .wrapper import install_bcc_wrapper
+from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 CommandRecord = tuple[str, tuple[str, ...]]
 
@@ -121,13 +121,13 @@ class NodeApplication:
         if os.name != "nt":
             self.data_dir.chmod(0o700)
         self._wrapper_path = install_bcc_wrapper(self.data_dir / "bin")
-        await self.command_server.start()
         try:
+            await self.command_server.start()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
         except BaseException:
-            await self.command_server.stop()
+            await self.stop()
             raise
         self._started = True
         self._stopped.clear()
@@ -149,10 +149,15 @@ class NodeApplication:
 
     async def stop(self) -> None:
         if not self._started:
-            await self.command_dispatcher.drain(
-                timeout=self.timeout_budget.shutdown_seconds,
-            )
-            await self.command_server.stop()
+            try:
+                await self.command_dispatcher.drain(
+                    timeout=self.timeout_budget.shutdown_seconds,
+                )
+            finally:
+                try:
+                    await self.command_server.stop()
+                finally:
+                    self._cleanup_bcc_wrapper()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -166,9 +171,24 @@ class NodeApplication:
                     timeout=self.timeout_budget.shutdown_seconds,
                 )
             finally:
-                await self.command_server.stop()
-                self._stopped.set()
-                remove_runtime_metadata(self.runtime_metadata_path, pid=os.getpid())
+                try:
+                    await self.command_server.stop()
+                finally:
+                    try:
+                        self._cleanup_bcc_wrapper()
+                    finally:
+                        self._stopped.set()
+                        remove_runtime_metadata(
+                            self.runtime_metadata_path,
+                            pid=os.getpid(),
+                        )
+
+    def _cleanup_bcc_wrapper(self) -> None:
+        wrapper_path = self._wrapper_path
+        if wrapper_path is None:
+            return
+        remove_bcc_wrapper(wrapper_path)
+        self._wrapper_path = None
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()

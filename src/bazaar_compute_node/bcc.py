@@ -146,9 +146,7 @@ def _require_text(
 ) -> str:
     value = message.get(field_name)
     if not isinstance(value, str) or (not allow_empty and not value):
-        _invalid_response(
-            f"command response contains an invalid message {field_name}"
-        )
+        _invalid_response(f"command response contains an invalid message {field_name}")
     return value
 
 
@@ -158,9 +156,7 @@ def _require_non_negative_int(
 ) -> int:
     value = message.get(field_name)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        _invalid_response(
-            f"command response contains an invalid message {field_name}"
-        )
+        _invalid_response(f"command response contains an invalid message {field_name}")
     return value
 
 
@@ -307,37 +303,103 @@ def _render_read(result: Mapping[str, object]) -> None:
     print(serialize_read(result))
 
 
-def _render_send(result: Mapping[str, object]) -> None:
+def _invalid_send_response(message: str) -> NoReturn:
+    raise BccCommandError(message, code="INVALID_RESPONSE")
+
+
+def _require_outbound_text(
+    outbound: Mapping[str, object],
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    value = outbound.get(field_name)
+    if not isinstance(value, str) or (not allow_empty and not value):
+        _invalid_send_response(
+            f"command response contains an invalid outbound {field_name}"
+        )
+    return value
+
+
+def _require_outbound_timestamp(
+    outbound: Mapping[str, object], field_name: str
+) -> int | None:
+    value = outbound.get(field_name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _invalid_send_response(
+            f"command response contains an invalid outbound {field_name}"
+        )
+    return value
+
+
+def serialize_send(result: Mapping[str, object]) -> str:
+    """Serialize a send result or raise the stable command error contract."""
+
     outbound = result.get("outbound")
     if not isinstance(outbound, Mapping):
-        raise BccCommandError(
-            "command response has no outbound object",
-            code="INVALID_RESPONSE",
-        )
+        _invalid_send_response("command response has no outbound object")
     state = outbound.get("state")
+    if not isinstance(state, str) or state not in {
+        "sent",
+        "queued",
+        "failed",
+        "unknown",
+        "rejected",
+    }:
+        _invalid_send_response("command response contains an invalid outbound state")
+    target = _require_outbound_text(outbound, "target")
+    outbound_message_id = _require_outbound_text(outbound, "outbound_message_id")
     if state == "sent":
-        print(
-            f"Message sent to {outbound['target']}. "
-            f"Message ID: {outbound['outbound_message_id']}"
-        )
-        return
+        return f"Message sent to {target}. Message ID: {outbound_message_id}"
+    if state == "queued":
+        return f"Message queued to {target}. Message ID: {outbound_message_id}"
+
     error_kind = outbound.get("error_kind")
-    code = {
-        "fresh_check_required": "SEND_FRESH_CHECK_REQUIRED",
-        "fresh_check_failed": "SEND_FRESH_CHECK_FAILED",
-        "provider_failed": "SEND_FAILED",
-        "provider_unknown": "SEND_UNKNOWN",
-    }.get(str(error_kind), "SEND_REJECTED")
+    if not isinstance(error_kind, str) or not error_kind:
+        _invalid_send_response(
+            "command response contains no outbound error kind for a failed delivery"
+        )
+    error_message = outbound.get("error_message")
+    if not isinstance(error_message, str) or not error_message:
+        _invalid_send_response(
+            "command response contains no outbound error message for a failed delivery"
+        )
+    draft_saved_at_ms = _require_outbound_timestamp(outbound, "draft_saved_at_ms")
+    if state == "rejected" and draft_saved_at_ms is None:
+        _invalid_send_response("rejected outbound response has no saved draft")
+    next_action_value = outbound.get("next_action")
+    if next_action_value is not None and (
+        not isinstance(next_action_value, str) or not next_action_value
+    ):
+        _invalid_send_response(
+            "command response contains an invalid outbound next_action"
+        )
+    next_action = next_action_value if isinstance(next_action_value, str) else None
+    if state == "unknown" or error_kind == "provider_unknown":
+        code = "SEND_UNKNOWN"
+    elif error_kind == "fresh_check_required":
+        code = "SEND_FRESH_CHECK_REQUIRED"
+    elif error_kind == "fresh_check_failed":
+        code = "SEND_FRESH_CHECK_FAILED"
+    elif state == "failed" or error_kind in {
+        "provider_failed",
+        "target_not_replyable",
+    }:
+        code = "SEND_FAILED"
+    else:
+        code = "SEND_REJECTED"
     raise BccCommandError(
-        str(outbound.get("error_message") or "outbound delivery was not sent"),
+        error_message,
         code=code,
-        draft_saved=outbound.get("draft_saved_at_ms") is not None,
-        next_action=(
-            str(outbound["next_action"])
-            if outbound.get("next_action") is not None
-            else None
-        ),
+        draft_saved=draft_saved_at_ms is not None,
+        next_action=next_action,
     )
+
+
+def _render_send(result: Mapping[str, object]) -> None:
+    print(serialize_send(result))
 
 
 async def async_main(argv: Sequence[str] | None = None) -> int:

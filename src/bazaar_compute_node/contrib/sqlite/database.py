@@ -1750,6 +1750,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
         message.state
         in {
             OutboundDeliveryState.PENDING,
+            OutboundDeliveryState.QUEUED,
             OutboundDeliveryState.SENT,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
@@ -1780,10 +1781,13 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
         )
     ):
         raise ValueError("draft outbound message cannot contain delivery evidence")
-    if message.state is OutboundDeliveryState.PENDING and (
+    if message.state in {
+        OutboundDeliveryState.PENDING,
+        OutboundDeliveryState.QUEUED,
+    } and (
         message.completed_at_ms is not None or message.draft_saved_at_ms is not None
     ):
-        raise ValueError("pending outbound message cannot be terminal")
+        raise ValueError("non-terminal outbound message cannot be terminal")
     if message.state is OutboundDeliveryState.REJECTED and any(
         value is not None
         for value in (

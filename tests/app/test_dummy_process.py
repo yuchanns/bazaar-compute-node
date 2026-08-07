@@ -209,6 +209,11 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
 
     assert not endpoint_path.exists()
     assert not (data_dir / "runtime.json").exists()
+    if os.name == "nt":
+        assert not (data_dir / "bin" / "bcc.cmd").exists()
+        assert not (data_dir / "bin" / "bcc.ps1").exists()
+    else:
+        assert not (data_dir / "bin" / "bcc").exists()
 
 
 @pytest.mark.asyncio

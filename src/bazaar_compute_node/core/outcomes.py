@@ -7,6 +7,7 @@ from enum import StrEnum
 
 class ProviderCallStatus(StrEnum):
     CONFIRMED = "confirmed"
+    QUEUED = "queued"
     FAILED = "failed"
     UNKNOWN = "unknown"
 
@@ -22,11 +23,18 @@ class ProviderCallResult[ResultT]:
     receipt: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.status is ProviderCallStatus.CONFIRMED:
+        if self.status in {
+            ProviderCallStatus.CONFIRMED,
+            ProviderCallStatus.QUEUED,
+        }:
             if self.value is None:
-                raise ValueError("a confirmed provider call requires a value")
+                raise ValueError(
+                    f"a {self.status.value} provider call requires a value"
+                )
             if self.error_kind is not None or self.error_message is not None:
-                raise ValueError("a confirmed provider call cannot contain an error")
+                raise ValueError(
+                    f"a {self.status.value} provider call cannot contain an error"
+                )
             return
 
         if self.value is not None:

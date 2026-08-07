@@ -40,6 +40,7 @@ class RuntimeTurnState(StrEnum):
 class OutboundDeliveryState(StrEnum):
     DRAFT = "draft"
     PENDING = "pending"
+    QUEUED = "queued"
     SENT = "sent"
     FAILED = "failed"
     UNKNOWN = "unknown"
@@ -188,6 +189,14 @@ OUTBOUND_DELIVERY_TRANSITIONS: Mapping[
         {OutboundDeliveryState.PENDING, OutboundDeliveryState.REJECTED}
     ),
     OutboundDeliveryState.PENDING: frozenset(
+        {
+            OutboundDeliveryState.QUEUED,
+            OutboundDeliveryState.SENT,
+            OutboundDeliveryState.FAILED,
+            OutboundDeliveryState.UNKNOWN,
+        }
+    ),
+    OutboundDeliveryState.QUEUED: frozenset(
         {
             OutboundDeliveryState.SENT,
             OutboundDeliveryState.FAILED,

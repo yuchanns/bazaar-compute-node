@@ -56,8 +56,9 @@ channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 �
    exactly-once 语义。
 7. 审批能力属于 Channel port，由每个 Channel contrib 实现审批策略；当前 WeCom
    实现永远返回批准，不提供人工审批 UI。
-8. `bcc` wrapper 持久化注入到 `~/.bcn/bin/`，node 将该目录加入每个 runtime 子进程的
-   PATH；wrapper 不放在启动临时目录。
+8. `bcc` wrapper 在 node 生命周期内注入到 `~/.bcn/bin/`，node 将该目录加入每个 runtime
+   子进程的 PATH；每次启动重写 wrapper，退出时只删除本次 node 生成的 wrapper 文件，避免
+   后续迭代复用旧 bin；wrapper 不放在启动临时目录。
 
 ## 2. 已确认的边界与非目标
 
@@ -174,13 +175,13 @@ database:   persistent SQLite database under data_dir
 
 ```text
 ~/.bcn/
-├── bin/                       # persistent bcc wrappers
+├── bin/                       # lifecycle-scoped bcc wrappers
 ├── workspaces/{uuidv7}/       # shared agent workspace
 └── ...                        # SQLite data and other persistent node state
 ```
 
-临时目录只用于 IPC endpoint metadata 和生命周期临时文件；`bcc` wrapper 本身必须位于
-`~/.bcn/bin/`，以便 node 重启后仍能复用并由所有 runtime session 使用。
+临时目录只用于 IPC endpoint metadata 和生命周期临时文件；运行中的 `bcc` wrapper 必须位于
+`~/.bcn/bin/`，由 node 启动时生成并在 node 退出时删除，避免重启后复用旧 wrapper。
 
 业务启动阶段只依赖 core `IStorage` port 的 `initialize`，由注入的 storage implementation
 读取或创建 node identity；业务层随后根据返回的 `workspace_id` 创建 workspace directory。
@@ -660,8 +661,8 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
 2. 解析跨平台 data directory，通过注入的 storage port 启动持久化实现；SQLite adapter 在
    自己的实现内部执行 migrations。
 3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
-4. 启动本地 command service，确保 `~/.bcn/bin/` 下存在平台对应的 `bcc` wrapper，
-   并把该稳定目录加入每个 runtime 子进程的 PATH。为每个 runtime 子进程注入
+4. 启动本地 command service，确保 `~/.bcn/bin/` 下存在本次 node 生命周期对应的
+   `bcc` wrapper，并把该目录加入每个 runtime 子进程的 PATH。为每个 runtime 子进程注入
    `BCN_SESSION_ID=<bcn_session_id>`，让同一个 wrapper 能路由到正确的 session。
 5. 按已选择的 runtime/channel composition 恢复可恢复的 `runtime_sessions`；不假设上次
    进程仍然存在。
@@ -1067,8 +1068,9 @@ composition root、command service lifecycle 和 dispatch contract。
 - 将 Phase 1 的开发 transport 替换或升级为 Unix domain socket、Windows named pipe 或等价
   本机 IPC；loopback fallback 只允许随机 capability token、loopback bind 和受限 endpoint
   metadata。
-- 将 POSIX `bcc` 与 Windows `bcc.ps1` 持久化到 `~/.bcn/bin/`，为每个 runtime process
-  注入 PATH 和 `BCN_SESSION_ID`；wrapper 不携带宿主凭据和管理能力。
+- 将 POSIX `bcc` 与 Windows `bcc.ps1` 注入到 `~/.bcn/bin/`，为每个 runtime process
+  注入 PATH 和 `BCN_SESSION_ID`；node 退出时删除本次生成的 wrapper 文件；wrapper 不携带
+  宿主凭据和管理能力。
 - command service 端校验 IPC client binding、environment session id 和 bcn/runtime mapping，
   防止跨 session 串读 cursor、snapshot 或 outbound target。
 

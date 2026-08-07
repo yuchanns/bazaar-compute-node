@@ -10,8 +10,10 @@ from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
 from bazaar_compute_node.contrib.dummy import DummyAudit, DummyChannel, DummyRuntime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import InboundMessage, RuntimeSession
+from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import RuntimeCommandContext
 
 
@@ -59,7 +61,9 @@ def make_message(seq: int, *, body: str) -> InboundMessage:
     )
 
 
-async def wait_for_messages(node: NodeApplication, count: int) -> tuple[InboundMessage, ...]:
+async def wait_for_messages(
+    node: NodeApplication, count: int
+) -> tuple[InboundMessage, ...]:
     for _ in range(200):
         async with node.storage.transaction() as transaction:
             messages = await transaction.list_inbound_messages("bcn-a")
@@ -83,6 +87,8 @@ async def run_bcc(
     node: NodeApplication,
     runtime_session: RuntimeSession,
     arguments: tuple[str, ...],
+    *,
+    body: str | None = None,
 ) -> tuple[int, str, str]:
     wrapper_path = node._wrapper_path
     if wrapper_path is None:
@@ -96,12 +102,16 @@ async def run_bcc(
     process = await asyncio.create_subprocess_exec(
         str(wrapper_path),
         *arguments,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE
+        if body is not None
+        else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=environment,
     )
-    stdout, stderr = await process.communicate()
+    stdout, stderr = await process.communicate(
+        body.encode() if body is not None else None
+    )
     return (
         process.returncode if process.returncode is not None else -1,
         stdout.decode(errors="replace"),
@@ -217,5 +227,170 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         assert bad_around_stdout == ""
         assert "Error: message not found in requested history" in bad_around_stderr
         assert "Code: INVALID_COMMAND" in bad_around_stderr
+    finally:
+        await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
+    tmp_path: Path,
+) -> None:
+    node = NodeApplication(
+        factories=make_factories(),
+        channel_slug="dummy",
+        runtime_slug="dummy",
+        storage_slug="sqlite",
+        audit_slug="dummy",
+        data_dir=tmp_path / "data",
+        endpoint_path=tmp_path / "bcn.sock",
+        node_id="node-3d",
+        timeout_budget=make_budget(),
+    )
+    channel = cast(DummyChannel, node.channel)
+    audit = cast(DummyAudit, node.audit)
+    await node.start()
+    try:
+        await channel.inject(make_message(1, body="first inbound"))
+        await wait_for_messages(node, 1)
+        runtime_session = await wait_for_runtime_session(node)
+
+        (
+            missing_snapshot_code,
+            missing_snapshot_stdout,
+            missing_snapshot_stderr,
+        ) = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="reply before check",
+        )
+        assert missing_snapshot_code != 0
+        assert missing_snapshot_stdout == ""
+        assert "Error: No inbox snapshot is available" in missing_snapshot_stderr
+        assert "Code: SEND_FRESH_CHECK_REQUIRED" in missing_snapshot_stderr
+        assert "Draft saved: yes" in missing_snapshot_stderr
+        assert len(channel.send_attempts) == 0
+
+        read_code, _read_stdout, read_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "read", "--target", "#dummy:bcn-a"),
+        )
+        assert read_code == 0, read_stderr
+
+        sent_code, sent_stdout, sent_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="confirmed reply",
+        )
+        assert sent_code == 0, sent_stderr
+        assert sent_stderr == ""
+        assert sent_stdout.startswith("Message sent to #dummy:bcn-a. Message ID: ")
+        assert len(channel.sent_messages) == 1
+
+        (
+            invalid_target_code,
+            invalid_target_stdout,
+            invalid_target_stderr,
+        ) = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:missing"),
+            body="invalid target reply",
+        )
+        assert invalid_target_code != 0
+        assert invalid_target_stdout == ""
+        assert (
+            "Error: Thread target is not found or is not replyable: #dummy:missing"
+            in invalid_target_stderr
+        )
+        assert "Code: SEND_FAILED" in invalid_target_stderr
+        assert "Draft saved: yes" in invalid_target_stderr
+        assert len(channel.send_attempts) == 1
+
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.QUEUED,
+                value=ChannelDeliveryReceipt(provider_receipt_ref="queue-1"),
+            )
+        )
+        queued_code, queued_stdout, queued_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="queued reply",
+        )
+        assert queued_code == 0, queued_stderr
+        assert queued_stderr == ""
+        assert queued_stdout.startswith("Message queued to #dummy:bcn-a. Message ID: ")
+        assert len(channel.queued_messages) == 1
+
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.UNKNOWN,
+                error_kind="transport_eof",
+                error_message="delivery outcome is unknown",
+            )
+        )
+        unknown_code, unknown_stdout, unknown_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="unknown reply",
+        )
+        assert unknown_code != 0
+        assert unknown_stdout == ""
+        assert "Code: SEND_UNKNOWN" in unknown_stderr
+        assert (
+            "Next action: reconcile channel delivery before retrying" in unknown_stderr
+        )
+
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_rejected",
+                error_message="provider rejected delivery",
+            )
+        )
+        failed_code, failed_stdout, failed_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="failed reply",
+        )
+        assert failed_code != 0
+        assert failed_stdout == ""
+        assert "Error: provider rejected delivery" in failed_stderr
+        assert "Code: SEND_FAILED" in failed_stderr
+
+        await channel.inject(make_message(2, body="new inbound"))
+        await wait_for_messages(node, 2)
+        stale_code, stale_stdout, stale_stderr = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="stale reply",
+        )
+        assert stale_code != 0
+        assert stale_stdout == ""
+        assert "Code: SEND_FRESH_CHECK_FAILED" in stale_stderr
+        assert "Draft saved: yes" in stale_stderr
+        assert len(channel.send_attempts) == 4
+        assert any(
+            event.event_name == "channel.outbound.pending" for event in audit.events
+        )
+        assert any(
+            event.event_name == "bcc.send.fresh_check.passed" for event in audit.events
+        )
+        assert any(
+            event.event_name == "channel.outbound.queued" for event in audit.events
+        )
+        assert any(
+            event.event_name == "channel.outbound.unknown" for event in audit.events
+        )
+        assert any(
+            event.event_name == "channel.outbound.failed" for event in audit.events
+        )
     finally:
         await node.stop()

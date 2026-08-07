@@ -385,6 +385,7 @@ class OutboundMessage:
             state
             in {
                 OutboundDeliveryState.PENDING,
+                OutboundDeliveryState.QUEUED,
                 OutboundDeliveryState.SENT,
             }
             and self.fresh_check_state is not FreshCheckState.PASSED

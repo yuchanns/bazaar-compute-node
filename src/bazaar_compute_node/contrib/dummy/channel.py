@@ -25,6 +25,7 @@ class DummyChannel(IChannel):
         self.receive_closed = False
         self.injected_messages: list[InboundMessage] = []
         self.send_attempts: list[OutboundMessage] = []
+        self.queued_messages: list[OutboundMessage] = []
         self.sent_messages: list[OutboundMessage] = []
         self.approval_requests: list[ApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
@@ -93,6 +94,8 @@ class DummyChannel(IChannel):
             )
         if result.status is ProviderCallStatus.CONFIRMED:
             self.sent_messages.append(message)
+        elif result.status is ProviderCallStatus.QUEUED:
+            self.queued_messages.append(message)
         return result
 
     async def request_approval(

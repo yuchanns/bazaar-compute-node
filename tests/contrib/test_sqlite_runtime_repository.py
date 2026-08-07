@@ -170,7 +170,17 @@ async def test_sqlite_outbound_repository_persists_delivery_and_fresh_check_audi
         pending = replace(pending, provider_attempted_at_ms=121)
         pending = await transaction.save_outbound_message(pending)
 
-        sent = pending.transition_to(
+        queued = pending.transition_to(
+            OutboundDeliveryState.QUEUED,
+            at_ms=125,
+            provider_receipt_ref="queue-receipt-1",
+        )
+        queued = await transaction.save_outbound_message(queued)
+        assert (
+            await transaction.get_outbound_message(draft.outbound_message_id) == queued
+        )
+
+        sent = queued.transition_to(
             OutboundDeliveryState.SENT,
             at_ms=130,
             provider_message_id="provider-outbound-1",

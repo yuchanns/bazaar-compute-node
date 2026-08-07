@@ -285,9 +285,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         async with self._concurrency.for_session(bcn_session_id):
             async with self._storage.transaction() as transaction:
                 if await transaction.get_bcn_session(bcn_session_id) is None:
-                    raise SessionNotFoundError(
-                        f"unknown bcn session: {bcn_session_id}"
-                    )
+                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
                 cursor = await transaction.get_consumer_cursor(bcn_session_id)
                 if cursor is None:
                     cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
@@ -329,9 +327,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         async with self._concurrency.for_session(bcn_session_id):
             async with self._storage.transaction() as transaction:
                 if await transaction.get_bcn_session(bcn_session_id) is None:
-                    raise SessionNotFoundError(
-                        f"unknown bcn session: {bcn_session_id}"
-                    )
+                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
                 messages = await transaction.list_inbound_messages(
                     bcn_session_id,
                     target=target,
@@ -378,9 +374,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
             async with self._storage.transaction() as transaction:
                 bcn_session = await transaction.get_bcn_session(bcn_session_id)
                 if bcn_session is None:
-                    raise SessionNotFoundError(
-                        f"unknown bcn session: {bcn_session_id}"
-                    )
+                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
                 channel_session = await transaction.get_channel_session(
                     bcn_session.channel_session_id
                 )
@@ -392,6 +386,11 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 if cursor is None:
                     cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
                 current_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
+                target_messages = await transaction.list_inbound_messages(
+                    bcn_session_id,
+                    target=target,
+                    limit=1,
+                )
                 outbound = OutboundMessage(
                     outbound_message_id=outbound_id,
                     command_id=command_id,
@@ -405,7 +404,35 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 )
                 outbound = await transaction.save_outbound_message(outbound)
                 outbound_id = outbound.outbound_message_id
-                if cursor.inbox_snapshot_seq is None:
+                rejection_event_name = "bcc.send.fresh_check.failed"
+                if not target_messages:
+                    outbound = outbound.transition_to(
+                        OutboundDeliveryState.REJECTED,
+                        at_ms=self._clock(),
+                        error_kind=ErrorKind.TARGET_NOT_REPLYABLE.value,
+                        error_message=(
+                            f"Thread target is not found or is not replyable: {target}"
+                        ),
+                        next_action=(
+                            "Run `bcc message read` or `bcc message check` for this "
+                            "target to verify whether the message already landed; "
+                            "retry only after stable verification."
+                        ),
+                    )
+                    await transaction.save_outbound_message(outbound)
+                    audit_context = CorrelationContext(
+                        node_id=self.node_id,
+                        channel_slug=channel_session.channel_slug,
+                        channel_session_id=channel_session.channel_session_id,
+                        bcn_session_id=bcn_session_id,
+                        command_id=command_id,
+                        inbound_seq=current_seq,
+                        outbound_message_id=outbound_id,
+                    )
+                    audit_state = RuntimeEventState.FAILED
+                    audit_kind = ErrorKind.TARGET_NOT_REPLYABLE
+                    rejection_event_name = "bcc.send.target.failed"
+                elif cursor.inbox_snapshot_seq is None:
                     outbound = outbound.record_fresh_check(
                         FreshCheckState.FAILED,
                         snapshot_seq=None,
@@ -415,8 +442,13 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                         OutboundDeliveryState.REJECTED,
                         at_ms=self._clock(),
                         error_kind=ErrorKind.FRESH_CHECK_REQUIRED.value,
-                        error_message="no inbox snapshot is available",
-                        next_action="run message check or read before sending",
+                        error_message=(
+                            "No inbox snapshot is available; outbound send was refused."
+                        ),
+                        next_action=(
+                            "Run `bcc message check` or `bcc message read` before "
+                            "retrying."
+                        ),
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = CorrelationContext(
@@ -440,8 +472,14 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                         OutboundDeliveryState.REJECTED,
                         at_ms=self._clock(),
                         error_kind=ErrorKind.FRESH_CHECK_FAILED.value,
-                        error_message="new inbound messages arrived after the snapshot",
-                        next_action="run message check or read again before sending",
+                        error_message=(
+                            "New inbound message(s) arrived after the latest inbox "
+                            "snapshot; outbound send was refused."
+                        ),
+                        next_action=(
+                            "Run `bcc message check` to read the new messages, then "
+                            "retry `bcc message send` if still appropriate."
+                        ),
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = CorrelationContext(
@@ -484,7 +522,7 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
 
             if outbound.state is OutboundDeliveryState.REJECTED:
                 await self._append_audit(
-                    event_name="bcc.send.fresh_check.failed",
+                    event_name=rejection_event_name,
                     state=audit_state,
                     correlation=audit_context,
                     error_kind=audit_kind,
@@ -492,6 +530,11 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 )
                 return outbound
 
+            await self._append_audit(
+                event_name="bcc.send.fresh_check.passed",
+                state=RuntimeEventState.COMPLETED,
+                correlation=audit_context,
+            )
             await self._append_audit(
                 event_name="channel.outbound.pending",
                 state=RuntimeEventState.STARTED,
@@ -533,6 +576,18 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
                 )
                 terminal_kind = None
                 terminal_state = RuntimeEventState.COMPLETED
+            elif provider_result.status is ProviderCallStatus.QUEUED:
+                receipt = provider_result.value
+                if receipt is None:
+                    raise ValueError("queued channel delivery has no receipt")
+                outbound = outbound.transition_to(
+                    OutboundDeliveryState.QUEUED,
+                    at_ms=self._clock(),
+                    provider_message_id=receipt.provider_message_id,
+                    provider_receipt_ref=receipt.provider_receipt_ref,
+                )
+                terminal_kind = None
+                terminal_state = RuntimeEventState.STARTED
             elif provider_result.status is ProviderCallStatus.FAILED:
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.FAILED,
@@ -1027,7 +1082,9 @@ class SessionOrchestrator(ICommandService, IAsyncLifecycle):
         else:
             state = (
                 RuntimeProcessState.UNKNOWN
-                if result is None or result.status is ProviderCallStatus.UNKNOWN
+                if result is None
+                or result.status
+                in {ProviderCallStatus.UNKNOWN, ProviderCallStatus.QUEUED}
                 else RuntimeProcessState.FAILED
             )
             stopped = stopping.transition_process_to(

@@ -11,6 +11,7 @@ from bazaar_compute_node.contrib.dummy import (
     DummyStorage,
     DummyTurnPlan,
 )
+from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -344,6 +345,94 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         )
         assert stale.state is OutboundDeliveryState.REJECTED
         assert len(channel.send_attempts) == 1
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_send_validates_target_and_preserves_provider_delivery_states() -> None:
+    orchestrator, channel, _runtime, storage, audit = await make_node()
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+
+        invalid_target = await orchestrator.send(
+            bcn_session_id="bcn-1",
+            command_id="command-invalid-target",
+            target="#dummy:missing",
+            body="reply",
+            created_at_ms=2,
+            timeout=1,
+        )
+        assert invalid_target.state is OutboundDeliveryState.REJECTED
+        assert invalid_target.error_kind == "target_not_replyable"
+        assert invalid_target.draft_saved_at_ms is not None
+        assert not channel.send_attempts
+        assert any(
+            event.event_name == "bcc.send.target.failed" for event in audit.events
+        )
+
+        await orchestrator.check("bcn-1", timeout=1)
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.QUEUED,
+                value=ChannelDeliveryReceipt(provider_receipt_ref="queue-1"),
+            )
+        )
+        queued = await orchestrator.send(
+            bcn_session_id="bcn-1",
+            command_id="command-queued",
+            target="#dummy:bcn-1",
+            body="queued reply",
+            created_at_ms=3,
+            timeout=1,
+        )
+        assert queued.state is OutboundDeliveryState.QUEUED
+        assert queued.provider_receipt_ref == "queue-1"
+        assert channel.queued_messages == [channel.send_attempts[0]]
+
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.UNKNOWN,
+                error_kind="transport_eof",
+                error_message="delivery outcome is unknown",
+            )
+        )
+        unknown = await orchestrator.send(
+            bcn_session_id="bcn-1",
+            command_id="command-unknown",
+            target="#dummy:bcn-1",
+            body="unknown reply",
+            created_at_ms=4,
+            timeout=1,
+        )
+        assert unknown.state is OutboundDeliveryState.UNKNOWN
+        assert unknown.next_action == "reconcile channel delivery before retrying"
+
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_rejected",
+                error_message="provider rejected delivery",
+            )
+        )
+        failed = await orchestrator.send(
+            bcn_session_id="bcn-1",
+            command_id="command-failed",
+            target="#dummy:bcn-1",
+            body="failed reply",
+            created_at_ms=5,
+            timeout=1,
+        )
+        assert failed.state is OutboundDeliveryState.FAILED
+        assert len(channel.send_attempts) == 3
+        assert not channel.sent_messages
+        assert any(
+            event.event_name == "channel.outbound.queued" for event in audit.events
+        )
+        assert any(
+            event.event_name == "bcc.send.fresh_check.passed" for event in audit.events
+        )
     finally:
         await orchestrator.stop(timeout=1)
 
