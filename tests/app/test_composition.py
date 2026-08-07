@@ -15,6 +15,7 @@ from bazaar_compute_node.contrib.dummy import DummyChannel, DummyRuntime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import InboundMessage
+from bazaar_compute_node.core.paths import resolve_data_dir
 
 
 def make_budget() -> TimeoutBudget:
@@ -55,14 +56,13 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
         storage_slug="sqlite",
         audit_slug="dummy",
     )
-    data_dir = tmp_path / "bcn"
+    data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
         channel_slug="dummy",
         runtime_slug="dummy",
         storage_slug="sqlite",
         audit_slug="dummy",
-        data_dir=data_dir,
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3a",
         timeout_budget=make_budget(),
@@ -150,7 +150,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
     else:
         assert not (data_dir / "bin" / "bcc").exists()
     assert node._wrapper_path is None
-    persisted = SqliteDatabase(data_dir)
+    persisted = SqliteDatabase()
     await persisted.start(timeout=2)
     try:
         identity = await persisted.initialize(node_id="node-3a")
@@ -181,7 +181,6 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
         runtime_slug="dummy",
         storage_slug="sqlite",
         audit_slug="dummy",
-        data_dir=tmp_path / "bcn",
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=make_budget(),
     )

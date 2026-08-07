@@ -30,8 +30,8 @@ def make_factories() -> AdapterFactories:
     def create_runtime(_context: RuntimeCommandContext) -> DummyRuntime:
         return DummyRuntime()
 
-    def create_storage(data_dir: Path) -> SqliteDatabase:
-        return SqliteDatabase(data_dir)
+    def create_storage() -> SqliteDatabase:
+        return SqliteDatabase()
 
     return AdapterFactories(
         channel=DummyChannel,
@@ -130,7 +130,6 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         runtime_slug="dummy",
         storage_slug="sqlite",
         audit_slug="dummy",
-        data_dir=tmp_path / "data",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3c",
         timeout_budget=make_budget(),
@@ -241,7 +240,6 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         runtime_slug="dummy",
         storage_slug="sqlite",
         audit_slug="dummy",
-        data_dir=tmp_path / "data",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3d",
         timeout_budget=make_budget(),

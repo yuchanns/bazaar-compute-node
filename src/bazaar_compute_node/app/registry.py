@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
-from pathlib import Path
 from typing import Any, cast
 
 from ..core.channel import IChannel
@@ -20,7 +19,7 @@ CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
 ChannelFactory = Callable[[], IChannel]
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
-StorageFactory = Callable[[Path], IStorage]
+StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[], IAudit]
 
 

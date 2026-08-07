@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 
 import pytest
 
@@ -9,7 +8,7 @@ from bazaar_compute_node.app.registry import AdapterRegistry, ProviderLoadError
 from bazaar_compute_node.core.runtime import RuntimeCommandContext
 
 
-def test_dummy_adapters_are_loaded_through_entry_points(tmp_path: Path) -> None:
+def test_dummy_adapters_are_loaded_through_entry_points() -> None:
     factories = AdapterRegistry().load(
         channel_slug="dummy",
         runtime_slug="dummy",
@@ -31,12 +30,12 @@ def test_dummy_adapters_are_loaded_through_entry_points(tmp_path: Path) -> None:
         ).__class__.__name__
         == "DummyRuntime"
     )
-    assert factories.storage(tmp_path).__class__.__name__ == "DummyStorage"
+    assert factories.storage().__class__.__name__ == "DummyStorage"
     assert factories.audit().__class__.__name__ == "DummyAudit"
     assert factories.control is not None
 
 
-def test_sqlite_storage_composes_without_dummy_control(tmp_path: Path) -> None:
+def test_sqlite_storage_composes_without_dummy_control() -> None:
     factories = AdapterRegistry().load(
         channel_slug="dummy",
         runtime_slug="dummy",
@@ -44,7 +43,7 @@ def test_sqlite_storage_composes_without_dummy_control(tmp_path: Path) -> None:
         audit_slug="dummy",
     )
 
-    assert factories.storage(tmp_path).__class__.__name__ == "SqliteDatabase"
+    assert factories.storage().__class__.__name__ == "SqliteDatabase"
     assert factories.control is None
 
 

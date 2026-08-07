@@ -115,6 +115,7 @@ for line in sys.stdin:
     assert supervisor.state is JsonlProcessState.STOPPED
 
 
+@pytest.mark.real_home
 @pytest.mark.asyncio
 async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
     codex = shutil.which("codex")
@@ -125,7 +126,7 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
     await database.start(timeout=10)
     try:
         identity = await database.initialize()
-        workspace = resolve_workspace_dir(identity.workspace_id, database.data_dir)
+        workspace = resolve_workspace_dir(identity.workspace_id)
         workspace.mkdir(parents=True, exist_ok=True)
         supervisor = JsonlProcessSupervisor(
             JsonlProcessSpec(

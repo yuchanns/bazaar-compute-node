@@ -49,14 +49,14 @@ channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 �
 3. 首次 channel inbound 创建并持久化三方绑定：
    `agent_runtime_session_id <-> bcn_session_id <-> channel_session_id`。
 4. bcn 启动时只生成一个 workspace UUID，写入 SQLite；workspace 固定为
-   `~/.bcn/workspaces/{uuid}/`，后续启动复用，不按 agent 拆分。
+   `$HOME/.bcn/workspaces/{uuid}/`，后续启动复用，不按 agent 拆分。
 5. Channel 只把“有消息待处理”的提醒送进 runtime；真实消息由 agent 通过 `bcc`
    工具读取。
 6. 第一版只提供 `bcc message check/read/send`，不引入 task queue、claim、lease 或
    exactly-once 语义。
 7. 审批能力属于 Channel port，由每个 Channel contrib 实现审批策略；当前 WeCom
    实现永远返回批准，不提供人工审批 UI。
-8. `bcc` wrapper 在 node 生命周期内注入到 `~/.bcn/bin/`，node 将该目录加入每个 runtime
+8. `bcc` wrapper 在 node 生命周期内注入到 `$HOME/.bcn/bin/`，node 将该目录加入每个 runtime
    子进程的 PATH；每次启动重写 wrapper，退出时只删除本次 node 生成的 wrapper 文件，避免
    后续迭代复用旧 bin；wrapper 不放在启动临时目录。
 
@@ -165,23 +165,23 @@ UUID 统一使用 RFC 9562 UUIDv7，不为这些能力增加第三方依赖。
 不重复承担 UUIDv7 格式校验：
 
 ```text
-data_dir:   platform user data directory for bcn
-workspace:  ~/.bcn/workspaces/{workspace_id}/
+data_dir:   $HOME/.bcn
+workspace:  $HOME/.bcn/workspaces/{workspace_id}/
 database:   persistent SQLite database under data_dir
 ```
 
-`~/.bcn` 是产品语义上的逻辑根目录，实际路径由跨平台 resolver 计算；不能把业务
-状态放进 runtime 启动时创建的临时目录。稳定目录布局为：
+`$HOME/.bcn` 是固定的产品数据根目录；不能通过环境变量、CLI 参数或构造参数覆盖，也不能
+把业务状态放进 runtime 启动时创建的临时目录。稳定目录布局为：
 
 ```text
-~/.bcn/
+$HOME/.bcn/
 ├── bin/                       # lifecycle-scoped bcc wrappers
 ├── workspaces/{uuidv7}/       # shared agent workspace
 └── ...                        # SQLite data and other persistent node state
 ```
 
 临时目录只用于 IPC endpoint metadata 和生命周期临时文件；运行中的 `bcc` wrapper 必须位于
-`~/.bcn/bin/`，由 node 启动时生成并在 node 退出时删除，避免重启后复用旧 wrapper。
+`$HOME/.bcn/bin/`，由 node 启动时生成并在 node 退出时删除，避免重启后复用旧 wrapper。
 
 业务启动阶段只依赖 core `IStorage` port 的 `initialize`，由注入的 storage implementation
 读取或创建 node identity；业务层随后根据返回的 `workspace_id` 创建 workspace directory。
@@ -658,10 +658,10 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
 ### 5.1 启动
 
 1. 解析 `--channel` 与 `--runtime`，拒绝未知或不兼容的 adapter slug。
-2. 解析跨平台 data directory，通过注入的 storage port 启动持久化实现；SQLite adapter 在
-   自己的实现内部执行 migrations。
+2. 使用固定的 `$HOME/.bcn` data directory，通过 storage port 启动持久化实现；SQLite adapter
+   在自己的实现内部执行 migrations。
 3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
-4. 启动本地 command service，确保 `~/.bcn/bin/` 下存在本次 node 生命周期对应的
+4. 启动本地 command service，确保 `$HOME/.bcn/bin/` 下存在本次 node 生命周期对应的
    `bcc` wrapper，并把该目录加入每个 runtime 子进程的 PATH。为每个 runtime 子进程注入
    `BCN_SESSION_ID=<bcn_session_id>`，让同一个 wrapper 能路由到正确的 session。
 5. 按已选择的 runtime/channel composition 恢复可恢复的 `runtime_sessions`；不假设上次
@@ -1068,7 +1068,7 @@ composition root、command service lifecycle 和 dispatch contract。
 - 将 Phase 1 的开发 transport 替换或升级为 Unix domain socket、Windows named pipe 或等价
   本机 IPC；loopback fallback 只允许随机 capability token、loopback bind 和受限 endpoint
   metadata。
-- 将 POSIX `bcc` 与 Windows `bcc.ps1` 注入到 `~/.bcn/bin/`，为每个 runtime process
+- 将 POSIX `bcc` 与 Windows `bcc.ps1` 注入到 `$HOME/.bcn/bin/`，为每个 runtime process
   注入 PATH 和 `BCN_SESSION_ID`；node 退出时删除本次生成的 wrapper 文件；wrapper 不携带
   宿主凭据和管理能力。
 - command service 端校验 IPC client binding、environment session id 和 bcn/runtime mapping，

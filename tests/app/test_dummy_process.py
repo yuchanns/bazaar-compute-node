@@ -12,6 +12,7 @@ import pytest
 
 from bazaar_compute_node.app.daemon import read_runtime_metadata
 from bazaar_compute_node.app.transport import LocalCommandClient
+from bazaar_compute_node.core.paths import resolve_data_dir
 
 
 async def wait_for_runtime_endpoint(data_dir: Path) -> str:
@@ -64,7 +65,7 @@ def start_dummy_process(
     tmp_path: Path,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     endpoint = tmp_path / "node.sock"
-    data_dir = tmp_path / "bcn"
+    data_dir = resolve_data_dir()
     environment = os.environ.copy()
     source_root = str(Path(__file__).parents[2] / "src")
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -82,8 +83,6 @@ def start_dummy_process(
             "dummy",
             "--storage",
             "dummy",
-            "--data-dir",
-            str(data_dir),
             "--endpoint",
             str(endpoint),
         ],
@@ -95,7 +94,7 @@ def start_dummy_process(
     return process, endpoint, data_dir
 
 
-def stop_dummy_process(data_dir: Path) -> subprocess.CompletedProcess[str]:
+def stop_dummy_process() -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     source_root = str(Path(__file__).parents[2] / "src")
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -107,8 +106,6 @@ def stop_dummy_process(data_dir: Path) -> subprocess.CompletedProcess[str]:
             "-m",
             "bazaar_compute_node.cli",
             "stop",
-            "--data-dir",
-            str(data_dir),
         ],
         env=environment,
         capture_output=True,
@@ -200,7 +197,7 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
         assert all(turn["state"] == "completed" for turn in runtime_turns.values())
         assert all(outbound["state"] == "sent" for outbound in outbound_messages)
     finally:
-        stop_process = await asyncio.to_thread(stop_dummy_process, data_dir)
+        stop_process = await asyncio.to_thread(stop_dummy_process)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()
@@ -240,8 +237,6 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
                 "-m",
                 "bazaar_compute_node.cli",
                 "restart",
-                "--data-dir",
-                str(data_dir),
             ],
             env=environment,
             capture_output=True,
@@ -264,7 +259,7 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
         )
         assert response.get("ok") is True
     finally:
-        stop_process = await asyncio.to_thread(stop_dummy_process, data_dir)
+        stop_process = await asyncio.to_thread(stop_dummy_process)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()

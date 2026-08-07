@@ -20,11 +20,9 @@ from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_d
 
 
 @pytest.mark.asyncio
-async def test_sqlite_bootstrap_persists_node_and_workspace_state(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "node"
-    database = SqliteDatabase(data_dir)
+async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
+    data_dir = resolve_data_dir()
+    database = SqliteDatabase()
 
     await database.start(timeout=2)
     try:
@@ -96,7 +94,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
     finally:
         await database.stop(timeout=2)
 
-    restarted = SqliteDatabase(data_dir)
+    restarted = SqliteDatabase()
     await restarted.start(timeout=2)
     try:
         restarted_identity = await restarted.initialize(node_id="node-1")
@@ -108,8 +106,8 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state(
 
 
 @pytest.mark.asyncio
-async def test_sqlite_transaction_rolls_back_and_commits_ddl(tmp_path: Path) -> None:
-    database = SqliteDatabase(tmp_path / "node")
+async def test_sqlite_transaction_rolls_back_and_commits_ddl() -> None:
+    database = SqliteDatabase()
     await database.start(timeout=2)
     try:
         with pytest.raises(RuntimeError, match="rollback"):
@@ -139,9 +137,9 @@ async def test_sqlite_transaction_rolls_back_and_commits_ddl(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_sqlite_migration_checksum_mismatch_fails_closed(tmp_path: Path) -> None:
-    data_dir = tmp_path / "node"
-    database = SqliteDatabase(data_dir)
+async def test_sqlite_migration_checksum_mismatch_fails_closed() -> None:
+    data_dir = resolve_data_dir()
+    database = SqliteDatabase()
     await database.start(timeout=2)
     await database.stop(timeout=2)
 
@@ -152,17 +150,15 @@ async def test_sqlite_migration_checksum_mismatch_fails_closed(tmp_path: Path) -
         )
         await connection.commit()
 
-    restarted = SqliteDatabase(data_dir)
+    restarted = SqliteDatabase()
     with pytest.raises(MigrationChecksumError):
         await restarted.start(timeout=2)
     assert not restarted.is_started
 
 
 @pytest.mark.asyncio
-async def test_sqlite_applies_new_migration_to_existing_v1_database(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "node"
+async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
+    data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
 
@@ -183,7 +179,7 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database(
         )
         await connection.commit()
 
-    database = SqliteDatabase(data_dir)
+    database = SqliteDatabase()
     await database.start(timeout=2)
     try:
         async with database.transaction() as transaction:
@@ -218,20 +214,11 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database(
         await database.stop(timeout=2)
 
 
-def test_resolve_data_dir_prefers_explicit_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("BCN_DATA_DIR", str(tmp_path / "environment"))
-    assert resolve_data_dir(tmp_path / "custom") == tmp_path / "custom"
-    assert resolve_data_dir() == (tmp_path / "environment").resolve()
+def test_resolve_data_dir_uses_the_home_bcn_root() -> None:
+    assert resolve_data_dir() == (Path.home() / ".bcn").resolve()
 
 
-def test_default_workspace_uses_the_home_bcn_root(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("BCN_DATA_DIR", raising=False)
-
+def test_default_workspace_uses_the_home_bcn_root() -> None:
     assert resolve_data_dir() == (Path.home() / ".bcn").resolve()
     assert (
         resolve_workspace_dir("workspace-1")

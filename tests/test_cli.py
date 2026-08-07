@@ -28,18 +28,18 @@ def test_main_runs_async_entrypoint(capsys: pytest.CaptureFixture[str]) -> None:
     assert "usage: bcn" in captured.out
 
 
-def test_help_shows_the_resolved_data_dir(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    configured_data_dir = tmp_path / "configured-data"
-    monkeypatch.setenv("BCN_DATA_DIR", str(configured_data_dir))
-
+def test_help_shows_the_resolved_data_dir() -> None:
     help_text = build_parser().format_help()
 
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
     ).replace("\n", "")
+    assert "--data-dir" not in help_text
+
+
+def test_cli_rejects_data_dir_override() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--data-dir", "override"])
 
 
 def test_cli_defaults_to_sqlite_storage() -> None:

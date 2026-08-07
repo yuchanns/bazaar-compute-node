@@ -26,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     default_data_dir = resolve_data_dir()
     parser = argparse.ArgumentParser(
         prog="bcn",
-        description="Runtime-agnostic computer node daemon for agents and channels.",
+        description=(
+            "Runtime-agnostic computer node daemon for agents and channels. "
+            f"Persistent node root: {default_data_dir}."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -44,11 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--storage", default="sqlite")
     parser.add_argument("--audit", default="dummy")
     parser.add_argument(
-        "--data-dir",
-        type=Path,
-        help=f"Persistent node root (default: {default_data_dir}).",
-    )
-    parser.add_argument(
         "--endpoint",
         type=Path,
         help="Local command endpoint path on Unix; Windows uses loopback TCP.",
@@ -59,10 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the selected node in the current process instead of daemonizing.",
     )
     return parser
-
-
-def _data_dir(args: argparse.Namespace) -> Path:
-    return resolve_data_dir(args.data_dir)
 
 
 def _endpoint_path(args: argparse.Namespace, data_dir: Path) -> Path:
@@ -95,14 +89,13 @@ def _load_factories(
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     factories = _load_factories(args, parser)
 
-    data_dir = _data_dir(args)
+    data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
         channel_slug=args.channel,
         runtime_slug=args.runtime,
         storage_slug=args.storage,
         audit_slug=args.audit,
-        data_dir=data_dir,
         endpoint_path=_endpoint_path(args, data_dir),
     )
     await node.start()
@@ -131,8 +124,6 @@ def _daemon_command(args: argparse.Namespace, data_dir: Path) -> list[str]:
         args.storage,
         "--audit",
         args.audit,
-        "--data-dir",
-        str(data_dir),
         "--endpoint",
         str(_endpoint_path(args, data_dir)),
     ]
@@ -169,7 +160,7 @@ async def _start_daemon(
     parser: argparse.ArgumentParser,
 ) -> int:
     _load_factories(args, parser)
-    data_dir = _data_dir(args)
+    data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = data_dir / "runtime.json"
     metadata = read_runtime_metadata(metadata_path)
@@ -204,7 +195,7 @@ async def _stop_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    data_dir = _data_dir(args)
+    data_dir = resolve_data_dir()
     metadata_path = data_dir / "runtime.json"
     metadata = read_runtime_metadata(metadata_path)
     if metadata is None:
@@ -237,7 +228,7 @@ async def _restart_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    data_dir = _data_dir(args)
+    data_dir = resolve_data_dir()
     metadata = read_runtime_metadata(data_dir / "runtime.json")
     if (args.channel is None) != (args.runtime is None):
         parser.error("--channel and --runtime must be provided together")

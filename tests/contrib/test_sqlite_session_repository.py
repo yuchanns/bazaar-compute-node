@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -24,8 +23,8 @@ from bazaar_compute_node.core.models import (
 
 
 @pytest_asyncio.fixture
-async def database(tmp_path: Path) -> AsyncIterator[SqliteDatabase]:
-    database = SqliteDatabase(tmp_path / "node")
+async def database() -> AsyncIterator[SqliteDatabase]:
+    database = SqliteDatabase()
     await database.start(timeout=2)
     await database.initialize(node_id="node-1", workspace_id="workspace-1")
     try:
@@ -185,9 +184,8 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
             await transaction.get_runtime_session("runtime-1") == make_runtime_session()
         )
 
-    data_dir = database.data_dir
     await database.stop(timeout=2)
-    restarted = SqliteDatabase(data_dir)
+    restarted = SqliteDatabase()
     await restarted.start(timeout=2)
     try:
         await restarted.initialize(node_id="node-1", workspace_id="workspace-1")
@@ -416,13 +414,10 @@ async def test_sqlite_inbound_and_cursor_transaction_rolls_back_together(
 
 
 @pytest.mark.asyncio
-async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "node"
+async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped() -> None:
     lifecycle_timeout = 10
-    first = SqliteDatabase(data_dir)
-    second = SqliteDatabase(data_dir)
+    first = SqliteDatabase()
+    second = SqliteDatabase()
     await first.start(timeout=lifecycle_timeout)
     await first.initialize(node_id="node-1", workspace_id="workspace-1")
     await second.start(timeout=lifecycle_timeout)
@@ -608,12 +603,9 @@ async def test_sqlite_session_graph_rolls_back_as_one_transaction(
 
 
 @pytest.mark.asyncio
-async def test_sqlite_concurrent_get_or_create_has_one_winner(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "node"
-    first = SqliteDatabase(data_dir)
-    second = SqliteDatabase(data_dir)
+async def test_sqlite_concurrent_get_or_create_has_one_winner() -> None:
+    first = SqliteDatabase()
+    second = SqliteDatabase()
     await first.start(timeout=2)
     await first.initialize(node_id="node-1", workspace_id="workspace-1")
     await second.start(timeout=2)

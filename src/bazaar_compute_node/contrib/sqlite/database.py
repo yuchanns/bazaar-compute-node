@@ -1083,7 +1083,6 @@ class SqliteDatabase:
 
     def __init__(
         self,
-        data_dir: Path | str | None = None,
         *,
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
@@ -1093,7 +1092,7 @@ class SqliteDatabase:
             or busy_timeout_ms <= 0
         ):
             raise ValueError("busy_timeout_ms must be a positive integer")
-        self.data_dir = resolve_data_dir(data_dir)
+        self.data_dir = resolve_data_dir()
         self.database_path = self.data_dir / DATABASE_FILENAME
         self._busy_timeout_ms = busy_timeout_ms
         self._connection: aiosqlite.Connection | None = None

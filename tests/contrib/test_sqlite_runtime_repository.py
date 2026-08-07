@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -30,8 +29,8 @@ from bazaar_compute_node.core.models import (
 
 
 @pytest_asyncio.fixture
-async def database(tmp_path: Path) -> AsyncIterator[SqliteDatabase]:
-    database = SqliteDatabase(tmp_path / "node")
+async def database() -> AsyncIterator[SqliteDatabase]:
+    database = SqliteDatabase()
     await database.start(timeout=2)
     await database.initialize(node_id="node-1", workspace_id="workspace-1")
     try:
@@ -342,12 +341,9 @@ async def save_starting_turn(database: SqliteDatabase, turn_id: str) -> RuntimeT
 
 
 @pytest.mark.asyncio
-async def test_sqlite_runtime_turn_active_invariant_serializes_two_connections(
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "node"
-    first_database = SqliteDatabase(data_dir)
-    second_database = SqliteDatabase(data_dir)
+async def test_sqlite_active_turn_invariant_serializes_two_connections() -> None:
+    first_database = SqliteDatabase()
+    second_database = SqliteDatabase()
     await first_database.start(timeout=2)
     await first_database.initialize(node_id="node-1", workspace_id="workspace-1")
     await save_runtime_graph(first_database)

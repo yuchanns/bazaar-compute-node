@@ -13,7 +13,7 @@ from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
-from ..core.paths import resolve_workspace_dir
+from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage, NodeIdentity
 from .command import (
@@ -42,7 +42,6 @@ class NodeApplication:
         factories: AdapterFactories,
         channel_slug: str,
         runtime_slug: str,
-        data_dir: Path,
         endpoint_path: Path | None = None,
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
@@ -51,7 +50,7 @@ class NodeApplication:
         runtime_metadata_path: Path | None = None,
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
-        self.data_dir = data_dir.expanduser()
+        self.data_dir = resolve_data_dir()
         self.channel_slug = channel_slug
         self.runtime_slug = runtime_slug
         self.storage_slug = storage_slug
@@ -66,7 +65,7 @@ class NodeApplication:
             shutdown_seconds=5,
         )
         self.channel: IChannel = factories.channel()
-        self.storage: IStorage = factories.storage(self.data_dir)
+        self.storage: IStorage = factories.storage()
         self.audit: IAudit = factories.audit()
         self.command_log: list[CommandRecord] = []
         self._wrapper_path: Path | None = None
@@ -77,7 +76,6 @@ class NodeApplication:
         self._stopped = asyncio.Event()
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
-            data_dir=self.data_dir,
             environment_for_session=self._runtime_environment,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
@@ -202,7 +200,7 @@ class NodeApplication:
 
     async def _ensure_workspace(self, identity: NodeIdentity) -> None:
         self._identity = identity
-        workspace_dir = resolve_workspace_dir(identity.workspace_id, self.data_dir)
+        workspace_dir = resolve_workspace_dir(identity.workspace_id)
         await asyncio.to_thread(
             workspace_dir.mkdir,
             parents=True,

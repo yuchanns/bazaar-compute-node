@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 from .approval import IApprovalHandler
@@ -16,7 +15,6 @@ class RuntimeCommandContext:
     """Generic command capability made available to a runtime adapter."""
 
     run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
-    data_dir: Path | None = None
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]] | None = None
 
 
