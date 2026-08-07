@@ -246,8 +246,16 @@ async def test_daemon_restart_reuses_persisted_adapter_selection(
         assert second_metadata is not None
         assert second_metadata.channel_slug == "dummy"
         assert second_metadata.runtime_slug == "dummy"
-        assert second_metadata.endpoint == first_metadata.endpoint
+        if os.name == "nt":
+            assert second_metadata.endpoint.startswith("tcp://127.0.0.1:")
+        else:
+            assert second_metadata.endpoint == first_metadata.endpoint
         assert second_metadata.pid != first_metadata.pid
+        response = await request_with_retry(
+            second_metadata.endpoint,
+            {"kind": "control", "operation": "status"},
+        )
+        assert response.get("ok") is True
     finally:
         stop_process = await asyncio.to_thread(stop_dummy_process, data_dir)
         assert stop_process.returncode == 0, stop_process.stderr

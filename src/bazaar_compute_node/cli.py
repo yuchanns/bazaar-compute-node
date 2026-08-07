@@ -149,7 +149,7 @@ def _spawn_daemon(
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                close_fds=False,
+                close_fds=True,
                 creationflags=(
                     subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                 ),
