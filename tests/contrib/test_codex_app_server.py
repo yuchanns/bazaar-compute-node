@@ -29,18 +29,19 @@ def python_process(script: str, *, cwd: Path | None = None) -> JsonlProcessSpec:
 
 def test_build_thread_start_params_maps_rendered_instructions() -> None:
     developer_instructions = "Runtime: runtime-from-caller"
+    workspace = Path.cwd()
     params = build_thread_start_params(
         developer_instructions,
         model="gpt-5.6-luna",
         approval_policy="never",
-        cwd=Path("/tmp/bcn-test-workspace"),
+        cwd=workspace,
         ephemeral=True,
     )
 
     assert params["developerInstructions"] == developer_instructions
     assert params["model"] == "gpt-5.6-luna"
     assert params["approvalPolicy"] == "never"
-    assert params["cwd"] == "/tmp/bcn-test-workspace"
+    assert params["cwd"] == str(workspace)
     assert params["ephemeral"] is True
 
 
