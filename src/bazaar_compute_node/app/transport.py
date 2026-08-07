@@ -173,18 +173,19 @@ class LocalCommandServer:
             except OSError:
                 pass
 
-    async def _dispatch(self, payload: dict[str, object]) -> Mapping[str, object]:
+    async def _dispatch(self, payload: Mapping[str, object]) -> Mapping[str, object]:
         if self._handler is None:
             raise RuntimeError("local command server is not ready")
+        request = dict(payload)
         if self._capability is not None:
-            capability = payload.pop("capability", None)
+            capability = request.pop("capability", None)
             if capability != self._capability:
                 return {
                     "ok": False,
                     "code": "LOCAL_AUTH_FAILED",
                     "error": "local command capability is invalid",
                 }
-        return await self._handler(payload)
+        return await self._handler(request)
 
 
 class LocalCommandClient:
