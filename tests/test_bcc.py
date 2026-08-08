@@ -177,6 +177,24 @@ def test_send_serializer_maps_refusal_to_stable_error_contract() -> None:
     assert error.value.next_action == "Run `bcc message check` before retrying."
 
 
+def test_send_serializer_maps_empty_body_refusal() -> None:
+    result = {
+        "outbound": outbound_payload(
+            state="rejected",
+            error_kind="empty_body",
+            error_message="Outbound message body must not be empty.",
+            next_action="Provide a non-empty message body and retry.",
+        )
+    }
+
+    with pytest.raises(BccCommandError) as error:
+        serialize_send(result)
+
+    assert error.value.code == "SEND_EMPTY_BODY"
+    assert error.value.draft_saved is False
+    assert error.value.next_action == "Provide a non-empty message body and retry."
+
+
 def test_send_serializer_rejects_malformed_delivery_response() -> None:
     with pytest.raises(BccCommandError) as error:
         serialize_send(

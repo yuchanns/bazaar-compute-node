@@ -377,6 +377,7 @@ class OutboundMessage:
         state: OutboundDeliveryState,
         *,
         at_ms: int,
+        save_draft: bool = True,
         provider_message_id: str | None = None,
         provider_receipt_ref: str | None = None,
         error_kind: str | None = None,
@@ -411,7 +412,9 @@ class OutboundMessage:
             else self.completed_at_ms
         )
         draft_saved_at_ms = (
-            at_ms if state is OutboundDeliveryState.REJECTED else self.draft_saved_at_ms
+            at_ms
+            if state is OutboundDeliveryState.REJECTED and save_draft
+            else self.draft_saved_at_ms
         )
         return replace(
             self,

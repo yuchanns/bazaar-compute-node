@@ -367,7 +367,7 @@ def serialize_send(result: Mapping[str, object]) -> str:
             "command response contains no outbound error message for a failed delivery"
         )
     draft_saved_at_ms = _require_outbound_timestamp(outbound, "draft_saved_at_ms")
-    if state == "rejected" and draft_saved_at_ms is None:
+    if state == "rejected" and draft_saved_at_ms is None and error_kind != "empty_body":
         _invalid_send_response("rejected outbound response has no saved draft")
     next_action_value = outbound.get("next_action")
     if next_action_value is not None and (
@@ -379,6 +379,8 @@ def serialize_send(result: Mapping[str, object]) -> str:
     next_action = next_action_value if isinstance(next_action_value, str) else None
     if state == "unknown" or error_kind == "provider_unknown":
         code = "SEND_UNKNOWN"
+    elif error_kind == "empty_body":
+        code = "SEND_EMPTY_BODY"
     elif error_kind == "fresh_check_required":
         code = "SEND_FRESH_CHECK_REQUIRED"
     elif error_kind == "fresh_check_failed":

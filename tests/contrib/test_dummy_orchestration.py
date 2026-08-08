@@ -676,6 +676,25 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         )
 
         await orchestrator.command_service.check("bcn-1")
+        empty_body = await orchestrator.command_service.send(
+            bcn_session_id="bcn-1",
+            command_id="command-empty-body",
+            target="#dummy:bcn-1",
+            body=" \t",
+            created_at_ms=3,
+        )
+        assert empty_body.state is OutboundDeliveryState.REJECTED
+        assert empty_body.error_kind == "empty_body"
+        assert empty_body.draft_saved_at_ms is None
+        assert all(
+            message.command_id != "command-empty-body"
+            for message in storage.outbound_messages.values()
+        )
+        assert not channel.send_attempts
+        assert any(
+            event.event_name == "bcc.send.empty_body.failed" for event in audit.events
+        )
+
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.QUEUED,
@@ -687,7 +706,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             command_id="command-queued",
             target="#dummy:bcn-1",
             body="queued reply",
-            created_at_ms=3,
+            created_at_ms=4,
         )
         assert queued.state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
@@ -705,7 +724,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             command_id="command-unknown",
             target="#dummy:bcn-1",
             body="unknown reply",
-            created_at_ms=4,
+            created_at_ms=5,
         )
         assert unknown.state is OutboundDeliveryState.UNKNOWN
         assert unknown.next_action == "reconcile channel delivery before retrying"
@@ -722,7 +741,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             command_id="command-failed",
             target="#dummy:bcn-1",
             body="failed reply",
-            created_at_ms=5,
+            created_at_ms=6,
         )
         assert failed.state is OutboundDeliveryState.FAILED
         assert len(channel.send_attempts) == 3

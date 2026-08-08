@@ -288,6 +288,27 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         assert len(channel.sent_messages) == 1
 
         (
+            empty_body_code,
+            empty_body_stdout,
+            empty_body_stderr,
+        ) = await run_bcc(
+            node,
+            runtime_session,
+            ("message", "send", "--target", "#dummy:bcn-a"),
+            body="",
+        )
+        assert empty_body_code != 0
+        assert empty_body_stdout == ""
+        assert "Error: Outbound message body must not be empty." in empty_body_stderr
+        assert "Code: SEND_EMPTY_BODY" in empty_body_stderr
+        assert "Draft saved:" not in empty_body_stderr
+        assert (
+            "Next action: Provide a non-empty message body and retry."
+            in empty_body_stderr
+        )
+        assert len(channel.send_attempts) == 1
+
+        (
             invalid_target_code,
             invalid_target_stdout,
             invalid_target_stderr,

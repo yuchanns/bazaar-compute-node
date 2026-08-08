@@ -190,10 +190,31 @@ class SessionCommandService(ICommandService):
                     fresh_check_state=FreshCheckState.REQUIRED,
                     created_at_ms=created_at_ms,
                 )
-                outbound = await transaction.save_outbound_message(outbound)
-                outbound_id = outbound.outbound_message_id
+                if body.strip():
+                    outbound = await transaction.save_outbound_message(outbound)
+                    outbound_id = outbound.outbound_message_id
                 rejection_event_name = "bcc.send.fresh_check.failed"
-                if not target_messages:
+                if not body.strip():
+                    outbound = outbound.transition_to(
+                        OutboundDeliveryState.REJECTED,
+                        at_ms=self._clock(),
+                        save_draft=False,
+                        error_kind=ErrorKind.EMPTY_BODY.value,
+                        error_message="Outbound message body must not be empty.",
+                        next_action="Provide a non-empty message body and retry.",
+                    )
+                    audit_context = self._correlation(
+                        bcn_session_id=bcn_session_id,
+                        channel_slug=channel_session.channel_slug,
+                        channel_session_id=channel_session.channel_session_id,
+                        command_id=command_id,
+                        inbound_seq=current_seq,
+                        outbound_message_id=None,
+                    )
+                    audit_state = RuntimeEventState.FAILED
+                    audit_kind = ErrorKind.EMPTY_BODY
+                    rejection_event_name = "bcc.send.empty_body.failed"
+                elif not target_messages:
                     outbound = outbound.transition_to(
                         OutboundDeliveryState.REJECTED,
                         at_ms=self._clock(),

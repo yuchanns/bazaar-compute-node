@@ -15,6 +15,7 @@ class ErrorKind(StrEnum):
     VALIDATION = "validation"
     SESSION_NOT_FOUND = "session_not_found"
     TARGET_NOT_REPLYABLE = "target_not_replyable"
+    EMPTY_BODY = "empty_body"
     FRESH_CHECK_REQUIRED = "fresh_check_required"
     FRESH_CHECK_FAILED = "fresh_check_failed"
     PROVIDER_FAILED = "provider_failed"
