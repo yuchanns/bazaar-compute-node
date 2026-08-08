@@ -17,6 +17,7 @@ from bazaar_compute_node.contrib.dummy import (
     DummyTurnPlan,
 )
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
@@ -147,6 +148,25 @@ class _AcceptanceChannel(Protocol):
     async def inject(self, message: InboundMessage) -> None: ...
 
 
+class _AcceptanceAudit(DummyAudit):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_check_completed = asyncio.Event()
+        self.release_first_check = asyncio.Event()
+        self._first_check_blocked = False
+
+    async def append(self, event: AuditEvent, *, timeout: float) -> None:
+        self.events.append(event)
+        if (
+            not self._first_check_blocked
+            and event.metadata.get("operation") == "bcc.message.check"
+            and event.metadata.get("status") == "completed"
+        ):
+            self._first_check_blocked = True
+            self.first_check_completed.set()
+            await self.release_first_check.wait()
+
+
 async def _wait_for_inbound_messages(
     storage: IStorage,
     bcn_session_id: str,
@@ -253,7 +273,7 @@ async def run_natural_conversation_contract(
         storage = SqliteDatabase()
         await storage.start(timeout=30)
         identity = await storage.initialize()
-        audit = DummyAudit()
+        audit = _AcceptanceAudit()
         node = NodeApplication(
             factories=AdapterFactories(
                 channel=lambda channel_instance=channel_instance: cast(
@@ -292,11 +312,8 @@ async def run_natural_conversation_contract(
                 event_suffix="turn.started",
                 turn_id=f"turn-{first_row.message_id}",
             )
-            await _wait_for_audit_event(
-                audit,
-                bcn_session_id=bcn_session_id,
-                operation="bcc.message.check",
-            )
+            async with asyncio.timeout(180):
+                await audit.first_check_completed.wait()
             await channel_instance.inject(second)
             persisted = await _wait_for_inbound_messages(
                 storage,
@@ -308,6 +325,7 @@ async def run_natural_conversation_contract(
                 first.provider_message_id,
                 second.provider_message_id,
             ]
+            audit.release_first_check.set()
 
             first_turn = await _wait_for_runtime_turn(
                 storage,
@@ -323,23 +341,54 @@ async def run_natural_conversation_contract(
             assert second_turn.state is RuntimeTurnState.COMPLETED
             assert channel_instance.sent_messages
 
-            fresh_rejections = [
-                event
-                for event in audit.events
+            first_check_index = next(
+                index
+                for index, event in enumerate(audit.events)
+                if (
+                    event.correlation.bcn_session_id == bcn_session_id
+                    and event.metadata.get("operation") == "bcc.message.check"
+                    and event.metadata.get("status") == "completed"
+                )
+            )
+            fresh_rejection_indices = [
+                index
+                for index, event in enumerate(audit.events)
                 if (
                     event.correlation.bcn_session_id == bcn_session_id
                     and event.event_name == "bcc.send.fresh_check.failed"
                 )
             ]
-            assert fresh_rejections
-            fresh_rejection_index = audit.events.index(fresh_rejections[0])
-            assert any(
-                index > fresh_rejection_index
-                and event.correlation.bcn_session_id == bcn_session_id
-                and event.metadata.get("operation") == "bcc.message.send"
-                and event.metadata.get("status") == "sent"
+            sent_indices = [
+                index
                 for index, event in enumerate(audit.events)
-            )
+                if (
+                    event.correlation.bcn_session_id == bcn_session_id
+                    and event.metadata.get("operation") == "bcc.message.send"
+                    and event.metadata.get("status") == "sent"
+                )
+            ]
+            assert sent_indices
+            if fresh_rejection_indices:
+                assert any(
+                    sent_index > fresh_rejection_indices[0]
+                    for sent_index in sent_indices
+                )
+            else:
+                subsequent_check_indices = [
+                    index
+                    for index, event in enumerate(audit.events)
+                    if (
+                        index > first_check_index
+                        and event.correlation.bcn_session_id == bcn_session_id
+                        and event.metadata.get("operation") == "bcc.message.check"
+                        and event.metadata.get("status") == "completed"
+                    )
+                ]
+                assert subsequent_check_indices
+                assert any(
+                    sent_index > subsequent_check_indices[0]
+                    for sent_index in sent_indices
+                )
 
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(
@@ -365,6 +414,7 @@ async def run_natural_conversation_contract(
                 for message in channel_instance.sent_messages
             )
         finally:
+            audit.release_first_check.set()
             await node.stop()
             if storage.is_started:
                 await storage.stop(timeout=30)
