@@ -193,7 +193,6 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> IRuntimeTurnStream:
-        del approval_handler
         self._ensure_started()
         connection = self._connections.get(session.agent_runtime_session_id)
         if connection is None or not connection.supervisor.is_running:
@@ -237,6 +236,8 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             provider_turn_id=provider_turn_id,
+            approval_handler=approval_handler,
+            approval_timeout=timeout,
             initial_error=initial_error,
             initial_error_kind=initial_error_kind,
             initial_error_state=initial_error_state,

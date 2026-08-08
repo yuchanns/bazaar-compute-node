@@ -9,6 +9,7 @@ from ..audit import ErrorKind
 from ..channel import IChannel
 from ..command import SessionNotFoundError
 from ..concurrency import ISessionConcurrency, SessionLockRegistry
+from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     AgentSignal,
@@ -20,6 +21,7 @@ from ..models import (
     ChannelSessionState,
     ConsumerCursor,
     InboundMessage,
+    RuntimeEventState,
     RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
@@ -240,61 +242,91 @@ class SessionOrchestrator(IAsyncLifecycle):
         finish_state: RuntimeTurnState | None = None
         finish_error_kind: ErrorKind | None = None
         finish_error_message: str | None = None
+        context: SessionContext | None = None
+        turn: RuntimeTurn | None = None
         while True:
             wait_for: asyncio.Event | None = None
             async with lock:
-                completion = self._turn_in_flight.get(message.bcn_session_id)
-                if completion is not None:
-                    wait_for = completion
-                else:
+                if turn is None:
                     context = await self._prepare_session(message)
-                    message, turn, is_new = await self._record_inbound_and_turn(
-                        message, context
-                    )
-                    if not is_new or turn.state in {
-                        RuntimeTurnState.COMPLETED,
-                        RuntimeTurnState.FAILED,
-                        RuntimeTurnState.CANCELLED,
-                        RuntimeTurnState.UNKNOWN,
-                    }:
-                        return turn
+                    completion = self._turn_in_flight.get(message.bcn_session_id)
+                    if completion is not None:
+                        message, pending_turn, _ = await self._record_inbound_and_turn(
+                            message,
+                            context,
+                            create_turn=False,
+                        )
+                        if pending_turn is not None and pending_turn.state in {
+                            RuntimeTurnState.COMPLETED,
+                            RuntimeTurnState.FAILED,
+                            RuntimeTurnState.CANCELLED,
+                            RuntimeTurnState.UNKNOWN,
+                        }:
+                            return pending_turn
+                        wait_for = completion
+                    else:
+                        message, turn, is_new = await self._record_inbound_and_turn(
+                            message, context
+                        )
+                        if turn is None:
+                            raise RuntimeError("inbound turn was not created")
+                        if not is_new or turn.state in {
+                            RuntimeTurnState.COMPLETED,
+                            RuntimeTurnState.FAILED,
+                            RuntimeTurnState.CANCELLED,
+                            RuntimeTurnState.UNKNOWN,
+                        }:
+                            return turn
 
-                    context = await self._ensure_runtime_session(context)
-                    if (
-                        context.runtime_session.process_state
-                        is not RuntimeProcessState.RUNNING
-                    ):
-                        finish_state = (
-                            RuntimeTurnState.UNKNOWN
-                            if context.runtime_session.process_state
-                            is RuntimeProcessState.UNKNOWN
-                            else RuntimeTurnState.FAILED
+                if wait_for is None:
+                    if context is None or turn is None:
+                        raise RuntimeError("inbound turn context is not initialized")
+                    completion = self._turn_in_flight.get(message.bcn_session_id)
+                    if completion is not None:
+                        wait_for = completion
+                    else:
+                        context = await self._ensure_runtime_session(context)
+                        if (
+                            context.runtime_session.process_state
+                            is not RuntimeProcessState.RUNNING
+                        ):
+                            finish_state = (
+                                RuntimeTurnState.UNKNOWN
+                                if context.runtime_session.process_state
+                                is RuntimeProcessState.UNKNOWN
+                                else RuntimeTurnState.FAILED
+                            )
+                            finish_error_kind = (
+                                ErrorKind.PROVIDER_UNKNOWN
+                                if finish_state is RuntimeTurnState.UNKNOWN
+                                else ErrorKind.PROVIDER_FAILED
+                            )
+                            finish_error_message = (
+                                "runtime session start outcome is unknown"
+                                if finish_state is RuntimeTurnState.UNKNOWN
+                                else "runtime session failed to start"
+                            )
+                            self._turn_in_flight[message.bcn_session_id] = (
+                                asyncio.Event()
+                            )
+                            break
+                        bcn_session = await self._state_writer.apply_locked(
+                            message.bcn_session_id,
+                            AgentTick(
+                                source=AgentTickSource.CHANNEL,
+                                signal=AgentSignal.TURN_STARTED,
+                                observed_at_ms=self._clock(),
+                            ),
                         )
-                        finish_error_kind = (
-                            ErrorKind.PROVIDER_UNKNOWN
-                            if finish_state is RuntimeTurnState.UNKNOWN
-                            else ErrorKind.PROVIDER_FAILED
-                        )
-                        finish_error_message = (
-                            "runtime session start outcome is unknown"
-                            if finish_state is RuntimeTurnState.UNKNOWN
-                            else "runtime session failed to start"
-                        )
+                        context = replace(context, bcn_session=bcn_session)
                         self._turn_in_flight[message.bcn_session_id] = asyncio.Event()
                         break
-                    bcn_session = await self._state_writer.apply_locked(
-                        message.bcn_session_id,
-                        AgentTick(
-                            source=AgentTickSource.CHANNEL,
-                            signal=AgentSignal.TURN_STARTED,
-                            observed_at_ms=self._clock(),
-                        ),
-                    )
-                    context = replace(context, bcn_session=bcn_session)
-                    self._turn_in_flight[message.bcn_session_id] = asyncio.Event()
-                    break
             if wait_for is not None:
                 await wait_for.wait()
+                context = None
+
+        if context is None or turn is None:
+            raise RuntimeError("inbound turn context is not initialized")
 
         try:
             if finish_state is not None:
@@ -398,8 +430,12 @@ class SessionOrchestrator(IAsyncLifecycle):
             return SessionContext(channel_session, bcn_session, runtime_session)
 
     async def _record_inbound_and_turn(
-        self, message: InboundMessage, context: SessionContext
-    ) -> tuple[InboundMessage, RuntimeTurn, bool]:
+        self,
+        message: InboundMessage,
+        context: SessionContext,
+        *,
+        create_turn: bool = True,
+    ) -> tuple[InboundMessage, RuntimeTurn | None, bool]:
         async with self._storage.transaction() as transaction:
             existing_turn = await transaction.get_runtime_turn(
                 f"turn-{message.message_id}"
@@ -424,6 +460,8 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
             await transaction.save_channel_session(channel_session)
             await transaction.save_bcn_session(bcn_session)
+            if not create_turn:
+                return message, None, True
             turn = RuntimeTurn(
                 turn_id=turn_id,
                 agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
@@ -466,6 +504,35 @@ class SessionOrchestrator(IAsyncLifecycle):
                     ),
                 )
             return replace(context, bcn_session=bcn_session)
+        if runtime_session.process_state not in {
+            RuntimeProcessState.STARTING,
+            RuntimeProcessState.UNKNOWN,
+            RuntimeProcessState.RECONCILING,
+        }:
+            return context
+        process_operation = (
+            "start"
+            if runtime_session.process_state is RuntimeProcessState.STARTING
+            else "resume"
+        )
+        process_correlation = CorrelationContext(
+            node_id=self.node_id,
+            channel_slug=context.channel_session.channel_slug,
+            channel_session_id=context.channel_session.channel_session_id,
+            bcn_session_id=bcn_session.bcn_session_id,
+            agent_runtime_session_id=runtime_session.agent_runtime_session_id,
+            provider_thread_id=runtime_session.provider_thread_id,
+        )
+        await self._audit.append(
+            event_name=f"runtime.process.{process_operation}.requested",
+            state=RuntimeEventState.STARTED,
+            correlation=process_correlation,
+            metadata={
+                "runtime": runtime_session.runtime_slug,
+                "workspace_id": runtime_session.workspace_id,
+            },
+        )
+
         if runtime_session.process_state is RuntimeProcessState.STARTING:
             if bcn_session.state is AgentState.CREATED:
                 bcn_session = await self._state_writer.apply_locked(
@@ -527,7 +594,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         else:
-            return context
+            raise RuntimeError("unsupported runtime process state")
 
         now_ms = self._clock()
         if provider_result.status is ProviderCallStatus.CONFIRMED:
@@ -572,6 +639,22 @@ class SessionOrchestrator(IAsyncLifecycle):
                     )
                 await transaction.save_runtime_session(runtime_session)
                 bcn_session = current_bcn
+            await self._audit.append(
+                event_name=(
+                    "runtime.process.started"
+                    if process_operation == "start"
+                    else "runtime.process.resumed"
+                ),
+                state=RuntimeEventState.COMPLETED,
+                correlation=replace(
+                    process_correlation,
+                    provider_thread_id=runtime_session.provider_thread_id,
+                ),
+                metadata={
+                    "runtime": runtime_session.runtime_slug,
+                    "workspace_id": runtime_session.workspace_id,
+                },
+            )
         else:
             target_state = (
                 RuntimeProcessState.FAILED
@@ -609,6 +692,26 @@ class SessionOrchestrator(IAsyncLifecycle):
                 )
                 await transaction.save_runtime_session(runtime_session)
                 bcn_session = current_bcn
+            await self._audit.append(
+                event_name=f"runtime.process.{target_state.value}",
+                state=(
+                    RuntimeEventState.FAILED
+                    if target_state is RuntimeProcessState.FAILED
+                    else RuntimeEventState.UNKNOWN
+                ),
+                correlation=process_correlation,
+                error_kind=(
+                    ErrorKind(provider_result.error_kind)
+                    if provider_result.error_kind in ErrorKind._value2member_map_
+                    else ErrorKind.INTERNAL
+                ),
+                error_message=provider_result.error_message,
+                metadata={
+                    "operation": process_operation,
+                    "runtime": runtime_session.runtime_slug,
+                    "workspace_id": runtime_session.workspace_id,
+                },
+            )
 
         self._runtime_sessions[runtime_session.agent_runtime_session_id] = (
             runtime_session
@@ -626,6 +729,22 @@ class SessionOrchestrator(IAsyncLifecycle):
         self, runtime_session: RuntimeSession, *, timeout: float
     ) -> None:
         now_ms = self._clock()
+        process_correlation = CorrelationContext(
+            node_id=self.node_id,
+            channel_session_id=runtime_session.channel_session_id,
+            bcn_session_id=runtime_session.bcn_session_id,
+            agent_runtime_session_id=runtime_session.agent_runtime_session_id,
+            provider_thread_id=runtime_session.provider_thread_id,
+        )
+        await self._audit.append(
+            event_name="runtime.process.stop.requested",
+            state=RuntimeEventState.STARTED,
+            correlation=process_correlation,
+            metadata={
+                "runtime": runtime_session.runtime_slug,
+                "workspace_id": runtime_session.workspace_id,
+            },
+        )
         stopping = runtime_session.transition_process_to(
             RuntimeProcessState.STOPPING,
             updated_at_ms=now_ms,
@@ -715,3 +834,30 @@ class SessionOrchestrator(IAsyncLifecycle):
                 ),
             )
             await transaction.save_runtime_session(stopped)
+        await self._audit.append(
+            event_name=(
+                "runtime.process.stopped"
+                if stopped.process_state is RuntimeProcessState.STOPPED
+                else f"runtime.process.{stopped.process_state.value}"
+            ),
+            state=(
+                RuntimeEventState.COMPLETED
+                if stopped.process_state is RuntimeProcessState.STOPPED
+                else RuntimeEventState.UNKNOWN
+                if stopped.process_state is RuntimeProcessState.UNKNOWN
+                else RuntimeEventState.FAILED
+            ),
+            correlation=process_correlation,
+            error_kind=(
+                ErrorKind(stopped.last_error_kind)
+                if stopped.last_error_kind in ErrorKind._value2member_map_
+                else ErrorKind.INTERNAL
+                if stopped.last_error_message
+                else None
+            ),
+            error_message=stopped.last_error_message,
+            metadata={
+                "runtime": stopped.runtime_slug,
+                "workspace_id": stopped.workspace_id,
+            },
+        )

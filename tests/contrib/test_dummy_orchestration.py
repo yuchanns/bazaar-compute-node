@@ -471,6 +471,43 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
+    orchestrator, channel, runtime, storage, _audit = await make_node()
+    runtime.queue_turn_plan(DummyTurnPlan(block_until_release=True))
+    first = make_message(seq=1)
+    second = make_message(seq=2)
+
+    try:
+        await channel.inject(first)
+        await wait_until(lambda: bool(runtime.active_streams))
+
+        await channel.inject(second)
+        await wait_until(
+            lambda: storage.inbound_messages.get("bcn-1") == [first, second]
+        )
+        assert len(runtime.started_turns) == 1
+
+        runtime.queue_turn_plan(DummyTurnPlan())
+        next(iter(runtime.active_streams)).release()
+        await wait_until(
+            lambda: (
+                storage.runtime_turns.get("turn-message-bcn-1-2") is not None
+                and storage.runtime_turns["turn-message-bcn-1-2"].state
+                is RuntimeTurnState.COMPLETED
+            )
+        )
+
+        assert (
+            storage.runtime_turns["turn-message-bcn-1-1"].state
+            is RuntimeTurnState.COMPLETED
+        )
+        assert len(runtime.started_turns) == 2
+        assert "session=bcn-1" in runtime.started_turns[1][2]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -> None:
     orchestrator, channel, _runtime, storage, _audit = await make_node()
     try:

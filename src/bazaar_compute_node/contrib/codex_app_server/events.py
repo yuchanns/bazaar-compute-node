@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from time import time_ns
-from typing import Self
+from typing import Self, cast
 from uuid import uuid7
 
+from ...core.approval import IApprovalHandler
 from ...core.models import RuntimeEvent, RuntimeEventState
 from ...core.runtime import IRuntimeTurnStream
+from .approval import (
+    approval_error,
+    build_approval_response,
+    is_approval_method,
+    parse_approval_request,
+)
 from .client import parse_error_notification, parse_turn_notification
 from .process import JsonlProcessSupervisor
 from .protocol import (
     CodexAppServerProtocolError,
     JsonlMessage,
+    JsonlRequestId,
     JsonlTransportError,
+    is_request_id,
 )
 
 
@@ -30,6 +40,8 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         turn_id: str,
         provider_thread_id: str,
         provider_turn_id: str | None,
+        approval_handler: IApprovalHandler | None = None,
+        approval_timeout: float = 30,
         initial_error: BaseException | None = None,
         initial_error_kind: str = "provider_unknown",
         initial_error_state: RuntimeEventState = RuntimeEventState.UNKNOWN,
@@ -43,6 +55,9 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         self._turn_id = turn_id
         self._provider_thread_id = provider_thread_id
         self._provider_turn_id = provider_turn_id
+        self._approval_handler = approval_handler
+        self._approval_timeout = approval_timeout
+        self._responded_request_ids: set[JsonlRequestId] = set()
         self._initial_error = initial_error
         self._initial_error_kind = initial_error_kind
         self._initial_error_state = initial_error_state
@@ -90,7 +105,17 @@ class CodexTurnEventStream(IRuntimeTurnStream):
                     metadata={"provider_method": "transport"},
                 )
             try:
+                if await self._handle_provider_request(message):
+                    continue
                 event = self._map_message(message)
+            except JsonlTransportError as error:
+                return self._terminal_event(
+                    RuntimeEventState.UNKNOWN,
+                    event_name="codex.turn.transport.unknown",
+                    error_kind="provider_unknown",
+                    error_message=_safe_error_message(error),
+                    metadata={"provider_method": "transport"},
+                )
             except (CodexAppServerProtocolError, TypeError, ValueError) as error:
                 return self._terminal_event(
                     RuntimeEventState.UNKNOWN,
@@ -261,6 +286,75 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         self._closed_callback_called = True
         if self._on_closed is not None:
             self._on_closed()
+
+    async def _handle_provider_request(self, message: JsonlMessage) -> bool:
+        method = message.get("method")
+        request_id = message.get("id")
+        if not isinstance(method, str) or request_id is None:
+            return False
+        if not is_request_id(request_id):
+            raise CodexAppServerProtocolError(
+                "provider request id must be an integer or string"
+            )
+        request_id = cast(JsonlRequestId, request_id)
+        if request_id in self._responded_request_ids:
+            return True
+        self._responded_request_ids.add(request_id)
+        if not is_approval_method(method):
+            await self._respond_with_error(
+                request_id,
+                CodexAppServerProtocolError(
+                    f"unsupported provider request method: {method}"
+                ),
+            )
+            raise CodexAppServerProtocolError("unsupported provider request")
+        response_attempted = False
+        try:
+            approval = parse_approval_request(
+                message,
+                bcn_session_id=self._bcn_session_id,
+                agent_runtime_session_id=self._agent_runtime_session_id,
+                turn_id=self._turn_id,
+                provider_thread_id=self._provider_thread_id,
+                provider_turn_id=self._provider_turn_id,
+            )
+            if self._approval_handler is None:
+                raise CodexAppServerProtocolError(
+                    "runtime approval handler is not configured"
+                )
+            result = await self._approval_handler.request_approval(
+                approval.request,
+                timeout=self._approval_timeout,
+            )
+            response = build_approval_response(approval, result)
+            response_attempted = True
+            await self._supervisor.respond(
+                request_id,
+                result=response,
+                timeout=self._approval_timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if not response_attempted:
+                await self._respond_with_error(request_id, error)
+            if response_attempted and isinstance(error, JsonlTransportError):
+                raise
+            raise CodexAppServerProtocolError(
+                f"approval bridge failed: {type(error).__name__}"
+            ) from error
+        return True
+
+    async def _respond_with_error(
+        self,
+        request_id: JsonlRequestId,
+        error: BaseException,
+    ) -> None:
+        await self._supervisor.respond(
+            request_id,
+            error=approval_error(error),
+            timeout=self._approval_timeout,
+        )
 
 
 def _belongs_to_thread(params: Mapping[str, object], thread_id: str) -> bool:

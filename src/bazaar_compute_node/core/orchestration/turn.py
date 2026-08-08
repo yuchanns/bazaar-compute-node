@@ -148,23 +148,44 @@ class SessionTurnCoordinator:
             current_binding = replace(binding, request_id=request_id)
             if not current_binding.matches(request):
                 raise ValueError("runtime approval request correlation mismatch")
-            result = await self._channel.request_approval(request, timeout=timeout)
-            if result.request_id != request_id:
-                raise ValueError("channel approval result correlation mismatch")
+            approval_correlation = CorrelationContext(
+                node_id=self._node_id(),
+                channel_slug=context.channel_session.channel_slug,
+                channel_session_id=context.channel_session.channel_session_id,
+                bcn_session_id=context.bcn_session.bcn_session_id,
+                agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
+                turn_id=turn.turn_id,
+                request_id=request_id,
+                inbound_seq=message.seq,
+            )
+            await self._audit.append(
+                event_name="approval.requested",
+                state=RuntimeEventState.STARTED,
+                correlation=approval_correlation,
+                metadata={"action": request.action},
+            )
+            try:
+                result = await self._channel.request_approval(request, timeout=timeout)
+                if result.request_id != request_id:
+                    raise ValueError("channel approval result correlation mismatch")
+            except Exception as error:
+                await self._audit.append(
+                    event_name="approval.failed",
+                    state=RuntimeEventState.FAILED,
+                    correlation=approval_correlation,
+                    error_kind=ErrorKind.PROVIDER_FAILED,
+                    error_message=f"approval failed: {type(error).__name__}",
+                    metadata={"action": request.action},
+                )
+                raise
             await self._audit.append(
                 event_name="approval.decided",
                 state=RuntimeEventState.COMPLETED,
-                correlation=CorrelationContext(
-                    node_id=self._node_id(),
-                    channel_slug=context.channel_session.channel_slug,
-                    channel_session_id=context.channel_session.channel_session_id,
-                    bcn_session_id=context.bcn_session.bcn_session_id,
-                    agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
-                    turn_id=turn.turn_id,
-                    request_id=request_id,
-                    inbound_seq=message.seq,
-                ),
-                metadata={"decision": result.decision.value},
+                correlation=approval_correlation,
+                metadata={
+                    "action": request.action,
+                    "decision": result.decision.value,
+                },
             )
             return result
 
@@ -174,14 +195,31 @@ class SessionTurnCoordinator:
             approval_handler = _ApprovalHandler(
                 lambda request, timeout: request_approval(request, timeout=timeout)
             )
-            stream = await self._runtime.start_turn(
-                context.runtime_session,
-                turn,
-                f"[inbox notice session={context.bcn_session.bcn_session_id}]\n"
-                "Inbox update: 1 unread message. Use the message command to read it.",
-                approval_handler,
-                timeout=self._timeout_budget.provider_call_seconds,
+            await self._audit.append(
+                event_name="runtime.request.turn.started",
+                state=RuntimeEventState.STARTED,
+                correlation=turn_correlation,
+                metadata={"provider_method": "turn/start"},
             )
+            try:
+                stream = await self._runtime.start_turn(
+                    context.runtime_session,
+                    turn,
+                    f"[inbox notice session={context.bcn_session.bcn_session_id}]\n"
+                    "Inbox update: 1 unread message. Use the message command to read it.",
+                    approval_handler,
+                    timeout=self._timeout_budget.provider_call_seconds,
+                )
+            except Exception as error:
+                await self._audit.append(
+                    event_name="runtime.request.turn.failed",
+                    state=RuntimeEventState.FAILED,
+                    correlation=turn_correlation,
+                    error_kind=ErrorKind.PROVIDER_FAILED,
+                    error_message=f"turn request failed: {type(error).__name__}",
+                    metadata={"provider_method": "turn/start"},
+                )
+                raise
             async for event in stream:
                 turn = await self._apply_runtime_event(message, context, turn, event)
                 if _is_terminal_turn_event(event):
@@ -214,7 +252,7 @@ class SessionTurnCoordinator:
                 turn,
                 RuntimeTurnState.FAILED,
                 error_kind=ErrorKind.PROVIDER_FAILED,
-                error_message=str(error),
+                error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
                 bcn_session_id=context.bcn_session.bcn_session_id,
             )
