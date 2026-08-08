@@ -76,9 +76,9 @@ SCHEMA_MIGRATION = Migration(
         -- Provider conversation/thread identity and channel-level following state.
         CREATE TABLE channel_sessions (
             -- Stable local identifier for the normalized channel session.
-            channel_session_id TEXT PRIMARY KEY,
-            -- Selected channel adapter slug.
-            channel_slug TEXT,
+            id TEXT PRIMARY KEY,
+            -- Selected channel adapter name.
+            channel TEXT,
             -- Provider-native conversation identity used for lookup.
             provider_conversation_key TEXT,
             -- Provider-native thread or reply identity when one exists.
@@ -105,7 +105,7 @@ SCHEMA_MIGRATION = Migration(
         -- Stable bcn session bound to one channel session and the shared workspace.
         CREATE TABLE bcn_sessions (
             -- Stable local identifier exposed to the runtime command wrapper.
-            bcn_session_id TEXT PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             -- Application-managed association to a channel session.
             channel_session_id TEXT,
             -- UUIDv7-backed identifier of the shared workspace used by this session.
@@ -128,13 +128,13 @@ SCHEMA_MIGRATION = Migration(
         -- One agent runtime process/thread binding and process recovery state.
         CREATE TABLE runtime_sessions (
             -- Stable local identifier for one runtime process lifecycle.
-            agent_runtime_session_id TEXT PRIMARY KEY,
+            id TEXT PRIMARY KEY,
             -- Application-managed association to a bcn session.
             bcn_session_id TEXT,
             -- Application-managed channel session association for correlation.
             channel_session_id TEXT,
-            -- Selected agent runtime adapter slug.
-            runtime_slug TEXT,
+            -- Selected agent runtime adapter name.
+            runtime TEXT,
             -- Runtime adapter or protocol version used for this process.
             runtime_version TEXT,
             -- Provider-native runtime thread identifier when available.
@@ -169,7 +169,7 @@ SCHEMA_MIGRATION = Migration(
             -- Stable local identifier for one runtime turn.
             turn_id TEXT PRIMARY KEY,
             -- Application-managed association to the runtime session.
-            agent_runtime_session_id TEXT,
+            session_id TEXT,
             -- Provider-native turn identifier when available.
             provider_turn_id TEXT,
             -- Client message identifier that caused this turn.
@@ -198,11 +198,11 @@ SCHEMA_MIGRATION = Migration(
             -- Node-local monotonic sequence used for cursor and snapshot boundaries.
             seq INTEGER,
             -- Application-managed association to a bcn session.
-            bcn_session_id TEXT,
+            session_id TEXT,
             -- Application-managed association to a channel session.
             channel_session_id TEXT,
-            -- Channel adapter slug that normalized the message.
-            channel_slug TEXT,
+            -- Channel adapter name that normalized the message.
+            channel TEXT,
             -- Provider-native message identifier used for application-level deduplication.
             provider_message_id TEXT,
             -- Provider timestamp, if supplied.
@@ -237,7 +237,7 @@ SCHEMA_MIGRATION = Migration(
             -- Stable identifier of the originating command invocation.
             command_id TEXT,
             -- Application-managed association to a bcn session.
-            bcn_session_id TEXT,
+            session_id TEXT,
             -- Application-managed association to a channel session.
             channel_session_id TEXT,
             -- Canonical target supplied to the send command.
@@ -278,7 +278,7 @@ SCHEMA_MIGRATION = Migration(
         -- Per-session delivery cursor and the latest inbox snapshot used by fresh-check.
         CREATE TABLE consumer_cursors (
             -- Stable bcn session identifier used as the cursor record identity.
-            bcn_session_id TEXT PRIMARY KEY,
+            session_id TEXT PRIMARY KEY,
             -- Highest inbound sequence already delivered by check.
             delivered_through_seq INTEGER,
             -- Latest inbound sequence observed by check or read.
@@ -314,16 +314,16 @@ SCHEMA_MIGRATION = Migration(
             duration_ms INTEGER,
             -- Node identifier that emitted the event.
             node_id TEXT,
-            -- Channel adapter slug associated with the event.
-            channel_slug TEXT,
-            -- Runtime adapter slug associated with the event.
-            runtime_slug TEXT,
+            -- Channel adapter name associated with the event.
+            channel TEXT,
+            -- Runtime adapter name associated with the event.
+            runtime TEXT,
             -- Channel session correlation identifier.
             channel_session_id TEXT,
             -- Bcn session correlation identifier.
             bcn_session_id TEXT,
             -- Agent runtime session correlation identifier.
-            agent_runtime_session_id TEXT,
+            runtime_session_id TEXT,
             -- Runtime turn correlation identifier.
             turn_id TEXT,
             -- Provider or protocol request correlation identifier.
@@ -348,7 +348,7 @@ SCHEMA_MIGRATION = Migration(
         """,
         """
         CREATE INDEX idx_inbound_session_seq
-            ON inbound_messages (bcn_session_id, seq)
+            ON inbound_messages (session_id, seq)
         """,
         """
         CREATE INDEX idx_inbound_seq
@@ -360,7 +360,7 @@ SCHEMA_MIGRATION = Migration(
         """,
         """
         CREATE INDEX idx_outbound_session_created
-            ON outbound_messages (bcn_session_id, created_at_ms)
+            ON outbound_messages (session_id, created_at_ms)
         """,
         """
         CREATE INDEX idx_outbound_state_created
@@ -372,7 +372,7 @@ SCHEMA_MIGRATION = Migration(
         """,
         """
         CREATE INDEX idx_runtime_turns_session_state
-            ON runtime_turns (agent_runtime_session_id, state, started_at_ms)
+            ON runtime_turns (session_id, state, started_at_ms)
         """,
         """
         CREATE INDEX idx_runtime_events_session_seq
@@ -397,7 +397,7 @@ SESSION_MAPPING_INDEX_MIGRATION = Migration(
         -- Provider identity lookup used by channel session get-or-create.
         CREATE INDEX idx_channel_sessions_provider_identity
             ON channel_sessions (
-                channel_slug,
+                channel,
                 provider_conversation_key,
                 provider_thread_key
             )
@@ -422,12 +422,12 @@ MESSAGE_LOG_INDEX_MIGRATION = Migration(
         """
         -- Provider-scoped inbound deduplication lookup.
         CREATE INDEX idx_inbound_provider_identity
-            ON inbound_messages (channel_slug, provider_message_id)
+            ON inbound_messages (channel, provider_message_id)
         """,
         """
         -- Target-filtered history lookup for one bcn session.
         CREATE INDEX idx_inbound_session_target_seq
-            ON inbound_messages (bcn_session_id, canonical_target, seq)
+            ON inbound_messages (session_id, canonical_target, seq)
         """,
     ),
 )

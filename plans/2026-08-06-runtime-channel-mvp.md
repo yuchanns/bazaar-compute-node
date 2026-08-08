@@ -30,7 +30,7 @@ bcn stop
 bcn restart
 ```
 
-`--channel` 和 `--runtime` 是 composition root 的 adapter slug。CLI 在启动 node 前完成
+`--channel` 和 `--runtime` 是 composition root 的 adapter name。CLI 在启动 node 前完成
 参数解析，并通过 Python package entry point 动态加载被选择的 Channel、Agent Runtime、
 Storage 和 Audit contrib；未选择或未安装的 provider 不会被 import。首版一个进程选择一组
 channel/runtime；该组合内部仍支持多个 bcn session 并发。`start`/`run` 必须从显式 CLI 参数
@@ -48,7 +48,7 @@ provider entry point。
 2. 一个固定的 agent runtime session 实例就是一个 agent；每个 agent runtime session
    使用独立的 Codex App Server 子进程，但所有 agent 共用同一个稳定 workspace。
 3. 首次 channel inbound 创建并持久化三方绑定：
-   `agent_runtime_session_id <-> bcn_session_id <-> channel_session_id`。
+   `runtime_session_id <-> bcn_session_id <-> channel_session_id`。
 4. bcn 启动时只生成一个 workspace UUID，写入 SQLite；workspace 固定为
    `$HOME/.bcn/workspaces/{uuid}/`，后续启动复用，不按 agent 拆分。
 5. Channel 只把“有消息待处理”的提醒送进 runtime；真实消息由 agent 通过 `bcc`
@@ -276,9 +276,9 @@ CREATE TABLE node_state (
 -- Provider conversation/thread identity and channel-level following state.
 CREATE TABLE channel_sessions (
     -- Stable local identifier for the normalized channel session.
-    channel_session_id TEXT PRIMARY KEY,
-    -- Selected channel adapter slug.
-    channel_slug TEXT,
+    id TEXT PRIMARY KEY,
+    -- Selected channel adapter name.
+    channel TEXT,
     -- Provider-native conversation identity used for lookup.
     provider_conversation_key TEXT,
     -- Provider-native thread or reply identity when one exists.
@@ -304,7 +304,7 @@ CREATE TABLE channel_sessions (
 -- Stable bcn session bound to one channel session and the shared workspace.
 CREATE TABLE bcn_sessions (
     -- Stable local identifier exposed to the runtime command wrapper.
-    bcn_session_id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     -- Application-managed association to a channel session.
     channel_session_id TEXT,
     -- UUID of the shared workspace used by this session.
@@ -326,13 +326,13 @@ CREATE TABLE bcn_sessions (
 -- One agent runtime process/thread binding and process recovery state.
 CREATE TABLE runtime_sessions (
     -- Stable local identifier for one runtime process lifecycle.
-    agent_runtime_session_id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     -- Application-managed association to a bcn session.
     bcn_session_id TEXT,
     -- Application-managed channel session association for correlation.
     channel_session_id TEXT,
-    -- Selected agent runtime adapter slug.
-    runtime_slug TEXT,
+    -- Selected agent runtime adapter name.
+    runtime TEXT,
     -- Runtime adapter or protocol version used for this process.
     runtime_version TEXT,
     -- Provider-native runtime thread identifier when available.
@@ -366,7 +366,7 @@ CREATE TABLE runtime_turns (
     -- Stable local identifier for one runtime turn.
     turn_id TEXT PRIMARY KEY,
     -- Application-managed association to the runtime session.
-    agent_runtime_session_id TEXT,
+    session_id TEXT,
     -- Provider-native turn identifier when available.
     provider_turn_id TEXT,
     -- Client message identifier that caused this turn.
@@ -389,16 +389,16 @@ CREATE TABLE runtime_turns (
 
 -- Append-only normalized inbound message log with the node-local delivery sequence.
 CREATE TABLE inbound_messages (
+    -- Stable local UUIDv7 message identifier used as the physical row identity.
+    message_id TEXT PRIMARY KEY,
     -- Node-local monotonic sequence used for cursor and snapshot boundaries.
-    seq INTEGER PRIMARY KEY,
-    -- Stable local message identifier.
-    message_id TEXT,
+    seq INTEGER,
     -- Application-managed association to a bcn session.
-    bcn_session_id TEXT,
+    session_id TEXT,
     -- Application-managed association to a channel session.
     channel_session_id TEXT,
-    -- Channel adapter slug that normalized the message.
-    channel_slug TEXT,
+    -- Channel adapter name that normalized the message.
+    channel TEXT,
     -- Provider-native message identifier used for application-level deduplication.
     provider_message_id TEXT,
     -- Provider timestamp, if supplied.
@@ -432,7 +432,7 @@ CREATE TABLE outbound_messages (
     -- Stable identifier of the originating command invocation.
     command_id TEXT,
     -- Application-managed association to a bcn session.
-    bcn_session_id TEXT,
+    session_id TEXT,
     -- Application-managed association to a channel session.
     channel_session_id TEXT,
     -- Canonical target supplied to the send command.
@@ -472,7 +472,7 @@ CREATE TABLE outbound_messages (
 -- Per-session delivery cursor and the latest inbox snapshot used by fresh-check.
 CREATE TABLE consumer_cursors (
     -- Stable bcn session identifier used as the cursor record identity.
-    bcn_session_id TEXT PRIMARY KEY,
+    session_id TEXT PRIMARY KEY,
     -- Highest inbound sequence already delivered by check.
     delivered_through_seq INTEGER,
     -- Latest inbound sequence observed by check or read.
@@ -507,16 +507,16 @@ CREATE TABLE runtime_events (
     duration_ms INTEGER,
     -- Node identifier that emitted the event.
     node_id TEXT,
-    -- Channel adapter slug associated with the event.
-    channel_slug TEXT,
-    -- Runtime adapter slug associated with the event.
-    runtime_slug TEXT,
+    -- Channel adapter name associated with the event.
+    channel TEXT,
+    -- Runtime adapter name associated with the event.
+    runtime TEXT,
     -- Channel session correlation identifier.
     channel_session_id TEXT,
     -- Bcn session correlation identifier.
     bcn_session_id TEXT,
     -- Agent runtime session correlation identifier.
-    agent_runtime_session_id TEXT,
+    runtime_session_id TEXT,
     -- Runtime turn correlation identifier.
     turn_id TEXT,
     -- Provider or protocol request correlation identifier.
@@ -560,7 +560,7 @@ CREATE TABLE schema_migrations (
   UUIDv7 primary key；不把它们当作跨表关联、业务唯一性或状态校验。应用层必须在写入前
   校验 required fields、ID 格式和对象归属。
 - `channel_sessions` 的逻辑查找键是
-  `(channel_slug, provider_conversation_key, provider_thread_key)`。没有 thread 的 provider
+  `(channel, provider_conversation_key, provider_thread_key)`。没有 thread 的 provider
   identity 由 adapter 规范化为空字符串或显式 sentinel；repository 在 session lock 内
   执行 get-or-create，发现重复绑定时返回已有记录或冲突错误。
 - `bcn_sessions.channel_session_id` 与 `runtime_sessions.bcn_session_id` 表达 MVP 的
@@ -572,7 +572,7 @@ CREATE TABLE schema_migrations (
 - `inbound_messages.message_id` 是 repository 生成的 UUIDv7 primary key；`seq` 仍是独立的
   node-local monotonic sequence，用于 cursor/snapshot 边界并建立普通索引。append-only
   语义下不做 delete，因此 node 重启后继续递增。provider 去重逻辑键是
-  `(channel_slug, provider_message_id)`，由 adapter/repository 在同一事务中检查，不能只按
+  `(channel, provider_message_id)`，由 adapter/repository 在同一事务中检查，不能只按
   provider message id 全局去重。
 - `outbound_messages` 记录的是 send command attempt，而不只是已经送达的 provider message。
   fresh-check 拒绝时写 `state='rejected'`、`fresh_check_state='failed'/'required'` 和
@@ -589,17 +589,19 @@ CREATE TABLE schema_migrations (
 
   ```sql
   CREATE INDEX idx_inbound_session_seq
-      ON inbound_messages (bcn_session_id, seq);
+      ON inbound_messages (session_id, seq);
+  CREATE INDEX idx_inbound_seq
+      ON inbound_messages (seq);
   CREATE INDEX idx_inbound_channel_received
       ON inbound_messages (channel_session_id, received_at_ms);
   CREATE INDEX idx_outbound_session_created
-      ON outbound_messages (bcn_session_id, created_at_ms);
+      ON outbound_messages (session_id, created_at_ms);
   CREATE INDEX idx_outbound_state_created
       ON outbound_messages (state, created_at_ms);
   CREATE INDEX idx_runtime_sessions_state
       ON runtime_sessions (process_state, updated_at_ms);
   CREATE INDEX idx_runtime_turns_session_state
-      ON runtime_turns (agent_runtime_session_id, state, started_at_ms);
+      ON runtime_turns (session_id, state, started_at_ms);
   CREATE INDEX idx_runtime_events_session_seq
       ON runtime_events (bcn_session_id, event_seq);
   CREATE INDEX idx_runtime_events_name_seq
@@ -661,7 +663,7 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
 
 ### 5.1 启动
 
-1. 解析 `--channel` 与 `--runtime`，拒绝未知或不兼容的 adapter slug。
+1. 解析 `--channel` 与 `--runtime`，拒绝未知或不兼容的 adapter name。
 2. 使用固定的 `$HOME/.bcn` data directory，通过 storage port 启动持久化实现；SQLite adapter
    在自己的实现内部执行 migrations。
 3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
@@ -852,7 +854,7 @@ Codex JSON-RPC request payload 暴露给 Channel 实现。
   ```
 
 - 每条相关日志尽可能包含 `node_id`、`channel`、`runtime`、`channel_session_id`、
-  `bcn_session_id`、`agent_runtime_session_id`、`turn_id`、`request_id`、local `seq` 和
+  `bcn_session_id`、`runtime_session_id`、`turn_id`、`request_id`、local `seq` 和
   provider id；未知字段省略，不使用伪造值。
 - runtime、Channel、storage、IPC 和 approval 的异常边界使用带 traceback 的异常日志；
   observer/logging failure 不能覆盖原始业务错误。异常同时转换成 core 的稳定
@@ -978,7 +980,7 @@ orchestration 测试套件、可替换的 Test Channel/Runtime 与内存 Storage
 
 #### Task 1E：动态 composition、daemon lifecycle、command service 与 `bcc` 小闭环
 
-- 在 `app/cli` 建立通用 composition root，解析 adapter slug，并通过 Python entry point
+- 在 `app/cli` 建立通用 composition root，解析 adapter name，并通过 Python entry point
   动态加载 provider factory；`app` 不包含 `TestNode` 或任何 provider-specific Node 类，
   新增 provider 只需安装 contrib package 并注册 entry point。未知、未安装或不兼容组合
   必须在启动前失败。
@@ -1078,7 +1080,7 @@ state，完成可审阅的跨平台本地 IPC、持久 wrapper 和三类 message
 #### Task 3A：composition root 与 command service lifecycle
 
 - 将 Phase 1 的 Test composition 扩展为真实 storage/channel/runtime 的 adapter factory，
-  让 `app/cli` 暴露完整的 `--channel`、`--runtime` 组合；未知或不兼容 slug 在启动前清晰
+  让 `app/cli` 暴露完整的 `--channel`、`--runtime` 组合；未知或不兼容 adapter name 在启动前清晰
   失败。
 - 完善 command service 的启动、停止、health/error boundary 和 session-scoped dispatch；
   service 只调用 core ports，不把 provider SDK 对象返回给 wrapper。
@@ -1184,8 +1186,8 @@ integration。
 
 - 将 `contrib/dummy` 的可控实现全部迁到 `tests/support`：`DummyChannel`、`DummyRuntime`、
   `DummyTurnPlan` 分别改为 `TestChannel`、`TestRuntime`、`TestTurnPlan`，内存 storage/audit
-  改为 `MemoryStorage` 与 `RecordingAudit`；同步迁移测试 fixture、slug、canonical target 和
-  文件名，不保留 import、class、entry point 或 slug 兼容 alias。
+  改为 `MemoryStorage` 与 `RecordingAudit`；同步迁移测试 fixture、adapter name、canonical target 和
+  文件名，不保留 import、class、entry point 或 adapter-name 兼容 alias。
 - 从 production package metadata 删除所有 dummy channel/runtime/storage/audit/control entry
   point；删除 `NodeApplication`、`AdapterRegistry`、`SessionOrchestrator` 中的 dummy 默认值。
   `start`/`run` 必须从 CLI 或持久配置显式解析非空 `channel` 与 `runtime`，不得回退到任何

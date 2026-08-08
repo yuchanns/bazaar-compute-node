@@ -27,22 +27,22 @@ def make_budget() -> TimeoutBudget:
     )
 
 
-def make_message(bcn_session_id: str) -> InboundMessage:
+def make_message(session_id: str) -> InboundMessage:
     return InboundMessage(
         seq=1,
-        message_id=f"message-{bcn_session_id}-1",
-        bcn_session_id=bcn_session_id,
-        channel_session_id=f"channel-{bcn_session_id}",
-        channel_slug="test",
-        provider_message_id=f"provider-{bcn_session_id}-1",
+        message_id=f"message-{session_id}-1",
+        session_id=session_id,
+        channel_session_id=f"channel-{session_id}",
+        channel="test",
+        provider_message_id=f"provider-{session_id}-1",
         received_at_ms=1,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#test:{bcn_session_id}",
-        body=f"inbound-{bcn_session_id}",
+        canonical_target=f"#test:{session_id}",
+        body=f"inbound-{session_id}",
         provider_time_ms=1,
-        provider_thread_id=f"thread-{bcn_session_id}",
+        provider_thread_id=f"thread-{session_id}",
     )
 
 
@@ -51,18 +51,14 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
     tmp_path: Path,
 ) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
+        channel="test",
+        runtime="test",
+        storage="sqlite",
+        audit="test",
     )
     data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3a",
         timeout_budget=make_budget(),
@@ -112,7 +108,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
                 break
             await asyncio.sleep(0.01)
         assert len(channel.sent_messages) == 2
-        assert {message.bcn_session_id for message in channel.sent_messages} == {
+        assert {message.session_id for message in channel.sent_messages} == {
             "bcn-a",
             "bcn-b",
         }
@@ -158,7 +154,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             for session_id in ("bcn-a", "bcn-b"):
                 assert await transaction.get_bcn_session(session_id) is not None
                 messages = await transaction.list_inbound_messages(session_id)
-                assert [message.bcn_session_id for message in messages] == [session_id]
+                assert [message.session_id for message in messages] == [session_id]
                 assert await transaction.find_runtime_session(session_id) is not None
     finally:
         await persisted.stop(timeout=2)
@@ -169,17 +165,13 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     tmp_path: Path,
 ) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
+        channel="test",
+        runtime="test",
+        storage="sqlite",
+        audit="test",
     )
     node = NodeApplication(
         factories=factories,
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=make_budget(),
     )
@@ -199,17 +191,13 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
 @pytest.mark.asyncio
 async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="test",
-        audit_slug="test",
+        channel="test",
+        runtime="test",
+        storage="test",
+        audit="test",
     )
     node = NodeApplication(
         factories=factories,
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="test",
-        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=TimeoutBudget(
             startup_seconds=2,

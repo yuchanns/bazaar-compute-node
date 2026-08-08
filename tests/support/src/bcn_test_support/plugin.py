@@ -20,17 +20,17 @@ def create_channel() -> IChannel:
 
 
 def create_runtime(context: RuntimeCommandContext) -> IRuntime:
-    async def run_default_commands(bcn_session_id: str) -> None:
+    async def run_default_commands(session_id: str) -> None:
         commands: tuple[tuple[Sequence[str], str | None], ...] = (
             (("message", "check"), None),
-            (("message", "read", "--target", f"#test:{bcn_session_id}"), None),
+            (("message", "read", "--target", f"#test:{session_id}"), None),
             (
-                ("message", "send", "--target", f"#test:{bcn_session_id}"),
-                f"test reply for {bcn_session_id}\n",
+                ("message", "send", "--target", f"#test:{session_id}"),
+                f"test reply for {session_id}\n",
             ),
         )
         for arguments, body in commands:
-            await context.run_command(bcn_session_id, arguments, body)
+            await context.run_command(session_id, arguments, body)
 
     return TestRuntime(default_command_runner=run_default_commands)
 

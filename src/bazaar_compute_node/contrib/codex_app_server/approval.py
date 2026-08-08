@@ -42,8 +42,8 @@ def is_approval_method(method: object) -> bool:
 def parse_approval_request(
     message: JsonlMessage,
     *,
-    bcn_session_id: str,
-    agent_runtime_session_id: str,
+    session_id: str,
+    runtime_session_id: str,
     turn_id: str,
     provider_thread_id: str,
     provider_turn_id: str | None,
@@ -110,8 +110,8 @@ def parse_approval_request(
         params=params,
         request=ApprovalRequest(
             request_id=str(request_id),
-            bcn_session_id=bcn_session_id,
-            agent_runtime_session_id=agent_runtime_session_id,
+            session_id=session_id,
+            runtime_session_id=runtime_session_id,
             action=action,
             created_at_ms=started_at_ms,
             turn_id=turn_id,

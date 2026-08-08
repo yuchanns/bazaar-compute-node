@@ -76,7 +76,7 @@ def _endpoint_path(args: argparse.Namespace, data_dir: Path) -> Path:
     return (args.endpoint or data_dir / "bcn.sock").expanduser()
 
 
-def _require_adapter_slugs(
+def _require_adapters(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
     if args.channel is None or args.runtime is None:
@@ -87,13 +87,13 @@ def _load_factories(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> AdapterFactories:
-    _require_adapter_slugs(parser, args)
+    _require_adapters(parser, args)
     try:
         return AdapterRegistry().load(
-            channel_slug=args.channel,
-            runtime_slug=args.runtime,
-            storage_slug=args.storage,
-            audit_slug=args.audit,
+            channel=args.channel,
+            runtime=args.runtime,
+            storage=args.storage,
+            audit=args.audit,
         )
     except ProviderLoadError as error:
         parser.error(str(error))
@@ -142,10 +142,6 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
-        channel_slug=args.channel,
-        runtime_slug=args.runtime,
-        storage_slug=args.storage,
-        audit_slug=args.audit,
         endpoint_path=_endpoint_path(args, data_dir),
         runtime_options=_runtime_options(args),
     )

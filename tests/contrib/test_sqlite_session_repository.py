@@ -38,16 +38,16 @@ async def database() -> AsyncIterator[SqliteDatabase]:
 
 def make_channel_session(
     *,
-    channel_session_id: str = "channel-1",
-    channel_slug: str = "test",
+    session_id: str = "channel-1",
+    channel: str = "test",
     provider_conversation_key: str = "conversation-1",
     provider_thread_key: str = "thread-1",
     state: ChannelSessionState = ChannelSessionState.ACTIVE,
     updated_at_ms: int = 100,
 ) -> ChannelSession:
     return ChannelSession(
-        channel_session_id=channel_session_id,
-        channel_slug=channel_slug,
+        id=session_id,
+        channel=channel,
         provider_conversation_key=provider_conversation_key,
         provider_thread_key=provider_thread_key,
         state=state,
@@ -59,14 +59,14 @@ def make_channel_session(
 
 def make_bcn_session(
     *,
-    bcn_session_id: str = "bcn-1",
+    session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
     workspace_id: str = "workspace-1",
     state: AgentState = AgentState.CREATED,
     updated_at_ms: int = 100,
 ) -> BcnSession:
     return BcnSession(
-        bcn_session_id=bcn_session_id,
+        id=session_id,
         channel_session_id=channel_session_id,
         workspace_id=workspace_id,
         state=state,
@@ -78,7 +78,7 @@ def make_bcn_session(
 
 def make_runtime_session(
     *,
-    agent_runtime_session_id: str = "runtime-1",
+    session_id: str = "runtime-1",
     bcn_session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
     workspace_id: str = "workspace-1",
@@ -86,10 +86,10 @@ def make_runtime_session(
     updated_at_ms: int = 100,
 ) -> RuntimeSession:
     return RuntimeSession(
-        agent_runtime_session_id=agent_runtime_session_id,
+        id=session_id,
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        runtime_slug="test",
+        runtime="test",
         workspace_id=workspace_id,
         process_state=process_state,
         created_at_ms=100,
@@ -102,9 +102,9 @@ def make_runtime_session(
 
 def make_inbound_message(
     *,
-    bcn_session_id: str = "bcn-1",
+    session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
-    channel_slug: str = "test",
+    channel: str = "test",
     provider_message_id: str = "provider-message-1",
     message_id: str = "caller-message-1",
     seq: int = 0,
@@ -115,9 +115,9 @@ def make_inbound_message(
     return InboundMessage(
         seq=seq,
         message_id=message_id,
-        bcn_session_id=bcn_session_id,
+        session_id=session_id,
         channel_session_id=channel_session_id,
-        channel_slug=channel_slug,
+        channel=channel,
         provider_message_id=provider_message_id,
         received_at_ms=received_at_ms,
         sender_id="sender-1",
@@ -143,20 +143,20 @@ async def save_channel_and_bcn_session(
     *,
     channel_session_id: str,
     bcn_session_id: str,
-    channel_slug: str = "test",
+    channel: str = "test",
     provider_conversation_key: str | None = None,
 ) -> None:
     async with database.transaction() as transaction:
         await transaction.save_channel_session(
             make_channel_session(
-                channel_session_id=channel_session_id,
-                channel_slug=channel_slug,
+                session_id=channel_session_id,
+                channel=channel,
                 provider_conversation_key=provider_conversation_key or "conversation-1",
             )
         )
         await transaction.save_bcn_session(
             make_bcn_session(
-                bcn_session_id=bcn_session_id,
+                session_id=bcn_session_id,
                 channel_session_id=channel_session_id,
             )
         )
@@ -171,7 +171,7 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
     async with database.transaction() as transaction:
         assert (
             await transaction.find_channel_session(
-                channel_slug="test",
+                channel="test",
                 provider_conversation_key="conversation-1",
                 provider_thread_key="thread-1",
             )
@@ -286,7 +286,7 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
     async with database.transaction() as transaction:
         other_session_message = await transaction.append_inbound_message(
             make_inbound_message(
-                bcn_session_id="bcn-2",
+                session_id="bcn-2",
                 channel_session_id="channel-2",
                 provider_message_id="provider-message-bcn-2",
                 message_id="other-session-message",
@@ -300,7 +300,7 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
         async with database.transaction() as transaction:
             await transaction.append_inbound_message(
                 make_inbound_message(
-                    bcn_session_id="bcn-2",
+                    session_id="bcn-2",
                     channel_session_id="channel-2",
                     provider_message_id=inbound.provider_message_id,
                     message_id="cross-session-message",
@@ -311,14 +311,14 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
         database,
         channel_session_id="channel-3",
         bcn_session_id="bcn-3",
-        channel_slug="other",
+        channel="other",
     )
     async with database.transaction() as transaction:
         other_provider_namespace = await transaction.append_inbound_message(
             make_inbound_message(
-                bcn_session_id="bcn-3",
+                session_id="bcn-3",
                 channel_session_id="channel-3",
-                channel_slug="other",
+                channel="other",
                 provider_message_id=inbound.provider_message_id,
                 message_id="other-channel-message",
             )
@@ -345,7 +345,7 @@ async def test_sqlite_cursor_snapshot_check_drains_and_read_does_not(
                 )
             )
         messages = tuple(messages_list)
-        await transaction.save_consumer_cursor(ConsumerCursor(bcn_session_id="bcn-1"))
+        await transaction.save_consumer_cursor(ConsumerCursor(session_id="bcn-1"))
 
     async with database.transaction() as transaction:
         cursor = await transaction.get_consumer_cursor("bcn-1")
@@ -441,9 +441,7 @@ async def test_sqlite_inbound_and_cursor_transaction_rolls_back_together(
     with pytest.raises(RuntimeError, match="rollback"):
         async with database.transaction() as transaction:
             await transaction.append_inbound_message(make_inbound_message())
-            await transaction.save_consumer_cursor(
-                ConsumerCursor(bcn_session_id="bcn-1")
-            )
+            await transaction.save_consumer_cursor(ConsumerCursor(session_id="bcn-1"))
             raise RuntimeError("rollback")
 
     async with database.transaction() as transaction:
@@ -477,7 +475,7 @@ async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped() -> 
             async with first.transaction() as transaction:
                 cursor = await transaction.get_consumer_cursor("bcn-1")
                 if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id="bcn-1")
+                    cursor = ConsumerCursor(session_id="bcn-1")
                 latest_seq = await transaction.get_latest_inbound_seq("bcn-1")
                 messages = await transaction.list_inbound_messages(
                     "bcn-1", after_seq=cursor.delivered_through_seq
@@ -500,7 +498,7 @@ async def test_sqlite_concurrent_check_and_read_keep_cursor_session_scoped() -> 
             async with second.transaction() as transaction:
                 cursor = await transaction.get_consumer_cursor("bcn-1")
                 if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id="bcn-1")
+                    cursor = ConsumerCursor(session_id="bcn-1")
                 latest_seq = await transaction.get_latest_inbound_seq("bcn-1")
                 messages = await transaction.list_inbound_messages("bcn-1")
                 await asyncio.sleep(0.05)
@@ -541,17 +539,17 @@ async def test_sqlite_session_graph_rejects_duplicate_bindings(
     with pytest.raises(ValueError, match="channel provider identity"):
         async with database.transaction() as transaction:
             await transaction.save_channel_session(
-                make_channel_session(channel_session_id="channel-2")
+                make_channel_session(session_id="channel-2")
             )
 
     with pytest.raises(ValueError, match="channel session is already bound"):
         async with database.transaction() as transaction:
-            await transaction.save_bcn_session(make_bcn_session(bcn_session_id="bcn-2"))
+            await transaction.save_bcn_session(make_bcn_session(session_id="bcn-2"))
 
     with pytest.raises(ValueError, match="bcn session is already bound"):
         async with database.transaction() as transaction:
             await transaction.save_runtime_session(
-                make_runtime_session(agent_runtime_session_id="runtime-2")
+                make_runtime_session(session_id="runtime-2")
             )
 
 
@@ -604,20 +602,20 @@ async def test_sqlite_session_updates_validate_binding_and_state_transitions(
     with pytest.raises(ValueError, match="binding cannot change"):
         async with database.transaction() as transaction:
             await transaction.save_runtime_session(
-                replace(make_runtime_session(), runtime_slug="other-runtime")
+                replace(make_runtime_session(), runtime="other-runtime")
             )
 
     with pytest.raises(ValueError, match="workspace"):
         async with database.transaction() as transaction:
             await transaction.save_bcn_session(
-                make_bcn_session(bcn_session_id="bcn-2", workspace_id="workspace-2")
+                make_bcn_session(session_id="bcn-2", workspace_id="workspace-2")
             )
 
     with pytest.raises(ValueError, match="does not match bcn session"):
         async with database.transaction() as transaction:
             await transaction.save_runtime_session(
                 make_runtime_session(
-                    agent_runtime_session_id="runtime-2",
+                    session_id="runtime-2",
                     channel_session_id="other-channel",
                 )
             )
@@ -654,7 +652,7 @@ async def test_sqlite_concurrent_get_or_create_has_one_winner() -> None:
             await asyncio.sleep(0.05)
             await transaction.save_channel_session(
                 make_channel_session(
-                    channel_session_id=channel_session_id,
+                    session_id=channel_session_id,
                     provider_conversation_key="conversation-concurrent",
                     provider_thread_key="",
                 )
@@ -674,12 +672,12 @@ async def test_sqlite_concurrent_get_or_create_has_one_winner() -> None:
         assert isinstance(errors[0], ValueError)
         async with first.transaction() as transaction:
             winner = await transaction.find_channel_session(
-                channel_slug="test",
+                channel="test",
                 provider_conversation_key="conversation-concurrent",
                 provider_thread_key="",
             )
         assert winner is not None
-        assert winner.channel_session_id in {"channel-first", "channel-second"}
+        assert winner.id in {"channel-first", "channel-second"}
     finally:
         await first.stop(timeout=2)
         await second.stop(timeout=2)

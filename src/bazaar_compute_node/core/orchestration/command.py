@@ -48,18 +48,18 @@ class SessionCommandService(ICommandService):
         self._node_id = node_id
         self._clock = clock
 
-    async def check(self, bcn_session_id: str) -> MessageCheckResult:
-        async with self._concurrency.for_session(bcn_session_id):
+    async def check(self, session_id: str) -> MessageCheckResult:
+        async with self._concurrency.for_session(session_id):
             async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(bcn_session_id)
+                bcn_session = await transaction.get_bcn_session(session_id)
                 if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
+                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+                cursor = await transaction.get_consumer_cursor(session_id)
                 if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
-                latest_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
+                    cursor = ConsumerCursor(session_id=session_id)
+                latest_seq = await transaction.get_latest_inbound_seq(session_id)
                 messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
+                    session_id,
                     after_seq=cursor.delivered_through_seq,
                 )
                 now_ms = self._clock()
@@ -82,14 +82,14 @@ class SessionCommandService(ICommandService):
             operation="bcc.message.check",
             status="completed",
             state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(bcn_session_id=bcn_session_id),
-            arguments={"bcn_session_id": bcn_session_id},
+            correlation=self._correlation(session_id=session_id),
+            arguments={"session_id": session_id},
         )
         return result
 
     async def read(
         self,
-        bcn_session_id: str,
+        session_id: str,
         *,
         target: str,
         around_message_id: str | None = None,
@@ -99,21 +99,21 @@ class SessionCommandService(ICommandService):
             raise ValueError("target must be a non-empty string")
         if limit <= 0:
             raise ValueError("limit must be positive")
-        async with self._concurrency.for_session(bcn_session_id):
+        async with self._concurrency.for_session(session_id):
             async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(bcn_session_id)
+                bcn_session = await transaction.get_bcn_session(session_id)
                 if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
+                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
                 messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
+                    session_id,
                     target=target,
                     around_message_id=around_message_id,
                     limit=limit,
                 )
-                latest_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
+                latest_seq = await transaction.get_latest_inbound_seq(session_id)
+                cursor = await transaction.get_consumer_cursor(session_id)
                 if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
+                    cursor = ConsumerCursor(session_id=session_id)
                 now_ms = self._clock()
                 cursor = replace(
                     cursor,
@@ -134,9 +134,9 @@ class SessionCommandService(ICommandService):
             operation="bcc.message.read",
             status="completed",
             state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(bcn_session_id=bcn_session_id),
+            correlation=self._correlation(session_id=session_id),
             arguments={
-                "bcn_session_id": bcn_session_id,
+                "session_id": session_id,
                 "target": target,
                 "around_message_id": around_message_id,
                 "limit": limit,
@@ -147,7 +147,7 @@ class SessionCommandService(ICommandService):
     async def send(
         self,
         *,
-        bcn_session_id: str,
+        session_id: str,
         command_id: str,
         target: str,
         body: str,
@@ -157,12 +157,12 @@ class SessionCommandService(ICommandService):
             raise ValueError("command_id must be a non-empty string")
         if not target:
             raise ValueError("target must be a non-empty string")
-        outbound_id = f"outbound-{bcn_session_id}-{command_id}"
-        async with self._concurrency.for_session(bcn_session_id):
+        outbound_id = f"outbound-{session_id}-{command_id}"
+        async with self._concurrency.for_session(session_id):
             async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(bcn_session_id)
+                bcn_session = await transaction.get_bcn_session(session_id)
                 if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
+                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
                 channel_session = await transaction.get_channel_session(
                     bcn_session.channel_session_id
                 )
@@ -170,20 +170,20 @@ class SessionCommandService(ICommandService):
                     raise ValueError(
                         f"unknown channel session: {bcn_session.channel_session_id}"
                     )
-                cursor = await transaction.get_consumer_cursor(bcn_session_id)
+                cursor = await transaction.get_consumer_cursor(session_id)
                 if cursor is None:
-                    cursor = ConsumerCursor(bcn_session_id=bcn_session_id)
-                current_seq = await transaction.get_latest_inbound_seq(bcn_session_id)
+                    cursor = ConsumerCursor(session_id=session_id)
+                current_seq = await transaction.get_latest_inbound_seq(session_id)
                 target_messages = await transaction.list_inbound_messages(
-                    bcn_session_id,
+                    session_id,
                     target=target,
                     limit=1,
                 )
                 outbound = OutboundMessage(
                     outbound_message_id=outbound_id,
                     command_id=command_id,
-                    bcn_session_id=bcn_session_id,
-                    channel_session_id=channel_session.channel_session_id,
+                    session_id=session_id,
+                    channel_session_id=channel_session.id,
                     target=target,
                     body=body,
                     state=OutboundDeliveryState.DRAFT,
@@ -204,9 +204,9 @@ class SessionCommandService(ICommandService):
                         next_action="Provide a non-empty message body and retry.",
                     )
                     audit_context = self._correlation(
-                        bcn_session_id=bcn_session_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
+                        session_id=session_id,
+                        channel=channel_session.channel,
+                        channel_session_id=channel_session.id,
                         command_id=command_id,
                         inbound_seq=current_seq,
                         outbound_message_id=None,
@@ -230,9 +230,9 @@ class SessionCommandService(ICommandService):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
-                        bcn_session_id=bcn_session_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
+                        session_id=session_id,
+                        channel=channel_session.channel,
+                        channel_session_id=channel_session.id,
                         command_id=command_id,
                         inbound_seq=current_seq,
                         outbound_message_id=outbound_id,
@@ -260,9 +260,9 @@ class SessionCommandService(ICommandService):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
-                        bcn_session_id=bcn_session_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
+                        session_id=session_id,
+                        channel=channel_session.channel,
+                        channel_session_id=channel_session.id,
                         command_id=command_id,
                         inbound_seq=current_seq,
                         outbound_message_id=outbound_id,
@@ -290,9 +290,9 @@ class SessionCommandService(ICommandService):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
-                        bcn_session_id=bcn_session_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
+                        session_id=session_id,
+                        channel=channel_session.channel,
+                        channel_session_id=channel_session.id,
                         command_id=command_id,
                         inbound_seq=current_seq,
                         outbound_message_id=outbound_id,
@@ -315,9 +315,9 @@ class SessionCommandService(ICommandService):
                     )
                     await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
-                        bcn_session_id=bcn_session_id,
-                        channel_slug=channel_session.channel_slug,
-                        channel_session_id=channel_session.channel_session_id,
+                        session_id=session_id,
+                        channel=channel_session.channel,
+                        channel_session_id=channel_session.id,
                         command_id=command_id,
                         inbound_seq=current_seq,
                         outbound_message_id=outbound_id,
@@ -455,8 +455,8 @@ class SessionCommandService(ICommandService):
     def _correlation(
         self,
         *,
-        bcn_session_id: str,
-        channel_slug: str | None = None,
+        session_id: str,
+        channel: str | None = None,
         channel_session_id: str | None = None,
         command_id: str | None = None,
         inbound_seq: int | None = None,
@@ -464,9 +464,9 @@ class SessionCommandService(ICommandService):
     ) -> CorrelationContext:
         return CorrelationContext(
             node_id=self._node_id(),
-            channel_slug=channel_slug,
+            channel=channel,
             channel_session_id=channel_session_id,
-            bcn_session_id=bcn_session_id,
+            bcn_session_id=session_id,
             command_id=command_id,
             inbound_seq=inbound_seq,
             outbound_message_id=outbound_message_id,

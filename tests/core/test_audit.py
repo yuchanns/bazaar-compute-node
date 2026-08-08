@@ -17,8 +17,8 @@ from bazaar_compute_node.core.observability import LogLevel
 def make_approval_request() -> ApprovalRequest:
     return ApprovalRequest(
         request_id="request-1",
-        bcn_session_id="bcn-1",
-        agent_runtime_session_id="runtime-1",
+        session_id="bcn-1",
+        runtime_session_id="runtime-1",
         action="command",
         created_at_ms=1,
         turn_id="turn-1",
@@ -29,9 +29,9 @@ def test_approval_binding_preserves_runtime_to_channel_correlation() -> None:
     request = make_approval_request()
     binding = ApprovalBinding(
         request_id=request.request_id,
-        bcn_session_id=request.bcn_session_id,
+        bcn_session_id=request.session_id,
         channel_session_id="channel-1",
-        agent_runtime_session_id=request.agent_runtime_session_id,
+        runtime_session_id=request.runtime_session_id,
         turn_id=request.turn_id,
     )
 
@@ -51,7 +51,7 @@ def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
         created_at_ms=2,
         correlation=CorrelationContext(
             bcn_session_id="bcn-1",
-            agent_runtime_session_id="runtime-1",
+            runtime_session_id="runtime-1",
             turn_id="turn-1",
         ),
         level=LogLevel.ERROR,

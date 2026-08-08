@@ -50,13 +50,13 @@ class SessionNotFoundError(ValueError):
 class ICommandService(Protocol):
     """Session-scoped command surface used by the local wrapper."""
 
-    async def check(self, bcn_session_id: str) -> MessageCheckResult:
+    async def check(self, session_id: str) -> MessageCheckResult:
         """Read new messages and advance only the delivery cursor."""
         ...
 
     async def read(
         self,
-        bcn_session_id: str,
+        session_id: str,
         *,
         target: str,
         around_message_id: str | None = None,
@@ -68,7 +68,7 @@ class ICommandService(Protocol):
     async def send(
         self,
         *,
-        bcn_session_id: str,
+        session_id: str,
         command_id: str,
         target: str,
         body: str,

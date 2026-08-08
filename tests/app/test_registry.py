@@ -17,11 +17,11 @@ PROVIDER_GROUPS = frozenset(
 )
 
 
-def test_unknown_adapter_slug_fails_before_composition() -> None:
+def test_unknown_adapter_name_fails_before_composition() -> None:
     with pytest.raises(ProviderLoadError, match="not installed"):
         AdapterRegistry().load(
-            channel_slug="missing-channel",
-            runtime_slug="test",
+            channel="missing-channel",
+            runtime="test",
         )
 
 

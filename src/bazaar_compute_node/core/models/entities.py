@@ -39,8 +39,8 @@ def _validate_non_negative(value: int, field_name: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ChannelSession:
-    channel_session_id: str
-    channel_slug: str
+    id: str
+    channel: str
     provider_conversation_key: str
     provider_thread_key: str
     state: ChannelSessionState
@@ -52,8 +52,8 @@ class ChannelSession:
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_text(self.channel_session_id, "channel_session_id")
-        _validate_text(self.channel_slug, "channel_slug")
+        _validate_text(self.id, "id")
+        _validate_text(self.channel, "channel")
         _validate_text(self.provider_conversation_key, "provider_conversation_key")
         if not isinstance(self.provider_thread_key, str):
             raise TypeError("provider_thread_key must be a string")
@@ -76,7 +76,7 @@ class ChannelSession:
 
 @dataclass(frozen=True, slots=True)
 class BcnSession:
-    bcn_session_id: str
+    id: str
     channel_session_id: str
     workspace_id: str
     state: AgentState
@@ -87,7 +87,7 @@ class BcnSession:
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_text(self.bcn_session_id, "bcn_session_id")
+        _validate_text(self.id, "id")
         _validate_text(self.channel_session_id, "channel_session_id")
         _validate_text(self.workspace_id, "workspace_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
@@ -121,10 +121,10 @@ class BcnSession:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSession:
-    agent_runtime_session_id: str
+    id: str
     bcn_session_id: str
     channel_session_id: str
-    runtime_slug: str
+    runtime: str
     workspace_id: str
     process_state: RuntimeProcessState
     created_at_ms: int
@@ -139,10 +139,10 @@ class RuntimeSession:
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_text(self.agent_runtime_session_id, "agent_runtime_session_id")
+        _validate_text(self.id, "id")
         _validate_text(self.bcn_session_id, "bcn_session_id")
         _validate_text(self.channel_session_id, "channel_session_id")
-        _validate_text(self.runtime_slug, "runtime_slug")
+        _validate_text(self.runtime, "runtime")
         _validate_text(self.workspace_id, "workspace_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
@@ -202,7 +202,7 @@ class RuntimeSession:
 @dataclass(frozen=True, slots=True)
 class RuntimeTurn:
     turn_id: str
-    agent_runtime_session_id: str
+    session_id: str
     state: RuntimeTurnState
     started_at_ms: int
     provider_turn_id: str | None = None
@@ -215,7 +215,7 @@ class RuntimeTurn:
 
     def __post_init__(self) -> None:
         _validate_text(self.turn_id, "turn_id")
-        _validate_text(self.agent_runtime_session_id, "agent_runtime_session_id")
+        _validate_text(self.session_id, "session_id")
         _validate_non_negative(self.started_at_ms, "started_at_ms")
         if self.provider_turn_id is not None:
             _validate_text(self.provider_turn_id, "provider_turn_id")
@@ -261,9 +261,9 @@ class RuntimeTurn:
 class InboundMessage:
     seq: int
     message_id: str
-    bcn_session_id: str
+    session_id: str
     channel_session_id: str
-    channel_slug: str
+    channel: str
     provider_message_id: str
     received_at_ms: int
     sender_id: str
@@ -281,9 +281,9 @@ class InboundMessage:
         _validate_non_negative(self.seq, "seq")
         for value, field_name in (
             (self.message_id, "message_id"),
-            (self.bcn_session_id, "bcn_session_id"),
+            (self.session_id, "session_id"),
             (self.channel_session_id, "channel_session_id"),
-            (self.channel_slug, "channel_slug"),
+            (self.channel, "channel"),
             (self.provider_message_id, "provider_message_id"),
             (self.sender_id, "sender_id"),
             (self.sender_display_name, "sender_display_name"),
@@ -300,7 +300,7 @@ class InboundMessage:
 class OutboundMessage:
     outbound_message_id: str
     command_id: str
-    bcn_session_id: str
+    session_id: str
     channel_session_id: str
     target: str
     body: str
@@ -323,7 +323,7 @@ class OutboundMessage:
         for value, field_name in (
             (self.outbound_message_id, "outbound_message_id"),
             (self.command_id, "command_id"),
-            (self.bcn_session_id, "bcn_session_id"),
+            (self.session_id, "session_id"),
             (self.channel_session_id, "channel_session_id"),
             (self.target, "target"),
         ):
@@ -431,7 +431,7 @@ class OutboundMessage:
 
 @dataclass(frozen=True, slots=True)
 class ConsumerCursor:
-    bcn_session_id: str
+    session_id: str
     delivered_through_seq: int = 0
     inbox_snapshot_seq: int | None = None
     inbox_snapshot_source: str | None = None
@@ -441,7 +441,7 @@ class ConsumerCursor:
     updated_at_ms: int = 0
 
     def __post_init__(self) -> None:
-        _validate_text(self.bcn_session_id, "bcn_session_id")
+        _validate_text(self.session_id, "session_id")
         _validate_non_negative(self.delivered_through_seq, "delivered_through_seq")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         for value, field_name in (
@@ -462,8 +462,8 @@ class ConsumerCursor:
 @dataclass(frozen=True, slots=True)
 class ApprovalRequest:
     request_id: str
-    bcn_session_id: str
-    agent_runtime_session_id: str
+    session_id: str
+    runtime_session_id: str
     action: str
     created_at_ms: int
     turn_id: str | None = None
@@ -472,8 +472,8 @@ class ApprovalRequest:
     def __post_init__(self) -> None:
         for value, field_name in (
             (self.request_id, "request_id"),
-            (self.bcn_session_id, "bcn_session_id"),
-            (self.agent_runtime_session_id, "agent_runtime_session_id"),
+            (self.session_id, "session_id"),
+            (self.runtime_session_id, "runtime_session_id"),
             (self.action, "action"),
         ):
             _validate_text(value, field_name)
@@ -504,10 +504,10 @@ class RuntimeEvent:
     state: RuntimeEventState
     duration_ms: int | None = None
     node_id: str | None = None
-    channel_slug: str | None = None
+    channel: str | None = None
     channel_session_id: str | None = None
     bcn_session_id: str | None = None
-    agent_runtime_session_id: str | None = None
+    runtime_session_id: str | None = None
     turn_id: str | None = None
     request_id: str | None = None
     command_id: str | None = None
@@ -517,7 +517,7 @@ class RuntimeEvent:
     error_type: str | None = None
     error_message: str | None = None
     traceback_ref: str | None = None
-    runtime_slug: str | None = None
+    runtime: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:

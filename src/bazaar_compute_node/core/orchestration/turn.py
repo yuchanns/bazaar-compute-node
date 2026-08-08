@@ -134,9 +134,9 @@ class SessionTurnCoordinator:
     ) -> RuntimeTurn:
         binding = ApprovalBinding(
             request_id="pending",
-            bcn_session_id=context.bcn_session.bcn_session_id,
-            channel_session_id=context.channel_session.channel_session_id,
-            agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
+            bcn_session_id=context.bcn_session.id,
+            channel_session_id=context.channel_session.id,
+            runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
         )
         turn_correlation = self.turn_correlation(message, context, turn)
@@ -150,10 +150,10 @@ class SessionTurnCoordinator:
                 raise ValueError("runtime approval request correlation mismatch")
             approval_correlation = CorrelationContext(
                 node_id=self._node_id(),
-                channel_slug=context.channel_session.channel_slug,
-                channel_session_id=context.channel_session.channel_session_id,
-                bcn_session_id=context.bcn_session.bcn_session_id,
-                agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
+                channel=context.channel_session.channel,
+                channel_session_id=context.channel_session.id,
+                bcn_session_id=context.bcn_session.id,
+                runtime_session_id=context.runtime_session.id,
                 turn_id=turn.turn_id,
                 request_id=request_id,
                 inbound_seq=message.seq,
@@ -205,7 +205,7 @@ class SessionTurnCoordinator:
                 stream = await self._runtime.start_turn(
                     context.runtime_session,
                     turn,
-                    f"[inbox notice session={context.bcn_session.bcn_session_id}]\n"
+                    f"[inbox notice session={context.bcn_session.id}]\n"
                     "Inbox update: 1 unread message. Use the message command to read it.",
                     approval_handler,
                     timeout=self._timeout_budget.provider_call_seconds,
@@ -232,7 +232,7 @@ class SessionTurnCoordinator:
                     error_kind=ErrorKind.PROVIDER_UNKNOWN,
                     error_message="runtime stream ended without a terminal event",
                     correlation=turn_correlation,
-                    bcn_session_id=context.bcn_session.bcn_session_id,
+                    session_id=context.bcn_session.id,
                 )
             return turn
         except asyncio.CancelledError:
@@ -243,7 +243,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.CANCELLED,
                 error_message="runtime turn cancelled",
                 correlation=turn_correlation,
-                bcn_session_id=context.bcn_session.bcn_session_id,
+                session_id=context.bcn_session.id,
             )
             raise
         except Exception as error:  # noqa: BLE001
@@ -254,7 +254,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.PROVIDER_FAILED,
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
-                bcn_session_id=context.bcn_session.bcn_session_id,
+                session_id=context.bcn_session.id,
             )
         finally:
             await self._close_stream(stream)
@@ -267,9 +267,9 @@ class SessionTurnCoordinator:
         error_kind: ErrorKind | None,
         error_message: str | None,
         correlation: CorrelationContext | None,
-        bcn_session_id: str,
+        session_id: str,
     ) -> RuntimeTurn:
-        async with self._concurrency.for_session(bcn_session_id):
+        async with self._concurrency.for_session(session_id):
             if turn.state in {
                 RuntimeTurnState.COMPLETED,
                 RuntimeTurnState.FAILED,
@@ -293,9 +293,9 @@ class SessionTurnCoordinator:
                     error_message=error_message,
                 )
                 await transaction.save_runtime_turn(current_turn)
-                bcn_session = await transaction.get_bcn_session(bcn_session_id)
+                bcn_session = await transaction.get_bcn_session(session_id)
                 if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
+                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
                 if state is RuntimeTurnState.COMPLETED:
                     agent_signal = AgentSignal.TURN_COMPLETED
                 elif state is RuntimeTurnState.FAILED:
@@ -342,7 +342,7 @@ class SessionTurnCoordinator:
         if event.turn_id is not None and event.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         async with (
-            self._concurrency.for_session(message.bcn_session_id),
+            self._concurrency.for_session(message.session_id),
             self._storage.transaction() as transaction,
         ):
             event = await transaction.append_runtime_event(event)
@@ -393,12 +393,10 @@ class SessionTurnCoordinator:
                     provider_turn_id=provider_turn_id,
                 )
             await transaction.save_runtime_turn(updated_turn)
-            bcn_session = await transaction.get_bcn_session(
-                context.bcn_session.bcn_session_id
-            )
+            bcn_session = await transaction.get_bcn_session(context.bcn_session.id)
             if bcn_session is None:
                 raise SessionNotFoundError(
-                    f"unknown bcn session: {context.bcn_session.bcn_session_id}"
+                    f"unknown bcn session: {context.bcn_session.id}"
                 )
             await self._state_writer.apply_in_transaction(
                 transaction,
@@ -437,10 +435,10 @@ class SessionTurnCoordinator:
     ) -> CorrelationContext:
         return CorrelationContext(
             node_id=self._node_id(),
-            channel_slug=context.channel_session.channel_slug,
-            channel_session_id=context.channel_session.channel_session_id,
-            bcn_session_id=context.bcn_session.bcn_session_id,
-            agent_runtime_session_id=context.runtime_session.agent_runtime_session_id,
+            channel=context.channel_session.channel,
+            channel_session_id=context.channel_session.id,
+            bcn_session_id=context.bcn_session.id,
+            runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
             inbound_seq=message.seq,
             provider_thread_id=context.runtime_session.provider_thread_id,

@@ -32,6 +32,10 @@ from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, Node
 class MemoryStorage(IStorage, IAsyncLifecycle):
     """Transactional in-memory storage for behavior-level integration tests."""
 
+    @property
+    def name(self) -> str:
+        return "test"
+
     def __init__(self) -> None:
         self.channel_sessions: dict[str, ChannelSession] = {}
         self.bcn_sessions: dict[str, BcnSession] = {}
@@ -130,7 +134,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
     async def find_channel_session(
         self,
         *,
-        channel_slug: str,
+        channel: str,
         provider_conversation_key: str,
         provider_thread_key: str,
     ) -> ChannelSession | None:
@@ -138,7 +142,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             session
             for session in self._storage.channel_sessions.values()
             if (
-                session.channel_slug == channel_slug
+                session.channel == channel
                 and session.provider_conversation_key == provider_conversation_key
                 and session.provider_thread_key == provider_thread_key
             )
@@ -147,13 +151,11 @@ class _MemoryStorageTransaction(IStorageTransaction):
             raise ValueError("multiple rows violate channel provider identity")
         return matches[0] if matches else None
 
-    async def get_channel_session(
-        self, channel_session_id: str
-    ) -> ChannelSession | None:
-        return self._storage.channel_sessions.get(channel_session_id)
+    async def get_channel_session(self, session_id: str) -> ChannelSession | None:
+        return self._storage.channel_sessions.get(session_id)
 
-    async def get_bcn_session(self, bcn_session_id: str) -> BcnSession | None:
-        return self._storage.bcn_sessions.get(bcn_session_id)
+    async def get_bcn_session(self, session_id: str) -> BcnSession | None:
+        return self._storage.bcn_sessions.get(session_id)
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         matches = [
@@ -168,44 +170,41 @@ class _MemoryStorageTransaction(IStorageTransaction):
             )
         return matches[0] if matches else None
 
-    async def get_runtime_session(
-        self, agent_runtime_session_id: str
-    ) -> RuntimeSession | None:
-        return self._storage.runtime_sessions.get(agent_runtime_session_id)
+    async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
+        return self._storage.runtime_sessions.get(session_id)
 
-    async def find_runtime_session(self, bcn_session_id: str) -> RuntimeSession | None:
+    async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
         matches = [
             session
             for session in self._storage.runtime_sessions.values()
-            if session.bcn_session_id == bcn_session_id
+            if session.bcn_session_id == session_id
         ]
         if len(matches) > 1:
             raise ValueError(
-                "multiple runtime sessions are bound to the bcn session: "
-                f"{bcn_session_id}"
+                f"multiple runtime sessions are bound to the bcn session: {session_id}"
             )
         return matches[0] if matches else None
 
     async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
         return self._storage.runtime_turns.get(turn_id)
 
-    async def get_consumer_cursor(self, bcn_session_id: str) -> ConsumerCursor | None:
-        return self._storage.cursors.get(bcn_session_id)
+    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
+        return self._storage.cursors.get(session_id)
 
-    async def get_latest_inbound_seq(self, bcn_session_id: str) -> int:
-        messages = self._storage.inbound_messages.get(bcn_session_id, [])
+    async def get_latest_inbound_seq(self, session_id: str) -> int:
+        messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
 
     async def list_inbound_messages(
         self,
-        bcn_session_id: str,
+        session_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
-        messages = list(self._storage.inbound_messages.get(bcn_session_id, []))
+        messages = list(self._storage.inbound_messages.get(session_id, []))
         if after_seq is not None:
             messages = [message for message in messages if message.seq > after_seq]
         if target is not None:
@@ -235,10 +234,10 @@ class _MemoryStorageTransaction(IStorageTransaction):
             raise TypeError("channel session state is invalid")
         if not isinstance(session.following, bool):
             raise TypeError("channel session following must be a boolean")
-        existing = self._storage.channel_sessions.get(session.channel_session_id)
+        existing = self._storage.channel_sessions.get(session.id)
         if existing is not None:
             if (
-                existing.channel_slug != session.channel_slug
+                existing.channel != session.channel
                 or existing.provider_conversation_key
                 != session.provider_conversation_key
                 or existing.provider_thread_key != session.provider_thread_key
@@ -248,16 +247,15 @@ class _MemoryStorageTransaction(IStorageTransaction):
             session = _validate_channel_session_update(existing, session)
         else:
             duplicate = await self.find_channel_session(
-                channel_slug=session.channel_slug,
+                channel=session.channel,
                 provider_conversation_key=session.provider_conversation_key,
                 provider_thread_key=session.provider_thread_key,
             )
             if duplicate is not None:
                 raise ValueError(
-                    "channel provider identity is already bound to "
-                    f"{duplicate.channel_session_id}"
+                    f"channel provider identity is already bound to {duplicate.id}"
                 )
-        self._storage.channel_sessions[session.channel_session_id] = session
+        self._storage.channel_sessions[session.id] = session
 
     async def save_bcn_session(self, session: BcnSession) -> None:
         if not isinstance(session.state, AgentState):
@@ -265,7 +263,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._require_workspace(session.workspace_id)
         if session.channel_session_id not in self._storage.channel_sessions:
             raise ValueError(f"unknown channel session: {session.channel_session_id}")
-        existing = self._storage.bcn_sessions.get(session.bcn_session_id)
+        existing = self._storage.bcn_sessions.get(session.id)
         if existing is not None:
             if (
                 existing.channel_session_id != session.channel_session_id
@@ -277,16 +275,14 @@ class _MemoryStorageTransaction(IStorageTransaction):
         else:
             duplicate = await self.find_bcn_session(session.channel_session_id)
             if duplicate is not None:
-                raise ValueError(
-                    f"channel session is already bound to {duplicate.bcn_session_id}"
-                )
-        self._storage.bcn_sessions[session.bcn_session_id] = session
+                raise ValueError(f"channel session is already bound to {duplicate.id}")
+        self._storage.bcn_sessions[session.id] = session
 
     async def save_runtime_session(self, session: RuntimeSession) -> None:
         if not isinstance(session.process_state, RuntimeProcessState):
             raise TypeError("runtime session process state is invalid")
         self._require_workspace(session.workspace_id)
-        existing = self._storage.runtime_sessions.get(session.agent_runtime_session_id)
+        existing = self._storage.runtime_sessions.get(session.id)
         bcn_session = self._storage.bcn_sessions.get(session.bcn_session_id)
         if bcn_session is None:
             raise ValueError(f"unknown bcn session: {session.bcn_session_id}")
@@ -303,7 +299,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             if (
                 existing.bcn_session_id != session.bcn_session_id
                 or existing.channel_session_id != session.channel_session_id
-                or existing.runtime_slug != session.runtime_slug
+                or existing.runtime != session.runtime
                 or existing.workspace_id != session.workspace_id
                 or existing.created_at_ms != session.created_at_ms
             ):
@@ -312,11 +308,8 @@ class _MemoryStorageTransaction(IStorageTransaction):
         else:
             duplicate = await self.find_runtime_session(session.bcn_session_id)
             if duplicate is not None:
-                raise ValueError(
-                    "bcn session is already bound to "
-                    f"{duplicate.agent_runtime_session_id}"
-                )
-        self._storage.runtime_sessions[session.agent_runtime_session_id] = session
+                raise ValueError(f"bcn session is already bound to {duplicate.id}")
+        self._storage.runtime_sessions[session.id] = session
 
     def _require_workspace(self, workspace_id: str) -> None:
         identity = self._storage.node_identity
@@ -329,10 +322,8 @@ class _MemoryStorageTransaction(IStorageTransaction):
 
     async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
         _validate_runtime_turn_input(turn)
-        if turn.agent_runtime_session_id not in self._storage.runtime_sessions:
-            raise ValueError(
-                f"unknown runtime session: {turn.agent_runtime_session_id}"
-            )
+        if turn.session_id not in self._storage.runtime_sessions:
+            raise ValueError(f"unknown runtime session: {turn.session_id}")
         existing = self._storage.runtime_turns.get(turn.turn_id)
         if existing is None:
             if turn.state is not RuntimeTurnState.STARTING:
@@ -340,7 +331,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             _validate_active_runtime_turn(self._storage, turn)
             self._storage.runtime_turns[turn.turn_id] = turn
             return
-        if existing.agent_runtime_session_id != turn.agent_runtime_session_id:
+        if existing.session_id != turn.session_id:
             raise ValueError("runtime turn binding cannot change")
         if existing.started_at_ms != turn.started_at_ms:
             raise ValueError("runtime turn start time cannot change")
@@ -349,20 +340,20 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._storage.runtime_turns[turn.turn_id] = canonical
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
-        messages = self._storage.inbound_messages.setdefault(message.bcn_session_id, [])
+        messages = self._storage.inbound_messages.setdefault(message.session_id, [])
         provider_matches = [
             existing
             for session_messages in self._storage.inbound_messages.values()
             for existing in session_messages
             if (
-                existing.channel_slug == message.channel_slug
+                existing.channel == message.channel
                 and existing.provider_message_id == message.provider_message_id
             )
         ]
         if provider_matches:
             existing = provider_matches[0]
             if (
-                existing.bcn_session_id != message.bcn_session_id
+                existing.session_id != message.session_id
                 or existing.channel_session_id != message.channel_session_id
             ):
                 raise ValueError(
@@ -385,7 +376,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
         return message
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
-        self._storage.cursors[cursor.bcn_session_id] = cursor
+        self._storage.cursors[cursor.session_id] = cursor
 
     async def get_outbound_message(
         self, outbound_message_id: str
@@ -394,9 +385,9 @@ class _MemoryStorageTransaction(IStorageTransaction):
 
     async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
         _validate_outbound_message_input(message)
-        bcn_session = self._storage.bcn_sessions.get(message.bcn_session_id)
+        bcn_session = self._storage.bcn_sessions.get(message.session_id)
         if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.bcn_session_id}")
+            raise ValueError(f"unknown bcn session: {message.session_id}")
         if message.channel_session_id not in self._storage.channel_sessions:
             raise ValueError(f"unknown channel session: {message.channel_session_id}")
         if bcn_session.channel_session_id != message.channel_session_id:
@@ -410,7 +401,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             return canonical
         if (
             existing.command_id != message.command_id
-            or existing.bcn_session_id != message.bcn_session_id
+            or existing.session_id != message.session_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.body != message.body
@@ -484,7 +475,7 @@ def _validate_active_runtime_turn(
     for existing in storage.runtime_turns.values():
         if (
             existing.turn_id != turn.turn_id
-            and existing.agent_runtime_session_id == turn.agent_runtime_session_id
+            and existing.session_id == turn.session_id
             and existing.state in active_states
             and turn.state in active_states
         ):
@@ -764,11 +755,11 @@ def _validate_runtime_event_input(event: RuntimeEvent) -> None:
         raise TypeError("runtime event state is invalid")
     for value, field_name in (
         (event.node_id, "node_id"),
-        (event.channel_slug, "channel_slug"),
-        (event.runtime_slug, "runtime_slug"),
+        (event.channel, "channel"),
+        (event.runtime, "runtime"),
         (event.channel_session_id, "channel_session_id"),
         (event.bcn_session_id, "bcn_session_id"),
-        (event.agent_runtime_session_id, "agent_runtime_session_id"),
+        (event.runtime_session_id, "runtime_session_id"),
         (event.turn_id, "turn_id"),
         (event.request_id, "request_id"),
         (event.command_id, "command_id"),
@@ -802,10 +793,7 @@ def _validate_runtime_event_references(
         channel_session = storage.channel_sessions.get(event.channel_session_id)
         if channel_session is None:
             raise ValueError(f"unknown channel session: {event.channel_session_id}")
-        if (
-            event.channel_slug is not None
-            and event.channel_slug != channel_session.channel_slug
-        ):
+        if event.channel is not None and event.channel != channel_session.channel:
             raise ValueError("runtime event channel binding does not match")
     bcn_session = None
     if event.bcn_session_id is not None:
@@ -817,22 +805,17 @@ def _validate_runtime_event_references(
             and bcn_session.channel_session_id != event.channel_session_id
         ):
             raise ValueError("runtime event bcn/channel binding does not match")
-        if event.channel_slug is not None:
+        if event.channel is not None:
             channel_session = channel_session or storage.channel_sessions.get(
                 bcn_session.channel_session_id
             )
-            if (
-                channel_session is not None
-                and channel_session.channel_slug != event.channel_slug
-            ):
+            if channel_session is not None and channel_session.channel != event.channel:
                 raise ValueError("runtime event channel binding does not match")
     runtime_session = None
-    if event.agent_runtime_session_id is not None:
-        runtime_session = storage.runtime_sessions.get(event.agent_runtime_session_id)
+    if event.runtime_session_id is not None:
+        runtime_session = storage.runtime_sessions.get(event.runtime_session_id)
         if runtime_session is None:
-            raise ValueError(
-                f"unknown runtime session: {event.agent_runtime_session_id}"
-            )
+            raise ValueError(f"unknown runtime session: {event.runtime_session_id}")
         if (
             event.bcn_session_id is not None
             and runtime_session.bcn_session_id != event.bcn_session_id
@@ -843,17 +826,12 @@ def _validate_runtime_event_references(
             and runtime_session.channel_session_id != event.channel_session_id
         ):
             raise ValueError("runtime event runtime/channel binding does not match")
+        if event.runtime is not None and event.runtime != runtime_session.runtime:
+            raise ValueError("runtime event runtime name does not match")
         if (
-            event.runtime_slug is not None
-            and event.runtime_slug != runtime_session.runtime_slug
-        ):
-            raise ValueError("runtime event runtime slug does not match")
-        if (
-            event.channel_slug is not None
-            and storage.channel_sessions[
-                runtime_session.channel_session_id
-            ].channel_slug
-            != event.channel_slug
+            event.channel is not None
+            and storage.channel_sessions[runtime_session.channel_session_id].channel
+            != event.channel
         ):
             raise ValueError("runtime event channel binding does not match")
     if event.turn_id is not None:
@@ -861,14 +839,12 @@ def _validate_runtime_event_references(
         if turn is None:
             raise ValueError(f"unknown runtime turn: {event.turn_id}")
         if (
-            event.agent_runtime_session_id is not None
-            and turn.agent_runtime_session_id != event.agent_runtime_session_id
+            event.runtime_session_id is not None
+            and turn.session_id != event.runtime_session_id
         ):
             raise ValueError("runtime event turn/runtime binding does not match")
         if runtime_session is None:
-            runtime_session = storage.runtime_sessions.get(
-                turn.agent_runtime_session_id
-            )
+            runtime_session = storage.runtime_sessions.get(turn.session_id)
         if (
             event.bcn_session_id is not None
             and runtime_session is not None
@@ -881,17 +857,12 @@ def _validate_runtime_event_references(
                 and runtime_session.channel_session_id != event.channel_session_id
             ):
                 raise ValueError("runtime event turn/channel binding does not match")
+            if event.runtime is not None and runtime_session.runtime != event.runtime:
+                raise ValueError("runtime event turn/runtime name does not match")
             if (
-                event.runtime_slug is not None
-                and runtime_session.runtime_slug != event.runtime_slug
-            ):
-                raise ValueError("runtime event turn/runtime slug does not match")
-            if (
-                event.channel_slug is not None
-                and storage.channel_sessions[
-                    runtime_session.channel_session_id
-                ].channel_slug
-                != event.channel_slug
+                event.channel is not None
+                and storage.channel_sessions[runtime_session.channel_session_id].channel
+                != event.channel
             ):
                 raise ValueError("runtime event turn/channel binding does not match")
     if event.outbound_message_id is not None:
@@ -900,7 +871,7 @@ def _validate_runtime_event_references(
             raise ValueError(f"unknown outbound message: {event.outbound_message_id}")
         if (
             event.bcn_session_id is not None
-            and outbound.bcn_session_id != event.bcn_session_id
+            and outbound.session_id != event.bcn_session_id
         ):
             raise ValueError("runtime event outbound/bcn binding does not match")
         if (
@@ -909,9 +880,9 @@ def _validate_runtime_event_references(
         ):
             raise ValueError("runtime event outbound/channel binding does not match")
         if (
-            event.channel_slug is not None
-            and storage.channel_sessions[outbound.channel_session_id].channel_slug
-            != event.channel_slug
+            event.channel is not None
+            and storage.channel_sessions[outbound.channel_session_id].channel
+            != event.channel
         ):
             raise ValueError("runtime event outbound/channel binding does not match")
     if (
@@ -932,7 +903,7 @@ def _validate_channel_session_update(
     incoming: ChannelSession,
 ) -> ChannelSession:
     if (
-        existing.channel_slug != incoming.channel_slug
+        existing.channel != incoming.channel
         or existing.provider_conversation_key != incoming.provider_conversation_key
         or existing.provider_thread_key != incoming.provider_thread_key
         or existing.created_at_ms != incoming.created_at_ms
@@ -983,7 +954,7 @@ def _validate_runtime_session_update(
     if (
         existing.bcn_session_id != incoming.bcn_session_id
         or existing.channel_session_id != incoming.channel_session_id
-        or existing.runtime_slug != incoming.runtime_slug
+        or existing.runtime != incoming.runtime
         or existing.workspace_id != incoming.workspace_id
         or existing.created_at_ms != incoming.created_at_ms
     ):

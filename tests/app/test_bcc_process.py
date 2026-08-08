@@ -45,9 +45,9 @@ def make_message(seq: int, *, body: str) -> InboundMessage:
     return InboundMessage(
         seq=seq,
         message_id=f"input-message-{seq}",
-        bcn_session_id="bcn-a",
+        session_id="bcn-a",
         channel_session_id="channel-bcn-a",
-        channel_slug="test",
+        channel="test",
         provider_message_id=f"provider-message-{seq}",
         received_at_ms=1_000 + seq,
         provider_time_ms=2_000 + seq,
@@ -126,10 +126,6 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
     factories = make_factories()
     node = NodeApplication(
         factories=factories,
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3c",
         timeout_budget=make_budget(),
@@ -236,10 +232,6 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
 ) -> None:
     node = NodeApplication(
         factories=make_factories(),
-        channel_slug="test",
-        runtime_slug="test",
-        storage_slug="sqlite",
-        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3d",
         timeout_budget=make_budget(),

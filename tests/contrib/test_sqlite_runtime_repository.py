@@ -40,13 +40,13 @@ async def database() -> AsyncIterator[SqliteDatabase]:
 
 
 def make_channel_session(
-    *, channel_session_id: str = "channel-1", channel_slug: str = "test"
+    *, session_id: str = "channel-1", channel: str = "test"
 ) -> ChannelSession:
     return ChannelSession(
-        channel_session_id=channel_session_id,
-        channel_slug=channel_slug,
-        provider_conversation_key=f"conversation-{channel_session_id}",
-        provider_thread_key=f"thread-{channel_session_id}",
+        id=session_id,
+        channel=channel,
+        provider_conversation_key=f"conversation-{session_id}",
+        provider_thread_key=f"thread-{session_id}",
         state=ChannelSessionState.ACTIVE,
         created_at_ms=100,
         updated_at_ms=100,
@@ -54,10 +54,10 @@ def make_channel_session(
 
 
 def make_bcn_session(
-    *, bcn_session_id: str = "bcn-1", channel_session_id: str = "channel-1"
+    *, session_id: str = "bcn-1", channel_session_id: str = "channel-1"
 ) -> BcnSession:
     return BcnSession(
-        bcn_session_id=bcn_session_id,
+        id=session_id,
         channel_session_id=channel_session_id,
         workspace_id="workspace-1",
         state=AgentState.CREATED,
@@ -68,15 +68,15 @@ def make_bcn_session(
 
 def make_runtime_session(
     *,
-    runtime_id: str = "runtime-1",
+    session_id: str = "runtime-1",
     bcn_session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
 ) -> RuntimeSession:
     return RuntimeSession(
-        agent_runtime_session_id=runtime_id,
+        id=session_id,
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        runtime_slug="test",
+        runtime="test",
         workspace_id="workspace-1",
         process_state=RuntimeProcessState.STARTING,
         created_at_ms=100,
@@ -85,20 +85,20 @@ def make_runtime_session(
 
 
 def make_inbound_message(
-    *, bcn_session_id: str = "bcn-1", channel_session_id: str = "channel-1"
+    *, session_id: str = "bcn-1", channel_session_id: str = "channel-1"
 ) -> InboundMessage:
     return InboundMessage(
         seq=0,
         message_id="provider-local-message",
-        bcn_session_id=bcn_session_id,
+        session_id=session_id,
         channel_session_id=channel_session_id,
-        channel_slug="test",
+        channel="test",
         provider_message_id="provider-message-1",
         received_at_ms=101,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#test:{bcn_session_id}",
+        canonical_target=f"#test:{session_id}",
         body="inbound body",
     )
 
@@ -112,17 +112,17 @@ async def save_runtime_graph(
 ) -> None:
     async with database.transaction() as transaction:
         await transaction.save_channel_session(
-            make_channel_session(channel_session_id=channel_session_id)
+            make_channel_session(session_id=channel_session_id)
         )
         await transaction.save_bcn_session(
             make_bcn_session(
-                bcn_session_id=bcn_session_id,
+                session_id=bcn_session_id,
                 channel_session_id=channel_session_id,
             )
         )
         await transaction.save_runtime_session(
             make_runtime_session(
-                runtime_id=runtime_id,
+                session_id=runtime_id,
                 bcn_session_id=bcn_session_id,
                 channel_session_id=channel_session_id,
             )
@@ -132,15 +132,15 @@ async def save_runtime_graph(
 def make_draft(
     *,
     outbound_message_id: str = "outbound-1",
-    bcn_session_id: str = "bcn-1",
+    session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
 ) -> OutboundMessage:
     return OutboundMessage(
         outbound_message_id=outbound_message_id,
         command_id=f"command-{outbound_message_id}",
-        bcn_session_id=bcn_session_id,
+        session_id=session_id,
         channel_session_id=channel_session_id,
-        target=f"#test:{bcn_session_id}",
+        target=f"#test:{session_id}",
         body="outbound body",
         state=OutboundDeliveryState.DRAFT,
         fresh_check_state=FreshCheckState.REQUIRED,
@@ -275,7 +275,7 @@ async def test_sqlite_runtime_turn_repository_enforces_transitions_and_active_tu
     async with database.transaction() as transaction:
         starting = RuntimeTurn(
             turn_id="turn-1",
-            agent_runtime_session_id="runtime-1",
+            session_id="runtime-1",
             state=RuntimeTurnState.STARTING,
             started_at_ms=110,
             client_user_message_id="message-1",
@@ -331,7 +331,7 @@ async def test_sqlite_runtime_turn_repository_enforces_transitions_and_active_tu
 async def save_starting_turn(database: SqliteDatabase, turn_id: str) -> RuntimeTurn:
     turn = RuntimeTurn(
         turn_id=turn_id,
-        agent_runtime_session_id="runtime-1",
+        session_id="runtime-1",
         state=RuntimeTurnState.STARTING,
         started_at_ms=200,
     )
@@ -384,7 +384,7 @@ async def test_sqlite_runtime_event_repository_is_append_only_and_validates_refe
         inbound = await transaction.append_inbound_message(make_inbound_message())
         turn = RuntimeTurn(
             turn_id="turn-event",
-            agent_runtime_session_id="runtime-1",
+            session_id="runtime-1",
             state=RuntimeTurnState.STARTING,
             started_at_ms=110,
         )
@@ -398,11 +398,11 @@ async def test_sqlite_runtime_event_repository_is_append_only_and_validates_refe
             event_name="runtime.turn.started",
             state=RuntimeEventState.STARTED,
             node_id="node-1",
-            channel_slug="test",
-            runtime_slug="test",
+            channel="test",
+            runtime="test",
             channel_session_id="channel-1",
             bcn_session_id="bcn-1",
-            agent_runtime_session_id="runtime-1",
+            runtime_session_id="runtime-1",
             turn_id="turn-event",
             inbound_seq=inbound.seq,
         )
@@ -431,13 +431,13 @@ async def test_sqlite_runtime_event_repository_is_append_only_and_validates_refe
                 replace(started, event_seq=700, event_name="tampered")
             )
 
-        with pytest.raises(ValueError, match="runtime slug"):
+        with pytest.raises(ValueError, match="runtime name"):
             await transaction.append_runtime_event(
                 replace(
                     started,
                     event_seq=0,
                     event_id="event-bad-runtime",
-                    runtime_slug="other-runtime",
+                    runtime="other-runtime",
                 )
             )
 

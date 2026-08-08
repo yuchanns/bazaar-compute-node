@@ -24,8 +24,8 @@ from bazaar_compute_node.core.models import (
 
 def make_channel_session() -> ChannelSession:
     return ChannelSession(
-        channel_session_id="channel-1",
-        channel_slug="test",
+        id="channel-1",
+        channel="test",
         provider_conversation_key="conversation-1",
         provider_thread_key="",
         state=ChannelSessionState.ACTIVE,
@@ -36,7 +36,7 @@ def make_channel_session() -> ChannelSession:
 
 def make_bcn_session() -> BcnSession:
     return BcnSession(
-        bcn_session_id="bcn-1",
+        id="bcn-1",
         channel_session_id="channel-1",
         workspace_id="workspace-1",
         state=AgentState.CREATED,
@@ -47,10 +47,10 @@ def make_bcn_session() -> BcnSession:
 
 def make_runtime_session() -> RuntimeSession:
     return RuntimeSession(
-        agent_runtime_session_id="runtime-1",
+        id="runtime-1",
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
-        runtime_slug="test",
+        runtime="test",
         workspace_id="workspace-1",
         process_state=RuntimeProcessState.STARTING,
         created_at_ms=1,
@@ -61,7 +61,7 @@ def make_runtime_session() -> RuntimeSession:
 def make_runtime_turn() -> RuntimeTurn:
     return RuntimeTurn(
         turn_id="turn-1",
-        agent_runtime_session_id="runtime-1",
+        session_id="runtime-1",
         state=RuntimeTurnState.STARTING,
         started_at_ms=1,
     )
@@ -71,7 +71,7 @@ def make_outbound_message() -> OutboundMessage:
     return OutboundMessage(
         outbound_message_id="outbound-1",
         command_id="command-1",
-        bcn_session_id="bcn-1",
+        session_id="bcn-1",
         channel_session_id="channel-1",
         target="#test:message-1",
         body="hello",

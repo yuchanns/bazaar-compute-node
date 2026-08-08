@@ -133,9 +133,9 @@ def stop_test_process() -> subprocess.CompletedProcess[str]:
 
 def inbound_payload(session_id: str, seq: int = 1) -> dict[str, object]:
     return {
-        "bcn_session_id": session_id,
+        "session_id": session_id,
         "channel_session_id": f"channel-{session_id}",
-        "channel_slug": "test",
+        "channel": "test",
         "provider_message_id": f"provider-{session_id}-{seq}",
         "message_id": f"message-{session_id}-{seq}",
         "seq": seq,
@@ -190,7 +190,7 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
         runtime_turns = cast(dict[str, dict[str, object]], status["runtime_turns"])
         outbound_messages = cast(list[dict[str, object]], status["outbound_messages"])
         assert inbound_messages == {"bcn-a": 1, "bcn-b": 1}
-        assert {message["bcn_session_id"] for message in sent_messages} == {
+        assert {message["session_id"] for message in sent_messages} == {
             "bcn-a",
             "bcn-b",
         }

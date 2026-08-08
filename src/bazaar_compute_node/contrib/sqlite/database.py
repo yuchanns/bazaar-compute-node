@@ -41,6 +41,10 @@ class NodeState:
 class SqliteDatabase:
     """Persistent SQLite foundation used by the storage repository adapter."""
 
+    @property
+    def name(self) -> str:
+        return "sqlite"
+
     def __init__(
         self,
         *,

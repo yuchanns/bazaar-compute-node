@@ -16,8 +16,8 @@ async def test_storage_transaction_rolls_back_on_error() -> None:
     storage = MemoryStorage()
     await storage.initialize(node_id="node-1", workspace_id="workspace-1")
     channel_session = ChannelSession(
-        channel_session_id="channel-1",
-        channel_slug="test",
+        id="channel-1",
+        channel="test",
         provider_conversation_key="conversation-1",
         provider_thread_key="",
         state=ChannelSessionState.ACTIVE,
@@ -25,7 +25,7 @@ async def test_storage_transaction_rolls_back_on_error() -> None:
         updated_at_ms=1,
     )
     session = BcnSession(
-        bcn_session_id="bcn-1",
+        id="bcn-1",
         channel_session_id="channel-1",
         workspace_id="workspace-1",
         state=AgentState.CREATED,

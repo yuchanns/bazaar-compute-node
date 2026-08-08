@@ -12,7 +12,7 @@ class ISessionConcurrency(Protocol):
     independent and must not be acquired by a global node lock.
     """
 
-    def for_session(self, bcn_session_id: str) -> asyncio.Lock:
+    def for_session(self, session_id: str) -> asyncio.Lock:
         """Return a stable lock keyed by the opaque bcn session id."""
         ...
 
@@ -23,7 +23,7 @@ class SessionLockRegistry:
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def for_session(self, bcn_session_id: str) -> asyncio.Lock:
-        if not isinstance(bcn_session_id, str) or not bcn_session_id:
-            raise ValueError("bcn_session_id must be a non-empty string")
-        return self._locks.setdefault(bcn_session_id, asyncio.Lock())
+    def for_session(self, session_id: str) -> asyncio.Lock:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        return self._locks.setdefault(session_id, asyncio.Lock())

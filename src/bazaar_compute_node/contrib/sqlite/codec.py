@@ -34,10 +34,8 @@ def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
     ):
         raise ValueError("channel session following value is invalid")
     return ChannelSession(
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        channel_slug=_required_text(row["channel_slug"], "channel_slug"),
+        id=_required_text(row["id"], "id"),
+        channel=_required_text(row["channel"], "channel"),
         provider_conversation_key=_required_text(
             row["provider_conversation_key"], "provider_conversation_key"
         ),
@@ -64,7 +62,7 @@ def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
 
 def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
     return BcnSession(
-        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        id=_required_text(row["id"], "id"),
         channel_session_id=_required_text(
             row["channel_session_id"], "channel_session_id"
         ),
@@ -82,14 +80,12 @@ def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
 
 def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
     return RuntimeSession(
-        agent_runtime_session_id=_required_text(
-            row["agent_runtime_session_id"], "agent_runtime_session_id"
-        ),
+        id=_required_text(row["id"], "id"),
         bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
         channel_session_id=_required_text(
             row["channel_session_id"], "channel_session_id"
         ),
-        runtime_slug=_required_text(row["runtime_slug"], "runtime_slug"),
+        runtime=_required_text(row["runtime"], "runtime"),
         workspace_id=_required_text(row["workspace_id"], "workspace_id"),
         process_state=RuntimeProcessState(
             _required_text(row["process_state"], "runtime_session.process_state")
@@ -116,9 +112,7 @@ def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
 def _runtime_turn_from_row(row: aiosqlite.Row) -> RuntimeTurn:
     return RuntimeTurn(
         turn_id=_required_text(row["turn_id"], "turn_id"),
-        agent_runtime_session_id=_required_text(
-            row["agent_runtime_session_id"], "agent_runtime_session_id"
-        ),
+        session_id=_required_text(row["session_id"], "session_id"),
         state=RuntimeTurnState(_required_text(row["state"], "runtime_turn.state")),
         started_at_ms=_required_non_negative_int(row["started_at_ms"], "started_at_ms"),
         provider_turn_id=_optional_text(row["provider_turn_id"], "provider_turn_id"),
@@ -139,11 +133,11 @@ def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
     return InboundMessage(
         seq=_required_non_negative_int(row["seq"], "seq"),
         message_id=_required_text(row["message_id"], "message_id"),
-        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        session_id=_required_text(row["session_id"], "session_id"),
         channel_session_id=_required_text(
             row["channel_session_id"], "channel_session_id"
         ),
-        channel_slug=_required_text(row["channel_slug"], "channel_slug"),
+        channel=_required_text(row["channel"], "channel"),
         provider_message_id=_required_text(
             row["provider_message_id"], "provider_message_id"
         ),
@@ -181,7 +175,7 @@ def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
             row["outbound_message_id"], "outbound_message_id"
         ),
         command_id=_required_text(row["command_id"], "command_id"),
-        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        session_id=_required_text(row["session_id"], "session_id"),
         channel_session_id=_required_text(
             row["channel_session_id"], "channel_session_id"
         ),
@@ -232,14 +226,14 @@ def _runtime_event_from_row(row: aiosqlite.Row) -> RuntimeEvent:
         state=RuntimeEventState(_required_text(row["state"], "runtime_event.state")),
         duration_ms=_optional_non_negative_int(row["duration_ms"], "duration_ms"),
         node_id=_optional_text(row["node_id"], "node_id"),
-        channel_slug=_optional_text(row["channel_slug"], "channel_slug"),
-        runtime_slug=_optional_text(row["runtime_slug"], "runtime_slug"),
+        channel=_optional_text(row["channel"], "channel"),
+        runtime=_optional_text(row["runtime"], "runtime"),
         channel_session_id=_optional_text(
             row["channel_session_id"], "channel_session_id"
         ),
         bcn_session_id=_optional_text(row["bcn_session_id"], "bcn_session_id"),
-        agent_runtime_session_id=_optional_text(
-            row["agent_runtime_session_id"], "agent_runtime_session_id"
+        runtime_session_id=_optional_text(
+            row["runtime_session_id"], "runtime_session_id"
         ),
         turn_id=_optional_text(row["turn_id"], "turn_id"),
         request_id=_optional_text(row["request_id"], "request_id"),
@@ -258,7 +252,7 @@ def _runtime_event_from_row(row: aiosqlite.Row) -> RuntimeEvent:
 
 def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
-        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
+        session_id=_required_text(row["session_id"], "session_id"),
         delivered_through_seq=_required_non_negative_int(
             row["delivered_through_seq"], "delivered_through_seq"
         ),
@@ -597,11 +591,11 @@ def _validate_runtime_event_input(event: RuntimeEvent) -> None:
         raise TypeError("runtime event state is invalid")
     for value, field_name in (
         (event.node_id, "node_id"),
-        (event.channel_slug, "channel_slug"),
-        (event.runtime_slug, "runtime_slug"),
+        (event.channel, "channel"),
+        (event.runtime, "runtime"),
         (event.channel_session_id, "channel_session_id"),
         (event.bcn_session_id, "bcn_session_id"),
-        (event.agent_runtime_session_id, "agent_runtime_session_id"),
+        (event.runtime_session_id, "runtime_session_id"),
         (event.turn_id, "turn_id"),
         (event.request_id, "request_id"),
         (event.command_id, "command_id"),
@@ -631,9 +625,9 @@ def _same_inbound_payload(
     incoming: InboundMessage,
 ) -> bool:
     return (
-        existing.bcn_session_id,
+        existing.session_id,
         existing.channel_session_id,
-        existing.channel_slug,
+        existing.channel,
         existing.provider_message_id,
         existing.provider_time_ms,
         existing.sender_id,
@@ -646,9 +640,9 @@ def _same_inbound_payload(
         existing.provider_payload_ref,
         existing.metadata,
     ) == (
-        incoming.bcn_session_id,
+        incoming.session_id,
         incoming.channel_session_id,
-        incoming.channel_slug,
+        incoming.channel,
         incoming.provider_message_id,
         incoming.provider_time_ms,
         incoming.sender_id,
@@ -742,7 +736,7 @@ def _validate_channel_session_update(
     incoming: ChannelSession,
 ) -> ChannelSession:
     if (
-        existing.channel_slug != incoming.channel_slug
+        existing.channel != incoming.channel
         or existing.provider_conversation_key != incoming.provider_conversation_key
         or existing.provider_thread_key != incoming.provider_thread_key
         or existing.created_at_ms != incoming.created_at_ms
@@ -793,7 +787,7 @@ def _validate_runtime_session_update(
     if (
         existing.bcn_session_id != incoming.bcn_session_id
         or existing.channel_session_id != incoming.channel_session_id
-        or existing.runtime_slug != incoming.runtime_slug
+        or existing.runtime != incoming.runtime
         or existing.workspace_id != incoming.workspace_id
         or existing.created_at_ms != incoming.created_at_ms
     ):

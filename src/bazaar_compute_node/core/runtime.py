@@ -46,6 +46,11 @@ class IRuntime(IAsyncLifecycle, Protocol):
     not converted into a confirmed failure.
     """
 
+    @property
+    def name(self) -> str:
+        """Return the stable entry-point identity of this adapter."""
+        ...
+
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:

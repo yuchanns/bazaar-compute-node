@@ -18,6 +18,10 @@ _LOG_LEVELS = {
 class LoggingAudit(IAudit):
     """Emit sanitized audit events through the process logging pipeline."""
 
+    @property
+    def name(self) -> str:
+        return "logging"
+
     def __init__(self, logger: logging.Logger | None = None) -> None:
         if logger is None:
             logger = logging.getLogger("bazaar_compute_node.audit")

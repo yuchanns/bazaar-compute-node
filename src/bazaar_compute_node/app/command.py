@@ -18,9 +18,9 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         "seq": message.seq,
         "message_id": message.message_id,
         "short_message_id": message.message_id[:8],
-        "bcn_session_id": message.bcn_session_id,
+        "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
-        "channel_slug": message.channel_slug,
+        "channel": message.channel,
         "provider_message_id": message.provider_message_id,
         "received_at_ms": message.received_at_ms,
         "provider_time_ms": message.provider_time_ms,
@@ -38,7 +38,7 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
     return {
         "outbound_message_id": message.outbound_message_id,
         "command_id": message.command_id,
-        "bcn_session_id": message.bcn_session_id,
+        "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "target": message.target,
         "body": message.body,
@@ -285,7 +285,7 @@ class CommandDispatcher:
                     "INVALID_CREATED_AT", "created_at_ms must be non-negative"
                 )
             result = await self._service.send(
-                bcn_session_id=session_id,
+                session_id=session_id,
                 command_id=command_id,
                 target=target,
                 body=body,

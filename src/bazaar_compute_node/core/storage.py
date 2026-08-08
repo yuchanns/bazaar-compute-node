@@ -42,20 +42,18 @@ class IStorageTransaction(Protocol):
     async def find_channel_session(
         self,
         *,
-        channel_slug: str,
+        channel: str,
         provider_conversation_key: str,
         provider_thread_key: str,
     ) -> ChannelSession | None:
         """Find a channel session by provider-neutral identity fields."""
         ...
 
-    async def get_channel_session(
-        self, channel_session_id: str
-    ) -> ChannelSession | None:
+    async def get_channel_session(self, session_id: str) -> ChannelSession | None:
         """Load one channel session by local id."""
         ...
 
-    async def get_bcn_session(self, bcn_session_id: str) -> BcnSession | None:
+    async def get_bcn_session(self, session_id: str) -> BcnSession | None:
         """Load one bcn session by local id."""
         ...
 
@@ -63,13 +61,11 @@ class IStorageTransaction(Protocol):
         """Find the bcn session bound to one channel session for recovery."""
         ...
 
-    async def get_runtime_session(
-        self, agent_runtime_session_id: str
-    ) -> RuntimeSession | None:
+    async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
         """Load one runtime process session by local id."""
         ...
 
-    async def find_runtime_session(self, bcn_session_id: str) -> RuntimeSession | None:
+    async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
         """Find the runtime session bound to one bcn session for recovery."""
         ...
 
@@ -77,17 +73,17 @@ class IStorageTransaction(Protocol):
         """Load one runtime turn by local id."""
         ...
 
-    async def get_consumer_cursor(self, bcn_session_id: str) -> ConsumerCursor | None:
+    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
         """Load the session-scoped delivery and inbox snapshot cursor."""
         ...
 
-    async def get_latest_inbound_seq(self, bcn_session_id: str) -> int:
+    async def get_latest_inbound_seq(self, session_id: str) -> int:
         """Return zero when the session has no inbound messages."""
         ...
 
     async def list_inbound_messages(
         self,
-        bcn_session_id: str,
+        session_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -138,6 +134,11 @@ class IStorageTransaction(Protocol):
 
 class IStorage(IAsyncLifecycle, Protocol):
     """Provider-neutral storage lifecycle and explicit transaction factory."""
+
+    @property
+    def name(self) -> str:
+        """Return the stable entry-point identity of this adapter."""
+        ...
 
     async def initialize(
         self,

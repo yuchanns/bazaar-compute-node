@@ -43,7 +43,7 @@ class TestControl:
             await self._channel.inject(message)
             return {
                 "accepted": True,
-                "bcn_session_id": message.bcn_session_id,
+                "session_id": message.session_id,
                 "message_id": message.message_id,
             }
         if operation == "status":
@@ -59,7 +59,7 @@ class TestControl:
             },
             "runtime_turns": {
                 turn_id: {
-                    "agent_runtime_session_id": turn.agent_runtime_session_id,
+                    "session_id": turn.session_id,
                     "state": turn.state.value,
                 }
                 for turn_id, turn in self._storage.runtime_turns.items()
@@ -90,9 +90,9 @@ class TestControl:
 
     @staticmethod
     def _message_from_control(payload: Mapping[str, object]) -> InboundMessage:
-        bcn_session_id = payload.get("bcn_session_id")
-        if not isinstance(bcn_session_id, str) or not bcn_session_id:
-            raise ValueError("bcn_session_id must be a non-empty string")
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
 
         seq = payload.get("seq")
         if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
@@ -100,21 +100,19 @@ class TestControl:
         body = payload.get("body")
         if not isinstance(body, str):
             raise TypeError("body must be text")
-        channel_session_id = payload.get(
-            "channel_session_id", f"channel-{bcn_session_id}"
-        )
-        message_id = payload.get("message_id", f"test-message-{bcn_session_id}-{seq}")
+        channel_session_id = payload.get("channel_session_id", f"channel-{session_id}")
+        message_id = payload.get("message_id", f"test-message-{session_id}-{seq}")
         provider_message_id = payload.get(
-            "provider_message_id", f"test-provider-{bcn_session_id}-{seq}"
+            "provider_message_id", f"test-provider-{session_id}-{seq}"
         )
-        canonical_target = payload.get("canonical_target", f"#test:{bcn_session_id}")
+        canonical_target = payload.get("canonical_target", f"#test:{session_id}")
         provider_thread_id = payload.get("provider_thread_id", "")
         received_at_ms = payload.get("received_at_ms", time_ns() // 1_000_000)
         provider_time_ms = payload.get("provider_time_ms", received_at_ms)
         sender_id = payload.get("sender_id", "test-sender")
         sender_display_name = payload.get("sender_display_name", "Test")
         message_type = payload.get("message_type", "text")
-        channel_slug = payload.get("channel_slug", "test")
+        channel = payload.get("channel", "test")
         for value, field_name in (
             (channel_session_id, "channel_session_id"),
             (message_id, "message_id"),
@@ -123,7 +121,7 @@ class TestControl:
             (sender_id, "sender_id"),
             (sender_display_name, "sender_display_name"),
             (message_type, "message_type"),
-            (channel_slug, "channel_slug"),
+            (channel, "channel"),
             (provider_thread_id, "provider_thread_id"),
         ):
             if not isinstance(value, str) or not value:
@@ -142,9 +140,9 @@ class TestControl:
         return InboundMessage(
             seq=seq,
             message_id=cast(str, message_id),
-            bcn_session_id=bcn_session_id,
+            session_id=session_id,
             channel_session_id=cast(str, channel_session_id),
-            channel_slug=cast(str, channel_slug),
+            channel=cast(str, channel),
             provider_message_id=cast(str, provider_message_id),
             received_at_ms=cast(int, received_at_ms),
             sender_id=cast(str, sender_id),
@@ -162,7 +160,7 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
     return {
         "outbound_message_id": message.outbound_message_id,
         "command_id": message.command_id,
-        "bcn_session_id": message.bcn_session_id,
+        "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "target": message.target,
         "body": message.body,

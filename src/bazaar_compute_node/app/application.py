@@ -34,22 +34,14 @@ class NodeApplication:
         self,
         *,
         factories: AdapterFactories,
-        channel_slug: str,
-        runtime_slug: str,
         endpoint_path: Path | None = None,
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
         runtime_options: Mapping[str, str] | None = None,
-        storage_slug: str,
-        audit_slug: str,
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
         self.data_dir = resolve_data_dir()
-        self.channel_slug = channel_slug
-        self.runtime_slug = runtime_slug
         self.runtime_options = dict(runtime_options or {})
-        self.storage_slug = storage_slug
-        self.audit_slug = audit_slug
         self.timeout_budget = timeout_budget or TimeoutBudget(
             startup_seconds=5,
             provider_call_seconds=5,
@@ -81,7 +73,6 @@ class NodeApplication:
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
-            runtime_slug=runtime_slug,
             on_node_initialized=self._ensure_workspace,
         )
         self.command_service = self.orchestrator.command_service
@@ -201,10 +192,10 @@ class NodeApplication:
             return {
                 "started": self._started,
                 "accepting": self.command_dispatcher.accepting,
-                "channel": self.channel_slug,
-                "runtime": self.runtime_slug,
-                "storage": self.storage_slug,
-                "audit": self.audit_slug,
+                "channel": self.channel.name,
+                "runtime": self.runtime.name,
+                "storage": self.storage.name,
+                "audit": self.audit.name,
                 "node_id": identity.node_id if identity is not None else None,
                 "workspace_id": (
                     identity.workspace_id if identity is not None else None
@@ -219,27 +210,25 @@ class NodeApplication:
 
     async def _validate_session_binding(
         self,
-        bcn_session_id: str,
+        session_id: str,
         request: Mapping[str, object],
     ) -> None:
         runtime_session_id = request.get("runtime_session_id")
         session_capability = request.get("session_capability")
         async with self.storage.transaction() as transaction:
-            bcn_session = await transaction.get_bcn_session(bcn_session_id)
+            bcn_session = await transaction.get_bcn_session(session_id)
             if bcn_session is None:
                 raise CommandDispatchError(
                     "SESSION_NOT_FOUND",
-                    f"unknown bcn session: {bcn_session_id}",
+                    f"unknown bcn session: {session_id}",
                 )
-            runtime_session = await transaction.find_runtime_session(bcn_session_id)
-        if runtime_session is None or runtime_session_id != (
-            runtime_session.agent_runtime_session_id
-        ):
+            runtime_session = await transaction.find_runtime_session(session_id)
+        if runtime_session is None or runtime_session_id != (runtime_session.id):
             raise CommandDispatchError(
                 "SESSION_BINDING_FAILED",
                 "runtime session binding is invalid",
             )
-        expected_capability = self._session_capabilities.get(bcn_session_id)
+        expected_capability = self._session_capabilities.get(session_id)
         if (
             expected_capability is None
             or not isinstance(session_capability, str)
@@ -253,28 +242,26 @@ class NodeApplication:
             )
 
     def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
-        self._runtime_session_ids[session.bcn_session_id] = (
-            session.agent_runtime_session_id
-        )
+        self._runtime_session_ids[session.bcn_session_id] = session.id
         return self._build_command_environment(
             session.bcn_session_id,
-            session.agent_runtime_session_id,
+            session.id,
         )
 
     def _build_command_environment(
         self,
-        bcn_session_id: str,
+        session_id: str,
         runtime_session_id: str,
     ) -> dict[str, str]:
-        if not bcn_session_id:
-            raise ValueError("bcn_session_id must be a non-empty string")
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
         if not runtime_session_id:
             raise ValueError("runtime_session_id must be a non-empty string")
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
         session_capability = self._session_capabilities.setdefault(
-            bcn_session_id,
+            session_id,
             secrets.token_urlsafe(32),
         )
         wrapper_directory = str(wrapper_path.parent)
@@ -282,7 +269,7 @@ class NodeApplication:
         environment = {
             "PATH": os.pathsep.join((wrapper_directory, existing_path)),
             "BCN_ENDPOINT": self.endpoint,
-            "BCN_SESSION_ID": bcn_session_id,
+            "BCN_SESSION_ID": session_id,
             "BCN_RUNTIME_SESSION_ID": runtime_session_id,
             "BCN_COMMAND_CAPABILITY": session_capability,
         }
@@ -294,12 +281,12 @@ class NodeApplication:
 
     async def _run_runtime_command(
         self,
-        bcn_session_id: str,
+        session_id: str,
         arguments: Sequence[str],
         body: str | None,
     ) -> None:
-        if not bcn_session_id:
-            raise ValueError("bcn_session_id must be a non-empty string")
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
         if not arguments or any(
             not isinstance(argument, str) for argument in arguments
         ):
@@ -307,13 +294,13 @@ class NodeApplication:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
-        self.command_log.append((bcn_session_id, tuple(arguments)))
+        self.command_log.append((session_id, tuple(arguments)))
         runtime_session_id = self._runtime_session_ids.get(
-            bcn_session_id,
-            f"runtime-{bcn_session_id}",
+            session_id,
+            f"runtime-{session_id}",
         )
         environment = self._build_command_environment(
-            bcn_session_id,
+            session_id,
             runtime_session_id,
         )
         process = await asyncio.create_subprocess_exec(

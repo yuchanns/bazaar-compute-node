@@ -37,6 +37,11 @@ class ILogger(Protocol):
 class IAudit(Protocol):
     """Durable append-only operational event boundary."""
 
+    @property
+    def name(self) -> str:
+        """Return the stable entry-point identity of this adapter."""
+        ...
+
     async def append(self, event: AuditEvent, *, timeout: float) -> None:
         """Persist one event; cancellation must propagate to the caller."""
         ...

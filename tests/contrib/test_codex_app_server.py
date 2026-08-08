@@ -368,9 +368,9 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             stream = CodexTurnEventStream(
                 supervisor,
                 node_id="node-test",
-                runtime_slug="codex",
-                bcn_session_id="bcn-test",
-                agent_runtime_session_id="session-test",
+                runtime="codex",
+                session_id="bcn-test",
+                runtime_session_id="session-test",
                 turn_id="local-turn-1",
                 provider_thread_id=thread_id,
                 provider_turn_id=provider_turn.turn_id,
@@ -402,12 +402,12 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
     await database.start(timeout=10)
 
     async def unexpected_command(
-        bcn_session_id: str,
+        session_id: str,
         arguments: Sequence[str],
         body: str | None,
     ) -> None:
         raise AssertionError(
-            f"the no-tool scenario unexpectedly invoked bcc for {bcn_session_id}: "
+            f"the no-tool scenario unexpectedly invoked bcc for {session_id}: "
             f"{arguments!r} {body!r}"
         )
 
@@ -418,7 +418,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
     ) -> tuple[str, str, tuple[str, ...]]:
         turn = RuntimeTurn(
             turn_id=f"turn-{label}",
-            agent_runtime_session_id=session.agent_runtime_session_id,
+            session_id=session.id,
             state=RuntimeTurnState.STARTING,
             started_at_ms=time_ns() // 1_000_000,
             client_user_message_id=f"message-{label}",
@@ -455,20 +455,20 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         identity = await database.initialize()
         now = time_ns() // 1_000_000
         first_session = RuntimeSession(
-            agent_runtime_session_id=f"runtime-first-{uuid7()}",
+            id=f"runtime-first-{uuid7()}",
             bcn_session_id=f"bcn-first-{uuid7()}",
             channel_session_id=f"channel-first-{uuid7()}",
-            runtime_slug="codex",
+            runtime="codex",
             workspace_id=identity.workspace_id,
             process_state=RuntimeProcessState.STARTING,
             created_at_ms=now,
             updated_at_ms=now,
         )
         second_session = RuntimeSession(
-            agent_runtime_session_id=f"runtime-second-{uuid7()}",
+            id=f"runtime-second-{uuid7()}",
             bcn_session_id=f"bcn-second-{uuid7()}",
             channel_session_id=f"channel-second-{uuid7()}",
-            runtime_slug="codex",
+            runtime="codex",
             workspace_id=identity.workspace_id,
             process_state=RuntimeProcessState.STARTING,
             created_at_ms=now,

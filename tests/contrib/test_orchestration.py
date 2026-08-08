@@ -44,26 +44,26 @@ from bazaar_compute_node.core.storage import IStorage, NodeIdentity
 
 def make_message(
     *,
-    bcn_session_id: str = "bcn-1",
+    session_id: str = "bcn-1",
     seq: int = 1,
     message_id: str | None = None,
     body: str | None = None,
 ) -> InboundMessage:
-    channel_session_id = f"channel-{bcn_session_id}"
+    channel_session_id = f"channel-{session_id}"
     return InboundMessage(
         seq=seq,
-        message_id=message_id or f"message-{bcn_session_id}-{seq}",
-        bcn_session_id=bcn_session_id,
+        message_id=message_id or f"message-{session_id}-{seq}",
+        session_id=session_id,
         channel_session_id=channel_session_id,
-        channel_slug="test",
-        provider_message_id=f"provider-{bcn_session_id}-{seq}",
+        channel="test",
+        provider_message_id=f"provider-{session_id}-{seq}",
         received_at_ms=seq,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#test:{bcn_session_id}",
+        canonical_target=f"#test:{session_id}",
         body=body if body is not None else f"inbound-{seq}",
-        provider_thread_id=f"thread-{bcn_session_id}",
+        provider_thread_id=f"thread-{session_id}",
     )
 
 
@@ -95,7 +95,6 @@ async def make_node() -> tuple[
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
-        runtime_slug="test",
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -120,7 +119,6 @@ async def test_orchestrator_initializes_storage_identity_before_runtime() -> Non
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
-        runtime_slug="test",
         on_node_initialized=on_node_initialized,
     )
     await orchestrator.start(timeout=1)
@@ -170,13 +168,13 @@ class _AcceptanceAudit(RecordingAudit):
 
 async def _wait_for_inbound_messages(
     storage: IStorage,
-    bcn_session_id: str,
+    session_id: str,
     count: int,
 ) -> tuple[InboundMessage, ...]:
     async with asyncio.timeout(180):
         while True:
             async with storage.transaction() as transaction:
-                messages = await transaction.list_inbound_messages(bcn_session_id)
+                messages = await transaction.list_inbound_messages(session_id)
             if len(messages) >= count:
                 return messages
             await asyncio.sleep(0.05)
@@ -199,7 +197,7 @@ async def _wait_for_runtime_turn(
 async def _wait_for_audit_event(
     audit: RecordingAudit,
     *,
-    bcn_session_id: str,
+    session_id: str,
     event_name: str | None = None,
     event_suffix: str | None = None,
     operation: str | None = None,
@@ -208,7 +206,7 @@ async def _wait_for_audit_event(
     async with asyncio.timeout(180):
         while True:
             if any(
-                event.correlation.bcn_session_id == bcn_session_id
+                event.correlation.bcn_session_id == session_id
                 and (event_name is None or event.event_name == event_name)
                 and (event_suffix is None or event.event_name.endswith(event_suffix))
                 and (operation is None or event.metadata.get("operation") == operation)
@@ -254,19 +252,19 @@ async def run_natural_conversation_contract(
     )
 
     for scenario_name, first_body, second_body, third_body in scenarios:
-        bcn_session_id = f"natural-{scenario_name}-{uuid7()}"
+        session_id = f"natural-{scenario_name}-{uuid7()}"
         first = make_message(
-            bcn_session_id=bcn_session_id,
+            session_id=session_id,
             seq=1,
             body=first_body,
         )
         second = make_message(
-            bcn_session_id=bcn_session_id,
+            session_id=session_id,
             seq=2,
             body=second_body,
         )
         third = make_message(
-            bcn_session_id=bcn_session_id,
+            session_id=session_id,
             seq=3,
             body=third_body,
         )
@@ -284,10 +282,6 @@ async def run_natural_conversation_contract(
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
             ),
-            channel_slug="test",
-            runtime_slug="codex",
-            storage_slug="sqlite",
-            audit_slug="test",
             endpoint_path=resolve_data_dir() / f"natural-{uuid7()}.sock",
             node_id=identity.node_id,
             workspace_id=identity.workspace_id,
@@ -303,13 +297,13 @@ async def run_natural_conversation_contract(
             await channel_instance.inject(first)
             persisted = await _wait_for_inbound_messages(
                 storage,
-                bcn_session_id,
+                session_id,
                 1,
             )
             first_row = persisted[0]
             await _wait_for_audit_event(
                 audit,
-                bcn_session_id=bcn_session_id,
+                session_id=session_id,
                 event_suffix="turn.started",
                 turn_id=f"turn-{first_row.message_id}",
             )
@@ -318,7 +312,7 @@ async def run_natural_conversation_contract(
             await channel_instance.inject(second)
             persisted = await _wait_for_inbound_messages(
                 storage,
-                bcn_session_id,
+                session_id,
                 2,
             )
             second_row = persisted[1]
@@ -344,7 +338,7 @@ async def run_natural_conversation_contract(
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(
                 storage,
-                bcn_session_id,
+                session_id,
                 3,
             )
             third_row = persisted[2]
@@ -364,7 +358,7 @@ async def run_natural_conversation_contract(
                     event.correlation.outbound_message_id
                     for event in audit.events
                     if (
-                        event.correlation.bcn_session_id == bcn_session_id
+                        event.correlation.bcn_session_id == session_id
                         and event.event_name == "channel.outbound.sent"
                         and event.correlation.inbound_seq == inbound.seq
                         and event.correlation.outbound_message_id is not None
@@ -376,7 +370,7 @@ async def run_natural_conversation_contract(
                         event.correlation.outbound_message_id
                         for event in audit.events
                         if (
-                            event.correlation.bcn_session_id == bcn_session_id
+                            event.correlation.bcn_session_id == session_id
                             and event.event_name == "bcc.send.fresh_check.passed"
                             and event.correlation.inbound_seq == inbound.seq
                             and event.correlation.outbound_message_id is not None
@@ -393,7 +387,7 @@ async def run_natural_conversation_contract(
                 event.correlation.outbound_message_id
                 for event in audit.events
                 if (
-                    event.correlation.bcn_session_id == bcn_session_id
+                    event.correlation.bcn_session_id == session_id
                     and event.event_name == "bcc.send.fresh_check.failed"
                     and event.correlation.outbound_message_id is not None
                 )
@@ -445,18 +439,18 @@ async def test_channel_storage_runtime_turn_path() -> None:
 async def test_runtime_can_run_real_command_service_behavior() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
 
-    async def command_script(commands: ICommandService, bcn_session_id: str) -> None:
-        checked = await commands.check(bcn_session_id)
+    async def command_script(commands: ICommandService, session_id: str) -> None:
+        checked = await commands.check(session_id)
         if not checked.messages:
             raise AssertionError("command did not observe the inbound message")
         history = await commands.read(
-            bcn_session_id,
+            session_id,
             target=checked.messages[0].canonical_target,
         )
         if not history.messages:
             raise AssertionError("history command did not observe the inbound message")
         outbound = await commands.send(
-            bcn_session_id=bcn_session_id,
+            session_id=session_id,
             command_id="command-1",
             target=checked.messages[0].canonical_target,
             body="runtime-generated reply",
@@ -576,8 +570,8 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
     try:
         request = ApprovalRequest(
             request_id="approval-1",
-            bcn_session_id="bcn-1",
-            agent_runtime_session_id="runtime-bcn-1",
+            session_id="bcn-1",
+            runtime_session_id="runtime-bcn-1",
             action="test-action",
             created_at_ms=1,
             turn_id="turn-message-bcn-1-1",
@@ -608,7 +602,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
         rejected_without_snapshot = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-before-check",
             target="#test:bcn-1",
             body="reply",
@@ -620,7 +614,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         checked = await orchestrator.command_service.check("bcn-1")
         assert checked.messages
         delivered = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-after-check",
             target="#test:bcn-1",
             body="reply",
@@ -632,7 +626,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         await channel.inject(make_message(seq=2))
         await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
         stale = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-stale",
             target="#test:bcn-1",
             body="reply",
@@ -652,7 +646,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
         invalid_target = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-invalid-target",
             target="#test:missing",
             body="reply",
@@ -668,7 +662,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
 
         await orchestrator.command_service.check("bcn-1")
         empty_body = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-empty-body",
             target="#test:bcn-1",
             body=" \t",
@@ -693,7 +687,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             )
         )
         queued = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-queued",
             target="#test:bcn-1",
             body="queued reply",
@@ -711,7 +705,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             )
         )
         unknown = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-unknown",
             target="#test:bcn-1",
             body="unknown reply",
@@ -728,7 +722,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             )
         )
         failed = await orchestrator.command_service.send(
-            bcn_session_id="bcn-1",
+            session_id="bcn-1",
             command_id="command-failed",
             target="#test:bcn-1",
             body="failed reply",
@@ -866,8 +860,8 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
     orchestrator, _, runtime, storage, audit = await make_node()
     try:
         first, second = await asyncio.gather(
-            orchestrator.handle_inbound(make_message(bcn_session_id="bcn-a")),
-            orchestrator.handle_inbound(make_message(bcn_session_id="bcn-b")),
+            orchestrator.handle_inbound(make_message(session_id="bcn-a")),
+            orchestrator.handle_inbound(make_message(session_id="bcn-b")),
         )
 
         assert first.state is RuntimeTurnState.COMPLETED

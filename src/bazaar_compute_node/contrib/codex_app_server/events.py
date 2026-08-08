@@ -34,9 +34,9 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         supervisor: JsonlProcessSupervisor,
         *,
         node_id: str,
-        runtime_slug: str,
-        bcn_session_id: str,
-        agent_runtime_session_id: str,
+        runtime: str,
+        session_id: str,
+        runtime_session_id: str,
         turn_id: str,
         provider_thread_id: str,
         provider_turn_id: str | None,
@@ -49,9 +49,9 @@ class CodexTurnEventStream(IRuntimeTurnStream):
     ) -> None:
         self._supervisor = supervisor
         self._node_id = node_id
-        self._runtime_slug = runtime_slug
-        self._bcn_session_id = bcn_session_id
-        self._agent_runtime_session_id = agent_runtime_session_id
+        self._runtime = runtime
+        self._session_id = session_id
+        self._runtime_session_id = runtime_session_id
         self._turn_id = turn_id
         self._provider_thread_id = provider_thread_id
         self._provider_turn_id = provider_turn_id
@@ -235,13 +235,13 @@ class CodexTurnEventStream(IRuntimeTurnStream):
             event_name=event_name,
             state=state,
             node_id=self._node_id,
-            bcn_session_id=self._bcn_session_id,
-            agent_runtime_session_id=self._agent_runtime_session_id,
+            bcn_session_id=self._session_id,
+            runtime_session_id=self._runtime_session_id,
             turn_id=self._turn_id,
             error_kind=error_kind,
             error_type=error_type,
             error_message=error_message,
-            runtime_slug=self._runtime_slug,
+            runtime=self._runtime,
             metadata=dict(metadata or {}),
         )
 
@@ -312,8 +312,8 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         try:
             approval = parse_approval_request(
                 message,
-                bcn_session_id=self._bcn_session_id,
-                agent_runtime_session_id=self._agent_runtime_session_id,
+                session_id=self._session_id,
+                runtime_session_id=self._runtime_session_id,
                 turn_id=self._turn_id,
                 provider_thread_id=self._provider_thread_id,
                 provider_turn_id=self._provider_turn_id,

@@ -49,6 +49,10 @@ class _CodexConnection:
 class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
     """Run one persistent Codex App Server process per bcn runtime session."""
 
+    @property
+    def name(self) -> str:
+        return "codex"
+
     def __init__(
         self,
         context: RuntimeCommandContext,
@@ -98,7 +102,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
         self._ensure_started()
-        existing = self._connections.pop(session.agent_runtime_session_id, None)
+        existing = self._connections.pop(session.id, None)
         if existing is not None:
             await self._stop_connection(existing, timeout=timeout)
         connection: _CodexConnection | None = None
@@ -107,8 +111,8 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
                     node_id=self._context.node_id,
-                    runtime_session_id=session.agent_runtime_session_id,
-                    runtime=session.runtime_slug,
+                    runtime_session_id=session.id,
+                    runtime=session.runtime,
                     workspace=str(connection.workspace),
                 ).render(),
                 model=self._model,
@@ -117,7 +121,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             )
             thread = parse_thread_response(response)
             connection.provider_thread_id = thread.thread_id
-            self._connections[session.agent_runtime_session_id] = connection
+            self._connections[session.id] = connection
             return ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
                 value=_running_session(
@@ -145,7 +149,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 error_kind="provider_failed",
                 error_message="cannot resume a runtime session without a provider thread",
             )
-        connection = self._connections.pop(session.agent_runtime_session_id, None)
+        connection = self._connections.pop(session.id, None)
         if connection is not None and not connection.supervisor.is_running:
             await self._stop_connection(connection, timeout=timeout)
             connection = None
@@ -169,7 +173,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                     "thread/resume returned a different provider thread"
                 )
             connection.provider_thread_id = thread.thread_id
-            self._connections[session.agent_runtime_session_id] = connection
+            self._connections[session.id] = connection
             return ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
                 value=_running_session(
@@ -194,7 +198,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         timeout: float,
     ) -> IRuntimeTurnStream:
         self._ensure_started()
-        connection = self._connections.get(session.agent_runtime_session_id)
+        connection = self._connections.get(session.id)
         if connection is None or not connection.supervisor.is_running:
             raise JsonlProcessNotRunning()
         if connection.active_turn_id is not None:
@@ -230,9 +234,9 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         return CodexTurnEventStream(
             connection.supervisor,
             node_id=self._context.node_id,
-            runtime_slug=session.runtime_slug,
-            bcn_session_id=session.bcn_session_id,
-            agent_runtime_session_id=session.agent_runtime_session_id,
+            runtime=session.runtime,
+            session_id=session.bcn_session_id,
+            runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             provider_turn_id=provider_turn_id,
@@ -241,9 +245,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             initial_error=initial_error,
             initial_error_kind=initial_error_kind,
             initial_error_state=initial_error_state,
-            on_closed=lambda: self._clear_active_turn(
-                session.agent_runtime_session_id, turn.turn_id
-            ),
+            on_closed=lambda: self._clear_active_turn(session.id, turn.turn_id),
         )
 
     async def interrupt_turn(
@@ -254,7 +256,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         timeout: float,
     ) -> ProviderCallResult[RuntimeTurn]:
         self._ensure_started()
-        connection = self._connections.get(session.agent_runtime_session_id)
+        connection = self._connections.get(session.id)
         provider_turn_id = turn.provider_turn_id
         if connection is None or provider_turn_id is None:
             return ProviderCallResult(
@@ -289,7 +291,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
-        connection = self._connections.pop(session.agent_runtime_session_id, None)
+        connection = self._connections.pop(session.id, None)
         stopping = session
         if stopping.process_state not in {
             RuntimeProcessState.STOPPING,

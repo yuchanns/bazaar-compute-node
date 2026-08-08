@@ -39,6 +39,11 @@ class IApproval(IApprovalHandler, Protocol):
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
     """Normalized inbound, outbound delivery, and approval contract."""
 
+    @property
+    def name(self) -> str:
+        """Return the stable entry-point identity of this adapter."""
+        ...
+
     def receive(self) -> AsyncIterator[InboundMessage]:
         """Return a cancellable stream of normalized inbound messages."""
         ...

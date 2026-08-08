@@ -20,6 +20,10 @@ class TestChannel(IChannel):
 
     __test__ = False
 
+    @property
+    def name(self) -> str:
+        return "test"
+
     def __init__(self) -> None:
         self.started = False
         self.accepting = False

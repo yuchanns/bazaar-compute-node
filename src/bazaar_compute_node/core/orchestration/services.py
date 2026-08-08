@@ -110,15 +110,15 @@ class SessionStateWriter:
         self._concurrency = concurrency
         self._bcn_sessions = bcn_sessions
 
-    async def apply(self, bcn_session_id: str, tick: AgentTick) -> BcnSession:
-        async with self._concurrency.for_session(bcn_session_id):
-            return await self.apply_locked(bcn_session_id, tick)
+    async def apply(self, session_id: str, tick: AgentTick) -> BcnSession:
+        async with self._concurrency.for_session(session_id):
+            return await self.apply_locked(session_id, tick)
 
-    async def apply_locked(self, bcn_session_id: str, tick: AgentTick) -> BcnSession:
+    async def apply_locked(self, session_id: str, tick: AgentTick) -> BcnSession:
         async with self._storage.transaction() as transaction:
-            bcn_session = await transaction.get_bcn_session(bcn_session_id)
+            bcn_session = await transaction.get_bcn_session(session_id)
             if bcn_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {bcn_session_id}")
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
             return await self.apply_in_transaction(transaction, bcn_session, tick)
 
     async def apply_in_transaction(
@@ -130,5 +130,5 @@ class SessionStateWriter:
         updated = bcn_session.apply_tick(tick)
         if updated is not bcn_session:
             await transaction.save_bcn_session(updated)
-        self._bcn_sessions[updated.bcn_session_id] = updated
+        self._bcn_sessions[updated.id] = updated
         return updated

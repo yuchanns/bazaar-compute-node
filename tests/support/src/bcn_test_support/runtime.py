@@ -46,6 +46,10 @@ class TestRuntime(IRuntime):
 
     __test__ = False
 
+    @property
+    def name(self) -> str:
+        return "test"
+
     def __init__(
         self,
         command_service: ICommandService | None = None,
@@ -209,9 +213,9 @@ class TestRuntime(IRuntime):
             event_name=f"runtime.turn.{state.value}",
             state=state,
             node_id="test-node",
-            runtime_slug=session.runtime_slug,
+            runtime=session.runtime,
             bcn_session_id=session.bcn_session_id,
-            agent_runtime_session_id=session.agent_runtime_session_id,
+            runtime_session_id=session.id,
             turn_id=turn.turn_id,
             error_kind=error_kind,
             error_message="test provider failure" if error_kind else None,
