@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from typing import Protocol, cast
+from uuid import uuid7
 
 import pytest
 
+from bazaar_compute_node.app.application import NodeApplication
+from bazaar_compute_node.app.registry import AdapterFactories
 from bazaar_compute_node.contrib.dummy import (
     DummyAudit,
     DummyChannel,
@@ -11,7 +16,8 @@ from bazaar_compute_node.contrib.dummy import (
     DummyStorage,
     DummyTurnPlan,
 )
-from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
+from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -22,13 +28,17 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     InboundMessage,
     OutboundDeliveryState,
+    OutboundMessage,
     RuntimeEventState,
     RuntimeProcessState,
+    RuntimeTurn,
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
-from bazaar_compute_node.core.storage import NodeIdentity
+from bazaar_compute_node.core.paths import resolve_data_dir
+from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
+from bazaar_compute_node.core.storage import IStorage, NodeIdentity
 
 
 def make_message(
@@ -36,6 +46,7 @@ def make_message(
     bcn_session_id: str = "bcn-1",
     seq: int = 1,
     message_id: str | None = None,
+    body: str | None = None,
 ) -> InboundMessage:
     channel_session_id = f"channel-{bcn_session_id}"
     return InboundMessage(
@@ -50,7 +61,7 @@ def make_message(
         sender_display_name="Sender",
         message_type="text",
         canonical_target=f"#dummy:{bcn_session_id}",
-        body=f"inbound-{seq}",
+        body=body if body is not None else f"inbound-{seq}",
         provider_thread_id=f"thread-{bcn_session_id}",
     )
 
@@ -128,6 +139,235 @@ async def wait_until(predicate: object) -> None:
             return
         await asyncio.sleep(0)
     raise AssertionError("condition was not reached")
+
+
+class _AcceptanceChannel(Protocol):
+    sent_messages: list[OutboundMessage]
+
+    async def inject(self, message: InboundMessage) -> None: ...
+
+
+async def _wait_for_inbound_messages(
+    storage: IStorage,
+    bcn_session_id: str,
+    count: int,
+) -> tuple[InboundMessage, ...]:
+    async with asyncio.timeout(180):
+        while True:
+            async with storage.transaction() as transaction:
+                messages = await transaction.list_inbound_messages(bcn_session_id)
+            if len(messages) >= count:
+                return messages
+            await asyncio.sleep(0.05)
+
+
+async def _wait_for_runtime_turn(
+    storage: IStorage,
+    turn_id: str,
+    states: frozenset[RuntimeTurnState],
+) -> RuntimeTurn:
+    async with asyncio.timeout(180):
+        while True:
+            async with storage.transaction() as transaction:
+                turn = await transaction.get_runtime_turn(turn_id)
+            if turn is not None and turn.state in states:
+                return turn
+            await asyncio.sleep(0.05)
+
+
+async def _wait_for_audit_event(
+    audit: DummyAudit,
+    *,
+    bcn_session_id: str,
+    event_name: str | None = None,
+    event_suffix: str | None = None,
+    operation: str | None = None,
+    turn_id: str | None = None,
+) -> None:
+    async with asyncio.timeout(180):
+        while True:
+            if any(
+                event.correlation.bcn_session_id == bcn_session_id
+                and (event_name is None or event.event_name == event_name)
+                and (event_suffix is None or event.event_name.endswith(event_suffix))
+                and (operation is None or event.metadata.get("operation") == operation)
+                and (turn_id is None or event.correlation.turn_id == turn_id)
+                for event in audit.events
+            ):
+                return
+            await asyncio.sleep(0.05)
+
+
+async def run_natural_conversation_contract(
+    *,
+    channel: Callable[[], IChannel],
+    runtime: Callable[[RuntimeCommandContext], IRuntime],
+) -> None:
+    """Assert the session contract with one selected Channel and runtime."""
+
+    scenarios = (
+        (
+            "no-conflict",
+            (
+                "明天下午三点我们做后端评审，地点是 A 栋 3 楼 302，参会人是你、我和 "
+                "API 小组。请先记住这个安排，后面我会补充。"
+            ),
+            (
+                "补充确认：会议仍按明天下午三点、A 栋 3 楼 302 进行，参会人也不变。"
+                "现在请告诉我你记录的安排。"
+            ),
+            "谢谢，按这个安排继续。请把会议时间、地点和参会人概括成一句话。",
+        ),
+        (
+            "correction",
+            (
+                "明天下午三点我们做后端评审，地点是 A 栋 3 楼 302，我会参加。"
+                "请先记住这个安排，后面我会补充。"
+            ),
+            (
+                "更正刚才的安排：我临时无法参加明天下午三点的会议，请不要再确认我会参加；"
+                "时间和地点仍供其他人参考。"
+            ),
+            "收到更正。请只概括目前仍有效的会议时间和地点，不要把我的出席状态写进去。",
+        ),
+    )
+
+    for scenario_name, first_body, second_body, third_body in scenarios:
+        bcn_session_id = f"natural-{scenario_name}-{uuid7()}"
+        first = make_message(
+            bcn_session_id=bcn_session_id,
+            seq=1,
+            body=first_body,
+        )
+        second = make_message(
+            bcn_session_id=bcn_session_id,
+            seq=2,
+            body=second_body,
+        )
+        third = make_message(
+            bcn_session_id=bcn_session_id,
+            seq=3,
+            body=third_body,
+        )
+        channel_instance = cast(_AcceptanceChannel, channel())
+        storage = SqliteDatabase()
+        await storage.start(timeout=30)
+        identity = await storage.initialize()
+        audit = DummyAudit()
+        node = NodeApplication(
+            factories=AdapterFactories(
+                channel=lambda channel_instance=channel_instance: cast(
+                    IChannel, channel_instance
+                ),
+                runtime=runtime,
+                storage=lambda storage=storage: storage,
+                audit=lambda audit=audit: audit,
+            ),
+            channel_slug="dummy",
+            runtime_slug="codex",
+            storage_slug="sqlite",
+            audit_slug="dummy",
+            endpoint_path=resolve_data_dir() / f"natural-{uuid7()}.sock",
+            node_id=identity.node_id,
+            workspace_id=identity.workspace_id,
+            timeout_budget=TimeoutBudget(
+                startup_seconds=30,
+                provider_call_seconds=30,
+                command_seconds=30,
+                shutdown_seconds=30,
+            ),
+        )
+        try:
+            await node.start()
+            await channel_instance.inject(first)
+            persisted = await _wait_for_inbound_messages(
+                storage,
+                bcn_session_id,
+                1,
+            )
+            first_row = persisted[0]
+            await _wait_for_audit_event(
+                audit,
+                bcn_session_id=bcn_session_id,
+                event_suffix="turn.started",
+                turn_id=f"turn-{first_row.message_id}",
+            )
+            await _wait_for_audit_event(
+                audit,
+                bcn_session_id=bcn_session_id,
+                operation="bcc.message.check",
+            )
+            await channel_instance.inject(second)
+            persisted = await _wait_for_inbound_messages(
+                storage,
+                bcn_session_id,
+                2,
+            )
+            second_row = persisted[1]
+            assert [message.provider_message_id for message in persisted[:2]] == [
+                first.provider_message_id,
+                second.provider_message_id,
+            ]
+
+            first_turn = await _wait_for_runtime_turn(
+                storage,
+                f"turn-{first_row.message_id}",
+                frozenset({RuntimeTurnState.COMPLETED}),
+            )
+            second_turn = await _wait_for_runtime_turn(
+                storage,
+                f"turn-{second_row.message_id}",
+                frozenset({RuntimeTurnState.COMPLETED}),
+            )
+            assert first_turn.state is RuntimeTurnState.COMPLETED
+            assert second_turn.state is RuntimeTurnState.COMPLETED
+            assert channel_instance.sent_messages
+
+            fresh_rejections = [
+                event
+                for event in audit.events
+                if (
+                    event.correlation.bcn_session_id == bcn_session_id
+                    and event.event_name == "bcc.send.fresh_check.failed"
+                )
+            ]
+            assert fresh_rejections
+            fresh_rejection_index = audit.events.index(fresh_rejections[0])
+            assert any(
+                index > fresh_rejection_index
+                and event.correlation.bcn_session_id == bcn_session_id
+                and event.metadata.get("operation") == "bcc.message.send"
+                and event.metadata.get("status") == "sent"
+                for index, event in enumerate(audit.events)
+            )
+
+            await channel_instance.inject(third)
+            persisted = await _wait_for_inbound_messages(
+                storage,
+                bcn_session_id,
+                3,
+            )
+            third_row = persisted[2]
+            assert [message.provider_message_id for message in persisted[:3]] == [
+                first.provider_message_id,
+                second.provider_message_id,
+                third.provider_message_id,
+            ]
+            third_turn = await _wait_for_runtime_turn(
+                storage,
+                f"turn-{third_row.message_id}",
+                frozenset({RuntimeTurnState.COMPLETED}),
+            )
+            assert third_turn.state is RuntimeTurnState.COMPLETED
+            assert len(channel_instance.sent_messages) >= 2
+            assert all(
+                message.target == first.canonical_target and bool(message.body.strip())
+                for message in channel_instance.sent_messages
+            )
+        finally:
+            await node.stop()
+            if storage.is_started:
+                await storage.stop(timeout=30)
 
 
 @pytest.mark.asyncio
