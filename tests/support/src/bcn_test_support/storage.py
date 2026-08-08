@@ -8,8 +8,8 @@ from types import TracebackType
 from typing import Self
 from uuid import uuid7
 
-from ...core.lifecycle import IAsyncLifecycle
-from ...core.models import (
+from bazaar_compute_node.core.lifecycle import IAsyncLifecycle
+from bazaar_compute_node.core.models import (
     AgentState,
     BcnSession,
     ChannelSession,
@@ -26,10 +26,10 @@ from ...core.models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
-from ...core.storage import IStorage, IStorageTransaction, NodeIdentity
+from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, NodeIdentity
 
 
-class DummyStorage(IStorage, IAsyncLifecycle):
+class MemoryStorage(IStorage, IAsyncLifecycle):
     """Transactional in-memory storage for behavior-level integration tests."""
 
     def __init__(self) -> None:
@@ -62,18 +62,18 @@ class DummyStorage(IStorage, IAsyncLifecycle):
         identity = self.node_identity
         if identity is None:
             identity = NodeIdentity(
-                node_id=node_id or "dummy-node",
+                node_id=node_id or "test-node",
                 workspace_id=workspace_id or str(uuid7()),
             )
         elif node_id is not None and identity.node_id != node_id:
-            raise ValueError("requested node_id does not match dummy identity")
+            raise ValueError("requested node_id does not match test identity")
         elif workspace_id is not None and identity.workspace_id != workspace_id:
-            raise ValueError("requested workspace_id does not match dummy identity")
+            raise ValueError("requested workspace_id does not match test identity")
         self.node_identity = identity
         return identity
 
     def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return _DummyStorageTransaction(self)
+        return _MemoryStorageTransaction(self)
 
 
 _Snapshot = tuple[
@@ -88,8 +88,8 @@ _Snapshot = tuple[
 ]
 
 
-class _DummyStorageTransaction(IStorageTransaction):
-    def __init__(self, storage: DummyStorage) -> None:
+class _MemoryStorageTransaction(IStorageTransaction):
+    def __init__(self, storage: MemoryStorage) -> None:
         self._storage = storage
         self._snapshot: _Snapshot | None = None
 
@@ -321,7 +321,7 @@ class _DummyStorageTransaction(IStorageTransaction):
     def _require_workspace(self, workspace_id: str) -> None:
         identity = self._storage.node_identity
         if identity is None:
-            raise RuntimeError("dummy storage identity has not been initialized")
+            raise RuntimeError("memory storage identity has not been initialized")
         if workspace_id != identity.workspace_id:
             raise ValueError(
                 "session workspace does not match the persisted node workspace"
@@ -472,7 +472,7 @@ def _validate_runtime_turn_input(turn: RuntimeTurn) -> None:
 
 
 def _validate_active_runtime_turn(
-    storage: DummyStorage,
+    storage: MemoryStorage,
     turn: RuntimeTurn,
 ) -> None:
     active_states = {
@@ -794,7 +794,7 @@ def _validate_optional_input_text(value: object, field_name: str) -> None:
 
 
 def _validate_runtime_event_references(
-    storage: DummyStorage,
+    storage: MemoryStorage,
     event: RuntimeEvent,
 ) -> None:
     channel_session = None

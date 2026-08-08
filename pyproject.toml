@@ -11,30 +11,25 @@ dependencies = [
 [project.scripts]
 bcn = "bazaar_compute_node.cli:main"
 
-[project.entry-points."bazaar_compute_node.channels"]
-dummy = "bazaar_compute_node.contrib.dummy.plugin:create_channel"
-
 [project.entry-points."bazaar_compute_node.runtimes"]
-dummy = "bazaar_compute_node.contrib.dummy.plugin:create_runtime"
 codex = "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime"
 
 [project.entry-points."bazaar_compute_node.storages"]
-dummy = "bazaar_compute_node.contrib.dummy.plugin:create_storage"
 sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
 
 [project.entry-points."bazaar_compute_node.audits"]
-dummy = "bazaar_compute_node.contrib.dummy.plugin:create_audit"
-
-[project.entry-points."bazaar_compute_node.controls"]
-dummy = "bazaar_compute_node.contrib.dummy.plugin:create_control"
-"dummy+codex" = "bazaar_compute_node.contrib.dummy.plugin:create_control"
+logging = "bazaar_compute_node.contrib.logging.plugin:create_audit"
 
 [dependency-groups]
 dev = [
+    "bcn-test-support",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.9.0",
 ]
+
+[tool.uv.sources]
+bcn-test-support = { path = "tests/support", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]

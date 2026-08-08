@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from bcn_test_support import TestChannel, TestRuntime
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.transport import LocalCommandClient
-from bazaar_compute_node.contrib.dummy import DummyChannel, DummyRuntime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import InboundMessage
@@ -33,13 +33,13 @@ def make_message(bcn_session_id: str) -> InboundMessage:
         message_id=f"message-{bcn_session_id}-1",
         bcn_session_id=bcn_session_id,
         channel_session_id=f"channel-{bcn_session_id}",
-        channel_slug="dummy",
+        channel_slug="test",
         provider_message_id=f"provider-{bcn_session_id}-1",
         received_at_ms=1,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#dummy:{bcn_session_id}",
+        canonical_target=f"#test:{bcn_session_id}",
         body=f"inbound-{bcn_session_id}",
         provider_time_ms=1,
         provider_thread_id=f"thread-{bcn_session_id}",
@@ -51,24 +51,24 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
     tmp_path: Path,
 ) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
     )
     data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3a",
         timeout_budget=make_budget(),
     )
-    channel = cast(DummyChannel, node.channel)
-    runtime = cast(DummyRuntime, node.runtime)
+    channel = cast(TestChannel, node.channel)
+    runtime = cast(TestRuntime, node.runtime)
 
     await node.start()
     endpoint = node.endpoint
@@ -85,10 +85,10 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
         assert isinstance(health_result, Mapping)
         assert health_result["started"] is True
         assert health_result["accepting"] is True
-        assert health_result["channel"] == "dummy"
-        assert health_result["runtime"] == "dummy"
+        assert health_result["channel"] == "test"
+        assert health_result["runtime"] == "test"
         assert health_result["storage"] == "sqlite"
-        assert health_result["audit"] == "dummy"
+        assert health_result["audit"] == "test"
         assert health_result["node_id"] == "node-3a"
         workspace_id = health_result["workspace_id"]
         assert isinstance(workspace_id, str)
@@ -169,17 +169,17 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     tmp_path: Path,
 ) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
     )
     node = NodeApplication(
         factories=factories,
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=make_budget(),
     )
@@ -199,17 +199,17 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
 @pytest.mark.asyncio
 async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> None:
     factories = AdapterRegistry().load(
-        channel_slug="dummy",
-        runtime_slug="dummy",
-        storage_slug="dummy",
-        audit_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
+        storage_slug="test",
+        audit_slug="test",
     )
     node = NodeApplication(
         factories=factories,
-        channel_slug="dummy",
-        runtime_slug="dummy",
-        storage_slug="dummy",
-        audit_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
+        storage_slug="test",
+        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=TimeoutBudget(
             startup_seconds=2,

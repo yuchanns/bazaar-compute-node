@@ -8,7 +8,8 @@ from time import time_ns
 from uuid import uuid7
 
 import pytest
-from test_dummy_orchestration import run_natural_conversation_contract
+from bcn_test_support import TestChannel
+from test_orchestration import run_natural_conversation_contract
 
 from bazaar_compute_node.contrib.codex_app_server import (
     CodexAppServerClient,
@@ -29,7 +30,6 @@ from bazaar_compute_node.contrib.codex_app_server import (
     parse_turn_response,
 )
 from bazaar_compute_node.contrib.codex_app_server.plugin import create_runtime
-from bazaar_compute_node.contrib.dummy import DummyChannel
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.client import CLIENT_INFO
@@ -573,7 +573,7 @@ async def test_local_codex_runtime_preserves_natural_conversation_session_behavi
         pytest.fail("codex CLI is required for the App Server integration test")
 
     await run_natural_conversation_contract(
-        channel=DummyChannel,
+        channel=TestChannel,
         runtime=lambda context: CodexAppServerRuntime(
             context,
             executable=codex,

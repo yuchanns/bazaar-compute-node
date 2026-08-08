@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from bcn_test_support import MemoryStorage
 
-from bazaar_compute_node.contrib.dummy import DummyStorage
 from bazaar_compute_node.core.models import (
     AgentState,
     BcnSession,
@@ -12,12 +12,12 @@ from bazaar_compute_node.core.models import (
 
 
 @pytest.mark.asyncio
-async def test_dummy_storage_transaction_rolls_back_on_error() -> None:
-    storage = DummyStorage()
+async def test_storage_transaction_rolls_back_on_error() -> None:
+    storage = MemoryStorage()
     await storage.initialize(node_id="node-1", workspace_id="workspace-1")
     channel_session = ChannelSession(
         channel_session_id="channel-1",
-        channel_slug="dummy",
+        channel_slug="test",
         provider_conversation_key="conversation-1",
         provider_thread_key="",
         state=ChannelSessionState.ACTIVE,

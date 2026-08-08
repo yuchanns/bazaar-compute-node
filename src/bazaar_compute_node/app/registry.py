@@ -44,20 +44,13 @@ class AdapterRegistry:
         *,
         channel_slug: str,
         runtime_slug: str,
-        storage_slug: str = "dummy",
-        audit_slug: str = "dummy",
+        storage_slug: str = "sqlite",
+        audit_slug: str = "logging",
     ) -> AdapterFactories:
-        control = None
-        if storage_slug == "dummy":
-            control = self._load_optional(
-                CONTROL_ENTRY_POINT_GROUP,
-                f"{channel_slug}+{runtime_slug}",
-            )
-            if control is None and channel_slug == runtime_slug:
-                control = self._load_optional(
-                    CONTROL_ENTRY_POINT_GROUP,
-                    channel_slug,
-                )
+        control = self._load_optional(
+            CONTROL_ENTRY_POINT_GROUP,
+            f"{channel_slug}+{runtime_slug}+{storage_slug}",
+        )
         return AdapterFactories(
             channel=cast(
                 ChannelFactory,

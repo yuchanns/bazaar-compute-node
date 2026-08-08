@@ -53,7 +53,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         storage: IStorage,
         audit: IAudit,
         timeout_budget: TimeoutBudget,
-        runtime_slug: str = "dummy",
+        runtime_slug: str,
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
         on_node_initialized: Callable[[NodeIdentity], Awaitable[None]] | None = None,

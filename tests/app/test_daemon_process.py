@@ -32,7 +32,7 @@ async def wait_for_runtime_endpoint(endpoint_path: Path) -> str:
         if response is not None and response.get("ok") is True:
             return endpoint
         await asyncio.sleep(0.01)
-    raise AssertionError("dummy node did not publish its local endpoint")
+    raise AssertionError("test node did not publish its local endpoint")
 
 
 async def request_with_retry(
@@ -68,10 +68,10 @@ async def wait_for_status(
         if predicate(result):
             return result
         await asyncio.sleep(0.01)
-    raise AssertionError("dummy node status did not reach the expected state")
+    raise AssertionError("test node status did not reach the expected state")
 
 
-def start_dummy_process(
+def start_test_process(
     tmp_path: Path,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     endpoint = tmp_path / "node.sock"
@@ -79,8 +79,8 @@ def start_dummy_process(
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "config.toml").write_text(
-        f'[node]\nchannel = "dummy"\nruntime = "dummy"\n'
-        f'storage = "dummy"\nendpoint = "{endpoint_text}"\n',
+        f'[node]\nchannel = "test"\nruntime = "test"\n'
+        f'storage = "test"\nendpoint = "{endpoint_text}"\n',
         encoding="utf-8",
     )
     environment = os.environ.copy()
@@ -95,11 +95,11 @@ def start_dummy_process(
             "bazaar_compute_node.cli",
             "start",
             "--channel",
-            "dummy",
+            "test",
             "--runtime",
-            "dummy",
+            "test",
             "--storage",
-            "dummy",
+            "test",
             "--endpoint",
             str(endpoint),
         ],
@@ -111,7 +111,7 @@ def start_dummy_process(
     return process, endpoint, data_dir
 
 
-def stop_dummy_process() -> subprocess.CompletedProcess[str]:
+def stop_test_process() -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     source_root = str(Path(__file__).parents[2] / "src")
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -135,7 +135,7 @@ def inbound_payload(session_id: str, seq: int = 1) -> dict[str, object]:
     return {
         "bcn_session_id": session_id,
         "channel_session_id": f"channel-{session_id}",
-        "channel_slug": "dummy",
+        "channel_slug": "test",
         "provider_message_id": f"provider-{session_id}-{seq}",
         "message_id": f"message-{session_id}-{seq}",
         "seq": seq,
@@ -144,17 +144,17 @@ def inbound_payload(session_id: str, seq: int = 1) -> dict[str, object]:
         "sender_id": "sender-1",
         "sender_display_name": "Sender",
         "message_type": "text",
-        "canonical_target": f"#dummy:{session_id}",
+        "canonical_target": f"#test:{session_id}",
         "body": f"inbound-{seq}",
         "provider_thread_id": f"thread-{session_id}",
     }
 
 
 @pytest.mark.asyncio
-async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
+async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir = start_dummy_process(tmp_path)
+    process, endpoint_path, data_dir = start_test_process(tmp_path)
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
@@ -202,19 +202,19 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
         assert commands_by_session == {
             "bcn-a": [
                 ["message", "check"],
-                ["message", "read", "--target", "#dummy:bcn-a"],
-                ["message", "send", "--target", "#dummy:bcn-a"],
+                ["message", "read", "--target", "#test:bcn-a"],
+                ["message", "send", "--target", "#test:bcn-a"],
             ],
             "bcn-b": [
                 ["message", "check"],
-                ["message", "read", "--target", "#dummy:bcn-b"],
-                ["message", "send", "--target", "#dummy:bcn-b"],
+                ["message", "read", "--target", "#test:bcn-b"],
+                ["message", "send", "--target", "#test:bcn-b"],
             ],
         }
         assert all(turn["state"] == "completed" for turn in runtime_turns.values())
         assert all(outbound["state"] == "sent" for outbound in outbound_messages)
     finally:
-        stop_process = await asyncio.to_thread(stop_dummy_process)
+        stop_process = await asyncio.to_thread(stop_test_process)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()
@@ -234,7 +234,7 @@ async def test_real_dummy_process_runs_bcc_commands_and_keeps_sessions_isolated(
 async def test_daemon_restart_uses_persisted_configuration(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir = start_dummy_process(tmp_path)
+    process, endpoint_path, data_dir = start_test_process(tmp_path)
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
@@ -266,7 +266,7 @@ async def test_daemon_restart_uses_persisted_configuration(
         )
         assert response.get("ok") is True
     finally:
-        stop_process = await asyncio.to_thread(stop_dummy_process)
+        stop_process = await asyncio.to_thread(stop_test_process)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()

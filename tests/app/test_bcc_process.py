@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from bcn_test_support import RecordingAudit, TestChannel, TestRuntime
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
-from bazaar_compute_node.contrib.dummy import DummyAudit, DummyChannel, DummyRuntime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
@@ -27,17 +27,17 @@ def make_budget() -> TimeoutBudget:
 
 
 def make_factories() -> AdapterFactories:
-    def create_runtime(_context: RuntimeCommandContext) -> DummyRuntime:
-        return DummyRuntime()
+    def create_runtime(_context: RuntimeCommandContext) -> TestRuntime:
+        return TestRuntime()
 
     def create_storage() -> SqliteDatabase:
         return SqliteDatabase()
 
     return AdapterFactories(
-        channel=DummyChannel,
+        channel=TestChannel,
         runtime=create_runtime,
         storage=create_storage,
-        audit=DummyAudit,
+        audit=RecordingAudit,
     )
 
 
@@ -47,14 +47,14 @@ def make_message(seq: int, *, body: str) -> InboundMessage:
         message_id=f"input-message-{seq}",
         bcn_session_id="bcn-a",
         channel_session_id="channel-bcn-a",
-        channel_slug="dummy",
+        channel_slug="test",
         provider_message_id=f"provider-message-{seq}",
         received_at_ms=1_000 + seq,
         provider_time_ms=2_000 + seq,
         sender_id="sender-id",
         sender_display_name="sender",
         message_type="human",
-        canonical_target="#dummy:bcn-a",
+        canonical_target="#test:bcn-a",
         body=body,
         provider_thread_id="provider-thread-a",
         reply_to_provider_message_id="provider-parent-a",
@@ -126,15 +126,15 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
     factories = make_factories()
     node = NodeApplication(
         factories=factories,
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3c",
         timeout_budget=make_budget(),
     )
-    channel = cast(DummyChannel, node.channel)
+    channel = cast(TestChannel, node.channel)
     await node.start()
     try:
         await channel.inject(make_message(1, body="first inbound"))
@@ -145,7 +145,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         read_code, read_stdout, read_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "read", "--target", "#dummy:bcn-a", "--limit", "2"),
+            ("message", "read", "--target", "#test:bcn-a", "--limit", "2"),
         )
         assert read_code == 0, read_stderr
         assert read_stderr == ""
@@ -153,7 +153,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
             "Read window: 2 returned, seq 1-2, oldest to newest."
         )
         assert "threadId=provider-thread-a" in read_stdout
-        assert "replyTarget=#dummy:bcn-a" in read_stdout
+        assert "replyTarget=#test:bcn-a" in read_stdout
         assert messages[0].message_id in read_stdout
         assert messages[1].message_id in read_stdout
         assert read_stdout.index("first inbound") < read_stdout.index("second inbound")
@@ -171,7 +171,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
                 "message",
                 "read",
                 "--target",
-                "#dummy:bcn-a",
+                "#test:bcn-a",
                 "--around",
                 messages[1].message_id,
                 "--limit",
@@ -190,7 +190,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         )
         assert check_code == 0, check_stderr
         assert check_stderr == ""
-        assert "[target=#dummy:bcn-a msg=" in check_stdout
+        assert "[target=#test:bcn-a msg=" in check_stdout
         assert "first inbound" in check_stdout
         assert "second inbound" in check_stdout
         assert "No more new messages." not in check_stdout
@@ -217,7 +217,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
                 "message",
                 "read",
                 "--target",
-                "#dummy:bcn-a",
+                "#test:bcn-a",
                 "--around",
                 "missing-message-id",
             ),
@@ -236,16 +236,16 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
 ) -> None:
     node = NodeApplication(
         factories=make_factories(),
-        channel_slug="dummy",
-        runtime_slug="dummy",
+        channel_slug="test",
+        runtime_slug="test",
         storage_slug="sqlite",
-        audit_slug="dummy",
+        audit_slug="test",
         endpoint_path=tmp_path / "bcn.sock",
         node_id="node-3d",
         timeout_budget=make_budget(),
     )
-    channel = cast(DummyChannel, node.channel)
-    audit = cast(DummyAudit, node.audit)
+    channel = cast(TestChannel, node.channel)
+    audit = cast(RecordingAudit, node.audit)
     await node.start()
     try:
         await channel.inject(make_message(1, body="first inbound"))
@@ -259,7 +259,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         ) = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="reply before check",
         )
         assert missing_snapshot_code != 0
@@ -272,19 +272,19 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         read_code, _read_stdout, read_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "read", "--target", "#dummy:bcn-a"),
+            ("message", "read", "--target", "#test:bcn-a"),
         )
         assert read_code == 0, read_stderr
 
         sent_code, sent_stdout, sent_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="confirmed reply",
         )
         assert sent_code == 0, sent_stderr
         assert sent_stderr == ""
-        assert sent_stdout.startswith("Message sent to #dummy:bcn-a. Message ID: ")
+        assert sent_stdout.startswith("Message sent to #test:bcn-a. Message ID: ")
         assert len(channel.sent_messages) == 1
 
         (
@@ -294,7 +294,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         ) = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="",
         )
         assert empty_body_code != 0
@@ -315,13 +315,13 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         ) = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:missing"),
+            ("message", "send", "--target", "#test:missing"),
             body="invalid target reply",
         )
         assert invalid_target_code != 0
         assert invalid_target_stdout == ""
         assert (
-            "Error: Thread target is not found or is not replyable: #dummy:missing"
+            "Error: Thread target is not found or is not replyable: #test:missing"
             in invalid_target_stderr
         )
         assert "Code: SEND_FAILED" in invalid_target_stderr
@@ -337,12 +337,12 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         queued_code, queued_stdout, queued_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="queued reply",
         )
         assert queued_code == 0, queued_stderr
         assert queued_stderr == ""
-        assert queued_stdout.startswith("Message queued to #dummy:bcn-a. Message ID: ")
+        assert queued_stdout.startswith("Message queued to #test:bcn-a. Message ID: ")
         assert len(channel.queued_messages) == 1
 
         channel.queue_send_result(
@@ -355,7 +355,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         unknown_code, unknown_stdout, unknown_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="unknown reply",
         )
         assert unknown_code != 0
@@ -375,7 +375,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         failed_code, failed_stdout, failed_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="failed reply",
         )
         assert failed_code != 0
@@ -388,7 +388,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         stale_code, stale_stdout, stale_stderr = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#dummy:bcn-a"),
+            ("message", "send", "--target", "#test:bcn-a"),
             body="stale reply",
         )
         assert stale_code != 0

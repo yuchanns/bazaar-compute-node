@@ -5,10 +5,11 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import time_ns
+from typing import ClassVar
 
-from ...core.approval import IApprovalHandler
-from ...core.command import ICommandService
-from ...core.models import (
+from bazaar_compute_node.core.approval import IApprovalHandler
+from bazaar_compute_node.core.command import ICommandService
+from bazaar_compute_node.core.models import (
     ApprovalRequest,
     RuntimeEvent,
     RuntimeEventState,
@@ -17,16 +18,18 @@ from ...core.models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
-from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from ...core.runtime import IRuntime, IRuntimeTurnStream
+from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.runtime import IRuntime, IRuntimeTurnStream
 
 CommandScript = Callable[[ICommandService, str], Awaitable[None]]
 CommandRunner = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
-class DummyTurnPlan:
+class TestTurnPlan:
     """A controlled runtime behavior used by one integration test turn."""
+
+    __test__: ClassVar[bool] = False
 
     states: tuple[RuntimeEventState, ...] = (
         RuntimeEventState.STARTED,
@@ -38,8 +41,10 @@ class DummyTurnPlan:
     raise_error: str | None = None
 
 
-class DummyRuntime(IRuntime):
+class TestRuntime(IRuntime):
     """Deterministic runtime that can execute a command script inside a turn."""
+
+    __test__ = False
 
     def __init__(
         self,
@@ -55,10 +60,10 @@ class DummyRuntime(IRuntime):
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.approval_results = []
-        self.active_streams: set[_DummyTurnStream] = set()
-        self.closed_streams: list[_DummyTurnStream] = []
+        self.active_streams: set[_TestTurnStream] = set()
+        self.closed_streams: list[_TestTurnStream] = []
         self.turn_started = asyncio.Event()
-        self._turn_plans: deque[DummyTurnPlan] = deque()
+        self._turn_plans: deque[TestTurnPlan] = deque()
         self._start_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._resume_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
@@ -74,7 +79,7 @@ class DummyRuntime(IRuntime):
         for stream in streams:
             await stream.aclose()
 
-    def queue_turn_plan(self, plan: DummyTurnPlan) -> None:
+    def queue_turn_plan(self, plan: TestTurnPlan) -> None:
         self._turn_plans.append(plan)
 
     def queue_start_result(self, result: ProviderCallResult[RuntimeSession]) -> None:
@@ -131,9 +136,9 @@ class DummyRuntime(IRuntime):
         timeout: float,
     ) -> IRuntimeTurnStream:
         if not self.started or self.stopped:
-            raise RuntimeError("dummy runtime is not started")
-        plan = self._turn_plans.popleft() if self._turn_plans else DummyTurnPlan()
-        stream = _DummyTurnStream(
+            raise RuntimeError("test runtime is not started")
+        plan = self._turn_plans.popleft() if self._turn_plans else TestTurnPlan()
+        stream = _TestTurnStream(
             runtime=self,
             session=session,
             turn=turn,
@@ -198,32 +203,32 @@ class DummyRuntime(IRuntime):
             error_kind = "provider_unknown"
         return RuntimeEvent(
             event_seq=self._event_seq,
-            event_id=f"dummy-event-{self._event_seq}",
+            event_id=f"test-event-{self._event_seq}",
             created_at_ms=time_ns() // 1_000_000,
             level="error" if error_kind else "info",
             event_name=f"runtime.turn.{state.value}",
             state=state,
-            node_id="dummy-node",
+            node_id="test-node",
             runtime_slug=session.runtime_slug,
             bcn_session_id=session.bcn_session_id,
             agent_runtime_session_id=session.agent_runtime_session_id,
             turn_id=turn.turn_id,
             error_kind=error_kind,
-            error_message="dummy provider failure" if error_kind else None,
+            error_message="test provider failure" if error_kind else None,
         )
 
 
-class _DummyTurnStream(IRuntimeTurnStream):
+class _TestTurnStream(IRuntimeTurnStream):
     def __init__(
         self,
         *,
-        runtime: DummyRuntime,
+        runtime: TestRuntime,
         session: RuntimeSession,
         turn: RuntimeTurn,
         input_text: str,
         approval_handler: IApprovalHandler,
         timeout: float,
-        plan: DummyTurnPlan,
+        plan: TestTurnPlan,
     ) -> None:
         self.runtime = runtime
         self.session = session
@@ -239,7 +244,7 @@ class _DummyTurnStream(IRuntimeTurnStream):
         self.closed = False
         self.released = asyncio.Event()
 
-    def __aiter__(self) -> _DummyTurnStream:
+    def __aiter__(self) -> _TestTurnStream:
         return self
 
     async def __anext__(self) -> RuntimeEvent:
@@ -255,7 +260,7 @@ class _DummyTurnStream(IRuntimeTurnStream):
         if not self.command_done and self.plan.command_script is not None:
             self.command_done = True
             if self.runtime.command_service is None:
-                raise RuntimeError("dummy runtime command service is not configured")
+                raise RuntimeError("test runtime command service is not configured")
             await self.plan.command_script(
                 self.runtime.command_service,
                 self.session.bcn_session_id,

@@ -20,12 +20,13 @@ def test_help_shows_the_resolved_data_dir() -> None:
     ).replace("\n", "")
 
 
-def test_cli_defaults_to_sqlite_storage() -> None:
+def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
     parser = build_parser()
-    args = parser.parse_args(["run", "--channel", "dummy", "--runtime", "dummy"])
+    args = parser.parse_args(["run", "--channel", "test", "--runtime", "test"])
     _apply_runtime_configuration(args, parser)
 
     assert args.storage == "sqlite"
+    assert args.audit == "logging"
 
 
 def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
@@ -116,3 +117,15 @@ def test_help_works_in_a_real_process() -> None:
 
     assert result.returncode == 0
     assert "usage: bcn" in result.stdout
+
+
+def test_run_requires_explicit_channel_and_runtime() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "bazaar_compute_node.cli", "run"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "--channel and --runtime must be provided together" in result.stderr

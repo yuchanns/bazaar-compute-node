@@ -6,16 +6,16 @@ from typing import Protocol, cast
 from uuid import uuid7
 
 import pytest
+from bcn_test_support import (
+    MemoryStorage,
+    RecordingAudit,
+    TestChannel,
+    TestRuntime,
+    TestTurnPlan,
+)
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
-from bazaar_compute_node.contrib.dummy import (
-    DummyAudit,
-    DummyChannel,
-    DummyRuntime,
-    DummyStorage,
-    DummyTurnPlan,
-)
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
@@ -55,13 +55,13 @@ def make_message(
         message_id=message_id or f"message-{bcn_session_id}-{seq}",
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        channel_slug="dummy",
+        channel_slug="test",
         provider_message_id=f"provider-{bcn_session_id}-{seq}",
         received_at_ms=seq,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#dummy:{bcn_session_id}",
+        canonical_target=f"#test:{bcn_session_id}",
         body=body if body is not None else f"inbound-{seq}",
         provider_thread_id=f"thread-{bcn_session_id}",
     )
@@ -78,15 +78,15 @@ def make_budget() -> TimeoutBudget:
 
 async def make_node() -> tuple[
     SessionOrchestrator,
-    DummyChannel,
-    DummyRuntime,
-    DummyStorage,
-    DummyAudit,
+    TestChannel,
+    TestRuntime,
+    MemoryStorage,
+    RecordingAudit,
 ]:
-    channel = DummyChannel()
-    runtime = DummyRuntime()
-    storage = DummyStorage()
-    audit = DummyAudit()
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = MemoryStorage()
+    audit = RecordingAudit()
     orchestrator = SessionOrchestrator(
         node_id="node-1",
         workspace_id="workspace-1",
@@ -95,7 +95,7 @@ async def make_node() -> tuple[
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
-        runtime_slug="dummy",
+        runtime_slug="test",
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -104,10 +104,10 @@ async def make_node() -> tuple[
 
 @pytest.mark.asyncio
 async def test_orchestrator_initializes_storage_identity_before_runtime() -> None:
-    channel = DummyChannel()
-    runtime = DummyRuntime()
-    storage = DummyStorage()
-    audit = DummyAudit()
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = MemoryStorage()
+    audit = RecordingAudit()
     seen: list[NodeIdentity] = []
 
     async def on_node_initialized(identity: NodeIdentity) -> None:
@@ -120,6 +120,7 @@ async def test_orchestrator_initializes_storage_identity_before_runtime() -> Non
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
+        runtime_slug="test",
         on_node_initialized=on_node_initialized,
     )
     await orchestrator.start(timeout=1)
@@ -148,7 +149,7 @@ class _AcceptanceChannel(Protocol):
     async def inject(self, message: InboundMessage) -> None: ...
 
 
-class _AcceptanceAudit(DummyAudit):
+class _AcceptanceAudit(RecordingAudit):
     def __init__(self) -> None:
         super().__init__()
         self.first_check_completed = asyncio.Event()
@@ -196,7 +197,7 @@ async def _wait_for_runtime_turn(
 
 
 async def _wait_for_audit_event(
-    audit: DummyAudit,
+    audit: RecordingAudit,
     *,
     bcn_session_id: str,
     event_name: str | None = None,
@@ -283,10 +284,10 @@ async def run_natural_conversation_contract(
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
             ),
-            channel_slug="dummy",
+            channel_slug="test",
             runtime_slug="codex",
             storage_slug="sqlite",
-            audit_slug="dummy",
+            audit_slug="test",
             endpoint_path=resolve_data_dir() / f"natural-{uuid7()}.sock",
             node_id=identity.node_id,
             workspace_id=identity.workspace_id,
@@ -411,7 +412,7 @@ async def run_natural_conversation_contract(
 
 
 @pytest.mark.asyncio
-async def test_dummy_channel_storage_runtime_turn_path() -> None:
+async def test_channel_storage_runtime_turn_path() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
     try:
         message = make_message()
@@ -441,7 +442,7 @@ async def test_dummy_channel_storage_runtime_turn_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
+async def test_runtime_can_run_real_command_service_behavior() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
 
     async def command_script(commands: ICommandService, bcn_session_id: str) -> None:
@@ -465,7 +466,7 @@ async def test_dummy_runtime_can_run_real_command_service_behavior() -> None:
             raise AssertionError("command did not deliver the outbound message")
 
     try:
-        runtime.queue_turn_plan(DummyTurnPlan(command_script=command_script))
+        runtime.queue_turn_plan(TestTurnPlan(command_script=command_script))
         await channel.inject(make_message())
         await wait_until(
             lambda: (
@@ -507,7 +508,7 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
 
         history = await orchestrator.command_service.read(
             "bcn-1",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             limit=1,
         )
         assert [message.seq for message in history.messages] == [1]
@@ -527,7 +528,7 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
         await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
         around = await orchestrator.command_service.read(
             "bcn-1",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             around_message_id=storage.inbound_messages["bcn-1"][1].message_id,
             limit=1,
         )
@@ -543,11 +544,11 @@ async def test_runtime_failure_and_unknown_stream_are_persisted() -> None:
     orchestrator, channel, runtime, storage, _ = await make_node()
     try:
         runtime.queue_turn_plan(
-            DummyTurnPlan(
+            TestTurnPlan(
                 states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED),
             )
         )
-        runtime.queue_turn_plan(DummyTurnPlan(states=(RuntimeEventState.STARTED,)))
+        runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED,)))
         await channel.inject(make_message(seq=1))
         await wait_until(
             lambda: (
@@ -577,11 +578,11 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
             request_id="approval-1",
             bcn_session_id="bcn-1",
             agent_runtime_session_id="runtime-bcn-1",
-            action="dummy-action",
+            action="test-action",
             created_at_ms=1,
             turn_id="turn-message-bcn-1-1",
         )
-        runtime.queue_turn_plan(DummyTurnPlan(approval_request=request))
+        runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
         await channel.inject(make_message())
         await wait_until(
             lambda: (
@@ -609,7 +610,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         rejected_without_snapshot = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-before-check",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="reply",
             created_at_ms=2,
         )
@@ -621,7 +622,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         delivered = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-after-check",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="reply",
             created_at_ms=3,
         )
@@ -633,7 +634,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
         stale = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-stale",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="reply",
             created_at_ms=4,
         )
@@ -653,7 +654,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         invalid_target = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-invalid-target",
-            target="#dummy:missing",
+            target="#test:missing",
             body="reply",
             created_at_ms=2,
         )
@@ -669,7 +670,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         empty_body = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-empty-body",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body=" \t",
             created_at_ms=3,
         )
@@ -694,7 +695,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         queued = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-queued",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="queued reply",
             created_at_ms=4,
         )
@@ -712,7 +713,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         unknown = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-unknown",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="unknown reply",
             created_at_ms=5,
         )
@@ -729,7 +730,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         failed = await orchestrator.command_service.send(
             bcn_session_id="bcn-1",
             command_id="command-failed",
-            target="#dummy:bcn-1",
+            target="#test:bcn-1",
             body="failed reply",
             created_at_ms=6,
         )
@@ -749,7 +750,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
 @pytest.mark.asyncio
 async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     orchestrator, channel, runtime, storage, _ = await make_node()
-    runtime.queue_turn_plan(DummyTurnPlan(block_until_release=True))
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
     assert storage.bcn_sessions["bcn-1"].state is AgentState.WORKING
@@ -772,7 +773,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
 @pytest.mark.asyncio
 async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
     orchestrator, channel, runtime, storage, _audit = await make_node()
-    runtime.queue_turn_plan(DummyTurnPlan(block_until_release=True))
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     first = make_message(seq=1)
     second = make_message(seq=2)
 
@@ -786,7 +787,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         )
         assert len(runtime.started_turns) == 1
 
-        runtime.queue_turn_plan(DummyTurnPlan())
+        runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()
         await wait_until(
             lambda: (

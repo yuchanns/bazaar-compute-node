@@ -39,7 +39,7 @@ async def database() -> AsyncIterator[SqliteDatabase]:
 def make_channel_session(
     *,
     channel_session_id: str = "channel-1",
-    channel_slug: str = "dummy",
+    channel_slug: str = "test",
     provider_conversation_key: str = "conversation-1",
     provider_thread_key: str = "thread-1",
     state: ChannelSessionState = ChannelSessionState.ACTIVE,
@@ -89,7 +89,7 @@ def make_runtime_session(
         agent_runtime_session_id=agent_runtime_session_id,
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        runtime_slug="dummy",
+        runtime_slug="test",
         workspace_id=workspace_id,
         process_state=process_state,
         created_at_ms=100,
@@ -104,11 +104,11 @@ def make_inbound_message(
     *,
     bcn_session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
-    channel_slug: str = "dummy",
+    channel_slug: str = "test",
     provider_message_id: str = "provider-message-1",
     message_id: str = "caller-message-1",
     seq: int = 0,
-    canonical_target: str = "#dummy:channel-1",
+    canonical_target: str = "#test:channel-1",
     body: str = "inbound body",
     received_at_ms: int = 200,
 ) -> InboundMessage:
@@ -143,7 +143,7 @@ async def save_channel_and_bcn_session(
     *,
     channel_session_id: str,
     bcn_session_id: str,
-    channel_slug: str = "dummy",
+    channel_slug: str = "test",
     provider_conversation_key: str | None = None,
 ) -> None:
     async with database.transaction() as transaction:
@@ -171,7 +171,7 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
     async with database.transaction() as transaction:
         assert (
             await transaction.find_channel_session(
-                channel_slug="dummy",
+                channel_slug="test",
                 provider_conversation_key="conversation-1",
                 provider_thread_key="thread-1",
             )
@@ -251,7 +251,7 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
                 provider_message_id="provider-message-2",
                 message_id="caller-message-2",
                 seq=999,
-                canonical_target="#dummy:channel-1",
+                canonical_target="#test:channel-1",
                 body="second inbound body",
                 received_at_ms=201,
             )
@@ -381,7 +381,7 @@ async def test_sqlite_cursor_snapshot_check_drains_and_read_does_not(
         latest_seq = await transaction.get_latest_inbound_seq("bcn-1")
         history = await transaction.list_inbound_messages(
             "bcn-1",
-            target="#dummy:channel-1",
+            target="#test:channel-1",
             around_message_id=messages[2].message_id,
             limit=3,
         )
@@ -674,7 +674,7 @@ async def test_sqlite_concurrent_get_or_create_has_one_winner() -> None:
         assert isinstance(errors[0], ValueError)
         async with first.transaction() as transaction:
             winner = await transaction.find_channel_session(
-                channel_slug="dummy",
+                channel_slug="test",
                 provider_conversation_key="conversation-concurrent",
                 provider_thread_key="",
             )

@@ -40,8 +40,8 @@ class NodeApplication:
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
         runtime_options: Mapping[str, str] | None = None,
-        storage_slug: str = "dummy",
-        audit_slug: str = "dummy",
+        storage_slug: str,
+        audit_slug: str,
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
         self.data_dir = resolve_data_dir()

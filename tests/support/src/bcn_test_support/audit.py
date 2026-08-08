@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from ...core.audit import AuditEvent
-from ...core.observability import IAudit
+from bazaar_compute_node.core.audit import AuditEvent
+from bazaar_compute_node.core.observability import IAudit
 
 
-class DummyAudit(IAudit):
-    """Observable append-only audit sink for the Dummy composition."""
+class RecordingAudit(IAudit):
+    """Observable append-only audit sink for integration tests."""
 
     def __init__(self) -> None:
         self.events: list[AuditEvent] = []

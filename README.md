@@ -9,13 +9,14 @@ uv run bcn --help
 uv run bcn --version
 ```
 
-## 一行启动
+## 启动
 
-使用者无需手动 clone 仓库，直接执行：
+启动时必须显式选择已安装的 Channel 和 Runtime；项目不为二者提供默认值。以 WeCom 和
+Codex 组合为例：
 
 ```bash
 uvx --from 'git+ssh://git@github.com/bazaar-compute-node/bcn@main' bcn start \
-  --channel dummy --runtime dummy --storage dummy
+  --channel wecom --runtime codex
 ```
 
 后台进程可使用同一条命令关闭：
@@ -32,10 +33,10 @@ uvx --from 'git+ssh://git@github.com/bazaar-compute-node/bcn@main' bcn stop
 
 ```toml
 [node]
-channel = "dummy"
-runtime = "dummy"
+channel = "wecom"
+runtime = "codex"
 storage = "sqlite"
-audit = "dummy"
+audit = "logging"
 
 [runtime]
 model = "gpt-5.6-luna"
@@ -43,7 +44,7 @@ effort = "max"
 ```
 
 命令行参数会覆盖对应的文件配置；`storage` 和 `audit` 的内置默认值分别为 `sqlite` 和
-`dummy`。`channel` 和 `runtime` 在 CLI 与配置文件中都没有设置时才报错。未设置
-`model`/`effort` 时由 App Server 使用默认值。
+`logging`。`channel` 和 `runtime` 必须由命令行或配置文件显式提供，缺少任一项都在启动前
+报错。未设置 `model`/`effort` 时由 App Server 使用默认值。
 Unix 直接使用 socket 文件作为 daemon endpoint；Windows 使用 per-user named pipe 和 named
 mutex，不需要 PID/lock 文件。SQLite 只保存 session、message、turn 等运行时状态。

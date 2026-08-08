@@ -40,7 +40,7 @@ async def database() -> AsyncIterator[SqliteDatabase]:
 
 
 def make_channel_session(
-    *, channel_session_id: str = "channel-1", channel_slug: str = "dummy"
+    *, channel_session_id: str = "channel-1", channel_slug: str = "test"
 ) -> ChannelSession:
     return ChannelSession(
         channel_session_id=channel_session_id,
@@ -76,7 +76,7 @@ def make_runtime_session(
         agent_runtime_session_id=runtime_id,
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        runtime_slug="dummy",
+        runtime_slug="test",
         workspace_id="workspace-1",
         process_state=RuntimeProcessState.STARTING,
         created_at_ms=100,
@@ -92,13 +92,13 @@ def make_inbound_message(
         message_id="provider-local-message",
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        channel_slug="dummy",
+        channel_slug="test",
         provider_message_id="provider-message-1",
         received_at_ms=101,
         sender_id="sender-1",
         sender_display_name="Sender",
         message_type="text",
-        canonical_target=f"#dummy:{bcn_session_id}",
+        canonical_target=f"#test:{bcn_session_id}",
         body="inbound body",
     )
 
@@ -140,7 +140,7 @@ def make_draft(
         command_id=f"command-{outbound_message_id}",
         bcn_session_id=bcn_session_id,
         channel_session_id=channel_session_id,
-        target=f"#dummy:{bcn_session_id}",
+        target=f"#test:{bcn_session_id}",
         body="outbound body",
         state=OutboundDeliveryState.DRAFT,
         fresh_check_state=FreshCheckState.REQUIRED,
@@ -398,8 +398,8 @@ async def test_sqlite_runtime_event_repository_is_append_only_and_validates_refe
             event_name="runtime.turn.started",
             state=RuntimeEventState.STARTED,
             node_id="node-1",
-            channel_slug="dummy",
-            runtime_slug="dummy",
+            channel_slug="test",
+            runtime_slug="test",
             channel_session_id="channel-1",
             bcn_session_id="bcn-1",
             agent_runtime_session_id="runtime-1",

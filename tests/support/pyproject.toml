@@ -1,0 +1,25 @@
+[project]
+name = "bcn-test-support"
+version = "0.1.0"
+description = "Test-only adapters for Bazaar Compute Node"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.entry-points."bazaar_compute_node.channels"]
+test = "bcn_test_support.plugin:create_channel"
+
+[project.entry-points."bazaar_compute_node.runtimes"]
+test = "bcn_test_support.plugin:create_runtime"
+
+[project.entry-points."bazaar_compute_node.storages"]
+test = "bcn_test_support.plugin:create_storage"
+
+[project.entry-points."bazaar_compute_node.audits"]
+test = "bcn_test_support.plugin:create_audit"
+
+[project.entry-points."bazaar_compute_node.controls"]
+"test+test+test" = "bcn_test_support.plugin:create_control"
+
+[build-system]
+requires = ["uv_build>=0.12.2,<0.13.0"]
+build-backend = "uv_build"

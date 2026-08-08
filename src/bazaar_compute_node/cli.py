@@ -15,7 +15,7 @@ from .app.registry import AdapterFactories, AdapterRegistry, ProviderLoadError
 from .app.transport import LocalCommandClient, local_endpoint_for_path
 from .core.paths import resolve_data_dir
 
-DEFAULT_AUDIT = "dummy"
+DEFAULT_AUDIT = "logging"
 DEFAULT_STORAGE = "sqlite"
 
 

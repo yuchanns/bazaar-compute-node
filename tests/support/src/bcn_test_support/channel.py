@@ -4,19 +4,21 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator
 
-from ...core.channel import ChannelDeliveryReceipt, IChannel
-from ...core.models import (
+from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
+from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
     InboundMessage,
     OutboundMessage,
 )
-from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 
 
-class DummyChannel(IChannel):
+class TestChannel(IChannel):
     """Controllable Channel adapter with observable inbound and outbound behavior."""
+
+    __test__ = False
 
     def __init__(self) -> None:
         self.started = False
@@ -52,7 +54,7 @@ class DummyChannel(IChannel):
 
     async def inject(self, message: InboundMessage) -> None:
         if not self.accepting:
-            raise RuntimeError("dummy channel is not accepting inbound messages")
+            raise RuntimeError("test channel is not accepting inbound messages")
         self.injected_messages.append(message)
         await self._inbound.put(message)
 
@@ -63,7 +65,7 @@ class DummyChannel(IChannel):
                 self.receive_closed = True
                 return
             if not isinstance(item, InboundMessage):
-                raise TypeError("dummy channel queue contained an invalid message")
+                raise TypeError("test channel queue contained an invalid message")
             yield item
 
     def queue_send_result(
@@ -82,14 +84,14 @@ class DummyChannel(IChannel):
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="channel_not_started",
-                error_message="dummy channel is not started",
+                error_message="test channel is not started",
             )
         result = self._send_results.popleft() if self._send_results else None
         if result is None:
             result = ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
                 value=ChannelDeliveryReceipt(
-                    provider_message_id=f"dummy-message-{message.outbound_message_id}"
+                    provider_message_id=f"test-message-{message.outbound_message_id}"
                 ),
             )
         if result.status is ProviderCallStatus.CONFIRMED:

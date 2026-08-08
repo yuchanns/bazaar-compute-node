@@ -25,7 +25,7 @@ from bazaar_compute_node.core.models import (
 def make_channel_session() -> ChannelSession:
     return ChannelSession(
         channel_session_id="channel-1",
-        channel_slug="dummy",
+        channel_slug="test",
         provider_conversation_key="conversation-1",
         provider_thread_key="",
         state=ChannelSessionState.ACTIVE,
@@ -50,7 +50,7 @@ def make_runtime_session() -> RuntimeSession:
         agent_runtime_session_id="runtime-1",
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
-        runtime_slug="dummy",
+        runtime_slug="test",
         workspace_id="workspace-1",
         process_state=RuntimeProcessState.STARTING,
         created_at_ms=1,
@@ -73,7 +73,7 @@ def make_outbound_message() -> OutboundMessage:
         command_id="command-1",
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
-        target="#dummy:message-1",
+        target="#test:message-1",
         body="hello",
         state=OutboundDeliveryState.DRAFT,
         fresh_check_state=FreshCheckState.REQUIRED,

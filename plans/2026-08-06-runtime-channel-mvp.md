@@ -3,12 +3,10 @@
 ## 状态
 
 - 模式：Plan
-- 状态：待进入 Code 模式
-- 基线：`main`，当前提交为 `47c79fe20b26853a827b4a6dabc1a906b01345cd`
-- 基线仓库状态：只有 packaged application、`bcn` CLI 和 uv 基础配置，基线时工作区 clean；
-  当前新增的是本计划文件，已有的空 `AGENTS.md` 未修改
-- 本计划定义首个可运行纵向切片；用户确认计划后，按其中阶段进入 Code 模式并实施生产代码。
-  当前轮次先只更新计划文档，避免在方案调整完成前提前改动生产代码。
+- 状态：Phase 4 Task 4C 已完成并处于 review；下一项为 Task 4D，完成 review 后进入 Phase 5。
+- 基线：`main`，当前提交为 `11f2b397a93567a036ee4b541cc6bba59d245af4`。
+- 当前更新只调整本计划中的 Test adapter 边界、必填 provider selection 与后续任务顺序，
+  不提前修改生产代码。
 
 ## 1. 目标
 
@@ -35,8 +33,10 @@ bcn restart
 `--channel` 和 `--runtime` 是 composition root 的 adapter slug。CLI 在启动 node 前完成
 参数解析，并通过 Python package entry point 动态加载被选择的 Channel、Agent Runtime、
 Storage 和 Audit contrib；未选择或未安装的 provider 不会被 import。首版一个进程选择一组
-channel/runtime；该组合内部仍支持多个 bcn session 并发。Phase 1 先提供 `dummy/dummy`
-开发入口完成小闭环；真实 provider 组合在后续 phase 接入，不把 Dummy 作为默认生产入口。
+channel/runtime；该组合内部仍支持多个 bcn session 并发。`start`/`run` 必须从显式 CLI 参数
+或持久配置解析出非空 `channel` 和 `runtime`，二者没有内置默认值，缺少任一项都在启动前
+失败。Phase 1 使用仅存在于测试代码的 Test adapters 完成小闭环，不把测试实现注册为生产
+provider entry point。
 兼容地直接执行 `bcn --channel ... --runtime ...` 等价于 `bcn start --channel ... --runtime ...`。
 `bcn` daemon 将配置、SQLite 运行态和日志保存在持久化 data directory，运行进程在后台
 维护，`stop`/`restart` 通过本机 command transport 和稳定 endpoint 做优雅生命周期控制；
@@ -109,10 +109,13 @@ src/bazaar_compute_node/
 ├── contrib/
 │   ├── sqlite/          # SQLite schema, migrations and repositories
 │   ├── codex_app_server/# async App Server process and protocol adapter
-│   ├── wecom/           # WeCom webhook/send adapter and normalization
-│   └── dummy/           # deterministic Channel and Agent Runtime adapters for core checks
+│   ├── logging/         # local operational audit sink
+│   └── wecom/           # WeCom webhook/send adapter and normalization
 └── app/
     └── cli/             # bcn composition root, local IPC and bcc wrapper
+
+tests/
+└── support/             # controllable Test adapters and test-only provider plugin
 ```
 
 具体包名可以在 Code 模式开始时按仓库惯例调整，但不能反转依赖方向或让 core import
@@ -899,11 +902,12 @@ stderr 日志用于实时堆栈，不把一次 logger 输出当成唯一事实�
 
 依赖：无。产出：async application entrypoint、lifecycle skeleton 和真实进程 smoke check。
 
-### Phase 1：core contracts 与 Dummy 可运行闭环
+### Phase 1：core contracts 与 Test adapter 可运行闭环
 
-目标：建立不依赖真实 provider 或 SQLite 的 domain contract、session orchestration、Dummy
-adapter 和最小可运行应用闭环；在进入真实持久化和 provider adapter 前，先用 `dummy/dummy`
-验证从 inbound 到 runtime turn、`bcc` command 和 outbound 的完整路径。
+目标：建立不依赖真实 provider 或 SQLite 的 domain contract、session orchestration、Test
+adapter 和最小可运行应用闭环；在进入真实持久化和 provider adapter 前，先用测试代码中的
+可控 Channel/Runtime/Storage/Audit 验证从 inbound 到 runtime turn、`bcc` command 和 outbound
+的完整路径。
 
 #### Task 1A：domain model 与状态边界
 
@@ -950,32 +954,32 @@ adapter 和最小可运行应用闭环；在进入真实持久化和 provider ad
   `created -> starting`，runtime 启动确认进入 `idle`，active turn 进入 `working`，turn
   terminal event 回到 `idle`，停止、失败和恢复分别进入对应状态；压缩阶段独立记录，工具
   调用解析后的 operation/arguments/status 只进入 audit log，不扩张 agent lifecycle state。
-- 先用 Dummy orchestration 验证正常 lifecycle、failure、unknown/reconcile、stop 和
+- 先用 Test adapter orchestration 验证正常 lifecycle、failure、unknown/reconcile、stop 和
   runtime/channel 交错 tick；不在本 Task 引入 provider-specific state 或新的 storage 实现。
 
 执行顺序：Task 1C 之后、Task 1D 之前。依赖：Task 1A 的 domain model、Task 1B 的 lifecycle
 port 和 Task 1C 的 correlation contract。后续由 Phase 2 持久化、Phase 5 Channel tick 和
 Phase 6 restart/reconciliation 消费与扩展。
 
-#### Task 1D：Dummy adapters 与 core orchestration harness
+#### Task 1D：Test adapters 与 core orchestration harness
 
-- 在 `contrib/dummy` 中实现内存 Dummy Storage、Dummy Channel 与 Dummy Agent Runtime；
-  Dummy 事务必须支持提交/回滚，不能把测试状态写进 SQLite 或 provider adapter。
+- 在 `tests/support` 中实现 `MemoryStorage`、`TestChannel`、`TestRuntime` 与 `RecordingAudit`；
+  内存事务必须支持提交/回滚，不能把测试状态写进 SQLite 或 provider adapter。
 - 实现 core session orchestration，驱动真实 contract、session routing、approval callback
-  和状态转换；Dummy 不得反向成为 core 依赖。Orchestration 必须允许 Channel inbound
-  触发 runtime reminder，并由 runtime adapter 回调 command service，而不是只在测试中
-  直接调用 core 方法。
+  和状态转换；Test adapter 不得反向成为 core 或生产 contrib 的依赖。Orchestration 必须允许
+  Channel inbound 触发 runtime reminder，并由 runtime adapter 回调 command service，而不是
+  只在测试中直接调用 core 方法。
 - 测试正常 inbound、turn completion、outbound delivery、provider failure、unknown turn、
   fresh-check refusal 和 graceful cancellation。
 - 测试多个 session 的 cursor、turn、workspace identity 和 correlation 不串线。
 
 依赖：Task 1F 的 agent lifecycle state machine、approval/audit/correlation contract。产出：不导入真实 provider 的 core
-orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters。
+orchestration 测试套件、可替换的 Test Channel/Runtime 与内存 Storage/Audit adapters。
 
 #### Task 1E：动态 composition、daemon lifecycle、command service 与 `bcc` 小闭环
 
 - 在 `app/cli` 建立通用 composition root，解析 adapter slug，并通过 Python entry point
-  动态加载 provider factory；`app` 不包含 `DummyNode` 或任何 provider-specific Node 类，
+  动态加载 provider factory；`app` 不包含 `TestNode` 或任何 provider-specific Node 类，
   新增 provider 只需安装 contrib package 并注册 entry point。未知、未安装或不兼容组合
   必须在启动前失败。
 - 提供 `bcn start`、`bcn stop`、`bcn restart` 的 daemon lifecycle；start 将 foreground
@@ -985,28 +989,28 @@ orchestration 测试套件、可替换的 Dummy Storage/Channel/Runtime adapters
   integration test seam，不改变 daemon 默认行为。
 - 暴露 session-scoped `check`/`read`/`send` command service，并提供最小本机 command
   transport；transport 只传递 core command/result，不泄露 adapter/provider 对象。
-- 生成可执行的 `bcc` wrapper，让 Dummy runtime 使用 `BCN_SESSION_ID` 调用 command service；
+- 生成可执行的 `bcc` wrapper，让 Test Runtime 使用 `BCN_SESSION_ID` 调用 command service；
   先覆盖当前开发平台的本机路径，同时保留跨平台 transport seam，生产级 Windows/Unix
   hardening 后置到 Phase 3。
-- Dummy Channel 提供受控 inbound 注入和 outbound/approval 观察接口；Dummy Runtime 提供
+- Test Channel 提供受控 inbound 注入和 outbound/approval 观察接口；Test Runtime 提供
   受控 turn script，能够在 turn 内实际执行 `bcc message check/read/send`，并把 command
   结果继续驱动后续 runtime 行为。
-- 以真实进程执行 `bcn start --channel dummy --runtime dummy`，验证 daemon ready、stop 和
-  restart，再通过其本机 endpoint 验证
-  `Dummy Channel → core orchestration → Dummy Storage → Dummy Runtime → bcc command service
-  → Dummy Channel` 的全链路，以及多 session 的 check/read/send、approval、fresh-check
-  refusal、provider failure、unknown turn 和 graceful shutdown；这一步不依赖 SQLite 或
-  真实 provider。
+- 通过只安装在测试环境、不会进入生产 wheel 或生产 entry point metadata 的最小 test-plugin
+  fixture 启动真实进程，验证 daemon ready、stop 和 restart，再通过其本机 endpoint 验证
+  `Test Channel → core orchestration → Memory Storage → Test Runtime → bcc command service
+  → Test Channel` 的全链路，以及多 session 的 check/read/send、approval、fresh-check refusal、
+  provider failure、unknown turn 和 graceful shutdown；这一步不依赖 SQLite 或真实 provider，
+  也不为生产 registry 增加 test override seam。
 
-依赖：Task 1D。产出：可启动的 Dummy node、最小 command service、`bcc` wrapper 和小闭环
+依赖：Task 1D。产出：可启动的 test-only node、最小 command service、`bcc` wrapper 和小闭环
 integration tests。
 
-Phase 验收：`bcn start --channel dummy --runtime dummy` 只加载选中的 Dummy entry point，
-在不依赖 SQLite 的情况下进入后台 ready；从 Dummy Channel 注入 inbound 后，Dummy Storage
-能观察到持久记录，Dummy Runtime 能在 turn 内实际调用 `bcc` command 并收到结果，最终
-outbound 能回到 Dummy Channel。`bcn stop` 和 `bcn restart` 能通过本机控制面完成优雅
-生命周期，多 session 不串线，退出时能清理 runtime、command service、storage 和运行态
-元数据。
+Phase 验收：test-only plugin 只在测试环境暴露选中的 Test entry point，在不依赖 SQLite 的
+情况下进入后台 ready；从 Test Channel 注入 inbound 后，Memory Storage 能观察到记录，
+Test Runtime 能在 turn 内实际调用 `bcc` command 并收到结果，最终 outbound 能回到 Test
+Channel。`bcn stop` 和 `bcn restart` 能通过本机控制面完成优雅生命周期，多 session 不串线，
+退出时能清理 runtime、command service、storage 和运行态元数据；生产 distribution 不包含
+任何 Test adapter entry point。
 
 ### Phase 2：SQLite 与 workspace
 
@@ -1068,12 +1072,12 @@ turn application invariant、runtime event append-only，以及显式事务下�
 
 ### Phase 3：production local command service 与 bcc
 
-目标：在 Phase 1 Dummy 小闭环的 command contract 基础上，接入 SQLite-backed session
+目标：在 Phase 1 Test adapter 小闭环的 command contract 基础上，接入 SQLite-backed session
 state，完成可审阅的跨平台本地 IPC、持久 wrapper 和三类 message command。
 
 #### Task 3A：composition root 与 command service lifecycle
 
-- 将 Phase 1 的 Dummy composition 扩展为真实 storage/channel/runtime 的 adapter factory，
+- 将 Phase 1 的 Test composition 扩展为真实 storage/channel/runtime 的 adapter factory，
   让 `app/cli` 暴露完整的 `--channel`、`--runtime` 组合；未知或不兼容 slug 在启动前清晰
   失败。
 - 完善 command service 的启动、停止、health/error boundary 和 session-scoped dispatch；
@@ -1081,7 +1085,7 @@ state，完成可审阅的跨平台本地 IPC、持久 wrapper 和三类 message
 - 固定一个 node process 可服务多个 bcn session，但每个 command 必须经过 session binding
   校验。
 
-依赖：Phase 1 的 Dummy composition 与 Phase 2 的 SQLite/workspace。产出：production
+依赖：Phase 1 的 Test composition 与 Phase 2 的 SQLite/workspace。产出：production
 composition root、command service lifecycle 和 dispatch contract。
 
 #### Task 3B：local IPC、wrapper 和 session binding
@@ -1103,7 +1107,7 @@ composition root、command service lifecycle 和 dispatch contract。
   session routing、cursor/snapshot 调用和 canonical text serializer。
 - 固定 stdout/stderr、退出码、sender identity、target、short/full message id、local seq、
   threadId、replyTarget 和历史窗口边界；不把 provider SDK object 泄露给 runtime。
-- 以 Dummy Channel 和真实 SQLite repository 验证 check drain、read non-drain、snapshot
+- 以 Test Channel 和真实 SQLite repository 验证 check drain、read non-drain、snapshot
   更新、无新消息输出和 target 定位错误。
 
 依赖：Task 3B 的 local IPC、wrapper 和 session binding。产出：check/read command contract
@@ -1150,11 +1154,13 @@ event 和 approval 转成 Phase 1 的中立 contract。
 - 将 provider event 转成中立 runtime event，保留必要 request/turn correlation，不把 provider
   wire schema 传播到 core 或 Channel。
 - production 通过固定 `$HOME/.bcn/config.toml` 的 `[node]`/`[runtime]` 表及 CLI 覆盖值选择
-  channel、runtime、storage、audit、model 和 effort；CLI 覆盖 config，storage/audit 缺省为
-  `sqlite`/`dummy`，channel/runtime 仍无值时才报错。model/effort 都未设置时省略对应
-  provider 参数，交给 provider 默认值。测试场景显式固定 `gpt-5.6-luna` 与 `effort=max`，
-  不得将测试选择写死在 production runtime/client。Unix 使用 socket endpoint；Windows 使用
-  per-user named pipe 与 named mutex，不保存 PID/lock 文件或运行 provider 元数据。
+  channel、runtime、storage、audit、model 和 effort；CLI 覆盖 config。`channel` 与 `runtime`
+  必须由 CLI 或配置显式给出，没有内置默认值，缺少任一项都在 composition 前失败；storage
+  缺省为 `sqlite`。Task 4D 移除临时 test audit 后，audit 缺省为 production `logging` adapter。
+  model/effort 都未设置时省略对应 provider 参数，交给 provider 默认值。测试场景显式固定
+  `gpt-5.6-luna` 与 `effort=max`，不得将测试选择写死在 production runtime/client。Unix 使用
+  socket endpoint；Windows 使用 per-user named pipe 与 named mutex，不保存 PID/lock 文件或
+  运行 provider 元数据。
 - 真实场景验证不只断言 wire response：使用自然语言驱动真实 turn，验证同一 thread 的自然
   follow-up、跨进程 resume 后的自然 follow-up、两个真实 process 的交错 event stream、interrupt，
   以及 `error.willRetry=true` 保持非终态。不得断言模型的精确回答文本；应观察 provider/local
@@ -1174,6 +1180,34 @@ normalization 和 protocol tests。
 依赖：Task 4B 的 thread/turn protocol adapter。产出：双向 approval bridge、reminder-to-bcc
 integration。
 
+#### Task 4D：Test adapter 边界与必填 provider selection
+
+- 将 `contrib/dummy` 的可控实现全部迁到 `tests/support`：`DummyChannel`、`DummyRuntime`、
+  `DummyTurnPlan` 分别改为 `TestChannel`、`TestRuntime`、`TestTurnPlan`，内存 storage/audit
+  改为 `MemoryStorage` 与 `RecordingAudit`；同步迁移测试 fixture、slug、canonical target 和
+  文件名，不保留 import、class、entry point 或 slug 兼容 alias。
+- 从 production package metadata 删除所有 dummy channel/runtime/storage/audit/control entry
+  point；删除 `NodeApplication`、`AdapterRegistry`、`SessionOrchestrator` 中的 dummy 默认值。
+  `start`/`run` 必须从 CLI 或持久配置显式解析非空 `channel` 与 `runtime`，不得回退到任何
+  Test adapter；storage 继续缺省为 `sqlite`。
+- 新增 production `logging` audit adapter，替换临时 dummy audit 默认值；`RecordingAudit`
+  只供测试观察，不进入 production package、默认配置或 provider registry。
+- 保留真实 subprocess、dynamic entry point、daemon start/stop/restart 和本机 control 验证，
+  但通过只安装在测试环境的最小 test-plugin fixture 暴露 Test adapters；fixture 不进入
+  production wheel，也不通过生产代码新增 factory override、环境开关或兼容分支。
+- 固定可复用的双向 adapter contract matrix：core 使用 TestChannel+TestRuntime；真实 Codex
+  使用 TestChannel+CodexRuntime；后续真实 WeCom 使用 WeComChannel+TestRuntime；完整产品
+  验收使用 WeComChannel+CodexRuntime。真实 Channel 的 inbound 必须从其 provider ingress
+  路径进入，TestRuntime 只替代 runtime；真实 Runtime 场景则必须经 TestChannel inbound port
+  注入，不直接写 storage。
+- 更新 README、配置示例、CLI/parser/registry/composition tests 和本计划中的 adapter 边界；
+  验证 production distribution/entry point inventory 不含 Test adapter，`channel` 或 `runtime`
+  缺失时启动 fail closed。
+
+依赖：Task 4C。产出：test-only adapter support、production logging audit、必填 Channel/Runtime
+selection、无测试 adapter 泄漏的 production package，以及可供 Phase 5 复用的 Channel
+contract harness。Task 4D 完成并 review 后才能进入 Task 5A。
+
 Phase 验收：真实 runtime process 使用 `model=gpt-5.6-luna`、`effort=max` 完成 initialize ->
 reminder -> bcc check -> bcc send；自然对话场景验证 agent 会根据真实消息决定 check/read/send，
 而不是机械执行固定 transcript。第二条真实 inbound 在第一次 check 完成后、第一次 send 前
@@ -1182,7 +1216,9 @@ reminder -> bcc check -> bcc send；自然对话场景验证 agent 会根据真�
 fresh-check state、provider receipt 和 audit，而不是精确回答文本。两个 session 并发时
 process、thread、workspace、turn 和 SQLite mapping 互不混淆；provider retry notification
 不错误终结本地 turn。不得用 fake/mock/httptest、直接写 SQLite 或生产注入制造这些场景；第二
-条 inbound 必须从实际 Channel 入站路径进入。
+条 inbound 必须从实际 Channel 入站路径进入。production package/entry point inventory 不含
+Test adapters，`channel`/`runtime` 未显式配置时启动失败；TestChannel+CodexRuntime 的真实
+自然问答与 TestChannel+TestRuntime 的 core/daemon contract 均通过。
 
 ### Phase 5：WeCom adapter 与端到端编排
 
@@ -1198,7 +1234,9 @@ session routing 汇合为可运行的端到端路径。
 - 处理 provider credential boundary；凭据只通过受控本机环境注入，不进入 SQLite、wrapper
   或日志。
 
-依赖：Phase 4。产出：真实 inbound normalization、dedupe 和 identity tests。
+依赖：Task 4D。产出：真实 inbound normalization、dedupe 和 identity tests；使用
+WeComChannel+TestRuntime 独立验证 Channel ingress、normalization 和 routing，不要求真实
+Codex Runtime 同时参与。
 
 #### Task 5B：outbound delivery 与 Channel approval policy
 
@@ -1274,10 +1312,13 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
 
 ## 9. 验证原则
 
-- `contrib/dummy` 只用于 core contract 和 orchestration 验证，不作为生产 Channel/runtime
-  adapter，也不能替代真实 provider 的端到端验收。
+- TestChannel、TestRuntime、MemoryStorage 与 RecordingAudit 只存在于 `tests/support` 或
+  test-only plugin fixture，不进入 production package、entry point、默认配置或 runtime
+  dependency；它们用于隔离验证 port contract，不能替代真实 provider 的端到端验收。
 - core 状态机可测试纯逻辑；持久化使用真实 SQLite 文件；IPC 使用真实本机 transport；
   runtime 使用真实 Codex App Server；Channel 使用授权的真实测试环境。
+- adapter 验证先独立后组合：TestChannel+CodexRuntime 验证真实 Runtime，
+  WeComChannel+TestRuntime 验证真实 Channel，最终再用 WeComChannel+CodexRuntime 验证产品链路。
 - 凭据通过本机受控环境注入，不写进 repository、SQLite、wrapper 内容或日志。
 - 每个阶段完成后至少检查：
 
@@ -1329,7 +1370,9 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
 ## 11. Code 模式入口条件
 
 进入 Code 模式前需要确认本计划本身，无需再次选择子方案。若直接按当前最优路径实施，
-第一批代码先完成 Task 0，再完成 Phase 1 的 Dummy Storage、core orchestration、Dummy
+第一批代码先完成 Task 0，再完成 Phase 1 的 MemoryStorage、core orchestration、Test
 composition、command service 和 `bcc` 小闭环；确认闭环可运行后再接 Phase 2 的 SQLite
 workspace 持久化，随后将同一 command contract 扩展到 production local IPC 和真实
-provider adapter，避免 provider-specific runtime 逻辑造成核心模型返工。
+provider adapter，避免 provider-specific runtime 逻辑造成核心模型返工。当前 Task 4C 完成后，
+下一项必须先执行 Task 4D 的 Test adapter 边界迁移与必填 provider selection，完成 review 后
+才能进入 Phase 5 Task 5A。

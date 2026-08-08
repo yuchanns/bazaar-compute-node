@@ -1,33 +1,33 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import cast
 
-from ...core.models import InboundMessage, OutboundMessage
-from .channel import DummyChannel
-from .storage import DummyStorage
+from bazaar_compute_node.core.models import InboundMessage, OutboundMessage
 
-ControlHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
+from .channel import TestChannel
+from .storage import MemoryStorage
+
 CommandRecord = tuple[str, tuple[str, ...]]
 
 
-class DummyControl:
-    """Development-only control surface owned by the Dummy provider."""
+class TestControl:
+    """Control surface owned by the test-only provider."""
 
     def __init__(self, context: Mapping[str, object]) -> None:
         channel = context.get("channel")
         storage = context.get("storage")
         command_log = context.get("command_log")
         is_started = context.get("is_started")
-        if not isinstance(channel, DummyChannel):
-            raise TypeError("dummy control requires a DummyChannel")
-        if not isinstance(storage, DummyStorage):
-            raise TypeError("dummy control requires a DummyStorage")
+        if not isinstance(channel, TestChannel):
+            raise TypeError("test control requires a TestChannel")
+        if not isinstance(storage, MemoryStorage):
+            raise TypeError("test control requires a MemoryStorage")
         if not isinstance(command_log, list):
-            raise TypeError("dummy control requires a command log")
+            raise TypeError("test control requires a command log")
         if not callable(is_started):
-            raise TypeError("dummy control requires an is_started callback")
+            raise TypeError("test control requires an is_started callback")
         self._channel = channel
         self._storage = storage
         self._command_log = cast(list[CommandRecord], command_log)
@@ -48,7 +48,7 @@ class DummyControl:
             }
         if operation == "status":
             return self._status()
-        raise ValueError(f"unsupported dummy control operation: {operation}")
+        raise ValueError(f"unsupported test control operation: {operation}")
 
     def _status(self) -> dict[str, object]:
         return {
@@ -103,18 +103,18 @@ class DummyControl:
         channel_session_id = payload.get(
             "channel_session_id", f"channel-{bcn_session_id}"
         )
-        message_id = payload.get("message_id", f"dummy-message-{bcn_session_id}-{seq}")
+        message_id = payload.get("message_id", f"test-message-{bcn_session_id}-{seq}")
         provider_message_id = payload.get(
-            "provider_message_id", f"dummy-provider-{bcn_session_id}-{seq}"
+            "provider_message_id", f"test-provider-{bcn_session_id}-{seq}"
         )
-        canonical_target = payload.get("canonical_target", f"#dummy:{bcn_session_id}")
+        canonical_target = payload.get("canonical_target", f"#test:{bcn_session_id}")
         provider_thread_id = payload.get("provider_thread_id", "")
         received_at_ms = payload.get("received_at_ms", time_ns() // 1_000_000)
         provider_time_ms = payload.get("provider_time_ms", received_at_ms)
-        sender_id = payload.get("sender_id", "dummy-sender")
-        sender_display_name = payload.get("sender_display_name", "Dummy")
+        sender_id = payload.get("sender_id", "test-sender")
+        sender_display_name = payload.get("sender_display_name", "Test")
         message_type = payload.get("message_type", "text")
-        channel_slug = payload.get("channel_slug", "dummy")
+        channel_slug = payload.get("channel_slug", "test")
         for value, field_name in (
             (channel_session_id, "channel_session_id"),
             (message_id, "message_id"),
@@ -182,4 +182,4 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
     }
 
 
-__all__ = ["DummyControl"]
+__all__ = ["TestControl"]
