@@ -339,56 +339,6 @@ async def run_natural_conversation_contract(
             )
             assert first_turn.state is RuntimeTurnState.COMPLETED
             assert second_turn.state is RuntimeTurnState.COMPLETED
-            assert channel_instance.sent_messages
-
-            first_check_index = next(
-                index
-                for index, event in enumerate(audit.events)
-                if (
-                    event.correlation.bcn_session_id == bcn_session_id
-                    and event.metadata.get("operation") == "bcc.message.check"
-                    and event.metadata.get("status") == "completed"
-                )
-            )
-            fresh_rejection_indices = [
-                index
-                for index, event in enumerate(audit.events)
-                if (
-                    event.correlation.bcn_session_id == bcn_session_id
-                    and event.event_name == "bcc.send.fresh_check.failed"
-                )
-            ]
-            sent_indices = [
-                index
-                for index, event in enumerate(audit.events)
-                if (
-                    event.correlation.bcn_session_id == bcn_session_id
-                    and event.metadata.get("operation") == "bcc.message.send"
-                    and event.metadata.get("status") == "sent"
-                )
-            ]
-            assert sent_indices
-            if fresh_rejection_indices:
-                assert any(
-                    sent_index > fresh_rejection_indices[0]
-                    for sent_index in sent_indices
-                )
-            else:
-                subsequent_check_indices = [
-                    index
-                    for index, event in enumerate(audit.events)
-                    if (
-                        index > first_check_index
-                        and event.correlation.bcn_session_id == bcn_session_id
-                        and event.metadata.get("operation") == "bcc.message.check"
-                        and event.metadata.get("status") == "completed"
-                    )
-                ]
-                assert subsequent_check_indices
-                assert any(
-                    sent_index > subsequent_check_indices[0]
-                    for sent_index in sent_indices
-                )
 
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(
@@ -408,10 +358,50 @@ async def run_natural_conversation_contract(
                 frozenset({RuntimeTurnState.COMPLETED}),
             )
             assert third_turn.state is RuntimeTurnState.COMPLETED
-            assert len(channel_instance.sent_messages) >= 2
-            assert all(
-                message.target == first.canonical_target and bool(message.body.strip())
-                for message in channel_instance.sent_messages
+            for inbound in (second_row, third_row):
+                delivery_ids = {
+                    event.correlation.outbound_message_id
+                    for event in audit.events
+                    if (
+                        event.correlation.bcn_session_id == bcn_session_id
+                        and event.event_name == "channel.outbound.sent"
+                        and event.correlation.inbound_seq == inbound.seq
+                        and event.correlation.outbound_message_id is not None
+                    )
+                }
+                assert delivery_ids
+                assert delivery_ids.issubset(
+                    {
+                        event.correlation.outbound_message_id
+                        for event in audit.events
+                        if (
+                            event.correlation.bcn_session_id == bcn_session_id
+                            and event.event_name == "bcc.send.fresh_check.passed"
+                            and event.correlation.inbound_seq == inbound.seq
+                            and event.correlation.outbound_message_id is not None
+                        )
+                    }
+                )
+                assert any(
+                    message.outbound_message_id in delivery_ids
+                    and message.target == inbound.canonical_target
+                    and bool(message.body.strip())
+                    for message in channel_instance.sent_messages
+                )
+            rejected_delivery_ids = {
+                event.correlation.outbound_message_id
+                for event in audit.events
+                if (
+                    event.correlation.bcn_session_id == bcn_session_id
+                    and event.event_name == "bcc.send.fresh_check.failed"
+                    and event.correlation.outbound_message_id is not None
+                )
+            }
+            assert rejected_delivery_ids.isdisjoint(
+                {
+                    message.outbound_message_id
+                    for message in channel_instance.sent_messages
+                }
             )
         finally:
             audit.release_first_check.set()
