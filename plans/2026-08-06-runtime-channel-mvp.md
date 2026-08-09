@@ -958,7 +958,7 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
   计数但不把它伪装成用户消息触发 Runtime。`enter_chat`、`template_card_event` 和
   `feedback_event` 当前均不支持，也不进入后续 task；WeCom event type 不扩散进 core。
 - `send`：接收包含 canonical target、body、content format 和可选中立 reply reference 的
-  `ChannelSendRequest`，根据平台能力映射关联被动回复、主动发送与消息级 reply，
+  `ChannelSendRequest`，根据平台能力映射主动发送与消息级 reply，
   仅返回 provider-neutral delivery receipt；是否真实应用消息级 reply 不进入 core 状态。
 - `request_approval`：接收 core 的中立 `ApprovalRequest`，返回 `ApprovalDecision`；每个
   Channel contrib 自己实现审批策略。
@@ -1267,7 +1267,7 @@ semantics 和真实临时 SQLite tests。
 
 #### Task 2D：outbound、runtime turn 和 event repository
 
-- 实现 `outbound_messages` 的 pending/sent/failed/unknown/rejected/draft 记录，以及
+- 实现 `outbound_messages` 的 pending/sent/partial/failed/unknown/rejected/draft 记录，以及
   `snapshot_seq`、`current_inbound_seq`、provider receipt 和 next action 审计字段。
 - 实现 `runtime_turns` 和 `runtime_events` repository；event 只允许 append，turn 状态只
   允许合法 transition，错误事件即使 session 创建或 runtime 启动失败也能落库。
@@ -1493,7 +1493,7 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
   建立时，当前 node 停止自动重连并进入可诊断的 degraded state，避免两个实例互相踢下线。
 - 对 JSON object 原始 frame 做 adapter-local 宽松字段读取，未知字段不使 reader 崩溃；随后对
   `aibot_msg_callback` 直接映射并严格校验 core 必填值：`body.msgid` 是 provider dedupe key，
-  `headers.req_id` 只用于本次被动回复/回执 correlation；`body.aibotid` 参与 account scope，
+  inbound `headers.req_id` 不进入 core message 或持久化字段；`body.aibotid` 参与 account scope，
   群聊 conversation 使用 `body.chatid`，单聊使用 `body.from.userid`，并保留 `chattype`、
   `create_time`、`msgtype`、`quote` 与媒体的短期 URL/AES key 为受控引用。官方资料未确认
   `create_time` 单位，真实 Bot 验证前只保存 raw value，不猜测秒或毫秒。
@@ -1536,32 +1536,24 @@ credential-boundary tests；使用 WeComChannel+TestRuntime 独立验证真实 B
 
 #### Task 5B：outbound、receipt 与 Channel approval policy
 
-- 普通 outbound 默认保持 Markdown。WeCom 被动回复将当前批次放入支持 Markdown 的
-  `stream.content`，主动发送使用 `msgtype="markdown"` 与 `markdown.content`。
-- WeCom adapter 在 provider 内部将一个逻辑 outbound 按每批最多 20480 UTF-8 bytes
-  分成多个独立完整 Markdown 消息。splitter 不破坏 Unicode code point，优先在空行、
+- 普通 outbound 默认保持 Markdown。WeCom 的每一批都使用 `aibot_send_msg` 主动发送，
+  payload 固定为 `msgtype="markdown"` 与 `markdown.content`；群聊目标为 `chatid`，
+  单聊目标为 `userid`，每批生成独立 req_id。
+- 官方 SDK 当前只给被动 stream content 标注 20480 UTF-8 bytes 上限，主动 Markdown type
+  未标注独立上限；bcn 将 20480 作为保守的 adapter batch cap，而不描述为主动发送的 provider
+  SLA，并以真实 Bot 边界结果继续校准。一个逻辑 outbound 超过该 cap 时分成多个独立完整
+  Markdown 消息。splitter 不破坏 Unicode code point，优先在空行、
   换行和 Markdown block 边界切分；跨批 fenced code block 在上一批闭合并在下一批重开，
   且这些辅助字符计入 byte limit。实现不假设企业微信 Markdown 等于完整
   CommonMark/GFM；支持子集以真实 Bot 渲染结果为准。
-- 实现两条明确的 provider send 路径：原 inbound WebSocket frame 的约三分钟
-  passive-reply window 仍有效时，优先使用 `aibot_respond_msg` 并透传原
-  `headers.req_id`；provider wire 要求该回复使用
-  `msgtype="stream"`，但 bcn 只发送一帧：新 stream id、完整 Markdown 正文和
-  `finish=true`。passive-reply window 已过期、node 重启或被动回复已结束时，改用
-  `aibot_send_msg` 主动发送，群聊目标为 `chatid`，单聊目标为 `userid`，并生成独立 req_id。
-  两者都会向同一会话发出机器人消息；被动路径的 req_id 只证明 wire correlation，
-  不声称企业微信 UI 会渲染为引用回复或 provider thread。
-- passive-reply window 可用时，第一批发送一帧完整被动回复，其余批次
-  按顺序使用 `aibot_send_msg`；window 不可用时全部批次都使用主动 Markdown。同一逻辑 outbound
-  的批次串行发送，每批都等待自己的 provider ack 后才发下一批。普通
-  event inbound frame 不使用 `aibot_respond_msg`。欢迎语和模板卡片
-  event 更新是五秒窗口；窗口外不得继续复用旧 req_id。
+- 不实现 `aibot_respond_msg`、passive-reply window、stream id、`stream.finish` 或
+  被动/主动 fallback。inbound frame 的 req_id 在 adapter 消费 frame 后即丢弃，不能作为
+  outbound correlation 或持久化 payload reference。同一逻辑 outbound 的主动批次串行发送，
+  每批都等待自己的 provider ack 后才发下一批。
 - Runtime 只在 `bcc message send` 时提交一个完整逻辑 outbound；Channel 的超限分批是
-  provider delivery detail，每批都是独立完整消息，不增量刷新已发内容。provider `stream`
-  只是首批被动回复 envelope，不是 bcn 的流式产品语义。
+  provider delivery detail，每批都是独立完整消息，不增量刷新已发内容。
 - WeCom 不支持对任意某条历史消息应用 message-level reply intent。
-  `ChannelSendRequest.reply_to` 非空时仍按正常被动/主动路径发送正文并忽略该提示；
-  inbound frame `req_id` 的 passive-response correlation 也不进入引用回复状态。
+  `ChannelSendRequest.reply_to` 非空时仍按正常主动路径发送正文并忽略该提示。
   支持该能力的 Channel 可以把中立 reply reference 映射为 provider reply，但无需向 core
   报告是否真实应用。
 - provider ack 的 `errcode=0` 只确认企业微信长连接服务接受并处理该命令，不代表终端展示、
@@ -1569,18 +1561,18 @@ credential-boundary tests；使用 WeComChannel+TestRuntime 独立验证真实 B
   失败是 failed；已有前缀批次确认成功后遇到明确失败是 partial；任一批回执超时或
   连接断开使整个逻辑 outbound 为 unknown。partial/unknown 都禁止从头自动重发。
   canonical receipt 关联本地 outbound id、总批数、已确认前缀数，以及每批的
-  provider req_id、stream id（若有）、errcode/errmsg 摘要和时间。
+  provider req_id、errcode/errmsg 摘要和时间。
 - 在 Channel port 上实现当前 approval policy：每个 approval request 返回 approved；保留
   后续替换为人工策略的接口，不把 runtime wire payload 暴露给 Channel。
 - 记录 inbound received、approval requested/decided、outbound pending/sent/partial/failed/unknown
   事件，保证 receipt 与本地 delivery 可关联。
 
-依赖：Task 5A 的连接、identity、inbound mapping 与 dedupe。产出：真实被动/主动
+依赖：Task 5A 的连接、identity、inbound mapping 与 dedupe。产出：真实主动
 provider send、receipt classification 与 approval adapter。
 
 出站媒体上传不属于 Task 5B：官方类型注释与 Node SDK 对 `chunk_index` 起点存在差异，只有
-先用真实 Bot wire capture 消除 0/1 起点歧义后才能另行规划；本期只做入站媒体、被动文本流
-和主动 Markdown。
+先用真实 Bot wire capture 消除 0/1 起点歧义后才能另行规划；本期只做入站媒体和主动
+Markdown。
 
 #### Task 5C：session orchestration 与平台 delivery rules
 
@@ -1638,8 +1630,7 @@ Phase 验收分三层：
    落库，且 health/capability 如实暴露 gap；验证标题、列表、链接、引用、代码块和表格的
    真实 Markdown 渲染，以及 20480-byte 边界和超限自动分批后的顺序送达；
    验证 `send --reply-to` 被忽略时正文仍正常送达，以及
-   单帧完整 passive reply（provider `stream.finish=true` envelope）、主动 fallback、
-   非零 ack、ack
+   全批次主动 Markdown、非零 ack、ack
    timeout/断线 unknown、单连接 `disconnected_event` 和 bounded shutdown 的可解释状态。
 3. WeComChannel+CodexRuntime：用真实 Bot 与真实 Codex App Server 完成 DM 持续自然问答和群聊
    attention 自然问答；已被 provider 投递的后续补充触发真实 fresh-check refusal/recovery，

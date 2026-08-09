@@ -247,6 +247,7 @@ class OutboundDeliveryState(StrEnum):
     PENDING = "pending"
     QUEUED = "queued"
     SENT = "sent"
+    PARTIAL = "partial"
     FAILED = "failed"
     UNKNOWN = "unknown"
     REJECTED = "rejected"
@@ -380,6 +381,7 @@ OUTBOUND_DELIVERY_TRANSITIONS: Mapping[
         {
             OutboundDeliveryState.QUEUED,
             OutboundDeliveryState.SENT,
+            OutboundDeliveryState.PARTIAL,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
         }
@@ -387,14 +389,20 @@ OUTBOUND_DELIVERY_TRANSITIONS: Mapping[
     OutboundDeliveryState.QUEUED: frozenset(
         {
             OutboundDeliveryState.SENT,
+            OutboundDeliveryState.PARTIAL,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
         }
     ),
     OutboundDeliveryState.SENT: frozenset(),
+    OutboundDeliveryState.PARTIAL: frozenset(),
     OutboundDeliveryState.FAILED: frozenset(),
     OutboundDeliveryState.UNKNOWN: frozenset(
-        {OutboundDeliveryState.SENT, OutboundDeliveryState.FAILED}
+        {
+            OutboundDeliveryState.SENT,
+            OutboundDeliveryState.PARTIAL,
+            OutboundDeliveryState.FAILED,
+        }
     ),
     OutboundDeliveryState.REJECTED: frozenset(),
 }

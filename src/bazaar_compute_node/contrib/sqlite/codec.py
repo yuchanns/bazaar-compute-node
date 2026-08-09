@@ -424,6 +424,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
             OutboundDeliveryState.PENDING,
             OutboundDeliveryState.QUEUED,
             OutboundDeliveryState.SENT,
+            OutboundDeliveryState.PARTIAL,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
         }
@@ -473,6 +474,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
         message.state
         in {
             OutboundDeliveryState.SENT,
+            OutboundDeliveryState.PARTIAL,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
             OutboundDeliveryState.REJECTED,
@@ -486,11 +488,11 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
     ):
         raise ValueError("rejected outbound message requires draft_saved_at_ms")
     if (
-        message.state is OutboundDeliveryState.SENT
+        message.state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
         and message.provider_message_id is None
         and message.provider_receipt_ref is None
     ):
-        raise ValueError("sent outbound message requires a provider receipt")
+        raise ValueError("delivered outbound message requires a provider receipt")
 
 
 def _validate_outbound_insert(message: OutboundMessage) -> None:

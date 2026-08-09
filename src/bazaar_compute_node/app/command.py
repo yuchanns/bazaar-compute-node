@@ -65,6 +65,7 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "current_inbound_seq": message.current_inbound_seq,
         "provider_message_id": message.provider_message_id,
         "provider_receipt_ref": message.provider_receipt_ref,
+        "delivery_receipt": message.metadata.get("delivery_receipt"),
         "provider_attempted_at_ms": message.provider_attempted_at_ms,
         "completed_at_ms": message.completed_at_ms,
         "draft_saved_at_ms": message.draft_saved_at_ms,

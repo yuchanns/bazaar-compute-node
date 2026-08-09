@@ -5,6 +5,7 @@ import base64
 import json
 import random
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from email.message import Message
 from time import time_ns
 from urllib.parse import unquote
@@ -24,9 +25,19 @@ from ...core.models import (
     OutboundMessage,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from .markdown import split_markdown
 
 _STOP = object()
 _MAX_MEDIA_BYTES = 25 * 1024 * 1024
+_MAX_MARKDOWN_BYTES = 20_480
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchResult:
+    status: ProviderCallStatus
+    receipt: Mapping[str, object]
+    error_kind: str | None = None
+    error_message: str | None = None
 
 
 class WeComChannel(IChannel):
@@ -49,6 +60,8 @@ class WeComChannel(IChannel):
         self._startup_error: Exception | None = None
         self._runner: asyncio.Task[None] | None = None
         self._connection: aiohttp.ClientWebSocketResponse | None = None
+        self._send_lock = asyncio.Lock()
+        self._pending_acks: dict[str, asyncio.Future[Mapping[str, object]]] = {}
         self._seen_message_ids: set[str] = set()
         self._degraded = False
         self._heartbeat_ack = ""
@@ -101,6 +114,12 @@ class WeComChannel(IChannel):
 
     async def stop(self, *, timeout: float) -> None:
         self._stopping.set()
+        try:
+            await asyncio.wait_for(self._send_lock.acquire(), timeout=timeout)
+        except TimeoutError:
+            pass
+        else:
+            self._send_lock.release()
         connection = self._connection
         if connection is not None:
             await connection.close()
@@ -127,10 +146,236 @@ class WeComChannel(IChannel):
     async def send(
         self, message: OutboundMessage, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        target_prefix, separator, target_id = message.target.partition(":")
+        if separator != ":" or target_prefix not in {"dm", "group"} or not target_id:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="invalid_target",
+                error_message="WeCom target must be a canonical DM or group target",
+            )
+        try:
+            batches = split_markdown(message.body, limit=_MAX_MARKDOWN_BYTES)
+        except ValueError as error:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="invalid_markdown",
+                error_message=str(error),
+            )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        receipts: list[dict[str, object]] = []
+        confirmed = 0
+        async with self._send_lock:
+            for batch in batches:
+                if loop.time() >= deadline:
+                    return self._clear_failure(
+                        total=len(batches),
+                        receipts=receipts,
+                        confirmed=confirmed,
+                        error_kind="delivery_timeout",
+                        error_message=(
+                            "WeCom delivery timed out between batches"
+                            if confirmed
+                            else "WeCom delivery timed out before sending"
+                        ),
+                    )
+                connection = self._connection
+                if connection is None or connection.closed or not self._ready.is_set():
+                    return self._clear_failure(
+                        total=len(batches),
+                        receipts=receipts,
+                        confirmed=confirmed,
+                        error_kind="connection_unavailable",
+                        error_message=(
+                            "WeCom connection became unavailable between batches"
+                            if confirmed
+                            else "WeCom connection is unavailable"
+                        ),
+                    )
+                result = await self._send_batch(
+                    connection,
+                    target_id=target_id,
+                    content=batch,
+                    deadline=deadline,
+                )
+                receipts.append(dict(result.receipt))
+                if result.status is ProviderCallStatus.CONFIRMED:
+                    confirmed += 1
+                    continue
+                if result.status is ProviderCallStatus.FAILED:
+                    return self._clear_failure(
+                        total=len(batches),
+                        receipts=receipts,
+                        confirmed=confirmed,
+                        error_kind=result.error_kind or "provider_rejected_batch",
+                        error_message=result.error_message
+                        or "WeCom rejected the outbound message",
+                    )
+                return ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind=result.error_kind or "ack_unknown",
+                    error_message=result.error_message
+                    or "WeCom acknowledgement outcome is unknown",
+                    receipt=self._delivery_receipt(len(batches), confirmed, receipts),
+                )
+
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=ChannelDeliveryReceipt(
+                provider_receipt_ref=str(receipts[-1]["provider_request_id"])
+            ),
+            receipt=self._delivery_receipt(len(batches), confirmed, receipts),
+        )
+
+    async def _send_batch(
+        self,
+        connection: aiohttp.ClientWebSocketResponse,
+        *,
+        target_id: str,
+        content: str,
+        deadline: float,
+    ) -> _BatchResult:
+        request_id = f"aibot_send_msg-{uuid4()}"
+        attempted_at_ms = time_ns() // 1_000_000
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Mapping[str, object]] = loop.create_future()
+        self._pending_acks[request_id] = future
+        try:
+            await connection.send_str(
+                json.dumps(
+                    {
+                        "cmd": "aibot_send_msg",
+                        "headers": {"req_id": request_id},
+                        "body": {
+                            "chatid": target_id,
+                            "msgtype": "markdown",
+                            "markdown": {"content": content},
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        except asyncio.CancelledError:
+            self._pending_acks.pop(request_id, None)
+            future.cancel()
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._pending_acks.pop(request_id, None)
+            future.cancel()
+            return _BatchResult(
+                status=ProviderCallStatus.UNKNOWN,
+                receipt={
+                    "provider_request_id": request_id,
+                    "state": "unknown",
+                    "attempted_at_ms": attempted_at_ms,
+                    "error_type": type(error).__name__,
+                },
+                error_kind="send_unknown",
+                error_message="WeCom send outcome is unknown",
+            )
+        try:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            frame = await asyncio.wait_for(future, timeout=remaining)
+        except asyncio.CancelledError:
+            raise
+        except (TimeoutError, ConnectionError) as error:
+            return _BatchResult(
+                status=ProviderCallStatus.UNKNOWN,
+                receipt={
+                    "provider_request_id": request_id,
+                    "state": "unknown",
+                    "attempted_at_ms": attempted_at_ms,
+                    "error_type": type(error).__name__,
+                },
+                error_kind="ack_unknown",
+                error_message="WeCom acknowledgement outcome is unknown",
+            )
+        finally:
+            self._pending_acks.pop(request_id, None)
+
+        acknowledged_at_ms = time_ns() // 1_000_000
+        error_code = frame.get("errcode")
+        error_message = frame.get("errmsg")
+        if not isinstance(error_code, int) or isinstance(error_code, bool):
+            return _BatchResult(
+                status=ProviderCallStatus.UNKNOWN,
+                receipt={
+                    "provider_request_id": request_id,
+                    "state": "unknown",
+                    "attempted_at_ms": attempted_at_ms,
+                    "acknowledged_at_ms": acknowledged_at_ms,
+                    "error_type": "InvalidAcknowledgement",
+                },
+                error_kind="invalid_ack",
+                error_message="WeCom acknowledgement is malformed",
+            )
+        if error_code != 0:
+            return _BatchResult(
+                status=ProviderCallStatus.FAILED,
+                receipt={
+                    "provider_request_id": request_id,
+                    "state": "failed",
+                    "attempted_at_ms": attempted_at_ms,
+                    "acknowledged_at_ms": acknowledged_at_ms,
+                    "error_code": error_code,
+                    "error_message": (
+                        error_message[:256] if isinstance(error_message, str) else None
+                    ),
+                },
+                error_kind="provider_rejected_batch",
+                error_message="WeCom rejected an outbound batch",
+            )
+        return _BatchResult(
+            status=ProviderCallStatus.CONFIRMED,
+            receipt={
+                "provider_request_id": request_id,
+                "state": "confirmed",
+                "attempted_at_ms": attempted_at_ms,
+                "acknowledged_at_ms": acknowledged_at_ms,
+                "error_code": 0,
+            },
+        )
+
+    @staticmethod
+    def _delivery_receipt(
+        total: int, confirmed: int, receipts: list[dict[str, object]]
+    ) -> Mapping[str, object]:
+        return {
+            "total_batches": total,
+            "confirmed_batches": confirmed,
+            "batches": tuple(receipts),
+        }
+
+    def _clear_failure(
+        self,
+        *,
+        total: int,
+        receipts: list[dict[str, object]],
+        confirmed: int,
+        error_kind: str,
+        error_message: str,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        receipt = self._delivery_receipt(total, confirmed, receipts)
+        if confirmed:
+            return ProviderCallResult(
+                status=ProviderCallStatus.PARTIAL,
+                value=ChannelDeliveryReceipt(
+                    provider_receipt_ref=str(
+                        receipts[confirmed - 1]["provider_request_id"]
+                    )
+                ),
+                error_kind=error_kind,
+                error_message=error_message,
+                receipt=receipt,
+            )
         return ProviderCallResult(
             status=ProviderCallStatus.FAILED,
-            error_kind="outbound_not_implemented",
-            error_message="WeCom outbound delivery is implemented in Task 5B",
+            error_kind=error_kind,
+            error_message=error_message,
+            receipt=receipt,
         )
 
     async def request_approval(
@@ -236,6 +481,10 @@ class WeComChannel(IChannel):
                     if request_id.startswith("ping-") and frame.get("errcode") == 0:
                         self._heartbeat_ack = request_id
                         continue
+                    pending = self._pending_acks.get(request_id)
+                    if pending is not None and not pending.done():
+                        pending.set_result(frame)
+                        continue
                     if frame.get("cmd") in {
                         "aibot_msg_callback",
                         "aibot_event_callback",
@@ -246,6 +495,12 @@ class WeComChannel(IChannel):
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+                for pending in self._pending_acks.values():
+                    if not pending.done():
+                        pending.set_exception(
+                            ConnectionError("WeCom connection closed before ack")
+                        )
+                self._pending_acks.clear()
                 self._connection = None
                 self._ready.clear()
                 if not self._stopping.is_set() and not self._degraded:
@@ -324,7 +579,6 @@ class WeComChannel(IChannel):
             metadata["provider_create_time"] = create_time
         if isinstance(body.get("quote"), dict):
             metadata["has_quote"] = True
-        request_id = self._request_id(frame)
         await self._inbound.put(
             InboundMessage(
                 seq=0,
@@ -342,7 +596,6 @@ class WeComChannel(IChannel):
                 target_kind=target_kind,
                 mentions_agent=mentions_agent,
                 attachments=tuple(attachments),
-                provider_payload_ref=request_id or None,
                 metadata=metadata,
             )
         )

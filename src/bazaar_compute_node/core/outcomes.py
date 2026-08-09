@@ -8,6 +8,7 @@ from enum import StrEnum
 class ProviderCallStatus(StrEnum):
     CONFIRMED = "confirmed"
     QUEUED = "queued"
+    PARTIAL = "partial"
     FAILED = "failed"
     UNKNOWN = "unknown"
 
@@ -35,6 +36,13 @@ class ProviderCallResult[ResultT]:
                 raise ValueError(
                     f"a {self.status.value} provider call cannot contain an error"
                 )
+            return
+
+        if self.status is ProviderCallStatus.PARTIAL:
+            if self.value is None:
+                raise ValueError("a partial provider call requires a value")
+            if not self.error_kind:
+                raise ValueError("a partial provider call requires an error_kind")
             return
 
         if self.value is not None:

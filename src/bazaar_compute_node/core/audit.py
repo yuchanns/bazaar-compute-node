@@ -19,6 +19,7 @@ class ErrorKind(StrEnum):
     FRESH_CHECK_REQUIRED = "fresh_check_required"
     FRESH_CHECK_FAILED = "fresh_check_failed"
     PROVIDER_FAILED = "provider_failed"
+    PROVIDER_PARTIAL = "provider_partial"
     PROVIDER_UNKNOWN = "provider_unknown"
     PROTOCOL = "protocol"
     STORAGE = "storage"

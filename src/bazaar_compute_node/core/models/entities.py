@@ -435,6 +435,7 @@ class OutboundMessage:
                 OutboundDeliveryState.PENDING,
                 OutboundDeliveryState.QUEUED,
                 OutboundDeliveryState.SENT,
+                OutboundDeliveryState.PARTIAL,
             }
             and self.fresh_check_state is not FreshCheckState.PASSED
         ):
@@ -444,6 +445,7 @@ class OutboundMessage:
             if state
             in {
                 OutboundDeliveryState.SENT,
+                OutboundDeliveryState.PARTIAL,
                 OutboundDeliveryState.FAILED,
                 OutboundDeliveryState.UNKNOWN,
                 OutboundDeliveryState.REJECTED,

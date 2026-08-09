@@ -40,6 +40,13 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
     )
     assert queued.status is ProviderCallStatus.QUEUED
 
+    partial = ProviderCallResult(
+        status=ProviderCallStatus.PARTIAL,
+        value="receipt-1",
+        error_kind="provider_rejected_batch",
+    )
+    assert partial.value == "receipt-1"
+
     unknown = ProviderCallResult(
         status=ProviderCallStatus.UNKNOWN,
         error_kind="transport_eof",
@@ -47,6 +54,11 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
     assert unknown.status is ProviderCallStatus.UNKNOWN
     with pytest.raises(ValueError, match="error_kind"):
         ProviderCallResult(status=ProviderCallStatus.FAILED)
+    with pytest.raises(ValueError, match="requires a value"):
+        ProviderCallResult(
+            status=ProviderCallStatus.PARTIAL,
+            error_kind="provider_rejected_batch",
+        )
 
 
 @pytest.mark.asyncio

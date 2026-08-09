@@ -718,6 +718,53 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
 
         channel.queue_send_result(
             ProviderCallResult(
+                status=ProviderCallStatus.PARTIAL,
+                value=ChannelDeliveryReceipt(provider_receipt_ref="batch-1"),
+                error_kind="provider_rejected_batch",
+                error_message="second batch rejected",
+                receipt={
+                    "total_batches": 2,
+                    "confirmed_batches": 1,
+                    "batches": (
+                        {
+                            "provider_request_id": "batch-1",
+                            "state": "confirmed",
+                        },
+                        {
+                            "provider_request_id": "batch-2",
+                            "state": "failed",
+                        },
+                    ),
+                },
+            )
+        )
+        partial = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-partial",
+            target="#test:bcn-1",
+            body="partial reply",
+            created_at_ms=6,
+        )
+        assert partial.state is OutboundDeliveryState.PARTIAL
+        assert partial.provider_receipt_ref == "batch-1"
+        assert partial.next_action == "do not retry the complete message automatically"
+        assert partial.metadata["delivery_receipt"] == {
+            "total_batches": 2,
+            "confirmed_batches": 1,
+            "batches": (
+                {
+                    "provider_request_id": "batch-1",
+                    "state": "confirmed",
+                },
+                {
+                    "provider_request_id": "batch-2",
+                    "state": "failed",
+                },
+            ),
+        }
+
+        channel.queue_send_result(
+            ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_rejected",
                 error_message="provider rejected delivery",
@@ -728,10 +775,10 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             command_id="command-failed",
             target="#test:bcn-1",
             body="failed reply",
-            created_at_ms=6,
+            created_at_ms=7,
         )
         assert failed.state is OutboundDeliveryState.FAILED
-        assert len(channel.send_attempts) == 3
+        assert len(channel.send_attempts) == 4
         assert not channel.sent_messages
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events

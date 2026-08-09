@@ -407,6 +407,22 @@ class SessionCommandService(ICommandService):
                 )
                 terminal_kind = None
                 terminal_state = RuntimeEventState.STARTED
+            elif provider_result.status is ProviderCallStatus.PARTIAL:
+                receipt = provider_result.value
+                if receipt is None:
+                    raise ValueError("partial channel delivery has no receipt")
+                outbound = outbound.transition_to(
+                    OutboundDeliveryState.PARTIAL,
+                    at_ms=self._clock(),
+                    provider_message_id=receipt.provider_message_id,
+                    provider_receipt_ref=receipt.provider_receipt_ref,
+                    error_kind=provider_result.error_kind
+                    or ErrorKind.PROVIDER_PARTIAL.value,
+                    error_message=provider_result.error_message,
+                    next_action="do not retry the complete message automatically",
+                )
+                terminal_kind = ErrorKind.PROVIDER_PARTIAL
+                terminal_state = RuntimeEventState.FAILED
             elif provider_result.status is ProviderCallStatus.FAILED:
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.FAILED,
@@ -429,6 +445,15 @@ class SessionCommandService(ICommandService):
                 terminal_kind = ErrorKind.PROVIDER_UNKNOWN
                 terminal_state = RuntimeEventState.UNKNOWN
 
+            if provider_result is not None and provider_result.receipt:
+                outbound = replace(
+                    outbound,
+                    metadata={
+                        **outbound.metadata,
+                        "delivery_receipt": dict(provider_result.receipt),
+                    },
+                )
+
             async with self._storage.transaction() as transaction:
                 await transaction.save_outbound_message(outbound)
             await self._audit.append(
@@ -437,6 +462,7 @@ class SessionCommandService(ICommandService):
                 correlation=audit_context,
                 error_kind=terminal_kind,
                 error_message=outbound.error_message,
+                metadata=provider_result.receipt if provider_result is not None else {},
             )
             await self._audit.append_tool(
                 operation="bcc.message.send",

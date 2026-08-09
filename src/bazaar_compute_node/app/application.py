@@ -71,7 +71,7 @@ class NodeApplication:
         self.timeout_budget = timeout_budget or TimeoutBudget(
             startup_seconds=5,
             provider_call_seconds=5,
-            command_seconds=5,
+            command_seconds=10,
             shutdown_seconds=5,
         )
         self.storage: IStorage = factories.storage()
