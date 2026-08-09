@@ -44,6 +44,11 @@ def test_provider_entry_points_keep_test_adapters_out_of_production() -> None:
             "bazaar_compute_node.contrib.logging.plugin:create_audit",
         ),
         (
+            "bazaar_compute_node.channels",
+            "wecom",
+            "bazaar_compute_node.contrib.wecom.plugin:create_channel",
+        ),
+        (
             "bazaar_compute_node.runtimes",
             "codex",
             "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime",

@@ -5,7 +5,9 @@ description = "Runtime-agnostic computer node daemon for agents and channels."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "aiohttp>=3.12.0",
     "aiosqlite>=0.20.0",
+    "cryptography>=45.0.0",
 ]
 
 [project.scripts]
@@ -13,6 +15,9 @@ bcn = "bazaar_compute_node.cli:main"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
 codex = "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime"
+
+[project.entry-points."bazaar_compute_node.channels"]
+wecom = "bazaar_compute_node.contrib.wecom.plugin:create_channel"
 
 [project.entry-points."bazaar_compute_node.storages"]
 sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"

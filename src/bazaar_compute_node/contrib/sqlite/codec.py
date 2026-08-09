@@ -11,8 +11,10 @@ from ...core.models import (
     BcnSession,
     ChannelSession,
     ChannelSessionState,
+    ChannelTargetKind,
     ConsumerCursor,
     FreshCheckState,
+    InboundAttachment,
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
@@ -47,6 +49,9 @@ def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
         ),
         created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
         updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
+        target_kind=ChannelTargetKind(
+            _required_text(row["target_kind"], "channel_session.target_kind")
+        ),
         following=bool(following),
         last_inbound_at_ms=_optional_non_negative_int(
             row["last_inbound_at_ms"], "last_inbound_at_ms"
@@ -129,7 +134,10 @@ def _runtime_turn_from_row(row: aiosqlite.Row) -> RuntimeTurn:
     )
 
 
-def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
+def _inbound_message_from_row(
+    row: aiosqlite.Row,
+    attachments: tuple[InboundAttachment, ...] = (),
+) -> InboundMessage:
     return InboundMessage(
         seq=_required_non_negative_int(row["seq"], "seq"),
         message_id=_required_text(row["message_id"], "message_id"),
@@ -151,6 +159,14 @@ def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
         message_type=_required_text(row["message_type"], "message_type"),
         canonical_target=_required_text(row["canonical_target"], "canonical_target"),
         body=_string_value(row["body"], "body", allow_empty=True),
+        target_kind=ChannelTargetKind(
+            _required_text(row["target_kind"], "inbound_message.target_kind")
+        ),
+        mentions_agent=bool(_required_boolean(row["mentions_agent"], "mentions_agent")),
+        notifies_runtime=bool(
+            _required_boolean(row["notifies_runtime"], "notifies_runtime")
+        ),
+        attachments=attachments,
         provider_time_ms=_optional_non_negative_int(
             row["provider_time_ms"], "provider_time_ms"
         ),
@@ -166,6 +182,21 @@ def _inbound_message_from_row(row: aiosqlite.Row) -> InboundMessage:
             row["provider_payload_ref"], "provider_payload_ref", allow_empty=False
         ),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
+def _inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
+    return InboundAttachment(
+        attachment_id=_required_text(row["attachment_id"], "attachment_id"),
+        name=_required_text(row["name"], "attachment.name"),
+        kind=_required_text(row["kind"], "attachment.kind"),
+        state=_required_text(row["state"], "attachment.state"),
+        media_type=_optional_text(row["media_type"], "attachment.media_type"),
+        relative_path=_optional_text(row["relative_path"], "attachment.relative_path"),
+        size_bytes=_optional_non_negative_int(
+            row["size_bytes"], "attachment.size_bytes"
+        ),
+        error=_optional_text(row["error"], "attachment.error"),
     )
 
 
@@ -634,6 +665,10 @@ def _same_inbound_payload(
         existing.sender_display_name,
         existing.message_type,
         existing.canonical_target,
+        existing.target_kind,
+        existing.mentions_agent,
+        existing.notifies_runtime,
+        existing.attachments,
         existing.body,
         existing.provider_thread_id,
         existing.reply_to_provider_message_id,
@@ -649,6 +684,10 @@ def _same_inbound_payload(
         incoming.sender_display_name,
         incoming.message_type,
         incoming.canonical_target,
+        incoming.target_kind,
+        incoming.mentions_agent,
+        incoming.notifies_runtime,
+        incoming.attachments,
         incoming.body,
         incoming.provider_thread_id,
         incoming.reply_to_provider_message_id,
@@ -739,6 +778,7 @@ def _validate_channel_session_update(
         existing.channel != incoming.channel
         or existing.provider_conversation_key != incoming.provider_conversation_key
         or existing.provider_thread_key != incoming.provider_thread_key
+        or existing.target_kind is not incoming.target_kind
         or existing.created_at_ms != incoming.created_at_ms
     ):
         raise ValueError("channel session identity cannot change")
@@ -867,6 +907,12 @@ def _required_positive_int(value: object, field_name: str) -> int:
     if result == 0:
         raise ValueError(f"{field_name} must be a positive integer")
     return result
+
+
+def _required_boolean(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+        raise ValueError(f"{field_name} must be a boolean integer")
+    return value
 
 
 def _optional_non_negative_int(value: object, field_name: str) -> int | None:

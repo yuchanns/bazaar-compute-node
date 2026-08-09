@@ -195,6 +195,34 @@ class _MemoryStorageTransaction(IStorageTransaction):
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
 
+    async def inbound_message_exists(
+        self, channel: str, provider_message_id: str
+    ) -> bool:
+        return await self.find_inbound_message(channel, provider_message_id) is not None
+
+    async def find_inbound_message(
+        self, channel: str, provider_message_id: str
+    ) -> InboundMessage | None:
+        matches = [
+            message
+            for messages in self._storage.inbound_messages.values()
+            for message in messages
+            if message.channel == channel
+            and message.provider_message_id == provider_message_id
+        ]
+        if len(matches) > 1:
+            raise ValueError("multiple rows violate provider inbound identity")
+        return matches[0] if matches else None
+
+    async def list_ready_attachment_paths(self) -> tuple[str, ...]:
+        return tuple(
+            attachment.relative_path
+            for messages in self._storage.inbound_messages.values()
+            for message in messages
+            for attachment in message.attachments
+            if attachment.state == "ready" and attachment.relative_path is not None
+        )
+
     async def list_inbound_messages(
         self,
         session_id: str,
@@ -202,6 +230,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
         after_seq: int | None = None,
         target: str | None = None,
         around_message_id: str | None = None,
+        notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         messages = list(self._storage.inbound_messages.get(session_id, []))
@@ -211,6 +240,8 @@ class _MemoryStorageTransaction(IStorageTransaction):
             messages = [
                 message for message in messages if message.canonical_target == target
             ]
+        if notifying_only:
+            messages = [message for message in messages if message.notifies_runtime]
         if around_message_id is not None:
             try:
                 around_index = next(

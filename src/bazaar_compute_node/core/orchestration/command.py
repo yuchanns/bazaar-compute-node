@@ -61,6 +61,7 @@ class SessionCommandService(ICommandService):
                 messages = await transaction.list_inbound_messages(
                     session_id,
                     after_seq=cursor.delivered_through_seq,
+                    notifying_only=True,
                 )
                 now_ms = self._clock()
                 cursor = replace(

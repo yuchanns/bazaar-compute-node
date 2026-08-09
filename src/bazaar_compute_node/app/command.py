@@ -28,6 +28,22 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         "sender_display_name": message.sender_display_name,
         "message_type": message.message_type,
         "canonical_target": message.canonical_target,
+        "target_kind": message.target_kind.value,
+        "mentions_agent": message.mentions_agent,
+        "notifies_runtime": message.notifies_runtime,
+        "attachments": [
+            {
+                "attachment_id": attachment.attachment_id,
+                "name": attachment.name,
+                "kind": attachment.kind,
+                "state": attachment.state,
+                "media_type": attachment.media_type,
+                "relative_path": attachment.relative_path,
+                "size_bytes": attachment.size_bytes,
+                "error": attachment.error,
+            }
+            for attachment in message.attachments
+        ],
         "body": message.body,
         "provider_thread_id": message.provider_thread_id,
         "reply_to_provider_message_id": message.reply_to_provider_message_id,

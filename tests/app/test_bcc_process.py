@@ -34,7 +34,7 @@ def make_factories() -> AdapterFactories:
         return SqliteDatabase()
 
     return AdapterFactories(
-        channel=TestChannel,
+        channel=lambda _context: TestChannel(),
         runtime=create_runtime,
         storage=create_storage,
         audit=RecordingAudit,
@@ -122,7 +122,12 @@ async def run_bcc(
 @pytest.mark.asyncio
 async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("BCN_WECOM_BOT_SECRET", "must-not-leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setenv("CODEX_HOME", "must-not-reach-test-runtime")
+    monkeypatch.setenv("TEST_RUNTIME_HOME", "test-runtime-home")
     factories = make_factories()
     node = NodeApplication(
         factories=factories,
@@ -137,6 +142,17 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         await channel.inject(make_message(2, body="second inbound"))
         messages = await wait_for_messages(node, 2)
         runtime_session = await wait_for_runtime_session(node)
+        runtime_environment = node._runtime_environment(runtime_session)
+        assert "BCN_WECOM_BOT_SECRET" not in runtime_environment
+        assert "OPENAI_API_KEY" not in runtime_environment
+        assert "CODEX_HOME" not in runtime_environment
+        assert runtime_environment["TEST_RUNTIME_HOME"] == "test-runtime-home"
+        assert {
+            "BCN_ENDPOINT",
+            "BCN_SESSION_ID",
+            "BCN_RUNTIME_SESSION_ID",
+            "BCN_COMMAND_CAPABILITY",
+        } <= runtime_environment.keys()
 
         read_code, read_stdout, read_stderr = await run_bcc(
             node,

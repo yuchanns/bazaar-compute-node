@@ -20,6 +20,9 @@ class NodeConfiguration:
     endpoint: str | None = None
     model: str | None = None
     effort: str | None = None
+    runtime_env_include: tuple[str, ...] = ()
+    wecom_bot_id: str | None = None
+    wecom_websocket_url: str | None = None
 
 
 class ConfigurationError(ValueError):
@@ -46,6 +49,15 @@ def load_node_configuration() -> NodeConfiguration:
     runtime = payload.get("runtime", {})
     if not isinstance(runtime, dict):
         raise ConfigurationError("[runtime] must be a TOML table")
+    runtime_env = runtime.get("env", {})
+    if not isinstance(runtime_env, dict):
+        raise ConfigurationError("[runtime.env] must be a TOML table")
+    channel = payload.get("channel", {})
+    if not isinstance(channel, dict):
+        raise ConfigurationError("[channel] must be a TOML table")
+    wecom = channel.get("wecom", {})
+    if not isinstance(wecom, dict):
+        raise ConfigurationError("[channel.wecom] must be a TOML table")
     return NodeConfiguration(
         channel=_optional_text(node.get("channel"), "node.channel"),
         runtime=_optional_text(node.get("runtime"), "node.runtime"),
@@ -54,6 +66,13 @@ def load_node_configuration() -> NodeConfiguration:
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         model=_optional_text(runtime.get("model"), "runtime.model"),
         effort=_optional_text(runtime.get("effort"), "runtime.effort"),
+        runtime_env_include=_text_list(
+            runtime_env.get("include", []), "runtime.env.include"
+        ),
+        wecom_bot_id=_optional_text(wecom.get("bot_id"), "channel.wecom.bot_id"),
+        wecom_websocket_url=_optional_text(
+            wecom.get("websocket_url"), "channel.wecom.websocket_url"
+        ),
     )
 
 
@@ -63,6 +82,16 @@ def _optional_text(value: object, field_name: str) -> str | None:
     if not isinstance(value, str) or not value:
         raise ConfigurationError(f"{field_name} must be non-empty text")
     return value
+
+
+def _text_list(value: object, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise ConfigurationError(f"{field_name} must be an array of non-empty text")
+    if len(set(value)) != len(value):
+        raise ConfigurationError(f"{field_name} cannot contain duplicates")
+    return tuple(value)
 
 
 __all__ = [

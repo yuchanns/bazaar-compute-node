@@ -18,6 +18,7 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     ChannelSessionState,
     ConsumerCursor,
+    InboundAttachment,
     InboundMessage,
     RuntimeProcessState,
     RuntimeSession,
@@ -242,7 +243,20 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
     database: SqliteDatabase,
 ) -> None:
     await save_session_graph(database)
-    inbound = make_inbound_message()
+    inbound = replace(
+        make_inbound_message(),
+        attachments=(
+            InboundAttachment(
+                attachment_id="attachment-1",
+                name="report.txt",
+                kind="file",
+                state="ready",
+                media_type="text/plain",
+                relative_path="attachments/attachment-1/content.txt",
+                size_bytes=7,
+            ),
+        ),
+    )
 
     async with database.transaction() as transaction:
         first = await transaction.append_inbound_message(inbound)

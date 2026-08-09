@@ -50,6 +50,9 @@ class TestRuntime(IRuntime):
     def name(self) -> str:
         return "test"
 
+    def environment_variable_names(self) -> tuple[str, ...]:
+        return ("TEST_RUNTIME_HOME",)
+
     def __init__(
         self,
         command_service: ICommandService | None = None,

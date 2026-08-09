@@ -16,7 +16,7 @@ class RuntimeCommandContext:
     """Generic command capability made available to a runtime adapter."""
 
     run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
-    environment_for_session: Callable[[RuntimeSession], Mapping[str, str]] | None = None
+    environment_for_session: Callable[[RuntimeSession], Mapping[str, str]]
     node_id: str = "bcn-node"
     runtime_options: Mapping[str, str] = field(default_factory=dict)
     client_info: ClientInfo = CLIENT_INFO
@@ -49,6 +49,10 @@ class IRuntime(IAsyncLifecycle, Protocol):
     @property
     def name(self) -> str:
         """Return the stable entry-point identity of this adapter."""
+        ...
+
+    def environment_variable_names(self) -> Sequence[str]:
+        """Return optional daemon environment names required by this runtime."""
         ...
 
     async def start_session(

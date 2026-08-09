@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from bazaar_compute_node.app.command import ControlHandler
-from bazaar_compute_node.core.channel import IChannel
+from bazaar_compute_node.core.channel import ChannelContext, IChannel
 from bazaar_compute_node.core.observability import IAudit
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 from bazaar_compute_node.core.storage import IStorage
@@ -15,7 +15,7 @@ from .runtime import TestRuntime
 from .storage import MemoryStorage
 
 
-def create_channel() -> IChannel:
+def create_channel(_context: ChannelContext) -> IChannel:
     return TestChannel()
 
 

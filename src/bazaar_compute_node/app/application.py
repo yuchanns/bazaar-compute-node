@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import re
 import secrets
 import signal
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from ..core.channel import IChannel
+from ..core.channel import ChannelContext, IChannel
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
@@ -16,6 +17,7 @@ from ..core.orchestration import SessionOrchestrator
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage, NodeIdentity
+from .attachments import AttachmentMaterializer
 from .command import (
     CommandDispatcher,
     CommandDispatchError,
@@ -25,6 +27,28 @@ from .transport import LocalCommandServer
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 CommandRecord = tuple[str, tuple[str, ...]]
+
+_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PLATFORM_ENVIRONMENT = {
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SystemRoot",
+    "ComSpec",
+    "PATHEXT",
+    "USERPROFILE",
+}
+_FORBIDDEN_ENVIRONMENT = {
+    "BCN_WECOM_BOT_SECRET",
+    "DATABASE_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "OPENAI_API_KEY",
+}
 
 
 class NodeApplication:
@@ -38,6 +62,8 @@ class NodeApplication:
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
         runtime_options: Mapping[str, str] | None = None,
+        channel_options: Mapping[str, object] | None = None,
+        runtime_environment_include: Sequence[str] = (),
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
         self.data_dir = resolve_data_dir()
@@ -48,7 +74,6 @@ class NodeApplication:
             command_seconds=5,
             shutdown_seconds=5,
         )
-        self.channel: IChannel = factories.channel()
         self.storage: IStorage = factories.storage()
         self.audit: IAudit = factories.audit()
         self.command_log: list[CommandRecord] = []
@@ -58,6 +83,18 @@ class NodeApplication:
         self._runtime_session_ids: dict[str, str] = {}
         self._started = False
         self._stopped = asyncio.Event()
+        self._runtime_environment_include = tuple(runtime_environment_include)
+        self._attachment_materializer = AttachmentMaterializer(
+            self._workspace_path, self._referenced_attachment_paths
+        )
+        self.channel: IChannel = factories.channel(
+            ChannelContext(
+                attachments=self._attachment_materializer,
+                inbound_exists=self._inbound_exists,
+                options=dict(channel_options or {}),
+                workspace=self._workspace_path,
+            )
+        )
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
             environment_for_session=self._runtime_environment,
@@ -173,6 +210,23 @@ class NodeApplication:
         )
         if os.name != "nt":
             await asyncio.to_thread(workspace_dir.chmod, 0o700)
+        await self._attachment_materializer.reconcile()
+
+    def _workspace_path(self) -> Path:
+        identity = self._identity
+        if identity is None:
+            raise RuntimeError("node identity has not been initialized")
+        return resolve_workspace_dir(identity.workspace_id)
+
+    async def _inbound_exists(self, channel: str, provider_message_id: str) -> bool:
+        async with self.storage.transaction() as transaction:
+            return await transaction.inbound_message_exists(
+                channel, provider_message_id
+            )
+
+    async def _referenced_attachment_paths(self) -> set[str]:
+        async with self.storage.transaction() as transaction:
+            return set(await transaction.list_ready_attachment_paths())
 
     def _adapter_context(self) -> Mapping[str, object]:
         return {
@@ -193,6 +247,7 @@ class NodeApplication:
                 "started": self._started,
                 "accepting": self.command_dispatcher.accepting,
                 "channel": self.channel.name,
+                "channel_health": dict(self.channel.health),
                 "runtime": self.runtime.name,
                 "storage": self.storage.name,
                 "audit": self.audit.name,
@@ -265,18 +320,35 @@ class NodeApplication:
             secrets.token_urlsafe(32),
         )
         wrapper_directory = str(wrapper_path.parent)
-        existing_path = os.environ.get("PATH") or os.defpath
+        allowed = set(_PLATFORM_ENVIRONMENT)
+        for name in self.runtime.environment_variable_names():
+            if not _ENVIRONMENT_NAME.fullmatch(name):
+                raise ValueError(f"runtime environment name is invalid: {name}")
+            if name.startswith("BCN_") or name in _FORBIDDEN_ENVIRONMENT:
+                raise ValueError(f"runtime environment name is reserved: {name}")
+            allowed.add(name)
+        for name in self._runtime_environment_include:
+            if not _ENVIRONMENT_NAME.fullmatch(name):
+                raise ValueError(f"runtime environment name is invalid: {name}")
+            if name.startswith("BCN_") or name in _FORBIDDEN_ENVIRONMENT:
+                raise ValueError(f"runtime environment name is reserved: {name}")
+            if name not in os.environ:
+                raise ValueError(f"runtime environment variable is missing: {name}")
+            allowed.add(name)
         environment = {
-            "PATH": os.pathsep.join((wrapper_directory, existing_path)),
-            "BCN_ENDPOINT": self.endpoint,
-            "BCN_SESSION_ID": session_id,
-            "BCN_RUNTIME_SESSION_ID": runtime_session_id,
-            "BCN_COMMAND_CAPABILITY": session_capability,
+            name: os.environ[name] for name in sorted(allowed) if os.environ.get(name)
         }
-        for name in ("PYTHONPATH", "SystemRoot"):
-            value = os.environ.get(name)
-            if value:
-                environment[name] = value
+        environment["PATH"] = os.pathsep.join(
+            (wrapper_directory, environment.get("PATH", os.defpath))
+        )
+        environment.update(
+            {
+                "BCN_ENDPOINT": self.endpoint,
+                "BCN_SESSION_ID": session_id,
+                "BCN_RUNTIME_SESSION_ID": runtime_session_id,
+                "BCN_COMMAND_CAPABILITY": session_capability,
+            }
+        )
         return environment
 
     async def _run_runtime_command(

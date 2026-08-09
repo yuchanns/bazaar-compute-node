@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, cast
 
-from ..core.channel import IChannel
+from ..core.channel import ChannelContext, IChannel
 from ..core.observability import IAudit
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage
@@ -17,7 +17,7 @@ STORAGE_ENTRY_POINT_GROUP = "bazaar_compute_node.storages"
 AUDIT_ENTRY_POINT_GROUP = "bazaar_compute_node.audits"
 CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
-ChannelFactory = Callable[[], IChannel]
+ChannelFactory = Callable[[ChannelContext], IChannel]
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[], IAudit]

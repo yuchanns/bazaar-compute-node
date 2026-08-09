@@ -149,7 +149,7 @@ provider SDK types。
 | 用途 | 外部库 | 作用域与规则 |
 | --- | --- | --- |
 | SQLite async adapter | `aiosqlite` | 仅由 `contrib/sqlite` 使用；通过每个 connection 的共享 worker thread 将 SQLite 操作移出主 loop。MVP 使用 long-lived connection、显式 transaction 和 repository lock，不引入 connection pool。 |
-| WeCom WebSocket transport | `websockets` | 仅由 `contrib/wecom` 使用；承载 WebSocket framing/TLS，Bot 认证、应用层 heartbeat、重连、回执队列和 lifecycle 由 adapter-local client 明确定义。 |
+| WeCom WebSocket transport | `aiohttp` | 仅由 `contrib/wecom` 使用；真实 endpoint 在认证后会发送带 MASK bit 的服务端 frame，严格 RFC parser 会以 1002 `incorrect masking` 断开，因此复用 `aiohttp` 的兼容 reader 承载 WebSocket framing/TLS；Bot 认证、应用层 heartbeat、重连、回执队列和 lifecycle 仍由 adapter-local client 明确定义。 |
 | WeCom media boundary | `aiohttp`、`cryptography` | 仅由 `contrib/wecom` 使用；下载五分钟有效的媒体 URL 并执行 provider 规定的 AES 解密。复用 application-scoped HTTP session，统一 timeout、TLS、response classification 和 shutdown。 |
 
 App Server 不引入 provider SDK 或 JSON-RPC 第三方封装：使用标准库 `asyncio` subprocess/stream、
@@ -167,7 +167,7 @@ UUID 统一使用 RFC 9562 UUIDv7，不为这些能力增加第三方依赖。
 
 以下不进入 MVP dependency set：`uvloop`、`anyio`/`trio`、SQLAlchemy、Pydantic、`orjson`、
 `tenacity`、FastAPI/Starlette、App Server provider SDK、WeCom provider SDK、`pyee` 和
-`python-dotenv`。WeCom adapter 直接使用 `websockets` 实现薄协议 client，以便保留原始 frame、
+`python-dotenv`。WeCom adapter 直接使用 `aiohttp` 实现薄协议 client，以便兼容真实 endpoint 的 masked server frame，并保留原始 frame、
 区分 ack/timeout/connection-loss、禁止 SDK 内部自动重发模糊 unknown state，并将 provider
 类型完全限制在 `contrib/wecom`；公开的 WecomTeam SDK 只作为协议与行为参考，不进入运行时
 依赖。其他依赖只有出现明确需求并完成真实 adapter 验证后才单独引入。
@@ -757,7 +757,8 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
    在自己的实现内部执行 migrations。
 3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
 4. 启动本地 command service，确保 `$HOME/.bcn/bin/` 下存在本次 node 生命周期对应的
-   `bcc` wrapper。composition 按平台和已选 Runtime 构造封闭的子进程环境白名单，
+   `bcc` wrapper。composition 按平台基线和已选 Runtime 通过
+   `IRuntime.environment_variable_names()` 声明的扩展构造封闭的子进程环境白名单，
    PATH 由白名单中的宿主 PATH 前缀该 wrapper 目录得到，再由 bcn 生成
    `BCN_ENDPOINT` / `BCN_SESSION_ID` / `BCN_RUNTIME_SESSION_ID` /
    `BCN_COMMAND_CAPABILITY`。Runtime adapter 只能使用这份完整环境，不得再合并
@@ -950,10 +951,12 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
 
 首个 Channel adapter 是 WeCom intelligent Bot，但 core 只依赖抽象 Channel port：
 
-- `receive`：消费 WebSocket 的 `aibot_msg_callback` / `aibot_event_callback`，在 adapter
-  内抹除 provider message/media 差异；必要时先调用 context 中的共享 attachment materializer，
-  最终只向 application 交付带本地附件路径的统一 `InboundMessage`、channel session identity
-  和 canonical target。
+- `receive`：消费 WebSocket 的 `aibot_msg_callback`，在 adapter 内抹除 provider
+  message/media 差异；必要时先调用 context 中的共享 attachment materializer，最终只向
+  application 交付带本地附件路径的统一 `InboundMessage`、channel session identity 和
+  canonical target。`aibot_event_callback` 是独立的 provider event stream；Task 5A 识别并
+  计数但不把它伪装成用户消息触发 Runtime。`enter_chat`、`template_card_event` 和
+  `feedback_event` 当前均不支持，也不进入后续 task；WeCom event type 不扩散进 core。
 - `send`：接收包含 canonical target、body、content format 和可选中立 reply reference 的
   `ChannelSendRequest`，根据平台能力映射关联被动回复、主动发送与消息级 reply，
   仅返回 provider-neutral delivery receipt；是否真实应用消息级 reply 不进入 core 状态。
@@ -982,8 +985,9 @@ bcn 生成值”构造封闭白名单：
   `COMSPEC`、`PATHEXT`、`TEMP` 和 `TMP`。实现前通过 Linux/macOS/Windows 真实
   process matrix 收敛到实际必需集合；新增名称需要真实失败证据，删除后要复验，不因
   当前 daemon 恰好存在就继承。
-- Runtime 扩展是代码中按 adapter name 审查的封闭集合。Codex 首版只内置官方公开的
-  非 token 位置/证书变量：
+- Runtime 扩展是各 contrib 通过 `IRuntime.environment_variable_names()` 声明、由
+  application 统一校验和读取值的封闭集合；application 不按 adapter name 分支，也不包含
+  provider-specific 变量名。Codex 首版只声明官方公开的非 token 位置/证书变量：
   `CODEX_HOME`、`CODEX_SQLITE_HOME`、`CODEX_CA_CERTIFICATE` 和 `SSL_CERT_FILE`；缺失值
   就使用 Codex 默认，不传空字符串。
 - 持久配置允许用户在 `[runtime.env]` 的 `include` 中追加精确变量名列表；值仍只从
@@ -1475,7 +1479,7 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
   context factory；未选择 WeCom 时不读取其配置或凭据，选中后缺少任一必填值都在连接前
   fail closed。
 - 固定 WecomTeam 官方 Python/Node.js SDK 的不可变源码提交作为协议参考；使用
-  `websockets` 编写 adapter-local thin client，不引入 SDK 的 event emitter、自动 `.env`、
+  `aiohttp` 编写 adapter-local thin client，不引入 SDK 的 event emitter、自动 `.env`、
   隐式重发或 provider 类型。连接默认 endpoint `wss://openws.work.weixin.qq.com`；私有部署
   endpoint 只能来自显式 `[channel.wecom].websocket_url`，不得作为隐藏环境覆盖。
 - 建立连接后以 `aibot_subscribe` 帧发送 `headers.req_id` 与 `body.bot_id` / `body.secret`，
@@ -1511,9 +1515,10 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
   provider 重投同一 inbound frame 也只追加一次；没有官方 replay cursor 或补发保证时，不能把
   重连描述为能够找回断线期间消息。
 - 在统一 Runtime 启动边界实现上述封闭环境白名单：先按平台复制最小基线，
-  再加入代码审查的 Runtime 扩展、`[runtime.env]` 中 `include` 的用户显式追加和 bcn
-  session capability。对追加名做格式、存在性、保留 namespace 和 adapter credential
-  拒绝校验。修改
+  再加入当前 `IRuntime.environment_variable_names()` 声明的扩展、`[runtime.env]` 中
+  `include` 的用户显式追加和 bcn session capability。application 对 Runtime 声明与用户追加
+  做格式、保留 namespace 和 adapter credential 拒绝校验，只对用户显式追加执行存在性
+  fail-closed；Runtime 声明的缺失可选值不传。修改
   `RuntimeCommandContext` contract 为必填的完整权威环境，并修正现有 Codex adapter
   的 `dict(os.environ)` + `update(...)` 合并行为。
 - 加入结构性 credential-boundary 验证：daemon 环境注入 sentinel Channel/Storage/
@@ -1524,17 +1529,15 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
 - 验证 WeCom Secret 和其他禁止 credential 不进入任意 Runtime 子进程环境、SQLite、
   wrapper、日志、异常或 health 输出；同时保留“同 OS 用户不是强隔离”的边界说明。
 
-依赖：Task 4D 与命名收口 review。产出：真实 WebSocket lifecycle、inbound mapping、dedupe、
-provider-neutral attachment materialization、identity 与 credential-boundary tests；使用
-WeComChannel+TestRuntime 独立验证真实 Bot ingress、routing 和媒体落盘，不要求真实 Codex
-Runtime 同时参与。
+依赖：Task 4D 与命名收口 review。产出：真实 WebSocket lifecycle、message inbound mapping、
+provider event 识别与计数、dedupe、provider-neutral attachment materialization、identity 与
+credential-boundary tests；使用 WeComChannel+TestRuntime 独立验证真实 Bot ingress、routing
+和媒体落盘，不要求真实 Codex Runtime 同时参与。
 
 #### Task 5B：outbound、receipt 与 Channel approval policy
 
 - 普通 outbound 默认保持 Markdown。WeCom 被动回复将当前批次放入支持 Markdown 的
-  `stream.content`，主动发送使用 `msgtype="markdown"` 与 `markdown.content`。欢迎语
-  `enter_chat` event 仍按 provider contract 使用 text 或 template card，不伪造 Markdown
-  欢迎语。
+  `stream.content`，主动发送使用 `msgtype="markdown"` 与 `markdown.content`。
 - WeCom adapter 在 provider 内部将一个逻辑 outbound 按每批最多 20480 UTF-8 bytes
   分成多个独立完整 Markdown 消息。splitter 不破坏 Unicode code point，优先在空行、
   换行和 Markdown block 边界切分；跨批 fenced code block 在上一批闭合并在下一批重开，

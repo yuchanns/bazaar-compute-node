@@ -19,6 +19,7 @@ from ..models import (
     BcnSession,
     ChannelSession,
     ChannelSessionState,
+    ChannelTargetKind,
     ConsumerCursor,
     InboundMessage,
     RuntimeEventState,
@@ -108,7 +109,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             node_id=lambda: self.node_id,
             clock=self._clock,
         )
-        self._active_tasks: set[asyncio.Task[RuntimeTurn]] = set()
+        self._active_tasks: set[asyncio.Task[RuntimeTurn | None]] = set()
         self._turn_in_flight: dict[str, asyncio.Event] = {}
         self._receive_task: asyncio.Task[None] | None = None
         self._started = False
@@ -213,7 +214,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             self._shutdown_errors.append(f"storage.stop: {type(error).__name__}")
         self._started = False
 
-    def dispatch_inbound(self, message: InboundMessage) -> asyncio.Task[RuntimeTurn]:
+    def dispatch_inbound(
+        self, message: InboundMessage
+    ) -> asyncio.Task[RuntimeTurn | None]:
         """Schedule one inbound message while retaining its task for shutdown."""
 
         if self._stopping:
@@ -233,7 +236,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("session_id must be a non-empty string")
         return await self._state_writer.apply(session_id, tick)
 
-    async def handle_inbound(self, message: InboundMessage) -> RuntimeTurn:
+    async def handle_inbound(self, message: InboundMessage) -> RuntimeTurn | None:
         """Persist one inbound message and drive one runtime turn to an outcome."""
 
         lock = self._concurrency.for_session(message.session_id)
@@ -246,14 +249,19 @@ class SessionOrchestrator(IAsyncLifecycle):
             wait_for: asyncio.Event | None = None
             async with lock:
                 if turn is None:
-                    context = await self._prepare_session(message)
                     completion = self._turn_in_flight.get(message.session_id)
+                    (
+                        context,
+                        message,
+                        pending_turn,
+                        turn_created,
+                    ) = await self._record_inbound_and_turn(
+                        message,
+                        create_turn=completion is None,
+                    )
                     if completion is not None:
-                        message, pending_turn, _ = await self._record_inbound_and_turn(
-                            message,
-                            context,
-                            create_turn=False,
-                        )
+                        if not message.notifies_runtime:
+                            return None
                         if pending_turn is not None and pending_turn.state in {
                             RuntimeTurnState.COMPLETED,
                             RuntimeTurnState.FAILED,
@@ -263,12 +271,10 @@ class SessionOrchestrator(IAsyncLifecycle):
                             return pending_turn
                         wait_for = completion
                     else:
-                        message, turn, is_new = await self._record_inbound_and_turn(
-                            message, context
-                        )
+                        turn = pending_turn
                         if turn is None:
-                            raise RuntimeError("inbound turn was not created")
-                        if not is_new or turn.state in {
+                            return None
+                        if not turn_created or turn.state in {
                             RuntimeTurnState.COMPLETED,
                             RuntimeTurnState.FAILED,
                             RuntimeTurnState.CANCELLED,
@@ -347,13 +353,31 @@ class SessionOrchestrator(IAsyncLifecycle):
                 break
             self.dispatch_inbound(message)
 
-    def _forget_task(self, task: asyncio.Task[RuntimeTurn]) -> None:
+    def _forget_task(self, task: asyncio.Task[RuntimeTurn | None]) -> None:
         self._active_tasks.discard(task)
         if not task.cancelled():
             task.exception()
 
-    async def _prepare_session(self, message: InboundMessage) -> SessionContext:
+    async def _record_inbound_and_turn(
+        self,
+        message: InboundMessage,
+        *,
+        create_turn: bool,
+    ) -> tuple[SessionContext | None, InboundMessage, RuntimeTurn | None, bool]:
+        context: SessionContext | None = None
         async with self._storage.transaction() as transaction:
+            existing_message = await transaction.find_inbound_message(
+                message.channel, message.provider_message_id
+            )
+            if existing_message is not None:
+                if (
+                    existing_message.session_id != message.session_id
+                    or existing_message.channel_session_id != message.channel_session_id
+                ):
+                    raise ValueError(
+                        "provider message id is already bound to another session"
+                    )
+                message = existing_message
             channel_session = await transaction.find_channel_session(
                 channel=message.channel,
                 provider_conversation_key=message.channel_session_id,
@@ -369,10 +393,34 @@ class SessionOrchestrator(IAsyncLifecycle):
                     state=ChannelSessionState.ACTIVE,
                     created_at_ms=now_ms,
                     updated_at_ms=now_ms,
+                    target_kind=message.target_kind,
+                    following=message.target_kind is ChannelTargetKind.DM
+                    or message.mentions_agent,
                 )
                 await transaction.save_channel_session(channel_session)
             elif channel_session.id != message.channel_session_id:
                 raise ValueError("inbound channel session identity does not match")
+            elif channel_session.target_kind is not message.target_kind:
+                raise ValueError("inbound channel target kind does not match")
+            elif (
+                existing_message is None
+                and message.mentions_agent
+                and not channel_session.following
+            ):
+                channel_session = replace(
+                    channel_session,
+                    following=True,
+                    updated_at_ms=now_ms,
+                )
+                await transaction.save_channel_session(channel_session)
+
+            if existing_message is None:
+                notifies_runtime = (
+                    message.target_kind is ChannelTargetKind.DM
+                    or channel_session.following
+                    or message.mentions_agent
+                )
+                message = replace(message, notifies_runtime=notifies_runtime)
 
             bcn_session = await transaction.get_bcn_session(message.session_id)
             if bcn_session is None:
@@ -397,73 +445,70 @@ class SessionOrchestrator(IAsyncLifecycle):
                     ConsumerCursor(session_id=message.session_id)
                 )
 
-            runtime_id = f"runtime-{message.session_id}"
-            runtime_session = await transaction.get_runtime_session(runtime_id)
-            if runtime_session is None:
-                runtime_session = RuntimeSession(
-                    id=runtime_id,
-                    bcn_session_id=bcn_session.id,
-                    channel_session_id=channel_session.id,
-                    runtime=self._runtime.name,
-                    workspace_id=self.workspace_id,
-                    process_state=RuntimeProcessState.STARTING,
-                    created_at_ms=now_ms,
+            if existing_message is None:
+                message = await transaction.append_inbound_message(message)
+                channel_session = replace(
+                    channel_session,
+                    last_inbound_at_ms=message.received_at_ms,
                     updated_at_ms=now_ms,
                 )
-                await transaction.save_runtime_session(runtime_session)
-            elif (
-                runtime_session.bcn_session_id != bcn_session.id
-                or runtime_session.channel_session_id != channel_session.id
-                or runtime_session.workspace_id != self.workspace_id
-            ):
-                raise ValueError("runtime session binding does not match")
+                bcn_session = replace(
+                    bcn_session,
+                    last_activity_at_ms=message.received_at_ms,
+                    updated_at_ms=now_ms,
+                )
+                await transaction.save_channel_session(channel_session)
+                await transaction.save_bcn_session(bcn_session)
 
-            self._bcn_sessions[bcn_session.id] = bcn_session
-            self._runtime_sessions[runtime_session.id] = runtime_session
-            return SessionContext(channel_session, bcn_session, runtime_session)
+            runtime_session: RuntimeSession | None = None
+            if message.notifies_runtime:
+                runtime_id = f"runtime-{message.session_id}"
+                runtime_session = await transaction.get_runtime_session(runtime_id)
+                if runtime_session is None:
+                    runtime_session = RuntimeSession(
+                        id=runtime_id,
+                        bcn_session_id=bcn_session.id,
+                        channel_session_id=channel_session.id,
+                        runtime=self._runtime.name,
+                        workspace_id=self.workspace_id,
+                        process_state=RuntimeProcessState.STARTING,
+                        created_at_ms=now_ms,
+                        updated_at_ms=now_ms,
+                    )
+                    await transaction.save_runtime_session(runtime_session)
+                elif (
+                    runtime_session.bcn_session_id != bcn_session.id
+                    or runtime_session.channel_session_id != channel_session.id
+                    or runtime_session.workspace_id != self.workspace_id
+                ):
+                    raise ValueError("runtime session binding does not match")
+                context = SessionContext(channel_session, bcn_session, runtime_session)
 
-    async def _record_inbound_and_turn(
-        self,
-        message: InboundMessage,
-        context: SessionContext,
-        *,
-        create_turn: bool = True,
-    ) -> tuple[InboundMessage, RuntimeTurn | None, bool]:
-        async with self._storage.transaction() as transaction:
-            existing_turn = await transaction.get_runtime_turn(
-                f"turn-{message.message_id}"
-            )
-            if existing_turn is not None:
-                return message, existing_turn, False
-            message = await transaction.append_inbound_message(message)
             turn_id = f"turn-{message.message_id}"
             existing_turn = await transaction.get_runtime_turn(turn_id)
             if existing_turn is not None:
-                return message, existing_turn, False
-            now_ms = self._clock()
-            channel_session = replace(
-                context.channel_session,
-                last_inbound_at_ms=message.received_at_ms,
-                updated_at_ms=now_ms,
-            )
-            bcn_session = replace(
-                context.bcn_session,
-                last_activity_at_ms=message.received_at_ms,
-                updated_at_ms=now_ms,
-            )
-            await transaction.save_channel_session(channel_session)
-            await transaction.save_bcn_session(bcn_session)
-            if not create_turn:
-                return message, None, True
-            turn = RuntimeTurn(
-                turn_id=turn_id,
-                session_id=context.runtime_session.id,
-                state=RuntimeTurnState.STARTING,
-                started_at_ms=now_ms,
-                client_user_message_id=message.message_id,
-            )
-            await transaction.save_runtime_turn(turn)
-        return message, turn, True
+                turn = existing_turn
+                turn_created = False
+            elif not create_turn or not message.notifies_runtime:
+                turn = None
+                turn_created = False
+            else:
+                if runtime_session is None:
+                    raise RuntimeError("notifying inbound has no runtime session")
+                turn = RuntimeTurn(
+                    turn_id=turn_id,
+                    session_id=runtime_session.id,
+                    state=RuntimeTurnState.STARTING,
+                    started_at_ms=now_ms,
+                    client_user_message_id=message.message_id,
+                )
+                await transaction.save_runtime_turn(turn)
+                turn_created = True
+
+        self._bcn_sessions[bcn_session.id] = bcn_session
+        if runtime_session is not None:
+            self._runtime_sessions[runtime_session.id] = runtime_session
+        return context, message, turn, turn_created
 
     async def _ensure_runtime_session(self, context: SessionContext) -> SessionContext:
         runtime_session = context.runtime_session

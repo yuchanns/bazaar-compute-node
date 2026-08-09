@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol, cast
 from uuid import uuid7
 
@@ -27,6 +28,7 @@ from bazaar_compute_node.core.models import (
     AgentTick,
     AgentTickSource,
     ApprovalRequest,
+    ChannelTargetKind,
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
@@ -275,7 +277,7 @@ async def run_natural_conversation_contract(
         audit = _AcceptanceAudit()
         node = NodeApplication(
             factories=AdapterFactories(
-                channel=lambda channel_instance=channel_instance: cast(
+                channel=lambda _context, channel_instance=channel_instance: cast(
                     IChannel, channel_instance
                 ),
                 runtime=runtime,
@@ -864,6 +866,8 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
             orchestrator.handle_inbound(make_message(session_id="bcn-b")),
         )
 
+        assert first is not None
+        assert second is not None
         assert first.state is RuntimeTurnState.COMPLETED
         assert second.state is RuntimeTurnState.COMPLETED
         assert storage.bcn_sessions["bcn-a"].workspace_id == "workspace-1"
@@ -883,6 +887,71 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
 
 
 @pytest.mark.asyncio
+async def test_group_mention_starts_following_after_quiet_history() -> None:
+    orchestrator, _, runtime, storage, _ = await make_node()
+    try:
+        quiet = replace(
+            make_message(seq=1),
+            target_kind=ChannelTargetKind.GROUP,
+            mentions_agent=False,
+        )
+        assert await orchestrator.handle_inbound(quiet) is None
+        assert storage.channel_sessions["channel-bcn-1"].following is False
+        assert storage.runtime_sessions == {}
+        assert runtime.started_sessions == []
+        assert (await orchestrator.command_service.check("bcn-1")).messages == ()
+        history = await orchestrator.command_service.read("bcn-1", target="#test:bcn-1")
+        assert len(history.messages) == 1
+        assert history.messages[0].notifies_runtime is False
+
+        mention = replace(
+            make_message(seq=2),
+            target_kind=ChannelTargetKind.GROUP,
+            mentions_agent=True,
+        )
+        turn = await orchestrator.handle_inbound(mention)
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.COMPLETED
+        assert storage.channel_sessions["channel-bcn-1"].following is True
+
+        follow_up = replace(
+            make_message(seq=3),
+            target_kind=ChannelTargetKind.GROUP,
+            mentions_agent=False,
+        )
+        follow_up_turn = await orchestrator.handle_inbound(follow_up)
+        assert follow_up_turn is not None
+        assert follow_up_turn.state is RuntimeTurnState.COMPLETED
+
+        assert await orchestrator.handle_inbound(quiet) is None
+        assert len(storage.inbound_messages["bcn-1"]) == 3
+        assert storage.inbound_messages["bcn-1"][0].notifies_runtime is False
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_inbound_failure_rolls_back_new_session_state() -> None:
+    orchestrator, _, _, storage, _ = await make_node()
+    try:
+        invalid = replace(
+            make_message(session_id="invalid", seq=2),
+            target_kind=ChannelTargetKind.GROUP,
+            mentions_agent=False,
+        )
+        with pytest.raises(ValueError, match="inbound sequence must be contiguous"):
+            await orchestrator.handle_inbound(invalid)
+
+        assert "channel-invalid" not in storage.channel_sessions
+        assert "invalid" not in storage.bcn_sessions
+        assert "invalid" not in storage.cursors
+        assert "invalid" not in storage.inbound_messages
+        assert "runtime-invalid" not in storage.runtime_sessions
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
     orchestrator, channel, runtime, storage, _ = await make_node()
     try:
@@ -896,6 +965,7 @@ async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
         task = orchestrator.dispatch_inbound(make_message())
         result = await task
 
+        assert result is not None
         assert result.state is RuntimeTurnState.FAILED
         assert (
             storage.runtime_sessions["runtime-bcn-1"].process_state

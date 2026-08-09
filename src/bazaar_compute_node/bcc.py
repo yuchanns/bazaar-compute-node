@@ -207,10 +207,12 @@ def _format_check_message(message: Mapping[str, object]) -> str:
         sender,
         body,
     ) = _message_header_fields(message)
-    return (
+    line = (
         f"[target={target} msg={short_message_id} time={timestamp} "
-        f"type={message_type}] @{sender}: {body}"
+        f"type={message_type} mentioned={str(message.get('mentions_agent') is True).lower()}] "
+        f"@{sender}: {body}"
     )
+    return line + _attachment_suffix(message)
 
 
 def _format_read_message(
@@ -242,7 +244,36 @@ def _format_read_message(
             )
         fields.append(f"threadId={provider_thread_id}")
     fields.append(f"replyTarget={target}")
-    return f"[{index}/{count} {' '.join(fields)}] @{sender}: {body}"
+    fields.append(f"mentioned={str(message.get('mentions_agent') is True).lower()}")
+    return (
+        f"[{index}/{count} {' '.join(fields)}] @{sender}: {body}"
+        + _attachment_suffix(message)
+    )
+
+
+def _attachment_suffix(message: Mapping[str, object]) -> str:
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list):
+        _invalid_response("command response contains invalid attachments")
+    if not attachments:
+        return ""
+    rendered: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            _invalid_response("command response contains an invalid attachment")
+        name = _require_text(attachment, "name")
+        attachment_id = _require_text(attachment, "attachment_id")
+        state = _require_text(attachment, "state")
+        if state == "ready":
+            path = _require_text(attachment, "relative_path")
+            rendered.append(f"{name} (id:{attachment_id}, path:{path})")
+        elif state == "failed":
+            error = _require_text(attachment, "error")
+            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
+        else:
+            _invalid_response("command response contains an invalid attachment state")
+    label = "attachment" if len(rendered) == 1 else "attachments"
+    return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
 
 
 def serialize_check(result: Mapping[str, object]) -> str:

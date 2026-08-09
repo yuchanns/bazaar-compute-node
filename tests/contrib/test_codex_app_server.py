@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
@@ -179,17 +180,31 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     ) -> None:
         return None
 
+    def environment(_session: RuntimeSession) -> dict[str, str]:
+        return {}
+
     configured = create_runtime(
         RuntimeCommandContext(
             run_command=run_command,
+            environment_for_session=environment,
             runtime_options={"model": TEST_MODEL, "effort": TEST_EFFORT},
         )
     )
-    defaulted = create_runtime(RuntimeCommandContext(run_command=run_command))
+    defaulted = create_runtime(
+        RuntimeCommandContext(
+            run_command=run_command, environment_for_session=environment
+        )
+    )
 
     assert isinstance(configured, CodexAppServerRuntime)
     assert configured._model == TEST_MODEL
     assert configured._effort == TEST_EFFORT
+    assert configured.environment_variable_names() == (
+        "CODEX_HOME",
+        "CODEX_SQLITE_HOME",
+        "CODEX_CA_CERTIFICATE",
+        "SSL_CERT_FILE",
+    )
     assert isinstance(defaulted, CodexAppServerRuntime)
     assert defaulted._model is None
     assert defaulted._effort is None
@@ -476,6 +491,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         )
         context = RuntimeCommandContext(
             run_command=unexpected_command,
+            environment_for_session=lambda _session: dict(os.environ),
             node_id=identity.node_id,
         )
         first_runtime = CodexAppServerRuntime(

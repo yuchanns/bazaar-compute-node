@@ -53,6 +53,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "bcn_sessions",
             "channel_sessions",
             "consumer_cursors",
+            "inbound_attachments",
             "inbound_messages",
             "node_state",
             "outbound_messages",

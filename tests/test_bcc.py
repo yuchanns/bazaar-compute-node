@@ -33,6 +33,8 @@ def message_payload(
         "body": "message body",
         "provider_thread_id": provider_thread_id,
         "reply_to_provider_message_id": "provider-parent-1",
+        "mentions_agent": False,
+        "attachments": [],
     }
 
 
@@ -45,7 +47,7 @@ def test_check_serializer_matches_canonical_text() -> None:
 
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=01234567 time=2023-11-14 22:13:20 "
-        "type=human] @sender: message body"
+        "type=human mentioned=false] @sender: message body"
     )
 
 
@@ -59,6 +61,38 @@ def test_check_serializer_preserves_zero_provider_timestamp() -> None:
     }
 
     assert "time=1970-01-01 00:00:00" in serialize_check(result)
+
+
+def test_check_and_read_render_the_same_attachment_suffix() -> None:
+    message = message_payload()
+    message["attachments"] = [
+        {
+            "attachment_id": "attachment-1",
+            "name": "report.txt",
+            "kind": "file",
+            "state": "ready",
+            "media_type": "text/plain",
+            "relative_path": "attachments/attachment-1/content.txt",
+            "size_bytes": 7,
+            "error": None,
+        }
+    ]
+    suffix = (
+        "[1 attachment: report.txt "
+        "(id:attachment-1, path:attachments/attachment-1/content.txt)]"
+    )
+
+    assert suffix in serialize_check(
+        {"messages": [message], "snapshot_seq": 7, "delivered_through_seq": 7}
+    )
+    assert suffix in serialize_read(
+        {
+            "messages": [message],
+            "snapshot_seq": 7,
+            "first_seq": 7,
+            "last_seq": 7,
+        }
+    )
 
 
 def test_empty_check_serializer_is_stable() -> None:
@@ -80,7 +114,7 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
         "time=2023-11-14 22:13:20 type=human threadId=provider-thread-1 "
-        "replyTarget=#work:parent123] @sender: message body"
+        "replyTarget=#work:parent123 mentioned=false] @sender: message body"
     )
 
 

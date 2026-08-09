@@ -15,6 +15,7 @@ from .states import (
     AgentTick,
     ApprovalDecision,
     ChannelSessionState,
+    ChannelTargetKind,
     FreshCheckState,
     OutboundDeliveryState,
     RuntimeEventState,
@@ -46,6 +47,7 @@ class ChannelSession:
     state: ChannelSessionState
     created_at_ms: int
     updated_at_ms: int
+    target_kind: ChannelTargetKind = ChannelTargetKind.DM
     following: bool = True
     last_inbound_at_ms: int | None = None
     last_outbound_at_ms: int | None = None
@@ -59,6 +61,8 @@ class ChannelSession:
             raise TypeError("provider_thread_key must be a string")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
         if self.last_inbound_at_ms is not None:
             _validate_non_negative(self.last_inbound_at_ms, "last_inbound_at_ms")
         if self.last_outbound_at_ms is not None:
@@ -258,6 +262,35 @@ class RuntimeTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class InboundAttachment:
+    attachment_id: str
+    name: str
+    kind: str
+    state: str
+    media_type: str | None = None
+    relative_path: str | None = None
+    size_bytes: int | None = None
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        for value, field_name in (
+            (self.attachment_id, "attachment_id"),
+            (self.name, "name"),
+            (self.kind, "kind"),
+            (self.state, "state"),
+        ):
+            _validate_text(value, field_name)
+        if self.state not in {"ready", "failed"}:
+            raise ValueError("attachment state must be ready or failed")
+        if self.state == "ready" and self.relative_path is None:
+            raise ValueError("ready attachment must have a relative path")
+        if self.state == "failed" and self.relative_path is not None:
+            raise ValueError("failed attachment cannot have a relative path")
+        if self.size_bytes is not None:
+            _validate_non_negative(self.size_bytes, "size_bytes")
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     seq: int
     message_id: str
@@ -271,6 +304,10 @@ class InboundMessage:
     message_type: str
     canonical_target: str
     body: str
+    target_kind: ChannelTargetKind = ChannelTargetKind.DM
+    mentions_agent: bool = False
+    notifies_runtime: bool = True
+    attachments: tuple[InboundAttachment, ...] = ()
     provider_time_ms: int | None = None
     provider_thread_id: str | None = None
     reply_to_provider_message_id: str | None = None
@@ -292,6 +329,8 @@ class InboundMessage:
         ):
             _validate_text(value, field_name)
         _validate_non_negative(self.received_at_ms, "received_at_ms")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
         if self.provider_time_ms is not None:
             _validate_non_negative(self.provider_time_ms, "provider_time_ms")
 

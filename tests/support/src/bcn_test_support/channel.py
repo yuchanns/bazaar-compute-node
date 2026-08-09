@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
 from bazaar_compute_node.core.models import (
@@ -23,6 +23,13 @@ class TestChannel(IChannel):
     @property
     def name(self) -> str:
         return "test"
+
+    @property
+    def health(self) -> Mapping[str, object]:
+        return {
+            "state": "ready" if self.accepting else "stopped",
+            "full_group_ingress": True,
+        }
 
     def __init__(self) -> None:
         self.started = False

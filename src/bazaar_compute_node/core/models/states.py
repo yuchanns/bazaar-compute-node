@@ -27,6 +27,11 @@ class AgentState(StrEnum):
     RECONCILING = "reconciling"
 
 
+class ChannelTargetKind(StrEnum):
+    DM = "dm"
+    GROUP = "group"
+
+
 class AgentTickSource(StrEnum):
     """Origin of an observation; the orchestrator remains the state writer."""
 

@@ -63,7 +63,10 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
         '[node]\nchannel = "config-channel"\nruntime = "config-runtime"\n'
         'storage = "config-storage"\naudit = "config-audit"\n'
         'endpoint = "config.sock"\n\n'
-        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n',
+        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n\n'
+        '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
+        '[channel.wecom]\nbot_id = "test-bot"\n'
+        'websocket_url = "wss://wecom.example.test"\n',
         encoding="utf-8",
     )
     parser = build_parser()
@@ -76,6 +79,11 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     assert config_args.endpoint == Path("config.sock")
     assert config_args.model == "config-model"
     assert config_args.effort == "config-effort"
+    assert config_args.runtime_env_include == ("CUSTOM_CA",)
+    assert config_args.channel_options == {
+        "bot_id": "test-bot",
+        "websocket_url": "wss://wecom.example.test",
+    }
 
     flag_args = parser.parse_args(
         [

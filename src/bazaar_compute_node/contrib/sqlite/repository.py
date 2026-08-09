@@ -26,6 +26,7 @@ from .codec import (
     _channel_session_from_row,
     _consumer_cursor_from_row,
     _encode_metadata,
+    _inbound_attachment_from_row,
     _inbound_message_from_row,
     _outbound_message_from_row,
     _required_non_negative_int,
@@ -143,7 +144,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
     ) -> ChannelSession | None:
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel, "
-            "provider_conversation_key, provider_thread_key, following, state, "
+            "provider_conversation_key, provider_thread_key, target_kind, following, state, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "provider_identity_ref_json "
             "FROM channel_sessions "
@@ -157,7 +158,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
     async def get_channel_session(self, session_id: str) -> ChannelSession | None:
         row = await self.fetchone(
             "SELECT id, channel, "
-            "provider_conversation_key, provider_thread_key, following, state, "
+            "provider_conversation_key, provider_thread_key, target_kind, following, state, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "provider_identity_ref_json "
             "FROM channel_sessions WHERE id = ?",
@@ -253,6 +254,44 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
 
+    async def inbound_message_exists(
+        self, channel: str, provider_message_id: str
+    ) -> bool:
+        row = await self.fetchone(
+            "SELECT 1 FROM inbound_messages WHERE channel = ? "
+            "AND provider_message_id = ? LIMIT 1",
+            (channel, provider_message_id),
+        )
+        return row is not None
+
+    async def find_inbound_message(
+        self, channel: str, provider_message_id: str
+    ) -> InboundMessage | None:
+        row = await self._fetch_one_or_conflict(
+            "SELECT seq, message_id, session_id, channel_session_id, "
+            "channel, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender_id, sender_display_name, message_type, "
+            "canonical_target, target_kind, provider_thread_id, "
+            "reply_to_provider_message_id, body, mentions_agent, "
+            "notifies_runtime, provider_payload_ref, metadata_json "
+            "FROM inbound_messages WHERE channel = ? "
+            "AND provider_message_id = ? ORDER BY seq",
+            (channel, provider_message_id),
+            "provider inbound identity",
+        )
+        if row is None:
+            return None
+        return _inbound_message_from_row(
+            row, await self._attachments(row["message_id"])
+        )
+
+    async def list_ready_attachment_paths(self) -> tuple[str, ...]:
+        rows = await self.fetchall(
+            "SELECT relative_path FROM inbound_attachments "
+            "WHERE state = 'ready' ORDER BY attachment_id"
+        )
+        return tuple(str(row["relative_path"]) for row in rows)
+
     async def list_inbound_messages(
         self,
         session_id: str,
@@ -260,6 +299,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         after_seq: int | None = None,
         target: str | None = None,
         around_message_id: str | None = None,
+        notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         _validate_non_empty_text(session_id, "session_id")
@@ -279,6 +319,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if target is not None:
             predicates.append("canonical_target = ?")
             parameters.append(target)
+        if notifying_only:
+            predicates.append("notifies_runtime = 1")
         where_clause = " AND ".join(predicates)
 
         if around_message_id is None:
@@ -286,13 +328,20 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 "SELECT seq, message_id, session_id, channel_session_id, "
                 "channel, provider_message_id, provider_time_ms, "
                 "received_at_ms, sender_id, sender_display_name, message_type, "
-                "canonical_target, provider_thread_id, "
-                "reply_to_provider_message_id, body, provider_payload_ref, "
+                "canonical_target, target_kind, provider_thread_id, "
+                "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
                 "metadata_json FROM inbound_messages "
                 f"WHERE {where_clause} ORDER BY seq LIMIT ?",
                 (*parameters, limit),
             )
-            return tuple(_inbound_message_from_row(row) for row in rows)
+            messages = []
+            for row in rows:
+                messages.append(
+                    _inbound_message_from_row(
+                        row, await self._attachments(row["message_id"])
+                    )
+                )
+            return tuple(messages)
 
         anchor = await self.fetchone(
             f"SELECT seq FROM inbound_messages WHERE {where_clause} AND message_id = ?",
@@ -335,8 +384,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "SELECT seq, message_id, session_id, channel_session_id, "
             "channel, provider_message_id, provider_time_ms, "
             "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, provider_thread_id, "
-            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "canonical_target, target_kind, provider_thread_id, "
+            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json, ROW_NUMBER() OVER (ORDER BY seq) AS row_number "
             "FROM inbound_messages "
             f"WHERE {where_clause}"
@@ -347,13 +396,20 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             + ") SELECT seq, message_id, session_id, channel_session_id, "
             "channel, provider_message_id, provider_time_ms, "
             "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, provider_thread_id, "
-            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "canonical_target, target_kind, provider_thread_id, "
+            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM filtered WHERE row_number BETWEEN ? AND ? "
             "ORDER BY row_number",
             (*parameters, start_position, end_position),
         )
-        return tuple(_inbound_message_from_row(row) for row in rows)
+        messages = []
+        for row in rows:
+            messages.append(
+                _inbound_message_from_row(
+                    row, await self._attachments(row["message_id"])
+                )
+            )
+        return tuple(messages)
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
         _validate_inbound_message_input(message)
@@ -375,15 +431,17 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "SELECT seq, message_id, session_id, channel_session_id, "
             "channel, provider_message_id, provider_time_ms, "
             "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, provider_thread_id, "
-            "reply_to_provider_message_id, body, provider_payload_ref, "
+            "canonical_target, target_kind, provider_thread_id, "
+            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM inbound_messages "
             "WHERE channel = ? AND provider_message_id = ? ORDER BY seq",
             (message.channel, message.provider_message_id),
             "provider inbound identity",
         )
         if existing_row is not None:
-            existing = _inbound_message_from_row(existing_row)
+            existing = _inbound_message_from_row(
+                existing_row, await self._attachments(existing_row["message_id"])
+            )
             if _same_inbound_payload(existing, message):
                 return existing
             raise ValueError(
@@ -401,10 +459,10 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "INSERT INTO inbound_messages ("
             "message_id, seq, session_id, channel_session_id, channel, "
             "provider_message_id, provider_time_ms, received_at_ms, sender_id, "
-            "sender_display_name, message_type, canonical_target, "
+            "sender_display_name, message_type, canonical_target, target_kind, "
             "provider_thread_id, reply_to_provider_message_id, body, "
-            "provider_payload_ref, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "mentions_agent, notifies_runtime, provider_payload_ref, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical.message_id,
                 canonical.seq,
@@ -418,14 +476,44 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 canonical.sender_display_name,
                 canonical.message_type,
                 canonical.canonical_target,
+                canonical.target_kind.value,
                 canonical.provider_thread_id,
                 canonical.reply_to_provider_message_id,
                 canonical.body,
+                int(canonical.mentions_agent),
+                int(canonical.notifies_runtime),
                 canonical.provider_payload_ref,
                 _encode_metadata(canonical.metadata),
             ),
         )
+        for ordinal, attachment in enumerate(canonical.attachments):
+            await self.execute(
+                "INSERT INTO inbound_attachments ("
+                "attachment_id, message_id, ordinal, name, kind, state, media_type, "
+                "relative_path, size_bytes, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attachment.attachment_id,
+                    canonical.message_id,
+                    ordinal,
+                    attachment.name,
+                    attachment.kind,
+                    attachment.state,
+                    attachment.media_type,
+                    attachment.relative_path,
+                    attachment.size_bytes,
+                    attachment.error,
+                ),
+            )
         return canonical
+
+    async def _attachments(self, message_id: str):
+        rows = await self.fetchall(
+            "SELECT attachment_id, name, kind, state, media_type, relative_path, "
+            "size_bytes, error FROM inbound_attachments WHERE message_id = ? "
+            "ORDER BY ordinal",
+            (message_id,),
+        )
+        return tuple(_inbound_attachment_from_row(row) for row in rows)
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
         _validate_consumer_cursor_input(cursor)
@@ -802,7 +890,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     session.channel,
                     session.provider_conversation_key,
                     session.provider_thread_key,
-                    None,
+                    session.target_kind.value,
                     int(session.following),
                     session.state.value,
                     _encode_metadata(session.metadata),
@@ -816,10 +904,11 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
         session = _validate_channel_session_update(existing, session)
         await self.execute(
-            "UPDATE channel_sessions SET following = ?, state = ?, "
+            "UPDATE channel_sessions SET target_kind = ?, following = ?, state = ?, "
             "updated_at_ms = ?, last_inbound_at_ms = ?, last_outbound_at_ms = ?, "
             "provider_identity_ref_json = ? WHERE id = ?",
             (
+                session.target_kind.value,
                 int(session.following),
                 session.state.value,
                 session.updated_at_ms,

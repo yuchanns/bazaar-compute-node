@@ -217,16 +217,37 @@ SCHEMA_MIGRATION = Migration(
             message_type TEXT,
             -- Canonical target used by reply commands.
             canonical_target TEXT,
+            -- Provider-neutral direct-message or group classification.
+            target_kind TEXT,
             -- Provider-native thread identifier when available.
             provider_thread_id TEXT,
             -- Provider-native identifier of the message being replied to.
             reply_to_provider_message_id TEXT,
             -- Normalized message body.
             body TEXT,
+            -- Whether the provider reports an explicit mention of the agent.
+            mentions_agent INTEGER,
+            -- Persisted application decision to expose this message as unread.
+            notifies_runtime INTEGER,
             -- Controlled reference to retained provider payload data.
             provider_payload_ref TEXT,
             -- Non-sensitive normalized metadata encoded as JSON.
             metadata_json TEXT
+        )
+        """,
+        """
+        -- Terminal local descriptors for provider-neutral inbound attachments.
+        CREATE TABLE inbound_attachments (
+            attachment_id TEXT PRIMARY KEY,
+            message_id TEXT,
+            ordinal INTEGER,
+            name TEXT,
+            kind TEXT,
+            state TEXT,
+            media_type TEXT,
+            relative_path TEXT,
+            size_bytes INTEGER,
+            error TEXT
         )
         """,
         """

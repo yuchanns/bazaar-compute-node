@@ -53,6 +53,14 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
     def name(self) -> str:
         return "codex"
 
+    def environment_variable_names(self) -> tuple[str, ...]:
+        return (
+            "CODEX_HOME",
+            "CODEX_SQLITE_HOME",
+            "CODEX_CA_CERTIFICATE",
+            "SSL_CERT_FILE",
+        )
+
     def __init__(
         self,
         context: RuntimeCommandContext,
@@ -345,9 +353,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         )
         if os.name != "nt":
             await asyncio.to_thread(workspace.chmod, 0o700)
-        environment = dict(os.environ)
-        if self._context.environment_for_session is not None:
-            environment.update(self._context.environment_for_session(session))
+        environment = dict(self._context.environment_for_session(session))
         supervisor = JsonlProcessSupervisor(
             JsonlProcessSpec(
                 executable=executable,
