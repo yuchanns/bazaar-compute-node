@@ -10,10 +10,8 @@ from uuid import uuid7
 
 from bazaar_compute_node.core.lifecycle import IAsyncLifecycle
 from bazaar_compute_node.core.models import (
-    AgentState,
     BcnSession,
     ChannelSession,
-    ChannelSessionState,
     ConsumerCursor,
     FreshCheckState,
     InboundMessage,
@@ -21,7 +19,6 @@ from bazaar_compute_node.core.models import (
     OutboundMessage,
     RuntimeEvent,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -135,16 +132,14 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self,
         *,
         channel: str,
-        provider_conversation_key: str,
-        provider_thread_key: str,
+        provider_thread_id: str,
     ) -> ChannelSession | None:
         matches = [
             session
             for session in self._storage.channel_sessions.values()
             if (
                 session.channel == channel
-                and session.provider_conversation_key == provider_conversation_key
-                and session.provider_thread_key == provider_thread_key
+                and session.provider_thread_id == provider_thread_id
             )
         ]
         if len(matches) > 1:
@@ -261,17 +256,13 @@ class _MemoryStorageTransaction(IStorageTransaction):
         return tuple(messages)
 
     async def save_channel_session(self, session: ChannelSession) -> None:
-        if not isinstance(session.state, ChannelSessionState):
-            raise TypeError("channel session state is invalid")
         if not isinstance(session.following, bool):
             raise TypeError("channel session following must be a boolean")
         existing = self._storage.channel_sessions.get(session.id)
         if existing is not None:
             if (
                 existing.channel != session.channel
-                or existing.provider_conversation_key
-                != session.provider_conversation_key
-                or existing.provider_thread_key != session.provider_thread_key
+                or existing.provider_thread_id != session.provider_thread_id
                 or existing.created_at_ms != session.created_at_ms
             ):
                 raise ValueError("channel session identity cannot change")
@@ -279,8 +270,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
         else:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
-                provider_conversation_key=session.provider_conversation_key,
-                provider_thread_key=session.provider_thread_key,
+                provider_thread_id=session.provider_thread_id,
             )
             if duplicate is not None:
                 raise ValueError(
@@ -289,8 +279,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._storage.channel_sessions[session.id] = session
 
     async def save_bcn_session(self, session: BcnSession) -> None:
-        if not isinstance(session.state, AgentState):
-            raise TypeError("bcn session state is invalid")
         self._require_workspace(session.workspace_id)
         if session.channel_session_id not in self._storage.channel_sessions:
             raise ValueError(f"unknown channel session: {session.channel_session_id}")
@@ -310,8 +298,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._storage.bcn_sessions[session.id] = session
 
     async def save_runtime_session(self, session: RuntimeSession) -> None:
-        if not isinstance(session.process_state, RuntimeProcessState):
-            raise TypeError("runtime session process state is invalid")
         self._require_workspace(session.workspace_id)
         existing = self._storage.runtime_sessions.get(session.id)
         bcn_session = self._storage.bcn_sessions.get(session.bcn_session_id)
@@ -435,6 +421,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             or existing.session_id != message.session_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
+            or existing.reply_to_message_id != message.reply_to_message_id
             or existing.body != message.body
             or existing.created_at_ms != message.created_at_ms
         ):
@@ -576,6 +563,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
     if not isinstance(message.body, str):
         raise TypeError("outbound body must be a string")
     for value, field_name in (
+        (message.reply_to_message_id, "reply_to_message_id"),
         (message.provider_message_id, "provider_message_id"),
         (message.provider_receipt_ref, "provider_receipt_ref"),
         (message.error_kind, "error_kind"),
@@ -937,18 +925,13 @@ def _validate_channel_session_update(
 ) -> ChannelSession:
     if (
         existing.channel != incoming.channel
-        or existing.provider_conversation_key != incoming.provider_conversation_key
-        or existing.provider_thread_key != incoming.provider_thread_key
+        or existing.provider_thread_id != incoming.provider_thread_id
         or existing.created_at_ms != incoming.created_at_ms
     ):
         raise ValueError("channel session identity cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_to(
-        incoming.state,
-        updated_at_ms=incoming.updated_at_ms,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         following=incoming.following,
         last_inbound_at_ms=incoming.last_inbound_at_ms,
@@ -968,12 +951,8 @@ def _validate_bcn_session_update(
     ):
         raise ValueError("bcn session binding cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_to(
-        incoming.state,
-        updated_at_ms=incoming.updated_at_ms,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         last_activity_at_ms=incoming.last_activity_at_ms,
         metadata=incoming.metadata,
@@ -993,19 +972,9 @@ def _validate_runtime_session_update(
     ):
         raise ValueError("runtime session binding cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_process_to(
-        incoming.process_state,
-        updated_at_ms=incoming.updated_at_ms,
-        error_kind=incoming.last_error_kind,
-        error_message=incoming.last_error_message,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         provider_thread_id=incoming.provider_thread_id,
-        process_id=incoming.process_id,
-        last_error_kind=incoming.last_error_kind or transitioned.last_error_kind,
-        last_error_message=incoming.last_error_message
-        or transitioned.last_error_message,
         metadata=incoming.metadata,
     )

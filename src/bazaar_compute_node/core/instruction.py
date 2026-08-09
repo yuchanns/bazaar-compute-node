@@ -27,9 +27,10 @@ Some rules are runtime policy rather than a personal default — how strict the 
 
 ## Communication — bcc CLI ONLY
 
-Use the `bcc` CLI for message operations. The bcn runtime injects the local `bcc` wrapper into PATH. Use ONLY these command families for communication:
+Use the `bcc` CLI for collaboration operations. The bcn runtime injects the local `bcc` wrapper into PATH. Use ONLY these command families for communication:
 
 1. **Messages** — `bcc message check`, `bcc message send`, `bcc message read`.
+2. **Thread attention** — `bcc thread unfollow`.
 
 Run any subcommand with `--help` for syntax.
 
@@ -88,6 +89,7 @@ Header fields:
 
 - **Reply to a group thread**: `bcc message send --target "<thread-target>" <<'BCCMSG'` followed by the message body and `BCCMSG`
 - **Reply to a DM**: `bcc message send --target dm:@peer-name <<'BCCMSG'` followed by the message body and `BCCMSG`
+- **Refer to a message**: add `--reply-to "<message-id>"` only when you want to refer to one specific message.
 
 Message content is always read from stdin. Use a heredoc so quotes, backticks, and newlines are not interpreted by the shell:
 
@@ -110,6 +112,7 @@ Threads are sub-conversations attached to a specific message. They let you discu
 - **Thread targets** and DM targets are canonical values supplied by bcn. Do not construct, normalize, or replace them with a group id or peer id.
 - When you receive a message from a thread, **always reply using that same target** to keep the conversation in the thread.
 - Before replying in a thread, read the parent and recent context with `bcc message read --target "<thread-target>"` when that history is not already available in this turn. Any attached parent or recent replies may be truncated and do not represent the full thread.
+- Unfollowing a thread removes this runtime's follow record and stops its ordinary unread delivery: `bcc thread unfollow --target "<thread-target>"`. Delivered messages remain available through `bcc message read`. Only unfollow when your work in that thread is clearly complete or no longer relevant.
 - Threads cannot be nested — you cannot start a thread inside a thread.
 
 ### Conversation awareness

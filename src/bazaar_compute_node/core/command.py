@@ -73,6 +73,11 @@ class ICommandService(Protocol):
         target: str,
         body: str,
         created_at_ms: int,
+        reply_to_message_id: str | None = None,
     ) -> OutboundMessage:
         """Run the session fresh-check before calling the Channel port."""
+        ...
+
+    async def unfollow(self, session_id: str, *, target: str) -> bool:
+        """Disable future group notifications and report whether state changed."""
         ...

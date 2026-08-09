@@ -251,7 +251,7 @@ log 的本地 `seq` 语义。
 | 表 | 注释 | 生命周期 |
 | --- | --- | --- |
 | `node_state` | 节点身份、共享 workspace 绑定和 schema version 缓存 | singleton，更新 metadata，不删除 |
-| `channel_sessions` | provider conversation/thread 到 channel session 的规范化绑定和 following 状态 | get-or-create，状态关闭，不删除历史身份 |
+| `channel_sessions` | provider thread 到 channel session 的规范化绑定和 following 状态 | get-or-create，状态关闭，不删除历史身份 |
 | `bcn_sessions` | 对外稳定的 bcn session，以及 channel/workspace 关系 | 创建后状态迁移，保留终态 |
 | `runtime_sessions` | agent runtime process、provider thread 和恢复状态 | 创建后记录启动/退出/对账状态，不复用 ID |
 | `runtime_turns` | 单个 runtime turn 的终态、unknown 和 reconciliation 状态 | append identity，状态有限迁移 |
@@ -287,22 +287,18 @@ CREATE TABLE node_state (
     metadata_json TEXT
 );
 
--- Provider conversation/thread identity and channel-level following state.
+-- Provider thread identity and channel-level following state.
 CREATE TABLE channel_sessions (
     -- Stable local identifier for the normalized channel session.
     id TEXT PRIMARY KEY,
     -- Selected channel adapter name.
     channel TEXT,
-    -- Provider-native conversation identity used for lookup.
-    provider_conversation_key TEXT,
-    -- Provider-native thread or reply identity when one exists.
-    provider_thread_key TEXT,
+    -- Provider-native routable thread identity used for lookup.
+    provider_thread_id TEXT,
     -- Normalized target category used by the command layer.
     target_kind TEXT,
     -- Application-managed following flag.
     following INTEGER,
-    -- Application-managed channel session lifecycle state.
-    state TEXT,
     -- Non-sensitive provider identity references encoded as JSON.
     provider_identity_ref_json TEXT,
     -- Creation time of the channel session.
@@ -323,23 +319,19 @@ CREATE TABLE bcn_sessions (
     channel_session_id TEXT,
     -- UUID of the shared workspace used by this session.
     workspace_id TEXT,
-    -- Application-managed bcn session lifecycle state.
-    state TEXT,
     -- Creation time of the bcn session.
     created_at_ms INTEGER,
-    -- Last update time of session state or metadata.
+    -- Last update time of durable session metadata.
     updated_at_ms INTEGER,
     -- Last message or runtime activity time.
     last_activity_at_ms INTEGER,
-    -- Time at which the session reached its stopped state.
-    stopped_at_ms INTEGER,
     -- Non-sensitive session metadata encoded as JSON.
     metadata_json TEXT
 );
 
--- One agent runtime process/thread binding and process recovery state.
+-- One durable agent runtime/thread binding.
 CREATE TABLE runtime_sessions (
-    -- Stable local identifier for one runtime process lifecycle.
+    -- Stable local identifier for one runtime binding.
     id TEXT PRIMARY KEY,
     -- Application-managed association to a bcn session.
     bcn_session_id TEXT,
@@ -351,26 +343,10 @@ CREATE TABLE runtime_sessions (
     runtime_version TEXT,
     -- Provider-native runtime thread identifier when available.
     provider_thread_id TEXT,
-    -- Application-managed process lifecycle state.
-    process_state TEXT,
-    -- Operating-system process identifier when the process is running.
-    process_pid INTEGER,
-    -- Last known process exit code.
-    last_exit_code INTEGER,
     -- Creation time of the runtime session record.
     created_at_ms INTEGER,
-    -- Last update time of runtime process state or metadata.
+    -- Last update time of durable runtime metadata.
     updated_at_ms INTEGER,
-    -- Process start time.
-    started_at_ms INTEGER,
-    -- Process stop time.
-    stopped_at_ms INTEGER,
-    -- Last time persisted state was reconciled with the process.
-    last_reconciled_at_ms INTEGER,
-    -- Stable application error category from the latest failure.
-    last_error_kind TEXT,
-    -- Redacted summary of the latest runtime failure.
-    last_error_message TEXT,
     -- Non-sensitive runtime metadata encoded as JSON.
     metadata_json TEXT
 );
@@ -413,22 +389,20 @@ CREATE TABLE inbound_messages (
     channel_session_id TEXT,
     -- Channel adapter name that normalized the message.
     channel TEXT,
+    -- Provider-native routable thread identity mapped to the channel session.
+    provider_thread_id TEXT,
     -- Provider-native message identifier used for application-level deduplication.
     provider_message_id TEXT,
     -- Provider timestamp, if supplied.
     provider_time_ms INTEGER,
     -- Local receipt time.
     received_at_ms INTEGER,
-    -- Stable provider sender identifier.
-    sender_id TEXT,
-    -- Display name captured at receipt time.
-    sender_display_name TEXT,
+    -- Provider-neutral sender identity shown to the runtime.
+    sender TEXT,
     -- Normalized sender or event type.
     message_type TEXT,
     -- Canonical target used by reply commands.
     canonical_target TEXT,
-    -- Provider-native thread identifier when available.
-    provider_thread_id TEXT,
     -- Provider-native identifier of the message being replied to.
     reply_to_provider_message_id TEXT,
     -- Normalized message body.
@@ -611,9 +585,8 @@ CREATE TABLE schema_migrations (
 - DDL 只保留用于物理行定位的 `INTEGER PRIMARY KEY`、本地 identity primary key 或消息
   UUIDv7 primary key；不把它们当作跨表关联、业务唯一性或状态校验。应用层必须在写入前
   校验 required fields、ID 格式和对象归属。
-- `channel_sessions` 的逻辑查找键是
-  `(channel, provider_conversation_key, provider_thread_key)`。没有 thread 的 provider
-  identity 由 adapter 规范化为空字符串或显式 sentinel；repository 在 session lock 内
+- `channel_sessions` 的逻辑查找键是 `(channel, provider_thread_id)`。DM 和群聊都由 adapter
+  规范化为 provider-native、可路由的 thread identity；repository 在 session lock 内
   执行 get-or-create，发现重复绑定时返回已有记录或冲突错误。
 - `bcn_sessions.channel_session_id` 与 `runtime_sessions.bcn_session_id` 表达 MVP 的
   一对一绑定，但由 application/repository 在同一 session lock 与显式事务中读取并校验，
@@ -647,9 +620,14 @@ CREATE TABLE schema_migrations (
   `draft_saved_at_ms`，因此 `Draft saved: yes` 有本地审计依据且不会伪称 provider 已调用。
 - `reply_to_message_id` 只保存 runtime 选择的本地 inbound message id；command service
   在创建 outbound 前校验该消息属于当前 bcn session 且 canonical target 兼容，再将
-  中立 reply reference（本地 id、provider message id、target）交给 Channel。它是
-  best-effort 发送提示：Channel 可以映射为 provider reply，也可以忽略并按普通消息发送；
+  provider message id 只作为瞬时 mapping 交给 Channel。bcc request/response、Runtime
+  instruction 和 durable outbound 始终只使用本地 message id；provider id 不进入 Runtime
+  可见边界。Channel 可以把瞬时 mapping 应用为 provider reply，也可以忽略并按普通消息发送；
   core 不记录或返回 provider 是否真实应用引用回复。
+- `canonical_target` 只使用 bcn 自己的 channel session id，格式为
+  `dm:<channel-session-id>` 或 `group:<channel-session-id>`。provider thread/user id
+  只保存在 Channel mapping 中；application 在调用 Channel 前将 system target 解析成瞬时
+  provider conversation key。bcc 的 check/read/send 不返回或接受 provider id。
 - `snapshot_seq` 是 command 使用的最近观察边界，`current_inbound_seq` 是 fresh-check
   重新读取到的当前边界；二者必须同时保存，便于解释“为什么拒绝”。`read` 返回的历史
   window 末 seq 不等于 snapshot seq；snapshot 始终记录该 session 当时的最新 inbound
@@ -673,8 +651,6 @@ CREATE TABLE schema_migrations (
       ON outbound_messages (session_id, created_at_ms);
   CREATE INDEX idx_outbound_state_created
       ON outbound_messages (state, created_at_ms);
-  CREATE INDEX idx_runtime_sessions_state
-      ON runtime_sessions (process_state, updated_at_ms);
   CREATE INDEX idx_runtime_turns_session_state
       ON runtime_turns (session_id, state, started_at_ms);
   CREATE INDEX idx_runtime_events_session_seq
@@ -779,7 +755,7 @@ TCP，必须使用每个 node 的随机 capability token、仅绑定 loopback，
    交付统一 `InboundMessage`：target kind、provider-neutral `mentions_agent` 以及零到多个已经
    含本地 relative path/failed category 的 `InboundAttachment`；不交付 URL、base64、AES key、
    SDK media object，也不决定 following。
-2. Application 以 channel conversation/thread identity 取得 session lock；Storage 查找
+2. Application 以 channel thread identity 取得 session lock；Storage 查找
    channel session，并再次校验 provider id 与全部 attachment path/terminal state。
 3. 在同一事务中 get-or-create channel/bcn session，将统一 inbound message 与全部 terminal
    attachment descriptor 无条件落库；DM 固定
@@ -812,7 +788,7 @@ bcc message read --target "<canonical-target>" [--around "<message-id>"]
 bcc message send --target "<canonical-target>" [--reply-to "<local-inbound-message-id>"] <<'BCCMSG'
 Message body.
 BCCMSG
-bcc message unfollow
+bcc thread unfollow --target "<canonical-target>"
 ```
 
 正文从 stdin 读取，不放进命令行参数；成功结果写 stdout，已处理的参数、fresh-check 或
@@ -848,10 +824,11 @@ failure category，但不输出 path：
 选择图片、音频或通用文件读取工具，但文件是否读取仍由 agent 决定。`check` 与 `read` 必须对
 同一 message/attachment snapshot 生成逐字相同的 suffix，避免一次消费后路径或状态漂移。
 
-`bcc message read` 负责历史窗口与定位字段，例如 local seq、完整 UUID、thread id 和
+`bcc message read` 负责历史窗口与定位字段，例如 local seq、完整本地 UUID 和
 reply target；每次 `check`/`read` 都返回或内部记录 inbox snapshot seq。`bcc message send`
-负责 target 校验、fresh check、outbound log 和 provider receipt。`bcc message unfollow` 只作用于
-当前 `BCN_SESSION_ID` 绑定的 group channel session，在 session command lock 内将 following
+负责 target 校验、fresh check、outbound log 和 provider receipt。`bcc thread unfollow --target`
+使用显式 BCN canonical target 选择 conversation；当前实现校验它属于 `BCN_SESSION_ID` 绑定的
+group channel session，并在 session command lock 内将 following
 转为 false 并记录 audit event。DM 或已是 unfollowed 的 group 调用都是幂等 no-op：
 返回成功 exit code，stdout/stderr 均为空，不改变状态。工具结果
 必须保留 sender identity，不能只返回无来源的正文。
@@ -865,18 +842,17 @@ No more new messages.
 
 # read: historical window with positioning fields
 Read window: <n> returned, seq <first-seq>-<last-seq>, oldest to newest.
-[1/<n> seq=<local-seq> msg=<full-message-id> time=<provider-time> type=human mentioned=<true|false> notifiesRuntime=<true|false> threadId=<thread-id> replyTarget=<canonical-target>] @sender: message body
+[1/<n> seq=<local-seq> msg=<full-message-id> time=<provider-time> type=human replyTarget=<canonical-target> mentioned=<true|false>] @sender: message body
 
 # send: confirmed outbound receipt
 Message sent to <canonical-target>. Message ID: <outbound-message-id>
 
-# unfollow: confirmed group mention/following transition
-Session unfollowed. New group messages will remain in history without notifying this runtime until attention is requested again.
+# unfollow: successful command has no stdout
 ```
 
 `check` 的 envelope 保留 agent 判断来源所需的 target、短消息 id、time、type、sender、
-`mentioned` 和 body；`read` 额外提供完整 message id、local seq、`notifiesRuntime`、threadId
-和 replyTarget，便于定位、区分 quiet history 与构造回复。`mentioned` 是统一 wire 名，
+`mentioned` 和 body；`read` 额外提供完整本地 message id、local seq 和 replyTarget，
+便于定位与构造回复。`mentioned` 是统一 wire 名，
 对应 core `InboundMessage.mentions_agent`；Runtime 不需要理解任何 provider mention schema。
 `send --reply-to` 表达中立的“尝试回复某条 inbound”意图；参数使用 bcn 本地 message id，
 不接收 provider-native id。未指定时是普通发送。Channel 能力不支持时忽略该提示并继续
@@ -957,8 +933,9 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
   canonical target。`aibot_event_callback` 是独立的 provider event stream；Task 5A 识别并
   计数但不把它伪装成用户消息触发 Runtime。`enter_chat`、`template_card_event` 和
   `feedback_event` 当前均不支持，也不进入后续 task；WeCom event type 不扩散进 core。
-- `send`：接收包含 canonical target、body、content format 和可选中立 reply reference 的
-  `ChannelSendRequest`，根据平台能力映射主动发送与消息级 reply，
+- `send`：接收 application 已按本地 channel/message ID 解析出的瞬时
+  `ChannelSendRequest`；其中 outbound 只含 BCN ID，provider conversation/reply ID 仅作为
+  Channel 内部投递 mapping，根据平台能力映射主动发送与消息级 reply，
   仅返回 provider-neutral delivery receipt；是否真实应用消息级 reply 不进入 core 状态。
 - `request_approval`：接收 core 的中立 `ApprovalRequest`，返回 `ApprovalDecision`；每个
   Channel contrib 自己实现审批策略。
@@ -1317,8 +1294,8 @@ composition root、command service lifecycle 和 dispatch contract。
 
 - 实现 `bcc message check`、`bcc message read --target ... [--around ...]` 的参数解析、
   session routing、cursor/snapshot 调用和 canonical text serializer。
-- 固定 stdout/stderr、退出码、sender identity、target、short/full message id、local seq、
-  threadId、replyTarget 和历史窗口边界；不把 provider SDK object 泄露给 runtime。
+- 固定 stdout/stderr、退出码、sender identity、target、short/full local message id、local seq、
+  replyTarget 和历史窗口边界；不把 provider ID 或 SDK object 泄露给 runtime。
 - 以 Test Channel 和真实 SQLite repository 验证 check drain、read non-drain、snapshot
   更新、无新消息输出和 target 定位错误。
 
@@ -1553,7 +1530,7 @@ credential-boundary tests；使用 WeComChannel+TestRuntime 独立验证真实 B
 - Runtime 只在 `bcc message send` 时提交一个完整逻辑 outbound；Channel 的超限分批是
   provider delivery detail，每批都是独立完整消息，不增量刷新已发内容。
 - WeCom 不支持对任意某条历史消息应用 message-level reply intent。
-  `ChannelSendRequest.reply_to` 非空时仍按正常主动路径发送正文并忽略该提示。
+  `ChannelSendRequest.provider_reply_to_message_id` 非空时仍按正常主动路径发送正文并忽略该提示。
   支持该能力的 Channel 可以把中立 reply reference 映射为 provider reply，但无需向 core
   报告是否真实应用。
 - provider ack 的 `errcode=0` 只确认企业微信长连接服务接受并处理该命令，不代表终端展示、
@@ -1576,14 +1553,28 @@ Markdown。
 
 #### Task 5C：session orchestration 与平台 delivery rules
 
+- `AgentState` 是唯一的 current lifecycle state machine，并且只存在于 daemon
+  内存。SQLite 不保存 bcn/channel/runtime 的 current lifecycle state；daemon 启动时
+  根据当下可确定事实重建 Agent 初始态，不恢复上一进程的状态。
+  `RuntimeProcessState` 和 `ChannelSessionState` 整套删除；Runtime/Channel 只管理
+  child process、connection、ack waiter 等实际资源，并把 observation 交给
+  orchestrator 转换为 `AgentSignal` 推进 `AgentState`。
+- `AgentState.STOPPED` 删除；其余已有 Agent state 暂时保留。graceful shutdown
+  只在内存中进入 `STOPPING`，用于拒绝新工作、收敛 in-flight 并释放资源；
+  完成后直接销毁 Agent 对象，不再进入一个无观察者的 terminal state。
+  Runtime start/resume/turn/stop 的 confirmed/failed/unknown observation 只更新内存
+  AgentState 和 append-only audit，不写 session row。
+- `RuntimeTurnState`、`OutboundDeliveryState` 仍作为 durable business attempt/delivery
+  outcome 保留；它们记录可能已有外部副作用的事实，不是 Runtime/Channel
+  current lifecycle，不得作为第二套 Agent state source of truth。
 - 首次 inbound 创建 channel/bcn mapping；只有 `notifies_runtime=true` 时才创建或恢复
-  runtime binding。后续同一 conversation/thread 复用既有 session；不同 conversation
+  runtime binding。后续同一 thread 复用既有 session；不同 thread
   不能共享 cursor、process 或 turn。
 - 在通用 orchestration 中保留真正的 following state machine：Channel 已投递的每条 inbound
   都先落库；unfollowed 时不进入该 session 的 unread count 且不触发 Runtime turn，
   group 的 `mentions_agent=true` 在同一事务中开启 following 并让当前消息进入未读；
   followed 时所有后续已投递 inbound 都进入未读并持续 reminder，直到 agent 调用
-  `bcc message unfollow`。DM 创建后固定 followed，所有 inbound 都通知 Runtime；
+  `bcc thread unfollow --target "<canonical-target>"`。DM 创建后固定 followed，所有 inbound 都通知 Runtime；
   unfollow 对 DM 成功返回但不改变 following。这个语义不能由
   provider 的“是否投递”隐式替代。
 - 所有 Channel adapter 都只负责标准化 target kind 与 `mentions_agent`，不自行改写
@@ -1593,27 +1584,32 @@ Markdown。
   following，但对未被 provider 投递的消息无法落库、计入未读或由 fresh-check/
   cursor/Codex thread 补回；这个 gap 只记为 Channel capability，不引入 WeCom-specific
   orchestration branch。
-- 将 group `chatid` 与 DM `userid` 映射为不同 canonical target kind；quote 只表示本次已投递
-  消息的引用内容，不建立 provider 不存在的 thread。Channel health/capability 明确
+- 将 group `chatid` 与 DM `userid` 映射到本地 channel session ID，并以该本地 ID 形成
+  `group:<channel-session-id>` / `dm:<channel-session-id>` canonical target；provider ID 不进入
+  bcc。quote 只表示本次已投递消息的引用内容，不建立 provider 不存在的 thread。Channel health/capability 明确
   暴露 group full-ingress 是否可用，让 operator 知道 following 是完整还是存在 provider gap，
   但不在 Runtime prompt 中伪造已收到的消息。
-- 同步 runtime developer instruction 与 `bcc --help`：说明 group mention 会开启 following，
-  agent 在确认不再需要后续群上下文时调用 `bcc message unfollow`；DM 上的同一命令
-  是无输出的成功 no-op。
+- 同步 runtime developer instruction 与 `bcc --help`，沿用 Raft 的行为边界：仅当当前
+  conversation 的工作明确完成或不再相关时调用
+  `bcc thread unfollow --target "<thread-target>"`。prompt 不解释
+  provider、group/DM 或 following 的实现细节；命令在 DM 上仍是无输出的成功 no-op。
 - restart 只重建 WebSocket、重新认证并恢复持久化的 following 与 session/runtime thread
   mapping；不声称恢复断线期间的
   provider event。graceful shutdown 先停止 receive/reconnect，再 bounded 等待当前 reply ack，
-  超时 outbound 留为 unknown，然后关闭 heartbeat 与 WebSocket。
-- 将 runtime completion、Channel outbound 和 session state 的边界保持独立，不能用一个
-  boolean 表示整条链路成功。
+  超时 outbound 留为 unknown，然后关闭 heartbeat 与 WebSocket。Runtime/Channel
+  observation 统一驱动 AgentState，但 runtime turn attempt 和 Channel outbound delivery
+  的 durable outcome 仍保持独立，不能用一个 boolean 表示整条链路成功。
 
 依赖：Task 5B 的 outbound delivery 与 Channel approval policy。产出：provider-neutral
-mention/following state machine、`bcc message unfollow`、平台 capability 与真实测试
+mention/following state machine、`bcc thread unfollow`、平台 capability 与真实测试
 channel flow。
 
 Phase 验收分三层：
 
 1. TestChannel+TestRuntime 的 core contract：使用能投递全量群消息的 test-only Channel
+   验证 `AgentState` 是唯一内存 lifecycle，新 daemon 不从 SQLite 恢复旧状态；
+   Runtime/Channel observation 只通过 `AgentSignal` 推进 Agent，graceful shutdown 进入
+   `STOPPING` 后直接销毁内存 Agent，不产生 `STOPPED` 或任何 session lifecycle DB write。
    验证 quiet group inbound 先落库但不进入 unread/reminder；`mentions_agent=true` 的 inbound 原子开启
    following 并触发 turn；后续 quiet inbound 持续通知；unfollow 后新消息仍落库但
    恢复静默；DM 始终通知且 unfollow 成功 no-op。同时验证 `send --reply-to`

@@ -76,7 +76,6 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "idx_runtime_events_created",
             "idx_runtime_events_name_seq",
             "idx_runtime_events_session_seq",
-            "idx_runtime_sessions_state",
             "idx_runtime_turns_session_state",
         }
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}

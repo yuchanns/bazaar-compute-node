@@ -7,7 +7,12 @@ from typing import Protocol
 
 from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
-from .models import InboundAttachment, InboundMessage, OutboundMessage
+from .models import (
+    ChannelTargetKind,
+    InboundAttachment,
+    InboundMessage,
+    OutboundMessage,
+)
 from .outcomes import ProviderCallResult
 
 
@@ -31,6 +36,25 @@ class ChannelDeliveryReceipt:
             raise ValueError(
                 "a channel delivery receipt requires a provider identifier"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelSendRequest:
+    """Transient provider mapping resolved behind the runtime command boundary."""
+
+    outbound: OutboundMessage
+    target_kind: ChannelTargetKind
+    provider_thread_id: str
+    provider_reply_to_message_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.provider_thread_id:
+            raise ValueError("provider_thread_id must be non-empty")
+        if (
+            self.provider_reply_to_message_id is not None
+            and not self.provider_reply_to_message_id
+        ):
+            raise ValueError("provider_reply_to_message_id must be non-empty")
 
 
 class IAttachmentMaterializer(Protocol):
@@ -87,7 +111,7 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         ...
 
     async def send(
-        self, message: OutboundMessage, *, timeout: float
+        self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
         """Deliver one outbound message without hiding unknown provider status."""
         ...

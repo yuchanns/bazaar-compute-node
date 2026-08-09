@@ -5,11 +5,6 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 
 
-class ChannelSessionState(StrEnum):
-    ACTIVE = "active"
-    CLOSED = "closed"
-
-
 class AgentState(StrEnum):
     """Provider-neutral lifecycle state for one bcn agent session."""
 
@@ -21,7 +16,6 @@ class AgentState(StrEnum):
     COMPACTING = "compacting"
     COMPACTION_COMPLETED = "compaction_completed"
     STOPPING = "stopping"
-    STOPPED = "stopped"
     FAILED = "failed"
     UNKNOWN = "unknown"
     RECONCILING = "reconciling"
@@ -55,7 +49,6 @@ class AgentSignal(StrEnum):
     COMPACTION_IN_PROGRESS = "compaction_in_progress"
     COMPACTION_COMPLETED = "compaction_completed"
     STOP_REQUESTED = "stop_requested"
-    STOP_CONFIRMED = "stop_confirmed"
     FAILED = "failed"
     UNKNOWN = "unknown"
     RECONCILE_REQUESTED = "reconcile_requested"
@@ -166,13 +159,8 @@ AGENT_TICK_TRANSITIONS: Mapping[AgentState, Mapping[AgentSignal, AgentState]] = 
     },
     AgentState.STOPPING: {
         AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.STOP_CONFIRMED: AgentState.STOPPED,
         AgentSignal.FAILED: AgentState.FAILED,
         AgentSignal.UNKNOWN: AgentState.UNKNOWN,
-    },
-    AgentState.STOPPED: {
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPED,
-        AgentSignal.STOP_CONFIRMED: AgentState.STOPPED,
     },
     AgentState.FAILED: {
         AgentSignal.START_REQUESTED: AgentState.STARTING,
@@ -220,16 +208,6 @@ def reduce_agent_tick(current: AgentState, tick: AgentTick) -> AgentState:
         raise StateTransitionError("agent", current, tick.signal)
     ensure_transition("agent", current, target, AGENT_STATE_TRANSITIONS)
     return target
-
-
-class RuntimeProcessState(StrEnum):
-    STARTING = "starting"
-    RUNNING = "running"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    FAILED = "failed"
-    UNKNOWN = "unknown"
-    RECONCILING = "reconciling"
 
 
 class RuntimeTurnState(StrEnum):
@@ -293,52 +271,6 @@ def ensure_transition[StateT: Enum](
     if target not in transitions.get(current, frozenset()):
         raise StateTransitionError(aggregate, current, target)
 
-
-CHANNEL_SESSION_TRANSITIONS: Mapping[
-    ChannelSessionState, frozenset[ChannelSessionState]
-] = {
-    ChannelSessionState.ACTIVE: frozenset({ChannelSessionState.CLOSED}),
-    ChannelSessionState.CLOSED: frozenset(),
-}
-
-RUNTIME_PROCESS_TRANSITIONS: Mapping[
-    RuntimeProcessState, frozenset[RuntimeProcessState]
-] = {
-    RuntimeProcessState.STARTING: frozenset(
-        {
-            RuntimeProcessState.RUNNING,
-            RuntimeProcessState.STOPPING,
-            RuntimeProcessState.FAILED,
-            RuntimeProcessState.UNKNOWN,
-        }
-    ),
-    RuntimeProcessState.RUNNING: frozenset(
-        {
-            RuntimeProcessState.STOPPING,
-            RuntimeProcessState.FAILED,
-            RuntimeProcessState.UNKNOWN,
-        }
-    ),
-    RuntimeProcessState.STOPPING: frozenset(
-        {
-            RuntimeProcessState.STOPPED,
-            RuntimeProcessState.FAILED,
-            RuntimeProcessState.UNKNOWN,
-        }
-    ),
-    RuntimeProcessState.STOPPED: frozenset(),
-    RuntimeProcessState.FAILED: frozenset(),
-    RuntimeProcessState.UNKNOWN: frozenset({RuntimeProcessState.RECONCILING}),
-    RuntimeProcessState.RECONCILING: frozenset(
-        {
-            RuntimeProcessState.RUNNING,
-            RuntimeProcessState.STOPPING,
-            RuntimeProcessState.STOPPED,
-            RuntimeProcessState.FAILED,
-            RuntimeProcessState.UNKNOWN,
-        }
-    ),
-}
 
 RUNTIME_TURN_TRANSITIONS: Mapping[RuntimeTurnState, frozenset[RuntimeTurnState]] = {
     RuntimeTurnState.STARTING: frozenset(

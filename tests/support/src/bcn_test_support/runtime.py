@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import time_ns
 from typing import ClassVar
 
@@ -13,7 +13,6 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     RuntimeEvent,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -104,13 +103,15 @@ class TestRuntime(IRuntime):
         self.started_sessions.append(session)
         if self._start_results:
             return self._start_results.popleft()
-        running = session.transition_process_to(
-            RuntimeProcessState.RUNNING,
-            updated_at_ms=time_ns() // 1_000_000,
-        )
+        if session.provider_thread_id is None:
+            session = replace(
+                session,
+                provider_thread_id=f"test-thread-{session.id}",
+                updated_at_ms=time_ns() // 1_000_000,
+            )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=running,
+            value=session,
         )
 
     async def resume_session(
@@ -119,18 +120,9 @@ class TestRuntime(IRuntime):
         self.resumed_sessions.append(session)
         if self._resume_results:
             return self._resume_results.popleft()
-        if session.process_state is RuntimeProcessState.UNKNOWN:
-            session = session.transition_process_to(
-                RuntimeProcessState.RECONCILING,
-                updated_at_ms=time_ns() // 1_000_000,
-            )
-        running = session.transition_process_to(
-            RuntimeProcessState.RUNNING,
-            updated_at_ms=time_ns() // 1_000_000,
-        )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=running,
+            value=session,
         )
 
     async def start_turn(
@@ -182,18 +174,9 @@ class TestRuntime(IRuntime):
         self.stopped_sessions.append(session)
         if self._stop_results:
             return self._stop_results.popleft()
-        if session.process_state is not RuntimeProcessState.STOPPING:
-            session = session.transition_process_to(
-                RuntimeProcessState.STOPPING,
-                updated_at_ms=time_ns() // 1_000_000,
-            )
-        stopped = session.transition_process_to(
-            RuntimeProcessState.STOPPED,
-            updated_at_ms=time_ns() // 1_000_000,
-        )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=stopped,
+            value=session,
         )
 
     def _next_event(
@@ -210,7 +193,7 @@ class TestRuntime(IRuntime):
             error_kind = "provider_unknown"
         return RuntimeEvent(
             event_seq=self._event_seq,
-            event_id=f"test-event-{self._event_seq}",
+            event_id=f"test-event-{turn.turn_id}-{self._event_seq}",
             created_at_ms=time_ns() // 1_000_000,
             level="error" if error_kind else "info",
             event_name=f"runtime.turn.{state.value}",

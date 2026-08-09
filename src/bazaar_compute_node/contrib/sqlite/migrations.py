@@ -73,22 +73,18 @@ SCHEMA_MIGRATION = Migration(
         )
         """,
         """
-        -- Provider conversation/thread identity and channel-level following state.
+        -- Provider thread identity and channel-level following state.
         CREATE TABLE channel_sessions (
             -- Stable local identifier for the normalized channel session.
             id TEXT PRIMARY KEY,
             -- Selected channel adapter name.
             channel TEXT,
-            -- Provider-native conversation identity used for lookup.
-            provider_conversation_key TEXT,
-            -- Provider-native thread or reply identity when one exists.
-            provider_thread_key TEXT,
+            -- Provider-native routable thread identity used for lookup.
+            provider_thread_id TEXT,
             -- Normalized target category used by the command layer.
             target_kind TEXT,
             -- Application-managed following flag.
             following INTEGER,
-            -- Application-managed channel session lifecycle state.
-            state TEXT,
             -- Non-sensitive provider identity references encoded as JSON.
             provider_identity_ref_json TEXT,
             -- Creation time of the channel session.
@@ -110,24 +106,20 @@ SCHEMA_MIGRATION = Migration(
             channel_session_id TEXT,
             -- UUIDv7-backed identifier of the shared workspace used by this session.
             workspace_id TEXT,
-            -- Application-managed bcn session lifecycle state.
-            state TEXT,
             -- Creation time of the bcn session.
             created_at_ms INTEGER,
-            -- Last update time of session state or metadata.
+            -- Last update time of durable session metadata.
             updated_at_ms INTEGER,
             -- Last message or runtime activity time.
             last_activity_at_ms INTEGER,
-            -- Time at which the session reached its stopped state.
-            stopped_at_ms INTEGER,
             -- Non-sensitive session metadata encoded as JSON.
             metadata_json TEXT
         )
         """,
         """
-        -- One agent runtime process/thread binding and process recovery state.
+        -- One durable agent runtime/thread binding.
         CREATE TABLE runtime_sessions (
-            -- Stable local identifier for one runtime process lifecycle.
+            -- Stable local identifier for one runtime binding.
             id TEXT PRIMARY KEY,
             -- Application-managed association to a bcn session.
             bcn_session_id TEXT,
@@ -139,26 +131,10 @@ SCHEMA_MIGRATION = Migration(
             runtime_version TEXT,
             -- Provider-native runtime thread identifier when available.
             provider_thread_id TEXT,
-            -- Application-managed process lifecycle state.
-            process_state TEXT,
-            -- Operating-system process identifier when the process is running.
-            process_pid INTEGER,
-            -- Last known process exit code.
-            last_exit_code INTEGER,
             -- Creation time of the runtime session record.
             created_at_ms INTEGER,
-            -- Last update time of runtime process state or metadata.
+            -- Last update time of durable runtime metadata.
             updated_at_ms INTEGER,
-            -- Process start time.
-            started_at_ms INTEGER,
-            -- Process stop time.
-            stopped_at_ms INTEGER,
-            -- Last time persisted state was reconciled with the process.
-            last_reconciled_at_ms INTEGER,
-            -- Stable application error category from the latest failure.
-            last_error_kind TEXT,
-            -- Redacted summary of the latest runtime failure.
-            last_error_message TEXT,
             -- Non-sensitive runtime metadata encoded as JSON.
             metadata_json TEXT
         )
@@ -203,24 +179,22 @@ SCHEMA_MIGRATION = Migration(
             channel_session_id TEXT,
             -- Channel adapter name that normalized the message.
             channel TEXT,
+            -- Provider-native routable thread identity mapped to the channel session.
+            provider_thread_id TEXT,
             -- Provider-native message identifier used for application-level deduplication.
             provider_message_id TEXT,
             -- Provider timestamp, if supplied.
             provider_time_ms INTEGER,
             -- Local receipt time.
             received_at_ms INTEGER,
-            -- Stable provider sender identifier.
-            sender_id TEXT,
-            -- Display name captured at receipt time.
-            sender_display_name TEXT,
+            -- Provider-neutral sender identity shown to the runtime.
+            sender TEXT,
             -- Normalized sender or event type.
             message_type TEXT,
             -- Canonical target used by reply commands.
             canonical_target TEXT,
             -- Provider-neutral direct-message or group classification.
             target_kind TEXT,
-            -- Provider-native thread identifier when available.
-            provider_thread_id TEXT,
             -- Provider-native identifier of the message being replied to.
             reply_to_provider_message_id TEXT,
             -- Normalized message body.
@@ -263,6 +237,8 @@ SCHEMA_MIGRATION = Migration(
             channel_session_id TEXT,
             -- Canonical target supplied to the send command.
             target TEXT,
+            -- Local inbound message identity for an optional reply intent.
+            reply_to_message_id TEXT,
             -- Outbound message body captured for retry and audit.
             body TEXT,
             -- Application-managed delivery lifecycle state.
@@ -388,10 +364,6 @@ SCHEMA_MIGRATION = Migration(
             ON outbound_messages (state, created_at_ms)
         """,
         """
-        CREATE INDEX idx_runtime_sessions_state
-            ON runtime_sessions (process_state, updated_at_ms)
-        """,
-        """
         CREATE INDEX idx_runtime_turns_session_state
             ON runtime_turns (session_id, state, started_at_ms)
         """,
@@ -419,8 +391,7 @@ SESSION_MAPPING_INDEX_MIGRATION = Migration(
         CREATE INDEX idx_channel_sessions_provider_identity
             ON channel_sessions (
                 channel,
-                provider_conversation_key,
-                provider_thread_key
+                provider_thread_id
             )
         """,
         """

@@ -4,7 +4,11 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 
-from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
+from bazaar_compute_node.core.channel import (
+    ChannelDeliveryReceipt,
+    ChannelSendRequest,
+    IChannel,
+)
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -37,6 +41,7 @@ class TestChannel(IChannel):
         self.stopped = False
         self.receive_closed = False
         self.injected_messages: list[InboundMessage] = []
+        self.send_requests: list[ChannelSendRequest] = []
         self.send_attempts: list[OutboundMessage] = []
         self.queued_messages: list[OutboundMessage] = []
         self.sent_messages: list[OutboundMessage] = []
@@ -88,8 +93,10 @@ class TestChannel(IChannel):
         self._approval_results.append(result)
 
     async def send(
-        self, message: OutboundMessage, *, timeout: float
+        self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        self.send_requests.append(request)
+        message = request.outbound
         self.send_attempts.append(message)
         if not self.started or self.stopped:
             return ProviderCallResult(

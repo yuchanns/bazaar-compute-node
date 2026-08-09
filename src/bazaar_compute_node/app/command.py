@@ -21,11 +21,9 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "channel": message.channel,
-        "provider_message_id": message.provider_message_id,
         "received_at_ms": message.received_at_ms,
         "provider_time_ms": message.provider_time_ms,
-        "sender_id": message.sender_id,
-        "sender_display_name": message.sender_display_name,
+        "sender": message.sender,
         "message_type": message.message_type,
         "canonical_target": message.canonical_target,
         "target_kind": message.target_kind.value,
@@ -45,8 +43,6 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
             for attachment in message.attachments
         ],
         "body": message.body,
-        "provider_thread_id": message.provider_thread_id,
-        "reply_to_provider_message_id": message.reply_to_provider_message_id,
     }
 
 
@@ -57,15 +53,13 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "target": message.target,
+        "reply_to_message_id": message.reply_to_message_id,
         "body": message.body,
         "state": message.state.value,
         "fresh_check_state": message.fresh_check_state.value,
         "created_at_ms": message.created_at_ms,
         "snapshot_seq": message.snapshot_seq,
         "current_inbound_seq": message.current_inbound_seq,
-        "provider_message_id": message.provider_message_id,
-        "provider_receipt_ref": message.provider_receipt_ref,
-        "delivery_receipt": message.metadata.get("delivery_receipt"),
         "provider_attempted_at_ms": message.provider_attempted_at_ms,
         "completed_at_ms": message.completed_at_ms,
         "draft_saved_at_ms": message.draft_saved_at_ms,
@@ -282,6 +276,7 @@ class CommandDispatcher:
             target = request.get("target")
             body = request.get("body")
             command_id = request.get("command_id")
+            reply_to_message_id = request.get("reply_to_message_id")
             created_at_ms = request.get("created_at_ms", time_ns() // 1_000_000)
             if not isinstance(target, str) or not target:
                 raise CommandDispatchError(
@@ -292,6 +287,13 @@ class CommandDispatcher:
             if not isinstance(command_id, str) or not command_id:
                 raise CommandDispatchError(
                     "COMMAND_ID_REQUIRED", "command_id must be a non-empty string"
+                )
+            if reply_to_message_id is not None and (
+                not isinstance(reply_to_message_id, str) or not reply_to_message_id
+            ):
+                raise CommandDispatchError(
+                    "INVALID_REPLY_TO",
+                    "reply_to_message_id must be a non-empty string",
                 )
             if (
                 isinstance(created_at_ms, bool)
@@ -307,11 +309,21 @@ class CommandDispatcher:
                 target=target,
                 body=body,
                 created_at_ms=created_at_ms,
+                reply_to_message_id=reply_to_message_id,
             )
             return {
                 "ok": True,
                 "result": {"outbound": serialize_outbound(result)},
             }
+
+        if command == "unfollow":
+            target = request.get("target")
+            if not isinstance(target, str) or not target:
+                raise CommandDispatchError(
+                    "TARGET_REQUIRED", "target must be a non-empty string"
+                )
+            changed = await self._service.unfollow(session_id, target=target)
+            return {"ok": True, "result": {"changed": changed}}
 
         raise CommandDispatchError("UNKNOWN_COMMAND", f"unsupported command: {command}")
 

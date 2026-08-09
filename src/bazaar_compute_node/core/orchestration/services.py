@@ -7,9 +7,14 @@ from ..command import SessionNotFoundError
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
-from ..models import AgentTick, BcnSession, RuntimeEventState
+from ..models import (
+    AgentState,
+    AgentTick,
+    RuntimeEventState,
+    reduce_agent_tick,
+)
 from ..observability import IAudit, LogLevel
-from ..storage import IStorage, IStorageTransaction
+from ..storage import IStorage
 
 
 class SessionAuditRecorder:
@@ -97,38 +102,34 @@ class SessionAuditRecorder:
 
 
 class SessionStateWriter:
-    """Serialize agent ticks and keep the in-process session cache current."""
+    """Serialize ticks against the process-local AgentState source of truth."""
 
     def __init__(
         self,
         *,
         storage: IStorage,
         concurrency: ISessionConcurrency,
-        bcn_sessions: dict[str, BcnSession],
+        states: dict[str, AgentState],
     ) -> None:
         self._storage = storage
         self._concurrency = concurrency
-        self._bcn_sessions = bcn_sessions
+        self._states = states
 
-    async def apply(self, session_id: str, tick: AgentTick) -> BcnSession:
+    def get(self, session_id: str) -> AgentState:
+        return self._states.get(session_id, AgentState.CREATED)
+
+    async def apply(self, session_id: str, tick: AgentTick) -> AgentState:
         async with self._concurrency.for_session(session_id):
             return await self.apply_locked(session_id, tick)
 
-    async def apply_locked(self, session_id: str, tick: AgentTick) -> BcnSession:
+    async def apply_locked(self, session_id: str, tick: AgentTick) -> AgentState:
         async with self._storage.transaction() as transaction:
             bcn_session = await transaction.get_bcn_session(session_id)
             if bcn_session is None:
                 raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            return await self.apply_in_transaction(transaction, bcn_session, tick)
+        return self.apply_observation(bcn_session.id, tick)
 
-    async def apply_in_transaction(
-        self,
-        transaction: IStorageTransaction,
-        bcn_session: BcnSession,
-        tick: AgentTick,
-    ) -> BcnSession:
-        updated = bcn_session.apply_tick(tick)
-        if updated is not bcn_session:
-            await transaction.save_bcn_session(updated)
-        self._bcn_sessions[updated.id] = updated
+    def apply_observation(self, session_id: str, tick: AgentTick) -> AgentState:
+        updated = reduce_agent_tick(self.get(session_id), tick)
+        self._states[session_id] = updated
         return updated

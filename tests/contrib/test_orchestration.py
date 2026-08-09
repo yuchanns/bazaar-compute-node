@@ -33,7 +33,6 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeTurn,
     RuntimeTurnState,
 )
@@ -58,14 +57,13 @@ def make_message(
         session_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
+        provider_thread_id=f"thread-{session_id}",
         provider_message_id=f"provider-{session_id}-{seq}",
         received_at_ms=seq,
-        sender_id="sender-1",
-        sender_display_name="Sender",
+        sender="Sender",
         message_type="text",
         canonical_target=f"#test:{session_id}",
         body=body if body is not None else f"inbound-{seq}",
-        provider_thread_id=f"thread-{session_id}",
     )
 
 
@@ -422,19 +420,65 @@ async def test_channel_storage_runtime_turn_path() -> None:
         )
 
         assert storage.inbound_messages["bcn-1"] == [message]
-        assert storage.bcn_sessions["bcn-1"].state is AgentState.IDLE
-        assert (
-            storage.runtime_sessions["runtime-bcn-1"].process_state
-            is RuntimeProcessState.RUNNING
-        )
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
         assert runtime.started_turns
         assert any(
             event.correlation.bcn_session_id == "bcn-1"
             and event.correlation.turn_id == "turn-message-bcn-1-1"
             for event in audit.events
         )
+        assert (
+            await orchestrator.command_service.unfollow("bcn-1", target="#test:bcn-1")
+            is False
+        )
+        assert storage.channel_sessions["channel-bcn-1"].following is True
     finally:
         await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_rebuilds_agent_state_and_resumes_durable_binding() -> (
+    None
+):
+    first, first_channel, _first_runtime, storage, _ = await make_node()
+    await first_channel.inject(make_message(seq=1))
+    await wait_until(
+        lambda: (
+            storage.runtime_turns.get("turn-message-bcn-1-1")
+            and storage.runtime_turns["turn-message-bcn-1-1"].state
+            is RuntimeTurnState.COMPLETED
+        )
+    )
+    runtime_binding = storage.runtime_sessions["runtime-bcn-1"]
+    assert runtime_binding.provider_thread_id == "test-thread-runtime-bcn-1"
+    assert first.agent_state("bcn-1") is AgentState.IDLE
+    await first.stop(timeout=1)
+    assert first.agent_state("bcn-1") is None
+
+    channel = TestChannel()
+    runtime = TestRuntime()
+    audit = RecordingAudit()
+    restarted = SessionOrchestrator(
+        node_id="node-1",
+        workspace_id="workspace-1",
+        channel=channel,
+        runtime=runtime,
+        storage=storage,
+        audit=audit,
+        timeout_budget=make_budget(),
+    )
+    runtime.command_service = restarted.command_service
+    await restarted.start(timeout=1)
+    try:
+        assert restarted.agent_state("bcn-1") is None
+        turn = await restarted.handle_inbound(make_message(seq=2))
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.COMPLETED
+        assert restarted.agent_state("bcn-1") is AgentState.IDLE
+        assert runtime.started_sessions == []
+        assert runtime.resumed_sessions == [runtime_binding]
+    finally:
+        await restarted.stop(timeout=1)
 
 
 @pytest.mark.asyncio
@@ -561,7 +605,7 @@ async def test_runtime_failure_and_unknown_stream_are_persisted() -> None:
                 is RuntimeTurnState.UNKNOWN
             )
         )
-        assert storage.bcn_sessions["bcn-1"].state is AgentState.UNKNOWN
+        assert orchestrator.agent_state("bcn-1") is AgentState.UNKNOWN
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -621,8 +665,12 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             target="#test:bcn-1",
             body="reply",
             created_at_ms=3,
+            reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
         )
         assert delivered.state is OutboundDeliveryState.SENT
+        assert channel.send_requests[0].provider_reply_to_message_id == (
+            storage.inbound_messages["bcn-1"][0].provider_message_id
+        )
         assert len(channel.send_attempts) == 1
 
         await channel.inject(make_message(seq=2))
@@ -796,7 +844,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
-    assert storage.bcn_sessions["bcn-1"].state is AgentState.WORKING
+    assert orchestrator.agent_state("bcn-1") is AgentState.WORKING
 
     await orchestrator.stop(timeout=1)
     result = await asyncio.gather(task, return_exceptions=True)
@@ -810,7 +858,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     assert runtime.stopped
     assert channel.stopped
     assert storage.stopped
-    assert storage.bcn_sessions["bcn-1"].state is AgentState.STOPPED
+    assert orchestrator.agent_state("bcn-1") is None
 
 
 @pytest.mark.asyncio
@@ -858,7 +906,7 @@ async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -
         await wait_until(
             lambda: (
                 storage.bcn_sessions.get("bcn-1") is not None
-                and storage.bcn_sessions["bcn-1"].state is AgentState.IDLE
+                and orchestrator.agent_state("bcn-1") is AgentState.IDLE
             )
         )
 
@@ -871,7 +919,7 @@ async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -
             orchestrator.tick("bcn-1", started_tick),
             orchestrator.tick("bcn-1", started_tick),
         )
-        assert {session.state for session in started} == {AgentState.WORKING}
+        assert set(started) == {AgentState.WORKING}
 
         completed_tick = AgentTick(
             source=AgentTickSource.RUNTIME,
@@ -882,7 +930,7 @@ async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -
             orchestrator.tick("bcn-1", completed_tick),
             orchestrator.tick("bcn-1", completed_tick),
         )
-        assert {session.state for session in completed} == {AgentState.IDLE}
+        assert set(completed) == {AgentState.IDLE}
 
         for signal, expected in (
             (AgentSignal.COMPACTION_STARTED, AgentState.COMPACTION_STARTING),
@@ -899,7 +947,7 @@ async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -
                     observed_at_ms=current.updated_at_ms,
                 ),
             )
-            assert updated.state is expected
+            assert updated is expected
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -970,8 +1018,21 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
 
+        assert (
+            await orchestrator.command_service.unfollow("bcn-1", target="#test:bcn-1")
+            is True
+        )
+        assert storage.channel_sessions["channel-bcn-1"].following is False
+        after_unfollow = replace(
+            make_message(seq=4),
+            target_kind=ChannelTargetKind.GROUP,
+            mentions_agent=False,
+        )
+        assert await orchestrator.handle_inbound(after_unfollow) is None
+        assert storage.inbound_messages["bcn-1"][-1].notifies_runtime is False
+
         assert await orchestrator.handle_inbound(quiet) is None
-        assert len(storage.inbound_messages["bcn-1"]) == 3
+        assert len(storage.inbound_messages["bcn-1"]) == 4
         assert storage.inbound_messages["bcn-1"][0].notifies_runtime is False
     finally:
         await orchestrator.stop(timeout=1)
@@ -1000,7 +1061,7 @@ async def test_inbound_failure_rolls_back_new_session_state() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
-    orchestrator, channel, runtime, storage, _ = await make_node()
+    orchestrator, channel, runtime, _, _ = await make_node()
     try:
         runtime.queue_start_result(
             ProviderCallResult(
@@ -1014,11 +1075,7 @@ async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
 
         assert result is not None
         assert result.state is RuntimeTurnState.FAILED
-        assert (
-            storage.runtime_sessions["runtime-bcn-1"].process_state
-            is RuntimeProcessState.FAILED
-        )
-        assert storage.bcn_sessions["bcn-1"].state is AgentState.FAILED
+        assert orchestrator.agent_state("bcn-1") is AgentState.FAILED
         assert not channel.sent_messages
     finally:
         await orchestrator.stop(timeout=1)

@@ -10,17 +10,14 @@ import pytest_asyncio
 
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.models import (
-    AgentState,
     BcnSession,
     ChannelSession,
-    ChannelSessionState,
     FreshCheckState,
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeEvent,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -45,9 +42,7 @@ def make_channel_session(
     return ChannelSession(
         id=session_id,
         channel=channel,
-        provider_conversation_key=f"conversation-{session_id}",
-        provider_thread_key=f"thread-{session_id}",
-        state=ChannelSessionState.ACTIVE,
+        provider_thread_id=f"thread-{session_id}",
         created_at_ms=100,
         updated_at_ms=100,
     )
@@ -60,7 +55,6 @@ def make_bcn_session(
         id=session_id,
         channel_session_id=channel_session_id,
         workspace_id="workspace-1",
-        state=AgentState.CREATED,
         created_at_ms=100,
         updated_at_ms=100,
     )
@@ -78,7 +72,6 @@ def make_runtime_session(
         channel_session_id=channel_session_id,
         runtime="test",
         workspace_id="workspace-1",
-        process_state=RuntimeProcessState.STARTING,
         created_at_ms=100,
         updated_at_ms=100,
     )
@@ -93,10 +86,10 @@ def make_inbound_message(
         session_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
+        provider_thread_id=f"thread-{session_id}",
         provider_message_id="provider-message-1",
         received_at_ms=101,
-        sender_id="sender-1",
-        sender_display_name="Sender",
+        sender="Sender",
         message_type="text",
         canonical_target=f"#test:{session_id}",
         body="inbound body",
@@ -142,6 +135,7 @@ def make_draft(
         channel_session_id=channel_session_id,
         target=f"#test:{session_id}",
         body="outbound body",
+        reply_to_message_id="inbound-local-1",
         state=OutboundDeliveryState.DRAFT,
         fresh_check_state=FreshCheckState.REQUIRED,
         created_at_ms=110,

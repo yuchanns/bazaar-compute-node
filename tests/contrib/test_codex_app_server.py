@@ -38,7 +38,6 @@ from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -475,7 +474,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             channel_session_id=f"channel-first-{uuid7()}",
             runtime="codex",
             workspace_id=identity.workspace_id,
-            process_state=RuntimeProcessState.STARTING,
             created_at_ms=now,
             updated_at_ms=now,
         )
@@ -485,7 +483,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             channel_session_id=f"channel-second-{uuid7()}",
             runtime="codex",
             workspace_id=identity.workspace_id,
-            process_state=RuntimeProcessState.STARTING,
             created_at_ms=now,
             updated_at_ms=now,
         )
@@ -541,14 +538,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             assert first_events[0] == "codex.turn.started"
 
             await first_runtime.stop(timeout=20)
-            unknown = first_running.transition_process_to(
-                RuntimeProcessState.UNKNOWN,
-                updated_at_ms=time_ns() // 1_000_000,
-            )
-            reconciling = unknown.transition_process_to(
-                RuntimeProcessState.RECONCILING,
-                updated_at_ms=time_ns() // 1_000_000,
-            )
             resumed_runtime = CodexAppServerRuntime(
                 context,
                 executable=codex,
@@ -558,7 +547,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             await resumed_runtime.start(timeout=10)
             try:
                 resumed_result = await resumed_runtime.resume_session(
-                    reconciling,
+                    first_running,
                     timeout=30,
                 )
                 assert resumed_result.value is not None

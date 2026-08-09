@@ -31,7 +31,7 @@ class BccCommandError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bcc",
-        description="Session-scoped message commands for a Bazaar Compute Node.",
+        description="Session-scoped collaboration commands for a Bazaar Compute Node.",
     )
     subparsers = parser.add_subparsers(dest="resource", required=True)
     message_parser = subparsers.add_parser("message")
@@ -45,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     send_parser = message_subparsers.add_parser("send")
     send_parser.add_argument("--target", required=True)
+    send_parser.add_argument("--reply-to")
+
+    thread_parser = subparsers.add_parser("thread")
+    thread_subparsers = thread_parser.add_subparsers(dest="command", required=True)
+    unfollow_parser = thread_subparsers.add_parser("unfollow")
+    unfollow_parser.add_argument("--target", required=True)
     return parser
 
 
@@ -93,6 +99,9 @@ async def _request(
         request["target"] = args.target
         request["body"] = body if body is not None else ""
         request["command_id"] = f"bcc-{uuid7().hex}"
+        request["reply_to_message_id"] = args.reply_to
+    elif args.command == "unfollow":
+        request["target"] = args.target
 
     response = await LocalCommandClient.request(endpoint, request)
     if response.get("ok") is not True:
@@ -192,7 +201,7 @@ def _message_header_fields(message: Mapping[str, object]) -> tuple[str, ...]:
         short_message_id,
         _format_message_timestamp(message),
         _require_text(message, "message_type"),
-        _require_text(message, "sender_display_name"),
+        _require_text(message, "sender"),
         _require_text(message, "body", allow_empty=True),
     )
 
@@ -236,13 +245,6 @@ def _format_read_message(
         f"time={timestamp}",
         f"type={message_type}",
     ]
-    provider_thread_id = message.get("provider_thread_id")
-    if provider_thread_id is not None:
-        if not isinstance(provider_thread_id, str) or not provider_thread_id:
-            _invalid_response(
-                "command response contains an invalid message provider_thread_id"
-            )
-        fields.append(f"threadId={provider_thread_id}")
     fields.append(f"replyTarget={target}")
     fields.append(f"mentioned={str(message.get('mentions_agent') is True).lower()}")
     return (
@@ -375,6 +377,7 @@ def serialize_send(result: Mapping[str, object]) -> str:
     if not isinstance(state, str) or state not in {
         "sent",
         "queued",
+        "partial",
         "failed",
         "unknown",
         "rejected",
@@ -408,7 +411,9 @@ def serialize_send(result: Mapping[str, object]) -> str:
             "command response contains an invalid outbound next_action"
         )
     next_action = next_action_value if isinstance(next_action_value, str) else None
-    if state == "unknown" or error_kind == "provider_unknown":
+    if state == "partial":
+        code = "SEND_PARTIAL"
+    elif state == "unknown" or error_kind == "provider_unknown":
         code = "SEND_UNKNOWN"
     elif error_kind == "empty_body":
         code = "SEND_EMPTY_BODY"
@@ -447,7 +452,7 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
         _render_check(result)
     elif args.command == "read":
         _render_read(result)
-    else:
+    elif args.command == "send":
         _render_send(result)
     return 0
 

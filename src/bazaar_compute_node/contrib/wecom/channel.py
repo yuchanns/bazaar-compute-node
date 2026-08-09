@@ -14,7 +14,12 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from ...core.channel import ChannelContext, ChannelDeliveryReceipt, IChannel
+from ...core.channel import (
+    ChannelContext,
+    ChannelDeliveryReceipt,
+    ChannelSendRequest,
+    IChannel,
+)
 from ...core.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -22,7 +27,6 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
-    OutboundMessage,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .markdown import split_markdown
@@ -144,15 +148,10 @@ class WeComChannel(IChannel):
             yield item
 
     async def send(
-        self, message: OutboundMessage, *, timeout: float
+        self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        target_prefix, separator, target_id = message.target.partition(":")
-        if separator != ":" or target_prefix not in {"dm", "group"} or not target_id:
-            return ProviderCallResult(
-                status=ProviderCallStatus.FAILED,
-                error_kind="invalid_target",
-                error_message="WeCom target must be a canonical DM or group target",
-            )
+        message = request.outbound
+        target_id = request.provider_thread_id
         try:
             batches = split_markdown(message.body, limit=_MAX_MARKDOWN_BYTES)
         except ValueError as error:
@@ -586,12 +585,12 @@ class WeComChannel(IChannel):
                 session_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
+                provider_thread_id=conversation,
                 provider_message_id=provider_message_id,
                 received_at_ms=time_ns() // 1_000_000,
-                sender_id=sender_id,
-                sender_display_name=sender_id,
+                sender=sender_id,
                 message_type=message_type,
-                canonical_target=f"{target_prefix}:{conversation}",
+                canonical_target=f"{target_prefix}:{channel_session_id}",
                 body=text,
                 target_kind=target_kind,
                 mentions_agent=mentions_agent,

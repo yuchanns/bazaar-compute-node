@@ -34,15 +34,14 @@ def make_message(session_id: str) -> InboundMessage:
         session_id=session_id,
         channel_session_id=f"channel-{session_id}",
         channel="test",
+        provider_thread_id=f"thread-{session_id}",
         provider_message_id=f"provider-{session_id}-1",
         received_at_ms=1,
-        sender_id="sender-1",
-        sender_display_name="Sender",
+        sender="Sender",
         message_type="text",
         canonical_target=f"#test:{session_id}",
         body=f"inbound-{session_id}",
         provider_time_ms=1,
-        provider_thread_id=f"thread-{session_id}",
     )
 
 

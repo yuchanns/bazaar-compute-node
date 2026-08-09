@@ -48,15 +48,14 @@ def make_message(seq: int, *, body: str) -> InboundMessage:
         session_id="bcn-a",
         channel_session_id="channel-bcn-a",
         channel="test",
+        provider_thread_id="provider-thread-a",
         provider_message_id=f"provider-message-{seq}",
         received_at_ms=1_000 + seq,
         provider_time_ms=2_000 + seq,
-        sender_id="sender-id",
-        sender_display_name="sender",
+        sender="sender",
         message_type="human",
         canonical_target="#test:bcn-a",
         body=body,
-        provider_thread_id="provider-thread-a",
         reply_to_provider_message_id="provider-parent-a",
     )
 
@@ -164,7 +163,8 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         assert read_stdout.splitlines()[0] == (
             "Read window: 2 returned, seq 1-2, oldest to newest."
         )
-        assert "threadId=provider-thread-a" in read_stdout
+        assert "provider-thread-a" not in read_stdout
+        assert "provider-message" not in read_stdout
         assert "replyTarget=#test:bcn-a" in read_stdout
         assert messages[0].message_id in read_stdout
         assert messages[1].message_id in read_stdout

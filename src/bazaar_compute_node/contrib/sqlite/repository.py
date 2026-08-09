@@ -36,7 +36,6 @@ from .codec import (
     _runtime_turn_from_row,
     _same_inbound_payload,
     _same_runtime_event_payload,
-    _validate_bcn_session_input,
     _validate_bcn_session_update,
     _validate_channel_session_input,
     _validate_channel_session_update,
@@ -51,7 +50,6 @@ from .codec import (
     _validate_outbound_update,
     _validate_positive_int,
     _validate_runtime_event_input,
-    _validate_runtime_session_input,
     _validate_runtime_session_update,
     _validate_runtime_turn_input,
     _validate_runtime_turn_update,
@@ -139,18 +137,16 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         self,
         *,
         channel: str,
-        provider_conversation_key: str,
-        provider_thread_key: str,
+        provider_thread_id: str,
     ) -> ChannelSession | None:
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel, "
-            "provider_conversation_key, provider_thread_key, target_kind, following, state, "
+            "provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "provider_identity_ref_json "
             "FROM channel_sessions "
-            "WHERE channel = ? AND provider_conversation_key = ? "
-            "AND provider_thread_key = ? ORDER BY rowid",
-            (channel, provider_conversation_key, provider_thread_key),
+            "WHERE channel = ? AND provider_thread_id = ? ORDER BY rowid",
+            (channel, provider_thread_id),
             "channel provider identity",
         )
         return _channel_session_from_row(row) if row is not None else None
@@ -158,7 +154,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
     async def get_channel_session(self, session_id: str) -> ChannelSession | None:
         row = await self.fetchone(
             "SELECT id, channel, "
-            "provider_conversation_key, provider_thread_key, target_kind, following, state, "
+            "provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "provider_identity_ref_json "
             "FROM channel_sessions WHERE id = ?",
@@ -168,8 +164,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
     async def get_bcn_session(self, session_id: str) -> BcnSession | None:
         row = await self.fetchone(
-            "SELECT id, channel_session_id, workspace_id, state, "
-            "created_at_ms, updated_at_ms, last_activity_at_ms, stopped_at_ms, "
+            "SELECT id, channel_session_id, workspace_id, "
+            "created_at_ms, updated_at_ms, last_activity_at_ms, "
             "metadata_json FROM bcn_sessions WHERE id = ?",
             (session_id,),
         )
@@ -177,8 +173,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         row = await self._fetch_one_or_conflict(
-            "SELECT id, channel_session_id, workspace_id, state, "
-            "created_at_ms, updated_at_ms, last_activity_at_ms, stopped_at_ms, "
+            "SELECT id, channel_session_id, workspace_id, "
+            "created_at_ms, updated_at_ms, last_activity_at_ms, "
             "metadata_json FROM bcn_sessions "
             "WHERE channel_session_id = ? ORDER BY rowid",
             (channel_session_id,),
@@ -191,11 +187,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "SELECT runtime_sessions.id, "
             "runtime_sessions.bcn_session_id, runtime_sessions.channel_session_id, "
             "runtime_sessions.runtime, bcn_sessions.workspace_id AS workspace_id, "
-            "runtime_sessions.process_state, runtime_sessions.provider_thread_id, "
-            "runtime_sessions.process_pid, runtime_sessions.created_at_ms, "
-            "runtime_sessions.updated_at_ms, runtime_sessions.started_at_ms, "
-            "runtime_sessions.stopped_at_ms, runtime_sessions.last_reconciled_at_ms, "
-            "runtime_sessions.last_error_kind, runtime_sessions.last_error_message, "
+            "runtime_sessions.provider_thread_id, runtime_sessions.created_at_ms, "
+            "runtime_sessions.updated_at_ms, "
             "runtime_sessions.metadata_json "
             "FROM runtime_sessions LEFT JOIN bcn_sessions "
             "ON bcn_sessions.id = runtime_sessions.bcn_session_id "
@@ -209,11 +202,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "SELECT runtime_sessions.id, "
             "runtime_sessions.bcn_session_id, runtime_sessions.channel_session_id, "
             "runtime_sessions.runtime, bcn_sessions.workspace_id AS workspace_id, "
-            "runtime_sessions.process_state, runtime_sessions.provider_thread_id, "
-            "runtime_sessions.process_pid, runtime_sessions.created_at_ms, "
-            "runtime_sessions.updated_at_ms, runtime_sessions.started_at_ms, "
-            "runtime_sessions.stopped_at_ms, runtime_sessions.last_reconciled_at_ms, "
-            "runtime_sessions.last_error_kind, runtime_sessions.last_error_message, "
+            "runtime_sessions.provider_thread_id, runtime_sessions.created_at_ms, "
+            "runtime_sessions.updated_at_ms, "
             "runtime_sessions.metadata_json FROM runtime_sessions "
             "LEFT JOIN bcn_sessions ON bcn_sessions.id = "
             "runtime_sessions.bcn_session_id "
@@ -269,9 +259,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
     ) -> InboundMessage | None:
         row = await self._fetch_one_or_conflict(
             "SELECT seq, message_id, session_id, channel_session_id, "
-            "channel, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, target_kind, provider_thread_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, "
+            "canonical_target, target_kind, "
             "reply_to_provider_message_id, body, mentions_agent, "
             "notifies_runtime, provider_payload_ref, metadata_json "
             "FROM inbound_messages WHERE channel = ? "
@@ -326,9 +316,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if around_message_id is None:
             rows = await self.fetchall(
                 "SELECT seq, message_id, session_id, channel_session_id, "
-                "channel, provider_message_id, provider_time_ms, "
-                "received_at_ms, sender_id, sender_display_name, message_type, "
-                "canonical_target, target_kind, provider_thread_id, "
+                "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+                "received_at_ms, sender, message_type, "
+                "canonical_target, target_kind, "
                 "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
                 "metadata_json FROM inbound_messages "
                 f"WHERE {where_clause} ORDER BY seq LIMIT ?",
@@ -382,9 +372,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
         filtered_query = (
             "SELECT seq, message_id, session_id, channel_session_id, "
-            "channel, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, target_kind, provider_thread_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, "
+            "canonical_target, target_kind, "
             "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json, ROW_NUMBER() OVER (ORDER BY seq) AS row_number "
             "FROM inbound_messages "
@@ -394,9 +384,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "WITH filtered AS ("
             + filtered_query
             + ") SELECT seq, message_id, session_id, channel_session_id, "
-            "channel, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, target_kind, provider_thread_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, "
+            "canonical_target, target_kind, "
             "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM filtered WHERE row_number BETWEEN ? AND ? "
             "ORDER BY row_number",
@@ -429,9 +419,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
         existing_row = await self._fetch_one_or_conflict(
             "SELECT seq, message_id, session_id, channel_session_id, "
-            "channel, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender_id, sender_display_name, message_type, "
-            "canonical_target, target_kind, provider_thread_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, "
+            "canonical_target, target_kind, "
             "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM inbound_messages "
             "WHERE channel = ? AND provider_message_id = ? ORDER BY seq",
@@ -458,26 +448,25 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         await self.execute(
             "INSERT INTO inbound_messages ("
             "message_id, seq, session_id, channel_session_id, channel, "
-            "provider_message_id, provider_time_ms, received_at_ms, sender_id, "
-            "sender_display_name, message_type, canonical_target, target_kind, "
-            "provider_thread_id, reply_to_provider_message_id, body, "
+            "provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, canonical_target, target_kind, "
+            "reply_to_provider_message_id, body, "
             "mentions_agent, notifies_runtime, provider_payload_ref, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical.message_id,
                 canonical.seq,
                 canonical.session_id,
                 canonical.channel_session_id,
                 canonical.channel,
+                canonical.provider_thread_id,
                 canonical.provider_message_id,
                 canonical.provider_time_ms,
                 canonical.received_at_ms,
-                canonical.sender_id,
-                canonical.sender_display_name,
+                canonical.sender,
                 canonical.message_type,
                 canonical.canonical_target,
                 canonical.target_kind.value,
-                canonical.provider_thread_id,
                 canonical.reply_to_provider_message_id,
                 canonical.body,
                 int(canonical.mentions_agent),
@@ -564,7 +553,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
     ) -> OutboundMessage | None:
         row = await self.fetchone(
             "SELECT outbound_message_id, command_id, session_id, "
-            "channel_session_id, target, body, state, fresh_check_state, "
+            "channel_session_id, target, reply_to_message_id, body, "
+            "state, fresh_check_state, "
             "snapshot_seq, current_inbound_seq, provider_message_id, "
             "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
             "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
@@ -592,18 +582,20 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             await self.execute(
                 "INSERT INTO outbound_messages ("
                 "outbound_message_id, command_id, session_id, "
-                "channel_session_id, target, body, state, fresh_check_state, "
+                "channel_session_id, target, reply_to_message_id, body, "
+                "state, fresh_check_state, "
                 "snapshot_seq, current_inbound_seq, provider_message_id, "
                 "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
                 "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
                 "next_action, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.outbound_message_id,
                     canonical.command_id,
                     canonical.session_id,
                     canonical.channel_session_id,
                     canonical.target,
+                    canonical.reply_to_message_id,
                     canonical.body,
                     canonical.state.value,
                     canonical.fresh_check_state.value,
@@ -628,6 +620,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             or existing.session_id != message.session_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
+            or existing.reply_to_message_id != message.reply_to_message_id
             or existing.body != message.body
             or existing.created_at_ms != message.created_at_ms
         ):
@@ -871,8 +864,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if existing is None:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
-                provider_conversation_key=session.provider_conversation_key,
-                provider_thread_key=session.provider_thread_key,
+                provider_thread_id=session.provider_thread_id,
             )
             if duplicate is not None:
                 raise ValueError(
@@ -880,19 +872,16 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 )
             await self.execute(
                 "INSERT INTO channel_sessions ("
-                "id, channel, provider_conversation_key, "
-                "provider_thread_key, target_kind, following, state, "
+                "id, channel, provider_thread_id, target_kind, following, "
                 "provider_identity_ref_json, created_at_ms, updated_at_ms, "
                 "last_inbound_at_ms, last_outbound_at_ms"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session.id,
                     session.channel,
-                    session.provider_conversation_key,
-                    session.provider_thread_key,
+                    session.provider_thread_id,
                     session.target_kind.value,
                     int(session.following),
-                    session.state.value,
                     _encode_metadata(session.metadata),
                     session.created_at_ms,
                     session.updated_at_ms,
@@ -904,13 +893,12 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
         session = _validate_channel_session_update(existing, session)
         await self.execute(
-            "UPDATE channel_sessions SET target_kind = ?, following = ?, state = ?, "
+            "UPDATE channel_sessions SET target_kind = ?, following = ?, "
             "updated_at_ms = ?, last_inbound_at_ms = ?, last_outbound_at_ms = ?, "
             "provider_identity_ref_json = ? WHERE id = ?",
             (
                 session.target_kind.value,
                 int(session.following),
-                session.state.value,
                 session.updated_at_ms,
                 session.last_inbound_at_ms,
                 session.last_outbound_at_ms,
@@ -920,7 +908,6 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
 
     async def save_bcn_session(self, session: BcnSession) -> None:
-        _validate_bcn_session_input(session)
         self._require_workspace(session.workspace_id)
         channel_session = await self.get_channel_session(session.channel_session_id)
         if channel_session is None:
@@ -933,19 +920,17 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 raise ValueError(f"channel session is already bound to {duplicate.id}")
             await self.execute(
                 "INSERT INTO bcn_sessions ("
-                "id, channel_session_id, workspace_id, state, "
-                "created_at_ms, updated_at_ms, last_activity_at_ms, stopped_at_ms, "
+                "id, channel_session_id, workspace_id, "
+                "created_at_ms, updated_at_ms, last_activity_at_ms, "
                 "metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     session.id,
                     session.channel_session_id,
                     session.workspace_id,
-                    session.state.value,
                     session.created_at_ms,
                     session.updated_at_ms,
                     session.last_activity_at_ms,
-                    session.stopped_at_ms,
                     _encode_metadata(session.metadata),
                 ),
             )
@@ -953,21 +938,18 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
         session = _validate_bcn_session_update(existing, session)
         await self.execute(
-            "UPDATE bcn_sessions SET state = ?, updated_at_ms = ?, "
-            "last_activity_at_ms = ?, stopped_at_ms = ?, metadata_json = ? "
+            "UPDATE bcn_sessions SET updated_at_ms = ?, "
+            "last_activity_at_ms = ?, metadata_json = ? "
             "WHERE id = ?",
             (
-                session.state.value,
                 session.updated_at_ms,
                 session.last_activity_at_ms,
-                session.stopped_at_ms,
                 _encode_metadata(session.metadata),
                 session.id,
             ),
         )
 
     async def save_runtime_session(self, session: RuntimeSession) -> None:
-        _validate_runtime_session_input(session)
         self._require_workspace(session.workspace_id)
         bcn_session = await self.get_bcn_session(session.bcn_session_id)
         if bcn_session is None:
@@ -990,11 +972,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             await self.execute(
                 "INSERT INTO runtime_sessions ("
                 "id, bcn_session_id, channel_session_id, "
-                "runtime, runtime_version, provider_thread_id, process_state, "
-                "process_pid, last_exit_code, created_at_ms, updated_at_ms, "
-                "started_at_ms, stopped_at_ms, last_reconciled_at_ms, "
-                "last_error_kind, last_error_message, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "runtime, runtime_version, provider_thread_id, "
+                "created_at_ms, updated_at_ms, metadata_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session.id,
                     session.bcn_session_id,
@@ -1002,16 +982,8 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     session.runtime,
                     None,
                     session.provider_thread_id,
-                    session.process_state.value,
-                    session.process_id,
-                    None,
                     session.created_at_ms,
                     session.updated_at_ms,
-                    session.started_at_ms,
-                    session.stopped_at_ms,
-                    session.last_reconciled_at_ms,
-                    session.last_error_kind,
-                    session.last_error_message,
                     _encode_metadata(session.metadata),
                 ),
             )
@@ -1020,20 +992,11 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         session = _validate_runtime_session_update(existing, session)
         await self.execute(
             "UPDATE runtime_sessions SET provider_thread_id = ?, "
-            "process_state = ?, process_pid = ?, updated_at_ms = ?, "
-            "started_at_ms = ?, stopped_at_ms = ?, last_reconciled_at_ms = ?, "
-            "last_error_kind = ?, last_error_message = ?, metadata_json = ? "
+            "updated_at_ms = ?, metadata_json = ? "
             "WHERE id = ?",
             (
                 session.provider_thread_id,
-                session.process_state.value,
-                session.process_id,
                 session.updated_at_ms,
-                session.started_at_ms,
-                session.stopped_at_ms,
-                session.last_reconciled_at_ms,
-                session.last_error_kind,
-                session.last_error_message,
                 _encode_metadata(session.metadata),
                 session.id,
             ),

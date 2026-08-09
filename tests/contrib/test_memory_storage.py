@@ -3,12 +3,7 @@ from __future__ import annotations
 import pytest
 from bcn_test_support import MemoryStorage
 
-from bazaar_compute_node.core.models import (
-    AgentState,
-    BcnSession,
-    ChannelSession,
-    ChannelSessionState,
-)
+from bazaar_compute_node.core.models import BcnSession, ChannelSession
 
 
 @pytest.mark.asyncio
@@ -18,9 +13,7 @@ async def test_storage_transaction_rolls_back_on_error() -> None:
     channel_session = ChannelSession(
         id="channel-1",
         channel="test",
-        provider_conversation_key="conversation-1",
-        provider_thread_key="",
-        state=ChannelSessionState.ACTIVE,
+        provider_thread_id="thread-1",
         created_at_ms=1,
         updated_at_ms=1,
     )
@@ -28,7 +21,6 @@ async def test_storage_transaction_rolls_back_on_error() -> None:
         id="bcn-1",
         channel_session_id="channel-1",
         workspace_id="workspace-1",
-        state=AgentState.CREATED,
         created_at_ms=1,
         updated_at_ms=1,
     )

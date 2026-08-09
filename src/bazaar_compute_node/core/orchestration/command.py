@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from ..audit import ErrorKind
-from ..channel import IChannel
+from ..channel import ChannelSendRequest, IChannel
 from ..command import (
     ICommandService,
     MessageCheckResult,
@@ -15,6 +15,7 @@ from ..command import (
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
+    ChannelTargetKind,
     ConsumerCursor,
     FreshCheckState,
     OutboundDeliveryState,
@@ -49,31 +50,33 @@ class SessionCommandService(ICommandService):
         self._clock = clock
 
     async def check(self, session_id: str) -> MessageCheckResult:
-        async with self._concurrency.for_session(session_id):
-            async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(session_id)
-                if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-                cursor = await transaction.get_consumer_cursor(session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(session_id=session_id)
-                latest_seq = await transaction.get_latest_inbound_seq(session_id)
-                messages = await transaction.list_inbound_messages(
-                    session_id,
-                    after_seq=cursor.delivered_through_seq,
-                    notifying_only=True,
-                )
-                now_ms = self._clock()
-                cursor = replace(
-                    cursor,
-                    delivered_through_seq=latest_seq,
-                    inbox_snapshot_seq=latest_seq,
-                    inbox_snapshot_source="check",
-                    inbox_snapshot_at_ms=now_ms,
-                    last_check_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_consumer_cursor(cursor)
+        async with (
+            self._concurrency.for_session(session_id),
+            self._storage.transaction() as transaction,
+        ):
+            bcn_session = await transaction.get_bcn_session(session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            cursor = await transaction.get_consumer_cursor(session_id)
+            if cursor is None:
+                cursor = ConsumerCursor(session_id=session_id)
+            latest_seq = await transaction.get_latest_inbound_seq(session_id)
+            messages = await transaction.list_inbound_messages(
+                session_id,
+                after_seq=cursor.delivered_through_seq,
+                notifying_only=True,
+            )
+            now_ms = self._clock()
+            cursor = replace(
+                cursor,
+                delivered_through_seq=latest_seq,
+                inbox_snapshot_seq=latest_seq,
+                inbox_snapshot_source="check",
+                inbox_snapshot_at_ms=now_ms,
+                last_check_at_ms=now_ms,
+                updated_at_ms=now_ms,
+            )
+            await transaction.save_consumer_cursor(cursor)
             result = MessageCheckResult(
                 messages=messages,
                 snapshot_seq=latest_seq,
@@ -153,6 +156,7 @@ class SessionCommandService(ICommandService):
         target: str,
         body: str,
         created_at_ms: int,
+        reply_to_message_id: str | None = None,
     ) -> OutboundMessage:
         if not command_id:
             raise ValueError("command_id must be a non-empty string")
@@ -180,6 +184,15 @@ class SessionCommandService(ICommandService):
                     target=target,
                     limit=1,
                 )
+                reply_to_provider_message_id = None
+                if reply_to_message_id is not None:
+                    reply_messages = await transaction.list_inbound_messages(
+                        session_id,
+                        target=target,
+                        around_message_id=reply_to_message_id,
+                        limit=1,
+                    )
+                    reply_to_provider_message_id = reply_messages[0].provider_message_id
                 outbound = OutboundMessage(
                     outbound_message_id=outbound_id,
                     command_id=command_id,
@@ -190,6 +203,7 @@ class SessionCommandService(ICommandService):
                     state=OutboundDeliveryState.DRAFT,
                     fresh_check_state=FreshCheckState.REQUIRED,
                     created_at_ms=created_at_ms,
+                    reply_to_message_id=reply_to_message_id,
                 )
                 if body.strip():
                     outbound = await transaction.save_outbound_message(outbound)
@@ -361,7 +375,13 @@ class SessionCommandService(ICommandService):
             )
             try:
                 provider_result = await self._channel.send(
-                    outbound, timeout=self._provider_call_timeout
+                    ChannelSendRequest(
+                        outbound=outbound,
+                        target_kind=channel_session.target_kind,
+                        provider_thread_id=channel_session.provider_thread_id,
+                        provider_reply_to_message_id=(reply_to_provider_message_id),
+                    ),
+                    timeout=self._provider_call_timeout,
                 )
             except asyncio.CancelledError:
                 raise
@@ -478,6 +498,54 @@ class SessionCommandService(ICommandService):
                 error_message=outbound.error_message,
             )
             return outbound
+
+    async def unfollow(self, session_id: str, *, target: str) -> bool:
+        if not target:
+            raise ValueError("target must be a non-empty string")
+        async with (
+            self._concurrency.for_session(session_id),
+            self._storage.transaction() as transaction,
+        ):
+            bcn_session = await transaction.get_bcn_session(session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            channel_session = await transaction.get_channel_session(
+                bcn_session.channel_session_id
+            )
+            if channel_session is None:
+                raise ValueError(
+                    f"unknown channel session: {bcn_session.channel_session_id}"
+                )
+            target_messages = await transaction.list_inbound_messages(
+                session_id,
+                target=target,
+                limit=1,
+            )
+            if not target_messages:
+                raise ValueError(f"Thread target is not found: {target}")
+            changed = (
+                channel_session.target_kind is ChannelTargetKind.GROUP
+                and channel_session.following
+            )
+            if changed:
+                channel_session = replace(
+                    channel_session,
+                    following=False,
+                    updated_at_ms=self._clock(),
+                )
+                await transaction.save_channel_session(channel_session)
+        await self._audit.append_tool(
+            operation="bcc.thread.unfollow",
+            status="completed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(
+                session_id=session_id,
+                channel=channel_session.channel,
+                channel_session_id=channel_session.id,
+            ),
+            arguments={"session_id": session_id, "target": target, "changed": changed},
+        )
+        return changed
 
     def _correlation(
         self,

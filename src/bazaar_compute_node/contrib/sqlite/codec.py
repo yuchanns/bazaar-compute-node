@@ -7,10 +7,8 @@ from dataclasses import replace
 import aiosqlite
 
 from ...core.models import (
-    AgentState,
     BcnSession,
     ChannelSession,
-    ChannelSessionState,
     ChannelTargetKind,
     ConsumerCursor,
     FreshCheckState,
@@ -20,7 +18,6 @@ from ...core.models import (
     OutboundMessage,
     RuntimeEvent,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -38,14 +35,8 @@ def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
     return ChannelSession(
         id=_required_text(row["id"], "id"),
         channel=_required_text(row["channel"], "channel"),
-        provider_conversation_key=_required_text(
-            row["provider_conversation_key"], "provider_conversation_key"
-        ),
-        provider_thread_key=_string_value(
-            row["provider_thread_key"], "provider_thread_key", allow_empty=True
-        ),
-        state=ChannelSessionState(
-            _required_text(row["state"], "channel_session.state")
+        provider_thread_id=_required_text(
+            row["provider_thread_id"], "provider_thread_id"
         ),
         created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
         updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
@@ -72,13 +63,11 @@ def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
             row["channel_session_id"], "channel_session_id"
         ),
         workspace_id=_required_text(row["workspace_id"], "workspace_id"),
-        state=AgentState(_required_text(row["state"], "bcn_session.state")),
         created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
         updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
         last_activity_at_ms=_optional_non_negative_int(
             row["last_activity_at_ms"], "last_activity_at_ms"
         ),
-        stopped_at_ms=_optional_non_negative_int(row["stopped_at_ms"], "stopped_at_ms"),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
 
@@ -92,23 +81,10 @@ def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
         ),
         runtime=_required_text(row["runtime"], "runtime"),
         workspace_id=_required_text(row["workspace_id"], "workspace_id"),
-        process_state=RuntimeProcessState(
-            _required_text(row["process_state"], "runtime_session.process_state")
-        ),
         created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
         updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
         provider_thread_id=_optional_text(
             row["provider_thread_id"], "provider_thread_id"
-        ),
-        process_id=_optional_non_negative_int(row["process_pid"], "process_pid"),
-        started_at_ms=_optional_non_negative_int(row["started_at_ms"], "started_at_ms"),
-        stopped_at_ms=_optional_non_negative_int(row["stopped_at_ms"], "stopped_at_ms"),
-        last_reconciled_at_ms=_optional_non_negative_int(
-            row["last_reconciled_at_ms"], "last_reconciled_at_ms"
-        ),
-        last_error_kind=_optional_text(row["last_error_kind"], "last_error_kind"),
-        last_error_message=_optional_text(
-            row["last_error_message"], "last_error_message"
         ),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
@@ -146,16 +122,16 @@ def _inbound_message_from_row(
             row["channel_session_id"], "channel_session_id"
         ),
         channel=_required_text(row["channel"], "channel"),
+        provider_thread_id=_required_text(
+            row["provider_thread_id"], "provider_thread_id"
+        ),
         provider_message_id=_required_text(
             row["provider_message_id"], "provider_message_id"
         ),
         received_at_ms=_required_non_negative_int(
             row["received_at_ms"], "received_at_ms"
         ),
-        sender_id=_required_text(row["sender_id"], "sender_id"),
-        sender_display_name=_required_text(
-            row["sender_display_name"], "sender_display_name"
-        ),
+        sender=_required_text(row["sender"], "sender"),
         message_type=_required_text(row["message_type"], "message_type"),
         canonical_target=_required_text(row["canonical_target"], "canonical_target"),
         body=_string_value(row["body"], "body", allow_empty=True),
@@ -169,9 +145,6 @@ def _inbound_message_from_row(
         attachments=attachments,
         provider_time_ms=_optional_non_negative_int(
             row["provider_time_ms"], "provider_time_ms"
-        ),
-        provider_thread_id=_optional_string_value(
-            row["provider_thread_id"], "provider_thread_id", allow_empty=True
         ),
         reply_to_provider_message_id=_optional_string_value(
             row["reply_to_provider_message_id"],
@@ -212,6 +185,10 @@ def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
         ),
         target=_required_text(row["target"], "target"),
         body=_string_value(row["body"], "body", allow_empty=True),
+        reply_to_message_id=_optional_text(
+            row["reply_to_message_id"],
+            "reply_to_message_id",
+        ),
         state=OutboundDeliveryState(
             _required_text(row["state"], "outbound_message.state")
         ),
@@ -400,6 +377,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
     if not isinstance(message.body, str):
         raise TypeError("outbound body must be a string")
     for value, field_name in (
+        (message.reply_to_message_id, "reply_to_message_id"),
         (message.provider_message_id, "provider_message_id"),
         (message.provider_receipt_ref, "provider_receipt_ref"),
         (message.error_kind, "error_kind"),
@@ -661,10 +639,10 @@ def _same_inbound_payload(
         existing.session_id,
         existing.channel_session_id,
         existing.channel,
+        existing.provider_thread_id,
         existing.provider_message_id,
         existing.provider_time_ms,
-        existing.sender_id,
-        existing.sender_display_name,
+        existing.sender,
         existing.message_type,
         existing.canonical_target,
         existing.target_kind,
@@ -672,7 +650,6 @@ def _same_inbound_payload(
         existing.notifies_runtime,
         existing.attachments,
         existing.body,
-        existing.provider_thread_id,
         existing.reply_to_provider_message_id,
         existing.provider_payload_ref,
         existing.metadata,
@@ -680,10 +657,10 @@ def _same_inbound_payload(
         incoming.session_id,
         incoming.channel_session_id,
         incoming.channel,
+        incoming.provider_thread_id,
         incoming.provider_message_id,
         incoming.provider_time_ms,
-        incoming.sender_id,
-        incoming.sender_display_name,
+        incoming.sender,
         incoming.message_type,
         incoming.canonical_target,
         incoming.target_kind,
@@ -691,7 +668,6 @@ def _same_inbound_payload(
         incoming.notifies_runtime,
         incoming.attachments,
         incoming.body,
-        incoming.provider_thread_id,
         incoming.reply_to_provider_message_id,
         incoming.provider_payload_ref,
         incoming.metadata,
@@ -756,20 +732,8 @@ def _validate_consumer_cursor_update(
 
 
 def _validate_channel_session_input(session: ChannelSession) -> None:
-    if not isinstance(session.state, ChannelSessionState):
-        raise TypeError("channel session state is invalid")
     if not isinstance(session.following, bool):
         raise TypeError("channel session following must be a boolean")
-
-
-def _validate_bcn_session_input(session: BcnSession) -> None:
-    if not isinstance(session.state, AgentState):
-        raise TypeError("bcn session state is invalid")
-
-
-def _validate_runtime_session_input(session: RuntimeSession) -> None:
-    if not isinstance(session.process_state, RuntimeProcessState):
-        raise TypeError("runtime session process state is invalid")
 
 
 def _validate_channel_session_update(
@@ -778,19 +742,14 @@ def _validate_channel_session_update(
 ) -> ChannelSession:
     if (
         existing.channel != incoming.channel
-        or existing.provider_conversation_key != incoming.provider_conversation_key
-        or existing.provider_thread_key != incoming.provider_thread_key
+        or existing.provider_thread_id != incoming.provider_thread_id
         or existing.target_kind is not incoming.target_kind
         or existing.created_at_ms != incoming.created_at_ms
     ):
         raise ValueError("channel session identity cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_to(
-        incoming.state,
-        updated_at_ms=incoming.updated_at_ms,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         following=incoming.following,
         last_inbound_at_ms=incoming.last_inbound_at_ms,
@@ -810,12 +769,8 @@ def _validate_bcn_session_update(
     ):
         raise ValueError("bcn session binding cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_to(
-        incoming.state,
-        updated_at_ms=incoming.updated_at_ms,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         last_activity_at_ms=incoming.last_activity_at_ms,
         metadata=incoming.metadata,
@@ -835,20 +790,10 @@ def _validate_runtime_session_update(
     ):
         raise ValueError("runtime session binding cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    transitioned = existing.transition_process_to(
-        incoming.process_state,
-        updated_at_ms=incoming.updated_at_ms,
-        error_kind=incoming.last_error_kind,
-        error_message=incoming.last_error_message,
-    )
     return replace(
-        transitioned,
+        existing,
         updated_at_ms=incoming.updated_at_ms,
         provider_thread_id=incoming.provider_thread_id,
-        process_id=incoming.process_id,
-        last_error_kind=incoming.last_error_kind or transitioned.last_error_kind,
-        last_error_message=incoming.last_error_message
-        or transitioned.last_error_message,
         metadata=incoming.metadata,
     )
 

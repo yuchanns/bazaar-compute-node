@@ -29,7 +29,7 @@ def message_payload(
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,
         "message_type": "human",
-        "sender_display_name": "sender",
+        "sender": "sender",
         "body": "message body",
         "provider_thread_id": provider_thread_id,
         "reply_to_provider_message_id": "provider-parent-1",
@@ -102,6 +102,16 @@ def test_empty_check_serializer_is_stable() -> None:
     )
 
 
+def test_thread_unfollow_requires_an_explicit_target() -> None:
+    args = build_parser().parse_args(
+        ("thread", "unfollow", "--target", "#work:parent123")
+    )
+
+    assert args.resource == "thread"
+    assert args.command == "unfollow"
+    assert args.target == "#work:parent123"
+
+
 def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
     result = {
         "messages": [message_payload()],
@@ -113,8 +123,8 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
     assert serialize_read(result) == (
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
-        "time=2023-11-14 22:13:20 type=human threadId=provider-thread-1 "
-        "replyTarget=#work:parent123 mentioned=false] @sender: message body"
+        "time=2023-11-14 22:13:20 type=human replyTarget=#work:parent123 "
+        "mentioned=false] @sender: message body"
     )
 
 

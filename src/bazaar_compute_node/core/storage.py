@@ -36,15 +36,14 @@ class IStorageTransaction(Protocol):
 
     A normal context exit commits. An exception, including cancellation,
     rolls back. Implementations must not rely on implicit driver transactions
-    for cursor, fresh-check, or lifecycle state transitions.
+    for cursor, fresh-check, or durable outcome transitions.
     """
 
     async def find_channel_session(
         self,
         *,
         channel: str,
-        provider_conversation_key: str,
-        provider_thread_key: str,
+        provider_thread_id: str,
     ) -> ChannelSession | None:
         """Find a channel session by provider-neutral identity fields."""
         ...
@@ -62,7 +61,7 @@ class IStorageTransaction(Protocol):
         ...
 
     async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        """Load one runtime process session by local id."""
+        """Load one durable runtime binding by local id."""
         ...
 
     async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
@@ -111,15 +110,15 @@ class IStorageTransaction(Protocol):
         ...
 
     async def save_channel_session(self, session: ChannelSession) -> None:
-        """Persist a validated channel session state transition."""
+        """Persist a validated channel session binding update."""
         ...
 
     async def save_bcn_session(self, session: BcnSession) -> None:
-        """Persist a validated bcn session state transition."""
+        """Persist a validated bcn session binding update."""
         ...
 
     async def save_runtime_session(self, session: RuntimeSession) -> None:
-        """Persist a validated runtime process state transition."""
+        """Persist a validated runtime binding update."""
         ...
 
     async def save_runtime_turn(self, turn: RuntimeTurn) -> None:

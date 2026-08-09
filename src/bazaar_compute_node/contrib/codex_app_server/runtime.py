@@ -12,7 +12,6 @@ from ...core.instruction import DeveloperInstructionContext
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeSession,
     RuntimeTurn,
 )
@@ -132,8 +131,10 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             self._connections[session.id] = connection
             return ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
-                value=_running_session(
-                    session, thread.thread_id, connection.supervisor.pid
+                value=replace(
+                    session,
+                    provider_thread_id=thread.thread_id,
+                    updated_at_ms=_now_ms(),
                 ),
                 receipt={"provider_thread_id": thread.thread_id},
             )
@@ -184,8 +185,10 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             self._connections[session.id] = connection
             return ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
-                value=_running_session(
-                    session, thread.thread_id, connection.supervisor.pid
+                value=replace(
+                    session,
+                    provider_thread_id=thread.thread_id,
+                    updated_at_ms=_now_ms(),
                 ),
                 receipt={"provider_thread_id": thread.thread_id},
             )
@@ -300,28 +303,10 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
         connection = self._connections.pop(session.id, None)
-        stopping = session
-        if stopping.process_state not in {
-            RuntimeProcessState.STOPPING,
-            RuntimeProcessState.STOPPED,
-        }:
-            stopping = stopping.transition_process_to(
-                RuntimeProcessState.STOPPING,
-                updated_at_ms=_now_ms(),
-            )
         if connection is None:
-            if stopping.process_state is RuntimeProcessState.STOPPED:
-                return ProviderCallResult(
-                    status=ProviderCallStatus.CONFIRMED,
-                    value=stopping,
-                )
-            stopped = stopping.transition_process_to(
-                RuntimeProcessState.STOPPED,
-                updated_at_ms=_now_ms(),
-            )
             return ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
-                value=stopped,
+                value=session,
             )
         try:
             await connection.supervisor.stop(timeout=timeout)
@@ -329,13 +314,9 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             raise
         except Exception as error:  # noqa: BLE001
             return _provider_result(error)
-        stopped = stopping.transition_process_to(
-            stopping.process_state.STOPPED,
-            updated_at_ms=_now_ms(),
-        )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=stopped,
+            value=session,
         )
 
     async def _open_connection(
@@ -400,24 +381,6 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
     def _ensure_started(self) -> None:
         if not self._started or self._stopping:
             raise RuntimeError("Codex App Server runtime is not started")
-
-
-def _running_session(
-    session: RuntimeSession,
-    provider_thread_id: str,
-    process_id: int | None,
-) -> RuntimeSession:
-    updated = replace(
-        session,
-        provider_thread_id=provider_thread_id,
-        process_id=process_id,
-    )
-    if updated.process_state is not RuntimeProcessState.RUNNING:
-        updated = updated.transition_process_to(
-            RuntimeProcessState.RUNNING,
-            updated_at_ms=_now_ms(),
-        )
-    return updated
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[RuntimeSession]:

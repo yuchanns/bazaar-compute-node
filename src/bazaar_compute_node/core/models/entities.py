@@ -5,24 +5,16 @@ from dataclasses import dataclass, field, replace
 from typing import Self
 
 from .states import (
-    AGENT_STATE_TRANSITIONS,
-    CHANNEL_SESSION_TRANSITIONS,
     FRESH_CHECK_TRANSITIONS,
     OUTBOUND_DELIVERY_TRANSITIONS,
-    RUNTIME_PROCESS_TRANSITIONS,
     RUNTIME_TURN_TRANSITIONS,
-    AgentState,
-    AgentTick,
     ApprovalDecision,
-    ChannelSessionState,
     ChannelTargetKind,
     FreshCheckState,
     OutboundDeliveryState,
     RuntimeEventState,
-    RuntimeProcessState,
     RuntimeTurnState,
     ensure_transition,
-    reduce_agent_tick,
 )
 
 Metadata = Mapping[str, object]
@@ -42,9 +34,7 @@ def _validate_non_negative(value: int, field_name: str) -> None:
 class ChannelSession:
     id: str
     channel: str
-    provider_conversation_key: str
-    provider_thread_key: str
-    state: ChannelSessionState
+    provider_thread_id: str
     created_at_ms: int
     updated_at_ms: int
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
@@ -56,9 +46,7 @@ class ChannelSession:
     def __post_init__(self) -> None:
         _validate_text(self.id, "id")
         _validate_text(self.channel, "channel")
-        _validate_text(self.provider_conversation_key, "provider_conversation_key")
-        if not isinstance(self.provider_thread_key, str):
-            raise TypeError("provider_thread_key must be a string")
+        _validate_text(self.provider_thread_id, "provider_thread_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if not isinstance(self.target_kind, ChannelTargetKind):
@@ -68,26 +56,15 @@ class ChannelSession:
         if self.last_outbound_at_ms is not None:
             _validate_non_negative(self.last_outbound_at_ms, "last_outbound_at_ms")
 
-    def transition_to(self, state: ChannelSessionState, *, updated_at_ms: int) -> Self:
-        _validate_non_negative(updated_at_ms, "updated_at_ms")
-        ensure_transition(
-            "channel_session", self.state, state, CHANNEL_SESSION_TRANSITIONS
-        )
-        if state is self.state:
-            return self
-        return replace(self, state=state, updated_at_ms=updated_at_ms)
-
 
 @dataclass(frozen=True, slots=True)
 class BcnSession:
     id: str
     channel_session_id: str
     workspace_id: str
-    state: AgentState
     created_at_ms: int
     updated_at_ms: int
     last_activity_at_ms: int | None = None
-    stopped_at_ms: int | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -98,29 +75,6 @@ class BcnSession:
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if self.last_activity_at_ms is not None:
             _validate_non_negative(self.last_activity_at_ms, "last_activity_at_ms")
-        if self.stopped_at_ms is not None:
-            _validate_non_negative(self.stopped_at_ms, "stopped_at_ms")
-
-    def transition_to(self, state: AgentState, *, updated_at_ms: int) -> Self:
-        _validate_non_negative(updated_at_ms, "updated_at_ms")
-        ensure_transition("bcn_session", self.state, state, AGENT_STATE_TRANSITIONS)
-        if state is self.state:
-            return self
-        stopped_at_ms = (
-            updated_at_ms if state is AgentState.STOPPED else self.stopped_at_ms
-        )
-        return replace(
-            self,
-            state=state,
-            updated_at_ms=updated_at_ms,
-            stopped_at_ms=stopped_at_ms,
-        )
-
-    def apply_tick(self, tick: AgentTick) -> Self:
-        """Apply one core lifecycle tick through the pure agent reducer."""
-
-        target = reduce_agent_tick(self.state, tick)
-        return self.transition_to(target, updated_at_ms=tick.observed_at_ms)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,16 +84,9 @@ class RuntimeSession:
     channel_session_id: str
     runtime: str
     workspace_id: str
-    process_state: RuntimeProcessState
     created_at_ms: int
     updated_at_ms: int
     provider_thread_id: str | None = None
-    process_id: int | None = None
-    started_at_ms: int | None = None
-    stopped_at_ms: int | None = None
-    last_reconciled_at_ms: int | None = None
-    last_error_kind: str | None = None
-    last_error_message: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -150,57 +97,8 @@ class RuntimeSession:
         _validate_text(self.workspace_id, "workspace_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_non_negative(self.updated_at_ms, "updated_at_ms")
-        if self.process_id is not None and self.process_id < 0:
-            raise ValueError("process_id must be non-negative")
-        for value, field_name in (
-            (self.started_at_ms, "started_at_ms"),
-            (self.stopped_at_ms, "stopped_at_ms"),
-            (self.last_reconciled_at_ms, "last_reconciled_at_ms"),
-        ):
-            if value is not None:
-                _validate_non_negative(value, field_name)
         if self.provider_thread_id is not None:
             _validate_text(self.provider_thread_id, "provider_thread_id")
-
-    def transition_process_to(
-        self,
-        state: RuntimeProcessState,
-        *,
-        updated_at_ms: int,
-        error_kind: str | None = None,
-        error_message: str | None = None,
-    ) -> Self:
-        _validate_non_negative(updated_at_ms, "updated_at_ms")
-        ensure_transition(
-            "runtime_process", self.process_state, state, RUNTIME_PROCESS_TRANSITIONS
-        )
-        if state is self.process_state:
-            return self
-        started_at_ms = (
-            updated_at_ms
-            if state is RuntimeProcessState.RUNNING and self.started_at_ms is None
-            else self.started_at_ms
-        )
-        stopped_at_ms = (
-            updated_at_ms
-            if state is RuntimeProcessState.STOPPED
-            else self.stopped_at_ms
-        )
-        last_reconciled_at_ms = (
-            updated_at_ms
-            if state is RuntimeProcessState.RECONCILING
-            else self.last_reconciled_at_ms
-        )
-        return replace(
-            self,
-            process_state=state,
-            updated_at_ms=updated_at_ms,
-            started_at_ms=started_at_ms,
-            stopped_at_ms=stopped_at_ms,
-            last_reconciled_at_ms=last_reconciled_at_ms,
-            last_error_kind=error_kind or self.last_error_kind,
-            last_error_message=error_message or self.last_error_message,
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,10 +195,10 @@ class InboundMessage:
     session_id: str
     channel_session_id: str
     channel: str
+    provider_thread_id: str
     provider_message_id: str
     received_at_ms: int
-    sender_id: str
-    sender_display_name: str
+    sender: str
     message_type: str
     canonical_target: str
     body: str
@@ -309,7 +207,6 @@ class InboundMessage:
     notifies_runtime: bool = True
     attachments: tuple[InboundAttachment, ...] = ()
     provider_time_ms: int | None = None
-    provider_thread_id: str | None = None
     reply_to_provider_message_id: str | None = None
     provider_payload_ref: str | None = None
     metadata: Metadata = field(default_factory=dict)
@@ -321,9 +218,9 @@ class InboundMessage:
             (self.session_id, "session_id"),
             (self.channel_session_id, "channel_session_id"),
             (self.channel, "channel"),
+            (self.provider_thread_id, "provider_thread_id"),
             (self.provider_message_id, "provider_message_id"),
-            (self.sender_id, "sender_id"),
-            (self.sender_display_name, "sender_display_name"),
+            (self.sender, "sender"),
             (self.message_type, "message_type"),
             (self.canonical_target, "canonical_target"),
         ):
@@ -346,6 +243,7 @@ class OutboundMessage:
     state: OutboundDeliveryState
     fresh_check_state: FreshCheckState
     created_at_ms: int
+    reply_to_message_id: str | None = None
     snapshot_seq: int | None = None
     current_inbound_seq: int | None = None
     provider_message_id: str | None = None
@@ -368,6 +266,9 @@ class OutboundMessage:
         ):
             _validate_text(value, field_name)
         _validate_non_negative(self.created_at_ms, "created_at_ms")
+        for value, field_name in ((self.reply_to_message_id, "reply_to_message_id"),):
+            if value is not None:
+                _validate_text(value, field_name)
         for value, field_name in (
             (self.snapshot_seq, "snapshot_seq"),
             (self.current_inbound_seq, "current_inbound_seq"),

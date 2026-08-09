@@ -64,10 +64,7 @@ class TestControl:
                 }
                 for turn_id, turn in self._storage.runtime_turns.items()
             },
-            "runtime_sessions": {
-                session_id: session.process_state.value
-                for session_id, session in self._storage.runtime_sessions.items()
-            },
+            "runtime_sessions": sorted(self._storage.runtime_sessions),
             "cursors": {
                 session_id: {
                     "delivered_through_seq": cursor.delivered_through_seq,
@@ -106,11 +103,10 @@ class TestControl:
             "provider_message_id", f"test-provider-{session_id}-{seq}"
         )
         canonical_target = payload.get("canonical_target", f"#test:{session_id}")
-        provider_thread_id = payload.get("provider_thread_id", "")
+        provider_thread_id = payload.get("provider_thread_id", f"thread-{session_id}")
         received_at_ms = payload.get("received_at_ms", time_ns() // 1_000_000)
         provider_time_ms = payload.get("provider_time_ms", received_at_ms)
-        sender_id = payload.get("sender_id", "test-sender")
-        sender_display_name = payload.get("sender_display_name", "Test")
+        sender = payload.get("sender", "Test")
         message_type = payload.get("message_type", "text")
         channel = payload.get("channel", "test")
         for value, field_name in (
@@ -118,8 +114,7 @@ class TestControl:
             (message_id, "message_id"),
             (provider_message_id, "provider_message_id"),
             (canonical_target, "canonical_target"),
-            (sender_id, "sender_id"),
-            (sender_display_name, "sender_display_name"),
+            (sender, "sender"),
             (message_type, "message_type"),
             (channel, "channel"),
             (provider_thread_id, "provider_thread_id"),
@@ -145,8 +140,7 @@ class TestControl:
             channel=cast(str, channel),
             provider_message_id=cast(str, provider_message_id),
             received_at_ms=cast(int, received_at_ms),
-            sender_id=cast(str, sender_id),
-            sender_display_name=cast(str, sender_display_name),
+            sender=cast(str, sender),
             message_type=cast(str, message_type),
             canonical_target=cast(str, canonical_target),
             body=body,
