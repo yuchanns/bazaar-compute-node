@@ -3,10 +3,12 @@
 ## 状态
 
 - 模式：Plan
-- 状态：Phase 4 Task 4C 已完成并处于 review；下一项为 Task 4D，完成 review 后进入 Phase 5。
-- 基线：`main`，当前提交为 `11f2b397a93567a036ee4b541cc6bba59d245af4`。
-- 当前更新只调整本计划中的 Test adapter 边界、必填 provider selection 与后续任务顺序，
-  不提前修改生产代码。
+- 状态：Phase 4 与命名收口已完成并处于 review；review 后进入 Phase 5 Task 5A。
+- 基线：`main`，当前提交为 `4560831898dd6ddc5dbcc8e3bc077ca6fccee776`。
+- 当前更新只纠正 Phase 5 的 WeCom 接入假设及其交叉边界，不提前修改生产代码。新版
+  「智能机器人 API 模式」同时支持 WebSocket 长连接与 JSON URL 回调；本 MVP 明确选择
+  Bot ID + Secret 的 WebSocket 长连接，不接旧群机器人 webhook、自建应用回调，也不接
+  新版智能机器人的 URL 回调模式。
 
 ## 1. 目标
 
@@ -14,11 +16,11 @@
 computer node daemon。首个纵向切片的业务链路是：
 
 ```text
-WeCom inbound
-    -> channel normalization
+WeCom intelligent Bot WebSocket inbound
+    -> channel message mapping
     -> SQLite append-only log and session binding
     -> Codex App Server turn
-    -> agent calls bcc message check/read/send
+    -> agent calls bcc message check/read/send/unfollow
     -> outbound channel delivery and audit
 ```
 
@@ -53,7 +55,7 @@ provider entry point。
    `$HOME/.bcn/workspaces/{uuid}/`，后续启动复用，不按 agent 拆分。
 5. Channel 只把“有消息待处理”的提醒送进 runtime；真实消息由 agent 通过 `bcc`
    工具读取。
-6. 第一版只提供 `bcc message check/read/send`，不引入 task queue、claim、lease 或
+6. 第一版提供 `bcc message check/read/send/unfollow`，不引入 task queue、claim、lease 或
    exactly-once 语义。
 7. 审批能力属于 Channel port，由每个 Channel contrib 实现审批策略；当前 WeCom
    实现永远返回批准，不提供人工审批 UI。
@@ -83,12 +85,17 @@ provider entry point。
 
 - `bcc message check` 返回标准化 canonical text envelope；`read` 返回历史窗口；`send`
   返回 outbound receipt 或带 `Error`、`Code`、`Next action` 标签的错误文本。
-- 企业微信群聊是否收到后续消息由平台的 @ 规则决定；following 只能复用同一个 agent
-  runtime thread，不能伪造平台没有投递给机器人的群消息。
+- group following 是 provider-neutral core 语义：Channel 投递的所有群消息先落库；
+  unfollowed 时不计入未读、不触发 Runtime；明确提及机器人时开始 following，之后所有
+  已投递群消息持续进入未读/reminder，直到 agent 调用 unfollow。DM 始终是
+  followed，unfollow 对 DM 是返回成功的幂等 no-op。Channel 能力不改变这套 core 状态机；
+  无法投递全量群消息的
+  provider 只会造成可观测的 ingress gap。
 
 ### 首版非目标
 
-- WebSocket、Unix-socket WebSocket、HTTP RPC、远程 runtime transport。
+- Codex runtime 的 TCP WebSocket、Unix-socket WebSocket、HTTP RPC 和远程 runtime
+  transport；这一非目标不包含 Phase 5 明确需要的 WeCom Channel WebSocket。
 - Codex dynamic tools、MCP 形式的 bcc tools、request-user-input 或 MCP elicitation。
 - 企业微信人工 approval UI、管理员代审和跨 Channel 的统一审批策略。
 - 多 workspace、每 agent 独立 workspace、全局 skill 安装。
@@ -110,7 +117,7 @@ src/bazaar_compute_node/
 │   ├── sqlite/          # SQLite schema, migrations and repositories
 │   ├── codex_app_server/# async App Server process and protocol adapter
 │   ├── logging/         # local operational audit sink
-│   └── wecom/           # WeCom webhook/send adapter and normalization
+│   └── wecom/           # WeCom intelligent Bot WebSocket adapter and message mapping
 └── app/
     └── cli/             # bcn composition root, local IPC and bcc wrapper
 
@@ -142,7 +149,8 @@ provider SDK types。
 | 用途 | 外部库 | 作用域与规则 |
 | --- | --- | --- |
 | SQLite async adapter | `aiosqlite` | 仅由 `contrib/sqlite` 使用；通过每个 connection 的共享 worker thread 将 SQLite 操作移出主 loop。MVP 使用 long-lived connection、显式 transaction 和 repository lock，不引入 connection pool。 |
-| Channel HTTP client/server | `aiohttp` | 仅由 `contrib/wecom` 使用；同时承载 webhook server 与 provider HTTP client，复用 application-scoped `ClientSession`，统一 timeout、TLS、response classification 和 shutdown。 |
+| WeCom WebSocket transport | `websockets` | 仅由 `contrib/wecom` 使用；承载 WebSocket framing/TLS，Bot 认证、应用层 heartbeat、重连、回执队列和 lifecycle 由 adapter-local client 明确定义。 |
+| WeCom media boundary | `aiohttp`、`cryptography` | 仅由 `contrib/wecom` 使用；下载五分钟有效的媒体 URL 并执行 provider 规定的 AES 解密。复用 application-scoped HTTP session，统一 timeout、TLS、response classification 和 shutdown。 |
 
 App Server 不引入 provider SDK 或 JSON-RPC 第三方封装：使用标准库 `asyncio` subprocess/stream、
 `json` 和 adapter-local protocol types，避免 experimental wire schema 和 SDK 版本绑定进入
@@ -158,8 +166,11 @@ UUID 统一使用 RFC 9562 UUIDv7，不为这些能力增加第三方依赖。
 - `ruff`：格式化和静态检查基线，版本由 uv lock 固定。
 
 以下不进入 MVP dependency set：`uvloop`、`anyio`/`trio`、SQLAlchemy、Pydantic、`orjson`、
-`tenacity`、FastAPI/Starlette 和 App Server provider SDK。只有出现明确的协议、性能或类型
-校验需求，并完成真实 adapter 验证后，才单独引入对应库。
+`tenacity`、FastAPI/Starlette、App Server provider SDK、WeCom provider SDK、`pyee` 和
+`python-dotenv`。WeCom adapter 直接使用 `websockets` 实现薄协议 client，以便保留原始 frame、
+区分 ack/timeout/connection-loss、禁止 SDK 内部自动重发模糊 unknown state，并将 provider
+类型完全限制在 `contrib/wecom`；公开的 WecomTeam SDK 只作为协议与行为参考，不进入运行时
+依赖。其他依赖只有出现明确需求并完成真实 adapter 验证后才单独引入。
 
 ## 4. 核心数据模型与 SQLite
 
@@ -181,6 +192,7 @@ database:   persistent SQLite database under data_dir
 $HOME/.bcn/
 ├── bin/                       # lifecycle-scoped bcc wrappers
 ├── workspaces/{uuidv7}/       # shared agent workspace
+│   └── attachments/           # eagerly materialized inbound attachments
 └── ...                        # SQLite data and other persistent node state
 ```
 
@@ -197,14 +209,15 @@ core/application 不执行 SQLite SQL，也不依赖 SQLite-specific migration o
 类名可以在 Code 模式调整，但字段职责、约束和状态边界固定如下：
 
 - ID 使用 UUID 或 provider opaque ID 的 `TEXT`；不把 provider ID 当作本地主键。
-- 消息域的本地 `message_id` 与 `outbound_message_id` 使用 RFC 9562 UUIDv7 的 `TEXT`
-  primary key；由 repository 负责生成和格式校验，provider message ID 仍只是普通关联字段。
+- 消息域的本地 `message_id`、`attachment_id` 与 `outbound_message_id` 使用 RFC 9562 UUIDv7
+  的 `TEXT` primary key；由 repository 负责生成和格式校验，provider message ID 仍只是
+  普通关联字段。
 - 本地时间使用 UTC Unix milliseconds 的 `INTEGER`，字段统一使用 `_at_ms` 后缀；展示层
   再格式化为 canonical time。
 - 本地序列使用 `INTEGER`；`inbound_messages.seq` 和 `runtime_events.event_seq` 分别是
   node-local monotonic sequence，MVP 不物理删除这两类 append-only 记录。
 - JSON metadata 使用 `TEXT` 保存应用校验过的 JSON object；不依赖 SQLite JSON extension。
-  provider 原始 payload 只保存受控引用，不把完整 webhook、token、cookie 或 credential
+  provider 原始 payload 只保存受控引用，不把完整 inbound WebSocket frame、token、cookie 或 credential
   写入数据库。
 - 所有状态值、必填字段、默认值、关联关系和去重规则都由 core/application/repository
   校验；SQLite schema 只声明字段与物理行身份，不承载业务约束。未知 provider 状态不能
@@ -218,7 +231,7 @@ core/application 不执行 SQLite SQL，也不依赖 SQLite-specific migration o
 ```text
 node_state
   └── channel_sessions ─── bcn_sessions ─── runtime_sessions ─── runtime_turns
-          ├── inbound_messages
+          ├── inbound_messages ─── inbound_attachments
           └── outbound_messages
 bcn_sessions ─── consumer_cursors
 all lifecycle and command operations ─── runtime_events
@@ -243,6 +256,7 @@ log 的本地 `seq` 语义。
 | `runtime_sessions` | agent runtime process、provider thread 和恢复状态 | 创建后记录启动/退出/对账状态，不复用 ID |
 | `runtime_turns` | 单个 runtime turn 的终态、unknown 和 reconciliation 状态 | append identity，状态有限迁移 |
 | `inbound_messages` | provider inbound 的规范化、去重和 node-local seq 日志 | append-only |
+| `inbound_attachments` | inbound 附件的中立描述、workspace 路径和物化终态 | message append 时创建，物化终态后不变 |
 | `outbound_messages` | 每次 send command 的 draft、fresh-check 证据和 delivery 结果 | 一次 attempt 一行，状态有限迁移 |
 | `consumer_cursors` | 每个 bcn session 的 delivered cursor 与最新 inbox snapshot | singleton per session，原地更新 |
 | `runtime_events` | 跨 node/channel/runtime/session/turn/command 的运行和审计事件 | append-only |
@@ -419,9 +433,43 @@ CREATE TABLE inbound_messages (
     reply_to_provider_message_id TEXT,
     -- Normalized message body.
     body TEXT,
+    -- Whether this inbound explicitly mentions the agent.
+    mentions_agent INTEGER,
+    -- Immutable decision that this inbound enters the runtime unread stream.
+    notifies_runtime INTEGER,
     -- Controlled reference to retained provider payload data.
     provider_payload_ref TEXT,
     -- Non-sensitive normalized metadata encoded as JSON.
+    metadata_json TEXT
+);
+
+-- Provider-neutral inbound attachments materialized into the shared workspace.
+CREATE TABLE inbound_attachments (
+    -- Stable local UUIDv7 attachment identifier.
+    attachment_id TEXT PRIMARY KEY,
+    -- Application-managed association to the owning inbound message.
+    message_id TEXT,
+    -- Stable zero-based order within the owning message.
+    ordinal INTEGER,
+    -- Provider-neutral attachment category used as a reading hint.
+    kind TEXT,
+    -- Validated media type when known.
+    media_type TEXT,
+    -- Untrusted provider filename retained only for display.
+    original_name TEXT,
+    -- Workspace-relative path for a successfully materialized attachment.
+    relative_path TEXT,
+    -- Materialized plaintext byte size when known.
+    byte_size INTEGER,
+    -- Terminal materialization state: ready or failed.
+    state TEXT,
+    -- Stable failure category without provider credentials or URLs.
+    error_kind TEXT,
+    -- Local receipt time for the attachment descriptor.
+    created_at_ms INTEGER,
+    -- Time at which materialization reached a terminal state.
+    materialized_at_ms INTEGER,
+    -- Non-sensitive attachment metadata encoded as JSON.
     metadata_json TEXT
 );
 
@@ -439,6 +487,10 @@ CREATE TABLE outbound_messages (
     target TEXT,
     -- Outbound message body captured for retry and audit.
     body TEXT,
+    -- Provider-neutral outbound content format; ordinary messages default to markdown.
+    content_format TEXT,
+    -- Optional local inbound message identity the runtime intends to reply to.
+    reply_to_message_id TEXT,
     -- Application-managed delivery lifecycle state.
     state TEXT,
     -- Application-managed fresh-check result.
@@ -574,9 +626,30 @@ CREATE TABLE schema_migrations (
   语义下不做 delete，因此 node 重启后继续递增。provider 去重逻辑键是
   `(channel, provider_message_id)`，由 adapter/repository 在同一事务中检查，不能只按
   provider message id 全局去重。
+- `mentions_agent` 是统一 inbox message 的 provider-neutral 提及标记；每个 Channel
+  adapter 各自解析 provider 的 @/mention 语义，但进入 core 后都必须映射为这一布尔字段。
+  `notifies_runtime` 是 core 在同一 inbound transaction 中按 target kind、当前 following
+  和 mention transition 计算的不可变决策。两者都是应用层布尔值，不用 SQLite
+  `CHECK` 代替 core 校验。DM 必须始终 `notifies_runtime=true`；group 在显式
+  mention 时先将 session 转为 following，再将当前 inbound 标记为可通知。
+- `inbound_attachments` 与 `inbound_messages` 是一对多关系；`ordinal` 在同一消息内稳定且
+  连续。`kind` 只帮助 Runtime 选择读取工具，首版至少覆盖 `image`、`audio`、`video`、
+  `file`，未知类型降级为 `file`，不形成不同存储模型。provider 原名是不可信展示数据，
+  不参与目录或最终文件名生成；媒体 URL、AES key、response URL 等临时 credential
+  不进入该表、普通 metadata、日志或错误文本。
+- ready 附件的 `relative_path` 由共享 `AttachmentMaterializer` 生成，固定为
+  `attachments/<attachment-id>/content.<ext>`；扩展名从验证后的 media type 映射，未知时使用
+  `.bin`。路径始终相对共享 workspace，不能接受 Channel 提供的绝对路径、`..`、symlink
+  跳转或原始文件名拼接。failed 附件没有 `relative_path`，只保留稳定 `error_kind`；
+  Runtime 不会得到指向不存在文件的伪路径。
 - `outbound_messages` 记录的是 send command attempt，而不只是已经送达的 provider message。
   fresh-check 拒绝时写 `state='rejected'`、`fresh_check_state='failed'/'required'` 和
   `draft_saved_at_ms`，因此 `Draft saved: yes` 有本地审计依据且不会伪称 provider 已调用。
+- `reply_to_message_id` 只保存 runtime 选择的本地 inbound message id；command service
+  在创建 outbound 前校验该消息属于当前 bcn session 且 canonical target 兼容，再将
+  中立 reply reference（本地 id、provider message id、target）交给 Channel。它是
+  best-effort 发送提示：Channel 可以映射为 provider reply，也可以忽略并按普通消息发送；
+  core 不记录或返回 provider 是否真实应用引用回复。
 - `snapshot_seq` 是 command 使用的最近观察边界，`current_inbound_seq` 是 fresh-check
   重新读取到的当前边界；二者必须同时保存，便于解释“为什么拒绝”。`read` 返回的历史
   window 末 seq 不等于 snapshot seq；snapshot 始终记录该 session 当时的最新 inbound
@@ -594,6 +667,8 @@ CREATE TABLE schema_migrations (
       ON inbound_messages (seq);
   CREATE INDEX idx_inbound_channel_received
       ON inbound_messages (channel_session_id, received_at_ms);
+  CREATE INDEX idx_inbound_attachments_message_ordinal
+      ON inbound_attachments (message_id, ordinal);
   CREATE INDEX idx_outbound_session_created
       ON outbound_messages (session_id, created_at_ms);
   CREATE INDEX idx_outbound_state_created
@@ -621,9 +696,9 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
    `version` 的 `migration_name` 或 checksum 不一致时由 application ledger check 触发启动
    失败，不能静默跳过。
 2. 首个 migration 创建 `schema_migrations`、`node_state` 和 singleton row；随后按
-   `channel_sessions/bcn_sessions/runtime_sessions/runtime_turns`、message/cursor/outbound、
-   `runtime_events` 的依赖顺序创建表和索引。`node_state.schema_version` 是 ledger 最新
-   version 的缓存，不是第二套迁移事实源。
+   `channel_sessions/bcn_sessions/runtime_sessions/runtime_turns`、message/attachment/cursor/
+   outbound、`runtime_events` 的依赖顺序创建表和索引。`node_state.schema_version` 是 ledger
+   最新 version 的缓存，不是第二套迁移事实源。
 3. SQLite schema 只声明列、注释和查询索引，不声明 `NOT NULL`、`DEFAULT`、`CHECK`、
    `UNIQUE` 或 `FOREIGN KEY`；业务必填项、默认值、关系、去重和状态迁移由 core/application/
    repository port 实现，storage adapter 必须提供等价语义。每个 SQLite connection 都显式
@@ -636,14 +711,28 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
 
 ### 4.3 一致性规则
 
-1. Channel inbound 在一个显式事务和 channel/session lock 内完成 provider id 去重、分配本地
-   `seq`、写入 inbound log 和 get-or-create channel/bcn session；provider id 去重、channel
-   到 bcn/runtime 的关联以及必填字段校验全部由 application/repository 执行，不依赖 SQL
-   unique、foreign-key 或 check 约束。
-2. `message check` 从当前 consumer cursor 读取后续消息，并按既定 drain 语义推进
-   cursor；`message read` 是纯读取，不推进 cursor。两者都要记录本次操作看到的最新
-   inbox snapshot seq，供后续 `send` 做 fresh check；snapshot 的更新不能偷偷推进已交付
-   cursor。
+1. Channel 先用 application 提供的 provider-neutral ingress gate 检查
+   `(channel, provider_message_id)`；重复 frame 直接返回既有结果，不重复下载或生成文件。新
+   inbound 的 provider-specific base64、临时 URL、AES payload 或 SDK media object 都在 Channel
+   内解析，并通过 `ChannelContext.attachments` 的共享 `AttachmentMaterializer` 写入其管理的
+   staging 文件；成功内容在校验大小与路径后原子 rename 到最终路径，失败则形成不含敏感信息的
+   terminal descriptor。Channel 只有在所有附件均达到 `ready` 或 `failed` 后，才向
+   application 交付统一 `InboundMessage`；其中不再包含 provider media schema，附件已经是本地
+   id、展示名、kind、media type、workspace-relative path/failed category。application 随后在
+   显式事务和 channel/session lock 内再次校验 provider id，分配本地 `seq`、get-or-create
+   channel/bcn session、执行 following transition 和 `notifies_runtime` 决策，并 append inbound
+   message/attachments。事务提交后正文与全部附件描述同时进入 `check`、`read`、unread 和
+   Runtime notice。进程崩溃或事务回滚遗留的 staging/无引用最终文件由启动 reconciliation 清理，
+   不能生成第二条 message。DM session 创建后固定 following，unfollow 不改变状态；group
+   session 默认 unfollowed，`mentions_agent=true` 在同一事务中将其转为 following。provider id
+   去重、channel 到 bcn/runtime 的关联以及必填字段校验全部由 application/repository 执行，
+   不依赖 SQL unique、foreign-key 或 check 约束。
+2. `message check` 只从当前 consumer cursor 读取 `notifies_runtime=true` 的后续消息，
+   按 drain 语义推进 cursor；已落库的 quiet group inbound 不计入 unread/reminder。
+   `message read` 是纯历史读取，可返回同一 session 的 quiet 与 notifying inbound 供开始
+   following 后补齐上下文，但不回溯改写它们的 `notifies_runtime` 也不推进 cursor。
+   check/read 都记录本次实际观察到的最新 inbox snapshot seq，供后续 `send` 做
+   fresh check；snapshot 的更新不能偷偷推进已交付 cursor。
 3. `message send` 必须在同一 bcn session 的串行 command 边界内执行 fresh check：将当前
    inbound 最大 seq 与该 session 最近一次 `check`/`read` 的 snapshot seq 比较。若发现更
    新 inbound，必须在调用 Channel port 前拒绝，不产生 provider send；保存安全 draft 和
@@ -668,8 +757,11 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
    在自己的实现内部执行 migrations。
 3. 业务层调用 `storage.initialize` 读取或生成唯一 workspace UUID，并创建共享 workspace。
 4. 启动本地 command service，确保 `$HOME/.bcn/bin/` 下存在本次 node 生命周期对应的
-   `bcc` wrapper，并把该目录加入每个 runtime 子进程的 PATH。为每个 runtime 子进程注入
-   `BCN_SESSION_ID=<bcn_session_id>`，让同一个 wrapper 能路由到正确的 session。
+   `bcc` wrapper。composition 按平台和已选 Runtime 构造封闭的子进程环境白名单，
+   PATH 由白名单中的宿主 PATH 前缀该 wrapper 目录得到，再由 bcn 生成
+   `BCN_ENDPOINT` / `BCN_SESSION_ID` / `BCN_RUNTIME_SESSION_ID` /
+   `BCN_COMMAND_CAPABILITY`。Runtime adapter 只能使用这份完整环境，不得再合并
+   daemon `os.environ`。
 5. 按已选择的 runtime/channel composition 恢复可恢复的 `runtime_sessions`；不假设上次
    进程仍然存在。
 6. Channel adapter 开始接收 inbound。
@@ -681,13 +773,23 @@ TCP，必须使用每个 node 的随机 capability token、仅绑定 loopback，
 
 ### 5.2 首次 inbound 与 session 创建
 
-1. Channel adapter 将 provider event 转成 core `InboundMessage`。
-2. Storage 以 channel conversation/thread identity 查找 channel session。
-3. 不存在时，在同一事务中创建 channel session 和 bcn session，并创建 runtime binding
-   记录；Codex process/thread 可以延迟到事务提交后启动。
-4. 启动该 bcn session 的独立 Codex App Server process，设置共享 workspace 为 cwd 或
+1. Channel adapter 解析 provider event，并在共享 ingress gate 确认不是重复消息后，将
+   provider-specific 附件交给 `ChannelContext.attachments` 物化。adapter 最终只向抽象 port
+   交付统一 `InboundMessage`：target kind、provider-neutral `mentions_agent` 以及零到多个已经
+   含本地 relative path/failed category 的 `InboundAttachment`；不交付 URL、base64、AES key、
+   SDK media object，也不决定 following。
+2. Application 以 channel conversation/thread identity 取得 session lock；Storage 查找
+   channel session，并再次校验 provider id 与全部 attachment path/terminal state。
+3. 在同一事务中 get-or-create channel/bcn session，将统一 inbound message 与全部 terminal
+   attachment descriptor 无条件落库；DM 固定
+   followed，group 默认 unfollowed 并在 `mentions_agent=true` 的 inbound 时原子转为 followed。按转换后
+   状态固定当前 inbound 的 `notifies_runtime`。
+4. `notifies_runtime=false` 时事务提交后结束，不创建/启动 RuntimeSession、不增加
+   unread count、不发 reminder。`notifies_runtime=true` 时才创建或恢复 runtime binding，
+   启动该 bcn session 的独立 Codex App Server process，并设置共享 workspace 为 cwd 或
    runtime 支持的 workspace 参数。
-5. 完成 `initialize`、`thread/start` 或恢复已有 thread，再发送 reminder turn。
+5. 完成 `initialize`、`thread/start` 或恢复已有 thread，再按 notifying unread count
+   发送 reminder turn。
 
 ### 5.3 Reminder 与消息工具
 
@@ -706,9 +808,10 @@ wrapper 的调用面保持 shell-friendly 且与 session 中的既有工具调�
 ```bash
 bcc message check
 bcc message read --target "<canonical-target>" [--around "<message-id>"]
-bcc message send --target "<canonical-target>" <<'BCCMSG'
+bcc message send --target "<canonical-target>" [--reply-to "<local-inbound-message-id>"] <<'BCCMSG'
 Message body.
 BCCMSG
+bcc message unfollow
 ```
 
 正文从 stdin 读取，不放进命令行参数；成功结果写 stdout，已处理的参数、fresh-check 或
@@ -718,35 +821,75 @@ provider 错误写 stderr 并返回非零退出码。错误文本仍使用稳定
 `bcc message check` 的最小输出形态：
 
 ```text
-[target=#work:6632e039 msg=25e7bff4 time=2026-08-04 19:25:39 type=human] @sender: message body
+[target=#work:6632e039 msg=25e7bff4 time=2026-08-04 19:25:39 type=human mentioned=true] @sender: message body
 No more new messages.
 ```
 
+有附件时不创建 Codex-specific image input，也不把附件伪装进正文；`check`/`read` 的同一
+canonical serializer 在所属消息文本末尾追加一个 Raft-compatible inline suffix。ready
+附件直接给出 Runtime cwd 可解析的 workspace-relative path，不再要求 agent 调用二次下载
+命令：
+
+```text
+[target=#work:6632e039 msg=25e7bff4 time=2026-08-04 19:25:39 type=human mentioned=true] @sender: message body [1 attachment: image.png (id:019f0000-0000-7000-8000-000000000001, path:attachments/019f0000-0000-7000-8000-000000000001/content.png)]
+No more new messages.
+```
+
+多附件按 `ordinal` 输出并使用复数 `attachments`；failed descriptor 保留原位置、local id 与稳定
+failure category，但不输出 path：
+
+```text
+[2 attachments: image.png (id:019f0000-0000-7000-8000-000000000001, path:attachments/019f0000-0000-7000-8000-000000000001/content.png), report.pdf (id:019f0000-0000-7000-8000-000000000002, state:failed, error:download_failed)]
+```
+
+文件名只作 JSON-escaped 展示，不能包含未转义的换行或控制字符。suffix 属于普通 tool-result
+文本，因此所有 Runtime 都能看到；ready path 的扩展名来自已验证 media type，Runtime 可据此
+选择图片、音频或通用文件读取工具，但文件是否读取仍由 agent 决定。`check` 与 `read` 必须对
+同一 message/attachment snapshot 生成逐字相同的 suffix，避免一次消费后路径或状态漂移。
+
 `bcc message read` 负责历史窗口与定位字段，例如 local seq、完整 UUID、thread id 和
 reply target；每次 `check`/`read` 都返回或内部记录 inbox snapshot seq。`bcc message send`
-负责 target 校验、fresh check、outbound log 和 provider receipt。工具结果必须保留 sender
-identity，不能只返回无来源的正文。
+负责 target 校验、fresh check、outbound log 和 provider receipt。`bcc message unfollow` 只作用于
+当前 `BCN_SESSION_ID` 绑定的 group channel session，在 session command lock 内将 following
+转为 false 并记录 audit event。DM 或已是 unfollowed 的 group 调用都是幂等 no-op：
+返回成功 exit code，stdout/stderr 均为空，不改变状态。工具结果
+必须保留 sender identity，不能只返回无来源的正文。
 
-三类工具都使用面向 agent 的纯文本 stdout，不把 provider SDK 对象直接暴露给 runtime：
+四类工具都使用面向 agent 的纯文本 stdout，不把 provider SDK 对象直接暴露给 runtime：
 
 ```text
 # check: canonical inbound envelope
-[target=<canonical-target> msg=<short-message-id> time=<provider-time> type=human] @sender: message body
+[target=<canonical-target> msg=<short-message-id> time=<provider-time> type=human mentioned=<true|false>] @sender: message body
 No more new messages.
 
 # read: historical window with positioning fields
 Read window: <n> returned, seq <first-seq>-<last-seq>, oldest to newest.
-[1/<n> seq=<local-seq> msg=<full-message-id> time=<provider-time> type=human threadId=<thread-id> replyTarget=<canonical-target>] @sender: message body
+[1/<n> seq=<local-seq> msg=<full-message-id> time=<provider-time> type=human mentioned=<true|false> notifiesRuntime=<true|false> threadId=<thread-id> replyTarget=<canonical-target>] @sender: message body
 
 # send: confirmed outbound receipt
 Message sent to <canonical-target>. Message ID: <outbound-message-id>
+
+# unfollow: confirmed group mention/following transition
+Session unfollowed. New group messages will remain in history without notifying this runtime until attention is requested again.
 ```
 
-`check` 的 envelope 只保留 agent 判断来源所需的 target、短消息 id、time、type、sender 和
-body；`read` 额外提供完整 message id、local seq、threadId 和 replyTarget，便于定位和构造
-回复。`send` 成功必须返回可追踪的 message id，不能只返回 boolean；provider receipt 及
+`check` 的 envelope 保留 agent 判断来源所需的 target、短消息 id、time、type、sender、
+`mentioned` 和 body；`read` 额外提供完整 message id、local seq、`notifiesRuntime`、threadId
+和 replyTarget，便于定位、区分 quiet history 与构造回复。`mentioned` 是统一 wire 名，
+对应 core `InboundMessage.mentions_agent`；Runtime 不需要理解任何 provider mention schema。
+`send --reply-to` 表达中立的“尝试回复某条 inbound”意图；参数使用 bcn 本地 message id，
+不接收 provider-native id。未指定时是普通发送。Channel 能力不支持时忽略该提示并继续
+发送正文；core 不关心、不记录也不在 receipt 中报告引用回复是否真实发生。
+`send` 成功必须返回可追踪的 message id，不能只返回 boolean；provider receipt 及
 本地 delivery 状态同时写入 outbound log。若 provider 只确认已排队而未确认送达，输出应
-使用明确的 queued/unknown 状态，不能伪称为 sent。
+使用明确的 queued/unknown 状态，不能伪称为 sent。unfollow 完成后到达的 group
+inbound 仍然落库供 `read` 查看，但不进入 `check` 或 reminder；下一条
+`mentions_agent=true` 的 inbound 会在同一事务中重新开启 following。
+
+`bcc message send` 从 stdin 接收的普通正文默认是 `content_format=markdown`；纯文本是其
+自然子集，不需要额外 text 模式。core 只保存正文与中立格式，Channel adapter 按
+`delivery_constraints` 将其映射到 provider 支持的消息类型；不支持 Markdown 的 Channel 必须
+明确声明降级/拒绝策略，不让 Runtime 感知 provider wire type。
 
 `bcc message send` 的 fresh check 是发送前的安全门：command service 需要拿到同一 session
 最近的 snapshot，并在 session command lock 内重新读取当前 inbound 最大 seq。当前值大于
@@ -805,21 +948,84 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
 
 ## 6. Channel adapter 设计
 
-首个 Channel adapter 是 WeCom bot，但 core 只依赖抽象 Channel port：
+首个 Channel adapter 是 WeCom intelligent Bot，但 core 只依赖抽象 Channel port：
 
-- `receive`：把 webhook/event 规范化为 inbound message 和 channel session identity。
-- `send`：根据 canonical target 发送 outbound message，并返回 provider receipt。
-- `normalize_identity`：稳定映射群聊、单聊、thread/reply 和 sender identity。
+- `receive`：消费 WebSocket 的 `aibot_msg_callback` / `aibot_event_callback`，在 adapter
+  内抹除 provider message/media 差异；必要时先调用 context 中的共享 attachment materializer，
+  最终只向 application 交付带本地附件路径的统一 `InboundMessage`、channel session identity
+  和 canonical target。
+- `send`：接收包含 canonical target、body、content format 和可选中立 reply reference 的
+  `ChannelSendRequest`，根据平台能力映射关联被动回复、主动发送与消息级 reply，
+  仅返回 provider-neutral delivery receipt；是否真实应用消息级 reply 不进入 core 状态。
 - `request_approval`：接收 core 的中立 `ApprovalRequest`，返回 `ApprovalDecision`；每个
   Channel contrib 自己实现审批策略。
-- `delivery_constraints`：表达群聊必须重复 @ 等平台约束，不让 core 猜 provider 行为。
+- `delivery_constraints`：表达 provider 是否能投递全量群消息等平台约束，只用于
+  运维可观测性与产品限制提示，不改写 core following state machine。
+
+Channel factory 从无参调用改为接收中立 `ChannelContext`；context 包含 `node_id`、所选
+Channel 的非敏感配置、provider-neutral ingress dedupe gate，以及共享
+`AttachmentMaterializer` capability。materializer 接受 bytes 或 bounded async byte stream，
+统一负责 staging、大小/配额校验、受控路径、atomic rename 和 relative-path descriptor；它不
+接受 provider URL、AES key 或 SDK object。base64 解码、provider-authenticated download、AES
+解密等差异仍由对应 Channel 完成，再把明文字节流交给 materializer。WeCom 的 `bot_id` 来自
+持久配置 `[channel.wecom]`，Secret 固定从 `BCN_WECOM_BOT_SECRET` 读取，缺失时在连接前 fail
+closed。Secret 只由 WeCom factory/client 持有，不进入 Runtime context、wrapper、SQLite、
+日志、异常文本或 health 响应。
+
+Bot 面向外部用户，Runtime 处理的是不可信输入，因此 Runtime 子进程不继承 daemon
+完整环境。composition 统一按“平台基线 + 已选 Runtime 显式扩展 + 用户显式追加 +
+bcn 生成值”构造封闭白名单：
+
+- POSIX 基线仅继承 `HOME`、`PATH`、已存在的 `TMPDIR` 与 UTF-8 locale 所需的
+  `LANG` / `LC_ALL` / `LC_CTYPE`；Windows 基线仅继承 `PATH`、`USERPROFILE`、
+  `HOMEDRIVE`、`HOMEPATH`、`APPDATA`、`LOCALAPPDATA`、`SystemRoot`、`WINDIR`、
+  `COMSPEC`、`PATHEXT`、`TEMP` 和 `TMP`。实现前通过 Linux/macOS/Windows 真实
+  process matrix 收敛到实际必需集合；新增名称需要真实失败证据，删除后要复验，不因
+  当前 daemon 恰好存在就继承。
+- Runtime 扩展是代码中按 adapter name 审查的封闭集合。Codex 首版只内置官方公开的
+  非 token 位置/证书变量：
+  `CODEX_HOME`、`CODEX_SQLITE_HOME`、`CODEX_CA_CERTIFICATE` 和 `SSL_CERT_FILE`；缺失值
+  就使用 Codex 默认，不传空字符串。
+- 持久配置允许用户在 `[runtime.env]` 的 `include` 中追加精确变量名列表；值仍只从
+  daemon 环境读取。不支持通配符、前缀匹配、直接配置值或“继承全部”开关；
+  任一已配置名在 daemon 环境中缺失时都在启动 Runtime 前 fail closed。这一层是
+  operator 对暴露面的显式授权；配置和启动日志应提醒 token/key 类变量会被
+  Runtime 及其工具读取，但绝不回显变量值。
+- `BCN_*` 是 bcn 保留 namespace；除 bcn 自己生成的 session 变量外不可由用户追加。
+  已选 Channel/Storage/Audit adapter 注册的 credential 名（本期包含
+  `BCN_WECOM_BOT_SECRET`）也是强制拒绝集，不能被 `[runtime.env]` 覆盖。MVP 的
+  Codex 认证默认使用 `CODEX_HOME` 下的已持久登录或 OS credential store；若用户确实
+  选择追加 runtime token/API key，则这是明确接受该变量对 Runtime 可见，不得记录为 bcn
+  默认安全边界。
+- bcn 生成值只有前缀 wrapper 目录的 `PATH`、`BCN_ENDPOINT`、
+  `BCN_SESSION_ID`、`BCN_RUNTIME_SESSION_ID` 和 `BCN_COMMAND_CAPABILITY`。
+  `RuntimeCommandContext.environment_for_session` 改为必填并返回完整权威环境；所有
+  Runtime adapter 必须把它原样作为 subprocess `env`，不得再合并 `os.environ`。
+
+配置形态固定为：
+
+```toml
+[runtime.env]
+include = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]
+```
+
+`include` 只保存名称，不保存值；上例仅演示显式追加语义，不把 proxy 变量变成
+默认白名单。
+
+白名单只是减少外部输入直接诱导 Runtime 枚举环境时的凭据暴露面；同 OS 用户下的
+文件、credential store 和其他进程仍不是强隔离边界。若威胁模型要求抵御恶意 Runtime，
+后续必须使用独立 OS identity/process、受限 filesystem 或 secret broker，不能把环境白名单
+宣称为完整 sandbox。
 
 当前 WeCom 实现的 `request_approval` 永远返回 approved；后续可替换为人工审批，但不把
 Codex JSON-RPC request payload 暴露给 Channel 实现。
 
-企业微信群聊的 following 语义只表示继续使用既有 bcn/Codex session；没有 @ 的消息若
-平台未投递给 bot，不能由 bcn 的 cursor 或 Codex thread 补回。单聊才可以实现持续接收
-后续消息。
+WeCom adapter 不特判 following：群聊 inbound WebSocket frame 中的明确提及映射为统一
+`mentions_agent=true`，core 照常开启 following；之后若 provider 投递 inbound，core 照常持久化
+并通知 Runtime。但新版 WeCom 智能机器人不投递未再次明确提及机器人的群消息，
+因此 following 期间这些消息根本不进入 bcn，也无法由 cursor 或 Codex thread 补回。
+这是 WeCom capability gap，不是 core 分支；Telegram 等能投递全量群消息的 Channel 可以完整
+实现同一 contract。切换到同一 WeCom Bot 的 URL callback 只改 transport，不改变该投递能力。
 
 ## 7. 日志与可观测性
 
@@ -1222,51 +1428,229 @@ process、thread、workspace、turn 和 SQLite mapping 互不混淆；provider r
 Test adapters，`channel`/`runtime` 未显式配置时启动失败；TestChannel+CodexRuntime 的真实
 自然问答与 TestChannel+TestRuntime 的 core/daemon contract 均通过。
 
-### Phase 5：WeCom adapter 与端到端编排
+### Phase 5：WeCom intelligent Bot WebSocket adapter 与端到端编排
 
-目标：接入首个真实 Channel contrib，把 provider identity、inbound、approval、outbound 和
-session routing 汇合为可运行的端到端路径。
+目标：以新版「智能机器人 API 模式」的 WebSocket 长连接接入首个真实 Channel contrib，
+把配置、连接所有权、provider identity、inbound、approval、outbound 和 session routing
+汇合为可运行的端到端路径。当前协议依据优先级为企业微信官方文档、WecomTeam 官方 Python
+SDK 与 Node.js SDK；旧群机器人 webhook、自建应用 XML callback 和 OpenClaw plugin 的兼容
+分支不得进入该 adapter。同一个智能机器人同一时间只能选择 WebSocket 或 URL callback
+其中一种接入方式；Phase 5 不尝试双开。
 
-#### Task 5A：provider identity、inbound normalization 与 dedupe
+企业微信把 WebSocket inbound 的 `cmd` 命名为 `aibot_msg_callback` 和
+`aibot_event_callback`；这里的 `callback` 只是 provider wire 命名，实际仍是现有
+WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正文统一称为
+“inbound WebSocket frame”，只在引用精确 `cmd` 或区分官方 URL callback 模式时保留原词。
 
-- 接入真实 webhook/event reader，规范化 conversation/thread/reply/sender identity、message
-  type、provider time 和 canonical target。
-- 将重复 webhook、provider message id、群聊/单聊 target 和 thread/reply 语义映射到 Phase 2
-  的 application-level dedupe 与 channel session lookup。
-- 处理 provider credential boundary；凭据只通过受控本机环境注入，不进入 SQLite、wrapper
-  或日志。
+实现前固定并记录以下协议基线；官方文档无法直接确认的字段以同组织 SDK 的不可变源码提交
+与真实 Bot 帧交叉验证，不能把 SDK 行为上升为 provider 保证，也不直接依赖 SDK：
 
-依赖：Task 4D。产出：真实 inbound normalization、dedupe 和 identity tests；使用
-WeComChannel+TestRuntime 独立验证 Channel ingress、normalization 和 routing，不要求真实
-Codex Runtime 同时参与。
+- 企业微信智能机器人 API 接入：<https://developer.work.weixin.qq.com/document/path/101463>
+- 企业微信长连接配置：<https://open.work.weixin.qq.com/help2/pc/21661>
+- 企业微信智能机器人帮助：<https://open.work.weixin.qq.com/help?doc_id=21657>
+- 腾讯官方接入说明：<https://cloud.tencent.com/document/product/1759/121473>
+- 腾讯官方群聊 @ / 单聊触发规则：<https://cloud.tencent.com/document/product/1813/134138>
+- WecomTeam 官方 Python SDK：<https://github.com/WecomTeam/wecom-aibot-python-sdk>
+- WecomTeam 官方 Node.js SDK 不可变基线：
+  <https://github.com/WecomTeam/aibot-node-sdk/tree/80615b987ef69c6028ad764924609247c0725955>
 
-#### Task 5B：outbound delivery 与 Channel approval policy
+#### Task 5A：配置、WebSocket lifecycle、inbound mapping 与 dedupe
 
-- 实现 canonical target 到 provider send 的 mapping，返回 provider receipt/queued/unknown/
-  failed 的明确分类，并把本地 outbound state 与 provider state 分开。
+- 先扩展 provider-neutral inbound contract 与 repository：新增 `mentions_agent` 与
+  `notifies_runtime`，在单个 channel/session transaction 内完成去重、无条件 append、
+  group mention/following transition 和 unread/reminder 决策。DM 始终 followed，group 默认
+  unfollowed。Task 5A 先完成这个通用 ingress foundation，Task 5C 再增加 agent-driven
+  unfollow command 和完整的继续编排，不把语义塞进 WeCom adapter。
+- 在同一 provider-neutral inbound contract 中新增 `InboundAttachment`、
+  `inbound_attachments` repository，以及由 application 通过 `ChannelContext` 提供给所有
+  Channel 的共享 `AttachmentMaterializer`。各 Channel 先把 URL/AES、base64、SDK object 等
+  provider 格式转换为明文 bytes/bounded async byte stream，再调用 materializer；materializer
+  生成本地 UUIDv7，在共享 workspace 的 `attachments/<attachment-id>/` 下完成 staging、
+  大小/配额校验、原子 rename 与 crash reconciliation，并返回带 relative path 的中立
+  descriptor。Channel 向抽象 port 交付的 `InboundMessage` 已经只包含这些本地 descriptor；
+  core/application 不再下载、解密或理解 provider media schema。`check`/`read` 使用同一
+  canonical serializer，把 ready path 或 failed category 作为所属消息的 inline suffix 输出。
+- 扩展持久配置与 composition：`[channel.wecom].bot_id` 是非敏感必填项；
+  `BCN_WECOM_BOT_SECRET` 是唯一 Secret 来源。新增 `ChannelContext` 并将 Channel factory 改为
+  context factory；未选择 WeCom 时不读取其配置或凭据，选中后缺少任一必填值都在连接前
+  fail closed。
+- 固定 WecomTeam 官方 Python/Node.js SDK 的不可变源码提交作为协议参考；使用
+  `websockets` 编写 adapter-local thin client，不引入 SDK 的 event emitter、自动 `.env`、
+  隐式重发或 provider 类型。连接默认 endpoint `wss://openws.work.weixin.qq.com`；私有部署
+  endpoint 只能来自显式 `[channel.wecom].websocket_url`，不得作为隐藏环境覆盖。
+- 建立连接后以 `aibot_subscribe` 帧发送 `headers.req_id` 与 `body.bot_id` / `body.secret`，
+  只在对应回执 `errcode=0` 后进入 ready；认证失败、transport close、应用层 `cmd=ping`
+  heartbeat/ack、指数退避、bounded shutdown 都映射为明确的 Channel lifecycle state。
+  WebSocket control ping/pong 与应用层 JSON `cmd=ping` 是两层机制，不能只开启 library ping。
+- 默认沿用官方 SDK 的客户端策略：30 秒应用层 heartbeat、连续 2 次 ack 缺失判死、1/2/4/8/
+  16/30 秒退避上限；bcn 为重连加入 bounded jitter，并把网络重试预算与认证失败预算分开。
+  这些数值是 SDK 策略而非企业微信公开 SLA，配置与日志不得描述为 provider 保证。
+- 同一个 Bot 只允许一个 active connection owner。收到 `disconnected_event` 表示另一连接已
+  建立时，当前 node 停止自动重连并进入可诊断的 degraded state，避免两个实例互相踢下线。
+- 对 JSON object 原始 frame 做 adapter-local 宽松字段读取，未知字段不使 reader 崩溃；随后对
+  `aibot_msg_callback` 直接映射并严格校验 core 必填值：`body.msgid` 是 provider dedupe key，
+  `headers.req_id` 只用于本次被动回复/回执 correlation；`body.aibotid` 参与 account scope，
+  群聊 conversation 使用 `body.chatid`，单聊使用 `body.from.userid`，并保留 `chattype`、
+  `create_time`、`msgtype`、`quote` 与媒体的短期 URL/AES key 为受控引用。官方资料未确认
+  `create_time` 单位，真实 Bot 验证前只保存 raw value，不猜测秒或毫秒。
+- 将 DM 与 group target kind 及群聊的显式提及映射为统一 inbox 字段
+  `mentions_agent`；DM 不依赖该信号且始终通知 Runtime。WeCom 群聊 inbound frame
+  只能观察到已明确提及机器人的消息，因此映射为 `mentions_agent=true`；
+  adapter 不直接读写 `ChannelSession.following`。
+- 覆盖官方协议声明的 text/image/mixed/voice/file/video 与 event 类型；无法消费的类型必须
+  记录稳定的 unsupported classification，不能丢成空文本。按当前官方 SDK 类型，image/file/
+  video 是五分钟有效的加密下载 `url` 加可选 `aeskey`；mixed 的 `msg_item` 分别映射 text 或
+  image；voice 当前是 `content` 转写文本，不伪造为二进制附件。WeCom adapter 使用 `aiohttp`
+  流式下载并在 `contrib/wecom` 完成 AES-256-CBC 解密，再把明文 bounded byte stream 交给共享
+  materializer；文件名只能从受控的 `Content-Disposition` 解析为展示 metadata，adapter 不自行
+  拼接最终路径。下载、解密与 workspace 物化必须在 URL 过期前完成；成功后 Channel 交付带
+  ready local path 的统一 message，失败时交付无 path 的 failed descriptor。`response_url`、
+  媒体 URL 和 AES key 都只存在于本次 ingress 的短期内存状态，按临时 credential 脱敏，不写
+  SQLite、完整日志、异常、health 或普通 metadata。
+- 以 `body.msgid` 接入 Phase 2 application-level dedupe 与 channel session lookup。重连后即使
+  provider 重投同一 inbound frame 也只追加一次；没有官方 replay cursor 或补发保证时，不能把
+  重连描述为能够找回断线期间消息。
+- 在统一 Runtime 启动边界实现上述封闭环境白名单：先按平台复制最小基线，
+  再加入代码审查的 Runtime 扩展、`[runtime.env]` 中 `include` 的用户显式追加和 bcn
+  session capability。对追加名做格式、存在性、保留 namespace 和 adapter credential
+  拒绝校验。修改
+  `RuntimeCommandContext` contract 为必填的完整权威环境，并修正现有 Codex adapter
+  的 `dict(os.environ)` + `update(...)` 合并行为。
+- 加入结构性 credential-boundary 验证：daemon 环境注入 sentinel Channel/Storage/
+  Audit/API token 后，实际传给 subprocess spec 的 key set 仍必须与平台/Runtime 白名单完全
+  相等，且不含 sentinel；日志只记录 policy version/hash 和缺失的变量名，不记录值。
+  Linux/macOS/Windows 再分别以真实 Codex App Server 的登录、initialize、自然对话、
+  `bcc` 和 resume 覆盖验证精确白名单不破坏运行链路。
+- 验证 WeCom Secret 和其他禁止 credential 不进入任意 Runtime 子进程环境、SQLite、
+  wrapper、日志、异常或 health 输出；同时保留“同 OS 用户不是强隔离”的边界说明。
+
+依赖：Task 4D 与命名收口 review。产出：真实 WebSocket lifecycle、inbound mapping、dedupe、
+provider-neutral attachment materialization、identity 与 credential-boundary tests；使用
+WeComChannel+TestRuntime 独立验证真实 Bot ingress、routing 和媒体落盘，不要求真实 Codex
+Runtime 同时参与。
+
+#### Task 5B：outbound、receipt 与 Channel approval policy
+
+- 普通 outbound 默认保持 Markdown。WeCom 被动回复将当前批次放入支持 Markdown 的
+  `stream.content`，主动发送使用 `msgtype="markdown"` 与 `markdown.content`。欢迎语
+  `enter_chat` event 仍按 provider contract 使用 text 或 template card，不伪造 Markdown
+  欢迎语。
+- WeCom adapter 在 provider 内部将一个逻辑 outbound 按每批最多 20480 UTF-8 bytes
+  分成多个独立完整 Markdown 消息。splitter 不破坏 Unicode code point，优先在空行、
+  换行和 Markdown block 边界切分；跨批 fenced code block 在上一批闭合并在下一批重开，
+  且这些辅助字符计入 byte limit。实现不假设企业微信 Markdown 等于完整
+  CommonMark/GFM；支持子集以真实 Bot 渲染结果为准。
+- 实现两条明确的 provider send 路径：原 inbound WebSocket frame 的约三分钟
+  passive-reply window 仍有效时，优先使用 `aibot_respond_msg` 并透传原
+  `headers.req_id`；provider wire 要求该回复使用
+  `msgtype="stream"`，但 bcn 只发送一帧：新 stream id、完整 Markdown 正文和
+  `finish=true`。passive-reply window 已过期、node 重启或被动回复已结束时，改用
+  `aibot_send_msg` 主动发送，群聊目标为 `chatid`，单聊目标为 `userid`，并生成独立 req_id。
+  两者都会向同一会话发出机器人消息；被动路径的 req_id 只证明 wire correlation，
+  不声称企业微信 UI 会渲染为引用回复或 provider thread。
+- passive-reply window 可用时，第一批发送一帧完整被动回复，其余批次
+  按顺序使用 `aibot_send_msg`；window 不可用时全部批次都使用主动 Markdown。同一逻辑 outbound
+  的批次串行发送，每批都等待自己的 provider ack 后才发下一批。普通
+  event inbound frame 不使用 `aibot_respond_msg`。欢迎语和模板卡片
+  event 更新是五秒窗口；窗口外不得继续复用旧 req_id。
+- Runtime 只在 `bcc message send` 时提交一个完整逻辑 outbound；Channel 的超限分批是
+  provider delivery detail，每批都是独立完整消息，不增量刷新已发内容。provider `stream`
+  只是首批被动回复 envelope，不是 bcn 的流式产品语义。
+- WeCom 不支持对任意某条历史消息应用 message-level reply intent。
+  `ChannelSendRequest.reply_to` 非空时仍按正常被动/主动路径发送正文并忽略该提示；
+  inbound frame `req_id` 的 passive-response correlation 也不进入引用回复状态。
+  支持该能力的 Channel 可以把中立 reply reference 映射为 provider reply，但无需向 core
+  报告是否真实应用。
+- provider ack 的 `errcode=0` 只确认企业微信长连接服务接受并处理该命令，不代表终端展示、
+  用户收到或已读；非零回执是 confirmed failed，发送前
+  失败是 failed；已有前缀批次确认成功后遇到明确失败是 partial；任一批回执超时或
+  连接断开使整个逻辑 outbound 为 unknown。partial/unknown 都禁止从头自动重发。
+  canonical receipt 关联本地 outbound id、总批数、已确认前缀数，以及每批的
+  provider req_id、stream id（若有）、errcode/errmsg 摘要和时间。
 - 在 Channel port 上实现当前 approval policy：每个 approval request 返回 approved；保留
   后续替换为人工策略的接口，不把 runtime wire payload 暴露给 Channel。
-- 记录 inbound received、approval requested/decided、outbound pending/sent/failed/unknown
+- 记录 inbound received、approval requested/decided、outbound pending/sent/partial/failed/unknown
   事件，保证 receipt 与本地 delivery 可关联。
 
-依赖：Task 5A 的 provider identity、inbound normalization 与 dedupe。产出：真实 provider
-send/approval adapter。
+依赖：Task 5A 的连接、identity、inbound mapping 与 dedupe。产出：真实被动/主动
+provider send、receipt classification 与 approval adapter。
+
+出站媒体上传不属于 Task 5B：官方类型注释与 Node SDK 对 `chunk_index` 起点存在差异，只有
+先用真实 Bot wire capture 消除 0/1 起点歧义后才能另行规划；本期只做入站媒体、被动文本流
+和主动 Markdown。
 
 #### Task 5C：session orchestration 与平台 delivery rules
 
-- 首次 inbound 创建 channel/bcn/runtime mapping，后续同一 conversation/thread 复用既有
-  session；不同 conversation 不能共享 cursor、process 或 turn。
-- 实现群聊重复 @、following、reply/thread target、shutdown stop-receive 和 provider delivery
-  limitation；未投递给 bot 的消息不能由本地 cursor 补回。
+- 首次 inbound 创建 channel/bcn mapping；只有 `notifies_runtime=true` 时才创建或恢复
+  runtime binding。后续同一 conversation/thread 复用既有 session；不同 conversation
+  不能共享 cursor、process 或 turn。
+- 在通用 orchestration 中保留真正的 following state machine：Channel 已投递的每条 inbound
+  都先落库；unfollowed 时不进入该 session 的 unread count 且不触发 Runtime turn，
+  group 的 `mentions_agent=true` 在同一事务中开启 following 并让当前消息进入未读；
+  followed 时所有后续已投递 inbound 都进入未读并持续 reminder，直到 agent 调用
+  `bcc message unfollow`。DM 创建后固定 followed，所有 inbound 都通知 Runtime；
+  unfollow 对 DM 成功返回但不改变 following。这个语义不能由
+  provider 的“是否投递”隐式替代。
+- 所有 Channel adapter 都只负责标准化 target kind 与 `mentions_agent`，不自行改写
+  following 规则。能投递全量群消息的 Channel 在 group unfollowed/followed 两种状态下都
+  继续将 inbound 交给 core；WeCom 群聊因 provider 只投递明确提及机器人的消息，
+  实际只能提供 `mentions_agent=true` 的群聊 inbound frame。core 仍然正常开启和保持
+  following，但对未被 provider 投递的消息无法落库、计入未读或由 fresh-check/
+  cursor/Codex thread 补回；这个 gap 只记为 Channel capability，不引入 WeCom-specific
+  orchestration branch。
+- 将 group `chatid` 与 DM `userid` 映射为不同 canonical target kind；quote 只表示本次已投递
+  消息的引用内容，不建立 provider 不存在的 thread。Channel health/capability 明确
+  暴露 group full-ingress 是否可用，让 operator 知道 following 是完整还是存在 provider gap，
+  但不在 Runtime prompt 中伪造已收到的消息。
+- 同步 runtime developer instruction 与 `bcc --help`：说明 group mention 会开启 following，
+  agent 在确认不再需要后续群上下文时调用 `bcc message unfollow`；DM 上的同一命令
+  是无输出的成功 no-op。
+- restart 只重建 WebSocket、重新认证并恢复持久化的 following 与 session/runtime thread
+  mapping；不声称恢复断线期间的
+  provider event。graceful shutdown 先停止 receive/reconnect，再 bounded 等待当前 reply ack，
+  超时 outbound 留为 unknown，然后关闭 heartbeat 与 WebSocket。
 - 将 runtime completion、Channel outbound 和 session state 的边界保持独立，不能用一个
   boolean 表示整条链路成功。
 
-依赖：Task 5B 的 outbound delivery 与 Channel approval policy。产出：session orchestration、
-平台规则和真实测试 channel flow。
+依赖：Task 5B 的 outbound delivery 与 Channel approval policy。产出：provider-neutral
+mention/following state machine、`bcc message unfollow`、平台 capability 与真实测试
+channel flow。
 
-Phase 验收：真实测试 channel 中首次消息创建 session，后续消息复用同一 runtime thread；
-两个 conversation 并发运行时不共享 cursor/process/turn；重复 webhook、approval、fresh-
-check refusal、provider receipt 和 outbound audit 均可解释。
+Phase 验收分三层：
+
+1. TestChannel+TestRuntime 的 core contract：使用能投递全量群消息的 test-only Channel
+   验证 quiet group inbound 先落库但不进入 unread/reminder；`mentions_agent=true` 的 inbound 原子开启
+   following 并触发 turn；后续 quiet inbound 持续通知；unfollow 后新消息仍落库但
+   恢复静默；DM 始终通知且 unfollow 成功 no-op。同时验证 `send --reply-to`
+   的本地 message/session/target 归属校验；Channel 应用或忽略该提示都不改变 delivery contract。
+   使用真实临时 workspace 文件验证多附件顺序、受控相对路径、原子可见性、failed descriptor、
+   重复 inbound 不重复物化，以及 restart 清理 staging/无引用文件；`check` 与 `read` 对同一
+   message 输出逐字相同的 inline suffix。
+   这一层只验证 provider-neutral contract，
+   不替代真实 Channel 验收。
+2. WeComChannel+TestRuntime：以真实测试 Bot 完成认证，验证 DM、群聊 mention、引用与
+   image、file 至少两种媒体 inbound frame 的 identity/message mapping、真实下载/AES 解密、
+   `workspace/attachments` 物化及 suffix path 可读；验证群聊 inbound frame 进入相同的
+   following state machine，同时以真实未提及消息确认 provider 不会投递、此期间 bcn 无法
+   落库，且 health/capability 如实暴露 gap；验证标题、列表、链接、引用、代码块和表格的
+   真实 Markdown 渲染，以及 20480-byte 边界和超限自动分批后的顺序送达；
+   验证 `send --reply-to` 被忽略时正文仍正常送达，以及
+   单帧完整 passive reply（provider `stream.finish=true` envelope）、主动 fallback、
+   非零 ack、ack
+   timeout/断线 unknown、单连接 `disconnected_event` 和 bounded shutdown 的可解释状态。
+3. WeComChannel+CodexRuntime：用真实 Bot 与真实 Codex App Server 完成 DM 持续自然问答和群聊
+   attention 自然问答；已被 provider 投递的后续补充触发真实 fresh-check refusal/recovery，
+   不验收 provider 无法提供的未提及群聊 ingress。两个 conversation 并发时不共享 cursor、
+   process 或 turn。再发送一张真实图片和一个真实文件，确认 Codex 从 `check/read` 的普通
+   tool-result suffix 发现 workspace-relative path 并按自然任务需要读取，不依赖
+   Codex-specific `localImage` 注入或 `bcc attachment view`。确认所有 Runtime 都只使用
+   平台/Runtime 封闭白名单构造的统一
+   spawn environment，WeCom Secret 和所有禁止 credential 不在 runtime 子进程、
+   SQLite、wrapper、日志或 health 中，且
+   provider receipt、outbound audit 与本地 delivery state 可关联。
+
+Phase 5 不以旧群机器人 webhook、自建应用 XML callback、新版 URL callback、SDK 内部 event
+emitter 单元测试或人工构造 provider frame 替代真实 Bot 验收。
 
 ### Phase 6：恢复与运维边界
 
@@ -1320,7 +1704,9 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
 - core 状态机可测试纯逻辑；持久化使用真实 SQLite 文件；IPC 使用真实本机 transport；
   runtime 使用真实 Codex App Server；Channel 使用授权的真实测试环境。
 - adapter 验证先独立后组合：TestChannel+CodexRuntime 验证真实 Runtime，
-  WeComChannel+TestRuntime 验证真实 Channel，最终再用 WeComChannel+CodexRuntime 验证产品链路。
+  WeComChannel+TestRuntime 通过 Bot ID + Secret 的真实 WebSocket 验证真实 Channel，最终再用
+  WeComChannel+CodexRuntime 验证产品链路；不得用旧 webhook 或手工 frame 注入替代 Channel
+  ingress。
 - 凭据通过本机受控环境注入，不写进 repository、SQLite、wrapper 内容或日志。
 - 每个阶段完成后至少检查：
 
@@ -1368,13 +1754,25 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
    解决，不在本首版隐式引入 agent-specific workspace。
 8. **日志敏感信息与体积**：tool 参数、消息正文和 provider payload 可能包含敏感信息或
    产生高日志量；默认只记录摘要和关联 id，完整内容必须显式启用并受脱敏/大小限制。
+9. **Runtime environment 白名单漂移**：面向外部用户的 Bot 会把不可信输入交给
+   Runtime，因此子进程必须使用封闭白名单，不能继承 daemon 完整环境；新平台、
+   新 Runtime 或认证/证书变更都可能使白名单过宽或过窄。平台基线和 Runtime 扩展必须
+   是代码审查的封闭集合，通过三平台真实 process matrix 验证。`[runtime.env]`
+   只能精确追加变量名，且是 operator 可审计的显式授权；它不得覆盖 bcn 保留名或
+   adapter credential 拒绝集。该白名单是必要的减露面措施，但不能
+   隔离同 OS 用户可读的文件、credential store 或其他进程；需要强隔离时仍必须使用
+   独立 OS identity/process、受限 filesystem 或 secret broker。
+10. **附件资源耗尽与不可信内容**：provider 文件名、media type 和内容都不可信，且下载可能
+    耗尽磁盘、内存或连接预算。共享 materializer 必须流式处理，设置单文件/单消息大小和数量
+    上限、下载 timeout、总并发预算与 workspace 配额；路径只能由本地 ID 生成，并拒绝 symlink/
+    traversal。eager materialization 只保证 Runtime 首次看到消息时文件已达到 terminal state，
+    不构成恶意文件扫描或同 OS 用户隔离；共享 workspace 中的 Runtime 仍可能在之后修改文件，
+    audit 不能把 path 存在误报为内容不可变。
 
 ## 11. Code 模式入口条件
 
-进入 Code 模式前需要确认本计划本身，无需再次选择子方案。若直接按当前最优路径实施，
-第一批代码先完成 Task 0，再完成 Phase 1 的 MemoryStorage、core orchestration、Test
-composition、command service 和 `bcc` 小闭环；确认闭环可运行后再接 Phase 2 的 SQLite
-workspace 持久化，随后将同一 command contract 扩展到 production local IPC 和真实
-provider adapter，避免 provider-specific runtime 逻辑造成核心模型返工。当前 Task 4C 完成后，
-下一项必须先执行 Task 4D 的 Test adapter 边界迁移与必填 provider selection，完成 review 后
-才能进入 Phase 5 Task 5A。
+进入 Code 模式前需要确认本计划本身，无需再次选择子方案。Phase 1 至 Phase 4 与命名收口已
+完成；当前 review 通过后，下一项必须按本节更新后的范围进入 Phase 5 Task 5A。Task 5A 先
+完成官方资料/SDK 源码/真实 Bot 的协议基线和 credential boundary，再实现 WebSocket
+lifecycle 与 inbound mapping；完成 review 后才能进入 Task 5B，不并行提前写 outbound 或
+session orchestration。
