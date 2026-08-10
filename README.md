@@ -1,54 +1,145 @@
 # Bazaar Compute Node
 
-## 本地开发
+Bazaar Compute Node（`bcn`）是一个可组合的 Agent 计算节点。用户通过 Channel 与
+Agent Runtime 沟通：Channel 提供输入任务和接收结果的界面，Runtime 是用户选择的 Agent
+Harness 工具。
 
-项目使用 uv 管理 Python 环境和依赖。源码 checkout 后可以直接运行：
+不同的 Channel 与 Runtime 可以自由组合和扩展，不绑定具体供应商或交互形态。
+
+## 核心能力
+
+- **自由组合**：根据使用场景分别选择 Channel 与 Runtime，并可独立替换和扩展。
+- **持续会话**：每个用户和对话拥有独立上下文，节点重启后仍可继续之前的任务。
+- **真实工作区**：Runtime 可以在独立工作区中分析、创建和修改文件，而不局限于文本回答。
+- **可靠交付**：自动处理长结果的分批发送并记录交付状态，避免任务结果静默丢失。
+- **安全边界**：复用所选 Harness 的权限机制，按任务需要控制文件与网络访问。
+- **跨平台运行**：支持 Linux、macOS 和 Windows，并以后台进程长期运行。
+
+## 当前支持
+
+当前版本提供首组可用组合：
+
+- **WeCom Channel**：通过企业微信与 Agent Runtime 持续沟通；
+- **Codex Runtime**：使用 Codex 作为 Agent Harness 工具完成任务。
+
+## Roadmap
+
+bcn 将沿着可组合的 Channel、Runtime 与节点通用能力继续扩展。
+
+### 更多 Channel
+
+- **Telegram**：通过 Telegram 使用节点并接收任务结果。
+
+### 更多 Runtime
+
+- **Claude Code**：支持选择 Claude Code 作为 Agent Harness；
+- **pi**：支持选择 pi 作为 Agent Harness。
+
+### 节点能力
+
+- **附件发送**：让 Agent 可以通过当前 Channel 交付生成的文件；
+- **定时任务**：创建一次性或周期性任务，由节点按计划自动执行并返回结果。
+
+## 安装
+
+项目使用 [uv](https://docs.astral.sh/uv/) 分发，要求 Python 3.14 或更高版本：
 
 ```bash
-uv run bcn --help
-uv run bcn --version
+uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn --version
 ```
 
-## 启动
+生产环境建议将 `@main` 替换为固定 tag 或 commit，避免运行版本随分支更新。
 
-启动时必须显式选择已安装的 Channel 和 Runtime；项目不为二者提供默认值。以 WeCom 和
-Codex 组合为例：
+## Channel
+
+Channel 是用户输入任务、接收结果，并与 Agent Runtime 持续沟通的界面。启动节点时选择一种
+Channel 即可。
+
+### WeCom
+
+WeCom Channel 对接企业微信智能机器人，支持单聊、群聊、文本与媒体输入，以及 Markdown
+长消息分批返回。群聊中需要 @机器人，确保消息能够进入节点。
+
+在 `~/.bcn/config.toml` 中配置 Bot ID：
+
+```toml
+[channel.wecom]
+bot_id = "your-bot-id"
+```
+
+Bot Secret 不写入配置文件，只通过环境变量提供：
 
 ```bash
-uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn start \
-  --channel wecom --runtime codex
+export BCN_WECOM_BOT_SECRET='your-bot-secret'
 ```
 
-后台进程可使用同一条命令关闭：
+PowerShell：
 
-```bash
-uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn stop
+```powershell
+$env:BCN_WECOM_BOT_SECRET = 'your-bot-secret'
 ```
 
-稳定部署时建议进一步固定 tag 或 commit，避免运行版本随分支内容漂移。
+## Runtime
 
-## 启动配置
+Runtime 是用户选择的 Agent Harness 工具，用来运行 Agent 并完成任务。启动节点时选择一种
+Runtime 即可。
 
-启动组合配置保存在固定路径 `~/.bcn/config.toml`：
+### Codex
+
+使用 Codex Runtime 前，需要先安装并登录
+[Codex CLI](https://developers.openai.com/codex/cli/)。
+
+默认配置只允许 Codex 写入当前会话的工作区，并允许其命令访问网络：
+
+```toml
+[runtime]
+sandbox_mode = "workspace-write"
+network_access = true
+```
+
+如需覆盖 Codex 的默认模型或推理强度，可以在 `[runtime]` 中增加 `model` 和 `effort`。
+除非你明确需要使用运行用户已有的主机权限，否则不要将 `sandbox_mode` 改为
+`danger-full-access`。
+
+## 启动节点
+
+在 `~/.bcn/config.toml` 中选择要组合的 Channel 与 Runtime。以下配置使用当前已经落地的
+WeCom + Codex 组合：
 
 ```toml
 [node]
 channel = "wecom"
 runtime = "codex"
-storage = "sqlite"
-audit = "logging"
-
-[runtime]
-model = "gpt-5.6-luna"
-effort = "max"
 ```
 
-命令行参数会覆盖对应的文件配置；`storage` 和 `audit` 的内置默认值分别为 `sqlite` 和
-`logging`。`channel` 和 `runtime` 必须由命令行或配置文件显式提供，缺少任一项都在启动前
-报错。未设置 `model`/`effort` 时由 App Server 使用默认值。
-Unix 直接使用 socket 文件作为 daemon endpoint；Windows 使用 per-user named pipe 和 named
-mutex，不需要 PID/lock 文件。SQLite 只保存 session、message、turn 等运行时状态。
+启动后台节点：
+
+```bash
+uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn start
+```
+
+也可以不创建配置文件，直接通过 `--channel`、`--runtime`、`--model`、`--effort`、
+`--sandbox-mode` 和 `--network-access` 等参数启动；命令行参数会覆盖配置文件中的对应值。
+
+## 常用操作
+
+```bash
+# Stop the background node gracefully.
+uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn stop
+
+# Restart the node after changing configuration.
+uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn restart
+
+# Inspect available options.
+uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn --help
+```
+
+节点数据默认保存在 `~/.bcn`。停止节点会优雅关闭后台进程，不会删除既有会话、工作区或消息记录。
 
 ## 许可证
 
 本项目使用 [GNU Affero General Public License v3.0](LICENSE)。
+
+## Credits
+
+本项目的协作模型与 Agent Runtime 设计受到 [Raft.build](https://raft.build) 的启发，谨此致谢。
