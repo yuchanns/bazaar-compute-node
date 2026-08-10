@@ -62,6 +62,7 @@ class JsonlProcessSpec:
 
 
 _QUEUE_CLOSED = object()
+_JSONL_READ_CHUNK_BYTES = 64 * 1024
 
 
 class JsonlProcessSupervisor:
@@ -330,27 +331,41 @@ class JsonlProcessSupervisor:
             await self._protocol_failure("stdout pipe is unavailable")
             return
         line_number = 0
+        buffer = bytearray()
         try:
-            while line := await stdout.readline():
-                line_number += 1
-                try:
-                    decoded = line.decode("utf-8")
-                    payload = json.loads(decoded)
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    await self._protocol_failure(
-                        "stdout contains invalid JSONL",
-                        line_number=line_number,
-                    )
-                    if isinstance(error, UnicodeDecodeError):
+            while True:
+                chunk = await stdout.read(_JSONL_READ_CHUNK_BYTES)
+                if chunk:
+                    buffer.extend(chunk)
+                elif buffer:
+                    buffer.append(ord("\n"))
+                else:
+                    break
+                while True:
+                    boundary = buffer.find(b"\n")
+                    if boundary < 0:
+                        break
+                    line = bytes(buffer[:boundary])
+                    del buffer[: boundary + 1]
+                    line_number += 1
+                    try:
+                        decoded = line.decode("utf-8")
+                        payload = json.loads(decoded)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        await self._protocol_failure(
+                            "stdout contains invalid JSONL",
+                            line_number=line_number,
+                        )
                         return
-                    return
-                if not isinstance(payload, dict):
-                    await self._protocol_failure(
-                        "stdout JSONL item must be an object",
-                        line_number=line_number,
-                    )
-                    return
-                self._route_message(cast(JsonlMessage, payload))
+                    if not isinstance(payload, dict):
+                        await self._protocol_failure(
+                            "stdout JSONL item must be an object",
+                            line_number=line_number,
+                        )
+                        return
+                    self._route_message(cast(JsonlMessage, payload))
+                if not chunk:
+                    break
         except asyncio.CancelledError:
             raise
         except (ConnectionError, OSError) as error:
