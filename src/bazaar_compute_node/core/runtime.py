@@ -29,7 +29,7 @@ class RuntimeCommandContext:
     runtime_options: Mapping[str, str] = field(default_factory=dict)
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
-    startup_timeout_seconds: float = 600
+    startup_timeout_seconds: float = 60
     client_info: ClientInfo = CLIENT_INFO
 
 

@@ -141,11 +141,14 @@ provider SDK types。
 - 使用 Python 默认 event loop policy：Unix 使用 `SelectorEventLoop`，Windows 使用
   `ProactorEventLoop`。不在 MVP 强制引入 `uvloop`，避免破坏 Windows subprocess/IPC 的
   同一套语义。
-- runtime process 使用 `asyncio.create_subprocess_exec`；stdio/JSONL、IPC、HTTP、timeout、
-  cancellation 和 session lock 都使用 asyncio 原生 awaitable。同步阻塞调用只能位于明确的
+- runtime process 使用 `asyncio.create_subprocess_exec`；stdio/JSONL、IPC、HTTP、timeout 和
+  cancellation 都使用 asyncio 原生 awaitable。同步阻塞调用只能位于明确的
   storage 或 executor boundary，不能阻塞主 event loop。
-- 每个 bcn session 的 command、cursor、turn 和 outbound safety gate 仍按既定 session lock
-  串行化；async loop 负责 node 内 I/O multiplexing，不改变业务状态机的串行顺序。
+- Channel callback 使用 `put_nowait` 进入 per-conversation ingress queue；同一 event loop 内
+  queue registry mutation 与 enqueue 之间不让出控制权，不需要 session mutex。独立 ingress
+  worker 串行持久化，per-session Runtime worker 串行 Agent turn；任何 process resume/turn await
+  都不得反压 Channel ingress。command/cursor 使用短 storage transaction，outbound fresh-check
+  与 provider send 只保留其自身必要的 delivery ordering boundary。
 
 #### 3.1.2 Runtime dependencies
 
@@ -575,10 +578,10 @@ CREATE TABLE schema_migrations (
   UUIDv7 primary key；不把它们当作跨表关联、业务唯一性或状态校验。应用层必须在写入前
   校验 required fields、ID 格式和对象归属。
 - `channel_sessions` 的逻辑查找键是 `(channel, provider_thread_id)`。DM 和群聊都由 adapter
-  规范化为 provider-native、可路由的 thread identity；repository 在 session lock 内
-  执行 get-or-create，发现重复绑定时返回已有记录或冲突错误。
+  规范化为 provider-native、可路由的 thread identity；同一 conversation 的唯一 ingress
+  worker 在显式事务内执行 get-or-create，发现重复绑定时返回已有记录或冲突错误。
 - `bcn_sessions.channel_session_id` 与 `runtime_sessions.bcn_session_id` 表达 MVP 的
-  一对一绑定，但由 application/repository 在同一 session lock 与显式事务中读取并校验，
+  一对一绑定，但由 application/repository 在同一 ingress worker 与显式事务中读取并校验，
   不使用 SQL unique 或 foreign-key constraint。
 - 同一 runtime session 同时最多一个 `starting/running` turn 是当前 daemon 内存
   application state machine 的不变量。repository 不检查 active turn；`runtime_attempts`
@@ -684,7 +687,7 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
    terminal descriptor。Channel 只有在所有附件均达到 `ready` 或 `failed` 后，才向
    application 交付统一 `InboundMessage`；其中不再包含 provider media schema，附件已经是本地
    id、展示名、kind、media type、workspace-relative path/failed category。application 随后在
-   显式事务和 channel/session lock 内再次校验 provider id，分配本地 `seq`、get-or-create
+   conversation ingress worker 的显式事务内再次校验 provider id，分配本地 `seq`、get-or-create
    channel/bcn session、执行 following transition 和 `notifies_runtime` 决策，并 append inbound
    message/attachments。事务提交后正文与全部附件描述同时进入 `check`、`read`、unread 和
    Runtime notice。进程崩溃或事务回滚遗留的 staging/无引用最终文件由启动 reconciliation 清理，
@@ -744,18 +747,20 @@ TCP，必须使用每个 node 的随机 capability token、仅绑定 loopback，
    交付统一 `InboundMessage`：target kind、provider-neutral `mentions_agent` 以及零到多个已经
    含本地 relative path/failed category 的 `InboundAttachment`；不交付 URL、base64、AES key、
    SDK media object，也不决定 following。
-2. Application 以 channel thread identity 取得 session lock；Storage 查找
-   channel session，并再次校验 provider id 与全部 attachment path/terminal state。
+2. Application 以 `(channel, provider_thread_id)` 将消息放入 conversation ingress queue；该
+   queue 的唯一 worker 由 Storage 查找 channel session，并再次校验 provider id 与全部
+   attachment path/terminal state。
 3. 在同一事务中 get-or-create channel/bcn session，将统一 inbound message 与全部 terminal
    attachment descriptor 无条件落库；DM 固定
    followed，group 默认 unfollowed 并在 `mentions_agent=true` 的 inbound 时原子转为 followed。按转换后
    状态固定当前 inbound 的 `notifies_runtime`。
 4. `notifies_runtime=false` 时事务提交后结束，不创建/启动 RuntimeSession、不增加
    unread count、不发 reminder。`notifies_runtime=true` 时才创建或恢复 runtime binding，
-   启动该 bcn session 的独立 Codex App Server process，并设置共享 workspace 为 cwd 或
-   runtime 支持的 workspace 参数。
-5. 完成 `initialize`、`thread/start` 或恢复已有 thread，再按 notifying unread count
-   发送 reminder turn。
+   并向 canonical bcn session 的 Runtime queue 设置 coalesced unread notification；ingress
+   worker 不等待 Runtime process。
+5. Runtime worker 独占该 session 的 AgentState、当前 turn 与 connection；完成 `initialize`、
+   `thread/start` 或恢复已有 thread 后，按事务查询到的真实 notifying unread count 发送 reminder
+   turn。turn 运行期间的新 inbound 继续落库；turn 结束后仅在仍有 unread 时继续通知。
 
 ### 5.3 Reminder 与消息工具
 
@@ -886,7 +891,8 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
 ### 5.4 Codex turn 与审批
 
 - 每个 bcn session 一个 process supervisor；多个 bcn session 可以并发运行。
-- 同一个 Codex thread 同时只允许一个 active turn；不同 session 之间不共享 turn lock。
+- 同一个 Codex thread 的 Runtime queue 只有一个 worker，因此同时只允许一个 active turn；
+  不同 session 的 worker 可以并发运行，不共享 turn lock。
 - Codex 反向 approval request 由 runtime adapter 转成 `ApprovalRequest`，由当前 session
   的 Channel port 决定 `ApprovalDecision`；每个 Channel contrib 必须实现自己的审批策略。
 - WeCom MVP 的审批实现永远返回 approved，不等待人工输入；不能使用会阻止 approval
@@ -906,7 +912,9 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
 1. 子进程 EOF、协议解析失败或异常退出时，当前 local turn 在内存中结束为
    `unknown`，并 append audit event；不把它猜成 failed，也不持久化成可恢复状态。
 2. process startup/`initialize` 在尚未创建 provider thread 时可用新子进程有界重试；
-   已发出可能产生 provider 副作用的 thread/turn request 不自动重试。
+   `thread/resume` 只对 request timeout、process exit/not-running 且未收到 provider response 的
+   情况销毁旧 child，并用新 child 对同一 thread identity 重试一次。明确 remote/protocol/local
+   error 与 cancellation 不重试；可能产生副作用的 `thread/start`/`turn/start` 不自动重试。
 3. provider thread identity 可以在新 process 中 resume；旧 daemon 的 active turn 和 AgentState
    不恢复，新 daemon 从 `CREATED` 开始。
 4. graceful shutdown 先停止接收新 inbound，再等待 bounded 的 IPC/SQLite flush 和
@@ -1212,7 +1220,7 @@ session mapping 和显式事务语义。
 
 - 实现 `node_state`、`channel_sessions`、`bcn_sessions` 和 `runtime_sessions` 的读写，
   包括首次 inbound 的 get-or-create、workspace 绑定、三方 ID 关系和恢复时的 reconcile lookup。
-- 在 repository transaction/session lock 内实现一对一 binding、required field、ID format
+- 在 repository transaction 与 per-conversation ingress worker 内实现一对一 binding、required field、ID format
   和对象归属校验；重复逻辑 key 返回已有记录或明确冲突，不依赖 SQL unique/foreign key。
 - 让 session state transition 只能经过命名操作，禁止通用 update 绕过 state machine。
 
@@ -1225,7 +1233,7 @@ association invariant tests。
   repository-generated UUIDv7 message IDs、`consumer_cursors` 和独立 inbox snapshot。
 - 固定 `check` 推进 delivered cursor、`read` 不推进 cursor、两者都更新 snapshot 的事务
   语义；snapshot seq 与 delivery cursor 不混用。
-- 在显式事务与 session lock 下验证重复 inbound、并发 check/read、provider message id
+- 在显式事务与 conversation ingress worker 下验证重复 inbound、并发 check/read、provider message id
   冲突和跨 session 隔离。
 
 依赖：Task 2B 的 session/workspace repository。产出：message/cursor repository、snapshot

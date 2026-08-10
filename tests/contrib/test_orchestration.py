@@ -312,12 +312,15 @@ async def run_natural_conversation_contract(
                 event_suffix="turn.completed",
                 turn_id=f"turn-{first_row.message_id}",
             )
-            await _wait_for_audit_event(
-                audit,
-                session_id=session_id,
-                event_suffix="turn.completed",
-                turn_id=f"turn-{second_row.message_id}",
-            )
+            async with storage.transaction() as transaction:
+                cursor = await transaction.get_consumer_cursor(session_id)
+            if cursor is None or cursor.delivered_through_seq < second_row.seq:
+                await _wait_for_audit_event(
+                    audit,
+                    session_id=session_id,
+                    event_suffix="turn.completed",
+                    turn_id=f"turn-{second_row.message_id}",
+                )
 
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(

@@ -132,6 +132,8 @@ class SessionTurnCoordinator:
         message: InboundMessage,
         context: SessionContext,
         turn: RuntimeTurn,
+        *,
+        unread_count: int,
     ) -> RuntimeTurn:
         binding = ApprovalBinding(
             request_id="pending",
@@ -207,7 +209,8 @@ class SessionTurnCoordinator:
                     context.runtime_session,
                     turn,
                     f"[inbox notice session={context.bcn_session.id}]\n"
-                    "Inbox update: 1 unread message. Use the message command to read it.",
+                    f"Inbox update: {unread_count} unread message(s). "
+                    "Use the message command to read them.",
                     approval_handler,
                     timeout=self._timeout_budget.provider_call_seconds,
                 )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, replace
@@ -41,6 +43,7 @@ from .protocol import (
 )
 
 _INITIALIZE_ATTEMPTS = 2
+_RESUME_ATTEMPTS = 2
 
 
 @dataclass(slots=True)
@@ -88,6 +91,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self._model = model
         self._effort = effort
         self._connections: dict[str, _CodexConnection] = {}
+        self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
         self._stopping = False
 
@@ -169,42 +173,99 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         if connection is not None and not connection.supervisor.is_running:
             await self._stop_connection(connection, timeout=timeout)
             connection = None
-        if connection is None:
+        for attempt in range(_RESUME_ATTEMPTS):
+            if connection is None:
+                try:
+                    connection = await self._open_connection(session, timeout=timeout)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    return _provider_result(error)
             try:
-                connection = await self._open_connection(session, timeout=timeout)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001
-                return _provider_result(error)
-        try:
-            response = await connection.client.resume_thread(
-                provider_thread_id,
-                model=self._model,
-                cwd=connection.workspace,
-                timeout=timeout,
-            )
-            thread = parse_thread_response(response)
-            if thread.thread_id != provider_thread_id:
-                raise CodexAppServerProtocolError(
-                    "thread/resume returned a different provider thread"
+                response = await connection.client.resume_thread(
+                    provider_thread_id,
+                    model=self._model,
+                    cwd=connection.workspace,
+                    timeout=timeout,
                 )
-            connection.provider_thread_id = thread.thread_id
-            self._connections[session.id] = connection
-            return ProviderCallResult(
-                status=ProviderCallStatus.CONFIRMED,
-                value=replace(
-                    session,
-                    provider_thread_id=thread.thread_id,
-                    updated_at_ms=_now_ms(),
-                ),
-                receipt={"provider_thread_id": thread.thread_id},
-            )
-        except asyncio.CancelledError:
-            await self._stop_connection(connection, timeout=timeout)
-            raise
-        except Exception as error:  # noqa: BLE001
-            await self._stop_connection(connection, timeout=timeout)
-            return _provider_result(error)
+                thread = parse_thread_response(response)
+                if thread.thread_id != provider_thread_id:
+                    raise CodexAppServerProtocolError(
+                        "thread/resume returned a different provider thread"
+                    )
+                connection.provider_thread_id = thread.thread_id
+                self._connections[session.id] = connection
+                if attempt > 0:
+                    self._logger.info(
+                        "%s",
+                        json.dumps(
+                            {
+                                "event_name": "runtime.process.resume.retry_succeeded",
+                                "metadata": {
+                                    "attempt": attempt + 1,
+                                    "session_id": session.bcn_session_id,
+                                },
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    )
+                return ProviderCallResult(
+                    status=ProviderCallStatus.CONFIRMED,
+                    value=replace(
+                        session,
+                        provider_thread_id=thread.thread_id,
+                        updated_at_ms=_now_ms(),
+                    ),
+                    receipt={"provider_thread_id": thread.thread_id},
+                )
+            except asyncio.CancelledError:
+                await self._stop_connection(connection, timeout=timeout)
+                raise
+            except (
+                JsonlProcessExited,
+                JsonlProcessNotRunning,
+                JsonlRequestTimeout,
+            ) as error:
+                await self._stop_connection(connection, timeout=timeout)
+                connection = None
+                if attempt + 1 == _RESUME_ATTEMPTS:
+                    self._logger.error(
+                        "%s",
+                        json.dumps(
+                            {
+                                "event_name": "runtime.process.resume.retry_exhausted",
+                                "metadata": {
+                                    "attempt": attempt + 1,
+                                    "error_type": type(error).__name__,
+                                    "session_id": session.bcn_session_id,
+                                },
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    )
+                    return _provider_result(error)
+                self._logger.warning(
+                    "%s",
+                    json.dumps(
+                        {
+                            "event_name": "runtime.process.resume.retrying",
+                            "metadata": {
+                                "attempt": attempt + 1,
+                                "error_type": type(error).__name__,
+                                "next_attempt": attempt + 2,
+                                "session_id": session.bcn_session_id,
+                            },
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                )
+            except Exception as error:  # noqa: BLE001
+                await self._stop_connection(connection, timeout=timeout)
+                return _provider_result(error)
+        raise AssertionError("Codex resume retry loop did not return")
 
     async def start_turn(
         self,

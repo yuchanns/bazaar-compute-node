@@ -71,7 +71,7 @@ class NodeApplication:
         self.data_dir = resolve_data_dir()
         self.runtime_options = dict(runtime_options or {})
         self.timeout_budget = timeout_budget or TimeoutBudget(
-            startup_seconds=600,
+            startup_seconds=60,
             provider_call_seconds=600,
             command_seconds=10,
             shutdown_seconds=5,
