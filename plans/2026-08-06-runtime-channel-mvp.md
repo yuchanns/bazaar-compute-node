@@ -69,6 +69,9 @@ provider entry point。
 
 - App Server adapter 使用 stdio/JSONL 双向协议；`initialize` 完成后建立 thread，
   通过 `turn/start` 注入文本，消费异步事件直到 `turn/completed`。
+- App Server process startup/`initialize` 使用独立于普通 provider request 的 startup
+  timeout。`initialize` timeout 时尚未创建 provider thread，adapter 必须销毁该子进程并用
+  新进程做有界重试；已经可能创建 thread/turn 的 request 不允许按同一规则盲目重试。
 - `turn/completed` 是 turn 的权威终态；中途 error notification 不能直接视为最终失败。
 - `thread/read(includeTurns=true)` 用于进程异常或断线后的对账恢复。
 - App Server 当前是 experimental，官方 Python SDK 为 beta 且和匹配的 Codex CLI 版本
@@ -230,7 +233,7 @@ core/application 不执行 SQLite SQL，也不依赖 SQLite-specific migration o
 
 ```text
 node_state
-  └── channel_sessions ─── bcn_sessions ─── runtime_sessions ─── runtime_turns
+  └── channel_sessions ─── bcn_sessions ─── runtime_sessions ─── runtime_attempts
           ├── inbound_messages ─── inbound_attachments
           └── outbound_messages
 bcn_sessions ─── consumer_cursors
@@ -239,8 +242,8 @@ schema_migrations
 ```
 
 MVP 约束为一个 channel session 对应一个 bcn session、一个 bcn session 对应一个 runtime
-session；同一 runtime session 下同一时刻最多一个 active turn。这些都是 application
-state machine 和 repository transaction 的不变量，不写入 SQLite constraint。将来要支持
+session；同一 runtime session 下同一时刻最多一个 active turn 只是当前 daemon 的内存
+orchestration 不变量，不是 repository 或 SQLite constraint。将来要支持
 一个 channel session 多 agent 时，只调整 orchestration 规则和逻辑绑定检查，不改变 message
 log 的本地 `seq` 语义。
 
@@ -253,8 +256,8 @@ log 的本地 `seq` 语义。
 | `node_state` | 节点身份、共享 workspace 绑定和 schema version 缓存 | singleton，更新 metadata，不删除 |
 | `channel_sessions` | provider thread 到 channel session 的规范化绑定和 following 状态 | get-or-create，状态关闭，不删除历史身份 |
 | `bcn_sessions` | 对外稳定的 bcn session，以及 channel/workspace 关系 | 创建后状态迁移，保留终态 |
-| `runtime_sessions` | agent runtime process、provider thread 和恢复状态 | 创建后记录启动/退出/对账状态，不复用 ID |
-| `runtime_turns` | 单个 runtime turn 的终态、unknown 和 reconciliation 状态 | append identity，状态有限迁移 |
+| `runtime_sessions` | agent runtime 与 provider thread 的持久 identity 绑定 | 创建后只更新 provider thread 绑定，不保存 process state |
+| `runtime_attempts` | inbound 消息与本地 runtime turn ID 的不变对应 | append-only identity fact，无 lifecycle state |
 | `inbound_messages` | provider inbound 的规范化、去重和 node-local seq 日志 | append-only |
 | `inbound_attachments` | inbound 附件的中立描述、workspace 路径和物化终态 | message append 时创建，物化终态后不变 |
 | `outbound_messages` | 每次 send command 的 draft、fresh-check 证据和 delivery 结果 | 一次 attempt 一行，状态有限迁移 |
@@ -351,30 +354,16 @@ CREATE TABLE runtime_sessions (
     metadata_json TEXT
 );
 
--- Durable runtime turn state used for completion, interruption, and reconciliation.
-CREATE TABLE runtime_turns (
+-- Immutable identity fact for one process-local runtime attempt.
+CREATE TABLE runtime_attempts (
     -- Stable local identifier for one runtime turn.
     turn_id TEXT PRIMARY KEY,
     -- Application-managed association to the runtime session.
     session_id TEXT,
-    -- Provider-native turn identifier when available.
-    provider_turn_id TEXT,
     -- Client message identifier that caused this turn.
     client_user_message_id TEXT,
-    -- Application-managed turn lifecycle state.
-    state TEXT,
     -- Turn start time.
-    started_at_ms INTEGER,
-    -- Turn completion time when a terminal result is known.
-    completed_at_ms INTEGER,
-    -- Latest normalized runtime event name.
-    last_event_name TEXT,
-    -- Stable application error category for the turn.
-    error_kind TEXT,
-    -- Redacted summary of the turn failure.
-    error_message TEXT,
-    -- Non-sensitive turn metadata encoded as JSON.
-    metadata_json TEXT
+    started_at_ms INTEGER
 );
 
 -- Append-only normalized inbound message log with the node-local delivery sequence.
@@ -591,9 +580,9 @@ CREATE TABLE schema_migrations (
 - `bcn_sessions.channel_session_id` 与 `runtime_sessions.bcn_session_id` 表达 MVP 的
   一对一绑定，但由 application/repository 在同一 session lock 与显式事务中读取并校验，
   不使用 SQL unique 或 foreign-key constraint。
-- 同一 runtime session 同时最多一个 `starting/running/unknown/reconciling` turn 是
-  application state machine 的不变量。repository 在事务内检查 active turn，再插入或更新
-  turn；`provider_turn_id` 只是对账键，不作为本地 turn 主键。
+- 同一 runtime session 同时最多一个 `starting/running` turn 是当前 daemon 内存
+  application state machine 的不变量。repository 不检查 active turn；`runtime_attempts`
+  只记录 inbound 与 local turn identity，provider turn 只出现在 append-only event 中。
 - `inbound_messages.message_id` 是 repository 生成的 UUIDv7 primary key；`seq` 仍是独立的
   node-local monotonic sequence，用于 cursor/snapshot 边界并建立普通索引。append-only
   语义下不做 delete，因此 node 重启后继续递增。provider 去重逻辑键是
@@ -651,8 +640,8 @@ CREATE TABLE schema_migrations (
       ON outbound_messages (session_id, created_at_ms);
   CREATE INDEX idx_outbound_state_created
       ON outbound_messages (state, created_at_ms);
-  CREATE INDEX idx_runtime_turns_session_state
-      ON runtime_turns (session_id, state, started_at_ms);
+  CREATE INDEX idx_runtime_attempts_session_started
+      ON runtime_attempts (session_id, started_at_ms);
   CREATE INDEX idx_runtime_events_session_seq
       ON runtime_events (bcn_session_id, event_seq);
   CREATE INDEX idx_runtime_events_name_seq
@@ -672,7 +661,7 @@ runtime process，`approval.requested`/`approval.decided` 及 `request_id` 写�
    `version` 的 `migration_name` 或 checksum 不一致时由 application ledger check 触发启动
    失败，不能静默跳过。
 2. 首个 migration 创建 `schema_migrations`、`node_state` 和 singleton row；随后按
-   `channel_sessions/bcn_sessions/runtime_sessions/runtime_turns`、message/attachment/cursor/
+   `channel_sessions/bcn_sessions/runtime_sessions/runtime_attempts`、message/attachment/cursor/
    outbound、`runtime_events` 的依赖顺序创建表和索引。`node_state.schema_version` 是 ledger
    最新 version 的缓存，不是第二套迁移事实源。
 3. SQLite schema 只声明列、注释和查询索引，不声明 `NOT NULL`、`DEFAULT`、`CHECK`、
@@ -909,19 +898,19 @@ Next action: Run `bcc message read` or `bcc message check` for this target to ve
   event；只由 `turn/completed` 更新 turn 的最终状态。
 - `error.willRetry=true` 时保持 turn running，等待最终事件；不能仅凭 error notification
   结束本地 session。
-- Codex turn completion 不代表 Channel outbound 已送达；两套状态分别持久化。
+- Codex turn completion 不代表 Channel outbound 已送达；前者写 append-only runtime event，
+  后者保存需要对账的 delivery outcome。
 
 ### 5.5 断线、异常和关闭
 
-1. 子进程 EOF、协议解析失败或异常退出时，将 active local turn 标记为 `unknown`，不把
-   未确认的 provider 状态写成 failed。
-2. 按退避策略重启 process，并重新 `initialize`。
-3. 使用 `thread/read(includeTurns=true)` 对账，判断 thread 是否已经完成、失败或仍有
-   可恢复 turn。
-4. 对可以恢复的 conversation 继续发送下一次 turn；无法判断的 turn 生成可审计的
-   unknown 状态，避免重复执行不可逆操作。
-5. graceful shutdown 先停止接收新 inbound，再等待 bounded 的 IPC/SQLite flush 和
-   runtime process cleanup；超时留下可恢复状态。
+1. 子进程 EOF、协议解析失败或异常退出时，当前 local turn 在内存中结束为
+   `unknown`，并 append audit event；不把它猜成 failed，也不持久化成可恢复状态。
+2. process startup/`initialize` 在尚未创建 provider thread 时可用新子进程有界重试；
+   已发出可能产生 provider 副作用的 thread/turn request 不自动重试。
+3. provider thread identity 可以在新 process 中 resume；旧 daemon 的 active turn 和 AgentState
+   不恢复，新 daemon 从 `CREATED` 开始。
+4. graceful shutdown 先停止接收新 inbound，再等待 bounded 的 IPC/SQLite flush 和
+   runtime process cleanup；超时只留 append-only 诊断事实，不留 lifecycle state。
 
 ## 6. Channel adapter 设计
 
@@ -1054,7 +1043,7 @@ WeCom adapter 不特判 following：群聊 inbound WebSocket frame 中的明确�
 ### 7.2 持久化运行事件
 
 SQLite 增加独立的 `runtime_events` append-only 表，与 inbound/outbound message log、
-Codex turn 状态和 delivery 状态分开：
+runtime attempt identity 和 delivery outcome 分开：
 
 - `seq`：node-local monotonic event sequence。
 - `created_at`、`level`、`event_name`、`status`、`duration_ms`。
@@ -1242,12 +1231,12 @@ association invariant tests。
 依赖：Task 2B 的 session/workspace repository。产出：message/cursor repository、snapshot
 semantics 和真实临时 SQLite tests。
 
-#### Task 2D：outbound、runtime turn 和 event repository
+#### Task 2D：outbound、runtime attempt 和 event repository
 
 - 实现 `outbound_messages` 的 pending/sent/partial/failed/unknown/rejected/draft 记录，以及
   `snapshot_seq`、`current_inbound_seq`、provider receipt 和 next action 审计字段。
-- 实现 `runtime_turns` 和 `runtime_events` repository；event 只允许 append，turn 状态只
-  允许合法 transition，错误事件即使 session 创建或 runtime 启动失败也能落库。
+- 实现 `runtime_attempts` 和 `runtime_events` repository；attempt 只保存 immutable
+  identity fact，event 只允许 append，错误事件即使 session 创建或 runtime 启动失败也能落库。
 - 关联字段保持普通字段，由 application/repository 校验；不要用 trigger 或 SQLite-specific
   constraint 把 append-only 和 state machine 语义固化到 storage。
 
@@ -1257,7 +1246,7 @@ semantics 和真实临时 SQLite tests。
 Phase 验收：真实临时 SQLite 文件验证 workspace UUID 重启复用、migration checksum fail-closed、
 重复 inbound 不重复入库、check/read/snapshot 语义、outbound unknown/rejected 边界、active
 turn application invariant、runtime event append-only，以及显式事务下的多 session 并发；不
-以 SQLite DDL 拒绝非法行作为验收依据。
+以 SQLite DDL 拒绝非法行作为验收依据，也不用旧 attempt 反向限制新 turn。
 
 ### Phase 3：production local command service 与 bcc
 
@@ -1470,8 +1459,9 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
   建立时，当前 node 停止自动重连并进入可诊断的 degraded state，避免两个实例互相踢下线。
 - 对 JSON object 原始 frame 做 adapter-local 宽松字段读取，未知字段不使 reader 崩溃；随后对
   `aibot_msg_callback` 直接映射并严格校验 core 必填值：`body.msgid` 是 provider dedupe key，
-  inbound `headers.req_id` 不进入 core message 或持久化字段；`body.aibotid` 参与 account scope，
-  群聊 conversation 使用 `body.chatid`，单聊使用 `body.from.userid`，并保留 `chattype`、
+  inbound `headers.req_id` 不进入 core message 或持久化字段；群聊 conversation 使用
+  `body.chatid`，单聊使用 `body.from.userid`，切换 Bot 不改变同一 conversation 的本地
+  session mapping；并保留 `chattype`、
   `create_time`、`msgtype`、`quote` 与媒体的短期 URL/AES key 为受控引用。官方资料未确认
   `create_time` 单位，真实 Bot 验证前只保存 raw value，不猜测秒或毫秒。
 - 将 DM 与 group target kind 及群聊的显式提及映射为统一 inbox 字段
@@ -1505,6 +1495,11 @@ WebSocket 上的 inbound frame，不存在 HTTP callback server。本计划正�
   `bcc` 和 resume 覆盖验证精确白名单不破坏运行链路。
 - 验证 WeCom Secret 和其他禁止 credential 不进入任意 Runtime 子进程环境、SQLite、
   wrapper、日志、异常或 health 输出；同时保留“同 OS 用户不是强隔离”的边界说明。
+- WeCom adapter 对每个业务 callback 记录不含原始 payload 的结构化观测：
+  收帧、事件类型、每个丢弃分支的稳定 reason，以及进入 core queue 的结果。
+  health 同步暴露累计 callback/queued/filtered 计数和最后一次 disposition，
+  使订阅成功、心跳正常但业务消息未入库时能直接区分 provider 未下发与
+  adapter 过滤；不记录消息正文、Secret 或媒体 URL。
 
 依赖：Task 4D 与命名收口 review。产出：真实 WebSocket lifecycle、message inbound mapping、
 provider event 识别与计数、dedupe、provider-neutral attachment materialization、identity 与
@@ -1578,12 +1573,16 @@ Markdown。
   完成后直接销毁 Agent 对象，不再进入一个无观察者的 terminal state。
   Runtime start/resume/turn/stop 的 confirmed/failed/unknown observation 只更新内存
   AgentState 和 append-only audit，不写 session row。
-- `RuntimeTurnState`、`OutboundDeliveryState` 仍作为 durable business attempt/delivery
-  outcome 保留；它们记录可能已有外部副作用的事实，不是 Runtime/Channel
-  current lifecycle，不得作为第二套 Agent state source of truth。
+- `RuntimeTurnState` 只存在于 orchestrator 内存，daemon 退出即销毁；SQLite 只保存 immutable
+  runtime attempt identity 与 append-only runtime event，不保存 turn current state、active
+  gate 或 reconciliation state。`OutboundDeliveryState` 仍作为 durable delivery outcome
+  保留，因为它对应需要对账的 Channel 外部发送事实。
 - 首次 inbound 创建 channel/bcn mapping；只有 `notifies_runtime=true` 时才创建或恢复
   runtime binding。后续同一 thread 复用既有 session；不同 thread
   不能共享 cursor、process 或 turn。
+- core 在 inbound transaction 完成后 append `channel.inbound.persisted` 观测，携带
+  node/session/inbound correlation 和 `notifies_runtime`；后续 runtime request/terminal 与
+  outbound event 继续使用同一 correlation，以便按单次 inbound 还原整条路径。
 - 在通用 orchestration 中保留真正的 following state machine：Channel 已投递的每条 inbound
   都先落库；unfollowed 时不进入该 session 的 unread count 且不触发 Runtime turn，
   group 的 `mentions_agent=true` 在同一事务中开启 following 并让当前消息进入未读；
@@ -1611,8 +1610,8 @@ Markdown。
   mapping；不声称恢复断线期间的
   provider event。graceful shutdown 先停止 receive/reconnect，再 bounded 等待当前 reply ack，
   超时 outbound 留为 unknown，然后关闭 heartbeat 与 WebSocket。Runtime/Channel
-  observation 统一驱动 AgentState，但 runtime turn attempt 和 Channel outbound delivery
-  的 durable outcome 仍保持独立，不能用一个 boolean 表示整条链路成功。
+  observation 统一驱动 AgentState；runtime attempt/event history 与 Channel outbound delivery
+  outcome 各自独立，但都不能反向恢复或 gate 新进程的 Agent lifecycle。
 
 依赖：Task 5B 的 outbound delivery 与 Channel approval policy。产出：provider-neutral
 mention/following state machine、`bcc thread unfollow`、平台 capability 与真实测试
@@ -1660,21 +1659,21 @@ Phase 验收分三层：
 Phase 5 不以旧群机器人 webhook、自建应用 XML callback、新版 URL callback、SDK 内部 event
 emitter 单元测试或人工构造 provider frame 替代真实 Bot 验收。
 
-### Phase 6：恢复与运维边界
+### Phase 6：进程重建与运维边界
 
-目标：处理进程、provider、SQLite 和 node 重启后的不确定状态，并形成可诊断的运维闭环。
+目标：处理进程、provider、SQLite 和 node 重启后的新进程重建，并形成可诊断的运维闭环；
+不恢复上一进程的 lifecycle state。
 
-#### Task 6A：process restart、turn reconciliation 与 unknown handling
+#### Task 6A：process restart 与 unknown evidence
 
-- 子进程 EOF、协议解析失败或异常退出时，将 active local turn 标记为 unknown，不猜测为
-  failed/completed；按退避策略重启并重新 initialize。
-- 使用 `thread/read(includeTurns=true)` 或等价 runtime reconciliation 查询 provider 状态，
-  将可确认的 completed/failed/recoverable 结果落回本地；不可判断的 turn 保留 unknown 和
-  可审计 next action。
+- 子进程 EOF、协议解析失败或异常退出时，将本次 unknown observation 写入
+  append-only event，销毁当前内存 Agent/turn；重启后从 `CREATED` 开始。
+- provider thread identity 只用于建立新 process 的 conversation binding，不用于恢复旧
+  local turn state。
 - provider send 状态不确定时禁止自动重复执行不可逆 outbound；明确失败才转 failed，可
   恢复项必须经过 fresh-check 和显式 retry policy。
 
-依赖：Phase 5。产出：restart/reconciliation state machine 与 failure tests。
+依赖：Phase 5。产出：restart process policy 与 operational evidence contract。
 
 #### Task 6B：backoff、overload 与 graceful shutdown
 
@@ -1685,7 +1684,7 @@ emitter 单元测试或人工构造 provider frame 替代真实 Bot 验收。
 - 对启动、runtime、Channel、SQLite、IPC 和 approval failure 定义 stable error kind、用户
   可执行 next action 和日志 correlation。
 
-依赖：Task 6A 的 process restart、turn reconciliation 与 unknown handling。产出：backoff/
+依赖：Task 6A 的 process restart 与 unknown evidence。产出：backoff/
 shutdown behavior 和 operational error contract。
 
 #### Task 6C：诊断、版本与 migration 运维面
@@ -1750,8 +1749,8 @@ unknown turn 和 shutdown timeout 场景下，状态可解释、不会静默丢�
    adapter port 要允许切换到 native asyncio JSONL process。
 3. **IPC 跨平台差异**：先抽象 command service transport；Unix socket、Windows named
    pipe 和 loopback fallback 必须保持相同的 session authentication 与本机可见性。
-4. **不确定的 turn 状态**：进程死亡时不能把 unknown 猜成 failed 或 completed；恢复先
-   对账，再决定是否继续。
+4. **不确定的 turn 结果**：进程死亡时不能把 unknown 猜成 failed 或 completed；
+   只保留 audit evidence，新 daemon 不恢复旧 turn state，也不自动重复可能已产生副作用的请求。
 5. **Channel 投递与审批语义**：provider receipt、Codex completion、本地 outbound state
    和 Channel approval decision 不能合并成一个 boolean；这些状态需要独立可审计。
 6. **发送前 freshness 与并发竞态**：snapshot、inbound append、pending outbound 和

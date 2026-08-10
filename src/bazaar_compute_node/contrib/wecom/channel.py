@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import random
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -77,6 +78,18 @@ class WeComChannel(IChannel):
         self._last_frame_at_ms: int | None = None
         self._connection_generation = 0
         self._ignored_event_frames = 0
+        self._message_frames_received = 0
+        self._message_frames_queued = 0
+        self._message_frames_filtered = 0
+        self._last_message_frame_at_ms: int | None = None
+        self._last_message_disposition: str | None = None
+        self._last_message_filter_reason: str | None = None
+        self._last_event_type: str | None = None
+        self._logger = logging.getLogger("bazaar_compute_node.channel.wecom")
+        if not self._logger.handlers:
+            self._logger.addHandler(logging.StreamHandler())
+        self._logger.setLevel(logging.INFO)
+        self._logger.propagate = False
 
     @property
     def name(self) -> str:
@@ -94,6 +107,13 @@ class WeComChannel(IChannel):
             "last_frame_at_ms": self._last_frame_at_ms,
             "last_disconnect_kind": self._last_disconnect_kind,
             "ignored_event_frames": self._ignored_event_frames,
+            "message_frames_received": self._message_frames_received,
+            "message_frames_queued": self._message_frames_queued,
+            "message_frames_filtered": self._message_frames_filtered,
+            "last_message_frame_at_ms": self._last_message_frame_at_ms,
+            "last_message_disposition": self._last_message_disposition,
+            "last_message_filter_reason": self._last_message_filter_reason,
+            "last_event_type": self._last_event_type,
         }
 
     async def start(self, *, timeout: float) -> None:
@@ -471,6 +491,11 @@ class WeComChannel(IChannel):
                     frame = self._frame(self._message_data(response))
                     self._last_frame_at_ms = time_ns() // 1_000_000
                     if self._is_disconnected_event(frame):
+                        self._last_event_type = "disconnected_event"
+                        self._observe(
+                            "wecom.event.received",
+                            event_type="disconnected_event",
+                        )
                         self._degraded = True
                         self._state = "degraded"
                         self._last_disconnect_kind = "disconnected_event"
@@ -526,28 +551,64 @@ class WeComChannel(IChannel):
             )
 
     async def _receive_message(self, frame: Mapping[str, object]) -> None:
+        command = frame.get("cmd")
         body = frame.get("body")
-        if not isinstance(body, dict):
-            return
-        if frame.get("cmd") == "aibot_event_callback" or body.get("msgtype") == "event":
+        if command == "aibot_event_callback":
             self._ignored_event_frames += 1
+            event = body.get("event") if isinstance(body, dict) else None
+            event_type = event.get("eventtype") if isinstance(event, dict) else None
+            self._last_event_type = (
+                event_type if isinstance(event_type, str) and event_type else "unknown"
+            )
+            self._observe(
+                "wecom.event.received",
+                event_type=self._last_event_type,
+            )
+            return
+        now_ms = time_ns() // 1_000_000
+        self._message_frames_received += 1
+        self._last_message_frame_at_ms = now_ms
+        if not isinstance(body, dict):
+            self._filter_message("invalid_body")
             return
         provider_message_id = body.get("msgid")
+        self._observe(
+            "wecom.message.received",
+            provider_message_id=(
+                provider_message_id
+                if isinstance(provider_message_id, str) and provider_message_id
+                else None
+            ),
+            message_type=body.get("msgtype"),
+            chat_type=body.get("chattype"),
+        )
         if not isinstance(provider_message_id, str) or not provider_message_id:
+            self._filter_message("missing_message_id")
             return
-        if (
-            provider_message_id in self._seen_message_ids
-            or await self._context.inbound_exists(self.name, provider_message_id)
-        ):
+        if provider_message_id in self._seen_message_ids:
+            self._filter_message(
+                "duplicate_in_process", provider_message_id=provider_message_id
+            )
+            return
+        if await self._context.inbound_exists(self.name, provider_message_id):
+            self._filter_message(
+                "duplicate_persisted", provider_message_id=provider_message_id
+            )
             return
         self._seen_message_ids.add(provider_message_id)
         chat_type = body.get("chattype")
         sender = body.get("from")
         sender_id = sender.get("userid") if isinstance(sender, dict) else None
         if not isinstance(sender_id, str) or not sender_id:
+            self._filter_message(
+                "missing_sender", provider_message_id=provider_message_id
+            )
             return
         message_type = body.get("msgtype")
         if not isinstance(message_type, str) or not message_type:
+            self._filter_message(
+                "missing_message_type", provider_message_id=provider_message_id
+            )
             return
         chat_id = body.get("chatid")
         if chat_type == "group":
@@ -561,15 +622,17 @@ class WeComChannel(IChannel):
             mentions_agent = False
             target_prefix = "dm"
         else:
+            self._filter_message(
+                "unsupported_chat_type", provider_message_id=provider_message_id
+            )
             return
         if not isinstance(conversation, str) or not conversation:
+            self._filter_message(
+                "missing_conversation", provider_message_id=provider_message_id
+            )
             return
         text, attachments = await self._content(body, message_type)
-        account = body.get("aibotid")
-        account_scope = (
-            account if isinstance(account, str) and account else self._bot_id
-        )
-        identity = f"wecom:{account_scope}:{target_prefix}:{conversation}"
+        identity = f"wecom:{target_prefix}:{conversation}"
         channel_session_id = str(uuid5(NAMESPACE_URL, identity))
         session_id = str(uuid5(NAMESPACE_URL, f"bcn:{identity}"))
         metadata: dict[str, object] = {}
@@ -597,6 +660,51 @@ class WeComChannel(IChannel):
                 attachments=tuple(attachments),
                 metadata=metadata,
             )
+        )
+        self._message_frames_queued += 1
+        self._last_message_disposition = "queued"
+        self._last_message_filter_reason = None
+        self._observe(
+            "wecom.message.queued",
+            provider_message_id=provider_message_id,
+            channel_session_id=channel_session_id,
+            session_id=session_id,
+            target_kind=target_kind.value,
+            message_type=message_type,
+        )
+
+    def _filter_message(
+        self,
+        reason: str,
+        *,
+        provider_message_id: str | None = None,
+    ) -> None:
+        self._message_frames_filtered += 1
+        self._last_message_disposition = "filtered"
+        self._last_message_filter_reason = reason
+        self._observe(
+            "wecom.message.filtered",
+            reason=reason,
+            provider_message_id=provider_message_id,
+        )
+
+    def _observe(self, event_name: str, **metadata: object) -> None:
+        self._logger.info(
+            "%s",
+            json.dumps(
+                {
+                    "event_name": event_name,
+                    "created_at_ms": time_ns() // 1_000_000,
+                    "metadata": {
+                        key: value
+                        for key, value in metadata.items()
+                        if value is not None
+                    },
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ),
         )
 
     async def _content(

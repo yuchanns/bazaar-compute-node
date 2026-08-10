@@ -13,8 +13,6 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeSession,
-    RuntimeTurn,
-    RuntimeTurnState,
     StateTransitionError,
     reduce_agent_tick,
 )
@@ -49,15 +47,6 @@ def make_runtime_session() -> RuntimeSession:
         workspace_id="workspace-1",
         created_at_ms=1,
         updated_at_ms=1,
-    )
-
-
-def make_runtime_turn() -> RuntimeTurn:
-    return RuntimeTurn(
-        turn_id="turn-1",
-        session_id="runtime-1",
-        state=RuntimeTurnState.STARTING,
-        started_at_ms=1,
     )
 
 
@@ -199,20 +188,6 @@ def test_agent_compaction_has_explicit_start_progress_and_completion_states() ->
         ),
     )
     assert fallback is AgentState.WORKING
-
-
-def test_runtime_turn_unknown_state_requires_reconciliation() -> None:
-    turn = make_runtime_turn().transition_to(
-        RuntimeTurnState.RUNNING,
-        at_ms=2,
-    )
-    turn = turn.transition_to(RuntimeTurnState.UNKNOWN, at_ms=3)
-    turn = turn.transition_to(RuntimeTurnState.RECONCILING, at_ms=4)
-    turn = turn.transition_to(RuntimeTurnState.COMPLETED, at_ms=5)
-
-    assert turn.completed_at_ms == 5
-    with pytest.raises(StateTransitionError):
-        turn.transition_to(RuntimeTurnState.FAILED, at_ms=6)
 
 
 def test_outbound_delivery_requires_a_passed_fresh_check() -> None:

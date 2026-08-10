@@ -40,6 +40,8 @@ from .protocol import (
     JsonlTransportError,
 )
 
+_INITIALIZE_ATTEMPTS = 2
+
 
 @dataclass(slots=True)
 class _CodexConnection:
@@ -354,30 +356,37 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         if os.name != "nt":
             await asyncio.to_thread(workspace.chmod, 0o700)
         environment = dict(self._context.environment_for_session(session))
-        supervisor = JsonlProcessSupervisor(
-            JsonlProcessSpec(
-                executable=executable,
-                arguments=("app-server", "--stdio"),
-                cwd=workspace,
-                environment=environment,
+        for attempt in range(_INITIALIZE_ATTEMPTS):
+            supervisor = JsonlProcessSupervisor(
+                JsonlProcessSpec(
+                    executable=executable,
+                    arguments=("app-server", "--stdio"),
+                    cwd=workspace,
+                    environment=environment,
+                )
             )
-        )
-        client = CodexAppServerClient(supervisor)
-        await supervisor.start(timeout=timeout)
-        try:
-            await client.initialize(
-                client_info=self._context.client_info,
-                timeout=timeout,
+            client = CodexAppServerClient(supervisor)
+            await supervisor.start(timeout=self._context.startup_timeout_seconds)
+            try:
+                await client.initialize(
+                    client_info=self._context.client_info,
+                    timeout=self._context.startup_timeout_seconds,
+                )
+            except JsonlRequestTimeout:
+                await supervisor.stop(timeout=timeout)
+                if attempt + 1 == _INITIALIZE_ATTEMPTS:
+                    raise
+                continue
+            except BaseException:
+                await supervisor.stop(timeout=timeout)
+                raise
+            return _CodexConnection(
+                supervisor=supervisor,
+                client=client,
+                workspace=workspace,
+                provider_thread_id=session.provider_thread_id or "",
             )
-        except BaseException:
-            await supervisor.stop(timeout=timeout)
-            raise
-        return _CodexConnection(
-            supervisor=supervisor,
-            client=client,
-            workspace=workspace,
-            provider_thread_id=session.provider_thread_id or "",
-        )
+        raise AssertionError("Codex initialization retry loop did not return")
 
     async def _stop_connection(
         self,

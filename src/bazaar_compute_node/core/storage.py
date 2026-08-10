@@ -11,9 +11,9 @@ from .models import (
     ConsumerCursor,
     InboundMessage,
     OutboundMessage,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeSession,
-    RuntimeTurn,
 )
 
 
@@ -68,8 +68,8 @@ class IStorageTransaction(Protocol):
         """Find the runtime session bound to one bcn session for recovery."""
         ...
 
-    async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
-        """Load one runtime turn by local id."""
+    async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
+        """Load one immutable runtime attempt correlation record."""
         ...
 
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
@@ -121,8 +121,8 @@ class IStorageTransaction(Protocol):
         """Persist a validated runtime binding update."""
         ...
 
-    async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
-        """Persist a validated runtime turn state transition."""
+    async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
+        """Persist one immutable runtime attempt correlation record."""
         ...
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:

@@ -11,8 +11,8 @@ from uuid import uuid7
 import pytest
 from bcn_test_support import RecordingAudit, TestChannel
 from test_orchestration import (
+    _wait_for_audit_event,
     _wait_for_inbound_messages,
-    _wait_for_runtime_turn,
     make_message,
     run_natural_conversation_contract,
 )
@@ -476,12 +476,12 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
         await node.start()
         await channel.inject(message)
         persisted = await _wait_for_inbound_messages(storage, session_id, 1)
-        turn = await _wait_for_runtime_turn(
-            storage,
-            f"turn-{persisted[0].message_id}",
-            frozenset({RuntimeTurnState.COMPLETED}),
+        await _wait_for_audit_event(
+            audit,
+            session_id=session_id,
+            event_suffix="turn.completed",
+            turn_id=f"turn-{persisted[0].message_id}",
         )
-        assert turn.state is RuntimeTurnState.COMPLETED
         assert (
             target.read_text(encoding="utf-8").strip() == "Workspace access is ready."
         )

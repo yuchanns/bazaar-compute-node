@@ -57,13 +57,6 @@ class TestControl:
                 session_id: len(messages)
                 for session_id, messages in self._storage.inbound_messages.items()
             },
-            "runtime_turns": {
-                turn_id: {
-                    "session_id": turn.session_id,
-                    "state": turn.state.value,
-                }
-                for turn_id, turn in self._storage.runtime_turns.items()
-            },
             "runtime_sessions": sorted(self._storage.runtime_sessions),
             "cursors": {
                 session_id: {

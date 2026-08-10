@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from time import time_ns
@@ -20,6 +22,7 @@ from ..models import (
     ChannelTargetKind,
     ConsumerCursor,
     InboundMessage,
+    RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
@@ -75,7 +78,13 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._concurrency = concurrency or SessionLockRegistry()
         self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}
+        self._runtime_turns: dict[str, RuntimeTurn] = {}
         self._agent_states: dict[str, AgentState] = {}
+        self._logger = logging.getLogger("bazaar_compute_node.orchestration.session")
+        if not self._logger.handlers:
+            self._logger.addHandler(logging.StreamHandler())
+        self._logger.setLevel(logging.INFO)
+        self._logger.propagate = False
         self._audit = SessionAuditRecorder(
             sink=audit,
             timeout_budget=timeout_budget,
@@ -103,6 +112,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             state_writer=self._state_writer,
             timeout_budget=timeout_budget,
             concurrency=self._concurrency,
+            turns=self._runtime_turns,
             node_id=lambda: self.node_id,
             clock=self._clock,
         )
@@ -211,6 +221,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._started = False
         self._agent_states.clear()
         self._runtime_sessions.clear()
+        self._runtime_turns.clear()
 
     def dispatch_inbound(
         self, message: InboundMessage
@@ -349,8 +360,28 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     def _forget_task(self, task: asyncio.Task[RuntimeTurn | None]) -> None:
         self._active_tasks.discard(task)
-        if not task.cancelled():
-            task.exception()
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        self._logger.error(
+            "%s",
+            json.dumps(
+                {
+                    "event_name": "channel.inbound.failed",
+                    "created_at_ms": self._clock(),
+                    "metadata": {
+                        "task_name": task.get_name(),
+                        "error_type": type(error).__name__,
+                        "error_message": str(error),
+                    },
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     async def _record_inbound_and_turn(
         self,
@@ -359,18 +390,14 @@ class SessionOrchestrator(IAsyncLifecycle):
         create_turn: bool,
     ) -> tuple[SessionContext | None, InboundMessage, RuntimeTurn | None, bool]:
         context: SessionContext | None = None
+        channel_session_created = False
+        bcn_session_created = False
+        runtime_session_created = False
         async with self._storage.transaction() as transaction:
             existing_message = await transaction.find_inbound_message(
                 message.channel, message.provider_message_id
             )
             if existing_message is not None:
-                if (
-                    existing_message.session_id != message.session_id
-                    or existing_message.channel_session_id != message.channel_session_id
-                ):
-                    raise ValueError(
-                        "provider message id is already bound to another session"
-                    )
                 message = existing_message
             channel_session = await transaction.find_channel_session(
                 channel=message.channel,
@@ -378,6 +405,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
             now_ms = self._clock()
             if channel_session is None:
+                channel_session_created = True
                 channel_session = ChannelSession(
                     id=message.channel_session_id,
                     channel=message.channel,
@@ -389,10 +417,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                     or message.mentions_agent,
                 )
                 await transaction.save_channel_session(channel_session)
-            elif channel_session.id != message.channel_session_id:
-                raise ValueError("inbound channel session identity does not match")
-            elif channel_session.target_kind is not message.target_kind:
-                raise ValueError("inbound channel target kind does not match")
             elif (
                 existing_message is None
                 and message.mentions_agent
@@ -405,16 +429,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                 )
                 await transaction.save_channel_session(channel_session)
 
-            if existing_message is None:
-                notifies_runtime = (
-                    message.target_kind is ChannelTargetKind.DM
-                    or channel_session.following
-                    or message.mentions_agent
-                )
-                message = replace(message, notifies_runtime=notifies_runtime)
-
-            bcn_session = await transaction.get_bcn_session(message.session_id)
+            bcn_session = await transaction.find_bcn_session(channel_session.id)
             if bcn_session is None:
+                bcn_session_created = True
                 bcn_session = BcnSession(
                     id=message.session_id,
                     channel_session_id=channel_session.id,
@@ -423,16 +440,30 @@ class SessionOrchestrator(IAsyncLifecycle):
                     updated_at_ms=now_ms,
                 )
                 await transaction.save_bcn_session(bcn_session)
-            elif (
-                bcn_session.channel_session_id != channel_session.id
-                or bcn_session.workspace_id != self.workspace_id
-            ):
-                raise ValueError("inbound bcn session binding does not match")
 
-            cursor = await transaction.get_consumer_cursor(message.session_id)
+            if existing_message is None:
+                notifies_runtime = (
+                    message.target_kind is ChannelTargetKind.DM
+                    or channel_session.following
+                    or message.mentions_agent
+                )
+                canonical_target = message.canonical_target
+                if channel_session.id != message.channel_session_id:
+                    canonical_target = (
+                        f"{channel_session.target_kind.value}:{channel_session.id}"
+                    )
+                message = replace(
+                    message,
+                    session_id=bcn_session.id,
+                    channel_session_id=channel_session.id,
+                    canonical_target=canonical_target,
+                    notifies_runtime=notifies_runtime,
+                )
+
+            cursor = await transaction.get_consumer_cursor(bcn_session.id)
             if cursor is None:
                 await transaction.save_consumer_cursor(
-                    ConsumerCursor(session_id=message.session_id)
+                    ConsumerCursor(session_id=bcn_session.id)
                 )
 
             if existing_message is None:
@@ -452,11 +483,11 @@ class SessionOrchestrator(IAsyncLifecycle):
 
             runtime_session: RuntimeSession | None = None
             if message.notifies_runtime:
-                runtime_id = f"runtime-{message.session_id}"
-                runtime_session = await transaction.get_runtime_session(runtime_id)
+                runtime_session = await transaction.find_runtime_session(bcn_session.id)
                 if runtime_session is None:
+                    runtime_session_created = True
                     runtime_session = RuntimeSession(
-                        id=runtime_id,
+                        id=f"runtime-{bcn_session.id}",
                         bcn_session_id=bcn_session.id,
                         channel_session_id=channel_session.id,
                         runtime=self._runtime.name,
@@ -465,18 +496,12 @@ class SessionOrchestrator(IAsyncLifecycle):
                         updated_at_ms=now_ms,
                     )
                     await transaction.save_runtime_session(runtime_session)
-                elif (
-                    runtime_session.bcn_session_id != bcn_session.id
-                    or runtime_session.channel_session_id != channel_session.id
-                    or runtime_session.workspace_id != self.workspace_id
-                ):
-                    raise ValueError("runtime session binding does not match")
                 context = SessionContext(channel_session, bcn_session, runtime_session)
 
             turn_id = f"turn-{message.message_id}"
-            existing_turn = await transaction.get_runtime_turn(turn_id)
-            if existing_turn is not None:
-                turn = existing_turn
+            existing_attempt = await transaction.get_runtime_attempt(turn_id)
+            if existing_attempt is not None:
+                turn = self._runtime_turns.get(turn_id)
                 turn_created = False
             elif not create_turn or not message.notifies_runtime:
                 turn = None
@@ -491,11 +516,52 @@ class SessionOrchestrator(IAsyncLifecycle):
                     started_at_ms=now_ms,
                     client_user_message_id=message.message_id,
                 )
-                await transaction.save_runtime_turn(turn)
+                await transaction.save_runtime_attempt(
+                    RuntimeAttempt(
+                        turn_id=turn.turn_id,
+                        session_id=turn.session_id,
+                        client_user_message_id=message.message_id,
+                        started_at_ms=turn.started_at_ms,
+                    )
+                )
                 turn_created = True
 
+        if existing_message is None:
+            await self._audit.append(
+                event_name="channel.inbound.persisted",
+                state=RuntimeEventState.COMPLETED,
+                correlation=CorrelationContext(
+                    node_id=self.node_id,
+                    channel=message.channel,
+                    channel_session_id=message.channel_session_id,
+                    bcn_session_id=message.session_id,
+                    runtime_session_id=(
+                        runtime_session.id if runtime_session is not None else None
+                    ),
+                    provider_thread_id=message.provider_thread_id,
+                    inbound_seq=message.seq,
+                ),
+                metadata={
+                    "notifies_runtime": message.notifies_runtime,
+                    "channel_session_mapping": (
+                        "created" if channel_session_created else "reused"
+                    ),
+                    "bcn_session_mapping": (
+                        "created" if bcn_session_created else "reused"
+                    ),
+                    "runtime_session_mapping": (
+                        "created"
+                        if runtime_session_created
+                        else "reused"
+                        if runtime_session is not None
+                        else "not_requested"
+                    ),
+                },
+            )
         if runtime_session is not None:
             self._runtime_sessions[runtime_session.id] = runtime_session
+        if turn_created and turn is not None:
+            self._runtime_turns[turn.turn_id] = turn
         return context, message, turn, turn_created
 
     async def _ensure_runtime_session(self, context: SessionContext) -> SessionContext:

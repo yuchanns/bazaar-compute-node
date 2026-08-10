@@ -16,10 +16,9 @@ from ...core.models import (
     ConsumerCursor,
     InboundMessage,
     OutboundMessage,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeSession,
-    RuntimeTurn,
-    RuntimeTurnState,
 )
 from .codec import (
     _bcn_session_from_row,
@@ -31,9 +30,9 @@ from .codec import (
     _outbound_message_from_row,
     _required_non_negative_int,
     _required_positive_int,
+    _runtime_attempt_from_row,
     _runtime_event_from_row,
     _runtime_session_from_row,
-    _runtime_turn_from_row,
     _same_inbound_payload,
     _same_runtime_event_payload,
     _validate_bcn_session_update,
@@ -51,8 +50,6 @@ from .codec import (
     _validate_positive_int,
     _validate_runtime_event_input,
     _validate_runtime_session_update,
-    _validate_runtime_turn_input,
-    _validate_runtime_turn_update,
 )
 
 if TYPE_CHECKING:
@@ -214,15 +211,13 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         return _runtime_session_from_row(row) if row is not None else None
 
-    async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
+    async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         row = await self.fetchone(
-            "SELECT turn_id, session_id, provider_turn_id, "
-            "client_user_message_id, state, started_at_ms, completed_at_ms, "
-            "last_event_name, error_kind, error_message, metadata_json "
-            "FROM runtime_turns WHERE turn_id = ?",
+            "SELECT turn_id, session_id, client_user_message_id, started_at_ms "
+            "FROM runtime_attempts WHERE turn_id = ?",
             (turn_id,),
         )
-        return _runtime_turn_from_row(row) if row is not None else None
+        return _runtime_attempt_from_row(row) if row is not None else None
 
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
         row = await self.fetchone(
@@ -777,16 +772,16 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     raise ValueError("runtime event channel binding does not match")
 
         if event.turn_id is not None:
-            turn = await self.get_runtime_turn(event.turn_id)
-            if turn is None:
-                raise ValueError(f"unknown runtime turn: {event.turn_id}")
+            attempt = await self.get_runtime_attempt(event.turn_id)
+            if attempt is None:
+                raise ValueError(f"unknown runtime attempt: {event.turn_id}")
             if (
                 event.runtime_session_id is not None
-                and turn.session_id != event.runtime_session_id
+                and attempt.session_id != event.runtime_session_id
             ):
-                raise ValueError("runtime event turn/runtime binding does not match")
+                raise ValueError("runtime event attempt/runtime binding does not match")
             if runtime_session is None:
-                runtime_session = await self.get_runtime_session(turn.session_id)
+                runtime_session = await self.get_runtime_session(attempt.session_id)
             if (
                 event.bcn_session_id is not None
                 and runtime_session is not None
@@ -1002,84 +997,27 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             ),
         )
 
-    async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
-        _validate_runtime_turn_input(turn)
-        if await self.get_runtime_session(turn.session_id) is None:
-            raise ValueError(f"unknown runtime session: {turn.session_id}")
-
-        existing = await self.get_runtime_turn(turn.turn_id)
-        if existing is None:
-            if turn.state is not RuntimeTurnState.STARTING:
-                raise ValueError("a new runtime turn must start in starting state")
-            await self._validate_active_runtime_turn(turn)
-            await self.execute(
-                "INSERT INTO runtime_turns ("
-                "turn_id, session_id, provider_turn_id, "
-                "client_user_message_id, state, started_at_ms, completed_at_ms, "
-                "last_event_name, error_kind, error_message, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    turn.turn_id,
-                    turn.session_id,
-                    turn.provider_turn_id,
-                    turn.client_user_message_id,
-                    turn.state.value,
-                    turn.started_at_ms,
-                    turn.completed_at_ms,
-                    turn.latest_event_name,
-                    turn.error_kind,
-                    turn.error_message,
-                    _encode_metadata(turn.metadata),
-                ),
-            )
+    async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
+        if not isinstance(attempt, RuntimeAttempt):
+            raise TypeError("attempt must be a RuntimeAttempt")
+        if await self.get_runtime_session(attempt.session_id) is None:
+            raise ValueError(f"unknown runtime session: {attempt.session_id}")
+        existing = await self.get_runtime_attempt(attempt.turn_id)
+        if existing is not None:
+            if existing != attempt:
+                raise ValueError("runtime attempt is immutable")
             return
-
-        if existing.session_id != turn.session_id:
-            raise ValueError("runtime turn binding cannot change")
-        if existing.started_at_ms != turn.started_at_ms:
-            raise ValueError("runtime turn start time cannot change")
-        canonical = _validate_runtime_turn_update(existing, turn)
-        await self._validate_active_runtime_turn(canonical)
         await self.execute(
-            "UPDATE runtime_turns SET provider_turn_id = ?, "
-            "client_user_message_id = ?, state = ?, completed_at_ms = ?, "
-            "last_event_name = ?, error_kind = ?, error_message = ?, "
-            "metadata_json = ? WHERE turn_id = ?",
+            "INSERT INTO runtime_attempts "
+            "(turn_id, session_id, client_user_message_id, started_at_ms) "
+            "VALUES (?, ?, ?, ?)",
             (
-                canonical.provider_turn_id,
-                canonical.client_user_message_id,
-                canonical.state.value,
-                canonical.completed_at_ms,
-                canonical.latest_event_name,
-                canonical.error_kind,
-                canonical.error_message,
-                _encode_metadata(canonical.metadata),
-                canonical.turn_id,
+                attempt.turn_id,
+                attempt.session_id,
+                attempt.client_user_message_id,
+                attempt.started_at_ms,
             ),
         )
-
-    async def _validate_active_runtime_turn(self, turn: RuntimeTurn) -> None:
-        active_states = tuple(
-            state.value
-            for state in (
-                RuntimeTurnState.STARTING,
-                RuntimeTurnState.RUNNING,
-                RuntimeTurnState.UNKNOWN,
-                RuntimeTurnState.RECONCILING,
-            )
-        )
-        placeholders = ", ".join("?" for _ in active_states)
-        rows = await self.fetchall(
-            "SELECT turn_id FROM runtime_turns "
-            "WHERE session_id = ? AND state IN ("
-            + placeholders
-            + ") AND turn_id <> ? LIMIT 1",
-            (turn.session_id, *active_states, turn.turn_id),
-        )
-        if rows:
-            raise ValueError(
-                f"runtime session already has an active turn: {rows[0]['turn_id']}"
-            )
 
     async def _fetch_one_or_conflict(
         self,

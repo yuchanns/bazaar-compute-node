@@ -102,6 +102,20 @@ class RuntimeSession:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeAttempt:
+    turn_id: str
+    session_id: str
+    client_user_message_id: str
+    started_at_ms: int
+
+    def __post_init__(self) -> None:
+        _validate_text(self.turn_id, "turn_id")
+        _validate_text(self.session_id, "session_id")
+        _validate_text(self.client_user_message_id, "client_user_message_id")
+        _validate_non_negative(self.started_at_ms, "started_at_ms")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeTurn:
     turn_id: str
     session_id: str
@@ -146,6 +160,7 @@ class RuntimeTurn:
                 RuntimeTurnState.COMPLETED,
                 RuntimeTurnState.FAILED,
                 RuntimeTurnState.CANCELLED,
+                RuntimeTurnState.UNKNOWN,
             }
             else self.completed_at_ms
         )

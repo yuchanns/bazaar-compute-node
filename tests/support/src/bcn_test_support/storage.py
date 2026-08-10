@@ -17,11 +17,10 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
-    RuntimeTurn,
-    RuntimeTurnState,
 )
 from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, NodeIdentity
 
@@ -37,7 +36,7 @@ class MemoryStorage(IStorage, IAsyncLifecycle):
         self.channel_sessions: dict[str, ChannelSession] = {}
         self.bcn_sessions: dict[str, BcnSession] = {}
         self.runtime_sessions: dict[str, RuntimeSession] = {}
-        self.runtime_turns: dict[str, RuntimeTurn] = {}
+        self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
         self.inbound_messages: dict[str, list[InboundMessage]] = {}
         self.outbound_messages: dict[str, OutboundMessage] = {}
@@ -81,7 +80,7 @@ _Snapshot = tuple[
     dict[str, ChannelSession],
     dict[str, BcnSession],
     dict[str, RuntimeSession],
-    dict[str, RuntimeTurn],
+    dict[str, RuntimeAttempt],
     dict[str, ConsumerCursor],
     dict[str, list[InboundMessage]],
     dict[str, OutboundMessage],
@@ -100,7 +99,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
             deepcopy(self._storage.channel_sessions),
             deepcopy(self._storage.bcn_sessions),
             deepcopy(self._storage.runtime_sessions),
-            deepcopy(self._storage.runtime_turns),
+            deepcopy(self._storage.runtime_attempts),
             deepcopy(self._storage.cursors),
             deepcopy(self._storage.inbound_messages),
             deepcopy(self._storage.outbound_messages),
@@ -119,7 +118,7 @@ class _MemoryStorageTransaction(IStorageTransaction):
                 self._storage.channel_sessions,
                 self._storage.bcn_sessions,
                 self._storage.runtime_sessions,
-                self._storage.runtime_turns,
+                self._storage.runtime_attempts,
                 self._storage.cursors,
                 self._storage.inbound_messages,
                 self._storage.outbound_messages,
@@ -180,8 +179,8 @@ class _MemoryStorageTransaction(IStorageTransaction):
             )
         return matches[0] if matches else None
 
-    async def get_runtime_turn(self, turn_id: str) -> RuntimeTurn | None:
-        return self._storage.runtime_turns.get(turn_id)
+    async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
+        return self._storage.runtime_attempts.get(turn_id)
 
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
         return self._storage.cursors.get(session_id)
@@ -337,24 +336,15 @@ class _MemoryStorageTransaction(IStorageTransaction):
                 "session workspace does not match the persisted node workspace"
             )
 
-    async def save_runtime_turn(self, turn: RuntimeTurn) -> None:
-        _validate_runtime_turn_input(turn)
-        if turn.session_id not in self._storage.runtime_sessions:
-            raise ValueError(f"unknown runtime session: {turn.session_id}")
-        existing = self._storage.runtime_turns.get(turn.turn_id)
-        if existing is None:
-            if turn.state is not RuntimeTurnState.STARTING:
-                raise ValueError("a new runtime turn must start in starting state")
-            _validate_active_runtime_turn(self._storage, turn)
-            self._storage.runtime_turns[turn.turn_id] = turn
-            return
-        if existing.session_id != turn.session_id:
-            raise ValueError("runtime turn binding cannot change")
-        if existing.started_at_ms != turn.started_at_ms:
-            raise ValueError("runtime turn start time cannot change")
-        canonical = _validate_runtime_turn_update(existing, turn)
-        _validate_active_runtime_turn(self._storage, canonical)
-        self._storage.runtime_turns[turn.turn_id] = canonical
+    async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
+        if not isinstance(attempt, RuntimeAttempt):
+            raise TypeError("attempt must be a RuntimeAttempt")
+        if attempt.session_id not in self._storage.runtime_sessions:
+            raise ValueError(f"unknown runtime session: {attempt.session_id}")
+        existing = self._storage.runtime_attempts.get(attempt.turn_id)
+        if existing is not None and existing != attempt:
+            raise ValueError("runtime attempt is immutable")
+        self._storage.runtime_attempts[attempt.turn_id] = attempt
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
         messages = self._storage.inbound_messages.setdefault(message.session_id, [])
@@ -453,104 +443,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
 def _validate_updated_at(existing: int, incoming: int) -> None:
     if incoming < existing:
         raise ValueError("session updated_at_ms cannot move backwards")
-
-
-def _validate_runtime_turn_input(turn: RuntimeTurn) -> None:
-    if not isinstance(turn, RuntimeTurn):
-        raise TypeError("turn must be a RuntimeTurn")
-    if not isinstance(turn.state, RuntimeTurnState):
-        raise TypeError("runtime turn state is invalid")
-    for value, field_name in (
-        (turn.latest_event_name, "latest_event_name"),
-        (turn.error_kind, "error_kind"),
-        (turn.error_message, "error_message"),
-    ):
-        _validate_optional_input_text(value, field_name)
-    terminal_states = {
-        RuntimeTurnState.COMPLETED,
-        RuntimeTurnState.FAILED,
-        RuntimeTurnState.CANCELLED,
-    }
-    if turn.state in terminal_states:
-        if turn.completed_at_ms is None:
-            raise ValueError("terminal runtime turn requires completed_at_ms")
-        if turn.completed_at_ms < turn.started_at_ms:
-            raise ValueError("runtime turn completion cannot precede start")
-    elif turn.completed_at_ms is not None:
-        raise ValueError("non-terminal runtime turn cannot have completed_at_ms")
-
-
-def _validate_active_runtime_turn(
-    storage: MemoryStorage,
-    turn: RuntimeTurn,
-) -> None:
-    active_states = {
-        RuntimeTurnState.STARTING,
-        RuntimeTurnState.RUNNING,
-        RuntimeTurnState.UNKNOWN,
-        RuntimeTurnState.RECONCILING,
-    }
-    for existing in storage.runtime_turns.values():
-        if (
-            existing.turn_id != turn.turn_id
-            and existing.session_id == turn.session_id
-            and existing.state in active_states
-            and turn.state in active_states
-        ):
-            raise ValueError(
-                f"runtime session already has an active turn: {existing.turn_id}"
-            )
-
-
-def _validate_runtime_turn_update(
-    existing: RuntimeTurn,
-    incoming: RuntimeTurn,
-) -> RuntimeTurn:
-    for existing_value, incoming_value, field_name in (
-        (
-            existing.provider_turn_id,
-            incoming.provider_turn_id,
-            "provider_turn_id",
-        ),
-        (
-            existing.client_user_message_id,
-            incoming.client_user_message_id,
-            "client_user_message_id",
-        ),
-    ):
-        if (
-            existing_value is not None
-            and incoming_value is not None
-            and existing_value != incoming_value
-        ):
-            raise ValueError(f"runtime turn {field_name} cannot change")
-    if existing.state is incoming.state:
-        if existing.completed_at_ms != incoming.completed_at_ms:
-            raise ValueError("runtime turn completion time cannot change")
-        transitioned = existing
-    else:
-        at_ms = (
-            incoming.completed_at_ms
-            if incoming.completed_at_ms is not None
-            else incoming.started_at_ms
-        )
-        transitioned = existing.transition_to(
-            incoming.state,
-            at_ms=at_ms,
-            error_kind=incoming.error_kind,
-            error_message=incoming.error_message,
-            latest_event_name=incoming.latest_event_name,
-        )
-    return replace(
-        transitioned,
-        provider_turn_id=incoming.provider_turn_id or existing.provider_turn_id,
-        client_user_message_id=incoming.client_user_message_id
-        or existing.client_user_message_id,
-        latest_event_name=incoming.latest_event_name or transitioned.latest_event_name,
-        error_kind=incoming.error_kind or transitioned.error_kind,
-        error_message=incoming.error_message or transitioned.error_message,
-        metadata=incoming.metadata,
-    )
 
 
 def _validate_outbound_message_input(message: OutboundMessage) -> None:
@@ -856,16 +748,16 @@ def _validate_runtime_event_references(
         ):
             raise ValueError("runtime event channel binding does not match")
     if event.turn_id is not None:
-        turn = storage.runtime_turns.get(event.turn_id)
-        if turn is None:
-            raise ValueError(f"unknown runtime turn: {event.turn_id}")
+        attempt = storage.runtime_attempts.get(event.turn_id)
+        if attempt is None:
+            raise ValueError(f"unknown runtime attempt: {event.turn_id}")
         if (
             event.runtime_session_id is not None
-            and turn.session_id != event.runtime_session_id
+            and attempt.session_id != event.runtime_session_id
         ):
-            raise ValueError("runtime event turn/runtime binding does not match")
+            raise ValueError("runtime event attempt/runtime binding does not match")
         if runtime_session is None:
-            runtime_session = storage.runtime_sessions.get(turn.session_id)
+            runtime_session = storage.runtime_sessions.get(attempt.session_id)
         if (
             event.bcn_session_id is not None
             and runtime_session is not None

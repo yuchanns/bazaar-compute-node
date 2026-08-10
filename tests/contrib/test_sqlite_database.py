@@ -28,7 +28,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 3
+        assert first_state.schema_version == 4
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -58,8 +58,8 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "node_state",
             "outbound_messages",
             "runtime_events",
+            "runtime_attempts",
             "runtime_sessions",
-            "runtime_turns",
             "schema_migrations",
         }
         assert {row["name"] for row in indexes} == {
@@ -76,7 +76,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "idx_runtime_events_created",
             "idx_runtime_events_name_seq",
             "idx_runtime_events_session_seq",
-            "idx_runtime_turns_session_state",
+            "idx_runtime_attempts_session_started",
         }
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
         outbound_primary_keys = {row["name"]: row["pk"] for row in outbound_columns}
@@ -197,11 +197,13 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
                     "idx_inbound_session_target_seq",
                 ),
             )
-        assert [row["version"] for row in migration_rows] == [1, 2, 3]
+        assert [row["version"] for row in migration_rows] == [1, 2, 3, 4]
         assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
         assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
         assert migration_rows[2]["migration_name"] == MIGRATIONS[2].name
         assert migration_rows[2]["checksum"] == MIGRATIONS[2].checksum
+        assert migration_rows[3]["migration_name"] == MIGRATIONS[3].name
+        assert migration_rows[3]["checksum"] == MIGRATIONS[3].checksum
         assert {row["name"] for row in mapping_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",

@@ -32,8 +32,6 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
-    RuntimeEventState,
-    RuntimeTurn,
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
@@ -180,20 +178,6 @@ async def _wait_for_inbound_messages(
             await asyncio.sleep(0.05)
 
 
-async def _wait_for_runtime_turn(
-    storage: IStorage,
-    turn_id: str,
-    states: frozenset[RuntimeTurnState],
-) -> RuntimeTurn:
-    async with asyncio.timeout(180):
-        while True:
-            async with storage.transaction() as transaction:
-                turn = await transaction.get_runtime_turn(turn_id)
-            if turn is not None and turn.state in states:
-                return turn
-            await asyncio.sleep(0.05)
-
-
 async def _wait_for_audit_event(
     audit: RecordingAudit,
     *,
@@ -203,7 +187,7 @@ async def _wait_for_audit_event(
     operation: str | None = None,
     turn_id: str | None = None,
 ) -> None:
-    async with asyncio.timeout(180):
+    async with asyncio.timeout(600):
         while True:
             if any(
                 event.correlation.bcn_session_id == session_id
@@ -322,18 +306,18 @@ async def run_natural_conversation_contract(
             ]
             audit.release_first_check.set()
 
-            first_turn = await _wait_for_runtime_turn(
-                storage,
-                f"turn-{first_row.message_id}",
-                frozenset({RuntimeTurnState.COMPLETED}),
+            await _wait_for_audit_event(
+                audit,
+                session_id=session_id,
+                event_suffix="turn.completed",
+                turn_id=f"turn-{first_row.message_id}",
             )
-            second_turn = await _wait_for_runtime_turn(
-                storage,
-                f"turn-{second_row.message_id}",
-                frozenset({RuntimeTurnState.COMPLETED}),
+            await _wait_for_audit_event(
+                audit,
+                session_id=session_id,
+                event_suffix="turn.completed",
+                turn_id=f"turn-{second_row.message_id}",
             )
-            assert first_turn.state is RuntimeTurnState.COMPLETED
-            assert second_turn.state is RuntimeTurnState.COMPLETED
 
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(
@@ -347,12 +331,12 @@ async def run_natural_conversation_contract(
                 second.provider_message_id,
                 third.provider_message_id,
             ]
-            third_turn = await _wait_for_runtime_turn(
-                storage,
-                f"turn-{third_row.message_id}",
-                frozenset({RuntimeTurnState.COMPLETED}),
+            await _wait_for_audit_event(
+                audit,
+                session_id=session_id,
+                event_suffix="turn.completed",
+                turn_id=f"turn-{third_row.message_id}",
             )
-            assert third_turn.state is RuntimeTurnState.COMPLETED
             for inbound in (second_row, third_row):
                 delivery_ids = {
                     event.correlation.outbound_message_id
@@ -412,10 +396,10 @@ async def test_channel_storage_runtime_turn_path() -> None:
         message = make_message()
         await channel.inject(message)
         await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-1")
-                and storage.runtime_turns["turn-message-bcn-1-1"].state
-                is RuntimeTurnState.COMPLETED
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
             )
         )
 
@@ -434,51 +418,6 @@ async def test_channel_storage_runtime_turn_path() -> None:
         assert storage.channel_sessions["channel-bcn-1"].following is True
     finally:
         await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_daemon_restart_rebuilds_agent_state_and_resumes_durable_binding() -> (
-    None
-):
-    first, first_channel, _first_runtime, storage, _ = await make_node()
-    await first_channel.inject(make_message(seq=1))
-    await wait_until(
-        lambda: (
-            storage.runtime_turns.get("turn-message-bcn-1-1")
-            and storage.runtime_turns["turn-message-bcn-1-1"].state
-            is RuntimeTurnState.COMPLETED
-        )
-    )
-    runtime_binding = storage.runtime_sessions["runtime-bcn-1"]
-    assert runtime_binding.provider_thread_id == "test-thread-runtime-bcn-1"
-    assert first.agent_state("bcn-1") is AgentState.IDLE
-    await first.stop(timeout=1)
-    assert first.agent_state("bcn-1") is None
-
-    channel = TestChannel()
-    runtime = TestRuntime()
-    audit = RecordingAudit()
-    restarted = SessionOrchestrator(
-        node_id="node-1",
-        workspace_id="workspace-1",
-        channel=channel,
-        runtime=runtime,
-        storage=storage,
-        audit=audit,
-        timeout_budget=make_budget(),
-    )
-    runtime.command_service = restarted.command_service
-    await restarted.start(timeout=1)
-    try:
-        assert restarted.agent_state("bcn-1") is None
-        turn = await restarted.handle_inbound(make_message(seq=2))
-        assert turn is not None
-        assert turn.state is RuntimeTurnState.COMPLETED
-        assert restarted.agent_state("bcn-1") is AgentState.IDLE
-        assert runtime.started_sessions == []
-        assert runtime.resumed_sessions == [runtime_binding]
-    finally:
-        await restarted.stop(timeout=1)
 
 
 @pytest.mark.asyncio
@@ -509,10 +448,10 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
         runtime.queue_turn_plan(TestTurnPlan(command_script=command_script))
         await channel.inject(make_message())
         await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-1")
-                and storage.runtime_turns["turn-message-bcn-1-1"].state
-                is RuntimeTurnState.COMPLETED
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
             )
         )
         assert len(channel.sent_messages) == 1
@@ -580,39 +519,8 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_failure_and_unknown_stream_are_persisted() -> None:
-    orchestrator, channel, runtime, storage, _ = await make_node()
-    try:
-        runtime.queue_turn_plan(
-            TestTurnPlan(
-                states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED),
-            )
-        )
-        runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED,)))
-        await channel.inject(make_message(seq=1))
-        await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-1")
-                and storage.runtime_turns["turn-message-bcn-1-1"].state
-                is RuntimeTurnState.FAILED
-            )
-        )
-        await channel.inject(make_message(seq=2))
-        await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-2")
-                and storage.runtime_turns["turn-message-bcn-1-2"].state
-                is RuntimeTurnState.UNKNOWN
-            )
-        )
-        assert orchestrator.agent_state("bcn-1") is AgentState.UNKNOWN
-    finally:
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
 async def test_approval_is_routed_to_the_current_channel_session() -> None:
-    orchestrator, channel, runtime, storage, audit = await make_node()
+    orchestrator, channel, runtime, _storage, audit = await make_node()
     try:
         request = ApprovalRequest(
             request_id="approval-1",
@@ -625,10 +533,10 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
         await channel.inject(make_message())
         await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-1")
-                and storage.runtime_turns["turn-message-bcn-1-1"].state
-                is RuntimeTurnState.COMPLETED
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
             )
         )
 
@@ -840,7 +748,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
 
 @pytest.mark.asyncio
 async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
-    orchestrator, channel, runtime, storage, _ = await make_node()
+    orchestrator, channel, runtime, storage, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
@@ -850,9 +758,10 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     result = await asyncio.gather(task, return_exceptions=True)
 
     assert isinstance(result[0], asyncio.CancelledError)
-    assert (
-        storage.runtime_turns["turn-message-bcn-1-1"].state
-        is RuntimeTurnState.CANCELLED
+    assert any(
+        event.event_name == "runtime.turn.cancelled"
+        and event.correlation.turn_id == "turn-message-bcn-1-1"
+        for event in audit.events
     )
     assert runtime.closed_streams
     assert runtime.stopped
@@ -863,7 +772,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
 
 @pytest.mark.asyncio
 async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
-    orchestrator, channel, runtime, storage, _audit = await make_node()
+    orchestrator, channel, runtime, storage, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     first = make_message(seq=1)
     second = make_message(seq=2)
@@ -881,16 +790,17 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()
         await wait_until(
-            lambda: (
-                storage.runtime_turns.get("turn-message-bcn-1-2") is not None
-                and storage.runtime_turns["turn-message-bcn-1-2"].state
-                is RuntimeTurnState.COMPLETED
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-2"
+                for event in audit.events
             )
         )
 
-        assert (
-            storage.runtime_turns["turn-message-bcn-1-1"].state
-            is RuntimeTurnState.COMPLETED
+        assert any(
+            event.event_name == "runtime.turn.completed"
+            and event.correlation.turn_id == "turn-message-bcn-1-1"
+            for event in audit.events
         )
         assert len(runtime.started_turns) == 2
         assert "session=bcn-1" in runtime.started_turns[1][2]

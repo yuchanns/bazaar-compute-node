@@ -172,21 +172,11 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
 
         status = await wait_for_status(
             endpoint,
-            lambda value: (
-                len(cast(list[object], value.get("sent_messages", []))) == 2
-                and all(
-                    turn.get("state") == "completed"
-                    for turn in cast(
-                        dict[str, dict[str, object]],
-                        value.get("runtime_turns", {}),
-                    ).values()
-                )
-            ),
+            lambda value: len(cast(list[object], value.get("sent_messages", []))) == 2,
         )
         inbound_messages = cast(dict[str, int], status["inbound_messages"])
         sent_messages = cast(list[dict[str, object]], status["sent_messages"])
         bcc_commands = cast(list[dict[str, object]], status["bcc_commands"])
-        runtime_turns = cast(dict[str, dict[str, object]], status["runtime_turns"])
         outbound_messages = cast(list[dict[str, object]], status["outbound_messages"])
         assert inbound_messages == {"bcn-a": 1, "bcn-b": 1}
         assert {message["session_id"] for message in sent_messages} == {
@@ -210,7 +200,6 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
                 ["message", "send", "--target", "#test:bcn-b"],
             ],
         }
-        assert all(turn["state"] == "completed" for turn in runtime_turns.values())
         assert all(outbound["state"] == "sent" for outbound in outbound_messages)
     finally:
         stop_process = await asyncio.to_thread(stop_test_process)

@@ -217,7 +217,6 @@ class RuntimeTurnState(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
-    RECONCILING = "reconciling"
 
 
 class OutboundDeliveryState(StrEnum):
@@ -292,15 +291,7 @@ RUNTIME_TURN_TRANSITIONS: Mapping[RuntimeTurnState, frozenset[RuntimeTurnState]]
     RuntimeTurnState.COMPLETED: frozenset(),
     RuntimeTurnState.FAILED: frozenset(),
     RuntimeTurnState.CANCELLED: frozenset(),
-    RuntimeTurnState.UNKNOWN: frozenset({RuntimeTurnState.RECONCILING}),
-    RuntimeTurnState.RECONCILING: frozenset(
-        {
-            RuntimeTurnState.COMPLETED,
-            RuntimeTurnState.FAILED,
-            RuntimeTurnState.CANCELLED,
-            RuntimeTurnState.UNKNOWN,
-        }
-    ),
+    RuntimeTurnState.UNKNOWN: frozenset(),
 }
 
 OUTBOUND_DELIVERY_TRANSITIONS: Mapping[

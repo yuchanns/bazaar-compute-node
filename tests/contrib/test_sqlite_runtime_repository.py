@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
@@ -16,12 +15,10 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
-    RuntimeTurn,
-    RuntimeTurnState,
-    StateTransitionError,
 )
 
 
@@ -261,128 +258,19 @@ async def test_sqlite_outbound_repository_rolls_back_and_rejects_identity_change
 
 
 @pytest.mark.asyncio
-async def test_sqlite_runtime_turn_repository_enforces_transitions_and_active_turn(
-    database: SqliteDatabase,
-) -> None:
-    await save_runtime_graph(database)
-
-    async with database.transaction() as transaction:
-        starting = RuntimeTurn(
-            turn_id="turn-1",
-            session_id="runtime-1",
-            state=RuntimeTurnState.STARTING,
-            started_at_ms=110,
-            client_user_message_id="message-1",
-        )
-        await transaction.save_runtime_turn(starting)
-        assert await transaction.get_runtime_turn("turn-1") == starting
-
-        second_starting = replace(starting, turn_id="turn-2")
-        with pytest.raises(ValueError, match="active turn"):
-            await transaction.save_runtime_turn(second_starting)
-
-        running = starting.transition_to(
-            RuntimeTurnState.RUNNING,
-            at_ms=120,
-            latest_event_name="runtime.turn.started",
-        )
-        await transaction.save_runtime_turn(running)
-        unknown = running.transition_to(
-            RuntimeTurnState.UNKNOWN,
-            at_ms=130,
-            error_kind="provider_unknown",
-            error_message="stream ended unexpectedly",
-        )
-        await transaction.save_runtime_turn(unknown)
-        reconciling = unknown.transition_to(
-            RuntimeTurnState.RECONCILING,
-            at_ms=140,
-        )
-        await transaction.save_runtime_turn(reconciling)
-        completed = reconciling.transition_to(
-            RuntimeTurnState.COMPLETED,
-            at_ms=150,
-            latest_event_name="runtime.turn.completed",
-        )
-        await transaction.save_runtime_turn(completed)
-        assert await transaction.get_runtime_turn("turn-1") == completed
-
-        next_turn = replace(starting, turn_id="turn-2", started_at_ms=160)
-        await transaction.save_runtime_turn(next_turn)
-
-        invalid_initial = replace(
-            starting,
-            turn_id="turn-invalid",
-            state=RuntimeTurnState.RUNNING,
-        )
-        with pytest.raises(ValueError, match="start in starting"):
-            await transaction.save_runtime_turn(invalid_initial)
-
-        with pytest.raises(StateTransitionError):
-            completed.transition_to(RuntimeTurnState.RUNNING, at_ms=160)
-
-
-async def save_starting_turn(database: SqliteDatabase, turn_id: str) -> RuntimeTurn:
-    turn = RuntimeTurn(
-        turn_id=turn_id,
-        session_id="runtime-1",
-        state=RuntimeTurnState.STARTING,
-        started_at_ms=200,
-    )
-    async with database.transaction() as transaction:
-        await transaction.save_runtime_turn(turn)
-    return turn
-
-
-@pytest.mark.asyncio
-async def test_sqlite_active_turn_invariant_serializes_two_connections() -> None:
-    first_database = SqliteDatabase()
-    second_database = SqliteDatabase()
-    await first_database.start(timeout=2)
-    await first_database.initialize(node_id="node-1", workspace_id="workspace-1")
-    await save_runtime_graph(first_database)
-    await second_database.start(timeout=2)
-    await second_database.initialize(node_id="node-1", workspace_id="workspace-1")
-
-    async def attempt(database: SqliteDatabase, turn_id: str) -> BaseException | None:
-        try:
-            await save_starting_turn(database, turn_id)
-        except BaseException as error:  # noqa: BLE001
-            return error
-        return None
-
-    try:
-        results = await asyncio.gather(
-            attempt(first_database, "turn-a"),
-            attempt(second_database, "turn-b"),
-        )
-        assert sum(result is None for result in results) == 1
-        assert (
-            sum(
-                isinstance(result, ValueError) and "active turn" in str(result)
-                for result in results
-            )
-            == 1
-        )
-    finally:
-        await second_database.stop(timeout=2)
-        await first_database.stop(timeout=2)
-
-
-@pytest.mark.asyncio
 async def test_sqlite_runtime_event_repository_is_append_only_and_validates_references(
     database: SqliteDatabase,
 ) -> None:
     await save_runtime_graph(database)
     async with database.transaction() as transaction:
         inbound = await transaction.append_inbound_message(make_inbound_message())
-        turn = RuntimeTurn(
+        attempt = RuntimeAttempt(
             turn_id="turn-event",
             session_id="runtime-1",
-            state=RuntimeTurnState.STARTING,
+            client_user_message_id="provider-local-message",
             started_at_ms=110,
         )
-        await transaction.save_runtime_turn(turn)
+        await transaction.save_runtime_attempt(attempt)
 
         started = RuntimeEvent(
             event_seq=999,

@@ -16,11 +16,10 @@ from ...core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
-    RuntimeTurn,
-    RuntimeTurnState,
 )
 
 
@@ -90,23 +89,14 @@ def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
     )
 
 
-def _runtime_turn_from_row(row: aiosqlite.Row) -> RuntimeTurn:
-    return RuntimeTurn(
+def _runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
+    return RuntimeAttempt(
         turn_id=_required_text(row["turn_id"], "turn_id"),
         session_id=_required_text(row["session_id"], "session_id"),
-        state=RuntimeTurnState(_required_text(row["state"], "runtime_turn.state")),
-        started_at_ms=_required_non_negative_int(row["started_at_ms"], "started_at_ms"),
-        provider_turn_id=_optional_text(row["provider_turn_id"], "provider_turn_id"),
-        client_user_message_id=_optional_text(
+        client_user_message_id=_required_text(
             row["client_user_message_id"], "client_user_message_id"
         ),
-        completed_at_ms=_optional_non_negative_int(
-            row["completed_at_ms"], "completed_at_ms"
-        ),
-        latest_event_name=_optional_text(row["last_event_name"], "last_event_name"),
-        error_kind=_optional_text(row["error_kind"], "error_kind"),
-        error_message=_optional_text(row["error_message"], "error_message"),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+        started_at_ms=_required_non_negative_int(row["started_at_ms"], "started_at_ms"),
     )
 
 
@@ -288,83 +278,6 @@ def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
 def _validate_inbound_message_input(message: InboundMessage) -> None:
     if not isinstance(message, InboundMessage):
         raise TypeError("message must be an InboundMessage")
-
-
-def _validate_runtime_turn_input(turn: RuntimeTurn) -> None:
-    if not isinstance(turn, RuntimeTurn):
-        raise TypeError("turn must be a RuntimeTurn")
-    if not isinstance(turn.state, RuntimeTurnState):
-        raise TypeError("runtime turn state is invalid")
-    for value, field_name in (
-        (turn.latest_event_name, "latest_event_name"),
-        (turn.error_kind, "error_kind"),
-        (turn.error_message, "error_message"),
-    ):
-        _validate_optional_input_text(value, field_name)
-    terminal_states = {
-        RuntimeTurnState.COMPLETED,
-        RuntimeTurnState.FAILED,
-        RuntimeTurnState.CANCELLED,
-    }
-    if turn.state in terminal_states:
-        if turn.completed_at_ms is None:
-            raise ValueError("terminal runtime turn requires completed_at_ms")
-        if turn.completed_at_ms < turn.started_at_ms:
-            raise ValueError("runtime turn completion cannot precede start")
-    elif turn.completed_at_ms is not None:
-        raise ValueError("non-terminal runtime turn cannot have completed_at_ms")
-
-
-def _validate_runtime_turn_update(
-    existing: RuntimeTurn,
-    incoming: RuntimeTurn,
-) -> RuntimeTurn:
-    for existing_value, incoming_value, field_name in (
-        (
-            existing.provider_turn_id,
-            incoming.provider_turn_id,
-            "provider_turn_id",
-        ),
-        (
-            existing.client_user_message_id,
-            incoming.client_user_message_id,
-            "client_user_message_id",
-        ),
-    ):
-        if (
-            existing_value is not None
-            and incoming_value is not None
-            and existing_value != incoming_value
-        ):
-            raise ValueError(f"runtime turn {field_name} cannot change")
-
-    if existing.state is incoming.state:
-        if existing.completed_at_ms != incoming.completed_at_ms:
-            raise ValueError("runtime turn completion time cannot change")
-        transitioned = existing
-    else:
-        at_ms = (
-            incoming.completed_at_ms
-            if incoming.completed_at_ms is not None
-            else incoming.started_at_ms
-        )
-        transitioned = existing.transition_to(
-            incoming.state,
-            at_ms=at_ms,
-            error_kind=incoming.error_kind,
-            error_message=incoming.error_message,
-            latest_event_name=incoming.latest_event_name,
-        )
-    return replace(
-        transitioned,
-        provider_turn_id=incoming.provider_turn_id or existing.provider_turn_id,
-        client_user_message_id=incoming.client_user_message_id
-        or existing.client_user_message_id,
-        latest_event_name=incoming.latest_event_name or transitioned.latest_event_name,
-        error_kind=incoming.error_kind or transitioned.error_kind,
-        error_message=incoming.error_message or transitioned.error_message,
-        metadata=incoming.metadata,
-    )
 
 
 def _validate_outbound_message_input(message: OutboundMessage) -> None:
