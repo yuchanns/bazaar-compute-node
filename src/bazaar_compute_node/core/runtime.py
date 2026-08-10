@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol
 
 from .approval import IApprovalHandler
@@ -9,6 +10,13 @@ from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
 from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
 from .outcomes import ProviderCallResult
+
+
+class RuntimeSandboxMode(StrEnum):
+    """Provider-neutral filesystem sandbox modes for runtime turns."""
+
+    WORKSPACE_WRITE = "workspace-write"
+    DANGER_FULL_ACCESS = "danger-full-access"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +27,8 @@ class RuntimeCommandContext:
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]]
     node_id: str = "bcn-node"
     runtime_options: Mapping[str, str] = field(default_factory=dict)
+    sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
+    network_access: bool = True
     client_info: ClientInfo = CLIENT_INFO
 
 

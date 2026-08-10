@@ -15,7 +15,7 @@ from ..core.models import RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
-from ..core.runtime import IRuntime, RuntimeCommandContext
+from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
 from ..core.storage import IStorage, NodeIdentity
 from .attachments import AttachmentMaterializer
 from .command import (
@@ -62,6 +62,8 @@ class NodeApplication:
         node_id: str = "bcn-node",
         workspace_id: str | None = None,
         runtime_options: Mapping[str, str] | None = None,
+        runtime_sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE,
+        runtime_network_access: bool = True,
         channel_options: Mapping[str, object] | None = None,
         runtime_environment_include: Sequence[str] = (),
         timeout_budget: TimeoutBudget | None = None,
@@ -100,6 +102,8 @@ class NodeApplication:
             environment_for_session=self._runtime_environment,
             node_id=node_id,
             runtime_options=self.runtime_options,
+            sandbox_mode=runtime_sandbox_mode,
+            network_access=runtime_network_access,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
         self.orchestrator = SessionOrchestrator(

@@ -17,7 +17,12 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.paths import resolve_workspace_dir
-from ...core.runtime import IRuntime, IRuntimeTurnStream, RuntimeCommandContext
+from ...core.runtime import (
+    IRuntime,
+    IRuntimeTurnStream,
+    RuntimeCommandContext,
+    RuntimeSandboxMode,
+)
 from .client import (
     CodexAppServerClient,
     parse_thread_response,
@@ -221,12 +226,26 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         initial_error_kind = "provider_unknown"
         initial_error_state = RuntimeEventState.UNKNOWN
         try:
+            if self._context.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE:
+                sandbox_policy: dict[str, object] = {
+                    "type": "workspaceWrite",
+                    "writableRoots": [str(connection.workspace)],
+                    "networkAccess": self._context.network_access,
+                }
+            elif self._context.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS:
+                sandbox_policy = {"type": "dangerFullAccess"}
+            else:
+                raise AssertionError(
+                    f"unsupported runtime sandbox mode: {self._context.sandbox_mode}"
+                )
             response = await connection.client.start_turn(
                 connection.provider_thread_id,
                 input_text,
                 client_user_message_id=turn.client_user_message_id,
                 model=self._model,
                 effort=self._effort,
+                cwd=connection.workspace,
+                sandbox_policy=sandbox_policy,
                 timeout=timeout,
             )
             provider_turn = parse_turn_response(response)

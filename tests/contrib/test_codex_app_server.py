@@ -9,9 +9,16 @@ from time import time_ns
 from uuid import uuid7
 
 import pytest
-from bcn_test_support import TestChannel
-from test_orchestration import run_natural_conversation_contract
+from bcn_test_support import RecordingAudit, TestChannel
+from test_orchestration import (
+    _wait_for_inbound_messages,
+    _wait_for_runtime_turn,
+    make_message,
+    run_natural_conversation_contract,
+)
 
+from bazaar_compute_node.app.application import NodeApplication
+from bazaar_compute_node.app.registry import AdapterFactories
 from bazaar_compute_node.contrib.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerRuntime,
@@ -42,8 +49,8 @@ from bazaar_compute_node.core.models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
-from bazaar_compute_node.core.paths import resolve_workspace_dir
-from bazaar_compute_node.core.runtime import RuntimeCommandContext
+from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeSandboxMode
 
 TEST_MODEL = "gpt-5.6-luna"
 TEST_EFFORT = "max"
@@ -112,10 +119,22 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         "natural follow-up",
         model=TEST_MODEL,
         effort=TEST_EFFORT,
+        cwd=Path("/workspace"),
+        sandbox_policy={
+            "type": "workspaceWrite",
+            "writableRoots": ["/workspace"],
+            "networkAccess": True,
+        },
     ) == {
         "threadId": "thread-1",
         "model": TEST_MODEL,
         "effort": TEST_EFFORT,
+        "cwd": str(Path("/workspace")),
+        "sandboxPolicy": {
+            "type": "workspaceWrite",
+            "writableRoots": ["/workspace"],
+            "networkAccess": True,
+        },
         "input": [{"type": "text", "text": "natural follow-up"}],
     }
     assert build_turn_interrupt_params("thread-1", "turn-1") == {
@@ -187,6 +206,8 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
             run_command=run_command,
             environment_for_session=environment,
             runtime_options={"model": TEST_MODEL, "effort": TEST_EFFORT},
+            sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
+            network_access=False,
         )
     )
     defaulted = create_runtime(
@@ -198,6 +219,8 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     assert isinstance(configured, CodexAppServerRuntime)
     assert configured._model == TEST_MODEL
     assert configured._effort == TEST_EFFORT
+    assert configured._context.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
+    assert configured._context.network_access is False
     assert configured.environment_variable_names() == (
         "CODEX_HOME",
         "CODEX_SQLITE_HOME",
@@ -207,6 +230,8 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     assert isinstance(defaulted, CodexAppServerRuntime)
     assert defaulted._model is None
     assert defaulted._effort is None
+    assert defaulted._context.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
+    assert defaulted._context.network_access is True
 
 
 @pytest.mark.asyncio
@@ -403,6 +428,70 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
         assert not supervisor.is_running
     finally:
         await database.stop(timeout=10)
+
+
+@pytest.mark.real_home
+@pytest.mark.asyncio
+async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox() -> (
+    None
+):
+    codex = shutil.which("codex")
+    if codex is None:
+        pytest.fail("codex CLI is required for the App Server integration test")
+
+    storage = SqliteDatabase()
+    await storage.start(timeout=10)
+    identity = await storage.initialize()
+    workspace = resolve_workspace_dir(identity.workspace_id)
+    filename = f"sandbox-acceptance-{uuid7()}.md"
+    target = workspace / filename
+    channel = TestChannel()
+    audit = RecordingAudit()
+    node = NodeApplication(
+        factories=AdapterFactories(
+            channel=lambda _context: channel,
+            runtime=lambda context: CodexAppServerRuntime(
+                context,
+                executable=codex,
+                model=TEST_MODEL,
+                effort=TEST_EFFORT,
+            ),
+            storage=lambda: storage,
+            audit=lambda: audit,
+        ),
+        endpoint_path=resolve_data_dir() / f"sandbox-acceptance-{uuid7()}.sock",
+        node_id=identity.node_id,
+        workspace_id=identity.workspace_id,
+    )
+    session_id = f"sandbox-acceptance-{uuid7()}"
+    message = make_message(
+        session_id=session_id,
+        body=(
+            f"We are preparing this project workspace for a new contributor. Please add "
+            f"a {filename} file containing exactly this sentence: Workspace access is "
+            "ready. Then confirm briefly that the project note is in place."
+        ),
+    )
+    try:
+        await node.start()
+        await channel.inject(message)
+        persisted = await _wait_for_inbound_messages(storage, session_id, 1)
+        turn = await _wait_for_runtime_turn(
+            storage,
+            f"turn-{persisted[0].message_id}",
+            frozenset({RuntimeTurnState.COMPLETED}),
+        )
+        assert turn.state is RuntimeTurnState.COMPLETED
+        assert (
+            target.read_text(encoding="utf-8").strip() == "Workspace access is ready."
+        )
+        assert channel.sent_messages
+    finally:
+        await node.stop()
+        if target.exists():
+            target.unlink()
+        if storage.is_started:
+            await storage.stop(timeout=10)
 
 
 @pytest.mark.real_home

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.paths import resolve_data_dir
+from ..core.runtime import RuntimeSandboxMode
 
 CONFIG_FILENAME = "config.toml"
 
@@ -20,6 +21,8 @@ class NodeConfiguration:
     endpoint: str | None = None
     model: str | None = None
     effort: str | None = None
+    sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
+    network_access: bool = True
     runtime_env_include: tuple[str, ...] = ()
     wecom_bot_id: str | None = None
     wecom_websocket_url: str | None = None
@@ -58,6 +61,19 @@ def load_node_configuration() -> NodeConfiguration:
     wecom = channel.get("wecom", {})
     if not isinstance(wecom, dict):
         raise ConfigurationError("[channel.wecom] must be a TOML table")
+    sandbox_mode = runtime.get("sandbox_mode", RuntimeSandboxMode.WORKSPACE_WRITE.value)
+    if not isinstance(sandbox_mode, str):
+        raise ConfigurationError("runtime.sandbox_mode must be text")
+    try:
+        parsed_sandbox_mode = RuntimeSandboxMode(sandbox_mode)
+    except ValueError as error:
+        allowed = ", ".join(mode.value for mode in RuntimeSandboxMode)
+        raise ConfigurationError(
+            f"runtime.sandbox_mode must be one of: {allowed}"
+        ) from error
+    network_access = runtime.get("network_access", True)
+    if not isinstance(network_access, bool):
+        raise ConfigurationError("runtime.network_access must be a boolean")
     return NodeConfiguration(
         channel=_optional_text(node.get("channel"), "node.channel"),
         runtime=_optional_text(node.get("runtime"), "node.runtime"),
@@ -66,6 +82,8 @@ def load_node_configuration() -> NodeConfiguration:
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         model=_optional_text(runtime.get("model"), "runtime.model"),
         effort=_optional_text(runtime.get("effort"), "runtime.effort"),
+        sandbox_mode=parsed_sandbox_mode,
+        network_access=network_access,
         runtime_env_include=_text_list(
             runtime_env.get("include", []), "runtime.env.include"
         ),

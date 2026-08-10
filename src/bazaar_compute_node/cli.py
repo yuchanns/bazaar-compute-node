@@ -14,6 +14,7 @@ from .app.config import ConfigurationError, load_node_configuration
 from .app.registry import AdapterFactories, AdapterRegistry, ProviderLoadError
 from .app.transport import LocalCommandClient, local_endpoint_for_path
 from .core.paths import resolve_data_dir
+from .core.runtime import RuntimeSandboxMode
 
 DEFAULT_AUDIT = "logging"
 DEFAULT_STORAGE = "sqlite"
@@ -50,6 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--effort",
         type=_non_empty_option,
         help="Optional reasoning effort passed to the selected runtime.",
+    )
+    parser.add_argument(
+        "--sandbox-mode",
+        type=RuntimeSandboxMode,
+        choices=tuple(RuntimeSandboxMode),
+        help="Filesystem sandbox mode applied to runtime turns.",
+    )
+    parser.add_argument(
+        "--network-access",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow runtime commands to access the network.",
     )
     parser.add_argument("--storage")
     parser.add_argument("--audit")
@@ -125,6 +138,8 @@ def _apply_runtime_configuration(
         "audit",
         "model",
         "effort",
+        "sandbox_mode",
+        "network_access",
     ):
         if getattr(args, name) is None:
             setattr(args, name, getattr(configuration, name))
@@ -149,6 +164,8 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         factories=factories,
         endpoint_path=_endpoint_path(args, data_dir),
         runtime_options=_runtime_options(args),
+        runtime_sandbox_mode=args.sandbox_mode,
+        runtime_network_access=args.network_access,
         channel_options=args.channel_options if args.channel == "wecom" else {},
         runtime_environment_include=args.runtime_env_include,
     )
@@ -181,10 +198,11 @@ def _daemon_command(args: argparse.Namespace, data_dir: Path) -> list[str]:
         "--endpoint",
         str(_endpoint_path(args, data_dir)),
     ]
-    for name in ("model", "effort"):
+    for name in ("model", "effort", "sandbox_mode"):
         value = getattr(args, name)
         if value is not None:
-            command.extend((f"--{name}", value))
+            command.extend((f"--{name.replace('_', '-')}", value))
+    command.append("--network-access" if args.network_access else "--no-network-access")
     return command
 
 

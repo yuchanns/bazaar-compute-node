@@ -1553,6 +1553,20 @@ Markdown。
 
 #### Task 5C：session orchestration 与平台 delivery rules
 
+- Runtime sandbox 是 provider-neutral 的 node 配置，而不是 Runtime adapter 的隐式默认值。
+  `runtime.sandbox_mode` 默认 `workspace-write`，只允许 `workspace-write` 与
+  `danger-full-access`；`runtime.network_access` 默认 `true`。core/CLI/config 无条件把这组
+  通用值交给 Runtime adapter，不能根据某个 provider 的 schema 丢弃设置；adapter 在每个 turn
+  按自己的协议显式转换，不能依赖 provider thread 的历史默认值。
+  Codex 将 `workspace-write` 转换为 `workspaceWrite`，并且 writable roots 只能是当前
+  RuntimeSession 对应的 bcn workspace；将 `danger-full-access` 转换为
+  `dangerFullAccess`。Codex 当前协议的 `dangerFullAccess` variant 没有 `networkAccess` 字段，
+  因此 adapter 虽然收到通用 network setting，但只能在支持该字段的 Codex policy 中编码；
+  其他 Runtime 是否以及如何映射由各自协议决定。approval policy 与 sandbox policy 是两个
+  独立维度，Channel 自动 approval 不构成 filesystem 权限提升。
+  bcn 只配置 Runtime provider 的 sandbox policy；daemon 外层的 OS 用户权限、文件 mode、
+  container/systemd sandbox 等仍是独立的 operator boundary。`danger-full-access` 只移除 Codex
+  内层 sandbox，不得描述为提升或绕过 daemon 进程本身没有的宿主权限。
 - `AgentState` 是唯一的 current lifecycle state machine，并且只存在于 daemon
   内存。SQLite 不保存 bcn/channel/runtime 的 current lifecycle state；daemon 启动时
   根据当下可确定事实重建 Agent 初始态，不恢复上一进程的状态。
@@ -1638,6 +1652,10 @@ Phase 验收分三层：
    spawn environment，WeCom Secret 和所有禁止 credential 不在 runtime 子进程、
    SQLite、wrapper、日志或 health 中，且
    provider receipt、outbound audit 与本地 delivery state 可关联。
+   默认 `workspace-write` 必须通过自然业务请求让真实 Codex 在当前 bcn workspace 创建文件并
+   读取确认；config 覆盖与 Codex wire contract 同时验证非法 mode fail-closed、
+   `workspaceWrite` 的唯一 writable root 与 network 映射，以及 `dangerFullAccess` 映射。
+   自动测试不通过写 workspace 外文件来验证 `danger-full-access`。
 
 Phase 5 不以旧群机器人 webhook、自建应用 XML callback、新版 URL callback、SDK 内部 event
 emitter 单元测试或人工构造 provider frame 替代真实 Bot 验收。

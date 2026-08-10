@@ -4,12 +4,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
 from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
     build_parser,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir
+from bazaar_compute_node.core.runtime import RuntimeSandboxMode
 
 
 def test_help_shows_the_resolved_data_dir() -> None:
@@ -27,6 +31,8 @@ def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
+    assert args.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
+    assert args.network_access is True
 
 
 def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
@@ -42,17 +48,23 @@ def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) 
             "gpt-5.6-luna",
             "--effort",
             "max",
+            "--sandbox-mode",
+            "danger-full-access",
+            "--no-network-access",
         ]
     )
     _apply_runtime_configuration(args, parser)
 
     command = _daemon_command(args, tmp_path)
 
-    assert command[-4:] == [
+    assert command[-7:] == [
         "--model",
         "gpt-5.6-luna",
         "--effort",
         "max",
+        "--sandbox-mode",
+        "danger-full-access",
+        "--no-network-access",
     ]
 
 
@@ -63,7 +75,8 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
         '[node]\nchannel = "config-channel"\nruntime = "config-runtime"\n'
         'storage = "config-storage"\naudit = "config-audit"\n'
         'endpoint = "config.sock"\n\n'
-        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n\n'
+        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n'
+        'sandbox_mode = "danger-full-access"\nnetwork_access = false\n\n'
         '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
         '[channel.wecom]\nbot_id = "test-bot"\n'
         'websocket_url = "wss://wecom.example.test"\n',
@@ -79,6 +92,8 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     assert config_args.endpoint == Path("config.sock")
     assert config_args.model == "config-model"
     assert config_args.effort == "config-effort"
+    assert config_args.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
+    assert config_args.network_access is False
     assert config_args.runtime_env_include == ("CUSTOM_CA",)
     assert config_args.channel_options == {
         "bot_id": "test-bot",
@@ -113,6 +128,25 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     assert flag_args.storage == "flag-storage"
     assert flag_args.audit == "flag-audit"
     assert flag_args.endpoint == Path("flag.sock")
+
+
+def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir(parents=True)
+    config_path = data_dir / "config.toml"
+    config_path.write_text(
+        '[runtime]\nsandbox_mode = "host-unrestricted"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="runtime.sandbox_mode"):
+        load_node_configuration()
+
+    config_path.write_text(
+        '[runtime]\nnetwork_access = "yes"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="runtime.network_access"):
+        load_node_configuration()
 
 
 def test_help_works_in_a_real_process() -> None:

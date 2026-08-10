@@ -112,6 +112,7 @@ def build_turn_start_params(
     effort: str | None = None,
     approval_policy: str | None = None,
     cwd: Path | None = None,
+    sandbox_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Build a text turn request with optional model and reasoning effort."""
 
@@ -135,6 +136,10 @@ def build_turn_start_params(
         params["approvalPolicy"] = approval_policy
     if cwd is not None:
         params["cwd"] = _path_text(cwd, "cwd")
+    if sandbox_policy is not None:
+        if not sandbox_policy:
+            raise ValueError("sandbox_policy must not be empty")
+        params["sandboxPolicy"] = dict(sandbox_policy)
     return params
 
 
@@ -230,6 +235,7 @@ class CodexAppServerClient:
         effort: str | None = None,
         approval_policy: str | None = None,
         cwd: Path | None = None,
+        sandbox_policy: Mapping[str, object] | None = None,
         timeout: float,
     ) -> JsonlMessage:
         return await self.supervisor.request(
@@ -242,6 +248,7 @@ class CodexAppServerClient:
                 effort=effort,
                 approval_policy=approval_policy,
                 cwd=cwd,
+                sandbox_policy=sandbox_policy,
             ),
             timeout=timeout,
         )
