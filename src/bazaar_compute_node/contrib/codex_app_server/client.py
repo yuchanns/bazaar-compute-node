@@ -48,7 +48,8 @@ def build_initialize_params(
         "clientInfo": {
             "name": client_info.name,
             "version": client_info.version,
-        }
+        },
+        "capabilities": {"experimentalApi": True},
     }
 
 
@@ -91,7 +92,10 @@ def build_thread_resume_params(
     """Build provider-local parameters for a persisted thread resume."""
 
     _validate_non_empty_string("thread_id", thread_id)
-    params: dict[str, object] = {"threadId": thread_id}
+    params: dict[str, object] = {
+        "threadId": thread_id,
+        "excludeTurns": True,
+    }
     if model is not None:
         _validate_non_empty_string("model", model)
         params["model"] = model

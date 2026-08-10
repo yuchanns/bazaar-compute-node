@@ -99,12 +99,16 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         "clientInfo": {
             "name": "bcn",
             "version": "0.1.0",
-        }
+        },
+        "capabilities": {"experimentalApi": True},
     }
     assert build_thread_start_params("instructions") == {
         "developerInstructions": "instructions",
     }
-    assert build_thread_resume_params("thread-1") == {"threadId": "thread-1"}
+    assert build_thread_resume_params("thread-1") == {
+        "threadId": "thread-1",
+        "excludeTurns": True,
+    }
     assert build_turn_start_params(
         "thread-1",
         "natural follow-up",
