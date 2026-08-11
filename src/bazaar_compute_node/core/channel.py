@@ -12,6 +12,7 @@ from .models import (
     InboundAttachment,
     InboundMessage,
     OutboundMessage,
+    StreamEvent,
 )
 from .outcomes import ProviderCallResult
 
@@ -107,6 +108,10 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
 
     def receive(self) -> AsyncIterator[InboundMessage]:
         """Return a cancellable stream of normalized inbound messages."""
+        ...
+
+    def offer_stream_event(self, event: StreamEvent) -> None:
+        """Offer one transient event without waiting for channel delivery."""
         ...
 
     async def send(

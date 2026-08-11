@@ -45,9 +45,12 @@ from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
+    RuntimeEvent,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    StreamEvent,
+    StreamEventKind,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
@@ -78,6 +81,80 @@ class _NoopApprovalHandler(IApprovalHandler):
         timeout: float,
     ) -> ApprovalResult:
         raise AssertionError(f"unexpected approval request: {request.request_id}")
+
+
+def test_codex_turn_stream_normalizes_transient_updates() -> None:
+    stream = CodexTurnEventStream(
+        JsonlProcessSupervisor(JsonlProcessSpec(executable="unused")),
+        node_id="node-1",
+        runtime="codex",
+        session_id="bcn-1",
+        runtime_session_id="runtime-1",
+        turn_id="turn-1",
+        provider_thread_id="thread-1",
+        provider_turn_id="provider-turn-1",
+    )
+
+    reasoning = stream._map_message(
+        {
+            "method": "item/reasoning/summaryTextDelta",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "itemId": "reasoning-1",
+                "delta": "",
+                "summaryIndex": 2,
+            },
+        }
+    )
+    assert isinstance(reasoning, StreamEvent)
+    assert reasoning == StreamEvent(
+        kind=StreamEventKind.REASONING_SUMMARY_DELTA,
+        created_at_ms=reasoning.created_at_ms,
+        session_id="bcn-1",
+        stream_id="reasoning-1",
+        content="",
+    )
+
+    summary_boundary = stream._map_message(
+        {
+            "method": "item/reasoning/summaryPartAdded",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "itemId": "reasoning-1",
+            },
+        }
+    )
+    assert summary_boundary is None
+
+    lifecycle = stream._map_message(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "item": {"id": "reasoning-1", "type": "reasoning"},
+            },
+        }
+    )
+    assert isinstance(lifecycle, RuntimeEvent)
+    assert lifecycle.metadata["provider_method"] == "item/completed"
+
+    future_progress = stream._map_message(
+        {
+            "method": "item/future/progress",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "itemId": "future-1",
+                "delta": "working",
+            },
+        }
+    )
+    assert isinstance(future_progress, StreamEvent)
+    assert future_progress.kind is StreamEventKind.ITEM_PROGRESS
+    assert future_progress.content == "working"
 
 
 def test_build_thread_start_params_maps_rendered_instructions() -> None:
@@ -474,9 +551,14 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             async with asyncio.timeout(120):
                 async for event in stream:
                     events.append(event)
-            assert events[0].state.value == "started"
-            assert events[-1].state.value == "completed"
-            assert events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
+            durable_events = [
+                event for event in events if isinstance(event, RuntimeEvent)
+            ]
+            assert durable_events[0].state.value == "started"
+            assert durable_events[-1].state.value == "completed"
+            assert (
+                durable_events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
+            )
         finally:
             await supervisor.stop(timeout=10)
 
@@ -594,20 +676,23 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         async with asyncio.timeout(120):
             async for event in stream:
                 events.append(event)
-        assert events[-1].state.value == "completed"
+        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
+        assert durable_events[-1].state.value == "completed"
         provider_turn_ids = {
             str(event.metadata["provider_turn_id"])
-            for event in events
+            for event in durable_events
             if event.metadata.get("provider_turn_id") is not None
         }
         assert len(provider_turn_ids) == 1
-        assert all(event.bcn_session_id == session.bcn_session_id for event in events)
+        assert all(
+            event.bcn_session_id == session.bcn_session_id for event in durable_events
+        )
         provider_thread_id = session.provider_thread_id
         assert provider_thread_id is not None
         return (
             provider_thread_id,
             provider_turn_ids.pop(),
-            tuple(event.event_name for event in events),
+            tuple(event.event_name for event in durable_events),
         )
 
     try:

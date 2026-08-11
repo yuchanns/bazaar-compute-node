@@ -528,6 +528,29 @@ INBOUND_PROVIDER_IDENTITY_MIGRATION = Migration(
     ),
 )
 
+TRANSIENT_STREAM_EVENT_MIGRATION = Migration(
+    version=8,
+    name="transient_stream_events",
+    statements=(
+        """
+        DELETE FROM runtime_events
+        WHERE event_name = 'codex.turn.progress'
+          AND (
+              json_extract(metadata_json, '$.provider_method') = 'turn/progress'
+              OR (
+                  json_extract(metadata_json, '$.provider_method') LIKE 'item/%'
+                  AND json_extract(metadata_json, '$.provider_method') NOT IN (
+                      'item/started',
+                      'item/completed',
+                      'item/autoApprovalReview/started',
+                      'item/autoApprovalReview/completed'
+                  )
+              )
+          )
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
@@ -536,6 +559,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     INBOUND_MESSAGE_REFERENCE_MIGRATION,
     INBOUND_MESSAGE_REFERENCE_INTEGRITY_MIGRATION,
     INBOUND_PROVIDER_IDENTITY_MIGRATION,
+    TRANSIENT_STREAM_EVENT_MIGRATION,
 )
 
 

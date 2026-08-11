@@ -8,7 +8,7 @@ from typing import Protocol
 from .approval import IApprovalHandler
 from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
-from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
+from .models import RuntimeEvent, RuntimeSession, RuntimeTurn, StreamEvent
 from .outcomes import ProviderCallResult
 
 
@@ -21,6 +21,9 @@ class RuntimeSandboxMode(StrEnum):
 
     WORKSPACE_WRITE = "workspace-write"
     DANGER_FULL_ACCESS = "danger-full-access"
+
+
+type RuntimeStreamItem = RuntimeEvent | StreamEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,12 +43,12 @@ class RuntimeCommandContext:
 class IRuntimeTurnStream(Protocol):
     """Cancellable stream of provider-neutral runtime events."""
 
-    def __aiter__(self) -> AsyncIterator[RuntimeEvent]:
-        """Iterate events without exposing provider wire types."""
+    def __aiter__(self) -> AsyncIterator[RuntimeStreamItem]:
+        """Iterate stream items without exposing provider wire types."""
         ...
 
-    async def __anext__(self) -> RuntimeEvent:
-        """Return the next event or raise StopAsyncIteration."""
+    async def __anext__(self) -> RuntimeStreamItem:
+        """Return the next stream item or raise StopAsyncIteration."""
         ...
 
     async def aclose(self) -> None:

@@ -16,6 +16,8 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    StreamEvent,
+    StreamEventKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
@@ -43,6 +45,8 @@ class TestTurnPlan:
     block_until_release: bool = False
     raise_error: str | None = None
     pre_start_unavailable: bool = False
+    update_count: int = 0
+    stream_session_id: str | None = None
 
 
 class TestRuntime(IRuntime):
@@ -79,6 +83,7 @@ class TestRuntime(IRuntime):
         self._resume_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._event_seq = 0
+        self._update_seq = 0
 
     async def start(self, *, timeout: float) -> None:
         self.started = True
@@ -214,6 +219,21 @@ class TestRuntime(IRuntime):
             error_message="test provider failure" if error_kind else None,
         )
 
+    def _next_update(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        session_id: str | None,
+    ) -> StreamEvent:
+        self._update_seq += 1
+        return StreamEvent(
+            kind=StreamEventKind.REASONING_SUMMARY_DELTA,
+            created_at_ms=time_ns() // 1_000_000,
+            session_id=session_id or session.bcn_session_id,
+            stream_id=f"reasoning-{turn.turn_id}",
+            content=f"delta-{self._update_seq}",
+        )
+
 
 class _TestTurnStream(IRuntimeTurnStream):
     def __init__(
@@ -235,6 +255,7 @@ class _TestTurnStream(IRuntimeTurnStream):
         self.timeout = timeout
         self.plan = plan
         self.index = 0
+        self.update_index = 0
         self.approval_done = False
         self.command_done = False
         self.error_raised = False
@@ -244,7 +265,7 @@ class _TestTurnStream(IRuntimeTurnStream):
     def __aiter__(self) -> _TestTurnStream:
         return self
 
-    async def __anext__(self) -> RuntimeEvent:
+    async def __anext__(self) -> RuntimeEvent | StreamEvent:
         if self.closed:
             raise StopAsyncIteration
         if not self.approval_done and self.plan.approval_request is not None:
@@ -272,6 +293,13 @@ class _TestTurnStream(IRuntimeTurnStream):
         if self.plan.raise_error is not None and not self.error_raised:
             self.error_raised = True
             raise RuntimeError(self.plan.raise_error)
+        if self.index == 1 and self.update_index < self.plan.update_count:
+            self.update_index += 1
+            return self.runtime._next_update(
+                self.session,
+                self.turn,
+                self.plan.stream_session_id,
+            )
         if self.index >= len(self.plan.states):
             if self.plan.block_until_release and not self.released.is_set():
                 await self.released.wait()

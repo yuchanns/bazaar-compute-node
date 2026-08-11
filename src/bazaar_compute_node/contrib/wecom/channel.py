@@ -29,6 +29,7 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
+    StreamEvent,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .markdown import split_markdown
@@ -173,6 +174,9 @@ class WeComChannel(IChannel):
             if not isinstance(item, InboundMessage):
                 raise TypeError("WeCom inbound queue contained an invalid message")
             yield item
+
+    def offer_stream_event(self, event: StreamEvent) -> None:
+        return None
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float

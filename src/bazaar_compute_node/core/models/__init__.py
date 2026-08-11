@@ -11,6 +11,7 @@ from .entities import (
     RuntimeEvent,
     RuntimeSession,
     RuntimeTurn,
+    StreamEvent,
 )
 from .states import (
     AGENT_STATE_TRANSITIONS,
@@ -26,6 +27,7 @@ from .states import (
     RuntimeEventState,
     RuntimeTurnState,
     StateTransitionError,
+    StreamEventKind,
     reduce_agent_tick,
 )
 
@@ -55,5 +57,7 @@ __all__ = [
     "RuntimeTurn",
     "RuntimeTurnState",
     "StateTransitionError",
+    "StreamEvent",
+    "StreamEventKind",
     "reduce_agent_tick",
 ]

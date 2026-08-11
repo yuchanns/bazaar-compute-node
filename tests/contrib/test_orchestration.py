@@ -424,6 +424,81 @@ async def test_channel_storage_runtime_turn_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_events_bypass_durable_storage_and_audit() -> None:
+    orchestrator, channel, runtime, storage, audit = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(update_count=20_000))
+    try:
+        await channel.inject(make_message())
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
+            )
+        )
+
+        assert len(channel.stream_events) == 20_000
+        assert {event.session_id for event in channel.stream_events} == {"bcn-1"}
+        assert channel.stream_events[0].content == "delta-1"
+        assert channel.stream_events[-1].content == "delta-20000"
+        assert [event.event_name for event in storage.runtime_events] == [
+            "runtime.turn.started",
+            "runtime.turn.completed",
+        ]
+        assert not any(
+            event.event_name == "reasoning-summary-delta" for event in audit.events
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
+    orchestrator, channel, runtime, _storage, audit = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(update_count=1))
+    channel.stream_event_error = RuntimeError("stream consumer unavailable")
+    try:
+        await channel.inject(make_message())
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
+            )
+        )
+
+        assert not channel.stream_events
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_stream_event_for_another_session_is_discarded() -> None:
+    orchestrator, channel, runtime, storage, audit = await make_node()
+    runtime.queue_turn_plan(
+        TestTurnPlan(update_count=1, stream_session_id="another-session")
+    )
+    try:
+        await channel.inject(make_message())
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
+            )
+        )
+
+        assert not channel.stream_events
+        assert [event.event_name for event in storage.runtime_events] == [
+            "runtime.turn.started",
+            "runtime.turn.completed",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_runtime_can_run_real_command_service_behavior() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
 
