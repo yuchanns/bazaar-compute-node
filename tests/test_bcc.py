@@ -26,7 +26,6 @@ def message_payload(
     return {
         "seq": seq,
         "message_id": message_id,
-        "short_message_id": message_id[:8],
         "canonical_target": target,
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,
@@ -49,7 +48,8 @@ def test_check_serializer_matches_canonical_text() -> None:
     }
 
     assert serialize_check(result) == (
-        "[target=#work:parent123 msg=01234567 time=2023-11-14 22:13:20 "
+        "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
+        "time=2023-11-14 22:13:20 "
         "type=human mentioned=false] @sender: message body"
     )
 
@@ -89,6 +89,8 @@ def test_check_serializer_renders_referenced_message_before_current_message() ->
 
     output = serialize_check(result)
     assert "Referenced messages: 1" in output
+    assert "msg=referenced-message-id" in output
+    assert "msg=current-message-id" in output
     assert "reply_to=referenced-message-id" in output
     assert output.index("quoted body") < output.index("current body")
 
@@ -184,22 +186,6 @@ def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
     output = serialize_read(result)
     assert "threadId=" not in output
     assert "replyTarget=#work:parent123" in output
-
-
-def test_serializer_rejects_inconsistent_response_fields() -> None:
-    message = message_payload()
-    message["short_message_id"] = "different"
-    result = {
-        "messages": [message],
-        "referenced_messages": [],
-        "snapshot_seq": 7,
-        "delivered_through_seq": 7,
-    }
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_check(result)
-
-    assert error.value.code == "INVALID_RESPONSE"
 
 
 def test_read_serializer_rejects_mismatched_window_bounds() -> None:

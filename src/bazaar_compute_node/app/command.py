@@ -17,7 +17,6 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
     return {
         "seq": message.seq,
         "message_id": message.message_id,
-        "short_message_id": message.message_id[:8],
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "channel": message.channel,

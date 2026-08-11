@@ -197,19 +197,15 @@ def _format_message_timestamp(message: Mapping[str, object]) -> str:
 
 def _message_header_fields(
     message: Mapping[str, object],
-) -> tuple[str, str, str, str, str, str | None, str]:
+) -> tuple[str, str, str, str, str | None, str]:
     target = _require_text(message, "canonical_target")
     message_id = _require_text(message, "message_id")
-    short_message_id = _require_text(message, "short_message_id")
-    if short_message_id != message_id[:8]:
-        _invalid_response("command response contains an inconsistent message id")
     sender = message.get("sender")
     if sender is not None and (not isinstance(sender, str) or not sender):
         _invalid_response("command response contains an invalid message sender")
     return (
         target,
         message_id,
-        short_message_id,
         _format_message_timestamp(message),
         _require_text(message, "message_type"),
         sender,
@@ -220,15 +216,14 @@ def _message_header_fields(
 def _format_check_message(message: Mapping[str, object]) -> str:
     (
         target,
-        _message_id,
-        short_message_id,
+        message_id,
         timestamp,
         message_type,
         sender,
         body,
     ) = _message_header_fields(message)
     line = (
-        f"[target={target} msg={short_message_id} time={timestamp} "
+        f"[target={target} msg={message_id} time={timestamp} "
         f"type={message_type} mentioned={str(message.get('mentions_agent') is True).lower()}"
     )
     reply_to_message_id = message.get("reply_to_message_id")
@@ -253,7 +248,6 @@ def _format_read_message(
     (
         target,
         message_id,
-        _short_message_id,
         timestamp,
         message_type,
         sender,

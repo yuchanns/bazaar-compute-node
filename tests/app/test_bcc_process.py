@@ -228,7 +228,7 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         assert check_stderr == ""
         assert "Referenced messages: 1" in check_stdout
         assert "reply_to=input-message-1" in check_stdout
-        assert "[target=#test:bcn-a msg=" in check_stdout
+        assert "[target=#test:bcn-a msg=input-message-2 " in check_stdout
         assert "quoted inbound" in check_stdout
         assert "current inbound" in check_stdout
         assert "No more new messages." not in check_stdout
