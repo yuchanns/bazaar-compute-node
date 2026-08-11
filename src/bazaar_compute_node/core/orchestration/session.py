@@ -30,7 +30,7 @@ from ..models import (
 )
 from ..observability import IAudit
 from ..outcomes import ProviderCallStatus
-from ..runtime import IRuntime
+from ..runtime import IRuntime, RuntimeSessionUnavailable
 from ..storage import IStorage, NodeIdentity
 from .command import SessionCommandService
 from .services import SessionAuditRecorder, SessionStateWriter
@@ -583,44 +583,69 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
         self._runtime_turns[turn.turn_id] = turn
 
-        context = await self._ensure_runtime_session(context)
-        agent_state = self._state_writer.get(context.bcn_session.id)
-        if agent_state is not AgentState.IDLE:
-            finish_state = (
-                RuntimeTurnState.UNKNOWN
-                if agent_state is AgentState.UNKNOWN
-                else RuntimeTurnState.FAILED
-            )
-            return await self._turns.finish_turn(
-                turn,
-                finish_state,
-                error_kind=(
-                    ErrorKind.PROVIDER_UNKNOWN
-                    if finish_state is RuntimeTurnState.UNKNOWN
-                    else ErrorKind.PROVIDER_FAILED
+        for attempt in range(2):
+            context = await self._ensure_runtime_session(context)
+            agent_state = self._state_writer.get(context.bcn_session.id)
+            if agent_state is not AgentState.IDLE:
+                finish_state = (
+                    RuntimeTurnState.UNKNOWN
+                    if agent_state is AgentState.UNKNOWN
+                    else RuntimeTurnState.FAILED
+                )
+                return await self._turns.finish_turn(
+                    turn,
+                    finish_state,
+                    error_kind=(
+                        ErrorKind.PROVIDER_UNKNOWN
+                        if finish_state is RuntimeTurnState.UNKNOWN
+                        else ErrorKind.PROVIDER_FAILED
+                    ),
+                    error_message=(
+                        "runtime session start outcome is unknown"
+                        if finish_state is RuntimeTurnState.UNKNOWN
+                        else "runtime session failed to start"
+                    ),
+                    correlation=self._turns.turn_correlation(message, context, turn),
+                    session_id=context.bcn_session.id,
+                )
+            self._state_writer.apply_observation(
+                context.bcn_session.id,
+                AgentTick(
+                    source=AgentTickSource.CHANNEL,
+                    signal=AgentSignal.TURN_STARTED,
+                    observed_at_ms=self._clock(),
                 ),
-                error_message=(
-                    "runtime session start outcome is unknown"
-                    if finish_state is RuntimeTurnState.UNKNOWN
-                    else "runtime session failed to start"
-                ),
-                correlation=self._turns.turn_correlation(message, context, turn),
-                session_id=context.bcn_session.id,
             )
-        self._state_writer.apply_observation(
-            context.bcn_session.id,
-            AgentTick(
-                source=AgentTickSource.CHANNEL,
-                signal=AgentSignal.TURN_STARTED,
-                observed_at_ms=self._clock(),
-            ),
-        )
-        return await self._turns.run_turn(
-            message,
-            context,
-            turn,
-            unread_count=len(unread),
-        )
+            try:
+                return await self._turns.run_turn(
+                    message,
+                    context,
+                    turn,
+                    unread_count=len(unread),
+                )
+            except RuntimeSessionUnavailable as error:
+                self._state_writer.apply_observation(
+                    context.bcn_session.id,
+                    AgentTick(
+                        source=AgentTickSource.RUNTIME,
+                        signal=AgentSignal.FAILED,
+                        observed_at_ms=self._clock(),
+                        error_kind=ErrorKind.PROVIDER_FAILED.value,
+                        error_message=str(error),
+                    ),
+                )
+                if attempt == 1:
+                    return await self._turns.finish_turn(
+                        turn,
+                        RuntimeTurnState.FAILED,
+                        error_kind=ErrorKind.PROVIDER_FAILED,
+                        error_message=str(error),
+                        correlation=self._turns.turn_correlation(
+                            message, context, turn
+                        ),
+                        session_id=context.bcn_session.id,
+                    )
+        raise AssertionError("runtime pre-start retry loop did not return")
 
     async def _ensure_runtime_session(self, context: SessionContext) -> SessionContext:
         runtime_session = context.runtime_session
