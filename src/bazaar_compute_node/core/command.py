@@ -13,6 +13,7 @@ class MessageCheckResult:
     messages: tuple[InboundMessage, ...]
     snapshot_seq: int
     delivered_through_seq: int
+    referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
         if self.snapshot_seq < 0 or self.delivered_through_seq < 0:
@@ -29,6 +30,7 @@ class MessageReadResult:
     snapshot_seq: int
     first_seq: int | None = None
     last_seq: int | None = None
+    referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
         if self.snapshot_seq < 0:

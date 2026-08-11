@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -84,7 +84,6 @@ class IAttachmentMaterializer(Protocol):
 @dataclass(frozen=True, slots=True)
 class ChannelContext:
     attachments: IAttachmentMaterializer
-    inbound_exists: Callable[[str, str], Awaitable[bool]]
     options: Mapping[str, object]
     workspace: Callable[[], Path]
 

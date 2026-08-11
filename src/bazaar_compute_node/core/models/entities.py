@@ -213,7 +213,7 @@ class InboundMessage:
     provider_thread_id: str
     provider_message_id: str
     received_at_ms: int
-    sender: str
+    sender: str | None
     message_type: str
     canonical_target: str
     body: str
@@ -222,7 +222,7 @@ class InboundMessage:
     notifies_runtime: bool = True
     attachments: tuple[InboundAttachment, ...] = ()
     provider_time_ms: int | None = None
-    reply_to_provider_message_id: str | None = None
+    reply_to_message_id: str | None = None
     provider_payload_ref: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
@@ -235,12 +235,15 @@ class InboundMessage:
             (self.channel, "channel"),
             (self.provider_thread_id, "provider_thread_id"),
             (self.provider_message_id, "provider_message_id"),
-            (self.sender, "sender"),
             (self.message_type, "message_type"),
             (self.canonical_target, "canonical_target"),
         ):
             _validate_text(value, field_name)
         _validate_non_negative(self.received_at_ms, "received_at_ms")
+        if self.sender is not None:
+            _validate_text(self.sender, "sender")
+        if self.reply_to_message_id is not None:
+            _validate_text(self.reply_to_message_id, "reply_to_message_id")
         if not isinstance(self.target_kind, ChannelTargetKind):
             raise TypeError("target_kind must be a ChannelTargetKind")
         if self.provider_time_ms is not None:

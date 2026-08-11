@@ -189,19 +189,18 @@ class _MemoryStorageTransaction(IStorageTransaction):
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
 
-    async def inbound_message_exists(
-        self, channel: str, provider_message_id: str
-    ) -> bool:
-        return await self.find_inbound_message(channel, provider_message_id) is not None
-
     async def find_inbound_message(
-        self, channel: str, provider_message_id: str
+        self,
+        channel: str,
+        provider_thread_id: str,
+        provider_message_id: str,
     ) -> InboundMessage | None:
         matches = [
             message
             for messages in self._storage.inbound_messages.values()
             for message in messages
             if message.channel == channel
+            and message.provider_thread_id == provider_thread_id
             and message.provider_message_id == provider_message_id
         ]
         if len(matches) > 1:
@@ -354,22 +353,17 @@ class _MemoryStorageTransaction(IStorageTransaction):
             for existing in session_messages
             if (
                 existing.channel == message.channel
+                and existing.provider_thread_id == message.provider_thread_id
                 and existing.provider_message_id == message.provider_message_id
             )
         ]
         if provider_matches:
-            existing = provider_matches[0]
-            if (
-                existing.session_id != message.session_id
-                or existing.channel_session_id != message.channel_session_id
-            ):
-                raise ValueError(
-                    "provider message id is already bound to another session"
-                )
-            if existing == message:
-                return existing
-            raise ValueError("duplicate provider message id has different content")
-        for existing in messages:
+            return provider_matches[0]
+        for existing in (
+            existing
+            for session_messages in self._storage.inbound_messages.values()
+            for existing in session_messages
+        ):
             if existing.message_id == message.message_id:
                 if existing != message:
                     raise ValueError("duplicate message id has different content")
@@ -379,6 +373,24 @@ class _MemoryStorageTransaction(IStorageTransaction):
             raise ValueError(
                 f"inbound sequence must be contiguous: expected {expected_seq}, got {message.seq}"
             )
+        if message.reply_to_message_id is not None:
+            referenced = next(
+                (
+                    existing
+                    for session_messages in self._storage.inbound_messages.values()
+                    for existing in session_messages
+                    if existing.message_id == message.reply_to_message_id
+                ),
+                None,
+            )
+            if referenced is None:
+                raise ValueError("reply_to_message_id does not reference a message")
+            if referenced.session_id != message.session_id:
+                raise ValueError("reply_to_message_id must belong to the same session")
+            if referenced.seq >= message.seq:
+                raise ValueError(
+                    "reply_to_message_id must reference an earlier message"
+                )
         messages.append(message)
         return message
 

@@ -41,7 +41,14 @@ def make_factories() -> AdapterFactories:
     )
 
 
-def make_message(seq: int, *, body: str) -> InboundMessage:
+def make_message(
+    seq: int,
+    *,
+    body: str,
+    sender: str | None = "sender",
+    notifies_runtime: bool = True,
+    reply_to_message_id: str | None = None,
+) -> InboundMessage:
     return InboundMessage(
         seq=seq,
         message_id=f"input-message-{seq}",
@@ -52,11 +59,12 @@ def make_message(seq: int, *, body: str) -> InboundMessage:
         provider_message_id=f"provider-message-{seq}",
         received_at_ms=1_000 + seq,
         provider_time_ms=2_000 + seq,
-        sender="sender",
+        sender=sender,
         message_type="human",
         canonical_target="#test:bcn-a",
         body=body,
-        reply_to_provider_message_id="provider-parent-a",
+        notifies_runtime=notifies_runtime,
+        reply_to_message_id=reply_to_message_id,
     )
 
 
@@ -137,8 +145,21 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
     channel = cast(TestChannel, node.channel)
     await node.start()
     try:
-        await channel.inject(make_message(1, body="first inbound"))
-        await channel.inject(make_message(2, body="second inbound"))
+        await channel.inject(
+            make_message(
+                1,
+                body="quoted inbound",
+                sender=None,
+                notifies_runtime=False,
+            )
+        )
+        await channel.inject(
+            make_message(
+                2,
+                body="current inbound",
+                reply_to_message_id="input-message-1",
+            )
+        )
         messages = await wait_for_messages(node, 2)
         runtime_session = await wait_for_runtime_session(node)
         runtime_environment = node._runtime_environment(runtime_session)
@@ -168,7 +189,9 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         assert "replyTarget=#test:bcn-a" in read_stdout
         assert messages[0].message_id in read_stdout
         assert messages[1].message_id in read_stdout
-        assert read_stdout.index("first inbound") < read_stdout.index("second inbound")
+        assert read_stdout.index("quoted inbound") < read_stdout.index(
+            "current inbound"
+        )
 
         async with node.storage.transaction() as transaction:
             cursor = await transaction.get_consumer_cursor("bcn-a")
@@ -192,8 +215,9 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         )
         assert around_code == 0, around_stderr
         assert "Read window: 1 returned, seq 2-2" in around_stdout
-        assert "second inbound" in around_stdout
-        assert "first inbound" not in around_stdout
+        assert "Referenced messages: 1" in around_stdout
+        assert "quoted inbound" in around_stdout
+        assert "current inbound" in around_stdout
 
         check_code, check_stdout, check_stderr = await run_bcc(
             node,
@@ -202,9 +226,11 @@ async def test_real_sqlite_bcc_check_read_and_snapshot_contract(
         )
         assert check_code == 0, check_stderr
         assert check_stderr == ""
+        assert "Referenced messages: 1" in check_stdout
+        assert "reply_to=input-message-1" in check_stdout
         assert "[target=#test:bcn-a msg=" in check_stdout
-        assert "first inbound" in check_stdout
-        assert "second inbound" in check_stdout
+        assert "quoted inbound" in check_stdout
+        assert "current inbound" in check_stdout
         assert "No more new messages." not in check_stdout
 
         async with node.storage.transaction() as transaction:

@@ -464,11 +464,78 @@ RUNTIME_ATTEMPT_FACT_MIGRATION = Migration(
     ),
 )
 
+INBOUND_MESSAGE_REFERENCE_MIGRATION = Migration(
+    version=5,
+    name="inbound_message_references",
+    statements=(
+        """
+        ALTER TABLE inbound_messages
+            RENAME COLUMN reply_to_provider_message_id TO reply_to_message_id
+        """,
+        """
+        UPDATE inbound_messages AS current
+        SET reply_to_message_id = (
+            SELECT referenced.message_id
+            FROM inbound_messages AS referenced
+            WHERE referenced.channel = current.channel
+              AND referenced.provider_message_id = current.reply_to_message_id
+            ORDER BY referenced.seq
+            LIMIT 1
+        )
+        WHERE current.reply_to_message_id IS NOT NULL
+        """,
+        """
+        CREATE INDEX idx_inbound_reply_to_message
+            ON inbound_messages (reply_to_message_id)
+        """,
+    ),
+)
+
+INBOUND_MESSAGE_REFERENCE_INTEGRITY_MIGRATION = Migration(
+    version=6,
+    name="inbound_message_reference_integrity",
+    statements=(
+        """
+        UPDATE inbound_messages AS current
+        SET reply_to_message_id = NULL
+        WHERE current.reply_to_message_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM inbound_messages AS referenced
+              WHERE referenced.message_id = current.reply_to_message_id
+                AND referenced.session_id = current.session_id
+                AND referenced.seq < current.seq
+          )
+        """,
+    ),
+)
+
+INBOUND_PROVIDER_IDENTITY_MIGRATION = Migration(
+    version=7,
+    name="inbound_provider_identity",
+    statements=(
+        """
+        DROP INDEX idx_inbound_provider_identity
+        """,
+        """
+        CREATE UNIQUE INDEX idx_inbound_provider_identity
+            ON inbound_messages (
+                channel,
+                provider_thread_id,
+                provider_message_id
+            )
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
     MESSAGE_LOG_INDEX_MIGRATION,
     RUNTIME_ATTEMPT_FACT_MIGRATION,
+    INBOUND_MESSAGE_REFERENCE_MIGRATION,
+    INBOUND_MESSAGE_REFERENCE_INTEGRITY_MIGRATION,
+    INBOUND_PROVIDER_IDENTITY_MIGRATION,
 )
 
 

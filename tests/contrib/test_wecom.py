@@ -48,9 +48,6 @@ def test_wecom_filename_decodes_provider_content_disposition() -> None:
 async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
     tmp_path: Path,
 ) -> None:
-    async def inbound_exists(_channel: str, _provider_message_id: str) -> bool:
-        return False
-
     async def referenced_paths() -> set[str]:
         return set()
 
@@ -60,7 +57,6 @@ async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
                 lambda: tmp_path,
                 referenced_paths,
             ),
-            inbound_exists=inbound_exists,
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -93,16 +89,12 @@ async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
 
 @pytest.mark.asyncio
 async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None:
-    async def inbound_exists(_channel: str, _provider_message_id: str) -> bool:
-        return False
-
     async def referenced_paths() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
-            inbound_exists=inbound_exists,
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -129,3 +121,73 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
     inbound = channel._inbound.get_nowait()
     assert isinstance(inbound, InboundMessage)
     assert inbound.provider_payload_ref is None
+
+
+@pytest.mark.asyncio
+async def test_wecom_emits_quoted_text_before_the_current_message(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+
+    def callback(message_id: str, current_text: str) -> dict[str, object]:
+        return {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": f"request-{message_id}"},
+            "body": {
+                "msgid": message_id,
+                "create_time": 123,
+                "aibotid": "bot-id",
+                "from": {"userid": "user-id"},
+                "chattype": "single",
+                "msgtype": "text",
+                "text": {"content": current_text},
+                "quote": {
+                    "msgtype": "text",
+                    "text": {"content": "The original quoted text."},
+                },
+            },
+        }
+
+    await channel._receive_message(
+        callback("message-with-quote", "Can you see the quoted text?")
+    )
+
+    referenced = channel._inbound.get_nowait()
+    current = channel._inbound.get_nowait()
+    assert isinstance(referenced, InboundMessage)
+    assert isinstance(current, InboundMessage)
+    assert referenced.body == "The original quoted text."
+    assert referenced.sender is None
+    assert referenced.notifies_runtime is False
+    assert referenced.mentions_agent is False
+    assert current.body == "Can you see the quoted text?"
+    assert current.message_id != current.provider_message_id
+    assert current.reply_to_message_id == referenced.message_id
+    assert current.session_id == referenced.session_id
+    assert current.canonical_target == referenced.canonical_target
+    assert "has_quote" not in current.metadata
+    assert len(referenced.provider_message_id) == 64
+
+    await channel._receive_message(
+        callback("another-message-with-quote", "Can you still see it?")
+    )
+    repeated_reference = channel._inbound.get_nowait()
+    another_current = channel._inbound.get_nowait()
+    assert isinstance(repeated_reference, InboundMessage)
+    assert isinstance(another_current, InboundMessage)
+    assert repeated_reference.provider_message_id == referenced.provider_message_id
+    assert repeated_reference.message_id == referenced.message_id
+    assert another_current.message_id != current.message_id
+    assert another_current.reply_to_message_id == referenced.message_id

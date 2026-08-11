@@ -128,11 +128,13 @@ def _require_result(response: Mapping[str, object]) -> Mapping[str, object]:
     return result
 
 
-def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]]:
-    messages = result.get("messages")
+def _require_message_list(
+    result: Mapping[str, object], field_name: str
+) -> list[Mapping[str, object]]:
+    messages = result.get(field_name)
     if not isinstance(messages, list):
         raise BccCommandError(
-            "command response has no messages list",
+            f"command response has no {field_name} list",
             code="INVALID_RESPONSE",
         )
     if not all(isinstance(message, Mapping) for message in messages):
@@ -141,6 +143,10 @@ def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]
             code="INVALID_RESPONSE",
         )
     return messages
+
+
+def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return _require_message_list(result, "messages")
 
 
 def _invalid_response(message: str) -> NoReturn:
@@ -189,19 +195,24 @@ def _format_message_timestamp(message: Mapping[str, object]) -> str:
     return format_message_time(_message_timestamp(message))
 
 
-def _message_header_fields(message: Mapping[str, object]) -> tuple[str, ...]:
+def _message_header_fields(
+    message: Mapping[str, object],
+) -> tuple[str, str, str, str, str, str | None, str]:
     target = _require_text(message, "canonical_target")
     message_id = _require_text(message, "message_id")
     short_message_id = _require_text(message, "short_message_id")
     if short_message_id != message_id[:8]:
         _invalid_response("command response contains an inconsistent message id")
+    sender = message.get("sender")
+    if sender is not None and (not isinstance(sender, str) or not sender):
+        _invalid_response("command response contains an invalid message sender")
     return (
         target,
         message_id,
         short_message_id,
         _format_message_timestamp(message),
         _require_text(message, "message_type"),
-        _require_text(message, "sender"),
+        sender,
         _require_text(message, "body", allow_empty=True),
     )
 
@@ -218,10 +229,19 @@ def _format_check_message(message: Mapping[str, object]) -> str:
     ) = _message_header_fields(message)
     line = (
         f"[target={target} msg={short_message_id} time={timestamp} "
-        f"type={message_type} mentioned={str(message.get('mentions_agent') is True).lower()}] "
-        f"@{sender}: {body}"
+        f"type={message_type} mentioned={str(message.get('mentions_agent') is True).lower()}"
     )
-    return line + _attachment_suffix(message)
+    reply_to_message_id = message.get("reply_to_message_id")
+    if reply_to_message_id is not None:
+        if not isinstance(reply_to_message_id, str) or not reply_to_message_id:
+            _invalid_response(
+                "command response contains an invalid message reply_to_message_id"
+            )
+        line += f" reply_to={reply_to_message_id}"
+    line += "] "
+    if sender is not None:
+        line += f"@{sender}: "
+    return line + body + _attachment_suffix(message)
 
 
 def _format_read_message(
@@ -247,10 +267,17 @@ def _format_read_message(
     ]
     fields.append(f"replyTarget={target}")
     fields.append(f"mentioned={str(message.get('mentions_agent') is True).lower()}")
-    return (
-        f"[{index}/{count} {' '.join(fields)}] @{sender}: {body}"
-        + _attachment_suffix(message)
-    )
+    reply_to_message_id = message.get("reply_to_message_id")
+    if reply_to_message_id is not None:
+        if not isinstance(reply_to_message_id, str) or not reply_to_message_id:
+            _invalid_response(
+                "command response contains an invalid message reply_to_message_id"
+            )
+        fields.append(f"replyTo={reply_to_message_id}")
+    line = f"[{index}/{count} {' '.join(fields)}] "
+    if sender is not None:
+        line += f"@{sender}: "
+    return line + body + _attachment_suffix(message)
 
 
 def _attachment_suffix(message: Mapping[str, object]) -> str:
@@ -288,7 +315,20 @@ def serialize_check(result: Mapping[str, object]) -> str:
             "command response contains an invalid check sequence boundary"
         )
     messages = _require_messages(result)
-    lines = [_format_check_message(message) for message in messages]
+    referenced_messages = _require_message_list(result, "referenced_messages")
+    lines: list[str] = []
+    if referenced_messages:
+        lines.append(f"Referenced messages: {len(referenced_messages)}")
+        lines.extend(
+            _format_read_message(
+                message,
+                index=index,
+                count=len(referenced_messages),
+            )
+            for index, message in enumerate(referenced_messages, start=1)
+        )
+        lines.append("New messages:")
+    lines.extend(_format_check_message(message) for message in messages)
     if not lines:
         lines.append("No more new messages.")
     return "\n".join(lines)
@@ -299,6 +339,7 @@ def serialize_read(result: Mapping[str, object]) -> str:
 
     _require_result_sequence(result, "snapshot_seq")
     messages = _require_messages(result)
+    referenced_messages = _require_message_list(result, "referenced_messages")
     first_seq = result.get("first_seq")
     last_seq = result.get("last_seq")
     if not messages:
@@ -321,6 +362,17 @@ def serialize_read(result: Mapping[str, object]) -> str:
             _invalid_response("command response read bounds do not match messages")
         bounds = f"{first_seq}-{last_seq}"
     lines = [f"Read window: {len(messages)} returned, seq {bounds}, oldest to newest."]
+    if referenced_messages:
+        lines.append(f"Referenced messages: {len(referenced_messages)}")
+        lines.extend(
+            _format_read_message(
+                message,
+                index=index,
+                count=len(referenced_messages),
+            )
+            for index, message in enumerate(referenced_messages, start=1)
+        )
+        lines.append("Window messages:")
     lines.extend(
         _format_read_message(message, index=index, count=len(messages))
         for index, message in enumerate(messages, start=1)

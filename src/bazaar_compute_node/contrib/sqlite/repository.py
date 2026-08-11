@@ -33,7 +33,6 @@ from .codec import (
     _runtime_attempt_from_row,
     _runtime_event_from_row,
     _runtime_session_from_row,
-    _same_inbound_payload,
     _same_runtime_event_payload,
     _validate_bcn_session_update,
     _validate_channel_session_input,
@@ -239,29 +238,22 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
 
-    async def inbound_message_exists(
-        self, channel: str, provider_message_id: str
-    ) -> bool:
-        row = await self.fetchone(
-            "SELECT 1 FROM inbound_messages WHERE channel = ? "
-            "AND provider_message_id = ? LIMIT 1",
-            (channel, provider_message_id),
-        )
-        return row is not None
-
     async def find_inbound_message(
-        self, channel: str, provider_message_id: str
+        self,
+        channel: str,
+        provider_thread_id: str,
+        provider_message_id: str,
     ) -> InboundMessage | None:
         row = await self._fetch_one_or_conflict(
             "SELECT seq, message_id, session_id, channel_session_id, "
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, message_type, "
             "canonical_target, target_kind, "
-            "reply_to_provider_message_id, body, mentions_agent, "
+            "reply_to_message_id, body, mentions_agent, "
             "notifies_runtime, provider_payload_ref, metadata_json "
             "FROM inbound_messages WHERE channel = ? "
-            "AND provider_message_id = ? ORDER BY seq",
-            (channel, provider_message_id),
+            "AND provider_thread_id = ? AND provider_message_id = ? ORDER BY seq",
+            (channel, provider_thread_id, provider_message_id),
             "provider inbound identity",
         )
         if row is None:
@@ -314,7 +306,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 "channel, provider_thread_id, provider_message_id, provider_time_ms, "
                 "received_at_ms, sender, message_type, "
                 "canonical_target, target_kind, "
-                "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
+                "reply_to_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
                 "metadata_json FROM inbound_messages "
                 f"WHERE {where_clause} ORDER BY seq LIMIT ?",
                 (*parameters, limit),
@@ -370,7 +362,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, message_type, "
             "canonical_target, target_kind, "
-            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
+            "reply_to_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json, ROW_NUMBER() OVER (ORDER BY seq) AS row_number "
             "FROM inbound_messages "
             f"WHERE {where_clause}"
@@ -382,7 +374,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, message_type, "
             "canonical_target, target_kind, "
-            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
+            "reply_to_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM filtered WHERE row_number BETWEEN ? AND ? "
             "ORDER BY row_number",
             (*parameters, start_position, end_position),
@@ -409,6 +401,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if (
             message.channel_session_id != channel_session.id
             or message.channel != channel_session.channel
+            or message.provider_thread_id != channel_session.provider_thread_id
         ):
             raise ValueError("inbound message binding does not match channel session")
 
@@ -417,21 +410,29 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, message_type, "
             "canonical_target, target_kind, "
-            "reply_to_provider_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
+            "reply_to_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
             "metadata_json FROM inbound_messages "
-            "WHERE channel = ? AND provider_message_id = ? ORDER BY seq",
-            (message.channel, message.provider_message_id),
+            "WHERE channel = ? AND provider_thread_id = ? "
+            "AND provider_message_id = ? ORDER BY seq",
+            (
+                message.channel,
+                message.provider_thread_id,
+                message.provider_message_id,
+            ),
             "provider inbound identity",
         )
         if existing_row is not None:
             existing = _inbound_message_from_row(
                 existing_row, await self._attachments(existing_row["message_id"])
             )
-            if _same_inbound_payload(existing, message):
-                return existing
-            raise ValueError(
-                "provider message id is already bound to different inbound content"
-            )
+            return existing
+
+        message_id_row = await self.fetchone(
+            "SELECT 1 FROM inbound_messages WHERE message_id = ?",
+            (message.message_id,),
+        )
+        if message_id_row is not None:
+            raise ValueError("message id is already bound to another inbound message")
 
         sequence_row = await self.fetchone(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM inbound_messages"
@@ -439,13 +440,29 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if sequence_row is None:
             raise RuntimeError("SQLite inbound sequence query returned no row")
         next_seq = _required_positive_int(sequence_row["next_seq"], "next_seq")
-        canonical = replace(message, seq=next_seq, message_id=str(uuid7()))
+        canonical = replace(message, seq=next_seq)
+        if canonical.reply_to_message_id is not None:
+            referenced = await self.fetchone(
+                "SELECT session_id, seq FROM inbound_messages WHERE message_id = ?",
+                (canonical.reply_to_message_id,),
+            )
+            if referenced is None:
+                raise ValueError("reply_to_message_id does not reference a message")
+            if referenced["session_id"] != canonical.session_id:
+                raise ValueError("reply_to_message_id must belong to the same session")
+            referenced_seq = _required_positive_int(
+                referenced["seq"], "reply_to_message_seq"
+            )
+            if referenced_seq >= canonical.seq:
+                raise ValueError(
+                    "reply_to_message_id must reference an earlier message"
+                )
         await self.execute(
             "INSERT INTO inbound_messages ("
             "message_id, seq, session_id, channel_session_id, channel, "
             "provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, message_type, canonical_target, target_kind, "
-            "reply_to_provider_message_id, body, "
+            "reply_to_message_id, body, "
             "mentions_agent, notifies_runtime, provider_payload_ref, metadata_json"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -462,7 +479,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 canonical.message_type,
                 canonical.canonical_target,
                 canonical.target_kind.value,
-                canonical.reply_to_provider_message_id,
+                canonical.reply_to_message_id,
                 canonical.body,
                 int(canonical.mentions_agent),
                 int(canonical.notifies_runtime),

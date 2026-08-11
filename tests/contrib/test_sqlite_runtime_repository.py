@@ -83,7 +83,7 @@ def make_inbound_message(
         session_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
-        provider_thread_id=f"thread-{session_id}",
+        provider_thread_id=f"thread-{channel_session_id}",
         provider_message_id="provider-message-1",
         received_at_ms=101,
         sender="Sender",

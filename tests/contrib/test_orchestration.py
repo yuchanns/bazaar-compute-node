@@ -895,6 +895,40 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
 
 
 @pytest.mark.asyncio
+async def test_inbound_deduplication_uses_external_conversation_identity() -> None:
+    orchestrator, _, runtime, storage, _ = await make_node()
+    try:
+        first = replace(
+            make_message(session_id="bcn-a"),
+            provider_message_id="shared-provider-message",
+        )
+        first_turn = await orchestrator.handle_inbound(first)
+        assert first_turn is not None
+
+        replay = replace(
+            first,
+            message_id="volatile-retry-message-id",
+            body="volatile retry body",
+            received_at_ms=999,
+        )
+        assert await orchestrator.handle_inbound(replay) is None
+        assert storage.inbound_messages["bcn-a"] == [
+            replace(first, notifies_runtime=True)
+        ]
+
+        other_conversation = replace(
+            make_message(session_id="bcn-b"),
+            provider_message_id=first.provider_message_id,
+        )
+        other_turn = await orchestrator.handle_inbound(other_conversation)
+        assert other_turn is not None
+        assert len(storage.inbound_messages["bcn-b"]) == 1
+        assert len(runtime.started_turns) == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_group_mention_starts_following_after_quiet_history() -> None:
     orchestrator, _, runtime, storage, _ = await make_node()
     try:

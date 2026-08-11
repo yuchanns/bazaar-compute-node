@@ -351,7 +351,7 @@ class JsonlProcessSupervisor:
                     try:
                         decoded = line.decode("utf-8")
                         payload = json.loads(decoded)
-                    except (UnicodeDecodeError, json.JSONDecodeError):
+                    except UnicodeDecodeError, json.JSONDecodeError:
                         await self._protocol_failure(
                             "stdout contains invalid JSONL",
                             line_number=line_number,
