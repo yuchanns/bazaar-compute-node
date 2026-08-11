@@ -26,9 +26,16 @@ Harness 工具。
 
 bcn 将沿着可组合的 Channel、Runtime 与节点通用能力继续扩展。
 
+### 更多 Harness
+
+- 一个节点允许添加多个 Agents
+- Agent Teams 合作
+
 ### 更多 Channel
 
-- **Telegram**：通过 Telegram 使用节点并接收任务结果。
+- **Telegram**：通过 Telegram 与 Agent 交互。
+- **GitHub**: 通过 GitHub Issue 与 Agent Harness 进行开发。
+- **GitLab**: 将 Agent Harness 引入企业私有仓库与团队进行开发。
 
 ### 更多 Runtime
 
