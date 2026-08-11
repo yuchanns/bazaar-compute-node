@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -90,12 +89,16 @@ def make_inbound_message(
     session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
     channel: str = "test",
+    provider_thread_id: str = "thread-1",
     provider_message_id: str = "provider-message-1",
     message_id: str = "caller-message-1",
     seq: int = 0,
     canonical_target: str = "#test:channel-1",
     body: str = "inbound body",
     received_at_ms: int = 200,
+    sender: str | None = "Sender",
+    reply_to_message_id: str | None = None,
+    notifies_runtime: bool = True,
 ) -> InboundMessage:
     return InboundMessage(
         seq=seq,
@@ -103,13 +106,15 @@ def make_inbound_message(
         session_id=session_id,
         channel_session_id=channel_session_id,
         channel=channel,
-        provider_thread_id="thread-1",
+        provider_thread_id=provider_thread_id,
         provider_message_id=provider_message_id,
         received_at_ms=received_at_ms,
-        sender="Sender",
+        sender=sender,
         message_type="text",
         canonical_target=canonical_target,
         body=body,
+        reply_to_message_id=reply_to_message_id,
+        notifies_runtime=notifies_runtime,
         provider_time_ms=received_at_ms,
         metadata={"source": "test", "nested": {"enabled": True}},
     )
@@ -218,8 +223,7 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
             )
         )
 
-        assert first.message_id != inbound.message_id
-        assert UUID(first.message_id).version == 7
+        assert first.message_id == inbound.message_id
         assert first.seq == 1
         assert second.seq == 2
         assert await transaction.get_latest_inbound_seq("bcn-1") == 2
@@ -233,10 +237,10 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
         )
         assert duplicate == first
 
-        with pytest.raises(ValueError, match="different inbound content"):
-            await transaction.append_inbound_message(
-                replace(inbound, message_id="conflicting-message", body="tampered")
-            )
+        replay_with_volatile_content = await transaction.append_inbound_message(
+            replace(inbound, message_id="conflicting-message", body="tampered")
+        )
+        assert replay_with_volatile_content == first
 
     await save_channel_and_bcn_session(
         database,
@@ -249,6 +253,7 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
             make_inbound_message(
                 session_id="bcn-2",
                 channel_session_id="channel-2",
+                provider_thread_id="thread-2",
                 provider_message_id="provider-message-bcn-2",
                 message_id="other-session-message",
             )
@@ -257,16 +262,17 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
         assert await transaction.get_latest_inbound_seq("bcn-1") == 2
         assert len(await transaction.list_inbound_messages("bcn-1")) == 2
 
-    with pytest.raises(ValueError, match="already bound"):
-        async with database.transaction() as transaction:
-            await transaction.append_inbound_message(
-                make_inbound_message(
-                    session_id="bcn-2",
-                    channel_session_id="channel-2",
-                    provider_message_id=inbound.provider_message_id,
-                    message_id="cross-session-message",
-                )
+    async with database.transaction() as transaction:
+        same_provider_id_in_another_thread = await transaction.append_inbound_message(
+            make_inbound_message(
+                session_id="bcn-2",
+                channel_session_id="channel-2",
+                provider_thread_id="thread-2",
+                provider_message_id=inbound.provider_message_id,
+                message_id="cross-session-message",
             )
+        )
+    assert same_provider_id_in_another_thread.seq == 4
 
     await save_channel_and_bcn_session(
         database,
@@ -284,7 +290,66 @@ async def test_sqlite_inbound_log_generates_node_identity_and_deduplicates(
                 message_id="other-channel-message",
             )
         )
-    assert other_provider_namespace.seq == 4
+    assert other_provider_namespace.seq == 5
+
+
+@pytest.mark.asyncio
+async def test_sqlite_inbound_internal_reply_requires_an_earlier_same_session_message(
+    database: SqliteDatabase,
+) -> None:
+    await save_session_graph(database)
+
+    async with database.transaction() as transaction:
+        referenced = await transaction.append_inbound_message(
+            make_inbound_message(
+                message_id="message-reference",
+                provider_message_id="provider-reference",
+                sender=None,
+                notifies_runtime=False,
+            )
+        )
+        current = await transaction.append_inbound_message(
+            make_inbound_message(
+                message_id="message-current",
+                provider_message_id="provider-current",
+                reply_to_message_id=referenced.message_id,
+            )
+        )
+
+    assert referenced.seq == 1
+    assert referenced.sender is None
+    assert not referenced.notifies_runtime
+    assert current.seq == 2
+    assert current.reply_to_message_id == referenced.message_id
+
+    with pytest.raises(ValueError, match="does not reference a message"):
+        async with database.transaction() as transaction:
+            await transaction.append_inbound_message(
+                make_inbound_message(
+                    message_id="message-dangling",
+                    provider_message_id="provider-dangling",
+                    reply_to_message_id="missing-message",
+                )
+            )
+
+    await save_channel_and_bcn_session(
+        database,
+        channel_session_id="channel-2",
+        bcn_session_id="bcn-2",
+        provider_thread_id="thread-2",
+    )
+    with pytest.raises(ValueError, match="same session"):
+        async with database.transaction() as transaction:
+            await transaction.append_inbound_message(
+                make_inbound_message(
+                    session_id="bcn-2",
+                    channel_session_id="channel-2",
+                    provider_thread_id="thread-2",
+                    message_id="message-cross-session",
+                    provider_message_id="provider-cross-session",
+                    reply_to_message_id=referenced.message_id,
+                )
+            )
 
 
 @pytest.mark.asyncio

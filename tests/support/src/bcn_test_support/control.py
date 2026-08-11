@@ -107,24 +107,23 @@ class TestControl:
             (message_id, "message_id"),
             (provider_message_id, "provider_message_id"),
             (canonical_target, "canonical_target"),
-            (sender, "sender"),
             (message_type, "message_type"),
             (channel, "channel"),
             (provider_thread_id, "provider_thread_id"),
         ):
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{field_name} must be a non-empty string")
+        if sender is not None and (not isinstance(sender, str) or not sender):
+            raise ValueError("sender must be a non-empty string")
         for value, field_name in (
             (received_at_ms, "received_at_ms"),
             (provider_time_ms, "provider_time_ms"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
-        reply_to_provider_message_id = payload.get("reply_to_provider_message_id")
-        if reply_to_provider_message_id is not None and not isinstance(
-            reply_to_provider_message_id, str
-        ):
-            raise TypeError("reply_to_provider_message_id must be a string")
+        reply_to_message_id = payload.get("reply_to_message_id")
+        if reply_to_message_id is not None and not isinstance(reply_to_message_id, str):
+            raise TypeError("reply_to_message_id must be a string")
         return InboundMessage(
             seq=seq,
             message_id=cast(str, message_id),
@@ -133,13 +132,13 @@ class TestControl:
             channel=cast(str, channel),
             provider_message_id=cast(str, provider_message_id),
             received_at_ms=cast(int, received_at_ms),
-            sender=cast(str, sender),
+            sender=cast(str | None, sender),
             message_type=cast(str, message_type),
             canonical_target=cast(str, canonical_target),
             body=body,
             provider_time_ms=cast(int, provider_time_ms),
             provider_thread_id=cast(str, provider_thread_id),
-            reply_to_provider_message_id=reply_to_provider_message_id,
+            reply_to_message_id=reply_to_message_id,
         )
 
 

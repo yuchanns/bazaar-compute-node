@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import random
@@ -45,6 +46,13 @@ class _BatchResult:
     error_message: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _InboundContent:
+    body: str
+    attachments: tuple[InboundAttachment, ...]
+    fingerprint: str
+
+
 class WeComChannel(IChannel):
     def __init__(
         self,
@@ -67,7 +75,6 @@ class WeComChannel(IChannel):
         self._connection: aiohttp.ClientWebSocketResponse | None = None
         self._send_lock = asyncio.Lock()
         self._pending_acks: dict[str, asyncio.Future[Mapping[str, object]]] = {}
-        self._seen_message_ids: set[str] = set()
         self._degraded = False
         self._heartbeat_ack = ""
         self._state = "stopped"
@@ -585,17 +592,6 @@ class WeComChannel(IChannel):
         if not isinstance(provider_message_id, str) or not provider_message_id:
             self._filter_message("missing_message_id")
             return
-        if provider_message_id in self._seen_message_ids:
-            self._filter_message(
-                "duplicate_in_process", provider_message_id=provider_message_id
-            )
-            return
-        if await self._context.inbound_exists(self.name, provider_message_id):
-            self._filter_message(
-                "duplicate_persisted", provider_message_id=provider_message_id
-            )
-            return
-        self._seen_message_ids.add(provider_message_id)
         chat_type = body.get("chattype")
         sender = body.get("from")
         sender_id = sender.get("userid") if isinstance(sender, dict) else None
@@ -631,33 +627,79 @@ class WeComChannel(IChannel):
                 "missing_conversation", provider_message_id=provider_message_id
             )
             return
-        text, attachments = await self._content(body, message_type)
         identity = f"wecom:{target_prefix}:{conversation}"
         channel_session_id = str(uuid5(NAMESPACE_URL, identity))
         session_id = str(uuid5(NAMESPACE_URL, f"bcn:{identity}"))
+        canonical_target = f"{target_prefix}:{channel_session_id}"
+        received_at_ms = time_ns() // 1_000_000
+        content = await self._content(body, message_type)
         metadata: dict[str, object] = {}
         create_time = body.get("create_time")
         if isinstance(create_time, int) and not isinstance(create_time, bool):
             metadata["provider_create_time"] = create_time
-        if isinstance(body.get("quote"), dict):
-            metadata["has_quote"] = True
+        reply_to_message_id = None
+        quote = body.get("quote")
+        if isinstance(quote, dict):
+            quote_type = quote.get("msgtype")
+            if isinstance(quote_type, str) and quote_type:
+                quote_content = await self._content(quote, quote_type)
+                quote_provider_message_id = quote_content.fingerprint
+                reply_to_message_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        "bcn:wecom:quoted-message:"
+                        f"{conversation}:{quote_content.fingerprint}",
+                    )
+                )
+                await self._inbound.put(
+                    InboundMessage(
+                        seq=0,
+                        message_id=reply_to_message_id,
+                        session_id=session_id,
+                        channel_session_id=channel_session_id,
+                        channel=self.name,
+                        provider_thread_id=conversation,
+                        provider_message_id=quote_provider_message_id,
+                        received_at_ms=received_at_ms,
+                        sender=None,
+                        message_type=quote_type,
+                        canonical_target=canonical_target,
+                        body=quote_content.body,
+                        target_kind=target_kind,
+                        mentions_agent=False,
+                        notifies_runtime=False,
+                        attachments=quote_content.attachments,
+                    )
+                )
+            else:
+                self._observe(
+                    "wecom.message.reference_unresolved",
+                    provider_message_id=provider_message_id,
+                    reason="missing_message_type",
+                )
         await self._inbound.put(
             InboundMessage(
                 seq=0,
-                message_id=provider_message_id,
+                message_id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"bcn:wecom:message:{provider_message_id}",
+                    )
+                ),
                 session_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
                 provider_thread_id=conversation,
                 provider_message_id=provider_message_id,
-                received_at_ms=time_ns() // 1_000_000,
+                received_at_ms=received_at_ms,
                 sender=sender_id,
                 message_type=message_type,
-                canonical_target=f"{target_prefix}:{channel_session_id}",
-                body=text,
+                canonical_target=canonical_target,
+                body=content.body,
                 target_kind=target_kind,
                 mentions_agent=mentions_agent,
-                attachments=tuple(attachments),
+                attachments=content.attachments,
+                reply_to_message_id=reply_to_message_id,
                 metadata=metadata,
             )
         )
@@ -671,6 +713,7 @@ class WeComChannel(IChannel):
             session_id=session_id,
             target_kind=target_kind.value,
             message_type=message_type,
+            referenced=reply_to_message_id is not None,
         )
 
     def _filter_message(
@@ -709,16 +752,24 @@ class WeComChannel(IChannel):
 
     async def _content(
         self, body: Mapping[str, object], message_type: str
-    ) -> tuple[str, list[InboundAttachment]]:
+    ) -> _InboundContent:
         if message_type in {"text", "voice"}:
             part = body.get(message_type)
             content = part.get("content") if isinstance(part, dict) else None
-            return (content if isinstance(content, str) else "", [])
+            text = content if isinstance(content, str) else ""
+            return _InboundContent(
+                body=text,
+                attachments=(),
+                fingerprint=self._content_fingerprint(
+                    {"message_type": message_type, "body": text}
+                ),
+            )
         if message_type == "mixed":
             mixed = body.get("mixed")
             items = mixed.get("msg_item") if isinstance(mixed, dict) else None
             texts: list[str] = []
             attachments: list[InboundAttachment] = []
+            fingerprint_items: list[object] = []
             if isinstance(items, list):
                 for item in items[:20]:
                     if not isinstance(item, dict):
@@ -730,23 +781,53 @@ class WeComChannel(IChannel):
                         )
                         if isinstance(content, str):
                             texts.append(content)
+                            fingerprint_items.append(
+                                {"message_type": "text", "body": content}
+                            )
                     elif item.get("msgtype") == "image":
                         image = item.get("image")
                         if isinstance(image, dict):
-                            attachments.append(await self._media(image, "image"))
-            return ("\n".join(texts), attachments)
+                            attachment, fingerprint = await self._media(image, "image")
+                            attachments.append(attachment)
+                            fingerprint_items.append(fingerprint)
+            return _InboundContent(
+                body="\n".join(texts),
+                attachments=tuple(attachments),
+                fingerprint=self._content_fingerprint(
+                    {"message_type": message_type, "items": fingerprint_items}
+                ),
+            )
         if message_type in {"image", "file", "video"}:
             media = body.get(message_type)
             if isinstance(media, dict):
-                return ("", [await self._media(media, message_type)])
-        return (f"[unsupported WeCom message type: {message_type}]", [])
+                attachment, fingerprint = await self._media(media, message_type)
+                return _InboundContent(
+                    body="",
+                    attachments=(attachment,),
+                    fingerprint=self._content_fingerprint(
+                        {"message_type": message_type, "media": fingerprint}
+                    ),
+                )
+        unsupported = f"[unsupported WeCom message type: {message_type}]"
+        return _InboundContent(
+            body=unsupported,
+            attachments=(),
+            fingerprint=self._content_fingerprint(
+                {"message_type": message_type, "body": unsupported}
+            ),
+        )
 
-    async def _media(self, media: Mapping[str, object], kind: str) -> InboundAttachment:
+    async def _media(
+        self, media: Mapping[str, object], kind: str
+    ) -> tuple[InboundAttachment, object]:
         url = media.get("url")
         aes_key = media.get("aeskey")
         if not isinstance(url, str) or not url:
-            return self._context.attachments.failed(
-                name=f"{kind}.bin", kind=kind, error="missing_media_url"
+            return (
+                self._context.attachments.failed(
+                    name=f"{kind}.bin", kind=kind, error="missing_media_url"
+                ),
+                {"kind": kind, "error": "missing_media_url"},
             )
         try:
             timeout = aiohttp.ClientTimeout(total=60, connect=10)
@@ -765,17 +846,44 @@ class WeComChannel(IChannel):
             plaintext = bytes(content)
             if isinstance(aes_key, str) and aes_key:
                 plaintext = self._decrypt(plaintext, aes_key)
-            return await self._context.attachments.materialize(
-                plaintext, name=name, kind=kind, media_type=media_type
+            return (
+                await self._context.attachments.materialize(
+                    plaintext, name=name, kind=kind, media_type=media_type
+                ),
+                {"kind": kind, "sha256": hashlib.sha256(plaintext).hexdigest()},
             )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
-            return self._context.attachments.failed(
-                name=f"{kind}.bin",
-                kind=kind,
-                error=f"media_materialization_failed:{type(error).__name__}",
+            error_kind = f"media_materialization_failed:{type(error).__name__}"
+            source_identity = self._content_fingerprint(
+                {
+                    "url": url,
+                    "aes_key": aes_key if isinstance(aes_key, str) else None,
+                }
             )
+            return (
+                self._context.attachments.failed(
+                    name=f"{kind}.bin",
+                    kind=kind,
+                    error=error_kind,
+                ),
+                {
+                    "kind": kind,
+                    "error": error_kind,
+                    "source_identity": source_identity,
+                },
+            )
+
+    @staticmethod
+    def _content_fingerprint(value: object) -> str:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _decrypt(content: bytes, aes_key: str) -> bytes:

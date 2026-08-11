@@ -397,7 +397,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         runtime_session_created = False
         async with self._storage.transaction() as transaction:
             existing_message = await transaction.find_inbound_message(
-                message.channel, message.provider_message_id
+                message.channel,
+                message.provider_thread_id,
+                message.provider_message_id,
             )
             if existing_message is not None:
                 message = existing_message
@@ -444,7 +446,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 await transaction.save_bcn_session(bcn_session)
 
             if existing_message is None:
-                notifies_runtime = (
+                notifies_runtime = message.notifies_runtime and (
                     message.target_kind is ChannelTargetKind.DM
                     or channel_session.following
                     or message.mentions_agent

@@ -43,6 +43,7 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
             for attachment in message.attachments
         ],
         "body": message.body,
+        "reply_to_message_id": message.reply_to_message_id,
     }
 
 
@@ -233,6 +234,10 @@ class CommandDispatcher:
                     "messages": [
                         serialize_inbound(message) for message in result.messages
                     ],
+                    "referenced_messages": [
+                        serialize_inbound(message)
+                        for message in result.referenced_messages
+                    ],
                     "snapshot_seq": result.snapshot_seq,
                     "delivered_through_seq": result.delivered_through_seq,
                 },
@@ -265,6 +270,10 @@ class CommandDispatcher:
                 "result": {
                     "messages": [
                         serialize_inbound(message) for message in result.messages
+                    ],
+                    "referenced_messages": [
+                        serialize_inbound(message)
+                        for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
                     "first_seq": result.first_seq,

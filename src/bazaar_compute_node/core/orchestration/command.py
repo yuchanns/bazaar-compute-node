@@ -18,12 +18,13 @@ from ..models import (
     ChannelTargetKind,
     ConsumerCursor,
     FreshCheckState,
+    InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeEventState,
 )
 from ..outcomes import ProviderCallStatus
-from ..storage import IStorage
+from ..storage import IStorage, IStorageTransaction
 from .services import SessionAuditRecorder
 
 
@@ -66,6 +67,11 @@ class SessionCommandService(ICommandService):
                 after_seq=cursor.delivered_through_seq,
                 notifying_only=True,
             )
+            referenced_messages = await self._referenced_messages(
+                transaction,
+                session_id=session_id,
+                messages=messages,
+            )
             now_ms = self._clock()
             cursor = replace(
                 cursor,
@@ -81,6 +87,7 @@ class SessionCommandService(ICommandService):
                 messages=messages,
                 snapshot_seq=latest_seq,
                 delivered_through_seq=latest_seq,
+                referenced_messages=referenced_messages,
             )
         await self._audit.append_tool(
             operation="bcc.message.check",
@@ -114,6 +121,11 @@ class SessionCommandService(ICommandService):
                     around_message_id=around_message_id,
                     limit=limit,
                 )
+                referenced_messages = await self._referenced_messages(
+                    transaction,
+                    session_id=session_id,
+                    messages=messages,
+                )
                 latest_seq = await transaction.get_latest_inbound_seq(session_id)
                 cursor = await transaction.get_consumer_cursor(session_id)
                 if cursor is None:
@@ -133,6 +145,7 @@ class SessionCommandService(ICommandService):
                 snapshot_seq=latest_seq,
                 first_seq=messages[0].seq if messages else None,
                 last_seq=messages[-1].seq if messages else None,
+                referenced_messages=referenced_messages,
             )
         await self._audit.append_tool(
             operation="bcc.message.read",
@@ -147,6 +160,39 @@ class SessionCommandService(ICommandService):
             },
         )
         return result
+
+    @staticmethod
+    async def _referenced_messages(
+        transaction: IStorageTransaction,
+        *,
+        session_id: str,
+        messages: tuple[InboundMessage, ...],
+    ) -> tuple[InboundMessage, ...]:
+        message_ids = {message.message_id for message in messages}
+        referenced: list[InboundMessage] = []
+        referenced_ids: set[str] = set()
+        for message in messages:
+            reference_id = message.reply_to_message_id
+            if (
+                reference_id is None
+                or reference_id in message_ids
+                or reference_id in referenced_ids
+            ):
+                continue
+            history = await transaction.list_inbound_messages(
+                session_id,
+                target=message.canonical_target,
+                around_message_id=reference_id,
+                limit=1,
+            )
+            referenced_message = history[0]
+            if referenced_message.message_id != reference_id:
+                raise RuntimeError(
+                    "referenced inbound lookup returned a different message"
+                )
+            referenced.append(referenced_message)
+            referenced_ids.add(reference_id)
+        return tuple(referenced)
 
     async def send(
         self,

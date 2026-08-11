@@ -121,7 +121,7 @@ def _inbound_message_from_row(
         received_at_ms=_required_non_negative_int(
             row["received_at_ms"], "received_at_ms"
         ),
-        sender=_required_text(row["sender"], "sender"),
+        sender=_optional_text(row["sender"], "sender"),
         message_type=_required_text(row["message_type"], "message_type"),
         canonical_target=_required_text(row["canonical_target"], "canonical_target"),
         body=_string_value(row["body"], "body", allow_empty=True),
@@ -136,10 +136,10 @@ def _inbound_message_from_row(
         provider_time_ms=_optional_non_negative_int(
             row["provider_time_ms"], "provider_time_ms"
         ),
-        reply_to_provider_message_id=_optional_string_value(
-            row["reply_to_provider_message_id"],
-            "reply_to_provider_message_id",
-            allow_empty=True,
+        reply_to_message_id=_optional_string_value(
+            row["reply_to_message_id"],
+            "reply_to_message_id",
+            allow_empty=False,
         ),
         provider_payload_ref=_optional_string_value(
             row["provider_payload_ref"], "provider_payload_ref", allow_empty=False
@@ -542,49 +542,6 @@ def _same_runtime_event_payload(
 def _validate_optional_input_text(value: object, field_name: str) -> None:
     if value is not None and (not isinstance(value, str) or not value):
         raise ValueError(f"{field_name} must be a non-empty string when present")
-
-
-def _same_inbound_payload(
-    existing: InboundMessage,
-    incoming: InboundMessage,
-) -> bool:
-    return (
-        existing.session_id,
-        existing.channel_session_id,
-        existing.channel,
-        existing.provider_thread_id,
-        existing.provider_message_id,
-        existing.provider_time_ms,
-        existing.sender,
-        existing.message_type,
-        existing.canonical_target,
-        existing.target_kind,
-        existing.mentions_agent,
-        existing.notifies_runtime,
-        existing.attachments,
-        existing.body,
-        existing.reply_to_provider_message_id,
-        existing.provider_payload_ref,
-        existing.metadata,
-    ) == (
-        incoming.session_id,
-        incoming.channel_session_id,
-        incoming.channel,
-        incoming.provider_thread_id,
-        incoming.provider_message_id,
-        incoming.provider_time_ms,
-        incoming.sender,
-        incoming.message_type,
-        incoming.canonical_target,
-        incoming.target_kind,
-        incoming.mentions_agent,
-        incoming.notifies_runtime,
-        incoming.attachments,
-        incoming.body,
-        incoming.reply_to_provider_message_id,
-        incoming.provider_payload_ref,
-        incoming.metadata,
-    )
 
 
 def _validate_consumer_cursor_input(cursor: ConsumerCursor) -> None:

@@ -20,6 +20,8 @@ def message_payload(
     received_at_ms: int = 1_700_000_000_001,
     target: str = "#work:parent123",
     provider_thread_id: str | None = "provider-thread-1",
+    sender: str | None = "sender",
+    reply_to_message_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "seq": seq,
@@ -29,10 +31,10 @@ def message_payload(
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,
         "message_type": "human",
-        "sender": "sender",
+        "sender": sender,
         "body": "message body",
         "provider_thread_id": provider_thread_id,
-        "reply_to_provider_message_id": "provider-parent-1",
+        "reply_to_message_id": reply_to_message_id,
         "mentions_agent": False,
         "attachments": [],
     }
@@ -41,6 +43,7 @@ def message_payload(
 def test_check_serializer_matches_canonical_text() -> None:
     result = {
         "messages": [message_payload()],
+        "referenced_messages": [],
         "snapshot_seq": 7,
         "delivered_through_seq": 7,
     }
@@ -56,11 +59,38 @@ def test_check_serializer_preserves_zero_provider_timestamp() -> None:
         "messages": [
             message_payload(provider_time_ms=0, received_at_ms=1_700_000_000_000)
         ],
+        "referenced_messages": [],
         "snapshot_seq": 1,
         "delivered_through_seq": 1,
     }
 
     assert "time=1970-01-01 00:00:00" in serialize_check(result)
+
+
+def test_check_serializer_renders_referenced_message_before_current_message() -> None:
+    referenced = message_payload(
+        message_id="referenced-message-id",
+        seq=6,
+        sender=None,
+    )
+    referenced["body"] = "quoted body"
+    current = message_payload(
+        message_id="current-message-id",
+        seq=7,
+        reply_to_message_id="referenced-message-id",
+    )
+    current["body"] = "current body"
+    result = {
+        "messages": [current],
+        "referenced_messages": [referenced],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    output = serialize_check(result)
+    assert "Referenced messages: 1" in output
+    assert "reply_to=referenced-message-id" in output
+    assert output.index("quoted body") < output.index("current body")
 
 
 def test_check_and_read_render_the_same_attachment_suffix() -> None:
@@ -83,11 +113,17 @@ def test_check_and_read_render_the_same_attachment_suffix() -> None:
     )
 
     assert suffix in serialize_check(
-        {"messages": [message], "snapshot_seq": 7, "delivered_through_seq": 7}
+        {
+            "messages": [message],
+            "referenced_messages": [],
+            "snapshot_seq": 7,
+            "delivered_through_seq": 7,
+        }
     )
     assert suffix in serialize_read(
         {
             "messages": [message],
+            "referenced_messages": [],
             "snapshot_seq": 7,
             "first_seq": 7,
             "last_seq": 7,
@@ -97,7 +133,14 @@ def test_check_and_read_render_the_same_attachment_suffix() -> None:
 
 def test_empty_check_serializer_is_stable() -> None:
     assert (
-        serialize_check({"messages": [], "snapshot_seq": 0, "delivered_through_seq": 0})
+        serialize_check(
+            {
+                "messages": [],
+                "referenced_messages": [],
+                "snapshot_seq": 0,
+                "delivered_through_seq": 0,
+            }
+        )
         == "No more new messages."
     )
 
@@ -115,6 +158,7 @@ def test_thread_unfollow_requires_an_explicit_target() -> None:
 def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
     result = {
         "messages": [message_payload()],
+        "referenced_messages": [],
         "snapshot_seq": 9,
         "first_seq": 7,
         "last_seq": 7,
@@ -131,6 +175,7 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
 def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
     result = {
         "messages": [message_payload(provider_thread_id=None)],
+        "referenced_messages": [],
         "snapshot_seq": 7,
         "first_seq": 7,
         "last_seq": 7,
@@ -146,6 +191,7 @@ def test_serializer_rejects_inconsistent_response_fields() -> None:
     message["short_message_id"] = "different"
     result = {
         "messages": [message],
+        "referenced_messages": [],
         "snapshot_seq": 7,
         "delivered_through_seq": 7,
     }
@@ -159,6 +205,7 @@ def test_serializer_rejects_inconsistent_response_fields() -> None:
 def test_read_serializer_rejects_mismatched_window_bounds() -> None:
     result = {
         "messages": [message_payload(seq=7)],
+        "referenced_messages": [],
         "snapshot_seq": 7,
         "first_seq": 6,
         "last_seq": 7,

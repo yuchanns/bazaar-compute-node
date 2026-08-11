@@ -80,16 +80,13 @@ class IStorageTransaction(Protocol):
         """Return zero when the session has no inbound messages."""
         ...
 
-    async def inbound_message_exists(
-        self, channel: str, provider_message_id: str
-    ) -> bool:
-        """Check the application-level provider deduplication key."""
-        ...
-
     async def find_inbound_message(
-        self, channel: str, provider_message_id: str
+        self,
+        channel: str,
+        provider_thread_id: str,
+        provider_message_id: str,
     ) -> InboundMessage | None:
-        """Load the canonical inbound bound to one provider deduplication key."""
+        """Load the canonical inbound bound to one external message identity."""
         ...
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]:

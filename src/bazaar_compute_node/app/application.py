@@ -92,7 +92,6 @@ class NodeApplication:
         self.channel: IChannel = factories.channel(
             ChannelContext(
                 attachments=self._attachment_materializer,
-                inbound_exists=self._inbound_exists,
                 options=dict(channel_options or {}),
                 workspace=self._workspace_path,
             )
@@ -222,12 +221,6 @@ class NodeApplication:
         if identity is None:
             raise RuntimeError("node identity has not been initialized")
         return resolve_workspace_dir(identity.workspace_id)
-
-    async def _inbound_exists(self, channel: str, provider_message_id: str) -> bool:
-        async with self.storage.transaction() as transaction:
-            return await transaction.inbound_message_exists(
-                channel, provider_message_id
-            )
 
     async def _referenced_attachment_paths(self) -> set[str]:
         async with self.storage.transaction() as transaction:
