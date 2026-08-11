@@ -24,6 +24,7 @@ from ...core.runtime import (
     IRuntimeTurnStream,
     RuntimeCommandContext,
     RuntimeSandboxMode,
+    RuntimeSessionUnavailable,
 )
 from .client import (
     CodexAppServerClient,
@@ -279,7 +280,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self._ensure_started()
         connection = self._connections.get(session.id)
         if connection is None or not connection.supervisor.is_running:
-            raise JsonlProcessNotRunning()
+            raise RuntimeSessionUnavailable("Codex App Server process is not running")
         if connection.active_turn_id is not None:
             raise RuntimeError(
                 f"runtime session already has an active turn: {connection.active_turn_id}"

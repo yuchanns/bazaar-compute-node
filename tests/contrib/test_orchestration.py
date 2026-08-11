@@ -1026,3 +1026,61 @@ async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
         assert not channel.sent_messages
     finally:
         await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_pre_start_failure_resumes_and_retries_the_current_inbound() -> None:
+    orchestrator, _, runtime, storage, _ = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(
+            make_message(body="Please summarize the latest project update.")
+        )
+        assert first_turn is not None
+        assert first_turn.state is RuntimeTurnState.COMPLETED
+
+        runtime.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
+        follow_up_turn = await orchestrator.handle_inbound(
+            make_message(
+                seq=2,
+                body="Could you also call out the remaining delivery risk?",
+            )
+        )
+
+        assert follow_up_turn is not None
+        assert follow_up_turn.state is RuntimeTurnState.COMPLETED
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert len(runtime.resumed_sessions) == 1
+        assert runtime.resumed_sessions[0].provider_thread_id is not None
+        assert len(runtime.started_turns) == 2
+        assert len(storage.runtime_attempts) == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
+    orchestrator, _, runtime, storage, _ = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(
+            make_message(body="Please summarize the latest project update.")
+        )
+        assert first_turn is not None
+        assert first_turn.state is RuntimeTurnState.COMPLETED
+
+        runtime.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
+        runtime.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
+        follow_up_turn = await orchestrator.handle_inbound(
+            make_message(
+                seq=2,
+                body="Could you also call out the remaining delivery risk?",
+            )
+        )
+
+        assert follow_up_turn is not None
+        assert follow_up_turn.state is RuntimeTurnState.FAILED
+        assert orchestrator.agent_state("bcn-1") is AgentState.FAILED
+        assert len(runtime.resumed_sessions) == 1
+        assert len(runtime.started_turns) == 1
+        assert len(storage.runtime_attempts) == 2
+    finally:
+        await orchestrator.stop(timeout=1)

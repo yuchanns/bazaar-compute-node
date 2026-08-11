@@ -18,7 +18,11 @@ from bazaar_compute_node.core.models import (
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
-from bazaar_compute_node.core.runtime import IRuntime, IRuntimeTurnStream
+from bazaar_compute_node.core.runtime import (
+    IRuntime,
+    IRuntimeTurnStream,
+    RuntimeSessionUnavailable,
+)
 
 CommandScript = Callable[[ICommandService, str], Awaitable[None]]
 CommandRunner = Callable[[str], Awaitable[None]]
@@ -38,6 +42,7 @@ class TestTurnPlan:
     command_script: CommandScript | None = None
     block_until_release: bool = False
     raise_error: str | None = None
+    pre_start_unavailable: bool = False
 
 
 class TestRuntime(IRuntime):
@@ -137,6 +142,8 @@ class TestRuntime(IRuntime):
         if not self.started or self.stopped:
             raise RuntimeError("test runtime is not started")
         plan = self._turn_plans.popleft() if self._turn_plans else TestTurnPlan()
+        if plan.pre_start_unavailable:
+            raise RuntimeSessionUnavailable("test runtime session is unavailable")
         stream = _TestTurnStream(
             runtime=self,
             session=session,

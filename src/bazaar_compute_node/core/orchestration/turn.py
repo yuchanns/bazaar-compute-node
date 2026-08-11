@@ -25,7 +25,7 @@ from ..models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
-from ..runtime import IRuntime, IRuntimeTurnStream
+from ..runtime import IRuntime, IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorage
 from .services import SessionAuditRecorder, SessionStateWriter
 
@@ -249,6 +249,9 @@ class SessionTurnCoordinator:
                 correlation=turn_correlation,
                 session_id=context.bcn_session.id,
             )
+            raise
+        except RuntimeSessionUnavailable:
+            await self._close_stream(stream)
             raise
         except Exception as error:  # noqa: BLE001
             await self._close_stream(stream)

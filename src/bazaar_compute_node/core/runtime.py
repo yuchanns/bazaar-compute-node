@@ -12,6 +12,10 @@ from .models import RuntimeEvent, RuntimeSession, RuntimeTurn
 from .outcomes import ProviderCallResult
 
 
+class RuntimeSessionUnavailable(RuntimeError):
+    """The runtime session failed before a provider turn request was written."""
+
+
 class RuntimeSandboxMode(StrEnum):
     """Provider-neutral filesystem sandbox modes for runtime turns."""
 
@@ -87,7 +91,11 @@ class IRuntime(IAsyncLifecycle, Protocol):
         *,
         timeout: float,
     ) -> IRuntimeTurnStream:
-        """Start one turn and return its cancellable event stream."""
+        """Start one turn and return its cancellable event stream.
+
+        Raise RuntimeSessionUnavailable only before writing the turn request to
+        the provider so orchestration can safely recover the session and retry.
+        """
         ...
 
     async def interrupt_turn(

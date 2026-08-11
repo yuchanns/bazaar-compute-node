@@ -50,7 +50,11 @@ from bazaar_compute_node.core.models import (
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
-from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeSandboxMode
+from bazaar_compute_node.core.runtime import (
+    RuntimeCommandContext,
+    RuntimeSandboxMode,
+    RuntimeSessionUnavailable,
+)
 
 TEST_MODEL = "gpt-5.6-luna"
 TEST_EFFORT = "max"
@@ -236,6 +240,54 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     assert defaulted._effort is None
     assert defaulted._context.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert defaulted._context.network_access is True
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_reports_missing_connection_before_turn_start() -> None:
+    async def run_command(
+        _session_id: str,
+        _arguments: Sequence[str],
+        _body: str | None,
+    ) -> None:
+        return None
+
+    runtime = CodexAppServerRuntime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _session: {},
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-missing-connection",
+        bcn_session_id="bcn-missing-connection",
+        channel_session_id="channel-missing-connection",
+        runtime="codex",
+        workspace_id="workspace-missing-connection",
+        provider_thread_id="thread-missing-connection",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    turn = RuntimeTurn(
+        turn_id="turn-missing-connection",
+        session_id=session.id,
+        state=RuntimeTurnState.STARTING,
+        started_at_ms=now_ms,
+        client_user_message_id="message-missing-connection",
+    )
+
+    await runtime.start(timeout=1)
+    try:
+        with pytest.raises(RuntimeSessionUnavailable):
+            await runtime.start_turn(
+                session,
+                turn,
+                "Please summarize the latest project update.",
+                _NoopApprovalHandler(),
+                timeout=1,
+            )
+    finally:
+        await runtime.stop(timeout=1)
 
 
 @pytest.mark.asyncio
