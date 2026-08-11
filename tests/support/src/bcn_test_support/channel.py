@@ -15,6 +15,7 @@ from bazaar_compute_node.core.models import (
     ApprovalResult,
     InboundMessage,
     OutboundMessage,
+    StreamEvent,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 
@@ -47,6 +48,8 @@ class TestChannel(IChannel):
         self.sent_messages: list[OutboundMessage] = []
         self.approval_requests: list[ApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
+        self.stream_events: list[StreamEvent] = []
+        self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
         self._send_results: deque[ProviderCallResult[ChannelDeliveryReceipt]] = deque()
         self._approval_results: deque[ApprovalResult] = deque()
@@ -83,6 +86,11 @@ class TestChannel(IChannel):
             if not isinstance(item, InboundMessage):
                 raise TypeError("test channel queue contained an invalid message")
             yield item
+
+    def offer_stream_event(self, event: StreamEvent) -> None:
+        if self.stream_event_error is not None:
+            raise self.stream_event_error
+        self.stream_events.append(event)
 
     def queue_send_result(
         self, result: ProviderCallResult[ChannelDeliveryReceipt]

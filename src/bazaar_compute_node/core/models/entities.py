@@ -14,6 +14,7 @@ from .states import (
     OutboundDeliveryState,
     RuntimeEventState,
     RuntimeTurnState,
+    StreamEventKind,
     ensure_transition,
 )
 
@@ -452,6 +453,25 @@ class ApprovalResult:
     def __post_init__(self) -> None:
         _validate_text(self.request_id, "request_id")
         _validate_non_negative(self.decided_at_ms, "decided_at_ms")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamEvent:
+    kind: StreamEventKind
+    created_at_ms: int
+    session_id: str
+    stream_id: str | None = None
+    content: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, StreamEventKind):
+            raise TypeError("kind must be a StreamEventKind")
+        _validate_non_negative(self.created_at_ms, "created_at_ms")
+        _validate_text(self.session_id, "session_id")
+        if self.stream_id is not None:
+            _validate_text(self.stream_id, "stream_id")
+        if self.content is not None and not isinstance(self.content, str):
+            raise TypeError("content must be a string when present")
 
 
 @dataclass(frozen=True, slots=True)

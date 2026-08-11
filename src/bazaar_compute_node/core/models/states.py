@@ -244,6 +244,19 @@ class RuntimeEventState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class StreamEventKind(StrEnum):
+    AGENT_MESSAGE_DELTA = "agent-message-delta"
+    PLAN_DELTA = "plan-delta"
+    REASONING_SUMMARY_DELTA = "reasoning-summary-delta"
+    REASONING_TEXT_DELTA = "reasoning-text-delta"
+    COMMAND_OUTPUT_DELTA = "command-output-delta"
+    COMMAND_INTERACTION = "command-interaction"
+    FILE_CHANGE_UPDATE = "file-change-update"
+    TOOL_PROGRESS = "tool-progress"
+    ITEM_PROGRESS = "item-progress"
+    TURN_PROGRESS = "turn-progress"
+
+
 class ApprovalDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
@@ -24,6 +25,7 @@ from ..models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    StreamEvent,
 )
 from ..runtime import IRuntime, IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorage
@@ -126,6 +128,7 @@ class SessionTurnCoordinator:
         self._turns = turns
         self._node_id = node_id
         self._clock = clock
+        self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
 
     async def run_turn(
         self,
@@ -225,6 +228,21 @@ class SessionTurnCoordinator:
                 )
                 raise
             async for event in stream:
+                if isinstance(event, StreamEvent):
+                    if event.session_id != context.bcn_session.id:
+                        self._logger.error(
+                            "runtime emitted stream event for another session",
+                            extra={
+                                "expected_session_id": context.bcn_session.id,
+                                "actual_session_id": event.session_id,
+                            },
+                        )
+                        continue
+                    try:
+                        self._channel.offer_stream_event(event)
+                    except Exception:
+                        self._logger.exception("channel rejected stream event")
+                    continue
                 turn = await self._apply_runtime_event(message, context, turn, event)
                 if _is_terminal_turn_event(event):
                     observed_terminal = True

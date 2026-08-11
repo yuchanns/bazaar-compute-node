@@ -7,14 +7,37 @@ from typing import Self, cast
 from uuid import uuid7
 
 from ...core.approval import IApprovalHandler
-from ...core.models import RuntimeEvent, RuntimeEventState
-from ...core.runtime import IRuntimeTurnStream
+from ...core.models import (
+    RuntimeEvent,
+    RuntimeEventState,
+    StreamEvent,
+    StreamEventKind,
+)
+from ...core.runtime import IRuntimeTurnStream, RuntimeStreamItem
 from .approval import (
     approval_error,
     build_approval_response,
     is_approval_method,
     parse_approval_request,
 )
+
+_DURABLE_ITEM_METHODS = {
+    "item/started",
+    "item/completed",
+    "item/autoApprovalReview/started",
+    "item/autoApprovalReview/completed",
+}
+_STREAM_EVENT_KINDS = {
+    "item/agentMessage/delta": StreamEventKind.AGENT_MESSAGE_DELTA,
+    "item/plan/delta": StreamEventKind.PLAN_DELTA,
+    "item/reasoning/summaryTextDelta": StreamEventKind.REASONING_SUMMARY_DELTA,
+    "item/reasoning/textDelta": StreamEventKind.REASONING_TEXT_DELTA,
+    "item/commandExecution/outputDelta": StreamEventKind.COMMAND_OUTPUT_DELTA,
+    "item/commandExecution/terminalInteraction": StreamEventKind.COMMAND_INTERACTION,
+    "item/fileChange/outputDelta": StreamEventKind.FILE_CHANGE_UPDATE,
+    "item/fileChange/patchUpdated": StreamEventKind.FILE_CHANGE_UPDATE,
+    "item/mcpToolCall/progress": StreamEventKind.TOOL_PROGRESS,
+}
 from .client import parse_error_notification, parse_turn_notification
 from .process import JsonlProcessSupervisor
 from .protocol import (
@@ -27,7 +50,7 @@ from .protocol import (
 
 
 class CodexTurnEventStream(IRuntimeTurnStream):
-    """Normalize one Codex turn's notifications into runtime-neutral events."""
+    """Normalize one Codex turn's notifications into runtime-neutral items."""
 
     def __init__(
         self,
@@ -70,7 +93,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
     def __aiter__(self) -> Self:
         return self
 
-    async def __anext__(self) -> RuntimeEvent:
+    async def __anext__(self) -> RuntimeStreamItem:
         if self._closed or self._terminal_emitted:
             raise StopAsyncIteration
         if not self._initial_emitted:
@@ -132,7 +155,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         self._closed = True
         self._call_closed_callback()
 
-    def _map_message(self, message: JsonlMessage) -> RuntimeEvent | None:
+    def _map_message(self, message: JsonlMessage) -> RuntimeStreamItem | None:
         method = message.get("method")
         params = message.get("params")
         if not isinstance(method, str) or not method:
@@ -206,7 +229,33 @@ class CodexTurnEventStream(IRuntimeTurnStream):
             and provider_turn_id != self._provider_turn_id
         ):
             return None
-        if method in {"turn/started", "turn/progress"} or method.startswith("item/"):
+        if method == "item/reasoning/summaryPartAdded":
+            return None
+        if method == "turn/progress" or (
+            method.startswith("item/") and method not in _DURABLE_ITEM_METHODS
+        ):
+            stream_id = params.get("itemId")
+            if not isinstance(stream_id, str) or not stream_id:
+                stream_id = None
+            content = params.get("delta")
+            if method == "item/mcpToolCall/progress":
+                content = params.get("message")
+            elif method == "item/commandExecution/terminalInteraction":
+                content = params.get("stdin")
+            if not isinstance(content, str):
+                content = None
+            return StreamEvent(
+                kind=(
+                    StreamEventKind.TURN_PROGRESS
+                    if method == "turn/progress"
+                    else _STREAM_EVENT_KINDS.get(method, StreamEventKind.ITEM_PROGRESS)
+                ),
+                created_at_ms=time_ns() // 1_000_000,
+                session_id=self._session_id,
+                stream_id=stream_id,
+                content=content,
+            )
+        if method == "turn/started" or method in _DURABLE_ITEM_METHODS:
             metadata = self._provider_metadata(method, params)
             if provider_turn_id is not None:
                 metadata["provider_turn_id"] = provider_turn_id
