@@ -855,7 +855,22 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         await wait_until(
             lambda: storage.inbound_messages.get("bcn-1") == [first, second]
         )
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
         assert len(runtime.started_turns) == 1
+        steered_session, steered_turn, steer_input = runtime.steered_turns[0]
+        assert steered_session.bcn_session_id == "bcn-1"
+        assert steered_turn.turn_id == "turn-message-bcn-1-1"
+        assert steer_input == (
+            "[inbox notice session=bcn-1]\n"
+            "Inbox update: 2 unread message(s). "
+            "Use the message command to read them."
+        )
+        second_body = second.body
+        assert second_body is not None
+        assert second_body not in steer_input
+        second_sender = second.sender
+        assert second_sender is not None
+        assert second_sender not in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()

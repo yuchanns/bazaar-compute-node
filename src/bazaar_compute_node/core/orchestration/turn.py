@@ -81,6 +81,14 @@ def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
     }
 
 
+def inbox_notice(session_id: str, unread_count: int) -> str:
+    return (
+        f"[inbox notice session={session_id}]\n"
+        f"Inbox update: {unread_count} unread message(s). "
+        "Use the message command to read them."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     channel_session: ChannelSession
@@ -211,9 +219,7 @@ class SessionTurnCoordinator:
                 stream = await self._runtime.start_turn(
                     context.runtime_session,
                     turn,
-                    f"[inbox notice session={context.bcn_session.id}]\n"
-                    f"Inbox update: {unread_count} unread message(s). "
-                    "Use the message command to read them.",
+                    inbox_notice(context.bcn_session.id, unread_count),
                     approval_handler,
                     timeout=self._timeout_budget.provider_call_seconds,
                 )
@@ -283,6 +289,52 @@ class SessionTurnCoordinator:
             )
         finally:
             await self._close_stream(stream)
+
+    async def steer_turn(
+        self,
+        message: InboundMessage,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        *,
+        unread_count: int,
+    ) -> None:
+        try:
+            accepted = await self._runtime.steer_turn(
+                context.runtime_session,
+                turn,
+                inbox_notice(context.bcn_session.id, unread_count),
+                timeout=self._timeout_budget.provider_call_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._logger.warning(
+                "runtime turn steer failed",
+                extra={
+                    "error_type": type(error).__name__,
+                    "session_id": context.bcn_session.id,
+                    "turn_id": turn.turn_id,
+                },
+            )
+            accepted = False
+        try:
+            await self._audit.append(
+                event_name=(
+                    "runtime.request.turn.steer.accepted"
+                    if accepted
+                    else "runtime.request.turn.steer.not_accepted"
+                ),
+                state=RuntimeEventState.COMPLETED,
+                correlation=self.turn_correlation(message, context, turn),
+                metadata={
+                    "provider_method": "turn/steer",
+                    "unread_count": unread_count,
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("runtime turn steer audit failed")
 
     async def finish_turn(
         self,
