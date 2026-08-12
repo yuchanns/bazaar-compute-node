@@ -842,6 +842,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 status=ProviderCallStatus.UNKNOWN,
                 error_kind="transport_eof",
                 error_message="delivery outcome is unknown",
+                receipt={"provider_receipt_ref": "attempted-send-1"},
             )
         )
         unknown = await orchestrator.command_service.send(
@@ -852,6 +853,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             created_at_ms=5,
         )
         assert unknown.state is OutboundDeliveryState.UNKNOWN
+        assert unknown.provider_receipt_ref == "attempted-send-1"
         assert unknown.next_action == "reconcile channel delivery before retrying"
 
         channel.queue_send_result(
@@ -906,6 +908,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_rejected",
                 error_message="provider rejected delivery",
+                receipt={"provider_receipt_ref": "attempted-send-2"},
             )
         )
         failed = await orchestrator.command_service.send(
@@ -916,6 +919,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             created_at_ms=7,
         )
         assert failed.state is OutboundDeliveryState.FAILED
+        assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 4
         assert not channel.sent_messages
         assert any(

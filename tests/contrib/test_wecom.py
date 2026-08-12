@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -5,8 +8,23 @@ import pytest
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.wecom.channel import WeComChannel
 from bazaar_compute_node.contrib.wecom.markdown import split_markdown
-from bazaar_compute_node.core.channel import ChannelContext
-from bazaar_compute_node.core.models import InboundMessage
+from bazaar_compute_node.contrib.wecom.outbound import (
+    CHUNK_SIZE,
+    encode_request,
+    media_type_for_filename,
+    prepare_attachments,
+    visible_message_body,
+)
+from bazaar_compute_node.core.channel import ChannelContext, ChannelSendRequest
+from bazaar_compute_node.core.models import (
+    ChannelTargetKind,
+    FreshCheckState,
+    InboundMessage,
+    OutboundAttachment,
+    OutboundDeliveryState,
+    OutboundMessage,
+)
+from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
 
 def test_wecom_markdown_split_preserves_unicode_and_block_boundaries() -> None:
@@ -42,6 +60,313 @@ def test_wecom_filename_decodes_provider_content_disposition() -> None:
         == "\u62a5\u544a.pdf"
     )
     assert WeComChannel._filename(None, "video") == "video.bin"
+
+
+def test_wecom_outbound_request_codec_uses_explicit_chat_type() -> None:
+    body = visible_message_body(
+        target_id="group-id",
+        target_kind=ChannelTargetKind.GROUP,
+        message_type="file",
+        content={"media_id": "media-id"},
+    )
+
+    frame = json.loads(encode_request("aibot_send_msg", "request-id", body))
+
+    assert frame == {
+        "cmd": "aibot_send_msg",
+        "headers": {"req_id": "request-id"},
+        "body": {
+            "chatid": "group-id",
+            "chat_type": 2,
+            "msgtype": "file",
+            "file": {"media_id": "media-id"},
+        },
+    }
+    assert (
+        visible_message_body(
+            target_id="user-id",
+            target_kind=ChannelTargetKind.DM,
+            message_type="markdown",
+            content={"content": "hello"},
+        )["chat_type"]
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "expected_type"),
+    (
+        ("photo.png", b"media-content", "image"),
+        ("photo.JPEG", b"media-content", "image"),
+        ("recording.amr", b"media-content", "voice"),
+        ("clip.mp4", b"media-content", "video"),
+        ("report.pdf", b"media-content", "file"),
+        ("photo.webp", b"media-content", "file"),
+    ),
+)
+def test_wecom_prepares_provider_media_type(
+    tmp_path: Path, name: str, content: bytes, expected_type: str
+) -> None:
+    source = tmp_path / name
+    source.write_bytes(content)
+    descriptor = OutboundAttachment(
+        name=name,
+        relative_path=name,
+        media_type=None,
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    prepared = prepare_attachments(tmp_path, (descriptor,))[0]
+
+    assert prepared.media_type == expected_type
+    assert prepared.content == content
+    assert prepared.md5 == hashlib.md5(content, usedforsecurity=False).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_type"),
+    (
+        ("photo.png", "image"),
+        ("photo.JPEG", "image"),
+        ("recording.amr", "voice"),
+        ("clip.mp4", "video"),
+        ("report.pdf", "file"),
+    ),
+)
+def test_wecom_maps_supported_filename_formats(name: str, expected_type: str) -> None:
+    assert media_type_for_filename(name)[0] == expected_type
+
+
+def test_wecom_prepares_zero_based_bounded_chunks(tmp_path: Path) -> None:
+    content = b"a" * (CHUNK_SIZE + 1)
+    source = tmp_path / "report.pdf"
+    source.write_bytes(content)
+    descriptor = OutboundAttachment(
+        name=source.name,
+        relative_path=source.name,
+        media_type="application/pdf",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    chunks = prepare_attachments(tmp_path, (descriptor,))[0].chunks
+
+    assert tuple(map(len, chunks)) == (CHUNK_SIZE, 1)
+    assert b"".join(chunks) == content
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "size_bytes", "message"),
+    (
+        ("empty.pdf", b"1234", 4, "at least 5 bytes"),
+        (
+            "recording.amr",
+            b"12345",
+            2 * 1024 * 1024 + 1,
+            "voice attachment exceeds its size limit",
+        ),
+    ),
+)
+def test_wecom_rejects_invalid_attachment_before_upload(
+    tmp_path: Path, name: str, content: bytes, size_bytes: int, message: str
+) -> None:
+    source = tmp_path / name
+    source.write_bytes(content)
+    descriptor = OutboundAttachment(
+        name=name,
+        relative_path=name,
+        media_type=None,
+        size_bytes=size_bytes,
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        prepare_attachments(tmp_path, (descriptor,))
+
+
+def test_wecom_rejects_changed_attachment_before_upload(tmp_path: Path) -> None:
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"changed")
+    descriptor = OutboundAttachment(
+        name=source.name,
+        relative_path=source.name,
+        media_type="application/pdf",
+        size_bytes=len(b"initial"),
+        sha256=hashlib.sha256(b"initial").hexdigest(),
+    )
+
+    with pytest.raises(ValueError, match="content changed"):
+        prepare_attachments(tmp_path, (descriptor,))
+
+
+def test_wecom_delivery_receipt_tracks_visible_parts_and_upload_requests() -> None:
+    receipt = WeComChannel._delivery_receipt(
+        2,
+        1,
+        [
+            {
+                "provider_request_id": "send-1",
+                "state": "confirmed",
+                "part_type": "markdown",
+                "ordinal": 1,
+            }
+        ],
+        [
+            {
+                "provider_request_id": "upload-1",
+                "state": "failed",
+                "stage": "init",
+                "attachment_ordinal": 1,
+            }
+        ],
+    )
+
+    assert receipt == {
+        "total_parts": 2,
+        "confirmed_parts": 1,
+        "parts": (
+            {
+                "provider_request_id": "send-1",
+                "state": "confirmed",
+                "part_type": "markdown",
+                "ordinal": 1,
+            },
+        ),
+        "uploads": (
+            {
+                "provider_request_id": "upload-1",
+                "state": "failed",
+                "stage": "init",
+                "attachment_ordinal": 1,
+            },
+        ),
+        "provider_receipt_ref": "send-1",
+    }
+
+
+def test_wecom_failure_after_visible_part_is_partial(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+
+    result = channel._clear_failure(
+        total=2,
+        receipts=[
+            {
+                "provider_request_id": "send-1",
+                "state": "confirmed",
+                "part_type": "markdown",
+                "ordinal": 1,
+            }
+        ],
+        upload_receipts=[
+            {
+                "provider_request_id": "upload-1",
+                "state": "failed",
+                "stage": "init",
+                "attachment_ordinal": 1,
+            }
+        ],
+        confirmed=1,
+        error_kind="provider_rejected_upload",
+        error_message="upload failed",
+    )
+
+    assert result.status is ProviderCallStatus.PARTIAL
+    assert result.value is not None
+    assert result.value.provider_receipt_ref == "send-1"
+
+
+def test_wecom_failure_before_visible_part_is_failed(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+
+    result = channel._clear_failure(
+        total=1,
+        receipts=[],
+        upload_receipts=[
+            {
+                "provider_request_id": "upload-1",
+                "state": "unknown",
+                "stage": "finish",
+                "attachment_ordinal": 1,
+            }
+        ],
+        confirmed=0,
+        error_kind="upload_unknown",
+        error_message="upload outcome is unknown",
+    )
+
+    assert result.status is ProviderCallStatus.FAILED
+    assert result.value is None
+
+
+@pytest.mark.asyncio
+async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+    outbound = OutboundMessage(
+        outbound_message_id="outbound-1",
+        command_id="command-1",
+        session_id="session-1",
+        channel_session_id="channel-session-1",
+        target="dm:user-id",
+        body="hello",
+        state=OutboundDeliveryState.PENDING,
+        fresh_check_state=FreshCheckState.PASSED,
+        created_at_ms=1,
+        snapshot_seq=1,
+        current_inbound_seq=1,
+    )
+    request = ChannelSendRequest(
+        outbound=outbound,
+        target_kind=ChannelTargetKind.DM,
+        provider_thread_id="user-id",
+    )
+    await channel._send_lock.acquire()
+
+    result = await channel.send(request, timeout=0.001)
+
+    assert result.status is ProviderCallStatus.FAILED
+    assert result.error_kind == "delivery_timeout"
+    channel._send_lock.release()
+    await asyncio.wait_for(channel._send_lock.acquire(), timeout=0.1)
+    channel._send_lock.release()
 
 
 @pytest.mark.asyncio

@@ -634,9 +634,18 @@ class SessionCommandService(ICommandService):
                 terminal_kind = ErrorKind.PROVIDER_PARTIAL
                 terminal_state = RuntimeEventState.FAILED
             elif provider_result.status is ProviderCallStatus.FAILED:
+                provider_receipt_ref = provider_result.receipt.get(
+                    "provider_receipt_ref"
+                )
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.FAILED,
                     at_ms=self._clock(),
+                    provider_receipt_ref=(
+                        provider_receipt_ref
+                        if isinstance(provider_receipt_ref, str)
+                        and provider_receipt_ref
+                        else None
+                    ),
                     error_kind=provider_result.error_kind
                     or ErrorKind.PROVIDER_FAILED.value,
                     error_message=provider_result.error_message,
@@ -644,9 +653,18 @@ class SessionCommandService(ICommandService):
                 terminal_kind = ErrorKind.PROVIDER_FAILED
                 terminal_state = RuntimeEventState.FAILED
             else:
+                provider_receipt_ref = provider_result.receipt.get(
+                    "provider_receipt_ref"
+                )
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.UNKNOWN,
                     at_ms=self._clock(),
+                    provider_receipt_ref=(
+                        provider_receipt_ref
+                        if isinstance(provider_receipt_ref, str)
+                        and provider_receipt_ref
+                        else None
+                    ),
                     error_kind=provider_result.error_kind
                     or ErrorKind.PROVIDER_UNKNOWN.value,
                     error_message=provider_result.error_message,
