@@ -179,6 +179,16 @@ class TestRuntime(IRuntime):
             value=turn,
         )
 
+    async def steer_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        input_text: str,
+        *,
+        timeout: float,
+    ) -> bool:
+        return False
+
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:

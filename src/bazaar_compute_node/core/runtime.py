@@ -101,6 +101,22 @@ class IRuntime(IAsyncLifecycle, Protocol):
         """
         ...
 
+    async def steer_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        input_text: str,
+        *,
+        timeout: float,
+    ) -> bool:
+        """Append input to the active turn when the runtime supports steering.
+
+        Return true only when the runtime confirms that the active turn accepted
+        the input. Unsupported or unconfirmed steering returns false without
+        changing the turn lifecycle.
+        """
+        ...
+
     async def interrupt_turn(
         self,
         session: RuntimeSession,

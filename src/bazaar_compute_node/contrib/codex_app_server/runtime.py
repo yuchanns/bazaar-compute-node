@@ -30,6 +30,7 @@ from .client import (
     CodexAppServerClient,
     parse_thread_response,
     parse_turn_response,
+    parse_turn_steer_response,
 )
 from .events import CodexTurnEventStream
 from .process import JsonlProcessSpec, JsonlProcessSupervisor
@@ -379,6 +380,56 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 "provider_turn_id": provider_turn_id,
             },
         )
+
+    async def steer_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        input_text: str,
+        *,
+        timeout: float,
+    ) -> bool:
+        self._ensure_started()
+        connection = self._connections.get(session.id)
+        provider_turn_id = turn.provider_turn_id
+        if (
+            connection is None
+            or not connection.supervisor.is_running
+            or connection.active_turn_id != turn.turn_id
+            or provider_turn_id is None
+        ):
+            return False
+        try:
+            response = await connection.client.steer_turn(
+                connection.provider_thread_id,
+                provider_turn_id,
+                input_text,
+                timeout=timeout,
+            )
+            accepted_turn_id = parse_turn_steer_response(response)
+            if accepted_turn_id != provider_turn_id:
+                raise CodexAppServerProtocolError(
+                    "turn/steer returned a different provider turn"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._logger.warning(
+                "%s",
+                json.dumps(
+                    {
+                        "event_name": "runtime.turn.steer.not_accepted",
+                        "metadata": {
+                            "error_type": type(error).__name__,
+                            "session_id": session.bcn_session_id,
+                        },
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            )
+            return False
+        return True
 
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float

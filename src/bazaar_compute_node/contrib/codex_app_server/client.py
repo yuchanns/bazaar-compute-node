@@ -153,6 +153,21 @@ def build_turn_interrupt_params(thread_id: str, turn_id: str) -> dict[str, objec
     return {"threadId": thread_id, "turnId": turn_id}
 
 
+def build_turn_steer_params(
+    thread_id: str,
+    turn_id: str,
+    input_text: str,
+) -> dict[str, object]:
+    _validate_non_empty_string("thread_id", thread_id)
+    _validate_non_empty_string("turn_id", turn_id)
+    _validate_non_empty_string("input_text", input_text)
+    return {
+        "threadId": thread_id,
+        "expectedTurnId": turn_id,
+        "input": [{"type": "text", "text": input_text}],
+    }
+
+
 class CodexAppServerClient:
     """Typed facade over the adapter-local Codex JSONL supervisor."""
 
@@ -270,6 +285,20 @@ class CodexAppServerClient:
             timeout=timeout,
         )
 
+    async def steer_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        input_text: str,
+        *,
+        timeout: float,
+    ) -> JsonlMessage:
+        return await self.supervisor.request(
+            "turn/steer",
+            build_turn_steer_params(thread_id, turn_id, input_text),
+            timeout=timeout,
+        )
+
     async def receive(self, *, timeout: float | None = None) -> JsonlMessage:
         return await self.supervisor.receive(timeout=timeout)
 
@@ -288,6 +317,11 @@ def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
 def parse_turn_response(response: Mapping[str, object]) -> CodexTurnInfo:
     result = _require_mapping(response, "result")
     return _parse_turn(_require_mapping(result, "turn"))
+
+
+def parse_turn_steer_response(response: Mapping[str, object]) -> str:
+    result = _require_mapping(response, "result")
+    return _require_text(result, "turnId", "result.turnId")
 
 
 def parse_turn_notification(message: Mapping[str, object]) -> tuple[str, CodexTurnInfo]:
