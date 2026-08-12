@@ -49,7 +49,20 @@ bcn 将沿着可组合的 Channel、Runtime 与节点通用能力继续扩展。
 
 ## 安装
 
-项目使用 [uv](https://docs.astral.sh/uv/) 分发，要求 Python 3.14 或更高版本：
+项目通过 PyPI 分发，要求 Python 3.14 或更高版本：
+
+```bash
+uv tool install bazaar-compute-node
+bcn --version
+```
+
+升级到 PyPI 上的最新正式版本：
+
+```bash
+uv tool upgrade bazaar-compute-node
+```
+
+也可以直接从 GitHub 运行尚未发布的源码：
 
 ```bash
 uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn --version

@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
+from bazaar_compute_node import __version__
 from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
 from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
     build_parser,
 )
+from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.paths import resolve_data_dir
 from bazaar_compute_node.core.runtime import RuntimeSandboxMode
 
@@ -22,6 +25,13 @@ def test_help_shows_the_resolved_data_dir() -> None:
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
     ).replace("\n", "")
+
+
+def test_runtime_version_matches_distribution_metadata() -> None:
+    distribution_version = version("bazaar-compute-node")
+
+    assert __version__ == distribution_version
+    assert CLIENT_INFO.version == distribution_version
 
 
 def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
