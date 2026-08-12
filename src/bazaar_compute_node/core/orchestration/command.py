@@ -105,6 +105,17 @@ class OutboundAttachmentResolver:
             )
         return tuple(attachments)
 
+    def verify(self, attachments: tuple[OutboundAttachment, ...]) -> None:
+        workspace = self._workspace().resolve(strict=True)
+        current = self(
+            tuple(
+                str(workspace.joinpath(*PurePosixPath(attachment.relative_path).parts))
+                for attachment in attachments
+            )
+        )
+        if current != attachments:
+            raise ValueError("attachment content changed after the draft was accepted")
+
 
 class SessionCommandService(ICommandService):
     """Execute session-scoped check, read, and send commands."""
@@ -451,20 +462,6 @@ class SessionCommandService(ICommandService):
                     audit_state = RuntimeEventState.FAILED
                     audit_kind = ErrorKind.FRESH_CHECK_FAILED
                 else:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.PASSED,
-                        snapshot_seq=cursor.inbox_snapshot_seq,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.PENDING,
-                        at_ms=self._clock(),
-                    )
-                    outbound = replace(
-                        outbound,
-                        provider_attempted_at_ms=self._clock(),
-                    )
-                    await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
                         session_id=session_id,
                         channel=channel_session.channel,
@@ -498,6 +495,63 @@ class SessionCommandService(ICommandService):
                     error_message=outbound.error_message,
                 )
                 return outbound
+
+            if outbound.attachments:
+                try:
+                    await asyncio.to_thread(
+                        self._attachment_resolver.verify, outbound.attachments
+                    )
+                except ValueError as error:
+                    outbound = outbound.transition_to(
+                        OutboundDeliveryState.REJECTED,
+                        at_ms=self._clock(),
+                        error_kind=ErrorKind.VALIDATION.value,
+                        error_message=str(error),
+                        next_action=(
+                            "Inspect the attachment files and submit a new message."
+                        ),
+                    )
+                    async with self._storage.transaction() as transaction:
+                        await transaction.save_outbound_message(outbound)
+                    await self._audit.append(
+                        event_name="bcc.send.attachment_preflight.failed",
+                        state=RuntimeEventState.FAILED,
+                        correlation=audit_context,
+                        error_kind=ErrorKind.VALIDATION,
+                        error_message=outbound.error_message,
+                    )
+                    await self._audit.append_tool(
+                        operation="bcc.message.send",
+                        status="rejected",
+                        state=RuntimeEventState.FAILED,
+                        correlation=audit_context,
+                        arguments={
+                            "command_id": command_id,
+                            "target": target,
+                            "reason": outbound.error_kind,
+                        },
+                        error_kind=ErrorKind.VALIDATION,
+                        error_message=outbound.error_message,
+                    )
+                    return outbound
+
+            if cursor.inbox_snapshot_seq is None:
+                raise AssertionError("accepted send requires an inbox snapshot")
+            outbound = outbound.record_fresh_check(
+                FreshCheckState.PASSED,
+                snapshot_seq=cursor.inbox_snapshot_seq,
+                current_inbound_seq=current_seq,
+            )
+            outbound = outbound.transition_to(
+                OutboundDeliveryState.PENDING,
+                at_ms=self._clock(),
+            )
+            outbound = replace(
+                outbound,
+                provider_attempted_at_ms=self._clock(),
+            )
+            async with self._storage.transaction() as transaction:
+                await transaction.save_outbound_message(outbound)
 
             await self._audit.append(
                 event_name="bcc.send.fresh_check.passed",
