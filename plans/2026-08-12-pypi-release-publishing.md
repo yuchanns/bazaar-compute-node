@@ -79,6 +79,22 @@ commit；tag 缺失时在 runner 中补建，存在时必须是指向该 HEAD �
 workflow 中所有第三方 actions 使用完整 commit SHA 固定，并在行尾标注对应 release
 版本，避免可变 tag 改写发布链路。
 
+### GitHub 签名的自动版本提交
+
+首次 `0.1.3` 发布证明 runner 中普通 `git commit` 即使使用
+`github-actions[bot]` name/email 并通过 `GITHUB_TOKEN` push，也只会生成 unsigned commit。
+身份字段不是密码学签名，GitHub API 返回 `reason=unsigned`。
+
+后续发布使用固定完整 SHA 的官方 `actions/github-script`，通过其预认证 Octokit client
+调用 GitHub GraphQL `createCommitOnBranch` mutation。prepare job 使用当前
+`GITHUB_TOKEN`，以触发时的 main HEAD 作为 `expectedHeadOid`，只提交 base64 编码后的
+`pyproject.toml` 与 `uv.lock`，且不提供自定义 author、committer 或 signature。GitHub
+官方保证该 mutation 在受支持的平台自动由 GitHub 签名；workflow 必须检查返回的
+`signature.isValid=true` 和 `wasSignedByGitHub=true`，否则停止发布。mutation 原子更新
+main 后，runner fetch 并 checkout 返回的精确 commit，再进入现有可重复构建与 tag 流程。
+
+现有 `0.1.3` 版本提交保持原样；为补签而改写已发布 main/tag 历史不在本任务范围内。
+
 ### 文档与首次配置
 
 新增最小 package smoke test，只验证真实安装产物的入口、distribution 名和版本，不引入

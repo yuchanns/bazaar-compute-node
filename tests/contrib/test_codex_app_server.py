@@ -179,7 +179,7 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     assert build_initialize_params(CLIENT_INFO) == {
         "clientInfo": {
             "name": "bcn",
-            "version": "0.1.0",
+            "version": CLIENT_INFO.version,
         },
         "capabilities": {"experimentalApi": True},
     }

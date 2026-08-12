@@ -132,16 +132,66 @@ jobs:
             exit 1
           fi
 
-      - name: Commit release version
+      - name: Create verified release commit
+        if: steps.release.outputs.mode == 'new'
+        id: version_commit
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          result-encoding: string
+          script: |
+            const fs = require("fs");
+            const expectedHeadOid = (await exec.getExecOutput(
+              "git",
+              ["rev-parse", "HEAD"],
+              {silent: true},
+            )).stdout.trim();
+            const encode = (path) => fs.readFileSync(path).toString("base64");
+            const input = {
+              branch: {
+                repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`,
+                branchName: "main",
+              },
+              expectedHeadOid,
+              message: {headline: `Release ${{ steps.release.outputs.tag }}`},
+              fileChanges: {
+                additions: [
+                  {path: "pyproject.toml", contents: encode("pyproject.toml")},
+                  {path: "uv.lock", contents: encode("uv.lock")},
+                ],
+              },
+            };
+            const mutation = `
+              mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) {
+                  commit {
+                    oid
+                    signature {
+                      isValid
+                      wasSignedByGitHub
+                    }
+                  }
+                }
+              }
+            `;
+            const result = await github.graphql(mutation, {input});
+            const {oid, signature} = result.createCommitOnBranch.commit;
+            if (!signature?.isValid || !signature.wasSignedByGitHub) {
+              throw new Error("Release commit was not signed and verified by GitHub");
+            }
+            return oid;
+
+      - name: Checkout release commit
         if: steps.release.outputs.mode == 'new'
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version_commit.outputs.result }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml uv.lock
-          git commit -m "Release $RELEASE_TAG"
-          git push origin HEAD:main
+          git restore pyproject.toml uv.lock
+          git fetch origin main
+          git checkout --detach "$RELEASE_COMMIT"
+          if [[ "$(git rev-parse origin/main)" != "$RELEASE_COMMIT" ]]; then
+            echo "origin/main does not point to the release commit" >&2
+            exit 1
+          fi
 
       - name: Set reproducible build timestamp
         run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >>"$GITHUB_ENV"
