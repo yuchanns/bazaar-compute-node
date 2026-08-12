@@ -10,6 +10,7 @@ from bazaar_compute_node.contrib.wecom.channel import WeComChannel
 from bazaar_compute_node.contrib.wecom.markdown import split_markdown
 from bazaar_compute_node.contrib.wecom.outbound import (
     CHUNK_SIZE,
+    AttachmentReader,
     encode_request,
     media_type_for_filename,
     prepare_attachments,
@@ -120,7 +121,7 @@ def test_wecom_prepares_provider_media_type(
     prepared = prepare_attachments(tmp_path, (descriptor,))[0]
 
     assert prepared.media_type == expected_type
-    assert prepared.content == content
+    assert prepared.size_bytes == len(content)
     assert prepared.md5 == hashlib.md5(content, usedforsecurity=False).hexdigest()
 
 
@@ -150,7 +151,12 @@ def test_wecom_prepares_zero_based_bounded_chunks(tmp_path: Path) -> None:
         sha256=hashlib.sha256(content).hexdigest(),
     )
 
-    chunks = prepare_attachments(tmp_path, (descriptor,))[0].chunks
+    prepared = prepare_attachments(tmp_path, (descriptor,))[0]
+    reader = AttachmentReader.open(prepared)
+    try:
+        chunks = tuple(reader.read_chunk() for _ in range(prepared.total_chunks))
+    finally:
+        reader.close()
 
     assert tuple(map(len, chunks)) == (CHUNK_SIZE, 1)
     assert b"".join(chunks) == content
@@ -162,7 +168,7 @@ def test_wecom_prepares_zero_based_bounded_chunks(tmp_path: Path) -> None:
         ("empty.pdf", b"1234", 4, "at least 5 bytes"),
         (
             "recording.amr",
-            b"12345",
+            b"x" * (2 * 1024 * 1024 + 1),
             2 * 1024 * 1024 + 1,
             "voice attachment exceeds its size limit",
         ),
@@ -185,7 +191,7 @@ def test_wecom_rejects_invalid_attachment_before_upload(
         prepare_attachments(tmp_path, (descriptor,))
 
 
-def test_wecom_rejects_changed_attachment_before_upload(tmp_path: Path) -> None:
+def test_wecom_prepares_current_attachment_content(tmp_path: Path) -> None:
     source = tmp_path / "report.pdf"
     source.write_bytes(b"changed")
     descriptor = OutboundAttachment(
@@ -196,8 +202,10 @@ def test_wecom_rejects_changed_attachment_before_upload(tmp_path: Path) -> None:
         sha256=hashlib.sha256(b"initial").hexdigest(),
     )
 
-    with pytest.raises(ValueError, match="content changed"):
-        prepare_attachments(tmp_path, (descriptor,))
+    prepared = prepare_attachments(tmp_path, (descriptor,))[0]
+
+    assert prepared.size_bytes == len(b"changed")
+    assert prepared.md5 == hashlib.md5(b"changed", usedforsecurity=False).hexdigest()
 
 
 def test_wecom_delivery_receipt_tracks_visible_parts_and_upload_requests() -> None:

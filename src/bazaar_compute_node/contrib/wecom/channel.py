@@ -34,6 +34,7 @@ from ...core.models import (
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .markdown import split_markdown
 from .outbound import (
+    AttachmentReader,
     PreparedAttachment,
     UploadResult,
     encode_request,
@@ -469,15 +470,14 @@ class WeComChannel(IChannel):
         deadline: float,
     ) -> UploadResult:
         receipts: list[dict[str, object]] = []
-        chunks = attachment.chunks
         init = await self._request(
             connection,
             command="aibot_upload_media_init",
             body={
                 "type": attachment.media_type,
                 "filename": attachment.descriptor.name,
-                "total_size": len(attachment.content),
-                "total_chunks": len(chunks),
+                "total_size": attachment.size_bytes,
+                "total_chunks": attachment.total_chunks,
                 "md5": attachment.md5,
             },
             deadline=deadline,
@@ -507,38 +507,66 @@ class WeComChannel(IChannel):
                 error_message="WeCom upload initialization omitted upload_id",
             )
 
-        for chunk_index, chunk in enumerate(chunks):
-            result = await self._request(
-                connection,
-                command="aibot_upload_media_chunk",
-                body={
-                    "upload_id": upload_id,
-                    "chunk_index": chunk_index,
-                    "base64_data": base64.b64encode(chunk).decode("ascii"),
-                },
-                deadline=deadline,
-                rejection_kind="provider_rejected_upload",
-                rejection_message="WeCom rejected an attachment upload chunk",
-                unknown_kind="upload_unknown",
-                unknown_message="WeCom attachment upload outcome is unknown",
-                visible=False,
+        try:
+            reader = await asyncio.to_thread(AttachmentReader.open, attachment)
+        except (OSError, ValueError) as error:
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind="attachment_read_failed",
+                error_message=str(error),
             )
-            chunk_receipt = dict(result.receipt)
-            chunk_receipt.update(
-                {
-                    "stage": "chunk",
-                    "attachment_ordinal": attachment_ordinal,
-                    "chunk_index": chunk_index,
-                }
-            )
-            receipts.append(chunk_receipt)
-            if result.status is not ProviderCallStatus.CONFIRMED:
-                return UploadResult(
-                    media_id=None,
-                    receipts=tuple(receipts),
-                    error_kind=result.error_kind or "upload_unknown",
-                    error_message=result.error_message,
+        try:
+            for chunk_index in range(attachment.total_chunks):
+                try:
+                    chunk = await asyncio.to_thread(reader.read_chunk)
+                except OSError as error:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind="attachment_read_failed",
+                        error_message=str(error),
+                    )
+                if not chunk:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind="attachment_read_failed",
+                        error_message="WeCom attachment ended before all chunks were read",
+                    )
+                result = await self._request(
+                    connection,
+                    command="aibot_upload_media_chunk",
+                    body={
+                        "upload_id": upload_id,
+                        "chunk_index": chunk_index,
+                        "base64_data": base64.b64encode(chunk).decode("ascii"),
+                    },
+                    deadline=deadline,
+                    rejection_kind="provider_rejected_upload",
+                    rejection_message="WeCom rejected an attachment upload chunk",
+                    unknown_kind="upload_unknown",
+                    unknown_message="WeCom attachment upload outcome is unknown",
+                    visible=False,
                 )
+                chunk_receipt = dict(result.receipt)
+                chunk_receipt.update(
+                    {
+                        "stage": "chunk",
+                        "attachment_ordinal": attachment_ordinal,
+                        "chunk_index": chunk_index,
+                    }
+                )
+                receipts.append(chunk_receipt)
+                if result.status is not ProviderCallStatus.CONFIRMED:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind=result.error_kind or "upload_unknown",
+                        error_message=result.error_message,
+                    )
+        finally:
+            await asyncio.to_thread(reader.close)
 
         finish = await self._request(
             connection,

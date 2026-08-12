@@ -29,15 +29,35 @@ _FILE_LIMIT = 20 * 1024 * 1024
 class PreparedAttachment:
     descriptor: OutboundAttachment
     media_type: str
-    content: bytes
+    workspace: Path
+    size_bytes: int
+    total_chunks: int
     md5: str
 
-    @property
-    def chunks(self) -> tuple[bytes, ...]:
-        return tuple(
-            self.content[offset : offset + CHUNK_SIZE]
-            for offset in range(0, len(self.content), CHUNK_SIZE)
+
+class AttachmentReader:
+    def __init__(self, descriptor: int) -> None:
+        self._descriptor = descriptor
+
+    @classmethod
+    def open(cls, attachment: PreparedAttachment) -> AttachmentReader:
+        descriptor, file_stat = _open_regular_file(
+            attachment.workspace, attachment.descriptor
         )
+        maximum_size = media_type_for_filename(attachment.descriptor.name)[1]
+        if file_stat.st_size > maximum_size:
+            os.close(descriptor)
+            raise ValueError(
+                f"WeCom {attachment.media_type} attachment exceeds its size limit: "
+                f"{attachment.descriptor.name}"
+            )
+        return cls(descriptor)
+
+    def read_chunk(self) -> bytes:
+        return os.read(self._descriptor, CHUNK_SIZE)
+
+    def close(self) -> None:
+        os.close(self._descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,79 +111,79 @@ def prepare_attachments(
                 f"WeCom attachment filename exceeds 256 bytes: {attachment.name}"
             )
         media_type, maximum_size = media_type_for_filename(attachment.name)
-        if attachment.size_bytes < MIN_MEDIA_BYTES:
-            raise ValueError(
-                f"WeCom attachment must contain at least 5 bytes: {attachment.name}"
-            )
-        if attachment.size_bytes > maximum_size:
-            raise ValueError(
-                f"WeCom {media_type} attachment exceeds its size limit: "
-                f"{attachment.name}"
-            )
-        path = root.joinpath(*PurePosixPath(attachment.relative_path).parts)
-        current = root
-        for part in PurePosixPath(attachment.relative_path).parts:
-            current = current / part
-            if current.is_symlink():
-                raise ValueError(
-                    f"WeCom attachment path must not contain symlinks: "
-                    f"{attachment.name}"
-                )
-        resolved = path.resolve(strict=True)
+        descriptor, _ = _open_regular_file(root, attachment)
+        md5 = hashlib.md5(usedforsecurity=False)
+        size_bytes = 0
         try:
-            resolved.relative_to(root)
-        except ValueError as error:
-            raise ValueError(
-                f"WeCom attachment path leaves the workspace: {attachment.name}"
-            ) from error
-        descriptor = os.open(
-            resolved,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            file_stat = os.fstat(descriptor)
-            opened_stat = os.stat(resolved, follow_symlinks=False)
-            if (
-                file_stat.st_dev != opened_stat.st_dev
-                or file_stat.st_ino != opened_stat.st_ino
-            ):
-                raise ValueError(
-                    f"WeCom attachment changed while it was opened: {attachment.name}"
-                )
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ValueError(
-                    f"WeCom attachment must be a regular file: {attachment.name}"
-                )
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                content = stream.read(maximum_size + 1)
+            while chunk := os.read(descriptor, CHUNK_SIZE):
+                size_bytes += len(chunk)
+                if size_bytes > maximum_size:
+                    raise ValueError(
+                        f"WeCom {media_type} attachment exceeds its size limit: "
+                        f"{attachment.name}"
+                    )
+                md5.update(chunk)
         finally:
             os.close(descriptor)
-        if file_stat.st_size > maximum_size or len(content) > maximum_size:
+        if size_bytes < MIN_MEDIA_BYTES:
             raise ValueError(
-                f"WeCom {media_type} attachment exceeds its size limit: "
-                f"{attachment.name}"
-            )
-        if len(content) != attachment.size_bytes:
-            raise ValueError(
-                f"attachment content changed before WeCom delivery: {attachment.name}"
-            )
-        if hashlib.sha256(content).hexdigest() != attachment.sha256:
-            raise ValueError(
-                f"attachment content changed before WeCom delivery: {attachment.name}"
+                f"WeCom attachment must contain at least 5 bytes: {attachment.name}"
             )
         prepared.append(
             PreparedAttachment(
                 descriptor=attachment,
                 media_type=media_type,
-                content=content,
-                md5=hashlib.md5(content, usedforsecurity=False).hexdigest(),
+                workspace=root,
+                size_bytes=size_bytes,
+                total_chunks=(size_bytes + CHUNK_SIZE - 1) // CHUNK_SIZE,
+                md5=md5.hexdigest(),
             )
         )
     return tuple(prepared)
 
 
+def _open_regular_file(
+    workspace: Path, attachment: OutboundAttachment
+) -> tuple[int, os.stat_result]:
+    relative = PurePosixPath(attachment.relative_path)
+    current = workspace
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(
+                f"WeCom attachment path must not contain symlinks: {attachment.name}"
+            )
+    resolved = current.resolve(strict=True)
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as error:
+        raise ValueError(
+            f"WeCom attachment path leaves the workspace: {attachment.name}"
+        ) from error
+    descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        file_stat = os.fstat(descriptor)
+        opened_stat = os.stat(resolved, follow_symlinks=False)
+        if (
+            file_stat.st_dev != opened_stat.st_dev
+            or file_stat.st_ino != opened_stat.st_ino
+        ):
+            raise ValueError(
+                f"WeCom attachment changed while it was opened: {attachment.name}"
+            )
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError(
+                f"WeCom attachment must be a regular file: {attachment.name}"
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, file_stat
+
+
 __all__ = [
     "CHUNK_SIZE",
+    "AttachmentReader",
     "PreparedAttachment",
     "UploadResult",
     "encode_request",

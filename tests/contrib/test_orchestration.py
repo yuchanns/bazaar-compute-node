@@ -36,7 +36,6 @@ from bazaar_compute_node.core.models import (
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
-from bazaar_compute_node.core.orchestration.command import OutboundAttachmentResolver
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_data_dir
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
@@ -102,34 +101,6 @@ async def make_node(
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
     return orchestrator, channel, runtime, storage, audit
-
-
-def test_outbound_attachment_preflight_rejects_changed_content(
-    tmp_path: Path,
-) -> None:
-    attachment = tmp_path / "report.txt"
-    attachment.write_text("original\n")
-    resolver = OutboundAttachmentResolver(lambda: tmp_path)
-    descriptors = resolver((str(attachment),))
-
-    attachment.write_text("changed\n")
-
-    with pytest.raises(
-        ValueError, match="attachment content changed after the draft was accepted"
-    ):
-        resolver.verify(descriptors)
-
-
-def test_outbound_attachment_preflight_rejects_removed_file(tmp_path: Path) -> None:
-    attachment = tmp_path / "report.txt"
-    attachment.write_text("original\n")
-    resolver = OutboundAttachmentResolver(lambda: tmp_path)
-    descriptors = resolver((str(attachment),))
-
-    attachment.unlink()
-
-    with pytest.raises(ValueError, match="attachment path is not readable"):
-        resolver.verify(descriptors)
 
 
 @pytest.mark.asyncio
@@ -731,49 +702,6 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
             "first.txt",
             "second.json",
         ]
-    finally:
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_send_rejects_changed_attachment_before_channel_call(
-    tmp_path: Path,
-) -> None:
-    attachment = tmp_path / "report.txt"
-    attachment.write_text("original\n")
-    workspace_calls = 0
-
-    def workspace() -> Path:
-        nonlocal workspace_calls
-        workspace_calls += 1
-        if workspace_calls == 2:
-            attachment.write_text("changed\n")
-        return tmp_path
-
-    orchestrator, channel, _runtime, storage, audit = await make_node(
-        workspace=workspace
-    )
-    try:
-        await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
-        await orchestrator.command_service.check("bcn-1")
-
-        rejected = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-changed-attachment",
-            target="#test:bcn-1",
-            body="Attached report.",
-            created_at_ms=2,
-            attachment_paths=(str(attachment),),
-        )
-
-        assert rejected.state is OutboundDeliveryState.REJECTED
-        assert rejected.error_kind == "validation"
-        assert not channel.send_attempts
-        assert any(
-            event.event_name == "bcc.send.attachment_preflight.failed"
-            for event in audit.events
-        )
     finally:
         await orchestrator.stop(timeout=1)
 
