@@ -74,6 +74,7 @@ class TestRuntime(IRuntime):
         self.resumed_sessions: list[RuntimeSession] = []
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
+        self.steered_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.approval_results = []
         self.active_streams: set[_TestTurnStream] = set()
         self.closed_streams: list[_TestTurnStream] = []
@@ -179,6 +180,17 @@ class TestRuntime(IRuntime):
             value=turn,
         )
 
+    async def steer_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        input_text: str,
+        *,
+        timeout: float,
+    ) -> bool:
+        self.steered_turns.append((session, turn, input_text))
+        return False
+
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
@@ -207,6 +219,11 @@ class TestRuntime(IRuntime):
             turn_id=turn.turn_id,
             error_kind=error_kind,
             error_message="test provider failure" if error_kind else None,
+            metadata=(
+                {"provider_turn_id": f"test-provider-{turn.turn_id}"}
+                if state is RuntimeEventState.STARTED
+                else {}
+            ),
         )
 
     def _next_update(

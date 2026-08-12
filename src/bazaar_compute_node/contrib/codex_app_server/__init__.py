@@ -11,10 +11,12 @@ from .client import (
     build_thread_start_params,
     build_turn_interrupt_params,
     build_turn_start_params,
+    build_turn_steer_params,
     parse_error_notification,
     parse_thread_response,
     parse_turn_notification,
     parse_turn_response,
+    parse_turn_steer_response,
 )
 from .events import CodexTurnEventStream
 from .process import (
@@ -56,8 +58,10 @@ __all__ = [
     "build_thread_start_params",
     "build_turn_interrupt_params",
     "build_turn_start_params",
+    "build_turn_steer_params",
     "parse_error_notification",
     "parse_thread_response",
     "parse_turn_notification",
     "parse_turn_response",
+    "parse_turn_steer_response",
 ]

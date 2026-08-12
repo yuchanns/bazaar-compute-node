@@ -32,10 +32,12 @@ from bazaar_compute_node.contrib.codex_app_server import (
     build_thread_start_params,
     build_turn_interrupt_params,
     build_turn_start_params,
+    build_turn_steer_params,
     parse_error_notification,
     parse_thread_response,
     parse_turn_notification,
     parse_turn_response,
+    parse_turn_steer_response,
 )
 from bazaar_compute_node.contrib.codex_app_server.plugin import create_runtime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
@@ -223,6 +225,22 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         "threadId": "thread-1",
         "turnId": "turn-1",
     }
+    assert build_turn_steer_params(
+        "thread-1",
+        "turn-1",
+        "[inbox notice session=bcn-1]\nInbox update: 1 unread message(s).",
+    ) == {
+        "threadId": "thread-1",
+        "expectedTurnId": "turn-1",
+        "input": [
+            {
+                "type": "text",
+                "text": (
+                    "[inbox notice session=bcn-1]\nInbox update: 1 unread message(s)."
+                ),
+            }
+        ],
+    }
     assert (
         build_thread_start_params("instructions", model="another-model")["model"]
         == "another-model"
@@ -243,6 +261,7 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         {"result": {"turn": {"id": "turn-1", "status": "inProgress"}}}
     )
     assert turn.turn_id == "turn-1"
+    assert parse_turn_steer_response({"result": {"turnId": "turn-1"}}) == "turn-1"
     thread_id, completed = parse_turn_notification(
         {
             "method": "turn/completed",
@@ -360,6 +379,54 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
                 _NoopApprovalHandler(),
                 timeout=1,
             )
+    finally:
+        await runtime.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_declines_steer_without_active_binding() -> None:
+    async def run_command(
+        _session_id: str,
+        _arguments: Sequence[str],
+        _body: str | None,
+    ) -> None:
+        return None
+
+    runtime = CodexAppServerRuntime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _session: {},
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-without-active-turn",
+        bcn_session_id="bcn-without-active-turn",
+        channel_session_id="channel-without-active-turn",
+        runtime="codex",
+        workspace_id="workspace-without-active-turn",
+        provider_thread_id="thread-without-active-turn",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    turn = RuntimeTurn(
+        turn_id="turn-without-active-turn",
+        session_id=session.id,
+        state=RuntimeTurnState.RUNNING,
+        started_at_ms=now_ms,
+        provider_turn_id="provider-turn-without-active-turn",
+        client_user_message_id="message-without-active-turn",
+    )
+
+    await runtime.start(timeout=1)
+    try:
+        assert not await runtime.steer_turn(
+            session,
+            turn,
+            "[inbox notice session=bcn-without-active-turn]\n"
+            "Inbox update: 1 unread message(s).",
+            timeout=1,
+        )
     finally:
         await runtime.stop(timeout=1)
 
@@ -524,7 +591,7 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             assert thread_started
             turn_response = await client.start_turn(
                 thread_id,
-                "Reply naturally in one short sentence and do not use tools.",
+                "Run `sleep 5`, then reply with one short sentence.",
                 client_user_message_id="task4b-message-1",
                 model=TEST_MODEL,
                 effort=TEST_EFFORT,
@@ -534,6 +601,36 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             assert isinstance(turn_result, dict)
             provider_turn = parse_turn_response(turn_response)
             assert provider_turn.status == "inProgress"
+            command_started = False
+            async with asyncio.timeout(30):
+                while not command_started:
+                    incoming = await supervisor.receive(timeout=10)
+                    method = incoming.get("method")
+                    params = incoming.get("params")
+                    if not isinstance(params, dict):
+                        continue
+                    if params.get("turnId") != provider_turn.turn_id:
+                        continue
+                    command_started = method in {
+                        "item/commandExecution/started",
+                        "item/started",
+                    } and (
+                        method == "item/commandExecution/started"
+                        or (
+                            isinstance(params.get("item"), dict)
+                            and params["item"].get("type") == "commandExecution"
+                        )
+                    )
+            assert command_started
+            steer_response = await client.steer_turn(
+                thread_id,
+                provider_turn.turn_id,
+                "[inbox notice session=bcn-test]\n"
+                "Inbox update: 1 unread message(s). "
+                "Use the message command to read them.",
+                timeout=30,
+            )
+            assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
             stream = CodexTurnEventStream(
                 supervisor,
                 session_id="bcn-test",

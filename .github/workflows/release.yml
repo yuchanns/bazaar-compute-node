@@ -91,12 +91,22 @@ jobs:
               exit 1
             fi
             changed_paths="$(git diff-tree --no-commit-id --name-only -r HEAD | sort)"
-            if [[ "$changed_paths" != $'pyproject.toml\nuv.lock' ]]; then
+            if [[ "$changed_paths" != $'CHANGELOG.md\npyproject.toml\nuv.lock' ]]; then
               echo "release commit changed unexpected paths" >&2
+              exit 1
+            fi
+            heading_pattern="^## ${version//./\\.} - [0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            if [[ "$(grep -Ec "$heading_pattern" CHANGELOG.md)" != "1" ]]; then
+              echo "release changelog heading must appear exactly once" >&2
               exit 1
             fi
             mode="retry"
           else
+            previous_tag="$(git describe --tags --abbrev=0 HEAD)"
+            if [[ "$(git cat-file -t "refs/tags/$previous_tag")" != "tag" ]]; then
+              echo "previous release tag $previous_tag is not annotated" >&2
+              exit 1
+            fi
             mode="new"
           fi
 
@@ -109,6 +119,7 @@ jobs:
           fi
 
           echo "mode=$mode" >>"$GITHUB_OUTPUT"
+          echo "previous_tag=${previous_tag:-}" >>"$GITHUB_OUTPUT"
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
@@ -145,6 +156,44 @@ jobs:
               ["rev-parse", "HEAD"],
               {silent: true},
             )).stdout.trim();
+            const version = "${{ steps.release.outputs.version }}";
+            const generated = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: "${{ steps.release.outputs.tag }}",
+              target_commitish: expectedHeadOid,
+              previous_tag_name: "${{ steps.release.outputs.previous_tag }}",
+            });
+            const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+            const headingPattern = new RegExp(
+              `^## ${version.replaceAll(".", "\\.")} - \\d{4}-\\d{2}-\\d{2}$`,
+              "gm",
+            );
+            if (changelog.match(headingPattern)?.length) {
+              throw new Error(`CHANGELOG.md already contains version ${version}`);
+            }
+            const insertionPoint = changelog.indexOf("\n## ");
+            if (insertionPoint === -1) {
+              throw new Error("CHANGELOG.md does not contain a release section");
+            }
+            const releaseDate = new Date().toISOString().slice(0, 10);
+            const releaseSection = [
+              `## ${version} - ${releaseDate}`,
+              generated.data.body.trim(),
+            ].join("\n\n");
+            fs.writeFileSync(
+              "CHANGELOG.md",
+              `${changelog.slice(0, insertionPoint + 1)}${releaseSection}\n\n${changelog.slice(insertionPoint + 1)}`,
+            );
+            const changedPaths = (await exec.getExecOutput(
+              "git",
+              ["diff", "--name-only"],
+              {silent: true},
+            )).stdout.trim().split("\n").sort();
+            const expectedPaths = ["CHANGELOG.md", "pyproject.toml", "uv.lock"];
+            if (JSON.stringify(changedPaths) !== JSON.stringify(expectedPaths)) {
+              throw new Error(`Release update changed unexpected paths: ${changedPaths.join(", ")}`);
+            }
             const encode = (path) => fs.readFileSync(path).toString("base64");
             const input = {
               branch: {
@@ -155,6 +204,7 @@ jobs:
               message: {headline: `Release ${{ steps.release.outputs.tag }}`},
               fileChanges: {
                 additions: [
+                  {path: "CHANGELOG.md", contents: encode("CHANGELOG.md")},
                   {path: "pyproject.toml", contents: encode("pyproject.toml")},
                   {path: "uv.lock", contents: encode("uv.lock")},
                 ],
@@ -185,7 +235,7 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ steps.version_commit.outputs.result }}
         run: |
-          git restore pyproject.toml uv.lock
+          git restore CHANGELOG.md pyproject.toml uv.lock
           git fetch origin main
           git checkout --detach "$RELEASE_COMMIT"
           if [[ "$(git rev-parse origin/main)" != "$RELEASE_COMMIT" ]]; then

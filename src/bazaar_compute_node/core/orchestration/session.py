@@ -332,29 +332,132 @@ class SessionOrchestrator(IAsyncLifecycle):
         self,
         queue: asyncio.Queue[_RuntimeNotification],
     ) -> None:
+        pending: list[_RuntimeNotification] = []
         while True:
-            batch = [await queue.get()]
+            if pending:
+                batch = pending
+                pending = []
+            else:
+                batch = [await queue.get()]
             while True:
                 try:
                     batch.append(queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
+            turn_task = asyncio.create_task(
+                self._run_notification(batch[0]),
+                name=f"bcn-turn-{batch[0].context.bcn_session.id}",
+            )
+            queue_task = asyncio.create_task(queue.get())
+            queue_notification_consumed = False
             try:
-                result = await self._run_notification(batch[0])
+                while True:
+                    notification: _RuntimeNotification | None = None
+                    done, _ = await asyncio.wait(
+                        (turn_task, queue_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if queue_task in done:
+                        notification = queue_task.result()
+                        pending.append(notification)
+                        queue_notification_consumed = True
+                        while True:
+                            try:
+                                pending.append(queue.get_nowait())
+                            except asyncio.QueueEmpty:
+                                break
+                    if turn_task in done:
+                        break
+
+                    async with self._storage.transaction() as transaction:
+                        runtime_session = await transaction.find_runtime_session(
+                            batch[0].context.bcn_session.id
+                        )
+                        cursor = await transaction.get_consumer_cursor(
+                            batch[0].context.bcn_session.id
+                        )
+                        delivered_through_seq = (
+                            cursor.delivered_through_seq if cursor is not None else 0
+                        )
+                        unread = await transaction.list_inbound_messages(
+                            batch[0].context.bcn_session.id,
+                            after_seq=delivered_through_seq,
+                            notifying_only=True,
+                        )
+
+                    active_turn = next(
+                        (
+                            turn
+                            for turn in self._runtime_turns.values()
+                            if turn.session_id == batch[0].context.runtime_session.id
+                            and turn.state is RuntimeTurnState.RUNNING
+                            and turn.provider_turn_id is not None
+                        ),
+                        None,
+                    )
+                    if (
+                        runtime_session is not None
+                        and unread
+                        and active_turn is not None
+                        and notification is not None
+                    ):
+                        context = SessionContext(
+                            batch[0].context.channel_session,
+                            batch[0].context.bcn_session,
+                            runtime_session,
+                        )
+                        await self._turns.steer_turn(
+                            notification.message,
+                            context,
+                            active_turn,
+                            unread_count=len(unread),
+                        )
+                    queue_task = asyncio.create_task(queue.get())
+                    queue_notification_consumed = False
+
+                result = turn_task.result()
                 for notification in batch:
                     if not notification.completion.done():
                         notification.completion.set_result(result)
             except asyncio.CancelledError:
-                for notification in batch:
+                turn_task.cancel()
+                queue_task.cancel()
+                await asyncio.gather(
+                    turn_task,
+                    queue_task,
+                    return_exceptions=True,
+                )
+                if (
+                    not queue_notification_consumed
+                    and not queue_task.cancelled()
+                    and queue_task.exception() is None
+                ):
+                    pending.append(queue_task.result())
+                    queue_notification_consumed = True
+                for notification in (*batch, *pending):
                     if not notification.completion.done():
                         notification.completion.cancel()
+                for _ in range(len(pending)):
+                    queue.task_done()
+                pending.clear()
                 raise
             except Exception as error:  # noqa: BLE001
+                turn_task.cancel()
+                await asyncio.gather(turn_task, return_exceptions=True)
                 for notification in batch:
                     if not notification.completion.done():
                         notification.completion.set_exception(error)
             finally:
-                for _notification in batch:
+                if not queue_task.done():
+                    queue_task.cancel()
+                try:
+                    notification = await queue_task
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    if not queue_notification_consumed:
+                        pending.append(notification)
+                for _ in range(len(batch)):
                     queue.task_done()
 
     async def _receive_loop(self) -> None:
