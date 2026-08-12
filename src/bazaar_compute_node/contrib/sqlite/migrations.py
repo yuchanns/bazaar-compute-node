@@ -551,6 +551,20 @@ TRANSIENT_STREAM_EVENT_MIGRATION = Migration(
     ),
 )
 
+RUNTIME_EVENTS_REMOVAL_MIGRATION = Migration(
+    version=9,
+    name="remove_runtime_events",
+    statements=(
+        """
+        ALTER TABLE schema_migrations
+        ADD COLUMN compaction_completed_at_ms INTEGER
+        """,
+        """
+        DROP TABLE runtime_events
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
@@ -560,6 +574,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     INBOUND_MESSAGE_REFERENCE_INTEGRITY_MIGRATION,
     INBOUND_PROVIDER_IDENTITY_MIGRATION,
     TRANSIENT_STREAM_EVENT_MIGRATION,
+    RUNTIME_EVENTS_REMOVAL_MIGRATION,
 )
 
 

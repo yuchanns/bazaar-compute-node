@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import Self, cast
-from uuid import uuid7
 
 from ...core.approval import IApprovalHandler
 from ...core.models import (
@@ -21,12 +20,6 @@ from .approval import (
     parse_approval_request,
 )
 
-_DURABLE_ITEM_METHODS = {
-    "item/started",
-    "item/completed",
-    "item/autoApprovalReview/started",
-    "item/autoApprovalReview/completed",
-}
 _STREAM_EVENT_KINDS = {
     "item/agentMessage/delta": StreamEventKind.AGENT_MESSAGE_DELTA,
     "item/plan/delta": StreamEventKind.PLAN_DELTA,
@@ -56,8 +49,6 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         self,
         supervisor: JsonlProcessSupervisor,
         *,
-        node_id: str,
-        runtime: str,
         session_id: str,
         runtime_session_id: str,
         turn_id: str,
@@ -71,8 +62,6 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         on_closed: Callable[[], None] | None = None,
     ) -> None:
         self._supervisor = supervisor
-        self._node_id = node_id
-        self._runtime = runtime
         self._session_id = session_id
         self._runtime_session_id = runtime_session_id
         self._turn_id = turn_id
@@ -217,7 +206,6 @@ class CodexTurnEventStream(IRuntimeTurnStream):
             return self._event(
                 event_name="codex.turn.error",
                 state=RuntimeEventState.STARTED,
-                error_type=error.error_type,
                 error_message=error.message,
                 metadata=metadata,
             )
@@ -231,9 +219,14 @@ class CodexTurnEventStream(IRuntimeTurnStream):
             return None
         if method == "item/reasoning/summaryPartAdded":
             return None
-        if method == "turn/progress" or (
-            method.startswith("item/") and method not in _DURABLE_ITEM_METHODS
-        ):
+        if method in {
+            "item/started",
+            "item/completed",
+            "item/autoApprovalReview/started",
+            "item/autoApprovalReview/completed",
+        }:
+            return None
+        if method == "turn/progress" or method.startswith("item/"):
             stream_id = params.get("itemId")
             if not isinstance(stream_id, str) or not stream_id:
                 stream_id = None
@@ -255,15 +248,6 @@ class CodexTurnEventStream(IRuntimeTurnStream):
                 stream_id=stream_id,
                 content=content,
             )
-        if method == "turn/started" or method in _DURABLE_ITEM_METHODS:
-            metadata = self._provider_metadata(method, params)
-            if provider_turn_id is not None:
-                metadata["provider_turn_id"] = provider_turn_id
-            return self._event(
-                event_name="codex.turn.progress",
-                state=RuntimeEventState.STARTED,
-                metadata=metadata,
-            )
         return None
 
     def _event(
@@ -272,25 +256,16 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         event_name: str,
         state: RuntimeEventState,
         error_kind: str | None = None,
-        error_type: str | None = None,
         error_message: str | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> RuntimeEvent:
         return RuntimeEvent(
-            event_seq=0,
-            event_id=str(uuid7()),
             created_at_ms=time_ns() // 1_000_000,
-            level="error" if error_kind else "info",
             event_name=event_name,
             state=state,
-            node_id=self._node_id,
-            bcn_session_id=self._session_id,
-            runtime_session_id=self._runtime_session_id,
             turn_id=self._turn_id,
             error_kind=error_kind,
-            error_type=error_type,
             error_message=error_message,
-            runtime=self._runtime,
             metadata=dict(metadata or {}),
         )
 

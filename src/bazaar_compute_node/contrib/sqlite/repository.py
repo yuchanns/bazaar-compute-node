@@ -17,7 +17,6 @@ from ...core.models import (
     InboundMessage,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeEvent,
     RuntimeSession,
 )
 from .codec import (
@@ -31,9 +30,7 @@ from .codec import (
     _required_non_negative_int,
     _required_positive_int,
     _runtime_attempt_from_row,
-    _runtime_event_from_row,
     _runtime_session_from_row,
-    _same_runtime_event_payload,
     _validate_bcn_session_update,
     _validate_channel_session_input,
     _validate_channel_session_update,
@@ -47,7 +44,6 @@ from .codec import (
     _validate_outbound_message_input,
     _validate_outbound_update,
     _validate_positive_int,
-    _validate_runtime_event_input,
     _validate_runtime_session_update,
 )
 
@@ -663,212 +659,6 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             ),
         )
         return canonical
-
-    async def append_runtime_event(self, event: RuntimeEvent) -> RuntimeEvent:
-        _validate_runtime_event_input(event)
-        existing_row = await self._fetch_one_or_conflict(
-            "SELECT event_seq, event_id, created_at_ms, level, event_name, state, "
-            "duration_ms, node_id, channel, runtime, "
-            "channel_session_id, bcn_session_id, runtime_session_id, "
-            "turn_id, request_id, command_id, inbound_seq, outbound_message_id, "
-            "error_kind, error_type, error_message, traceback_ref, metadata_json "
-            "FROM runtime_events WHERE event_id = ? ORDER BY event_seq",
-            (event.event_id,),
-            "runtime event identity",
-        )
-        if existing_row is not None:
-            existing = _runtime_event_from_row(existing_row)
-            if _same_runtime_event_payload(existing, event):
-                return existing
-            raise ValueError(
-                "runtime event id is already bound to different event content"
-            )
-
-        await self._validate_runtime_event_references(event)
-        sequence_row = await self.fetchone(
-            "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_event_seq "
-            "FROM runtime_events"
-        )
-        if sequence_row is None:
-            raise RuntimeError("SQLite runtime event sequence query returned no row")
-        next_event_seq = _required_positive_int(
-            sequence_row["next_event_seq"], "next_event_seq"
-        )
-        canonical = replace(event, event_seq=next_event_seq)
-        await self.execute(
-            "INSERT INTO runtime_events ("
-            "event_seq, event_id, created_at_ms, level, event_name, state, "
-            "duration_ms, node_id, channel, runtime, "
-            "channel_session_id, bcn_session_id, runtime_session_id, "
-            "turn_id, request_id, command_id, inbound_seq, outbound_message_id, "
-            "error_kind, error_type, error_message, traceback_ref, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                canonical.event_seq,
-                canonical.event_id,
-                canonical.created_at_ms,
-                canonical.level,
-                canonical.event_name,
-                canonical.state.value,
-                canonical.duration_ms,
-                canonical.node_id,
-                canonical.channel,
-                canonical.runtime,
-                canonical.channel_session_id,
-                canonical.bcn_session_id,
-                canonical.runtime_session_id,
-                canonical.turn_id,
-                canonical.request_id,
-                canonical.command_id,
-                canonical.inbound_seq,
-                canonical.outbound_message_id,
-                canonical.error_kind,
-                canonical.error_type,
-                canonical.error_message,
-                canonical.traceback_ref,
-                _encode_metadata(canonical.metadata),
-            ),
-        )
-        return canonical
-
-    async def _validate_runtime_event_references(self, event: RuntimeEvent) -> None:
-        channel_session = None
-        if event.channel_session_id is not None:
-            channel_session = await self.get_channel_session(event.channel_session_id)
-            if channel_session is None:
-                raise ValueError(f"unknown channel session: {event.channel_session_id}")
-            if event.channel is not None and event.channel != channel_session.channel:
-                raise ValueError("runtime event channel binding does not match")
-
-        bcn_session = None
-        if event.bcn_session_id is not None:
-            bcn_session = await self.get_bcn_session(event.bcn_session_id)
-            if bcn_session is None:
-                raise ValueError(f"unknown bcn session: {event.bcn_session_id}")
-            if (
-                event.channel_session_id is not None
-                and bcn_session.channel_session_id != event.channel_session_id
-            ):
-                raise ValueError("runtime event bcn/channel binding does not match")
-            if channel_session is None:
-                channel_session = await self.get_channel_session(
-                    bcn_session.channel_session_id
-                )
-            if (
-                event.channel is not None
-                and channel_session is not None
-                and event.channel != channel_session.channel
-            ):
-                raise ValueError("runtime event channel binding does not match")
-
-        runtime_session = None
-        if event.runtime_session_id is not None:
-            runtime_session = await self.get_runtime_session(event.runtime_session_id)
-            if runtime_session is None:
-                raise ValueError(f"unknown runtime session: {event.runtime_session_id}")
-            if (
-                event.bcn_session_id is not None
-                and runtime_session.bcn_session_id != event.bcn_session_id
-            ):
-                raise ValueError("runtime event runtime/bcn binding does not match")
-            if (
-                event.channel_session_id is not None
-                and runtime_session.channel_session_id != event.channel_session_id
-            ):
-                raise ValueError("runtime event runtime/channel binding does not match")
-            if event.runtime is not None and runtime_session.runtime != event.runtime:
-                raise ValueError("runtime event runtime name does not match")
-            if event.channel is not None:
-                runtime_channel = await self.get_channel_session(
-                    runtime_session.channel_session_id
-                )
-                if (
-                    runtime_channel is not None
-                    and runtime_channel.channel != event.channel
-                ):
-                    raise ValueError("runtime event channel binding does not match")
-
-        if event.turn_id is not None:
-            attempt = await self.get_runtime_attempt(event.turn_id)
-            if attempt is None:
-                raise ValueError(f"unknown runtime attempt: {event.turn_id}")
-            if (
-                event.runtime_session_id is not None
-                and attempt.session_id != event.runtime_session_id
-            ):
-                raise ValueError("runtime event attempt/runtime binding does not match")
-            if runtime_session is None:
-                runtime_session = await self.get_runtime_session(attempt.session_id)
-            if (
-                event.bcn_session_id is not None
-                and runtime_session is not None
-                and runtime_session.bcn_session_id != event.bcn_session_id
-            ):
-                raise ValueError("runtime event turn/bcn binding does not match")
-            if runtime_session is not None:
-                if (
-                    event.channel_session_id is not None
-                    and runtime_session.channel_session_id != event.channel_session_id
-                ):
-                    raise ValueError(
-                        "runtime event turn/channel binding does not match"
-                    )
-                if (
-                    event.runtime is not None
-                    and runtime_session.runtime != event.runtime
-                ):
-                    raise ValueError("runtime event turn/runtime name does not match")
-                if event.channel is not None:
-                    turn_channel = await self.get_channel_session(
-                        runtime_session.channel_session_id
-                    )
-                    if (
-                        turn_channel is not None
-                        and turn_channel.channel != event.channel
-                    ):
-                        raise ValueError(
-                            "runtime event turn/channel binding does not match"
-                        )
-
-        if event.outbound_message_id is not None:
-            outbound = await self.get_outbound_message(event.outbound_message_id)
-            if outbound is None:
-                raise ValueError(
-                    f"unknown outbound message: {event.outbound_message_id}"
-                )
-            if (
-                event.bcn_session_id is not None
-                and outbound.session_id != event.bcn_session_id
-            ):
-                raise ValueError("runtime event outbound/bcn binding does not match")
-            if (
-                event.channel_session_id is not None
-                and outbound.channel_session_id != event.channel_session_id
-            ):
-                raise ValueError(
-                    "runtime event outbound/channel binding does not match"
-                )
-            if event.channel is not None:
-                outbound_channel = await self.get_channel_session(
-                    outbound.channel_session_id
-                )
-                if (
-                    outbound_channel is not None
-                    and outbound_channel.channel != event.channel
-                ):
-                    raise ValueError(
-                        "runtime event outbound/channel binding does not match"
-                    )
-
-        if event.inbound_seq is not None and event.bcn_session_id is not None:
-            row = await self.fetchone(
-                "SELECT 1 FROM inbound_messages WHERE session_id = ? AND seq = ?",
-                (event.bcn_session_id, event.inbound_seq),
-            )
-            if row is None:
-                raise ValueError(
-                    f"unknown inbound sequence for bcn session: {event.inbound_seq}"
-                )
 
     async def save_channel_session(self, session: ChannelSession) -> None:
         _validate_channel_session_input(session)

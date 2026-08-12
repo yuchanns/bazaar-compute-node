@@ -13,6 +13,7 @@ import aiosqlite
 from ...core.paths import resolve_data_dir
 from ...core.storage import NodeIdentity
 from .migrations import (
+    RUNTIME_EVENTS_REMOVAL_MIGRATION,
     MigrationChecksumError,
     MigrationError,
     apply_migrations,
@@ -117,6 +118,39 @@ class SqliteDatabase:
                             transaction,
                             clock=_current_time_ms,
                         )
+                    compaction_row: aiosqlite.Row | None = None
+                    async with SqliteTransaction(self) as transaction:
+                        compaction_row = await transaction.fetchone(
+                            "SELECT compaction_completed_at_ms "
+                            "FROM schema_migrations WHERE version = ?",
+                            (RUNTIME_EVENTS_REMOVAL_MIGRATION.version,),
+                        )
+                    if compaction_row is None:
+                        raise MigrationError(
+                            "runtime event removal migration is missing from ledger"
+                        )
+                    if compaction_row["compaction_completed_at_ms"] is None:
+                        async with self._transaction_lock:
+                            await connection.execute("VACUUM")
+                        async with SqliteTransaction(self) as transaction:
+                            await transaction.execute(
+                                "UPDATE schema_migrations "
+                                "SET compaction_completed_at_ms = ? WHERE version = ?",
+                                (
+                                    _current_time_ms(),
+                                    RUNTIME_EVENTS_REMOVAL_MIGRATION.version,
+                                ),
+                            )
+                    async with self._transaction_lock:
+                        checkpoint_cursor = await connection.execute(
+                            "PRAGMA wal_checkpoint(TRUNCATE)"
+                        )
+                        try:
+                            checkpoint_row = await checkpoint_cursor.fetchone()
+                        finally:
+                            await checkpoint_cursor.close()
+                    if checkpoint_row is None or checkpoint_row[0] != 0:
+                        raise MigrationError("SQLite WAL checkpoint could not complete")
             except BaseException:
                 self._connection = None
                 self._node_state = None

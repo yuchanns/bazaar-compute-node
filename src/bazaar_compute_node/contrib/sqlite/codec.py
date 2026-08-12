@@ -17,8 +17,6 @@ from ...core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeEvent,
-    RuntimeEventState,
     RuntimeSession,
 )
 
@@ -210,40 +208,6 @@ def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
         error_kind=_optional_text(row["error_kind"], "error_kind"),
         error_message=_optional_text(row["error_message"], "error_message"),
         next_action=_optional_text(row["next_action"], "next_action"),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
-
-
-def _runtime_event_from_row(row: aiosqlite.Row) -> RuntimeEvent:
-    return RuntimeEvent(
-        event_seq=_required_non_negative_int(row["event_seq"], "event_seq"),
-        event_id=_required_text(row["event_id"], "event_id"),
-        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
-        level=_required_text(row["level"], "level"),
-        event_name=_required_text(row["event_name"], "event_name"),
-        state=RuntimeEventState(_required_text(row["state"], "runtime_event.state")),
-        duration_ms=_optional_non_negative_int(row["duration_ms"], "duration_ms"),
-        node_id=_optional_text(row["node_id"], "node_id"),
-        channel=_optional_text(row["channel"], "channel"),
-        runtime=_optional_text(row["runtime"], "runtime"),
-        channel_session_id=_optional_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        bcn_session_id=_optional_text(row["bcn_session_id"], "bcn_session_id"),
-        runtime_session_id=_optional_text(
-            row["runtime_session_id"], "runtime_session_id"
-        ),
-        turn_id=_optional_text(row["turn_id"], "turn_id"),
-        request_id=_optional_text(row["request_id"], "request_id"),
-        command_id=_optional_text(row["command_id"], "command_id"),
-        inbound_seq=_optional_non_negative_int(row["inbound_seq"], "inbound_seq"),
-        outbound_message_id=_optional_text(
-            row["outbound_message_id"], "outbound_message_id"
-        ),
-        error_kind=_optional_text(row["error_kind"], "error_kind"),
-        error_type=_optional_text(row["error_type"], "error_type"),
-        error_message=_optional_text(row["error_message"], "error_message"),
-        traceback_ref=_optional_text(row["traceback_ref"], "traceback_ref"),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
 
@@ -506,37 +470,6 @@ def _merge_timestamp(
     if existing is not None and incoming is not None and existing != incoming:
         raise ValueError(f"outbound {field_name} cannot change")
     return incoming if incoming is not None else existing
-
-
-def _validate_runtime_event_input(event: RuntimeEvent) -> None:
-    if not isinstance(event, RuntimeEvent):
-        raise TypeError("event must be a RuntimeEvent")
-    if not isinstance(event.state, RuntimeEventState):
-        raise TypeError("runtime event state is invalid")
-    for value, field_name in (
-        (event.node_id, "node_id"),
-        (event.channel, "channel"),
-        (event.runtime, "runtime"),
-        (event.channel_session_id, "channel_session_id"),
-        (event.bcn_session_id, "bcn_session_id"),
-        (event.runtime_session_id, "runtime_session_id"),
-        (event.turn_id, "turn_id"),
-        (event.request_id, "request_id"),
-        (event.command_id, "command_id"),
-        (event.outbound_message_id, "outbound_message_id"),
-        (event.error_kind, "error_kind"),
-        (event.error_type, "error_type"),
-        (event.error_message, "error_message"),
-        (event.traceback_ref, "traceback_ref"),
-    ):
-        _validate_optional_input_text(value, field_name)
-
-
-def _same_runtime_event_payload(
-    existing: RuntimeEvent,
-    incoming: RuntimeEvent,
-) -> bool:
-    return replace(existing, event_seq=incoming.event_seq) == incoming
 
 
 def _validate_optional_input_text(value: object, field_name: str) -> None:
