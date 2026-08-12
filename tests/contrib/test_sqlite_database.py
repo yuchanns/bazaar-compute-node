@@ -28,7 +28,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 9
+        assert first_state.schema_version == 10
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -100,6 +100,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         assert "reply_to_message_id" in inbound_primary_keys
         assert "reply_to_provider_message_id" not in inbound_primary_keys
         assert outbound_primary_keys["outbound_message_id"] == 1
+        assert "attachments_json" in outbound_primary_keys
         assert [row["name"] for row in provider_identity_columns] == [
             "channel",
             "provider_thread_id",
@@ -236,6 +237,7 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             7,
             8,
             9,
+            10,
         ]
         assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
         assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
@@ -253,6 +255,8 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
         assert migration_rows[7]["checksum"] == MIGRATIONS[7].checksum
         assert migration_rows[8]["migration_name"] == MIGRATIONS[8].name
         assert migration_rows[8]["checksum"] == MIGRATIONS[8].checksum
+        assert migration_rows[9]["migration_name"] == MIGRATIONS[9].name
+        assert migration_rows[9]["checksum"] == MIGRATIONS[9].checksum
         assert {row["name"] for row in mapping_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
@@ -340,6 +344,57 @@ async def test_sqlite_removes_runtime_events_and_compacts_existing_database() ->
         assert quick_check is not None
         assert quick_check[0] == "ok"
         assert database_path.stat().st_size < size_before // 2
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v10_migration_preserves_existing_outbound_drafts() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        for migration in MIGRATIONS[:9]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.execute(
+            "INSERT INTO outbound_messages ("
+            "outbound_message_id, command_id, session_id, channel_session_id, "
+            "target, body, state, fresh_check_state, created_at_ms, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "outbound-1",
+                "command-1",
+                "session-1",
+                "channel-1",
+                "#test:message-1",
+                "draft",
+                "draft",
+                "required",
+                1,
+                "{}",
+            ),
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        async with database.transaction() as transaction:
+            row = await transaction.fetchone(
+                "SELECT attachments_json FROM outbound_messages "
+                "WHERE outbound_message_id = ?",
+                ("outbound-1",),
+            )
+        assert row is not None
+        assert row["attachments_json"] == "[]"
     finally:
         await database.stop(timeout=2)
 
@@ -517,11 +572,11 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
 
 
 def test_resolve_data_dir_uses_the_home_bcn_root() -> None:
-    assert resolve_data_dir() == (Path.home() / ".bcn").resolve()
+    assert resolve_data_dir() == Path.home() / ".bcn"
 
 
 def test_default_workspace_uses_the_home_bcn_root() -> None:
     assert (
         resolve_workspace_dir("workspace-1")
-        == (Path.home() / ".bcn" / "workspaces" / "workspace-1").resolve()
+        == Path.home() / ".bcn" / "workspaces" / "workspace-1"
     )

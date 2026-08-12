@@ -565,6 +565,17 @@ RUNTIME_EVENTS_REMOVAL_MIGRATION = Migration(
     ),
 )
 
+OUTBOUND_ATTACHMENTS_MIGRATION = Migration(
+    version=10,
+    name="add_outbound_attachments",
+    statements=(
+        """
+        ALTER TABLE outbound_messages
+        ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
@@ -575,6 +586,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     INBOUND_PROVIDER_IDENTITY_MIGRATION,
     TRANSIENT_STREAM_EVENT_MIGRATION,
     RUNTIME_EVENTS_REMOVAL_MIGRATION,
+    OUTBOUND_ATTACHMENTS_MIGRATION,
 )
 
 

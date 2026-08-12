@@ -75,6 +75,7 @@ class ICommandService(Protocol):
         target: str,
         body: str,
         created_at_ms: int,
+        attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
     ) -> OutboundMessage:
         """Run the session fresh-check before calling the Channel port."""

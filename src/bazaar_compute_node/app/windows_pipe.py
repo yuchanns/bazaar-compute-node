@@ -123,7 +123,7 @@ def _is_invalid_handle(handle: Any) -> bool:
 
 def _pipe_name(endpoint_path: Path | None) -> str:
     path = endpoint_path or (Path.home() / ".bcn" / "bcn.sock")
-    identity = str(path.expanduser().resolve(strict=False)).casefold()
+    identity = str(path.expanduser().absolute()).casefold()
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
     return f"bcn-{digest}"
 

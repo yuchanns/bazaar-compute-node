@@ -10,6 +10,7 @@ from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
     FreshCheckState,
+    OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeSession,
@@ -62,6 +63,42 @@ def make_outbound_message() -> OutboundMessage:
         fresh_check_state=FreshCheckState.REQUIRED,
         created_at_ms=1,
     )
+
+
+def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:
+    attachment = OutboundAttachment(
+        name="report.txt",
+        relative_path="reports/report.txt",
+        media_type="text/plain",
+        size_bytes=7,
+        sha256="a" * 64,
+    )
+
+    assert attachment.relative_path == "reports/report.txt"
+    with pytest.raises(ValueError, match="workspace"):
+        OutboundAttachment(
+            name="report.txt",
+            relative_path="../report.txt",
+            media_type=None,
+            size_bytes=7,
+            sha256="a" * 64,
+        )
+    with pytest.raises(ValueError, match="workspace"):
+        OutboundAttachment(
+            name="report.txt",
+            relative_path="reports\\report.txt",
+            media_type=None,
+            size_bytes=7,
+            sha256="a" * 64,
+        )
+    with pytest.raises(ValueError, match="sha256"):
+        OutboundAttachment(
+            name="report.txt",
+            relative_path="report.txt",
+            media_type=None,
+            size_bytes=7,
+            sha256="invalid",
+        )
 
 
 def test_agent_ticks_are_idempotent_and_reject_invalid_order() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
@@ -562,6 +563,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         row = await self.fetchone(
             "SELECT outbound_message_id, command_id, session_id, "
             "channel_session_id, target, reply_to_message_id, body, "
+            "attachments_json, "
             "state, fresh_check_state, "
             "snapshot_seq, current_inbound_seq, provider_message_id, "
             "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
@@ -591,12 +593,13 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 "INSERT INTO outbound_messages ("
                 "outbound_message_id, command_id, session_id, "
                 "channel_session_id, target, reply_to_message_id, body, "
+                "attachments_json, "
                 "state, fresh_check_state, "
                 "snapshot_seq, current_inbound_seq, provider_message_id, "
                 "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
                 "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
                 "next_action, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.outbound_message_id,
                     canonical.command_id,
@@ -605,6 +608,19 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     canonical.target,
                     canonical.reply_to_message_id,
                     canonical.body,
+                    json.dumps(
+                        [
+                            {
+                                "name": attachment.name,
+                                "relative_path": attachment.relative_path,
+                                "media_type": attachment.media_type,
+                                "size_bytes": attachment.size_bytes,
+                                "sha256": attachment.sha256,
+                            }
+                            for attachment in canonical.attachments
+                        ],
+                        separators=(",", ":"),
+                    ),
                     canonical.state.value,
                     canonical.fresh_check_state.value,
                     canonical.snapshot_seq,
@@ -630,6 +646,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id
             or existing.body != message.body
+            or existing.attachments != message.attachments
             or existing.created_at_ms != message.created_at_ms
         ):
             raise ValueError("outbound message identity cannot change")

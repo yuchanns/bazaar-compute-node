@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import cast
 
@@ -10,6 +11,7 @@ from bcn_test_support import RecordingAudit, TestChannel, TestRuntime
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.contrib.sqlite.repository import SqliteTransaction
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import InboundMessage, RuntimeSession
@@ -282,6 +284,8 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
     audit = cast(RecordingAudit, node.audit)
     await node.start()
     try:
+        attachment_path = node._workspace_path() / "report.txt"
+        attachment_path.write_text("report\n")
         await channel.inject(make_message(1, body="first inbound"))
         await wait_for_messages(node, 1)
         runtime_session = await wait_for_runtime_session(node)
@@ -293,8 +297,15 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         ) = await run_bcc(
             node,
             runtime_session,
-            ("message", "send", "--target", "#test:bcn-a"),
-            body="reply before check",
+            (
+                "message",
+                "send",
+                "--target",
+                "#test:bcn-a",
+                "--attachment",
+                str(attachment_path),
+            ),
+            body="",
         )
         assert missing_snapshot_code != 0
         assert missing_snapshot_stdout == ""
@@ -302,6 +313,20 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         assert "Code: SEND_FRESH_CHECK_REQUIRED" in missing_snapshot_stderr
         assert "Draft saved: yes" in missing_snapshot_stderr
         assert len(channel.send_attempts) == 0
+        async with node.storage.transaction() as transaction:
+            sqlite_transaction = cast(SqliteTransaction, transaction)
+            row = await sqlite_transaction.fetchone(
+                "SELECT outbound_message_id FROM outbound_messages "
+                "ORDER BY created_at_ms DESC LIMIT 1"
+            )
+            assert row is not None
+            draft = await sqlite_transaction.get_outbound_message(
+                row["outbound_message_id"]
+            )
+        assert draft is not None
+        assert draft.body == ""
+        assert len(draft.attachments) == 1
+        assert draft.attachments[0].relative_path == "report.txt"
 
         read_code, _read_stdout, read_stderr = await run_bcc(
             node,
@@ -321,6 +346,86 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         assert sent_stdout.startswith("Message sent to #test:bcn-a. Message ID: ")
         assert len(channel.sent_messages) == 1
 
+        attachment_code, attachment_stdout, attachment_stderr = await run_bcc(
+            node,
+            runtime_session,
+            (
+                "message",
+                "send",
+                "--target",
+                "#test:bcn-a",
+                "--attachment",
+                str(attachment_path),
+            ),
+            body="",
+        )
+        assert attachment_code == 0, attachment_stderr
+        assert attachment_stdout.startswith("Message sent to #test:bcn-a. Message ID: ")
+        attachment_message = channel.sent_messages[-1]
+        assert attachment_message.body == ""
+        assert [attachment.name for attachment in attachment_message.attachments] == [
+            "report.txt"
+        ]
+        assert attachment_message.attachments[0].relative_path == "report.txt"
+
+        duplicate_code, duplicate_stdout, duplicate_stderr = await run_bcc(
+            node,
+            runtime_session,
+            (
+                "message",
+                "send",
+                "--target",
+                "#test:bcn-a",
+                "--attachment",
+                str(attachment_path),
+                "--attachment",
+                str(attachment_path),
+            ),
+            body="duplicate",
+        )
+        assert duplicate_code != 0
+        assert duplicate_stdout == ""
+        assert "attachment paths must not contain duplicates" in duplicate_stderr
+
+        outside_path = tmp_path / "outside.txt"
+        outside_path.write_text("outside\n")
+        outside_code, outside_stdout, outside_stderr = await run_bcc(
+            node,
+            runtime_session,
+            (
+                "message",
+                "send",
+                "--target",
+                "#test:bcn-a",
+                "--attachment",
+                str(outside_path),
+            ),
+            body="outside",
+        )
+        assert outside_code != 0
+        assert outside_stdout == ""
+        assert "attachment path must stay within the workspace" in outside_stderr
+
+        if os.name != "nt":
+            symlink_path = node._workspace_path() / "report-link.txt"
+            symlink_path.symlink_to(attachment_path)
+            symlink_code, symlink_stdout, symlink_stderr = await run_bcc(
+                node,
+                runtime_session,
+                (
+                    "message",
+                    "send",
+                    "--target",
+                    "#test:bcn-a",
+                    "--attachment",
+                    str(symlink_path),
+                ),
+                body="symlink",
+            )
+            assert symlink_code != 0
+            assert symlink_stdout == ""
+            assert "attachment path cannot contain symbolic links" in symlink_stderr
+
         (
             empty_body_code,
             empty_body_stdout,
@@ -333,14 +438,14 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         )
         assert empty_body_code != 0
         assert empty_body_stdout == ""
-        assert "Error: Outbound message body must not be empty." in empty_body_stderr
+        assert "Error: Outbound message must not be empty." in empty_body_stderr
         assert "Code: SEND_EMPTY_BODY" in empty_body_stderr
         assert "Draft saved:" not in empty_body_stderr
         assert (
-            "Next action: Provide a non-empty message body and retry."
+            "Next action: Provide a message body or attachment and retry."
             in empty_body_stderr
         )
-        assert len(channel.send_attempts) == 1
+        assert len(channel.send_attempts) == 2
 
         (
             invalid_target_code,
@@ -360,7 +465,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         )
         assert "Code: SEND_FAILED" in invalid_target_stderr
         assert "Draft saved: yes" in invalid_target_stderr
-        assert len(channel.send_attempts) == 1
+        assert len(channel.send_attempts) == 2
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -429,7 +534,7 @@ async def test_real_sqlite_bcc_send_safety_gate_and_delivery_states(
         assert stale_stdout == ""
         assert "Code: SEND_FRESH_CHECK_FAILED" in stale_stderr
         assert "Draft saved: yes" in stale_stderr
-        assert len(channel.send_attempts) == 4
+        assert len(channel.send_attempts) == 5
         assert any(
             event.event_name == "channel.outbound.pending" for event in audit.events
         )

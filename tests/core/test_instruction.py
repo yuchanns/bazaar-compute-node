@@ -19,5 +19,7 @@ def test_developer_instructions_render_runtime_context() -> None:
     assert "Runtime session ID: session-test" in rendered
     assert "Runtime: test-runtime" in rendered
     assert "Workspace: workspace-from-node" in rendered
+    assert '`--attachment "<path>"`' in rendered
+    assert "stdin body is optional when at least one attachment is present" in rendered
     assert "{{" not in rendered
     assert "}}" not in rendered

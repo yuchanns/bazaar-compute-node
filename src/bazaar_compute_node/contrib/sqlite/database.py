@@ -93,12 +93,13 @@ class SqliteDatabase:
             connection: aiosqlite.Connection | None = None
             try:
                 async with asyncio.timeout(timeout):
-                    self.data_dir.mkdir(
+                    await asyncio.to_thread(
+                        self.data_dir.mkdir,
                         parents=True,
                         exist_ok=True,
                         mode=0o700,
                     )
-                    _restrict_permissions(self.data_dir, 0o700)
+                    await asyncio.to_thread(_restrict_permissions, self.data_dir, 0o700)
                     connection = await aiosqlite.connect(
                         self.database_path,
                         timeout=self._busy_timeout_ms / 1000,
@@ -111,7 +112,9 @@ class SqliteDatabase:
                     await connection.execute(
                         f"PRAGMA busy_timeout = {self._busy_timeout_ms}"
                     )
-                    _restrict_permissions(self.database_path, 0o600)
+                    await asyncio.to_thread(
+                        _restrict_permissions, self.database_path, 0o600
+                    )
                     self._connection = connection
                     async with SqliteTransaction(self) as transaction:
                         self._schema_version = await apply_migrations(

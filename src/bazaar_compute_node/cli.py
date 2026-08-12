@@ -157,7 +157,7 @@ def _apply_runtime_configuration(
 
 
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    factories = _load_factories(args, parser)
+    factories = await asyncio.to_thread(_load_factories, args, parser)
 
     data_dir = resolve_data_dir()
     node = NodeApplication(
@@ -284,14 +284,14 @@ async def _start_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    _load_factories(args, parser)
-    data_dir = resolve_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(_load_factories, args, parser)
+    data_dir = await asyncio.to_thread(resolve_data_dir)
+    await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
     endpoint_path = _endpoint_path(args, data_dir)
     endpoint = local_endpoint_for_path(endpoint_path)
     if os.name == "nt" and await _endpoint_is_reachable(endpoint, timeout=0.5):
         parser.error("bcn is already running")
-    if os.name != "nt" and endpoint_path.exists():
+    if os.name != "nt" and await asyncio.to_thread(endpoint_path.exists):
         parser.error(f"bcn endpoint already exists: {endpoint_path}")
 
     log_path = data_dir / "bcn.log"
@@ -316,7 +316,7 @@ async def _stop_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    data_dir = resolve_data_dir()
+    data_dir = await asyncio.to_thread(resolve_data_dir)
     endpoint_path = _endpoint_path(args, data_dir)
     endpoint = local_endpoint_for_path(endpoint_path)
     if not await _endpoint_is_reachable(endpoint, timeout=0.5):
@@ -354,10 +354,8 @@ async def _restart_daemon(
 
 
 async def async_main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    parser, args = await asyncio.to_thread(_prepare_cli_arguments, argv)
     command = args.command
-    _apply_runtime_configuration(args, parser)
     if command is None:
         if args.channel is None and args.runtime is None:
             parser.print_help()
@@ -372,6 +370,15 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     if command == "restart":
         return await _restart_daemon(args, parser)
     parser.error(f"unsupported command: {command}")
+
+
+def _prepare_cli_arguments(
+    argv: Sequence[str] | None,
+) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _apply_runtime_configuration(args, parser)
+    return parser, args
 
 
 def main(argv: Sequence[str] | None = None) -> int:

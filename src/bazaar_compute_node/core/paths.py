@@ -6,7 +6,7 @@ from pathlib import Path
 def resolve_data_dir() -> Path:
     """Resolve the persistent node data directory under the user's home."""
 
-    return (Path.home() / ".bcn").resolve(strict=False)
+    return Path.home() / ".bcn"
 
 
 def resolve_workspace_dir(

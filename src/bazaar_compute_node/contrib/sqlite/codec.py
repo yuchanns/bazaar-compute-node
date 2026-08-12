@@ -14,6 +14,7 @@ from ...core.models import (
     FreshCheckState,
     InboundAttachment,
     InboundMessage,
+    OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
@@ -162,6 +163,37 @@ def _inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
 
 
 def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
+    raw_attachments = row["attachments_json"]
+    if not isinstance(raw_attachments, str):
+        raise TypeError("attachments_json must be text")
+    try:
+        attachment_values = json.loads(raw_attachments)
+    except json.JSONDecodeError as error:
+        raise ValueError("attachments_json must contain valid JSON") from error
+    if not isinstance(attachment_values, list):
+        raise TypeError("attachments_json must contain a list")
+    attachments: list[OutboundAttachment] = []
+    for index, value in enumerate(attachment_values):
+        if not isinstance(value, dict):
+            raise TypeError(f"attachments_json[{index}] must be an object")
+        attachments.append(
+            OutboundAttachment(
+                name=_required_text(value.get("name"), f"attachments[{index}].name"),
+                relative_path=_required_text(
+                    value.get("relative_path"),
+                    f"attachments[{index}].relative_path",
+                ),
+                media_type=_optional_text(
+                    value.get("media_type"), f"attachments[{index}].media_type"
+                ),
+                size_bytes=_required_non_negative_int(
+                    value.get("size_bytes"), f"attachments[{index}].size_bytes"
+                ),
+                sha256=_required_text(
+                    value.get("sha256"), f"attachments[{index}].sha256"
+                ),
+            )
+        )
     return OutboundMessage(
         outbound_message_id=_required_text(
             row["outbound_message_id"], "outbound_message_id"
@@ -173,6 +205,7 @@ def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
         ),
         target=_required_text(row["target"], "target"),
         body=_string_value(row["body"], "body", allow_empty=True),
+        attachments=tuple(attachments),
         reply_to_message_id=_optional_text(
             row["reply_to_message_id"],
             "reply_to_message_id",

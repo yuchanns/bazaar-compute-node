@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid7
 
@@ -93,6 +94,7 @@ async def make_node() -> tuple[
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
+        workspace=Path.cwd,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -117,6 +119,7 @@ async def test_orchestrator_initializes_storage_identity_before_runtime() -> Non
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
+        workspace=Path.cwd,
         on_node_initialized=on_node_initialized,
     )
     await orchestrator.start(timeout=1)
