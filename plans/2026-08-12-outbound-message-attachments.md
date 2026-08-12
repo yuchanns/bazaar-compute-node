@@ -84,7 +84,7 @@ send request。
 3. 实现 WeCom 主动附件交付：全量预检、类型映射、MD5、三阶段分片上传、显式 `chat_type`、逐附件主动发送
    及多 part receipt。复用现有通用 ack correlation，不增加只使用一次的薄 helper；补齐纯 frame/codec、
    边界和状态归并测试，完成后停在 review。
-4. 运行完整 non-real-home suite、Ruff、Pyright、compileall、lock verification、`git diff --check`，并确认
+4. 运行完整 test suite、Ruff、Pyright、compileall、lock verification、`git diff --check`，并确认
    Neovim LSP 实际 attach 后检查全部改动 Python 文件。随后在真实测试 WeCom 会话验证正文 + 多附件、
    attachment-only、DM/group `chat_type` 以及接收端内容；完成后提供业务 diff 和 live evidence，停在 review。
 

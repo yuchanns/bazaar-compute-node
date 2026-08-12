@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from bazaar_compute_node.core.paths import resolve_data_dir
+
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 
 _ERROR_ALREADY_EXISTS = 183
@@ -122,7 +124,7 @@ def _is_invalid_handle(handle: Any) -> bool:
 
 
 def _pipe_name(endpoint_path: Path | None) -> str:
-    path = endpoint_path or (Path.home() / ".bcn" / "bcn.sock")
+    path = endpoint_path or (resolve_data_dir() / "bcn.sock")
     identity = str(path.expanduser().absolute()).casefold()
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
     return f"bcn-{digest}"

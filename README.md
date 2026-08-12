@@ -154,7 +154,9 @@ uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn restar
 uvx --from 'git+https://github.com/yuchanns/bazaar-compute-node@main' bcn --help
 ```
 
-节点数据默认保存在 `~/.bcn`。停止节点会优雅关闭后台进程，不会删除既有会话、工作区或消息记录。
+节点数据默认保存在 `~/.bcn`。可通过 `BCN_DATA_NAME` 指定 HOME 下的另一数据目录名称，
+例如 `BCN_DATA_NAME=.bcn-test`；该值必须是单个目录名。停止节点会优雅关闭后台进程，
+不会删除既有会话、工作区或消息记录。
 
 ## 许可证
 

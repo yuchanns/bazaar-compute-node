@@ -571,12 +571,32 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
         await database.stop(timeout=2)
 
 
-def test_resolve_data_dir_uses_the_home_bcn_root() -> None:
+def test_resolve_data_dir_uses_the_configured_home_data_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BCN_DATA_NAME", ".bcn-custom")
+    assert resolve_data_dir() == Path.home() / ".bcn-custom"
+
+
+def test_resolve_data_dir_defaults_to_home_bcn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BCN_DATA_NAME")
     assert resolve_data_dir() == Path.home() / ".bcn"
+
+
+@pytest.mark.parametrize("data_name", ("", ".", "..", "nested/name", "nested\\name"))
+def test_resolve_data_dir_rejects_invalid_data_names(
+    monkeypatch: pytest.MonkeyPatch,
+    data_name: str,
+) -> None:
+    monkeypatch.setenv("BCN_DATA_NAME", data_name)
+    with pytest.raises(ValueError, match="single path component"):
+        resolve_data_dir()
 
 
 def test_default_workspace_uses_the_home_bcn_root() -> None:
     assert (
         resolve_workspace_dir("workspace-1")
-        == Path.home() / ".bcn" / "workspaces" / "workspace-1"
+        == resolve_data_dir() / "workspaces" / "workspace-1"
     )

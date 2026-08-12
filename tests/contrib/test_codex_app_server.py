@@ -499,7 +499,6 @@ for line in sys.stdin:
     assert supervisor.state is JsonlProcessState.STOPPED
 
 
-@pytest.mark.real_home
 @pytest.mark.asyncio
 async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
     codex = shutil.which("codex")
@@ -660,7 +659,6 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
         await database.stop(timeout=10)
 
 
-@pytest.mark.real_home
 @pytest.mark.asyncio
 async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox() -> (
     None
@@ -724,7 +722,6 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
             await storage.stop(timeout=10)
 
 
-@pytest.mark.real_home
 @pytest.mark.asyncio
 async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> None:
     codex = shutil.which("codex")
@@ -887,7 +884,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         await database.stop(timeout=10)
 
 
-@pytest.mark.real_home
 @pytest.mark.asyncio
 async def test_local_codex_runtime_preserves_natural_conversation_session_behavior() -> (
     None

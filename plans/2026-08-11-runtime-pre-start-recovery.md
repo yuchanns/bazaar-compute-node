@@ -33,6 +33,6 @@ A second pre-start failure completes the turn as failed instead of looping.
 - Add coverage proving the same inbound resumes the persisted provider thread,
   completes once, and does not create a second runtime attempt.
 - Add coverage proving a repeated pre-start failure stops after one retry.
-- Run focused tests, the non-real-home suite, Ruff format/check, Pyright,
+- Run focused tests, the full test suite, Ruff format/check, Pyright,
   compileall, lock verification, diff checks, and LSP diagnostics for changed
   production files.

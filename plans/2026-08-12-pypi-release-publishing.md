@@ -115,7 +115,7 @@ mock、fake 或网络依赖。README 只增加面向使用者的 PyPI 安装与�
   构建、真实 artifact 验证、版本 commit、annotated tag 和 OIDC publish。
 - 实现同版本安全重跑与 tag 状态不一致时 fail-closed，不删除或覆盖既有 tag/package。
 - 更新 README，只说明面向使用者的 PyPI 安装与升级方式。
-- 本地验证当前版本的 focused/full non-real-home tests、Ruff format/check、Pyright、
+- 本地验证当前版本的 focused/full tests、Ruff format/check、Pyright、
   compileall、`uv lock --check` 与 `git diff --check`。
 - 在隔离临时 checkout 中模拟一个未发布的新版本，执行版本更新、lock 校验、
   固定 `SOURCE_DATE_EPOCH` 后重复执行 `uv build --no-sources`，验证两次产物 SHA-256

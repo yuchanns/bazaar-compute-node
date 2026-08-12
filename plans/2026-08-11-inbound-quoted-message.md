@@ -150,7 +150,7 @@ v7 将外部消息 identity index 改为
 
 ### Task 4：完整验证与 live acceptance
 
-- 运行 Ruff、Pyright、相关文件 LSP、compileall、全量 non-real-home tests、lock 与 diff 检查。
+- 运行 Ruff、Pyright、相关文件 LSP、compileall、全量 tests、lock 与 diff 检查。
 - 保留原 SQLite 验证 v4 到 v5 migration 与 restart。
 - 经明确部署授权后，在真实 WeCom 中引用一条文本消息自然提问；确认引用原文和当前问题分别落库、
   内部 ID 关联正确、Runtime 一次 check 可见原文、outbound 成功。

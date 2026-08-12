@@ -73,6 +73,6 @@ foreign-key identity; gaps in the append-only sequence remain historical facts.
   terminal event without channel latency or failures changing the turn outcome.
 - Add coverage proving `item/started`, `item/completed`, errors, and terminal
   events remain durable.
-- Run focused tests, the non-real-home suite, Ruff format/check, Pyright,
+- Run focused tests, the full test suite, Ruff format/check, Pyright,
   compileall, lock verification, diff checks, and LSP diagnostics for changed
   production files.
