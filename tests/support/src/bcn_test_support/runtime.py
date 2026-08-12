@@ -82,7 +82,6 @@ class TestRuntime(IRuntime):
         self._start_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._resume_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
-        self._event_seq = 0
         self._update_seq = 0
 
     async def start(self, *, timeout: float) -> None:
@@ -193,27 +192,18 @@ class TestRuntime(IRuntime):
 
     def _next_event(
         self,
-        session: RuntimeSession,
         turn: RuntimeTurn,
         state: RuntimeEventState,
     ) -> RuntimeEvent:
-        self._event_seq += 1
         error_kind = None
         if state is RuntimeEventState.FAILED:
             error_kind = "provider_failed"
         elif state is RuntimeEventState.UNKNOWN:
             error_kind = "provider_unknown"
         return RuntimeEvent(
-            event_seq=self._event_seq,
-            event_id=f"test-event-{turn.turn_id}-{self._event_seq}",
             created_at_ms=time_ns() // 1_000_000,
-            level="error" if error_kind else "info",
             event_name=f"runtime.turn.{state.value}",
             state=state,
-            node_id="test-node",
-            runtime=session.runtime,
-            bcn_session_id=session.bcn_session_id,
-            runtime_session_id=session.id,
             turn_id=turn.turn_id,
             error_kind=error_kind,
             error_message="test provider failure" if error_kind else None,
@@ -321,7 +311,7 @@ class _TestTurnStream(IRuntimeTurnStream):
             if self.closed:
                 raise StopAsyncIteration
         self.index += 1
-        return self.runtime._next_event(self.session, self.turn, state)
+        return self.runtime._next_event(self.turn, state)
 
     async def aclose(self) -> None:
         if self.closed:

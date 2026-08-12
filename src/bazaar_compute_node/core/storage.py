@@ -12,7 +12,6 @@ from .models import (
     InboundMessage,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeEvent,
     RuntimeSession,
 )
 
@@ -138,10 +137,6 @@ class IStorageTransaction(Protocol):
 
     async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
         """Persist a draft or delivery transition and return its canonical row."""
-        ...
-
-    async def append_runtime_event(self, event: RuntimeEvent) -> RuntimeEvent:
-        """Append an operational event and return its canonical local sequence."""
         ...
 
 

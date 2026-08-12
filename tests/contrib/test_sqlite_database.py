@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from stat import S_IMODE
@@ -29,7 +28,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 8
+        assert first_state.schema_version == 9
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -55,6 +54,13 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             inbound_indexes = await transaction.fetchall(
                 "PRAGMA index_list(inbound_messages)"
             )
+            migration_columns = await transaction.fetchall(
+                "PRAGMA table_info(schema_migrations)"
+            )
+            compaction_row = await transaction.fetchone(
+                "SELECT compaction_completed_at_ms FROM schema_migrations "
+                "WHERE version = 9"
+            )
 
         assert {row["name"] for row in tables} == {
             "bcn_sessions",
@@ -64,7 +70,6 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "inbound_messages",
             "node_state",
             "outbound_messages",
-            "runtime_events",
             "runtime_attempts",
             "runtime_sessions",
             "schema_migrations",
@@ -81,11 +86,13 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_sessions_bcn",
-            "idx_runtime_events_created",
-            "idx_runtime_events_name_seq",
-            "idx_runtime_events_session_seq",
             "idx_runtime_attempts_session_started",
         }
+        assert "compaction_completed_at_ms" in {
+            row["name"] for row in migration_columns
+        }
+        assert compaction_row is not None
+        assert compaction_row["compaction_completed_at_ms"] is not None
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
         outbound_primary_keys = {row["name"]: row["pk"] for row in outbound_columns}
         assert inbound_primary_keys["message_id"] == 1
@@ -228,6 +235,7 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             6,
             7,
             8,
+            9,
         ]
         assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
         assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
@@ -243,6 +251,8 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
         assert migration_rows[6]["checksum"] == MIGRATIONS[6].checksum
         assert migration_rows[7]["migration_name"] == MIGRATIONS[7].name
         assert migration_rows[7]["checksum"] == MIGRATIONS[7].checksum
+        assert migration_rows[8]["migration_name"] == MIGRATIONS[8].name
+        assert migration_rows[8]["checksum"] == MIGRATIONS[8].checksum
         assert {row["name"] for row in mapping_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
@@ -256,33 +266,13 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_removes_historical_transient_stream_events() -> None:
+async def test_sqlite_removes_runtime_events_and_compacts_existing_database() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
-    rows = (
-        ("turn-started", "codex.turn.progress", "turn/started"),
-        ("turn-progress", "codex.turn.progress", "turn/progress"),
-        ("item-started", "codex.turn.progress", "item/started"),
-        ("agent-delta", "codex.turn.progress", "item/agentMessage/delta"),
-        (
-            "reasoning-delta",
-            "codex.turn.progress",
-            "item/reasoning/summaryTextDelta",
-        ),
-        ("unknown-item", "codex.turn.progress", "item/future/progress"),
-        ("item-completed", "codex.turn.progress", "item/completed"),
-        (
-            "auto-review",
-            "codex.turn.progress",
-            "item/autoApprovalReview/completed",
-        ),
-        ("turn-error", "codex.turn.error", "error"),
-        ("turn-completed", "codex.turn.completed", "turn/completed"),
-    )
 
     async with aiosqlite.connect(database_path) as connection:
-        for migration in MIGRATIONS[:7]:
+        for migration in MIGRATIONS[:8]:
             for statement in migration.statements:
                 await connection.execute(statement)
             await connection.execute(
@@ -291,43 +281,128 @@ async def test_sqlite_removes_historical_transient_stream_events() -> None:
                 "VALUES (?, ?, ?, ?, ?)",
                 (migration.version, migration.name, migration.checksum, 1, 0),
             )
-        for event_seq, (event_id, event_name, provider_method) in enumerate(
-            rows, start=1
-        ):
-            await connection.execute(
-                "INSERT INTO runtime_events ("
-                "event_seq, event_id, created_at_ms, level, event_name, state, "
-                "metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        await connection.execute(
+            "INSERT INTO node_state ("
+            "singleton_key, node_id, schema_version, workspace_id, "
+            "created_at_ms, updated_at_ms, metadata_json"
+            ") VALUES (1, 'node-retained', 8, 'workspace-retained', 1, 1, '{}')"
+        )
+        await connection.executemany(
+            "INSERT INTO runtime_events ("
+            "event_seq, event_id, created_at_ms, level, event_name, state, "
+            "metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
                 (
                     event_seq,
-                    event_id,
+                    f"event-{event_seq}",
                     event_seq,
                     "info",
-                    event_name,
-                    "started",
-                    json.dumps({"provider_method": provider_method}),
-                ),
-            )
+                    "runtime.turn.completed",
+                    "completed",
+                    "x" * 4096,
+                )
+                for event_seq in range(1, 2001)
+            ),
+        )
         await connection.commit()
+    size_before = database_path.stat().st_size
 
     database = SqliteDatabase()
-    await database.start(timeout=2)
+    await database.start(timeout=10)
     try:
+        wal_path = Path(f"{database_path}-wal")
+        assert not wal_path.exists() or wal_path.stat().st_size == 0
         async with database.transaction() as transaction:
-            remaining = await transaction.fetchall(
-                "SELECT event_id, event_seq FROM runtime_events ORDER BY event_seq"
+            runtime_objects = await transaction.fetchall(
+                "SELECT name FROM sqlite_master WHERE name = 'runtime_events' "
+                "OR name LIKE 'idx_runtime_events_%'"
             )
+            retained = await transaction.fetchone(
+                "SELECT node_id, workspace_id FROM node_state WHERE singleton_key = 1"
+            )
+            marker = await transaction.fetchone(
+                "SELECT compaction_completed_at_ms FROM schema_migrations "
+                "WHERE version = 9"
+            )
+            freelist = await transaction.fetchone("PRAGMA freelist_count")
             quick_check = await transaction.fetchone("PRAGMA quick_check")
-        assert [(row["event_id"], row["event_seq"]) for row in remaining] == [
-            ("turn-started", 1),
-            ("item-started", 3),
-            ("item-completed", 7),
-            ("auto-review", 8),
-            ("turn-error", 9),
-            ("turn-completed", 10),
-        ]
+
+        assert not runtime_objects
+        assert retained is not None
+        assert (retained["node_id"], retained["workspace_id"]) == (
+            "node-retained",
+            "workspace-retained",
+        )
+        assert marker is not None
+        assert marker["compaction_completed_at_ms"] is not None
+        assert freelist is not None
+        assert freelist[0] == 0
         assert quick_check is not None
         assert quick_check[0] == "ok"
+        assert database_path.stat().st_size < size_before // 2
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_retries_unmarked_post_migration_compaction() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        for migration in MIGRATIONS[:8]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.executemany(
+            "INSERT INTO runtime_events ("
+            "event_seq, event_id, created_at_ms, level, event_name, state, "
+            "metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    event_seq,
+                    f"event-{event_seq}",
+                    event_seq,
+                    "info",
+                    "runtime.turn.completed",
+                    "completed",
+                    "x" * 4096,
+                )
+                for event_seq in range(1, 1001)
+            ),
+        )
+        migration = MIGRATIONS[8]
+        for statement in migration.statements:
+            await connection.execute(statement)
+        await connection.execute(
+            "INSERT INTO schema_migrations "
+            "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (migration.version, migration.name, migration.checksum, 1, 0),
+        )
+        await connection.commit()
+    size_before = database_path.stat().st_size
+
+    database = SqliteDatabase()
+    await database.start(timeout=10)
+    try:
+        async with database.transaction() as transaction:
+            marker = await transaction.fetchone(
+                "SELECT compaction_completed_at_ms FROM schema_migrations "
+                "WHERE version = 9"
+            )
+            quick_check = await transaction.fetchone("PRAGMA quick_check")
+        assert marker is not None
+        assert marker["compaction_completed_at_ms"] is not None
+        assert quick_check is not None
+        assert quick_check[0] == "ok"
+        assert database_path.stat().st_size < size_before // 2
     finally:
         await database.stop(timeout=2)
 

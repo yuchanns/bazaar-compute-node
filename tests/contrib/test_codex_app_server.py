@@ -86,8 +86,6 @@ class _NoopApprovalHandler(IApprovalHandler):
 def test_codex_turn_stream_normalizes_transient_updates() -> None:
     stream = CodexTurnEventStream(
         JsonlProcessSupervisor(JsonlProcessSpec(executable="unused")),
-        node_id="node-1",
-        runtime="codex",
         session_id="bcn-1",
         runtime_session_id="runtime-1",
         turn_id="turn-1",
@@ -138,8 +136,7 @@ def test_codex_turn_stream_normalizes_transient_updates() -> None:
             },
         }
     )
-    assert isinstance(lifecycle, RuntimeEvent)
-    assert lifecycle.metadata["provider_method"] == "item/completed"
+    assert lifecycle is None
 
     future_progress = stream._map_message(
         {
@@ -539,8 +536,6 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             assert provider_turn.status == "inProgress"
             stream = CodexTurnEventStream(
                 supervisor,
-                node_id="node-test",
-                runtime="codex",
                 session_id="bcn-test",
                 runtime_session_id="session-test",
                 turn_id="local-turn-1",
@@ -684,9 +679,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             if event.metadata.get("provider_turn_id") is not None
         }
         assert len(provider_turn_ids) == 1
-        assert all(
-            event.bcn_session_id == session.bcn_session_id for event in durable_events
-        )
         provider_thread_id = session.provider_thread_id
         assert provider_thread_id is not None
         return (

@@ -327,8 +327,6 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         connection.active_turn_id = turn.turn_id
         return CodexTurnEventStream(
             connection.supervisor,
-            node_id=self._context.node_id,
-            runtime=session.runtime,
             session_id=session.bcn_session_id,
             runtime_session_id=session.id,
             turn_id=turn.turn_id,

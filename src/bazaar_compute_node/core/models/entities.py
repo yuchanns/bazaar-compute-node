@@ -476,39 +476,23 @@ class StreamEvent:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:
-    event_seq: int
-    event_id: str
     created_at_ms: int
-    level: str
     event_name: str
     state: RuntimeEventState
-    duration_ms: int | None = None
-    node_id: str | None = None
-    channel: str | None = None
-    channel_session_id: str | None = None
-    bcn_session_id: str | None = None
-    runtime_session_id: str | None = None
     turn_id: str | None = None
-    request_id: str | None = None
-    command_id: str | None = None
-    inbound_seq: int | None = None
-    outbound_message_id: str | None = None
     error_kind: str | None = None
-    error_type: str | None = None
     error_message: str | None = None
-    traceback_ref: str | None = None
-    runtime: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_non_negative(self.event_seq, "event_seq")
-        _validate_text(self.event_id, "event_id")
         _validate_non_negative(self.created_at_ms, "created_at_ms")
-        _validate_text(self.level, "level")
         _validate_text(self.event_name, "event_name")
+        if not isinstance(self.state, RuntimeEventState):
+            raise TypeError("state must be a RuntimeEventState")
         for value, field_name in (
-            (self.duration_ms, "duration_ms"),
-            (self.inbound_seq, "inbound_seq"),
+            (self.turn_id, "turn_id"),
+            (self.error_kind, "error_kind"),
+            (self.error_message, "error_message"),
         ):
             if value is not None:
-                _validate_non_negative(value, field_name)
+                _validate_text(value, field_name)

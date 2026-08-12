@@ -354,58 +354,56 @@ class SessionTurnCoordinator:
         if event.turn_id is not None and event.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         async with self._concurrency.for_session(message.session_id):
-            async with self._storage.transaction() as transaction:
-                event = await transaction.append_runtime_event(event)
-                agent_signal = _runtime_event_agent_signal(event)
-                if not _is_turn_event(event.event_name):
-                    target_state = turn.state
-                elif event.state is RuntimeEventState.STARTED:
-                    target_state = RuntimeTurnState.RUNNING
-                elif event.state is RuntimeEventState.COMPLETED:
-                    target_state = RuntimeTurnState.COMPLETED
-                elif event.state is RuntimeEventState.FAILED:
-                    target_state = RuntimeTurnState.FAILED
-                elif event.state is RuntimeEventState.CANCELLED:
-                    target_state = RuntimeTurnState.CANCELLED
-                else:
-                    target_state = RuntimeTurnState.UNKNOWN
-                provider_turn_id = event.metadata.get("provider_turn_id")
-                if provider_turn_id is not None and (
-                    not isinstance(provider_turn_id, str) or not provider_turn_id
-                ):
-                    raise ValueError("runtime event provider_turn_id is invalid")
-                if (
-                    provider_turn_id is not None
-                    and turn.provider_turn_id is not None
-                    and turn.provider_turn_id != provider_turn_id
-                ):
-                    raise ValueError("runtime event provider turn correlation mismatch")
-                error_kind = event.error_kind
-                if event.state is RuntimeEventState.FAILED and error_kind is None:
-                    error_kind = ErrorKind.PROVIDER_FAILED.value
-                if event.state is RuntimeEventState.UNKNOWN and error_kind is None:
-                    error_kind = ErrorKind.PROVIDER_UNKNOWN.value
-                if event.state is RuntimeEventState.CANCELLED and error_kind is None:
-                    error_kind = ErrorKind.CANCELLED.value
-                updated_turn = turn.transition_to(
-                    target_state,
-                    at_ms=event.created_at_ms,
-                    error_kind=error_kind,
-                    error_message=event.error_message,
-                    latest_event_name=event.event_name,
+            agent_signal = _runtime_event_agent_signal(event)
+            if not _is_turn_event(event.event_name):
+                target_state = turn.state
+            elif event.state is RuntimeEventState.STARTED:
+                target_state = RuntimeTurnState.RUNNING
+            elif event.state is RuntimeEventState.COMPLETED:
+                target_state = RuntimeTurnState.COMPLETED
+            elif event.state is RuntimeEventState.FAILED:
+                target_state = RuntimeTurnState.FAILED
+            elif event.state is RuntimeEventState.CANCELLED:
+                target_state = RuntimeTurnState.CANCELLED
+            else:
+                target_state = RuntimeTurnState.UNKNOWN
+            provider_turn_id = event.metadata.get("provider_turn_id")
+            if provider_turn_id is not None and (
+                not isinstance(provider_turn_id, str) or not provider_turn_id
+            ):
+                raise ValueError("runtime event provider_turn_id is invalid")
+            if (
+                provider_turn_id is not None
+                and turn.provider_turn_id is not None
+                and turn.provider_turn_id != provider_turn_id
+            ):
+                raise ValueError("runtime event provider turn correlation mismatch")
+            error_kind = event.error_kind
+            if event.state is RuntimeEventState.FAILED and error_kind is None:
+                error_kind = ErrorKind.PROVIDER_FAILED.value
+            if event.state is RuntimeEventState.UNKNOWN and error_kind is None:
+                error_kind = ErrorKind.PROVIDER_UNKNOWN.value
+            if event.state is RuntimeEventState.CANCELLED and error_kind is None:
+                error_kind = ErrorKind.CANCELLED.value
+            updated_turn = turn.transition_to(
+                target_state,
+                at_ms=event.created_at_ms,
+                error_kind=error_kind,
+                error_message=event.error_message,
+                latest_event_name=event.event_name,
+            )
+            if provider_turn_id is not None:
+                updated_turn = replace(
+                    updated_turn,
+                    provider_turn_id=provider_turn_id,
                 )
-                if provider_turn_id is not None:
-                    updated_turn = replace(
-                        updated_turn,
-                        provider_turn_id=provider_turn_id,
-                    )
-                agent_tick = AgentTick(
-                    source=AgentTickSource.RUNTIME,
-                    signal=agent_signal,
-                    observed_at_ms=self._clock(),
-                    error_kind=error_kind,
-                    error_message=event.error_message,
-                )
+            agent_tick = AgentTick(
+                source=AgentTickSource.RUNTIME,
+                signal=agent_signal,
+                observed_at_ms=self._clock(),
+                error_kind=error_kind,
+                error_message=event.error_message,
+            )
             if _is_terminal_turn_event(event):
                 self._turns.pop(turn.turn_id, None)
             else:

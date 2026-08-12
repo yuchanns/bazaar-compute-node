@@ -18,8 +18,6 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeEvent,
-    RuntimeEventState,
     RuntimeSession,
 )
 from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, NodeIdentity
@@ -40,7 +38,6 @@ class MemoryStorage(IStorage, IAsyncLifecycle):
         self.cursors: dict[str, ConsumerCursor] = {}
         self.inbound_messages: dict[str, list[InboundMessage]] = {}
         self.outbound_messages: dict[str, OutboundMessage] = {}
-        self.runtime_events: list[RuntimeEvent] = []
         self.node_identity: NodeIdentity | None = None
         self.started = False
         self.stopped = False
@@ -84,7 +81,6 @@ _Snapshot = tuple[
     dict[str, ConsumerCursor],
     dict[str, list[InboundMessage]],
     dict[str, OutboundMessage],
-    list[RuntimeEvent],
 ]
 
 
@@ -103,7 +99,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
             deepcopy(self._storage.cursors),
             deepcopy(self._storage.inbound_messages),
             deepcopy(self._storage.outbound_messages),
-            deepcopy(self._storage.runtime_events),
         )
         return self
 
@@ -122,7 +117,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
                 self._storage.cursors,
                 self._storage.inbound_messages,
                 self._storage.outbound_messages,
-                self._storage.runtime_events,
             ) = self._snapshot
         self._storage._lock.release()
         return False
@@ -432,25 +426,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._storage.outbound_messages[message.outbound_message_id] = canonical
         return canonical
 
-    async def append_runtime_event(self, event: RuntimeEvent) -> RuntimeEvent:
-        _validate_runtime_event_input(event)
-        for existing in self._storage.runtime_events:
-            if existing.event_id == event.event_id:
-                if not _same_runtime_event_payload(existing, event):
-                    raise ValueError("duplicate runtime event id has different content")
-                return existing
-        _validate_runtime_event_references(self._storage, event)
-        next_event_seq = (
-            max(
-                (existing.event_seq for existing in self._storage.runtime_events),
-                default=0,
-            )
-            + 1
-        )
-        canonical = replace(event, event_seq=next_event_seq)
-        self._storage.runtime_events.append(canonical)
-        return canonical
-
 
 def _validate_updated_at(existing: int, incoming: int) -> None:
     if incoming < existing:
@@ -673,154 +648,9 @@ def _merge_timestamp(
     return incoming if incoming is not None else existing
 
 
-def _validate_runtime_event_input(event: RuntimeEvent) -> None:
-    if not isinstance(event, RuntimeEvent):
-        raise TypeError("event must be a RuntimeEvent")
-    if not isinstance(event.state, RuntimeEventState):
-        raise TypeError("runtime event state is invalid")
-    for value, field_name in (
-        (event.node_id, "node_id"),
-        (event.channel, "channel"),
-        (event.runtime, "runtime"),
-        (event.channel_session_id, "channel_session_id"),
-        (event.bcn_session_id, "bcn_session_id"),
-        (event.runtime_session_id, "runtime_session_id"),
-        (event.turn_id, "turn_id"),
-        (event.request_id, "request_id"),
-        (event.command_id, "command_id"),
-        (event.outbound_message_id, "outbound_message_id"),
-        (event.error_kind, "error_kind"),
-        (event.error_type, "error_type"),
-        (event.error_message, "error_message"),
-        (event.traceback_ref, "traceback_ref"),
-    ):
-        _validate_optional_input_text(value, field_name)
-
-
-def _same_runtime_event_payload(
-    existing: RuntimeEvent,
-    incoming: RuntimeEvent,
-) -> bool:
-    return replace(existing, event_seq=incoming.event_seq) == incoming
-
-
 def _validate_optional_input_text(value: object, field_name: str) -> None:
     if value is not None and (not isinstance(value, str) or not value):
         raise ValueError(f"{field_name} must be a non-empty string when present")
-
-
-def _validate_runtime_event_references(
-    storage: MemoryStorage,
-    event: RuntimeEvent,
-) -> None:
-    channel_session = None
-    if event.channel_session_id is not None:
-        channel_session = storage.channel_sessions.get(event.channel_session_id)
-        if channel_session is None:
-            raise ValueError(f"unknown channel session: {event.channel_session_id}")
-        if event.channel is not None and event.channel != channel_session.channel:
-            raise ValueError("runtime event channel binding does not match")
-    bcn_session = None
-    if event.bcn_session_id is not None:
-        bcn_session = storage.bcn_sessions.get(event.bcn_session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {event.bcn_session_id}")
-        if (
-            event.channel_session_id is not None
-            and bcn_session.channel_session_id != event.channel_session_id
-        ):
-            raise ValueError("runtime event bcn/channel binding does not match")
-        if event.channel is not None:
-            channel_session = channel_session or storage.channel_sessions.get(
-                bcn_session.channel_session_id
-            )
-            if channel_session is not None and channel_session.channel != event.channel:
-                raise ValueError("runtime event channel binding does not match")
-    runtime_session = None
-    if event.runtime_session_id is not None:
-        runtime_session = storage.runtime_sessions.get(event.runtime_session_id)
-        if runtime_session is None:
-            raise ValueError(f"unknown runtime session: {event.runtime_session_id}")
-        if (
-            event.bcn_session_id is not None
-            and runtime_session.bcn_session_id != event.bcn_session_id
-        ):
-            raise ValueError("runtime event runtime/bcn binding does not match")
-        if (
-            event.channel_session_id is not None
-            and runtime_session.channel_session_id != event.channel_session_id
-        ):
-            raise ValueError("runtime event runtime/channel binding does not match")
-        if event.runtime is not None and event.runtime != runtime_session.runtime:
-            raise ValueError("runtime event runtime name does not match")
-        if (
-            event.channel is not None
-            and storage.channel_sessions[runtime_session.channel_session_id].channel
-            != event.channel
-        ):
-            raise ValueError("runtime event channel binding does not match")
-    if event.turn_id is not None:
-        attempt = storage.runtime_attempts.get(event.turn_id)
-        if attempt is None:
-            raise ValueError(f"unknown runtime attempt: {event.turn_id}")
-        if (
-            event.runtime_session_id is not None
-            and attempt.session_id != event.runtime_session_id
-        ):
-            raise ValueError("runtime event attempt/runtime binding does not match")
-        if runtime_session is None:
-            runtime_session = storage.runtime_sessions.get(attempt.session_id)
-        if (
-            event.bcn_session_id is not None
-            and runtime_session is not None
-            and runtime_session.bcn_session_id != event.bcn_session_id
-        ):
-            raise ValueError("runtime event turn/bcn binding does not match")
-        if runtime_session is not None:
-            if (
-                event.channel_session_id is not None
-                and runtime_session.channel_session_id != event.channel_session_id
-            ):
-                raise ValueError("runtime event turn/channel binding does not match")
-            if event.runtime is not None and runtime_session.runtime != event.runtime:
-                raise ValueError("runtime event turn/runtime name does not match")
-            if (
-                event.channel is not None
-                and storage.channel_sessions[runtime_session.channel_session_id].channel
-                != event.channel
-            ):
-                raise ValueError("runtime event turn/channel binding does not match")
-    if event.outbound_message_id is not None:
-        outbound = storage.outbound_messages.get(event.outbound_message_id)
-        if outbound is None:
-            raise ValueError(f"unknown outbound message: {event.outbound_message_id}")
-        if (
-            event.bcn_session_id is not None
-            and outbound.session_id != event.bcn_session_id
-        ):
-            raise ValueError("runtime event outbound/bcn binding does not match")
-        if (
-            event.channel_session_id is not None
-            and outbound.channel_session_id != event.channel_session_id
-        ):
-            raise ValueError("runtime event outbound/channel binding does not match")
-        if (
-            event.channel is not None
-            and storage.channel_sessions[outbound.channel_session_id].channel
-            != event.channel
-        ):
-            raise ValueError("runtime event outbound/channel binding does not match")
-    if (
-        event.inbound_seq is not None
-        and event.bcn_session_id is not None
-        and not any(
-            message.seq == event.inbound_seq
-            for message in storage.inbound_messages.get(event.bcn_session_id, [])
-        )
-    ):
-        raise ValueError(
-            f"unknown inbound sequence for bcn session: {event.inbound_seq}"
-        )
 
 
 def _validate_channel_session_update(
