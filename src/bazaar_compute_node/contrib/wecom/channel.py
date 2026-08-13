@@ -33,6 +33,14 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .markdown import split_markdown
+from .outbound import (
+    AttachmentReader,
+    PreparedAttachment,
+    UploadResult,
+    encode_request,
+    prepare_attachments,
+    visible_message_body,
+)
 
 _STOP = object()
 _MAX_MEDIA_BYTES = 25 * 1024 * 1024
@@ -40,9 +48,10 @@ _MAX_MARKDOWN_BYTES = 20_480
 
 
 @dataclass(frozen=True, slots=True)
-class _BatchResult:
+class _RequestResult:
     status: ProviderCallStatus
     receipt: Mapping[str, object]
+    body: Mapping[str, object] | None = None
     error_kind: str | None = None
     error_message: str | None = None
 
@@ -184,7 +193,11 @@ class WeComChannel(IChannel):
         message = request.outbound
         target_id = request.provider_thread_id
         try:
-            batches = split_markdown(message.body, limit=_MAX_MARKDOWN_BYTES)
+            batches = (
+                split_markdown(message.body, limit=_MAX_MARKDOWN_BYTES)
+                if message.body.strip()
+                else ()
+            )
         except ValueError as error:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
@@ -195,13 +208,62 @@ class WeComChannel(IChannel):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         receipts: list[dict[str, object]] = []
+        upload_receipts: list[dict[str, object]] = []
         confirmed = 0
-        async with self._send_lock:
+        total_parts = len(batches) + len(message.attachments)
+        if total_parts == 0:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="empty_message",
+                error_message="WeCom outbound message must not be empty",
+            )
+        try:
+            await asyncio.wait_for(
+                self._send_lock.acquire(), timeout=max(0.0, deadline - loop.time())
+            )
+        except TimeoutError:
+            return self._clear_failure(
+                total=total_parts,
+                receipts=receipts,
+                upload_receipts=upload_receipts,
+                confirmed=confirmed,
+                error_kind="delivery_timeout",
+                error_message="WeCom delivery timed out waiting for the send lock",
+            )
+        try:
+            try:
+                attachments = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        prepare_attachments,
+                        self._context.workspace(),
+                        message.attachments,
+                    ),
+                    timeout=max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError:
+                return self._clear_failure(
+                    total=total_parts,
+                    receipts=receipts,
+                    upload_receipts=upload_receipts,
+                    confirmed=confirmed,
+                    error_kind="delivery_timeout",
+                    error_message="WeCom attachment preflight timed out",
+                )
+            except (OSError, ValueError) as error:
+                return self._clear_failure(
+                    total=total_parts,
+                    receipts=receipts,
+                    upload_receipts=upload_receipts,
+                    confirmed=confirmed,
+                    error_kind="invalid_attachment",
+                    error_message=str(error),
+                )
             for batch in batches:
                 if loop.time() >= deadline:
                     return self._clear_failure(
-                        total=len(batches),
+                        total=total_parts,
                         receipts=receipts,
+                        upload_receipts=upload_receipts,
                         confirmed=confirmed,
                         error_kind="delivery_timeout",
                         error_message=(
@@ -213,8 +275,9 @@ class WeComChannel(IChannel):
                 connection = self._connection
                 if connection is None or connection.closed or not self._ready.is_set():
                     return self._clear_failure(
-                        total=len(batches),
+                        total=total_parts,
                         receipts=receipts,
+                        upload_receipts=upload_receipts,
                         confirmed=confirmed,
                         error_kind="connection_unavailable",
                         error_message=(
@@ -226,17 +289,21 @@ class WeComChannel(IChannel):
                 result = await self._send_batch(
                     connection,
                     target_id=target_id,
+                    target_kind=request.target_kind,
                     content=batch,
                     deadline=deadline,
                 )
-                receipts.append(dict(result.receipt))
+                receipt = dict(result.receipt)
+                receipt.update({"part_type": "markdown", "ordinal": len(receipts) + 1})
+                receipts.append(receipt)
                 if result.status is ProviderCallStatus.CONFIRMED:
                     confirmed += 1
                     continue
                 if result.status is ProviderCallStatus.FAILED:
                     return self._clear_failure(
-                        total=len(batches),
+                        total=total_parts,
                         receipts=receipts,
+                        upload_receipts=upload_receipts,
                         confirmed=confirmed,
                         error_kind=result.error_kind or "provider_rejected_batch",
                         error_message=result.error_message
@@ -247,15 +314,100 @@ class WeComChannel(IChannel):
                     error_kind=result.error_kind or "ack_unknown",
                     error_message=result.error_message
                     or "WeCom acknowledgement outcome is unknown",
-                    receipt=self._delivery_receipt(len(batches), confirmed, receipts),
+                    receipt=self._delivery_receipt(
+                        total_parts, confirmed, receipts, upload_receipts
+                    ),
                 )
+
+            for attachment_ordinal, attachment in enumerate(attachments, start=1):
+                if loop.time() >= deadline:
+                    return self._clear_failure(
+                        total=total_parts,
+                        receipts=receipts,
+                        upload_receipts=upload_receipts,
+                        confirmed=confirmed,
+                        error_kind="delivery_timeout",
+                        error_message="WeCom delivery timed out between parts",
+                    )
+                connection = self._connection
+                if connection is None or connection.closed or not self._ready.is_set():
+                    return self._clear_failure(
+                        total=total_parts,
+                        receipts=receipts,
+                        upload_receipts=upload_receipts,
+                        confirmed=confirmed,
+                        error_kind="connection_unavailable",
+                        error_message="WeCom connection became unavailable between parts",
+                    )
+                upload = await self._upload_attachment(
+                    connection,
+                    attachment=attachment,
+                    attachment_ordinal=attachment_ordinal,
+                    deadline=deadline,
+                )
+                upload_receipts.extend(dict(item) for item in upload.receipts)
+                if upload.error_kind is not None:
+                    return self._clear_failure(
+                        total=total_parts,
+                        receipts=receipts,
+                        upload_receipts=upload_receipts,
+                        confirmed=confirmed,
+                        error_kind=upload.error_kind,
+                        error_message=upload.error_message
+                        or "WeCom attachment upload failed",
+                    )
+                if upload.media_id is None:
+                    raise AssertionError("successful WeCom upload requires media_id")
+                result = await self._send_media(
+                    connection,
+                    target_id=target_id,
+                    target_kind=request.target_kind,
+                    attachment=attachment,
+                    media_id=upload.media_id,
+                    deadline=deadline,
+                )
+                receipt = dict(result.receipt)
+                receipt.update(
+                    {
+                        "part_type": attachment.media_type,
+                        "ordinal": len(receipts) + 1,
+                        "attachment_name": attachment.descriptor.name,
+                    }
+                )
+                receipts.append(receipt)
+                if result.status is ProviderCallStatus.CONFIRMED:
+                    confirmed += 1
+                    continue
+                if result.status is ProviderCallStatus.FAILED:
+                    return self._clear_failure(
+                        total=total_parts,
+                        receipts=receipts,
+                        upload_receipts=upload_receipts,
+                        confirmed=confirmed,
+                        error_kind=result.error_kind or "provider_rejected_part",
+                        error_message=result.error_message
+                        or "WeCom rejected an outbound attachment",
+                    )
+                return ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind=result.error_kind or "ack_unknown",
+                    error_message=result.error_message
+                    or "WeCom acknowledgement outcome is unknown",
+                    receipt=self._delivery_receipt(
+                        total_parts, confirmed, receipts, upload_receipts
+                    ),
+                )
+        finally:
+            self._send_lock.release()
 
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
             value=ChannelDeliveryReceipt(
                 provider_receipt_ref=str(receipts[-1]["provider_request_id"])
             ),
-            receipt=self._delivery_receipt(len(batches), confirmed, receipts),
+            receipt=self._delivery_receipt(
+                total_parts, confirmed, receipts, upload_receipts
+            ),
         )
 
     async def _send_batch(
@@ -263,28 +415,218 @@ class WeComChannel(IChannel):
         connection: aiohttp.ClientWebSocketResponse,
         *,
         target_id: str,
+        target_kind: ChannelTargetKind,
         content: str,
         deadline: float,
-    ) -> _BatchResult:
-        request_id = f"aibot_send_msg-{uuid4()}"
+    ) -> _RequestResult:
+        return await self._request(
+            connection,
+            command="aibot_send_msg",
+            body=visible_message_body(
+                target_id=target_id,
+                target_kind=target_kind,
+                message_type="markdown",
+                content={"content": content},
+            ),
+            deadline=deadline,
+            rejection_kind="provider_rejected_part",
+            rejection_message="WeCom rejected an outbound markdown part",
+            unknown_kind="send_unknown",
+            unknown_message="WeCom markdown delivery outcome is unknown",
+        )
+
+    async def _send_media(
+        self,
+        connection: aiohttp.ClientWebSocketResponse,
+        *,
+        target_id: str,
+        target_kind: ChannelTargetKind,
+        attachment: PreparedAttachment,
+        media_id: str,
+        deadline: float,
+    ) -> _RequestResult:
+        return await self._request(
+            connection,
+            command="aibot_send_msg",
+            body=visible_message_body(
+                target_id=target_id,
+                target_kind=target_kind,
+                message_type=attachment.media_type,
+                content={"media_id": media_id},
+            ),
+            deadline=deadline,
+            rejection_kind="provider_rejected_part",
+            rejection_message="WeCom rejected an outbound attachment",
+            unknown_kind="send_unknown",
+            unknown_message="WeCom attachment delivery outcome is unknown",
+        )
+
+    async def _upload_attachment(
+        self,
+        connection: aiohttp.ClientWebSocketResponse,
+        *,
+        attachment: PreparedAttachment,
+        attachment_ordinal: int,
+        deadline: float,
+    ) -> UploadResult:
+        receipts: list[dict[str, object]] = []
+        init = await self._request(
+            connection,
+            command="aibot_upload_media_init",
+            body={
+                "type": attachment.media_type,
+                "filename": attachment.descriptor.name,
+                "total_size": attachment.size_bytes,
+                "total_chunks": attachment.total_chunks,
+                "md5": attachment.md5,
+            },
+            deadline=deadline,
+            rejection_kind="provider_rejected_upload",
+            rejection_message="WeCom rejected attachment upload initialization",
+            unknown_kind="upload_unknown",
+            unknown_message="WeCom attachment upload outcome is unknown",
+            visible=False,
+        )
+        init_receipt = dict(init.receipt)
+        init_receipt.update({"stage": "init", "attachment_ordinal": attachment_ordinal})
+        receipts.append(init_receipt)
+        if init.status is not ProviderCallStatus.CONFIRMED:
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind=init.error_kind or "upload_unknown",
+                error_message=init.error_message,
+            )
+        upload_id = init.body.get("upload_id") if init.body is not None else None
+        if not isinstance(upload_id, str) or not upload_id:
+            receipts[-1]["state"] = "invalid_ack"
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind="invalid_upload_ack",
+                error_message="WeCom upload initialization omitted upload_id",
+            )
+
+        try:
+            reader = await asyncio.to_thread(AttachmentReader.open, attachment)
+        except (OSError, ValueError) as error:
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind="attachment_read_failed",
+                error_message=str(error),
+            )
+        try:
+            for chunk_index in range(attachment.total_chunks):
+                try:
+                    chunk = await asyncio.to_thread(reader.read_chunk)
+                except OSError as error:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind="attachment_read_failed",
+                        error_message=str(error),
+                    )
+                if not chunk:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind="attachment_read_failed",
+                        error_message="WeCom attachment ended before all chunks were read",
+                    )
+                result = await self._request(
+                    connection,
+                    command="aibot_upload_media_chunk",
+                    body={
+                        "upload_id": upload_id,
+                        "chunk_index": chunk_index,
+                        "base64_data": base64.b64encode(chunk).decode("ascii"),
+                    },
+                    deadline=deadline,
+                    rejection_kind="provider_rejected_upload",
+                    rejection_message="WeCom rejected an attachment upload chunk",
+                    unknown_kind="upload_unknown",
+                    unknown_message="WeCom attachment upload outcome is unknown",
+                    visible=False,
+                )
+                chunk_receipt = dict(result.receipt)
+                chunk_receipt.update(
+                    {
+                        "stage": "chunk",
+                        "attachment_ordinal": attachment_ordinal,
+                        "chunk_index": chunk_index,
+                    }
+                )
+                receipts.append(chunk_receipt)
+                if result.status is not ProviderCallStatus.CONFIRMED:
+                    return UploadResult(
+                        media_id=None,
+                        receipts=tuple(receipts),
+                        error_kind=result.error_kind or "upload_unknown",
+                        error_message=result.error_message,
+                    )
+        finally:
+            await asyncio.to_thread(reader.close)
+
+        finish = await self._request(
+            connection,
+            command="aibot_upload_media_finish",
+            body={"upload_id": upload_id},
+            deadline=deadline,
+            rejection_kind="provider_rejected_upload",
+            rejection_message="WeCom rejected attachment upload completion",
+            unknown_kind="upload_unknown",
+            unknown_message="WeCom attachment upload outcome is unknown",
+            visible=False,
+        )
+        finish_receipt = dict(finish.receipt)
+        finish_receipt.update(
+            {"stage": "finish", "attachment_ordinal": attachment_ordinal}
+        )
+        receipts.append(finish_receipt)
+        if finish.status is not ProviderCallStatus.CONFIRMED:
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind=finish.error_kind or "upload_unknown",
+                error_message=finish.error_message,
+            )
+        media_id = finish.body.get("media_id") if finish.body is not None else None
+        if not isinstance(media_id, str) or not media_id:
+            receipts[-1]["state"] = "invalid_ack"
+            return UploadResult(
+                media_id=None,
+                receipts=tuple(receipts),
+                error_kind="invalid_upload_ack",
+                error_message="WeCom upload completion omitted media_id",
+            )
+        return UploadResult(media_id=media_id, receipts=tuple(receipts))
+
+    async def _request(
+        self,
+        connection: aiohttp.ClientWebSocketResponse,
+        *,
+        command: str,
+        body: Mapping[str, object],
+        deadline: float,
+        rejection_kind: str,
+        rejection_message: str,
+        unknown_kind: str,
+        unknown_message: str,
+        visible: bool = True,
+    ) -> _RequestResult:
+        request_id = f"{command}-{uuid4()}"
         attempted_at_ms = time_ns() // 1_000_000
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Mapping[str, object]] = loop.create_future()
         self._pending_acks[request_id] = future
         try:
-            await connection.send_str(
-                json.dumps(
-                    {
-                        "cmd": "aibot_send_msg",
-                        "headers": {"req_id": request_id},
-                        "body": {
-                            "chatid": target_id,
-                            "msgtype": "markdown",
-                            "markdown": {"content": content},
-                        },
-                    },
-                    separators=(",", ":"),
-                )
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait_for(
+                connection.send_str(encode_request(command, request_id, body)),
+                timeout=remaining,
             )
         except asyncio.CancelledError:
             self._pending_acks.pop(request_id, None)
@@ -293,16 +635,17 @@ class WeComChannel(IChannel):
         except Exception as error:  # noqa: BLE001
             self._pending_acks.pop(request_id, None)
             future.cancel()
-            return _BatchResult(
+            return _RequestResult(
                 status=ProviderCallStatus.UNKNOWN,
                 receipt={
                     "provider_request_id": request_id,
                     "state": "unknown",
+                    "visible": visible,
                     "attempted_at_ms": attempted_at_ms,
                     "error_type": type(error).__name__,
                 },
-                error_kind="send_unknown",
-                error_message="WeCom send outcome is unknown",
+                error_kind=unknown_kind,
+                error_message=unknown_message,
             )
         try:
             remaining = deadline - loop.time()
@@ -312,16 +655,17 @@ class WeComChannel(IChannel):
         except asyncio.CancelledError:
             raise
         except (TimeoutError, ConnectionError) as error:
-            return _BatchResult(
+            return _RequestResult(
                 status=ProviderCallStatus.UNKNOWN,
                 receipt={
                     "provider_request_id": request_id,
                     "state": "unknown",
+                    "visible": visible,
                     "attempted_at_ms": attempted_at_ms,
                     "error_type": type(error).__name__,
                 },
-                error_kind="ack_unknown",
-                error_message="WeCom acknowledgement outcome is unknown",
+                error_kind=unknown_kind,
+                error_message=unknown_message,
             )
         finally:
             self._pending_acks.pop(request_id, None)
@@ -330,24 +674,26 @@ class WeComChannel(IChannel):
         error_code = frame.get("errcode")
         error_message = frame.get("errmsg")
         if not isinstance(error_code, int) or isinstance(error_code, bool):
-            return _BatchResult(
+            return _RequestResult(
                 status=ProviderCallStatus.UNKNOWN,
                 receipt={
                     "provider_request_id": request_id,
                     "state": "unknown",
+                    "visible": visible,
                     "attempted_at_ms": attempted_at_ms,
                     "acknowledged_at_ms": acknowledged_at_ms,
                     "error_type": "InvalidAcknowledgement",
                 },
-                error_kind="invalid_ack",
-                error_message="WeCom acknowledgement is malformed",
+                error_kind=unknown_kind,
+                error_message=unknown_message,
             )
         if error_code != 0:
-            return _BatchResult(
+            return _RequestResult(
                 status=ProviderCallStatus.FAILED,
                 receipt={
                     "provider_request_id": request_id,
                     "state": "failed",
+                    "visible": visible,
                     "attempted_at_ms": attempted_at_ms,
                     "acknowledged_at_ms": acknowledged_at_ms,
                     "error_code": error_code,
@@ -355,28 +701,38 @@ class WeComChannel(IChannel):
                         error_message[:256] if isinstance(error_message, str) else None
                     ),
                 },
-                error_kind="provider_rejected_batch",
-                error_message="WeCom rejected an outbound batch",
+                error_kind=rejection_kind,
+                error_message=rejection_message,
             )
-        return _BatchResult(
+        response_body = frame.get("body")
+        return _RequestResult(
             status=ProviderCallStatus.CONFIRMED,
             receipt={
                 "provider_request_id": request_id,
                 "state": "confirmed",
+                "visible": visible,
                 "attempted_at_ms": attempted_at_ms,
                 "acknowledged_at_ms": acknowledged_at_ms,
                 "error_code": 0,
             },
+            body=response_body if isinstance(response_body, Mapping) else None,
         )
 
     @staticmethod
     def _delivery_receipt(
-        total: int, confirmed: int, receipts: list[dict[str, object]]
+        total: int,
+        confirmed: int,
+        receipts: list[dict[str, object]],
+        upload_receipts: list[dict[str, object]],
     ) -> Mapping[str, object]:
         return {
-            "total_batches": total,
-            "confirmed_batches": confirmed,
-            "batches": tuple(receipts),
+            "total_parts": total,
+            "confirmed_parts": confirmed,
+            "parts": tuple(receipts),
+            "uploads": tuple(upload_receipts),
+            "provider_receipt_ref": (
+                receipts[-1]["provider_request_id"] if receipts else None
+            ),
         }
 
     def _clear_failure(
@@ -384,18 +740,17 @@ class WeComChannel(IChannel):
         *,
         total: int,
         receipts: list[dict[str, object]],
+        upload_receipts: list[dict[str, object]],
         confirmed: int,
         error_kind: str,
         error_message: str,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        receipt = self._delivery_receipt(total, confirmed, receipts)
+        receipt = self._delivery_receipt(total, confirmed, receipts, upload_receipts)
         if confirmed:
             return ProviderCallResult(
                 status=ProviderCallStatus.PARTIAL,
                 value=ChannelDeliveryReceipt(
-                    provider_receipt_ref=str(
-                        receipts[confirmed - 1]["provider_request_id"]
-                    )
+                    provider_receipt_ref=str(receipts[-1]["provider_request_id"])
                 ),
                 error_kind=error_kind,
                 error_message=error_message,

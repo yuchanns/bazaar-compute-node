@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, cast
 
@@ -46,11 +47,18 @@ class AdapterRegistry:
         runtime: str,
         storage: str = "sqlite",
         audit: str = "logging",
+        storage_options: Mapping[str, object] | None = None,
     ) -> AdapterFactories:
         control = self._load_optional(
             CONTROL_ENTRY_POINT_GROUP,
             f"{channel}+{runtime}+{storage}",
         )
+        storage_factory = cast(
+            Callable[[Mapping[str, object]], IStorage] | StorageFactory,
+            self._load(STORAGE_ENTRY_POINT_GROUP, storage),
+        )
+        if storage_options:
+            storage_factory = partial(storage_factory, dict(storage_options))
         return AdapterFactories(
             channel=cast(
                 ChannelFactory,
@@ -60,10 +68,7 @@ class AdapterRegistry:
                 RuntimeFactory,
                 self._load(RUNTIME_ENTRY_POINT_GROUP, runtime),
             ),
-            storage=cast(
-                StorageFactory,
-                self._load(STORAGE_ENTRY_POINT_GROUP, storage),
-            ),
+            storage=cast(StorageFactory, storage_factory),
             audit=cast(
                 AuditFactory,
                 self._load(AUDIT_ENTRY_POINT_GROUP, audit),

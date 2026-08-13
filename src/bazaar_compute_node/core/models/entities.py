@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import PurePosixPath
+from string import hexdigits
 from typing import Self
 
 from .states import (
@@ -205,6 +207,38 @@ class InboundAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class OutboundAttachment:
+    name: str
+    relative_path: str
+    media_type: str | None
+    size_bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_text(self.name, "name")
+        _validate_text(self.relative_path, "relative_path")
+        _validate_non_negative(self.size_bytes, "size_bytes")
+        path = PurePosixPath(self.relative_path)
+        if (
+            path.is_absolute()
+            or "\\" in self.relative_path
+            or ".." in path.parts
+            or path == PurePosixPath(".")
+        ):
+            raise ValueError("relative_path must stay within the workspace")
+        if path.name != self.name:
+            raise ValueError("name must match the relative path basename")
+        if self.media_type is not None:
+            _validate_text(self.media_type, "media_type")
+        if (
+            len(self.sha256) != 64
+            or self.sha256 != self.sha256.lower()
+            or any(character not in hexdigits for character in self.sha256)
+        ):
+            raise ValueError("sha256 must be a lowercase hexadecimal digest")
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     seq: int
     message_id: str
@@ -262,6 +296,7 @@ class OutboundMessage:
     state: OutboundDeliveryState
     fresh_check_state: FreshCheckState
     created_at_ms: int
+    attachments: tuple[OutboundAttachment, ...] = ()
     reply_to_message_id: str | None = None
     snapshot_seq: int | None = None
     current_inbound_seq: int | None = None
@@ -285,6 +320,11 @@ class OutboundMessage:
         ):
             _validate_text(value, field_name)
         _validate_non_negative(self.created_at_ms, "created_at_ms")
+        if not isinstance(self.attachments, tuple) or not all(
+            isinstance(attachment, OutboundAttachment)
+            for attachment in self.attachments
+        ):
+            raise TypeError("attachments must be a tuple of OutboundAttachment values")
         for value, field_name in ((self.reply_to_message_id, "reply_to_message_id"),):
             if value is not None:
                 _validate_text(value, field_name)

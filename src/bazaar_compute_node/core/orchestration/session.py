@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from time import time_ns
 
 from ..audit import ErrorKind
@@ -67,6 +68,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         storage: IStorage,
         audit: IAudit,
         timeout_budget: TimeoutBudget,
+        workspace: Callable[[], Path],
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
         on_node_initialized: Callable[[NodeIdentity], Awaitable[None]] | None = None,
@@ -115,6 +117,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             provider_call_timeout=timeout_budget.provider_call_seconds,
             concurrency=self._concurrency,
             node_id=lambda: self.node_id,
+            workspace=workspace,
             clock=self._clock,
         )
         self._turns = SessionTurnCoordinator(

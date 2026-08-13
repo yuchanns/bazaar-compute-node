@@ -150,6 +150,16 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "channel_session_id": message.channel_session_id,
         "target": message.target,
         "body": message.body,
+        "attachments": [
+            {
+                "name": attachment.name,
+                "relative_path": attachment.relative_path,
+                "media_type": attachment.media_type,
+                "size_bytes": attachment.size_bytes,
+                "sha256": attachment.sha256,
+            }
+            for attachment in message.attachments
+        ],
         "state": message.state.value,
         "fresh_check_state": message.fresh_check_state.value,
         "created_at_ms": message.created_at_ms,

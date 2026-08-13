@@ -13,6 +13,7 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     FreshCheckState,
     InboundMessage,
+    OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeSession,
@@ -129,6 +130,15 @@ def make_draft(
         channel_session_id=channel_session_id,
         target=f"#test:{session_id}",
         body="outbound body",
+        attachments=(
+            OutboundAttachment(
+                name="report.txt",
+                relative_path="reports/report.txt",
+                media_type="text/plain",
+                size_bytes=7,
+                sha256="a" * 64,
+            ),
+        ),
         reply_to_message_id="inbound-local-1",
         state=OutboundDeliveryState.DRAFT,
         fresh_check_state=FreshCheckState.REQUIRED,
@@ -252,3 +262,5 @@ async def test_sqlite_outbound_repository_rolls_back_and_rejects_identity_change
         persisted = await transaction.save_outbound_message(draft)
         with pytest.raises(ValueError, match="identity cannot change"):
             await transaction.save_outbound_message(replace(persisted, body="tampered"))
+        with pytest.raises(ValueError, match="identity cannot change"):
+            await transaction.save_outbound_message(replace(persisted, attachments=()))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid7
 
@@ -74,7 +75,9 @@ def make_budget() -> TimeoutBudget:
     )
 
 
-async def make_node() -> tuple[
+async def make_node(
+    *, workspace: Callable[[], Path] = Path.cwd
+) -> tuple[
     SessionOrchestrator,
     TestChannel,
     TestRuntime,
@@ -93,6 +96,7 @@ async def make_node() -> tuple[
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
+        workspace=workspace,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -117,6 +121,7 @@ async def test_orchestrator_initializes_storage_identity_before_runtime() -> Non
         storage=storage,
         audit=audit,
         timeout_budget=make_budget(),
+        workspace=Path.cwd,
         on_node_initialized=on_node_initialized,
     )
     await orchestrator.start(timeout=1)
@@ -667,6 +672,41 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_delivers_ordered_attachments_to_the_channel(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.json"
+    first.write_text("first\n")
+    second.write_text('{"second": true}\n')
+    orchestrator, channel, _runtime, storage, _audit = await make_node(
+        workspace=lambda: tmp_path
+    )
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await orchestrator.command_service.check("bcn-1")
+
+        delivered = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-with-attachments",
+            target="#test:bcn-1",
+            body="Attached reports.",
+            created_at_ms=2,
+            attachment_paths=(str(first), str(second)),
+        )
+
+        assert delivered.state is OutboundDeliveryState.SENT
+        assert channel.send_requests[0].outbound.attachments == delivered.attachments
+        assert [attachment.relative_path for attachment in delivered.attachments] == [
+            "first.txt",
+            "second.json",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_send_validates_target_and_preserves_provider_delivery_states() -> None:
     orchestrator, channel, _runtime, storage, audit = await make_node()
     try:
@@ -730,6 +770,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 status=ProviderCallStatus.UNKNOWN,
                 error_kind="transport_eof",
                 error_message="delivery outcome is unknown",
+                receipt={"provider_receipt_ref": "attempted-send-1"},
             )
         )
         unknown = await orchestrator.command_service.send(
@@ -740,6 +781,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             created_at_ms=5,
         )
         assert unknown.state is OutboundDeliveryState.UNKNOWN
+        assert unknown.provider_receipt_ref == "attempted-send-1"
         assert unknown.next_action == "reconcile channel delivery before retrying"
 
         channel.queue_send_result(
@@ -794,6 +836,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_rejected",
                 error_message="provider rejected delivery",
+                receipt={"provider_receipt_ref": "attempted-send-2"},
             )
         )
         failed = await orchestrator.command_service.send(
@@ -804,6 +847,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             created_at_ms=7,
         )
         assert failed.state is OutboundDeliveryState.FAILED
+        assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 4
         assert not channel.sent_messages
         assert any(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ class NodeConfiguration:
     storage: str | None = None
     audit: str | None = None
     endpoint: str | None = None
+    database_name: str | None = None
     model: str | None = None
     effort: str | None = None
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
@@ -36,13 +38,18 @@ def resolve_config_path() -> Path:
     return resolve_data_dir() / CONFIG_FILENAME
 
 
-def load_node_configuration() -> NodeConfiguration:
-    path = resolve_config_path()
+def load_node_configuration(path: Path | None = None) -> NodeConfiguration:
+    path = path or resolve_config_path()
     try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
         with path.open("rb") as config_file:
             payload = tomllib.load(config_file)
-    except FileNotFoundError:
-        return NodeConfiguration()
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigurationError(f"cannot read {path}: {error}") from error
 
@@ -80,6 +87,7 @@ def load_node_configuration() -> NodeConfiguration:
         storage=_optional_text(node.get("storage"), "node.storage"),
         audit=_optional_text(node.get("audit"), "node.audit"),
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
+        database_name=_optional_text(node.get("database_name"), "node.database_name"),
         model=_optional_text(runtime.get("model"), "runtime.model"),
         effort=_optional_text(runtime.get("effort"), "runtime.effort"),
         sandbox_mode=parsed_sandbox_mode,

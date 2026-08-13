@@ -457,7 +457,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> _CodexConnection:
-        executable = shutil.which(self._executable)
+        executable = await asyncio.to_thread(shutil.which, self._executable)
         if executable is None:
             raise FileNotFoundError(f"Codex executable not found: {self._executable}")
         workspace = resolve_workspace_dir(session.workspace_id)

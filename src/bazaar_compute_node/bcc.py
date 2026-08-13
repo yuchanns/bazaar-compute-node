@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import NoReturn
 from uuid import uuid7
 
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser = message_subparsers.add_parser("send")
     send_parser.add_argument("--target", required=True)
     send_parser.add_argument("--reply-to")
+    send_parser.add_argument("--attachment", action="append", default=[])
 
     thread_parser = subparsers.add_parser("thread")
     thread_subparsers = thread_parser.add_subparsers(dest="command", required=True)
@@ -100,6 +102,9 @@ async def _request(
         request["body"] = body if body is not None else ""
         request["command_id"] = f"bcc-{uuid7().hex}"
         request["reply_to_message_id"] = args.reply_to
+        request["attachment_paths"] = await asyncio.to_thread(
+            lambda: [str(Path(path).absolute()) for path in args.attachment]
+        )
     elif args.command == "unfollow":
         request["target"] = args.target
 

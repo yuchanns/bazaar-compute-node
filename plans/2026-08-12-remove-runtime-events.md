@@ -72,7 +72,7 @@ Migration transaction commit 后，`SqliteDatabase.start()` 检查 migration 9 �
      且 migration 9 标记为已压缩；
    - 已 commit schema 但未写压缩完成标记时，下次启动会安全重试；
    - 全新数据库不会暴露 `runtime_events`。
-7. 运行 focused tests、完整 non-real-home suite、Ruff、Pyright、compileall、lock verification、
+7. 运行 focused tests、完整 test suite、Ruff、Pyright、compileall、lock verification、
    diff-check，以及所有改动 Python 文件的 LSP diagnostics。
 
 完成后携带 exact diff 与验证证据停在 review。不引入兼容表或 dual-write。

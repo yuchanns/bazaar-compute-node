@@ -33,13 +33,24 @@ class AttachmentMaterializer:
         root = self._workspace() / "attachments"
         staging = root / ".staging"
         await asyncio.to_thread(staging.mkdir, parents=True, exist_ok=True, mode=0o700)
-        for path in await asyncio.to_thread(lambda: tuple(staging.iterdir())):
-            if path.is_file() and not path.is_symlink():
-                await asyncio.to_thread(path.unlink)
+        staged_files = await asyncio.to_thread(
+            lambda: tuple(
+                path
+                for path in staging.iterdir()
+                if path.is_file() and not path.is_symlink()
+            )
+        )
+        for path in staged_files:
+            await asyncio.to_thread(path.unlink)
         referenced = await self._referenced_paths()
-        for path in await asyncio.to_thread(lambda: tuple(root.iterdir())):
-            if path == staging or not path.is_dir() or path.is_symlink():
-                continue
+        attachment_directories = await asyncio.to_thread(
+            lambda: tuple(
+                path
+                for path in root.iterdir()
+                if path != staging and path.is_dir() and not path.is_symlink()
+            )
+        )
+        for path in attachment_directories:
             try:
                 if UUID(path.name).version != 7:
                     continue
@@ -61,10 +72,7 @@ class AttachmentMaterializer:
         if not name or not kind:
             raise ValueError("attachment name and kind must be non-empty")
         attachment_id = str(uuid7())
-        suffix = Path(name).suffix
-        if not _SAFE_SUFFIX.fullmatch(suffix):
-            guessed = mimetypes.guess_extension(media_type or "") or ".bin"
-            suffix = guessed if _SAFE_SUFFIX.fullmatch(guessed) else ".bin"
+        suffix = await asyncio.to_thread(_attachment_suffix, name, media_type)
         relative = PurePosixPath(
             "attachments", attachment_id, f"content{suffix.lower()}"
         )
@@ -78,8 +86,15 @@ class AttachmentMaterializer:
             )
             current_size = await asyncio.to_thread(self._stored_size, root)
             size = 0
+            descriptor: int | None = None
             try:
-                with temporary.open("xb") as output:
+                descriptor = await asyncio.to_thread(
+                    os.open,
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                try:
                     if isinstance(source, bytes):
                         size = len(source)
                         if size > self._max_file_bytes:
@@ -88,7 +103,7 @@ class AttachmentMaterializer:
                             )
                         if current_size + size > self._max_workspace_bytes:
                             raise ValueError("attachment workspace quota exceeded")
-                        await asyncio.to_thread(output.write, source)
+                        await asyncio.to_thread(_write_all, descriptor, source)
                     else:
                         async for chunk in source:
                             if not isinstance(chunk, bytes):
@@ -100,9 +115,11 @@ class AttachmentMaterializer:
                                 )
                             if current_size + size > self._max_workspace_bytes:
                                 raise ValueError("attachment workspace quota exceeded")
-                            await asyncio.to_thread(output.write, chunk)
-                    await asyncio.to_thread(output.flush)
-                    await asyncio.to_thread(os.fsync, output.fileno())
+                            await asyncio.to_thread(_write_all, descriptor, chunk)
+                    await asyncio.to_thread(os.fsync, descriptor)
+                finally:
+                    await asyncio.to_thread(os.close, descriptor)
+                    descriptor = None
                 await asyncio.to_thread(
                     destination.parent.mkdir, parents=True, mode=0o700
                 )
@@ -110,7 +127,9 @@ class AttachmentMaterializer:
                 if os.name != "nt":
                     await asyncio.to_thread(destination.chmod, 0o600)
             except BaseException:
-                if temporary.exists():
+                if descriptor is not None:
+                    await asyncio.to_thread(os.close, descriptor)
+                if await asyncio.to_thread(temporary.exists):
                     await asyncio.to_thread(temporary.unlink)
                 raise
         return InboundAttachment(
@@ -149,6 +168,23 @@ class AttachmentMaterializer:
             for path in root.glob("*/content.*")
             if path.is_file() and not path.is_symlink()
         )
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written == 0:
+            raise OSError("attachment write made no progress")
+        view = view[written:]
+
+
+def _attachment_suffix(name: str, media_type: str | None) -> str:
+    suffix = Path(name).suffix
+    if _SAFE_SUFFIX.fullmatch(suffix):
+        return suffix
+    guessed = mimetypes.guess_extension(media_type or "") or ".bin"
+    return guessed if _SAFE_SUFFIX.fullmatch(guessed) else ".bin"
 
 
 __all__ = ["AttachmentMaterializer"]

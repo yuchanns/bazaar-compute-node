@@ -157,6 +157,23 @@ def test_thread_unfollow_requires_an_explicit_target() -> None:
     assert args.target == "#work:parent123"
 
 
+def test_message_send_accepts_ordered_repeatable_attachments() -> None:
+    args = build_parser().parse_args(
+        (
+            "message",
+            "send",
+            "--target",
+            "#work:parent123",
+            "--attachment",
+            "first.txt",
+            "--attachment",
+            "second.png",
+        )
+    )
+
+    assert args.attachment == ["first.txt", "second.png"]
+
+
 def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
     result = {
         "messages": [message_payload()],

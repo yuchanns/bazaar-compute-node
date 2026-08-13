@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import mimetypes
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path, PurePosixPath
 
 from ..audit import ErrorKind
 from ..channel import ChannelSendRequest, IChannel
@@ -19,6 +24,7 @@ from ..models import (
     ConsumerCursor,
     FreshCheckState,
     InboundMessage,
+    OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeEventState,
@@ -26,6 +32,78 @@ from ..models import (
 from ..outcomes import ProviderCallStatus
 from ..storage import IStorage, IStorageTransaction
 from .services import SessionAuditRecorder
+
+
+class OutboundAttachmentResolver:
+    """Resolve stable outbound descriptors without blocking the event loop."""
+
+    def __init__(self, workspace: Callable[[], Path]) -> None:
+        self._workspace = workspace
+
+    def __call__(
+        self, attachment_paths: tuple[str, ...]
+    ) -> tuple[OutboundAttachment, ...]:
+        attachments: list[OutboundAttachment] = []
+        seen_paths: set[Path] = set()
+        workspace = self._workspace().resolve(strict=True)
+        for raw_path in attachment_paths:
+            if not isinstance(raw_path, str) or not raw_path:
+                raise ValueError("attachment paths must be non-empty strings")
+            source = Path(raw_path)
+            if not source.is_absolute():
+                raise ValueError("attachment paths must be absolute")
+            try:
+                relative = source.relative_to(workspace)
+            except ValueError as error:
+                raise ValueError(
+                    "attachment path must stay within the workspace"
+                ) from error
+            current = workspace
+            for part in relative.parts:
+                current /= part
+                if current.is_symlink():
+                    raise ValueError("attachment path cannot contain symbolic links")
+            try:
+                resolved = source.resolve(strict=True)
+            except OSError as error:
+                raise ValueError(
+                    f"attachment path is not readable: {source}"
+                ) from error
+            try:
+                relative = resolved.relative_to(workspace)
+            except ValueError as error:
+                raise ValueError(
+                    "attachment path must stay within the workspace"
+                ) from error
+            if resolved in seen_paths:
+                raise ValueError("attachment paths must not contain duplicates")
+            seen_paths.add(resolved)
+            digest = hashlib.sha256()
+            try:
+                descriptor = os.open(
+                    resolved,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+                with os.fdopen(descriptor, "rb") as attachment_file:
+                    file_stat = os.fstat(attachment_file.fileno())
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        raise ValueError("attachment path must identify a regular file")
+                    while chunk := attachment_file.read(1024 * 1024):
+                        digest.update(chunk)
+            except OSError as error:
+                raise ValueError(
+                    f"attachment path is not readable: {source}"
+                ) from error
+            attachments.append(
+                OutboundAttachment(
+                    name=resolved.name,
+                    relative_path=PurePosixPath(*relative.parts).as_posix(),
+                    media_type=mimetypes.guess_type(resolved.name)[0],
+                    size_bytes=file_stat.st_size,
+                    sha256=digest.hexdigest(),
+                )
+            )
+        return tuple(attachments)
 
 
 class SessionCommandService(ICommandService):
@@ -40,6 +118,7 @@ class SessionCommandService(ICommandService):
         provider_call_timeout: float,
         concurrency: ISessionConcurrency,
         node_id: Callable[[], str],
+        workspace: Callable[[], Path],
         clock: Callable[[], int],
     ) -> None:
         self._channel = channel
@@ -48,6 +127,7 @@ class SessionCommandService(ICommandService):
         self._provider_call_timeout = provider_call_timeout
         self._concurrency = concurrency
         self._node_id = node_id
+        self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
 
     async def check(self, session_id: str) -> MessageCheckResult:
@@ -202,12 +282,21 @@ class SessionCommandService(ICommandService):
         target: str,
         body: str,
         created_at_ms: int,
+        attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
     ) -> OutboundMessage:
         if not command_id:
             raise ValueError("command_id must be a non-empty string")
         if not target:
             raise ValueError("target must be a non-empty string")
+        attachments = (
+            await asyncio.to_thread(self._attachment_resolver, attachment_paths)
+            if attachment_paths
+            else ()
+        )
+        is_empty = True
+        if body.strip() or attachments:
+            is_empty = False
         outbound_id = f"outbound-{session_id}-{command_id}"
         async with self._concurrency.for_session(session_id):
             async with self._storage.transaction() as transaction:
@@ -246,23 +335,24 @@ class SessionCommandService(ICommandService):
                     channel_session_id=channel_session.id,
                     target=target,
                     body=body,
+                    attachments=attachments,
                     state=OutboundDeliveryState.DRAFT,
                     fresh_check_state=FreshCheckState.REQUIRED,
                     created_at_ms=created_at_ms,
                     reply_to_message_id=reply_to_message_id,
                 )
-                if body.strip():
+                if not is_empty:
                     outbound = await transaction.save_outbound_message(outbound)
                     outbound_id = outbound.outbound_message_id
                 rejection_event_name = "bcc.send.fresh_check.failed"
-                if not body.strip():
+                if is_empty:
                     outbound = outbound.transition_to(
                         OutboundDeliveryState.REJECTED,
                         at_ms=self._clock(),
                         save_draft=False,
                         error_kind=ErrorKind.EMPTY_BODY.value,
-                        error_message="Outbound message body must not be empty.",
-                        next_action="Provide a non-empty message body and retry.",
+                        error_message="Outbound message must not be empty.",
+                        next_action="Provide a message body or attachment and retry.",
                     )
                     audit_context = self._correlation(
                         session_id=session_id,
@@ -361,20 +451,6 @@ class SessionCommandService(ICommandService):
                     audit_state = RuntimeEventState.FAILED
                     audit_kind = ErrorKind.FRESH_CHECK_FAILED
                 else:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.PASSED,
-                        snapshot_seq=cursor.inbox_snapshot_seq,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.PENDING,
-                        at_ms=self._clock(),
-                    )
-                    outbound = replace(
-                        outbound,
-                        provider_attempted_at_ms=self._clock(),
-                    )
-                    await transaction.save_outbound_message(outbound)
                     audit_context = self._correlation(
                         session_id=session_id,
                         channel=channel_session.channel,
@@ -408,6 +484,24 @@ class SessionCommandService(ICommandService):
                     error_message=outbound.error_message,
                 )
                 return outbound
+
+            if cursor.inbox_snapshot_seq is None:
+                raise AssertionError("accepted send requires an inbox snapshot")
+            outbound = outbound.record_fresh_check(
+                FreshCheckState.PASSED,
+                snapshot_seq=cursor.inbox_snapshot_seq,
+                current_inbound_seq=current_seq,
+            )
+            outbound = outbound.transition_to(
+                OutboundDeliveryState.PENDING,
+                at_ms=self._clock(),
+            )
+            outbound = replace(
+                outbound,
+                provider_attempted_at_ms=self._clock(),
+            )
+            async with self._storage.transaction() as transaction:
+                await transaction.save_outbound_message(outbound)
 
             await self._audit.append(
                 event_name="bcc.send.fresh_check.passed",
@@ -490,9 +584,18 @@ class SessionCommandService(ICommandService):
                 terminal_kind = ErrorKind.PROVIDER_PARTIAL
                 terminal_state = RuntimeEventState.FAILED
             elif provider_result.status is ProviderCallStatus.FAILED:
+                provider_receipt_ref = provider_result.receipt.get(
+                    "provider_receipt_ref"
+                )
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.FAILED,
                     at_ms=self._clock(),
+                    provider_receipt_ref=(
+                        provider_receipt_ref
+                        if isinstance(provider_receipt_ref, str)
+                        and provider_receipt_ref
+                        else None
+                    ),
                     error_kind=provider_result.error_kind
                     or ErrorKind.PROVIDER_FAILED.value,
                     error_message=provider_result.error_message,
@@ -500,9 +603,18 @@ class SessionCommandService(ICommandService):
                 terminal_kind = ErrorKind.PROVIDER_FAILED
                 terminal_state = RuntimeEventState.FAILED
             else:
+                provider_receipt_ref = provider_result.receipt.get(
+                    "provider_receipt_ref"
+                )
                 outbound = outbound.transition_to(
                     OutboundDeliveryState.UNKNOWN,
                     at_ms=self._clock(),
+                    provider_receipt_ref=(
+                        provider_receipt_ref
+                        if isinstance(provider_receipt_ref, str)
+                        and provider_receipt_ref
+                        else None
+                    ),
                     error_kind=provider_result.error_kind
                     or ErrorKind.PROVIDER_UNKNOWN.value,
                     error_message=provider_result.error_message,

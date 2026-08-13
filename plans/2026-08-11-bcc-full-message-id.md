@@ -17,5 +17,5 @@ Make every message identifier emitted by `bcc message check` directly usable by
 - Remove `short_message_id` from the application response and bcc serializer
   contract.
 - Update serializer and real SQLite command-process coverage.
-- Validate with focused tests, the full non-real-home suite, Ruff, Pyright,
+- Validate with focused tests, the full test suite, Ruff, Pyright,
   compileall, lock checking, diff checking, and LSP diagnostics.

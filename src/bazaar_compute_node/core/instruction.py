@@ -90,6 +90,7 @@ Header fields:
 - **Reply to a group thread**: `bcc message send --target "<thread-target>" <<'BCCMSG'` followed by the message body and `BCCMSG`
 - **Reply to a DM**: `bcc message send --target dm:@peer-name <<'BCCMSG'` followed by the message body and `BCCMSG`
 - **Refer to a message**: add `--reply-to "<message-id>"` only when you want to refer to one specific message.
+- **Attach local files**: add repeatable `--attachment "<path>"` arguments. Paths must identify regular files inside the current workspace. The stdin body is optional when at least one attachment is present.
 
 Message content is always read from stdin. Use a heredoc so quotes, backticks, and newlines are not interpreted by the shell:
 
@@ -100,6 +101,8 @@ BCCMSG
 ```
 
 Use a delimiter that is unlikely to appear in the message body. Keep the body out of command-line arguments.
+
+One command invocation is one logical message even when a channel delivers its body and attachments as multiple provider messages. If delivery is partial or unknown, do not blindly retry the complete command.
 
 If bcn says a message was not sent and was saved as a draft, follow the `Next action` in the error. Do not report a draft as sent. Do not blindly retry an outcome whose delivery state is unknown.
 

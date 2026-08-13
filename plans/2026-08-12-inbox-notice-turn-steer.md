@@ -84,7 +84,7 @@ session、当前本地/provider turn；metadata 仅含 `provider_method=turn/ste
    - rejected/unknown/terminal race 时 inbound 不丢失，仍在当前 turn 结束后启动 next turn；
    - steer I/O 不阻塞随后 inbound 持久化，且 shutdown 会收拢 session actor 持有的两个等待源；
    - 多条 active-turn inbound 的 unread notice 与 queue/cursor 最终一致。
-4. 运行 focused tests、完整 non-real-home suite、Ruff、Pyright、compileall、lock verification、
+4. 运行 focused tests、完整 test suite、Ruff、Pyright、compileall、lock verification、
    `git diff --check`，并对所有改动 Python 文件执行 LSP diagnostics；完成后提供业务 diff，停在 review。
 
 本任务不提交、不推送、不发布、不部署；这些动作需要单独授权。

@@ -114,6 +114,7 @@ class NodeApplication:
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
+            workspace=self._workspace_path,
             on_node_initialized=self._ensure_workspace,
         )
         self.command_service = self.orchestrator.command_service
@@ -139,10 +140,12 @@ class NodeApplication:
     async def start(self) -> None:
         if self._started:
             return
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self.data_dir.mkdir, parents=True, exist_ok=True)
         if os.name != "nt":
-            self.data_dir.chmod(0o700)
-        self._wrapper_path = install_bcc_wrapper(self.data_dir / "bin")
+            await asyncio.to_thread(self.data_dir.chmod, 0o700)
+        self._wrapper_path = await asyncio.to_thread(
+            install_bcc_wrapper, self.data_dir / "bin"
+        )
         try:
             await self.command_server.start()
             await self.orchestrator.start(
@@ -165,7 +168,7 @@ class NodeApplication:
                 try:
                     await self.command_server.stop()
                 finally:
-                    self._cleanup_bcc_wrapper()
+                    await self._cleanup_bcc_wrapper()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -183,15 +186,15 @@ class NodeApplication:
                     await self.command_server.stop()
                 finally:
                     try:
-                        self._cleanup_bcc_wrapper()
+                        await self._cleanup_bcc_wrapper()
                     finally:
                         self._stopped.set()
 
-    def _cleanup_bcc_wrapper(self) -> None:
+    async def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             return
-        remove_bcc_wrapper(wrapper_path)
+        await asyncio.to_thread(remove_bcc_wrapper, wrapper_path)
         self._wrapper_path = None
 
     async def wait(self) -> None:

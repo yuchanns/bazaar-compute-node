@@ -55,6 +55,16 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "target": message.target,
         "reply_to_message_id": message.reply_to_message_id,
         "body": message.body,
+        "attachments": [
+            {
+                "name": attachment.name,
+                "relative_path": attachment.relative_path,
+                "media_type": attachment.media_type,
+                "size_bytes": attachment.size_bytes,
+                "sha256": attachment.sha256,
+            }
+            for attachment in message.attachments
+        ],
         "state": message.state.value,
         "fresh_check_state": message.fresh_check_state.value,
         "created_at_ms": message.created_at_ms,
@@ -284,6 +294,7 @@ class CommandDispatcher:
             target = request.get("target")
             body = request.get("body")
             command_id = request.get("command_id")
+            attachment_paths = request.get("attachment_paths", [])
             reply_to_message_id = request.get("reply_to_message_id")
             created_at_ms = request.get("created_at_ms", time_ns() // 1_000_000)
             if not isinstance(target, str) or not target:
@@ -295,6 +306,13 @@ class CommandDispatcher:
             if not isinstance(command_id, str) or not command_id:
                 raise CommandDispatchError(
                     "COMMAND_ID_REQUIRED", "command_id must be a non-empty string"
+                )
+            if not isinstance(attachment_paths, list) or not all(
+                isinstance(path, str) and path for path in attachment_paths
+            ):
+                raise CommandDispatchError(
+                    "INVALID_ATTACHMENTS",
+                    "attachment_paths must be a list of non-empty strings",
                 )
             if reply_to_message_id is not None and (
                 not isinstance(reply_to_message_id, str) or not reply_to_message_id
@@ -317,6 +335,7 @@ class CommandDispatcher:
                 target=target,
                 body=body,
                 created_at_ms=created_at_ms,
+                attachment_paths=tuple(attachment_paths),
                 reply_to_message_id=reply_to_message_id,
             )
             return {

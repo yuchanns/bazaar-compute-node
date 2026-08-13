@@ -73,12 +73,13 @@ async def wait_for_status(
 
 def start_test_process(
     tmp_path: Path,
-) -> tuple[subprocess.Popen[str], Path, Path]:
+) -> tuple[subprocess.Popen[str], Path, Path, Path]:
     endpoint = tmp_path / "node.sock"
     endpoint_text = endpoint.as_posix()
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "config.toml").write_text(
+    config_path = data_dir / "test_config.toml"
+    config_path.write_text(
         f'[node]\nchannel = "test"\nruntime = "test"\n'
         f'storage = "test"\nendpoint = "{endpoint_text}"\n',
         encoding="utf-8",
@@ -94,6 +95,10 @@ def start_test_process(
             "-m",
             "bazaar_compute_node.cli",
             "start",
+            "--config",
+            str(config_path),
+            "--database-name",
+            "test.sqlite3",
             "--channel",
             "test",
             "--runtime",
@@ -108,10 +113,10 @@ def start_test_process(
         stderr=subprocess.PIPE,
         text=True,
     )
-    return process, endpoint, data_dir
+    return process, endpoint, data_dir, config_path
 
 
-def stop_test_process() -> subprocess.CompletedProcess[str]:
+def stop_test_process(config_path: Path) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     source_root = str(Path(__file__).parents[2] / "src")
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -123,6 +128,10 @@ def stop_test_process() -> subprocess.CompletedProcess[str]:
             "-m",
             "bazaar_compute_node.cli",
             "stop",
+            "--config",
+            str(config_path),
+            "--database-name",
+            "test.sqlite3",
         ],
         env=environment,
         capture_output=True,
@@ -153,7 +162,7 @@ def inbound_payload(session_id: str, seq: int = 1) -> dict[str, object]:
 async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir = start_test_process(tmp_path)
+    process, endpoint_path, data_dir, config_path = start_test_process(tmp_path)
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
@@ -202,7 +211,7 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
         }
         assert all(outbound["state"] == "sent" for outbound in outbound_messages)
     finally:
-        stop_process = await asyncio.to_thread(stop_test_process)
+        stop_process = await asyncio.to_thread(stop_test_process, config_path)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()
@@ -222,7 +231,7 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
 async def test_daemon_restart_uses_persisted_configuration(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir = start_test_process(tmp_path)
+    process, endpoint_path, data_dir, config_path = start_test_process(tmp_path)
     await asyncio.to_thread(process.wait, 5)
     assert process.returncode == 0, process.stderr
     try:
@@ -239,6 +248,10 @@ async def test_daemon_restart_uses_persisted_configuration(
                 "-m",
                 "bazaar_compute_node.cli",
                 "restart",
+                "--config",
+                str(config_path),
+                "--database-name",
+                "test.sqlite3",
             ],
             env=environment,
             capture_output=True,
@@ -254,7 +267,7 @@ async def test_daemon_restart_uses_persisted_configuration(
         )
         assert response.get("ok") is True
     finally:
-        stop_process = await asyncio.to_thread(stop_test_process)
+        stop_process = await asyncio.to_thread(stop_test_process, config_path)
         assert stop_process.returncode == 0, stop_process.stderr
         if process.stdout is not None:
             process.stdout.close()

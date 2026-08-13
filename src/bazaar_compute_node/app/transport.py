@@ -84,21 +84,23 @@ class LocalCommandServer:
 
         path = self._endpoint_path
         if path is None:
-            path = (
-                Path(tempfile.gettempdir())
-                / f"bcn-{os.getpid()}-{secrets.token_hex(6)}.sock"
+            path = await asyncio.to_thread(
+                lambda: (
+                    Path(tempfile.gettempdir())
+                    / f"bcn-{os.getpid()}-{secrets.token_hex(6)}.sock"
+                )
             )
         path = path.expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        if await asyncio.to_thread(path.exists):
             raise FileExistsError(f"local command endpoint already exists: {path}")
         self._server = await asyncio.start_unix_server(
             self._handle_client,
             path=str(path),
         )
-        os.chmod(path, 0o600)
+        await asyncio.to_thread(os.chmod, path, 0o600)
         self._unix_path = path
-        path_stat = path.stat()
+        path_stat = await asyncio.to_thread(path.stat)
         self._unix_identity = (path_stat.st_dev, path_stat.st_ino)
         self._endpoint = f"unix://{path}"
 
@@ -122,10 +124,14 @@ class LocalCommandServer:
         self._unix_path = None
         identity = self._unix_identity
         self._unix_identity = None
-        if path is not None and identity is not None and path.exists():
-            path_stat = path.stat()
+        if (
+            path is not None
+            and identity is not None
+            and await asyncio.to_thread(path.exists)
+        ):
+            path_stat = await asyncio.to_thread(path.stat)
             if (path_stat.st_dev, path_stat.st_ino) == identity:
-                path.unlink()
+                await asyncio.to_thread(path.unlink)
 
     async def _handle_client(
         self,
