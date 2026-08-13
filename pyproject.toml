@@ -41,6 +41,12 @@ dev = [
 [tool.uv.sources]
 bcn-test-support = { path = "tests/support", editable = true }
 
+[tool.pytest.ini_options]
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: requires a real external provider",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
 build-backend = "uv_build"
