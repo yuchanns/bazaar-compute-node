@@ -67,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--storage")
     parser.add_argument("--audit")
     parser.add_argument(
+        "--config",
+        type=Path,
+        help="Configuration file path; defaults to the node data directory.",
+    )
+    parser.add_argument(
+        "--database-name",
+        type=_database_name,
+        help="SQLite database filename under the node data directory.",
+    )
+    parser.add_argument(
         "--endpoint",
         type=Path,
         help="Local command endpoint path on Unix; Windows derives a named pipe.",
@@ -82,6 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _non_empty_option(value: str) -> str:
     if not value:
         raise argparse.ArgumentTypeError("option value must be non-empty")
+    return value
+
+
+def _database_name(value: str) -> str:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise argparse.ArgumentTypeError(
+            "database name must be a single non-empty path component"
+        )
     return value
 
 
@@ -107,6 +125,9 @@ def _load_factories(
             runtime=args.runtime,
             storage=args.storage,
             audit=args.audit,
+            storage_options={"database_name": args.database_name}
+            if args.storage == "sqlite" and args.database_name is not None
+            else None,
         )
     except ProviderLoadError as error:
         parser.error(str(error))
@@ -128,7 +149,7 @@ def _apply_runtime_configuration(
     parser: argparse.ArgumentParser,
 ) -> None:
     try:
-        configuration = load_node_configuration()
+        configuration = load_node_configuration(args.config)
     except ConfigurationError as error:
         parser.error(str(error))
     for name in (
@@ -145,6 +166,8 @@ def _apply_runtime_configuration(
             setattr(args, name, getattr(configuration, name))
     if args.endpoint is None and configuration.endpoint is not None:
         args.endpoint = Path(configuration.endpoint).expanduser()
+    if args.database_name is None:
+        args.database_name = configuration.database_name
     if args.storage is None:
         args.storage = DEFAULT_STORAGE
     if args.audit is None:
@@ -198,6 +221,10 @@ def _daemon_command(args: argparse.Namespace, data_dir: Path) -> list[str]:
         "--endpoint",
         str(_endpoint_path(args, data_dir)),
     ]
+    if args.config is not None:
+        command.extend(("--config", str(args.config)))
+    if args.database_name is not None:
+        command.extend(("--database-name", args.database_name))
     for name in ("model", "effort", "sandbox_mode"):
         value = getattr(args, name)
         if value is not None:
@@ -377,6 +404,8 @@ def _prepare_cli_arguments(
 ) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.config is not None:
+        args.config = args.config.expanduser().resolve()
     _apply_runtime_configuration(args, parser)
     return parser, args
 

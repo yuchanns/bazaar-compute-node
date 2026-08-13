@@ -624,9 +624,8 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
             steer_response = await client.steer_turn(
                 thread_id,
                 provider_turn.turn_id,
-                "[inbox notice session=bcn-test]\n"
-                "Inbox update: 1 unread message(s). "
-                "Use the message command to read them.",
+                "A teammate just confirmed that the inbox update is expected. "
+                "Please acknowledge that in the same brief reply.",
                 timeout=30,
             )
             assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
@@ -637,6 +636,7 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
                 turn_id="local-turn-1",
                 provider_thread_id=thread_id,
                 provider_turn_id=provider_turn.turn_id,
+                approval_handler=TestChannel(),
             )
             events = []
             async with asyncio.timeout(120):
@@ -671,8 +671,10 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     await storage.start(timeout=10)
     identity = await storage.initialize()
     workspace = resolve_workspace_dir(identity.workspace_id)
-    filename = f"sandbox-acceptance-{uuid7()}.md"
+    filename = "sandbox-acceptance.md"
     target = workspace / filename
+    if target.exists():
+        target.unlink()
     channel = TestChannel()
     audit = RecordingAudit()
     node = NodeApplication(

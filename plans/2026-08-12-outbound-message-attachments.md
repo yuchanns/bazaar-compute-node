@@ -74,6 +74,14 @@ send request。
 
 ## 实施任务
 
+为保证三平台测试始终使用真实 HOME、同时不覆盖生产配置与数据库，`bcn` 提供两个显式启动参数：
+
+- `--config <path>` 指向本次进程使用的 TOML 配置；文件不存在时在该路径创建默认配置；
+- `--database-name <name>` 指定 node data directory 下的 SQLite 文件名，仅接受单个路径组件。
+
+两项参数都由 `start` 原样传递给 daemon `run`；未提供时继续使用 `config.toml` 与 `bcn.sqlite3`，不改变
+生产默认行为。测试使用真实 HOME，只为本次进程提供 task-scoped config path 与 database name。
+
 1. 在 `feat/outbound-message-attachments` 扩展 neutral domain、SQLite v10、local command transport 与
    `bcc message send --attachment`；实现
    workspace path 边界、重复路径拒绝、attachment-only 输入和完整 draft 持久化。补齐 domain、migration、
@@ -87,6 +95,8 @@ send request。
 4. 运行完整 test suite、Ruff、Pyright、compileall、lock verification、`git diff --check`，并确认
    Neovim LSP 实际 attach 后检查全部改动 Python 文件。随后在真实测试 WeCom 会话验证正文 + 多附件、
    attachment-only、DM/group `chat_type` 以及接收端内容；完成后提供业务 diff 和 live evidence，停在 review。
+5. 增加显式 config path 与 SQLite database name，确保 `start` 到 `run` 的传递和 CLI 优先级；只运行
+   focused configuration/composition tests 并提供业务 diff，停在 review，三平台完整 gate 需另行确认。
 
 当前分支为 `feat/outbound-message-attachments`，base 是
 `origin/main@9e4e7ce760b14beb292309af842d4c1b2bd47d48`。本计划不授权 commit、push、PR、发布或部署；这些动作

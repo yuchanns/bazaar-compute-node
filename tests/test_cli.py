@@ -78,6 +78,50 @@ def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) 
     ]
 
 
+def test_cli_forwards_explicit_config_and_database_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "task-config.toml"
+    config_path.write_text(
+        '[node]\nchannel = "test"\nruntime = "test"\n',
+        encoding="utf-8",
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "start",
+            "--config",
+            str(config_path),
+            "--database-name",
+            "task.sqlite3",
+        ]
+    )
+    args.config = args.config.expanduser().resolve()
+    _apply_runtime_configuration(args, parser)
+
+    command = _daemon_command(args, tmp_path)
+
+    assert command[command.index("--config") + 1] == str(config_path)
+    assert command[command.index("--database-name") + 1] == "task.sqlite3"
+
+
+def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> None:
+    config_path = tmp_path / "nested" / "config.toml"
+
+    configuration = load_node_configuration(config_path)
+
+    assert config_path.is_file()
+    assert configuration.channel is None
+    assert configuration.runtime is None
+    assert configuration.database_name is None
+
+
+@pytest.mark.parametrize("value", ["", ".", "..", "sub/task.sqlite3", "sub\\task"])
+def test_database_name_rejects_paths(value: str) -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--database-name", value])
+
+
 def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
@@ -100,6 +144,7 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     assert config_args.storage == "config-storage"
     assert config_args.audit == "config-audit"
     assert config_args.endpoint == Path("config.sock")
+    assert config_args.database_name is None
     assert config_args.model == "config-model"
     assert config_args.effort == "config-effort"
     assert config_args.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS

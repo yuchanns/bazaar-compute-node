@@ -578,6 +578,25 @@ def test_resolve_data_dir_uses_the_configured_home_data_name(
     assert resolve_data_dir() == Path.home() / ".bcn-custom"
 
 
+@pytest.mark.asyncio
+async def test_sqlite_uses_configured_database_name() -> None:
+    database = SqliteDatabase(database_name="task.sqlite3")
+
+    await database.start(timeout=2)
+    try:
+        assert database.database_path == resolve_data_dir() / "task.sqlite3"
+        assert database.database_path.exists()
+        assert not (resolve_data_dir() / "bcn.sqlite3").exists()
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.parametrize("value", ["", ".", "..", "sub/task.sqlite3", "sub\\task"])
+def test_sqlite_rejects_database_paths(value: str) -> None:
+    with pytest.raises(ValueError, match="single path component"):
+        SqliteDatabase(database_name=value)
+
+
 def test_resolve_data_dir_defaults_to_home_bcn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -50,6 +50,7 @@ class SqliteDatabase:
         self,
         *,
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+        database_name: str | None = None,
     ) -> None:
         if (
             isinstance(busy_timeout_ms, bool)
@@ -57,8 +58,16 @@ class SqliteDatabase:
             or busy_timeout_ms <= 0
         ):
             raise ValueError("busy_timeout_ms must be a positive integer")
+        database_name = DATABASE_FILENAME if database_name is None else database_name
+        if (
+            not database_name
+            or database_name in {".", ".."}
+            or "/" in database_name
+            or "\\" in database_name
+        ):
+            raise ValueError("database_name must be a single path component")
         self.data_dir = resolve_data_dir()
-        self.database_path = self.data_dir / DATABASE_FILENAME
+        self.database_path = self.data_dir / database_name
         self._busy_timeout_ms = busy_timeout_ms
         self._connection: aiosqlite.Connection | None = None
         self._node_state: NodeState | None = None

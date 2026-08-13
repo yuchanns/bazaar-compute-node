@@ -163,20 +163,23 @@ def test_wecom_prepares_zero_based_bounded_chunks(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "content", "size_bytes", "message"),
+    ("name", "size_bytes", "message"),
     (
-        ("empty.pdf", b"1234", 4, "at least 5 bytes"),
+        ("empty.pdf", 4, "at least 5 bytes"),
         (
             "recording.amr",
-            b"x" * (2 * 1024 * 1024 + 1),
             2 * 1024 * 1024 + 1,
             "voice attachment exceeds its size limit",
         ),
     ),
 )
 def test_wecom_rejects_invalid_attachment_before_upload(
-    tmp_path: Path, name: str, content: bytes, size_bytes: int, message: str
+    tmp_path: Path,
+    name: str,
+    size_bytes: int,
+    message: str,
 ) -> None:
+    content = b"x" * size_bytes
     source = tmp_path / name
     source.write_bytes(content)
     descriptor = OutboundAttachment(
