@@ -1,12 +1,11 @@
 """Codex App Server process, protocol, and runtime adapter."""
 
 from .client import (
-    CodexAppServerClient,
-    CodexAppServerProtocolError,
-    CodexErrorInfo,
-    CodexFsChangedInfo,
-    CodexThreadInfo,
-    CodexTurnInfo,
+    Client,
+    ErrorInfo,
+    FsChangedInfo,
+    ThreadInfo,
+    TurnInfo,
     build_fs_watch_params,
     build_initialize_params,
     build_thread_resume_params,
@@ -24,13 +23,14 @@ from .client import (
     parse_turn_response,
     parse_turn_steer_response,
 )
-from .events import CodexTurnEventStream
+from .events import TurnEventStream
 from .process import (
     JsonlProcessSpec,
     JsonlProcessState,
     JsonlProcessSupervisor,
 )
 from .protocol import (
+    AppServerProtocolError,
     JsonlMessage,
     JsonlProcessExited,
     JsonlProcessNotRunning,
@@ -39,17 +39,13 @@ from .protocol import (
     JsonlRequestTimeout,
     JsonlTransportError,
 )
-from .runtime import CodexAppServerRuntime
+from .runtime import Runtime
 
 __all__ = [
-    "CodexAppServerClient",
-    "CodexAppServerProtocolError",
-    "CodexAppServerRuntime",
-    "CodexErrorInfo",
-    "CodexFsChangedInfo",
-    "CodexThreadInfo",
-    "CodexTurnEventStream",
-    "CodexTurnInfo",
+    "AppServerProtocolError",
+    "Client",
+    "ErrorInfo",
+    "FsChangedInfo",
     "JsonlMessage",
     "JsonlProcessExited",
     "JsonlProcessNotRunning",
@@ -60,6 +56,10 @@ __all__ = [
     "JsonlRemoteError",
     "JsonlRequestTimeout",
     "JsonlTransportError",
+    "Runtime",
+    "ThreadInfo",
+    "TurnEventStream",
+    "TurnInfo",
     "build_fs_watch_params",
     "build_initialize_params",
     "build_thread_resume_params",

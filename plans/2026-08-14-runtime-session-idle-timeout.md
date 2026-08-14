@@ -194,11 +194,11 @@ schema migration version 连续更新；提交业务 diff，停在 Task 1.1 revi
 - `src/bazaar_compute_node/core/orchestration/session.py`
 - `src/bazaar_compute_node/core/orchestration/turn.py`
 - `src/bazaar_compute_node/core/runtime.py`
-- `src/bazaar_compute_node/contrib/codex_app_server/client.py`
-- `src/bazaar_compute_node/contrib/codex_app_server/runtime.py`
+- `src/bazaar_compute_node/contrib/codex/client.py`
+- `src/bazaar_compute_node/contrib/codex/runtime.py`
 - `src/bazaar_compute_node/app/application.py`
 - `tests/contrib/test_orchestration.py`
-- `tests/contrib/test_codex_app_server.py`
+- `tests/contrib/test_codex.py`
 - `tests/app/test_composition.py`
 - `tests/app/test_bcc_process.py`
 - `tests/support/src/bcn_test_support/runtime.py`

@@ -34,7 +34,7 @@ _STREAM_EVENT_KINDS = {
 from .client import parse_error_notification, parse_turn_notification
 from .process import JsonlProcessSupervisor
 from .protocol import (
-    CodexAppServerProtocolError,
+    AppServerProtocolError,
     JsonlMessage,
     JsonlRequestId,
     JsonlTransportError,
@@ -42,7 +42,7 @@ from .protocol import (
 )
 
 
-class CodexTurnEventStream(IRuntimeTurnStream):
+class TurnEventStream(IRuntimeTurnStream):
     """Normalize one Codex turn's notifications into runtime-neutral items."""
 
     def __init__(
@@ -128,7 +128,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
                     error_message=_safe_error_message(error),
                     metadata={"provider_method": "transport"},
                 )
-            except (CodexAppServerProtocolError, TypeError, ValueError) as error:
+            except (AppServerProtocolError, TypeError, ValueError) as error:
                 return self._terminal_event(
                     RuntimeEventState.UNKNOWN,
                     event_name="codex.turn.protocol.unknown",
@@ -317,7 +317,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         if not isinstance(method, str) or request_id is None:
             return False
         if not is_request_id(request_id):
-            raise CodexAppServerProtocolError(
+            raise AppServerProtocolError(
                 "provider request id must be an integer or string"
             )
         request_id = cast(JsonlRequestId, request_id)
@@ -327,11 +327,11 @@ class CodexTurnEventStream(IRuntimeTurnStream):
         if not is_approval_method(method):
             await self._respond_with_error(
                 request_id,
-                CodexAppServerProtocolError(
+                AppServerProtocolError(
                     f"unsupported provider request method: {method}"
                 ),
             )
-            raise CodexAppServerProtocolError("unsupported provider request")
+            raise AppServerProtocolError("unsupported provider request")
         response_attempted = False
         try:
             approval = parse_approval_request(
@@ -343,7 +343,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
                 provider_turn_id=self._provider_turn_id,
             )
             if self._approval_handler is None:
-                raise CodexAppServerProtocolError(
+                raise AppServerProtocolError(
                     "runtime approval handler is not configured"
                 )
             result = await self._approval_handler.request_approval(
@@ -364,7 +364,7 @@ class CodexTurnEventStream(IRuntimeTurnStream):
                 await self._respond_with_error(request_id, error)
             if response_attempted and isinstance(error, JsonlTransportError):
                 raise
-            raise CodexAppServerProtocolError(
+            raise AppServerProtocolError(
                 f"approval bridge failed: {type(error).__name__}"
             ) from error
         return True
@@ -403,4 +403,4 @@ def _safe_error_message(error: BaseException) -> str:
     return message or type(error).__name__
 
 
-__all__ = ["CodexTurnEventStream"]
+__all__ = ["TurnEventStream"]

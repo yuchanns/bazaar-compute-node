@@ -4,9 +4,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from ...core.models import ApprovalDecision, ApprovalRequest, ApprovalResult
+from ...core.models import (
+    ApprovalDecision,
+    ApprovalResult,
+)
+from ...core.models import (
+    ApprovalRequest as CoreApprovalRequest,
+)
 from .protocol import (
-    CodexAppServerProtocolError,
+    AppServerProtocolError,
     JsonlMessage,
     JsonlRequestId,
     is_request_id,
@@ -26,13 +32,13 @@ _APPROVAL_METHODS = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
-class CodexApprovalRequest:
+class ApprovalEnvelope:
     """Provider request plus its neutral approval projection."""
 
     request_id: JsonlRequestId
     method: str
     params: Mapping[str, object]
-    request: ApprovalRequest
+    request: CoreApprovalRequest
 
 
 def is_approval_method(method: object) -> bool:
@@ -47,28 +53,26 @@ def parse_approval_request(
     turn_id: str,
     provider_thread_id: str,
     provider_turn_id: str | None,
-) -> CodexApprovalRequest:
+) -> ApprovalEnvelope:
     method = message.get("method")
     if not isinstance(method, str) or not is_approval_method(method):
-        raise CodexAppServerProtocolError("message is not an approval request")
+        raise AppServerProtocolError("message is not an approval request")
     request_id = message.get("id")
     if not is_request_id(request_id):
-        raise CodexAppServerProtocolError(
-            "approval request id must be an integer or string"
-        )
+        raise AppServerProtocolError("approval request id must be an integer or string")
     request_id = cast(JsonlRequestId, request_id)
     params = message.get("params")
     if not isinstance(params, Mapping):
-        raise CodexAppServerProtocolError("approval request params must be an object")
+        raise AppServerProtocolError("approval request params must be an object")
 
     thread_value = _require_text(params, "threadId")
     if thread_value != provider_thread_id:
-        raise CodexAppServerProtocolError(
+        raise AppServerProtocolError(
             "approval request thread does not match runtime thread"
         )
     provider_turn_value = _require_text(params, "turnId")
     if provider_turn_id is None or provider_turn_value != provider_turn_id:
-        raise CodexAppServerProtocolError(
+        raise AppServerProtocolError(
             "approval request turn does not match runtime turn"
         )
     provider_item_id = _require_text(params, "itemId")
@@ -78,7 +82,7 @@ def parse_approval_request(
         or isinstance(started_at_ms, bool)
         or started_at_ms < 0
     ):
-        raise CodexAppServerProtocolError(
+        raise AppServerProtocolError(
             "approval request startedAtMs must be a non-negative integer"
         )
     action = {
@@ -89,7 +93,7 @@ def parse_approval_request(
     if method == _PERMISSIONS_METHOD and not isinstance(
         params.get("permissions"), Mapping
     ):
-        raise CodexAppServerProtocolError(
+        raise AppServerProtocolError(
             "permissions approval request has no permissions object"
         )
 
@@ -104,11 +108,11 @@ def parse_approval_request(
         value = params.get(provider_key)
         if isinstance(value, str) and value:
             metadata[metadata_key] = value
-    return CodexApprovalRequest(
+    return ApprovalEnvelope(
         request_id=request_id,
         method=method,
         params=params,
-        request=ApprovalRequest(
+        request=CoreApprovalRequest(
             request_id=str(request_id),
             session_id=session_id,
             runtime_session_id=runtime_session_id,
@@ -121,7 +125,7 @@ def parse_approval_request(
 
 
 def build_approval_response(
-    approval: CodexApprovalRequest,
+    approval: ApprovalEnvelope,
     result: ApprovalResult,
 ) -> Mapping[str, object]:
     if result.request_id != approval.request.request_id:
@@ -134,11 +138,11 @@ def build_approval_response(
             return {"permissions": {}}
         permissions = approval.params.get("permissions")
         if not isinstance(permissions, Mapping):
-            raise CodexAppServerProtocolError(
+            raise AppServerProtocolError(
                 "permissions approval request has no permissions object"
             )
         return {"permissions": dict(permissions), "scope": "turn"}
-    raise CodexAppServerProtocolError("unsupported approval response method")
+    raise AppServerProtocolError("unsupported approval response method")
 
 
 def approval_error(error: BaseException) -> Mapping[str, object]:
@@ -153,14 +157,14 @@ def approval_error(error: BaseException) -> Mapping[str, object]:
 def _require_text(params: Mapping[str, object], field_name: str) -> str:
     value = params.get(field_name)
     if not isinstance(value, str) or not value:
-        raise CodexAppServerProtocolError(
+        raise AppServerProtocolError(
             f"approval request {field_name} must be non-empty text"
         )
     return value
 
 
 __all__ = [
-    "CodexApprovalRequest",
+    "ApprovalEnvelope",
     "approval_error",
     "build_approval_response",
     "is_approval_method",

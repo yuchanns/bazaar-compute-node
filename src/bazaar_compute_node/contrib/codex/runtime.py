@@ -31,7 +31,7 @@ from ...core.runtime import (
     RuntimeSessionUnavailable,
 )
 from .client import (
-    CodexAppServerClient,
+    Client,
     parse_fs_changed_notification,
     parse_fs_watch_response,
     parse_initialize_response,
@@ -40,10 +40,10 @@ from .client import (
     parse_turn_response,
     parse_turn_steer_response,
 )
-from .events import CodexTurnEventStream
+from .events import TurnEventStream
 from .process import JsonlProcessSpec, JsonlProcessSupervisor
 from .protocol import (
-    CodexAppServerProtocolError,
+    AppServerProtocolError,
     JsonlProcessExited,
     JsonlProcessNotRunning,
     JsonlProtocolError,
@@ -59,15 +59,15 @@ _CODEX_HOME_AGENTS_WATCH_ID = "bcn-agents-codex-home"
 
 
 @dataclass(slots=True)
-class _CodexConnection:
+class _Connection:
     supervisor: JsonlProcessSupervisor
-    client: CodexAppServerClient
+    client: Client
     workspace: Path
     provider_thread_id: str
     active_turn_id: str | None = None
 
 
-class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
+class Runtime(IRuntime, IAsyncLifecycle):
     """Run one persistent Codex App Server process per bcn runtime session."""
 
     @property
@@ -102,7 +102,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self._executable = executable
         self._model = model
         self._effort = effort
-        self._connections: dict[str, _CodexConnection] = {}
+        self._connections: dict[str, _Connection] = {}
         self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
         self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
@@ -139,7 +139,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         existing = self._connections.pop(session.id, None)
         if existing is not None:
             await self._stop_connection(existing, timeout=timeout)
-        connection: _CodexConnection | None = None
+        connection: _Connection | None = None
         try:
             connection = await self._open_connection(session, timeout=timeout)
             response = await connection.client.start_thread(
@@ -211,7 +211,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 )
                 read_thread = parse_thread_response(read_response)
                 if read_thread.thread_id != provider_thread_id:
-                    raise CodexAppServerProtocolError(
+                    raise AppServerProtocolError(
                         "thread/read returned a different provider thread"
                     )
                 if read_thread.status == "active":
@@ -227,13 +227,13 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                         or len(active_turns) != 1
                         or active_turns[0].turn_id != turn.provider_turn_id
                     ):
-                        raise CodexAppServerProtocolError(
+                        raise AppServerProtocolError(
                             "active runtime turn cannot be reconciled"
                         )
                     connection.provider_thread_id = provider_thread_id
                     connection.active_turn_id = turn.turn_id
                     self._connections[session.id] = connection
-                    stream = CodexTurnEventStream(
+                    stream = TurnEventStream(
                         connection.supervisor,
                         session_id=session.bcn_session_id,
                         runtime_session_id=session.id,
@@ -259,7 +259,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                         },
                     )
                 if read_thread.status not in {"idle", "notLoaded"}:
-                    raise CodexAppServerProtocolError(
+                    raise AppServerProtocolError(
                         f"unsupported runtime thread status: {read_thread.status}"
                     )
                 response = await connection.client.resume_thread(
@@ -270,7 +270,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 )
                 thread = parse_thread_response(response)
                 if thread.thread_id != provider_thread_id:
-                    raise CodexAppServerProtocolError(
+                    raise AppServerProtocolError(
                         "thread/resume returned a different provider thread"
                     )
                 connection.provider_thread_id = thread.thread_id
@@ -407,11 +407,11 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             if isinstance(error, JsonlRemoteError):
                 initial_error_kind = "provider_failed"
                 initial_error_state = RuntimeEventState.FAILED
-            elif isinstance(error, CodexAppServerProtocolError):
+            elif isinstance(error, AppServerProtocolError):
                 initial_error_kind = "protocol"
                 initial_error_state = RuntimeEventState.FAILED
         connection.active_turn_id = turn.turn_id
-        return CodexTurnEventStream(
+        return TurnEventStream(
             connection.supervisor,
             session_id=session.bcn_session_id,
             runtime_session_id=session.id,
@@ -493,7 +493,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             )
             accepted_turn_id = parse_turn_steer_response(response)
             if accepted_turn_id != provider_turn_id:
-                raise CodexAppServerProtocolError(
+                raise AppServerProtocolError(
                     "turn/steer returned a different provider turn"
                 )
         except asyncio.CancelledError:
@@ -541,7 +541,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         session: RuntimeSession,
         *,
         timeout: float,
-    ) -> _CodexConnection:
+    ) -> _Connection:
         executable = await asyncio.to_thread(shutil.which, self._executable)
         if executable is None:
             raise FileNotFoundError(f"Codex executable not found: {self._executable}")
@@ -584,7 +584,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 ),
                 notification_router=route_notification,
             )
-            client = CodexAppServerClient(supervisor)
+            client = Client(supervisor)
             await supervisor.start(timeout=self._context.startup_timeout_seconds)
             try:
                 initialize_response = await client.initialize(
@@ -603,7 +603,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                         timeout=self._context.startup_timeout_seconds,
                     )
                     if parse_fs_watch_response(watch_response) != target:
-                        raise CodexAppServerProtocolError(
+                        raise AppServerProtocolError(
                             "fs/watch returned a different path"
                         )
             except JsonlRequestTimeout:
@@ -614,7 +614,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             except BaseException:
                 await supervisor.stop(timeout=timeout)
                 raise
-            return _CodexConnection(
+            return _Connection(
                 supervisor=supervisor,
                 client=client,
                 workspace=workspace,
@@ -624,7 +624,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
 
     async def _stop_connection(
         self,
-        connection: _CodexConnection,
+        connection: _Connection,
         *,
         timeout: float,
     ) -> None:
@@ -654,7 +654,7 @@ def _provider_result(error: BaseException) -> ProviderCallResult[Any]:
             error_kind="provider_unknown",
             error_message=_safe_error_message(error),
         )
-    if isinstance(error, (JsonlProtocolError, CodexAppServerProtocolError)):
+    if isinstance(error, (JsonlProtocolError, AppServerProtocolError)):
         return ProviderCallResult(
             status=ProviderCallStatus.FAILED,
             error_kind="protocol",
@@ -682,4 +682,4 @@ def _now_ms() -> int:
     return time_ns() // 1_000_000
 
 
-__all__ = ["CodexAppServerRuntime"]
+__all__ = ["Runtime"]

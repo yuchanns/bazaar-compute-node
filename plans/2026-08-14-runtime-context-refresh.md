@@ -30,7 +30,7 @@
   `fs/changed`。watch 支持绝对文件路径、目标尚不存在后创建以及原子替换，适合由 Codex adapter 注册
   workspace 与 Codex home 的 `AGENTS.md`。
 - `JsonlProcessSupervisor` 当前把所有非 response 消息写入同一个 `_incoming` queue，活跃
-  `CodexTurnEventStream` 是唯一 consumer。若再增加一个 idle watcher 直接读取该 queue，会与 turn stream 争抢
+  `TurnEventStream` 是唯一 consumer。若再增加一个 idle watcher 直接读取该 queue，会与 turn stream 争抢
   notification；而 session `IDLE` 时没有 consumer，context event 也无法及时进入 core。
 - 已合并的 runtime idle recycling 已具备 confirmed stop、进程内 live registry、UUIDv7 runtime session、timer
   与 capability rollover，并已采用“关闭后等待下一条 inbound 再创建”的 lifecycle。本需求只需让 context change
@@ -86,10 +86,10 @@ runtime stop 前由 orchestrator cancel/await receive task，因此 adapter mail
 
 `JsonlProcessSupervisor` 接受同步 notification router。`_route_message()` 在 response correlation 之后、写入
 `_incoming` 之前调用 router；router 只返回是否已消费，不执行 await、不取得 core lock，也不启动 detached task。
-已消费的 context notification 写入 `CodexAppServerRuntime` 的 runtime event mailbox；其余消息保持现有顺序进入
+已消费的 context notification 写入 `Runtime` 的 runtime event mailbox；其余消息保持现有顺序进入
 turn stream。
 
-`CodexAppServerClient` 增加 `fs/watch` request builder 与 response/notification parser。每次
+`Client` 增加 `fs/watch` request builder 与 response/notification parser。每次
 `_open_connection()` initialize confirmed 后，为以下绝对路径注册 connection-scoped watch：
 
 1. 当前 runtime workspace root 的 `AGENTS.md`；
@@ -135,9 +135,9 @@ notifying inbound 复用现有 `_ensure_runtime_session_or_discard()` 创建新 
 修改文件：
 
 - `src/bazaar_compute_node/core/runtime.py`
-- `src/bazaar_compute_node/contrib/codex_app_server/process.py`
+- `src/bazaar_compute_node/contrib/codex/process.py`
 - `tests/support/src/bcn_test_support/runtime.py`
-- `tests/contrib/test_codex_app_server.py`
+- `tests/contrib/test_codex.py`
 
 实施动作：
 
@@ -157,9 +157,9 @@ diff，停在 Task 1.1 review，不进入 Task 1.2。
 
 修改文件：
 
-- `src/bazaar_compute_node/contrib/codex_app_server/client.py`
-- `src/bazaar_compute_node/contrib/codex_app_server/runtime.py`
-- `tests/contrib/test_codex_app_server.py`
+- `src/bazaar_compute_node/contrib/codex/client.py`
+- `src/bazaar_compute_node/contrib/codex/runtime.py`
+- `tests/contrib/test_codex.py`
 
 实施动作：
 
@@ -234,7 +234,7 @@ context expire 的两种到达顺序均只 stop 一次，另一事件 noop；exp
 - `tests/conftest.py`
 - `tests/test_support.py`
 - `tests/contrib/test_orchestration.py`
-- `tests/contrib/test_codex_app_server.py`
+- `tests/contrib/test_codex.py`
 
 实施动作：
 
