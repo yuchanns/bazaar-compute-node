@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, cast
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
 from bcn_test_support import (
@@ -33,12 +33,17 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeEventState,
     RuntimeTurnState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_data_dir
-from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
+from bazaar_compute_node.core.runtime import (
+    IRuntime,
+    RuntimeCommandContext,
+    RuntimeSessionReconciliation,
+)
 from bazaar_compute_node.core.storage import IStorage, NodeIdentity
 
 
@@ -597,20 +602,24 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
 async def test_approval_is_routed_to_the_current_channel_session() -> None:
     orchestrator, channel, runtime, _storage, audit = await make_node()
     try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
         request = ApprovalRequest(
             request_id="approval-1",
             session_id="bcn-1",
-            runtime_session_id="runtime-bcn-1",
+            runtime_session_id=runtime_session.id,
             action="test-action",
             created_at_ms=1,
-            turn_id="turn-message-bcn-1-1",
+            turn_id="turn-message-bcn-1-2",
         )
         runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
-        await channel.inject(make_message())
+        await channel.inject(make_message(seq=2))
         await wait_until(
             lambda: any(
                 event.event_name == "runtime.turn.completed"
-                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                and event.correlation.turn_id == "turn-message-bcn-1-2"
                 for event in audit.events
             )
         )
@@ -903,6 +912,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert len(runtime.started_turns) == 1
         steered_session, steered_turn, steer_input = runtime.steered_turns[0]
         assert steered_session.bcn_session_id == "bcn-1"
+        assert steered_session == orchestrator.runtime_session("bcn-1")
         assert steered_turn.turn_id == "turn-message-bcn-1-1"
         assert steer_input == (
             "[inbox notice session=bcn-1]\n"
@@ -1016,6 +1026,13 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
             "bcn-a",
             "bcn-b",
         }
+        first_runtime = orchestrator.runtime_session("bcn-a")
+        second_runtime = orchestrator.runtime_session("bcn-b")
+        assert first_runtime is not None
+        assert second_runtime is not None
+        assert first_runtime.id != second_runtime.id
+        assert UUID(first_runtime.id).version == 7
+        assert UUID(second_runtime.id).version == 7
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1065,7 +1082,7 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         )
         assert await orchestrator.handle_inbound(quiet) is None
         assert storage.channel_sessions["channel-bcn-1"].following is False
-        assert storage.runtime_sessions == {}
+        assert orchestrator.runtime_session("bcn-1") is None
         assert runtime.started_sessions == []
         assert (await orchestrator.command_service.check("bcn-1")).messages == ()
         history = await orchestrator.command_service.read("bcn-1", target="#test:bcn-1")
@@ -1127,14 +1144,14 @@ async def test_inbound_failure_rolls_back_new_session_state() -> None:
         assert "invalid" not in storage.bcn_sessions
         assert "invalid" not in storage.cursors
         assert "invalid" not in storage.inbound_messages
-        assert "runtime-invalid" not in storage.runtime_sessions
+        assert orchestrator.runtime_session("invalid") is None
     finally:
         await orchestrator.stop(timeout=1)
 
 
 @pytest.mark.asyncio
-async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
-    orchestrator, channel, runtime, _, _ = await make_node()
+async def test_runtime_start_failure_replaces_session_for_current_inbound() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
     try:
         runtime.queue_start_result(
             ProviderCallResult(
@@ -1147,15 +1164,267 @@ async def test_runtime_start_failure_does_not_claim_a_running_session() -> None:
         result = await task
 
         assert result is not None
-        assert result.state is RuntimeTurnState.FAILED
-        assert orchestrator.agent_state("bcn-1") is AgentState.FAILED
-        assert not channel.sent_messages
+        assert result.state is RuntimeTurnState.COMPLETED
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert current_runtime is not None
+        assert len(runtime.started_sessions) == 2
+        assert runtime.started_sessions[0].id != current_runtime.id
+        assert runtime.started_sessions[1].id == current_runtime.id
     finally:
         await orchestrator.stop(timeout=1)
 
 
 @pytest.mark.asyncio
-async def test_pre_start_failure_resumes_and_retries_the_current_inbound() -> None:
+@pytest.mark.parametrize(
+    "status",
+    (ProviderCallStatus.FAILED, ProviderCallStatus.UNKNOWN),
+)
+async def test_unconfirmed_reconcile_clears_session_before_next_inbound(
+    status: ProviderCallStatus,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        runtime.queue_reconcile_result(
+            ProviderCallResult(
+                status=status,
+                error_kind=(
+                    "provider_failed"
+                    if status is ProviderCallStatus.FAILED
+                    else "provider_unknown"
+                ),
+                error_message="runtime session cannot be reconciled",
+            )
+        )
+        runtime.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
+        )
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        assert first_turn.state is RuntimeTurnState.UNKNOWN
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.agent_state("bcn-1") is None
+        assert len(runtime.reconciled_sessions) == 1
+        first_runtime = runtime.reconciled_sessions[0]
+
+        second_turn = await orchestrator.handle_inbound(make_message(seq=2))
+
+        assert second_turn is not None
+        assert second_turn.state is RuntimeTurnState.COMPLETED
+        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert current_runtime is not None
+        assert current_runtime.id != first_runtime.id
+        assert runtime.reconciled_sessions == [first_runtime]
+        assert runtime.started_sessions[-1].id == current_runtime.id
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_unknown_turn_reconciles_immediately() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        runtime.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
+        )
+        turn = await orchestrator.handle_inbound(make_message(seq=1))
+
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.UNKNOWN
+        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert current_runtime is not None
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert runtime.reconciled_sessions == [current_runtime]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert current_runtime is not None
+        runtime.queue_reconcile_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.CONFIRMED,
+                value=RuntimeSessionReconciliation(
+                    session=current_runtime,
+                    state=AgentState.FAILED,
+                ),
+            )
+        )
+        runtime.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
+        )
+
+        second_turn = await orchestrator.handle_inbound(make_message(seq=2))
+
+        assert second_turn is not None
+        assert second_turn.state is RuntimeTurnState.UNKNOWN
+        assert runtime.stopped_sessions[-1] == current_runtime
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.agent_state("bcn-1") is None
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
+    )
+    runtime.queue_reconcile_turn_plan(
+        TestTurnPlan(
+            states=(RuntimeEventState.COMPLETED,),
+            block_until_release=True,
+        )
+    )
+    first_task = orchestrator.dispatch_inbound(make_message(seq=1))
+
+    try:
+        await wait_until(
+            lambda: bool(runtime.reconciled_sessions and runtime.active_streams)
+        )
+        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert current_runtime is not None
+        assert orchestrator.agent_state("bcn-1") is AgentState.WORKING
+
+        second_task = orchestrator.dispatch_inbound(make_message(seq=2))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+        steered_session, steered_turn, _ = runtime.steered_turns[0]
+        assert steered_session == current_runtime
+        assert steered_turn.turn_id == "turn-message-bcn-1-1"
+        assert steered_turn.provider_turn_id == ("test-provider-turn-message-bcn-1-1")
+
+        next(iter(runtime.active_streams)).release()
+        first_turn, second_turn = await asyncio.gather(first_task, second_task)
+
+        assert first_turn is not None
+        assert first_turn.state is RuntimeTurnState.COMPLETED
+        assert second_turn is not None
+        assert second_turn.state is RuntimeTurnState.COMPLETED
+        assert orchestrator.runtime_session("bcn-1") == current_runtime
+        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert runtime.reconciled_sessions == [current_runtime]
+    finally:
+        if not first_task.done():
+            first_task.cancel()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_stop_replaces_runtime_session_on_next_inbound() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        first_runtime = orchestrator.runtime_session("bcn-1")
+        assert first_runtime is not None
+
+        await orchestrator._stop_runtime_session(first_runtime, timeout=1)
+
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.agent_state("bcn-1") is None
+        second_turn = await orchestrator.handle_inbound(make_message(seq=2))
+        assert second_turn is not None
+        second_runtime = orchestrator.runtime_session("bcn-1")
+        assert second_runtime is not None
+        assert second_runtime.id != first_runtime.id
+        assert UUID(second_runtime.id).version == 7
+        assert [session.id for session in runtime.started_sessions] == [
+            first_runtime.id,
+            second_runtime.id,
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    (ProviderCallStatus.FAILED, ProviderCallStatus.UNKNOWN),
+)
+async def test_unconfirmed_stop_clears_runtime_session(
+    status: ProviderCallStatus,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        first_runtime = orchestrator.runtime_session("bcn-1")
+        assert first_runtime is not None
+        runtime.queue_stop_result(
+            ProviderCallResult(
+                status=status,
+                error_kind=(
+                    "provider_failed"
+                    if status is ProviderCallStatus.FAILED
+                    else "provider_unknown"
+                ),
+                error_message="stop was not confirmed",
+            )
+        )
+
+        await orchestrator._stop_runtime_session(first_runtime, timeout=1)
+
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.agent_state("bcn-1") is None
+        second_turn = await orchestrator.handle_inbound(make_message(seq=2))
+        assert second_turn is not None
+        replacement = orchestrator.runtime_session("bcn-1")
+        assert replacement is not None
+        assert replacement.id != first_runtime.id
+        assert runtime.started_sessions[-1].id == replacement.id
+        assert not runtime.reconciled_sessions
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
+    first, _, _, storage, _ = await make_node()
+    first_runtime_id: str | None = None
+    try:
+        first_turn = await first.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        first_runtime = first.runtime_session("bcn-1")
+        assert first_runtime is not None
+        first_runtime_id = first_runtime.id
+    finally:
+        await first.stop(timeout=1)
+
+    channel = TestChannel()
+    runtime = TestRuntime()
+    second = SessionOrchestrator(
+        node_id="node-1",
+        workspace_id="workspace-1",
+        channel=channel,
+        runtime=runtime,
+        storage=storage,
+        audit=RecordingAudit(),
+        timeout_budget=make_budget(),
+        workspace=Path.cwd,
+    )
+    runtime.command_service = second.command_service
+    await second.start(timeout=1)
+    try:
+        second_turn = await second.handle_inbound(make_message(seq=2))
+        assert second_turn is not None
+        second_runtime = second.runtime_session("bcn-1")
+        assert second_runtime is not None
+        assert first_runtime_id is not None
+        assert second_runtime.id != first_runtime_id
+        assert UUID(second_runtime.id).version == 7
+    finally:
+        await second.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_pre_start_failure_reconciles_and_retries_the_current_inbound() -> None:
     orchestrator, _, runtime, storage, _ = await make_node()
     try:
         first_turn = await orchestrator.handle_inbound(
@@ -1175,8 +1444,8 @@ async def test_pre_start_failure_resumes_and_retries_the_current_inbound() -> No
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
         assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
-        assert len(runtime.resumed_sessions) == 1
-        assert runtime.resumed_sessions[0].provider_thread_id is not None
+        assert len(runtime.reconciled_sessions) == 1
+        assert runtime.reconciled_sessions[0].provider_thread_id is not None
         assert len(runtime.started_turns) == 2
         assert len(storage.runtime_attempts) == 2
     finally:
@@ -1204,8 +1473,9 @@ async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.FAILED
-        assert orchestrator.agent_state("bcn-1") is AgentState.FAILED
-        assert len(runtime.resumed_sessions) == 1
+        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert len(runtime.reconciled_sessions) == 1
         assert len(runtime.started_turns) == 1
         assert len(storage.runtime_attempts) == 2
     finally:

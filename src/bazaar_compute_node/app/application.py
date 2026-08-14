@@ -81,8 +81,7 @@ class NodeApplication:
         self.command_log: list[CommandRecord] = []
         self._wrapper_path: Path | None = None
         self._identity: NodeIdentity | None = None
-        self._session_capabilities: dict[str, str] = {}
-        self._runtime_session_ids: dict[str, str] = {}
+        self._session_capabilities: dict[str, tuple[str, str]] = {}
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_environment_include = tuple(runtime_environment_include)
@@ -278,18 +277,19 @@ class NodeApplication:
                     "SESSION_NOT_FOUND",
                     f"unknown bcn session: {session_id}",
                 )
-            runtime_session = await transaction.find_runtime_session(session_id)
-        if runtime_session is None or runtime_session_id != (runtime_session.id):
+        runtime_session = self.orchestrator.runtime_session(session_id)
+        if runtime_session is None or runtime_session_id != runtime_session.id:
             raise CommandDispatchError(
                 "SESSION_BINDING_FAILED",
                 "runtime session binding is invalid",
             )
-        expected_capability = self._session_capabilities.get(session_id)
+        capability_binding = self._session_capabilities.get(session_id)
         if (
-            expected_capability is None
+            capability_binding is None
+            or capability_binding[0] != runtime_session.id
             or not isinstance(session_capability, str)
             or not hmac.compare_digest(
-                session_capability.encode(), expected_capability.encode()
+                session_capability.encode(), capability_binding[1].encode()
             )
         ):
             raise CommandDispatchError(
@@ -298,7 +298,9 @@ class NodeApplication:
             )
 
     def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
-        self._runtime_session_ids[session.bcn_session_id] = session.id
+        runtime_session = self.orchestrator.runtime_session(session.bcn_session_id)
+        if runtime_session is None or runtime_session.id != session.id:
+            raise RuntimeError("runtime session is not the current live binding")
         return self._build_command_environment(
             session.bcn_session_id,
             session.id,
@@ -316,10 +318,11 @@ class NodeApplication:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
-        session_capability = self._session_capabilities.setdefault(
-            session_id,
-            secrets.token_urlsafe(32),
-        )
+        capability_binding = self._session_capabilities.get(session_id)
+        if capability_binding is None or capability_binding[0] != runtime_session_id:
+            capability_binding = (runtime_session_id, secrets.token_urlsafe(32))
+            self._session_capabilities[session_id] = capability_binding
+        session_capability = capability_binding[1]
         wrapper_directory = str(wrapper_path.parent)
         allowed = set(_PLATFORM_ENVIRONMENT)
         for name in self.runtime.environment_variable_names():
@@ -368,13 +371,12 @@ class NodeApplication:
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((session_id, tuple(arguments)))
-        runtime_session_id = self._runtime_session_ids.get(
-            session_id,
-            f"runtime-{session_id}",
-        )
+        runtime_session = self.orchestrator.runtime_session(session_id)
+        if runtime_session is None:
+            raise RuntimeError("runtime session is not live")
         environment = self._build_command_environment(
             session_id,
-            runtime_session_id,
+            runtime_session.id,
         )
         process = await asyncio.create_subprocess_exec(
             str(wrapper_path),

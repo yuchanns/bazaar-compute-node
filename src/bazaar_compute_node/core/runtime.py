@@ -8,7 +8,7 @@ from typing import Protocol
 from .approval import IApprovalHandler
 from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
-from .models import RuntimeEvent, RuntimeSession, RuntimeTurn, StreamEvent
+from .models import AgentState, RuntimeEvent, RuntimeSession, RuntimeTurn, StreamEvent
 from .outcomes import ProviderCallResult
 
 
@@ -56,6 +56,15 @@ class IRuntimeTurnStream(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionReconciliation:
+    """Confirmed session state with an optional recovered turn stream."""
+
+    session: RuntimeSession
+    state: AgentState
+    stream: IRuntimeTurnStream | None = None
+
+
 class IRuntime(IAsyncLifecycle, Protocol):
     """Async agent-runtime contract isolated from provider SDK types.
 
@@ -76,13 +85,18 @@ class IRuntime(IAsyncLifecycle, Protocol):
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
-        """Start a new runtime process/session."""
+        """Start a session, releasing its process before non-confirmed return."""
         ...
 
-    async def resume_session(
-        self, session: RuntimeSession, *, timeout: float
-    ) -> ProviderCallResult[RuntimeSession]:
-        """Reconcile or resume a persisted runtime session."""
+    async def reconcile_session(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn | None,
+        approval_handler: IApprovalHandler | None,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSessionReconciliation]:
+        """Confirm recovery, releasing its process before non-confirmed return."""
         ...
 
     async def start_turn(
@@ -130,5 +144,5 @@ class IRuntime(IAsyncLifecycle, Protocol):
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
-        """Stop one runtime process within the bounded shutdown budget."""
+        """Release one runtime process within the bounded shutdown budget."""
         ...

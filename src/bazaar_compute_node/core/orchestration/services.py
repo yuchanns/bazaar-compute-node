@@ -133,3 +133,11 @@ class SessionStateWriter:
         updated = reduce_agent_tick(self.get(session_id), tick)
         self._states[session_id] = updated
         return updated
+
+    def apply_reconciliation(
+        self,
+        session_id: str,
+        state: AgentState,
+    ) -> AgentState:
+        self._states[session_id] = state
+        return state

@@ -112,6 +112,20 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             "bcn-b",
         }
         assert len(runtime.started_turns) == 2
+        runtime_sessions = {
+            session_id: node.orchestrator.runtime_session(session_id)
+            for session_id in ("bcn-a", "bcn-b")
+        }
+        assert all(session is not None for session in runtime_sessions.values())
+        runtime_a = runtime_sessions["bcn-a"]
+        runtime_b = runtime_sessions["bcn-b"]
+        assert runtime_a is not None
+        assert runtime_b is not None
+        assert runtime_a.id != runtime_b.id
+        runtime_session_ids = {
+            "bcn-a": runtime_a.id,
+            "bcn-b": runtime_b.id,
+        }
 
         missing_capability = await LocalCommandClient.request(
             endpoint,
@@ -119,7 +133,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
                 "kind": "command",
                 "command": "check",
                 "session_id": "bcn-a",
-                "runtime_session_id": "runtime-bcn-a",
+                "runtime_session_id": runtime_a.id,
             },
         )
         assert missing_capability["code"] == "SESSION_BINDING_FAILED"
@@ -129,8 +143,8 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
                 "kind": "command",
                 "command": "check",
                 "session_id": "bcn-b",
-                "runtime_session_id": "runtime-bcn-b",
-                "session_capability": node._session_capabilities["bcn-a"],
+                "runtime_session_id": runtime_b.id,
+                "session_capability": node._session_capabilities["bcn-a"][1],
             },
         )
         assert cross_session_capability["code"] == "SESSION_BINDING_FAILED"
@@ -154,7 +168,11 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
                 assert await transaction.get_bcn_session(session_id) is not None
                 messages = await transaction.list_inbound_messages(session_id)
                 assert [message.session_id for message in messages] == [session_id]
-                assert await transaction.find_runtime_session(session_id) is not None
+                attempt = await transaction.get_runtime_attempt(
+                    f"turn-message-{session_id}-1"
+                )
+                assert attempt is not None
+                assert attempt.session_id == runtime_session_ids[session_id]
     finally:
         await persisted.stop(timeout=2)
 

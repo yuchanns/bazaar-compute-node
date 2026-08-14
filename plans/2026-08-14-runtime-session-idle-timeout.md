@@ -2,10 +2,10 @@
 
 ## 状态
 
-- 当前阶段：设计完成，等待 review。
+- 当前阶段：Task 1.2 实施完成，等待 review；尚未进入 Task 1.3。
 - 实施分支：`f-20260814-runtime-session-idle-timeout`。
 - 基线：`main@18ab8b8`。
-- 功能代码尚未修改；本计划不授权 commit、push、PR、发布或部署。
+- Task 1.1 已提交；Task 1.2 尚未提交。本计划不授权 commit、push、PR、发布或部署。
 
 ## 目标
 
@@ -39,8 +39,12 @@
   session 的关联标识，不再要求对应数据库实体存在。
 - `RuntimeSession` 继续作为 core 与 runtime adapter 之间的 provider-neutral 内存值对象；删除的是 storage
   contract、repository 和表，不是 runtime port 的参数类型。
-- 同一 daemon 进程内，已启动且未回收的 session 继续复用当前 provider thread；仅在同一进程内出现可恢复的
-  runtime unavailable/unknown 状态时允许 `resume_session()`。
+- 同一 daemon 进程内，已启动且未回收的 session 继续复用当前 provider thread。core 只通过
+  `reconcile_session()` 请求恢复，不感知 provider 的查询、进程与协议细节；adapter 只有在确认原 session
+  可恢复时才返回 confirmed。
+- provider session 进入 `FAILED`，或 reconcile 仍无法确认原 session 可恢复时，adapter 先确认旧 provider
+  进程终止，core 再清除 live mapping/state；下一条需要 runtime 的 inbound 创建全新 runtime session。旧、新
+  turn 不在 BCN 内并发执行。
 - daemon 重启和已确认的空闲回收都清除进程内 mapping。随后只执行 `start_session()`，不从历史数据库恢复
   provider thread。
 - 每条新 inbound 都刷新 node-scoped `TimerWheel` 中当前 live session 的 deadline。expiry 在 `IDLE` 时
@@ -48,8 +52,15 @@
   generation 保持不变时于状态回到 `IDLE` 后立即回收。
 - startup、reconciliation 与 stop 期间不执行并发回收；pending notification 会先刷新 deadline，再进入
   当前或下一次 turn。
-- provider stop 确认成功后删除 live mapping 并把 process-local state 复位为 `CREATED` 语义；stop failed
-  或 unknown 时保留 mapping，并分别进入 `FAILED` 或 `UNKNOWN`，让下一条输入沿现有恢复状态机处理。
+- 每次重新创建 provider 进程都必须重置 idle timer：先 cancel/await 旧 session 的 timer watcher，再为新
+  runtime session 使用全新 timer generation，并从触发 replacement 的当前 inbound 重新获得完整
+  `idle_timeout`。旧 expiry event 不能命中新 binding。
+- provider session `FAILED` 时立即终止进程并清除 live mapping/state。`UNKNOWN` 在当前 per-session worker 内
+  立即 reconcile；confirmed snapshot 直接携带 adapter 观察到的 `AgentState` 与可选恢复句柄，不另建状态枚举，
+  也不在 runtime port 限制状态集合。orchestrator 显式处理对应状态：`IDLE` 恢复空闲，具备 active turn/event
+  stream 的可恢复活跃状态继续走现有 steer/terminal 流程；失败状态、无法确认或缺少必要恢复句柄时，在旧进程
+  终止后清除 mapping/state。显式 stop 无论 provider operation outcome 如何，都在 adapter 完成进程释放后清除
+  live binding。
 - `idle_timeout` 接受有限整数或浮点数；默认 `0`，所有小于或等于 `0` 的值都表示常驻。
 
 ## 设计
@@ -133,8 +144,8 @@ per-session runtime queue 扩展为 notification、refresh-only activity 与 exp
 三项同时成立才调用 `_stop_runtime_session_locked()`。如果 state 尚未回到 `IDLE`，worker 只记录 expired 标记，
 不轮询、不打断 turn；turn/compaction 回到 `IDLE` 后由同一个 worker 再次复核。期间任一新 inbound 都 reset timer
 并清除 expired；FIFO queue 与 generation check 共同决定 inbound/expiry 竞态。若新消息在 worker 已通过复核并
-开始 confirmed stop 后到达，它只作为新 activity 留在 queue，不携带旧 runtime context；关闭完成后 worker
-重新读取 registry，并为该 notification 创建新 session。
+开始 stop 后到达，它只作为新 activity 留在 queue，不携带旧 runtime context；关闭完成后 worker 重新读取
+registry，并为该 notification 创建新 session。
 
 watcher 是 session orchestration 自己持有并监督的一次性 bridge task，不属于 `TimerWheel` driver；它只把 timer
 完成转换成 mailbox item。session replacement、confirmed stop 与 daemon shutdown 都 cancel/await 未完成 watcher，
@@ -181,22 +192,36 @@ schema migration version 连续更新；提交业务 diff，停在 Task 1.1 revi
 修改文件：
 
 - `src/bazaar_compute_node/core/orchestration/session.py`
-- `src/bazaar_compute_node/core/orchestration/services.py`
+- `src/bazaar_compute_node/core/orchestration/turn.py`
+- `src/bazaar_compute_node/core/runtime.py`
+- `src/bazaar_compute_node/contrib/codex_app_server/client.py`
+- `src/bazaar_compute_node/contrib/codex_app_server/runtime.py`
 - `src/bazaar_compute_node/app/application.py`
 - `tests/contrib/test_orchestration.py`
+- `tests/contrib/test_codex_app_server.py`
 - `tests/app/test_composition.py`
 - `tests/app/test_bcc_process.py`
+- `tests/support/src/bcn_test_support/runtime.py`
 
 实施动作：
 
 1. 把 registry 改为按 `bcn_session_id` 索引，并在 runtime worker 消费 notification 时创建 UUIDv7 session。
 2. 删除 ingress、turn steer、turn start 和 provider start confirmed 路径中的 storage mapping 读写。
-3. 让 confirmed stop 原子清除 live mapping 与 state；failed/unknown stop 保留可恢复上下文并写入对应状态。
-4. 让 bcc validator 和 runtime command runner 只接受 orchestrator 当前 live session，删除 deterministic fallback。
+3. 把 provider 恢复收口为 `IRuntime.reconcile_session()`；Codex adapter 在内部通过 provider thread 查询确认
+   可恢复性。snapshot 复用 `AgentState` 并允许 adapter 报告任意已观察状态；唯一 `SessionStateWriter` 直接写入
+   reconcile observation，普通 lifecycle event 继续通过 signal/reducer。confirmed idle 恢复连接；可恢复的活跃
+   状态返回 active turn 的 provider-neutral event stream，core 恢复原 `RuntimeTurn`，后续 inbound 继续走现有
+   steer 分支。provider session failed、active turn 无法接管或 reconcile unconfirmed 时，先终止旧 provider 进程，
+   再原子清除 live mapping/state。
+4. 让 provider session failed、reconcile unconfirmed 与显式 stop 在旧进程释放后原子清除 live mapping/state；
+   普通 turn failed/cancelled 仍回到 `IDLE`。
+5. 让 bcc validator 和 runtime command runner 只接受 orchestrator 当前 live session，删除 deterministic fallback。
 
 Focused tests：覆盖同进程复用、daemon lifecycle 后创建新 runtime、confirmed stop 后生成新 runtime id、
-failed/unknown stop 保留恢复上下文、当前 live runtime 的 bcc binding 成功、两个 BCN session 相互隔离、turn
-steer 使用当前 live session。
+provider session failed 后清除 live binding、turn unknown 当场 reconcile、adapter 返回的 `AgentState` 经既有
+state writer 显式处理、confirmed idle 复用原 session、confirmed working 恢复原 active turn/event stream 并继续
+steer 至 terminal、confirmed failed 与 reconcile failed/unknown 在旧 provider 进程终止后清 binding、当前 live
+runtime 的 bcc binding 成功、两个 BCN session 相互隔离、turn steer 使用当前 live session。
 
 完成条件与停止点：所有 runtime/provider thread mapping 只存在于 orchestrator 内存，SQLite 重启不影响 durable
 消息但不会恢复旧 provider thread；提交业务 diff，停在 Task 1.2 review，不进入 Task 1.3。
@@ -234,7 +259,9 @@ steer 使用当前 live session。
 5. confirmed timeout stop 后 cancel timer 并 cancel/await 未完成 watcher；runtime worker 保持可接收下一条
    notification；下一次处理创建
    全新 session。
-6. 在 README 的 runtime 配置示例中说明秒单位、支持小数、默认常驻和 `<= 0` 语义。
+6. provider process 因 start/reconcile failure 被 replacement 时执行同一 timer generation rollover：旧 timer/
+   watcher 在旧 binding 清除前完成 cancel，新 process confirmed 后以当前 inbound activity 重置完整 deadline。
+7. 在 README 的 runtime 配置示例中说明秒单位、支持小数、默认常驻和 `<= 0` 语义。
 
 Focused tests：覆盖默认常驻、正值整数与小数、`<= 0` 常驻语义；通用 wheel 的 create/reset/cancel、timer
 状态、`wait()` 单 waiter、reset/expiry 竞态、cancel/close 唤醒、near 边界、四级选择/cascade、跨层

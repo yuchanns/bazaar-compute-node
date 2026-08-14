@@ -19,6 +19,8 @@ class CodexThreadInfo:
     thread_id: str
     session_id: str | None = None
     path: str | None = None
+    status: str | None = None
+    turns: tuple[CodexTurnInfo, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,10 +309,28 @@ def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
     result = _require_mapping(response, "result")
     thread = _require_mapping(result, "thread")
     thread_id = _require_text(thread, "id", "thread.id")
+    raw_status = thread.get("status")
+    status = None
+    if raw_status is not None:
+        status = _require_text(
+            _require_mapping(thread, "status"),
+            "type",
+            "thread.status.type",
+        )
+    raw_turns = thread.get("turns", [])
+    if not isinstance(raw_turns, list):
+        raise CodexAppServerProtocolError("thread.turns must be an array")
+    turns = tuple(
+        _parse_turn(value) for value in raw_turns if isinstance(value, Mapping)
+    )
+    if len(turns) != len(raw_turns):
+        raise CodexAppServerProtocolError("thread.turns items must be objects")
     return CodexThreadInfo(
         thread_id=thread_id,
         session_id=_optional_text(thread.get("sessionId"), "thread.sessionId"),
         path=_optional_text(thread.get("path"), "thread.path"),
+        status=status,
+        turns=turns,
     )
 
 

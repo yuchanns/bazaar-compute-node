@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
-from ..approval import ApprovalBinding
+from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import IChannel
 from ..concurrency import ISessionConcurrency
@@ -138,14 +138,12 @@ class SessionTurnCoordinator:
         self._clock = clock
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
 
-    async def run_turn(
+    def approval_handler(
         self,
         message: InboundMessage,
         context: SessionContext,
         turn: RuntimeTurn,
-        *,
-        unread_count: int,
-    ) -> RuntimeTurn:
+    ) -> IApprovalHandler:
         binding = ApprovalBinding(
             request_id="pending",
             bcn_session_id=context.bcn_session.id,
@@ -153,7 +151,6 @@ class SessionTurnCoordinator:
             runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
         )
-        turn_correlation = self.turn_correlation(message, context, turn)
 
         async def request_approval(
             request: ApprovalRequest, *, timeout: float
@@ -203,12 +200,22 @@ class SessionTurnCoordinator:
             )
             return result
 
+        return _ApprovalHandler(
+            lambda request, timeout: request_approval(request, timeout=timeout)
+        )
+
+    async def run_turn(
+        self,
+        message: InboundMessage,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        *,
+        unread_count: int,
+    ) -> RuntimeTurn:
+        turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
-        observed_terminal = False
         try:
-            approval_handler = _ApprovalHandler(
-                lambda request, timeout: request_approval(request, timeout=timeout)
-            )
+            approval_handler = self.approval_handler(message, context, turn)
             await self._audit.append(
                 event_name="runtime.request.turn.started",
                 state=RuntimeEventState.STARTED,
@@ -233,6 +240,64 @@ class SessionTurnCoordinator:
                     metadata={"provider_method": "turn/start"},
                 )
                 raise
+            return await self._consume_turn_stream(
+                message,
+                context,
+                turn,
+                stream,
+                turn_correlation=turn_correlation,
+            )
+        except RuntimeSessionUnavailable:
+            await self._close_stream(stream)
+            raise
+        except asyncio.CancelledError:
+            await self._close_stream(stream)
+            await self.finish_turn(
+                turn,
+                RuntimeTurnState.CANCELLED,
+                error_kind=ErrorKind.CANCELLED,
+                error_message="runtime turn cancelled",
+                correlation=turn_correlation,
+                session_id=context.bcn_session.id,
+            )
+            raise
+        except Exception as error:  # noqa: BLE001
+            await self._close_stream(stream)
+            return await self.finish_turn(
+                turn,
+                RuntimeTurnState.FAILED,
+                error_kind=ErrorKind.PROVIDER_FAILED,
+                error_message=f"runtime turn failed: {type(error).__name__}",
+                correlation=turn_correlation,
+                session_id=context.bcn_session.id,
+            )
+
+    async def resume_turn(
+        self,
+        message: InboundMessage,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        stream: IRuntimeTurnStream,
+    ) -> RuntimeTurn:
+        return await self._consume_turn_stream(
+            message,
+            context,
+            turn,
+            stream,
+            turn_correlation=self.turn_correlation(message, context, turn),
+        )
+
+    async def _consume_turn_stream(
+        self,
+        message: InboundMessage,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        stream: IRuntimeTurnStream,
+        *,
+        turn_correlation: CorrelationContext,
+    ) -> RuntimeTurn:
+        observed_terminal = False
+        try:
             async for event in stream:
                 if isinstance(event, StreamEvent):
                     if event.session_id != context.bcn_session.id:
@@ -273,9 +338,6 @@ class SessionTurnCoordinator:
                 correlation=turn_correlation,
                 session_id=context.bcn_session.id,
             )
-            raise
-        except RuntimeSessionUnavailable:
-            await self._close_stream(stream)
             raise
         except Exception as error:  # noqa: BLE001
             await self._close_stream(stream)

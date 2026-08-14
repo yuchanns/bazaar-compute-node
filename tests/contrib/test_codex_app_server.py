@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from time import time_ns
 from uuid import uuid7
@@ -45,6 +46,7 @@ from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.core.models import (
+    AgentState,
     ApprovalRequest,
     ApprovalResult,
     RuntimeEvent,
@@ -257,6 +259,22 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         }
     )
     assert thread.thread_id == "thread-1"
+    active_thread = parse_thread_response(
+        {
+            "result": {
+                "thread": {
+                    "id": "thread-1",
+                    "status": {"type": "active"},
+                    "turns": [
+                        {"id": "turn-1", "status": "inProgress"},
+                    ],
+                }
+            }
+        }
+    )
+    assert active_thread.status == "active"
+    assert active_thread.turns[0].turn_id == "turn-1"
+    assert active_thread.turns[0].status == "inProgress"
     turn = parse_turn_response(
         {"result": {"turn": {"id": "turn-1", "status": "inProgress"}}}
     )
@@ -858,6 +876,51 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             assert concurrent[0][1] != concurrent[1][1]
             assert first_events[0] == "codex.turn.started"
 
+            active_turn = RuntimeTurn(
+                turn_id="turn-active-reconcile",
+                session_id=first_running.id,
+                state=RuntimeTurnState.STARTING,
+                started_at_ms=time_ns() // 1_000_000,
+                client_user_message_id="message-active-reconcile",
+            )
+            active_stream = await first_runtime.start_turn(
+                first_running,
+                active_turn,
+                "Please wait at least ten seconds before replying, then give one "
+                "short sentence about explicit state machines.",
+                _NoopApprovalHandler(),
+                timeout=30,
+            )
+            started_event = await anext(active_stream)
+            assert isinstance(started_event, RuntimeEvent)
+            active_provider_turn_id = started_event.metadata.get("provider_turn_id")
+            assert isinstance(active_provider_turn_id, str)
+            await active_stream.aclose()
+            active_turn = replace(
+                active_turn,
+                state=RuntimeTurnState.RUNNING,
+                provider_turn_id=active_provider_turn_id,
+            )
+
+            active_result = await first_runtime.reconcile_session(
+                first_running,
+                active_turn,
+                _NoopApprovalHandler(),
+                timeout=30,
+            )
+            assert active_result.value is not None
+            assert active_result.value.state is AgentState.WORKING
+            recovered_stream = active_result.value.stream
+            assert recovered_stream is not None
+            recovered_events = []
+            async with asyncio.timeout(180):
+                async for event in recovered_stream:
+                    recovered_events.append(event)
+            recovered_runtime_events = [
+                event for event in recovered_events if isinstance(event, RuntimeEvent)
+            ]
+            assert recovered_runtime_events[-1].state.value == "completed"
+
             await first_runtime.stop(timeout=20)
             resumed_runtime = CodexAppServerRuntime(
                 context,
@@ -867,12 +930,15 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             )
             await resumed_runtime.start(timeout=10)
             try:
-                resumed_result = await resumed_runtime.resume_session(
+                resumed_result = await resumed_runtime.reconcile_session(
                     first_running,
+                    None,
+                    None,
                     timeout=30,
                 )
                 assert resumed_result.value is not None
-                resumed = resumed_result.value
+                assert resumed_result.value.state is AgentState.IDLE
+                resumed = resumed_result.value.session
                 assert resumed.provider_thread_id == first_thread
                 resumed_thread, resumed_turn, _ = await consume_turn(
                     resumed_runtime,
