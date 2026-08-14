@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from bcn_test_support import TestRuntime
 
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.runtime import RuntimeExpire
 
 
 def test_timeout_budget_requires_finite_positive_boundaries() -> None:
@@ -59,6 +61,30 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
             status=ProviderCallStatus.PARTIAL,
             error_kind="provider_rejected_batch",
         )
+
+
+def test_runtime_expire_requires_runtime_session_identity() -> None:
+    with pytest.raises(ValueError, match="runtime_session_id"):
+        RuntimeExpire("")
+    with pytest.raises(ValueError, match="runtime_session_id"):
+        RuntimeExpire(None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_test_runtime_delivers_expiry_to_one_waiter() -> None:
+    runtime = TestRuntime()
+    await runtime.start(timeout=1)
+    receiver = asyncio.create_task(runtime.receive_expire())
+
+    runtime.emit_expire("runtime-1")
+
+    assert await receiver == RuntimeExpire("runtime-1")
+    cancelled_receiver = asyncio.create_task(runtime.receive_expire())
+    await asyncio.sleep(0)
+    cancelled_receiver.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_receiver
+    await runtime.stop(timeout=1)
 
 
 @pytest.mark.asyncio

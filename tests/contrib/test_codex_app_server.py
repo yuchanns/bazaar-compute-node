@@ -27,6 +27,7 @@ from bazaar_compute_node.contrib.codex_app_server import (
     JsonlProcessSpec,
     JsonlProcessState,
     JsonlProcessSupervisor,
+    JsonlProtocolError,
     JsonlRemoteError,
     build_initialize_params,
     build_thread_resume_params,
@@ -515,6 +516,70 @@ for line in sys.stdin:
     await supervisor.start(timeout=2)
     await supervisor.stop(timeout=2)
     assert supervisor.state is JsonlProcessState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_routes_only_consumed_notifications() -> None:
+    routed: list[dict[str, object]] = []
+
+    def route_notification(message: dict[str, object]) -> bool:
+        routed.append(message)
+        return message.get("method") == "context/changed"
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=route_notification,
+    )
+    consumed = {"method": "context/changed", "params": {}}
+    retained = {"method": "turn/completed", "params": {"turnId": "turn-1"}}
+    provider_request = {
+        "id": "request-1",
+        "method": "item/commandExecution/requestApproval",
+        "params": {},
+    }
+
+    supervisor._route_message(consumed)
+    supervisor._route_message(retained)
+    supervisor._route_message(provider_request)
+
+    assert routed == [consumed, retained]
+    assert await supervisor.receive(timeout=0.1) == retained
+    assert await supervisor.receive(timeout=0.1) == provider_request
+
+
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> None:
+    def reject_notification(_message: dict[str, object]) -> bool:
+        raise AssertionError("response reached the notification router")
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=reject_notification,
+    )
+    response = {"id": 7, "result": {}}
+
+    supervisor._route_message(response)
+
+    assert await supervisor.receive(timeout=0.1) == response
+
+
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_fails_pending_requests_when_router_raises() -> None:
+    def reject_notification(_message: dict[str, object]) -> bool:
+        raise ValueError("invalid notification")
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=reject_notification,
+    )
+    pending = asyncio.get_running_loop().create_future()
+    supervisor._pending[1] = pending
+
+    supervisor._route_message({"method": "context/changed", "params": {}})
+
+    assert isinstance(supervisor.fatal_error, JsonlProtocolError)
+    with pytest.raises(JsonlProtocolError, match="notification router failed"):
+        await pending
 
 
 @pytest.mark.e2e

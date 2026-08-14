@@ -25,6 +25,7 @@ from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
     RuntimeCommandContext,
+    RuntimeExpire,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
@@ -96,6 +97,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
         self._model = model
         self._effort = effort
         self._connections: dict[str, _CodexConnection] = {}
+        self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
         self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
         self._stopping = False
@@ -120,6 +122,9 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             except OSError, TimeoutError, JsonlTransportError:
                 continue
         self._started = False
+
+    async def receive_expire(self) -> RuntimeExpire:
+        return await self._expire_events.get()
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
