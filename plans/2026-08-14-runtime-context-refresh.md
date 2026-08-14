@@ -2,10 +2,10 @@
 
 ## 状态
 
-- 当前阶段：计划完成，等待 review；尚未进入 Task 1.1。
+- 当前阶段：Task 1.1 至 Task 1.4 已完成；Task 1.5 实施完成，等待 review。
 - 实施分支：`f-20260814-runtime-context-refresh`。
 - 基线：`main@029c316e41f776078eed755ca6e5b74ef3abac6a`。
-- 当前只有本计划文件的未提交改动；本计划不授权 commit、push、PR、发布或部署。
+- 当前未提交 diff 只包含 Task 1.5 的计划与测试基础设施；本计划不授权 commit、push、PR、发布或部署。
 
 ## 目标
 
@@ -223,6 +223,35 @@ context expire 的两种到达顺序均只 stop 一次，另一事件 noop；exp
 
 完成条件与停止点：提供业务 diff 与真实 provider 验收证据，停在 task review；不执行 commit、push、PR、发布
 或部署。
+
+### Task 1.5：收口 standalone 跨平台验收基础设施
+
+修改文件：
+
+- `tests/support/src/bcn_test_support/environment.py`
+- `tests/support/src/bcn_test_support/lifecycle.py`
+- `tests/support/src/bcn_test_support/__init__.py`
+- `tests/conftest.py`
+- `tests/test_support.py`
+- `tests/contrib/test_orchestration.py`
+- `tests/contrib/test_codex_app_server.py`
+
+实施动作：
+
+1. 由 `tempfile.TemporaryDirectory()` 选择各平台系统临时目录，在同一临时根内提供 HOME、CODEX_HOME、BCN
+   data、workspace 与固定短文件名 endpoint，并由 context 统一恢复环境和删除临时状态。
+2. pytest 的自动 `basetemp` 与 standalone 验收复用同一个 system-temp helper；完整 pytest 保持原 HOME，仅继续
+   隔离自身 BCN data name，standalone 的 HOME 不进入 pytest 进程环境。
+3. 提供 provider-neutral terminal wait：同一 session 的新 outbound 已发送、core lifecycle 到达 `IDLE` 或已确认
+   runtime discard，并且对应 active runtime turn 已清除；provider audit 与 stderr 只保留为超时诊断。
+4. 真实 provider 验收的 local endpoint 直接使用 system-temp fixture 根，不再从 HOME/BCN data 目录派生深层
+   socket path；真实 Codex 凭据只由验收调用方显式复制到临时 CODEX_HOME。
+
+Focused tests：临时根、子目录、环境恢复与清理；pytest `basetemp` 复用；普通 terminal 与 context-expire 后
+discard terminal；真实 Codex e2e 使用短 endpoint 且不依赖 provider audit 名。
+
+完成条件与停止点：Linux focused/full/static/LSP gate 全绿；Windows 与 macOS 在新 exact head 上复核
+system-temp、neutral wait 与真实 Codex runtime-expire 主路径，随后停在 task review；不执行 PR、发布或部署。
 
 ## 最终验收
 

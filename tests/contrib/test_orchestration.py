@@ -14,6 +14,7 @@ from bcn_test_support import (
     TestChannel,
     TestRuntime,
     TestTurnPlan,
+    wait_for_turn_terminal,
 )
 
 from bazaar_compute_node.app.application import NodeApplication
@@ -38,7 +39,6 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
-from bazaar_compute_node.core.paths import resolve_data_dir
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     RuntimeCommandContext,
@@ -248,6 +248,7 @@ async def run_natural_conversation_contract(
     *,
     channel: Callable[[], IChannel],
     runtime: Callable[[RuntimeCommandContext], IRuntime],
+    endpoint_root: Path,
 ) -> None:
     """Assert the session contract with one selected Channel and runtime."""
 
@@ -309,7 +310,7 @@ async def run_natural_conversation_contract(
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
             ),
-            endpoint_path=resolve_data_dir() / f"natural-{uuid7()}.sock",
+            endpoint_path=endpoint_root / f"natural-{scenario_name}.sock",
             node_id=identity.node_id,
             workspace_id=identity.workspace_id,
             timeout_budget=TimeoutBudget(
@@ -559,13 +560,15 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
     try:
         runtime.queue_turn_plan(TestTurnPlan(command_script=command_script))
-        await channel.inject(make_message())
-        await wait_until(
-            lambda: any(
-                event.event_name == "runtime.turn.completed"
-                and event.correlation.turn_id == "turn-message-bcn-1-1"
-                for event in audit.events
-            )
+        message = make_message()
+        await channel.inject(message)
+        await wait_for_turn_terminal(
+            orchestrator=orchestrator,
+            channel=channel,
+            session_id=message.session_id,
+            client_user_message_id=message.message_id,
+            sent_after=0,
+            timeout=1,
         )
         assert len(channel.sent_messages) == 1
         assert storage.cursors["bcn-1"].delivered_through_seq == 1
@@ -1551,6 +1554,51 @@ async def test_context_expire_waits_for_active_turn_then_precedes_pending_inboun
     finally:
         if not first_task.done():
             first_task.cancel()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+
+    async def command_script(commands: ICommandService, session_id: str) -> None:
+        checked = await commands.check(session_id)
+        await commands.send(
+            session_id=session_id,
+            command_id="terminal-wait",
+            target=checked.messages[0].canonical_target,
+            body="terminal reply",
+            created_at_ms=2,
+        )
+
+    message = make_message()
+    runtime.queue_turn_plan(
+        TestTurnPlan(command_script=command_script, block_until_release=True)
+    )
+    try:
+        await channel.inject(message)
+        await runtime.turn_started.wait()
+        runtime_session = orchestrator.runtime_session(message.session_id)
+        assert runtime_session is not None
+        runtime.emit_expire(runtime_session.id)
+        await wait_until(
+            lambda: runtime_session.id in orchestrator._expired_runtime_ids
+        )
+
+        next(iter(runtime.active_streams)).release()
+        outbound = await wait_for_turn_terminal(
+            orchestrator=orchestrator,
+            channel=channel,
+            session_id=message.session_id,
+            client_user_message_id=message.message_id,
+            sent_after=0,
+            timeout=1,
+            expect_runtime_discarded=True,
+        )
+
+        assert [message.body for message in outbound] == ["terminal reply"]
+        assert runtime.stopped_sessions == [runtime_session]
+    finally:
         await orchestrator.stop(timeout=1)
 
 

@@ -62,7 +62,7 @@ from bazaar_compute_node.core.models import (
     StreamEvent,
     StreamEventKind,
 )
-from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
     RuntimeExpire,
@@ -776,9 +776,9 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox() -> (
-    None
-):
+async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox(
+    system_temp_dir: Path,
+) -> None:
     codex = shutil.which("codex")
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
@@ -805,7 +805,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
             storage=lambda: storage,
             audit=lambda: audit,
         ),
-        endpoint_path=resolve_data_dir() / f"sandbox-acceptance-{uuid7()}.sock",
+        endpoint_path=system_temp_dir / "sandbox-acceptance.sock",
         node_id=identity.node_id,
         workspace_id=identity.workspace_id,
     )
@@ -1142,9 +1142,9 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_local_codex_runtime_preserves_natural_conversation_session_behavior() -> (
-    None
-):
+async def test_local_codex_runtime_preserves_natural_conversation_session_behavior(
+    system_temp_dir: Path,
+) -> None:
     codex = shutil.which("codex")
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
@@ -1157,4 +1157,5 @@ async def test_local_codex_runtime_preserves_natural_conversation_session_behavi
             model=TEST_MODEL,
             effort=TEST_EFFORT,
         ),
+        endpoint_root=system_temp_dir,
     )
