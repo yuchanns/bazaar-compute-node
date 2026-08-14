@@ -8,11 +8,13 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import time_ns
+from typing import Any
 
 from ...core.approval import IApprovalHandler
 from ...core.instruction import DeveloperInstructionContext
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
+    AgentState,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
@@ -24,6 +26,7 @@ from ...core.runtime import (
     IRuntimeTurnStream,
     RuntimeCommandContext,
     RuntimeSandboxMode,
+    RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
 from .client import (
@@ -45,7 +48,7 @@ from .protocol import (
 )
 
 _INITIALIZE_ATTEMPTS = 2
-_RESUME_ATTEMPTS = 2
+_RECONCILE_ATTEMPTS = 2
 
 
 @dataclass(slots=True)
@@ -160,22 +163,29 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 await self._stop_connection(connection, timeout=timeout)
             return _provider_result(error)
 
-    async def resume_session(
-        self, session: RuntimeSession, *, timeout: float
-    ) -> ProviderCallResult[RuntimeSession]:
+    async def reconcile_session(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn | None,
+        approval_handler: IApprovalHandler | None,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSessionReconciliation]:
         self._ensure_started()
         provider_thread_id = session.provider_thread_id
         if provider_thread_id is None:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_failed",
-                error_message="cannot resume a runtime session without a provider thread",
+                error_message=(
+                    "cannot reconcile a runtime session without a provider thread"
+                ),
             )
         connection = self._connections.pop(session.id, None)
         if connection is not None and not connection.supervisor.is_running:
             await self._stop_connection(connection, timeout=timeout)
             connection = None
-        for attempt in range(_RESUME_ATTEMPTS):
+        for attempt in range(_RECONCILE_ATTEMPTS):
             if connection is None:
                 try:
                     connection = await self._open_connection(session, timeout=timeout)
@@ -184,6 +194,63 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                 except Exception as error:  # noqa: BLE001
                     return _provider_result(error)
             try:
+                read_response = await connection.client.read_thread(
+                    provider_thread_id,
+                    timeout=timeout,
+                )
+                read_thread = parse_thread_response(read_response)
+                if read_thread.thread_id != provider_thread_id:
+                    raise CodexAppServerProtocolError(
+                        "thread/read returned a different provider thread"
+                    )
+                if read_thread.status == "active":
+                    active_turns = tuple(
+                        item
+                        for item in read_thread.turns
+                        if item.status == "inProgress"
+                    )
+                    if (
+                        turn is None
+                        or approval_handler is None
+                        or turn.provider_turn_id is None
+                        or len(active_turns) != 1
+                        or active_turns[0].turn_id != turn.provider_turn_id
+                    ):
+                        raise CodexAppServerProtocolError(
+                            "active runtime turn cannot be reconciled"
+                        )
+                    connection.provider_thread_id = provider_thread_id
+                    connection.active_turn_id = turn.turn_id
+                    self._connections[session.id] = connection
+                    stream = CodexTurnEventStream(
+                        connection.supervisor,
+                        session_id=session.bcn_session_id,
+                        runtime_session_id=session.id,
+                        turn_id=turn.turn_id,
+                        provider_thread_id=provider_thread_id,
+                        provider_turn_id=turn.provider_turn_id,
+                        approval_handler=approval_handler,
+                        approval_timeout=timeout,
+                        on_closed=lambda: self._clear_active_turn(
+                            session.id, turn.turn_id
+                        ),
+                    )
+                    return ProviderCallResult(
+                        status=ProviderCallStatus.CONFIRMED,
+                        value=RuntimeSessionReconciliation(
+                            session=replace(session, updated_at_ms=_now_ms()),
+                            state=AgentState.WORKING,
+                            stream=stream,
+                        ),
+                        receipt={
+                            "provider_thread_id": provider_thread_id,
+                            "provider_turn_id": turn.provider_turn_id,
+                        },
+                    )
+                if read_thread.status not in {"idle", "notLoaded"}:
+                    raise CodexAppServerProtocolError(
+                        f"unsupported runtime thread status: {read_thread.status}"
+                    )
                 response = await connection.client.resume_thread(
                     provider_thread_id,
                     model=self._model,
@@ -202,7 +269,9 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                         "%s",
                         json.dumps(
                             {
-                                "event_name": "runtime.process.resume.retry_succeeded",
+                                "event_name": (
+                                    "runtime.process.reconcile.retry_succeeded"
+                                ),
                                 "metadata": {
                                     "attempt": attempt + 1,
                                     "session_id": session.bcn_session_id,
@@ -214,10 +283,13 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                     )
                 return ProviderCallResult(
                     status=ProviderCallStatus.CONFIRMED,
-                    value=replace(
-                        session,
-                        provider_thread_id=thread.thread_id,
-                        updated_at_ms=_now_ms(),
+                    value=RuntimeSessionReconciliation(
+                        session=replace(
+                            session,
+                            provider_thread_id=thread.thread_id,
+                            updated_at_ms=_now_ms(),
+                        ),
+                        state=AgentState.IDLE,
                     ),
                     receipt={"provider_thread_id": thread.thread_id},
                 )
@@ -231,12 +303,14 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             ) as error:
                 await self._stop_connection(connection, timeout=timeout)
                 connection = None
-                if attempt + 1 == _RESUME_ATTEMPTS:
+                if attempt + 1 == _RECONCILE_ATTEMPTS:
                     self._logger.error(
                         "%s",
                         json.dumps(
                             {
-                                "event_name": "runtime.process.resume.retry_exhausted",
+                                "event_name": (
+                                    "runtime.process.reconcile.retry_exhausted"
+                                ),
                                 "metadata": {
                                     "attempt": attempt + 1,
                                     "error_type": type(error).__name__,
@@ -252,7 +326,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
                     "%s",
                     json.dumps(
                         {
-                            "event_name": "runtime.process.resume.retrying",
+                            "event_name": "runtime.process.reconcile.retrying",
                             "metadata": {
                                 "attempt": attempt + 1,
                                 "error_type": type(error).__name__,
@@ -267,7 +341,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             except Exception as error:  # noqa: BLE001
                 await self._stop_connection(connection, timeout=timeout)
                 return _provider_result(error)
-        raise AssertionError("Codex resume retry loop did not return")
+        raise AssertionError("Codex reconcile retry loop did not return")
 
     async def start_turn(
         self,
@@ -522,7 +596,7 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             raise RuntimeError("Codex App Server runtime is not started")
 
 
-def _provider_result(error: BaseException) -> ProviderCallResult[RuntimeSession]:
+def _provider_result(error: BaseException) -> ProviderCallResult[Any]:
     if isinstance(
         error, (JsonlProcessExited, JsonlProcessNotRunning, JsonlRequestTimeout)
     ):

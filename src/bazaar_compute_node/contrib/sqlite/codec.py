@@ -18,7 +18,6 @@ from ...core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeSession,
 )
 
 
@@ -65,24 +64,6 @@ def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
         updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
         last_activity_at_ms=_optional_non_negative_int(
             row["last_activity_at_ms"], "last_activity_at_ms"
-        ),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
-
-
-def _runtime_session_from_row(row: aiosqlite.Row) -> RuntimeSession:
-    return RuntimeSession(
-        id=_required_text(row["id"], "id"),
-        bcn_session_id=_required_text(row["bcn_session_id"], "bcn_session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        runtime=_required_text(row["runtime"], "runtime"),
-        workspace_id=_required_text(row["workspace_id"], "workspace_id"),
-        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
-        updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
-        provider_thread_id=_optional_text(
-            row["provider_thread_id"], "provider_thread_id"
         ),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
@@ -609,27 +590,6 @@ def _validate_bcn_session_update(
         existing,
         updated_at_ms=incoming.updated_at_ms,
         last_activity_at_ms=incoming.last_activity_at_ms,
-        metadata=incoming.metadata,
-    )
-
-
-def _validate_runtime_session_update(
-    existing: RuntimeSession,
-    incoming: RuntimeSession,
-) -> RuntimeSession:
-    if (
-        existing.bcn_session_id != incoming.bcn_session_id
-        or existing.channel_session_id != incoming.channel_session_id
-        or existing.runtime != incoming.runtime
-        or existing.workspace_id != incoming.workspace_id
-        or existing.created_at_ms != incoming.created_at_ms
-    ):
-        raise ValueError("runtime session binding cannot change")
-    _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    return replace(
-        existing,
-        updated_at_ms=incoming.updated_at_ms,
-        provider_thread_id=incoming.provider_thread_id,
         metadata=incoming.metadata,
     )
 

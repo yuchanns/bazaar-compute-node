@@ -10,6 +10,7 @@ from typing import ClassVar
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.models import (
+    AgentState,
     ApprovalRequest,
     RuntimeEvent,
     RuntimeEventState,
@@ -23,6 +24,7 @@ from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallSt
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
 
@@ -71,7 +73,7 @@ class TestRuntime(IRuntime):
         self.started = False
         self.stopped = False
         self.started_sessions: list[RuntimeSession] = []
-        self.resumed_sessions: list[RuntimeSession] = []
+        self.reconciled_sessions: list[RuntimeSession] = []
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.steered_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
@@ -81,7 +83,10 @@ class TestRuntime(IRuntime):
         self.turn_started = asyncio.Event()
         self._turn_plans: deque[TestTurnPlan] = deque()
         self._start_results: deque[ProviderCallResult[RuntimeSession]] = deque()
-        self._resume_results: deque[ProviderCallResult[RuntimeSession]] = deque()
+        self._reconcile_results: deque[
+            ProviderCallResult[RuntimeSessionReconciliation]
+        ] = deque()
+        self._reconcile_turn_plans: deque[TestTurnPlan] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._update_seq = 0
 
@@ -101,8 +106,13 @@ class TestRuntime(IRuntime):
     def queue_start_result(self, result: ProviderCallResult[RuntimeSession]) -> None:
         self._start_results.append(result)
 
-    def queue_resume_result(self, result: ProviderCallResult[RuntimeSession]) -> None:
-        self._resume_results.append(result)
+    def queue_reconcile_result(
+        self, result: ProviderCallResult[RuntimeSessionReconciliation]
+    ) -> None:
+        self._reconcile_results.append(result)
+
+    def queue_reconcile_turn_plan(self, plan: TestTurnPlan) -> None:
+        self._reconcile_turn_plans.append(plan)
 
     def queue_stop_result(self, result: ProviderCallResult[RuntimeSession]) -> None:
         self._stop_results.append(result)
@@ -124,15 +134,44 @@ class TestRuntime(IRuntime):
             value=session,
         )
 
-    async def resume_session(
-        self, session: RuntimeSession, *, timeout: float
-    ) -> ProviderCallResult[RuntimeSession]:
-        self.resumed_sessions.append(session)
-        if self._resume_results:
-            return self._resume_results.popleft()
+    async def reconcile_session(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn | None,
+        approval_handler: IApprovalHandler | None,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSessionReconciliation]:
+        self.reconciled_sessions.append(session)
+        if self._reconcile_results:
+            return self._reconcile_results.popleft()
+        if self._reconcile_turn_plans:
+            if turn is None or approval_handler is None:
+                raise ValueError("working reconciliation requires an active turn")
+            stream = _TestTurnStream(
+                runtime=self,
+                session=session,
+                turn=turn,
+                input_text="",
+                approval_handler=approval_handler,
+                timeout=timeout,
+                plan=self._reconcile_turn_plans.popleft(),
+            )
+            self.active_streams.add(stream)
+            return ProviderCallResult(
+                status=ProviderCallStatus.CONFIRMED,
+                value=RuntimeSessionReconciliation(
+                    session=session,
+                    state=AgentState.WORKING,
+                    stream=stream,
+                ),
+            )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=session,
+            value=RuntimeSessionReconciliation(
+                session=session,
+                state=AgentState.IDLE,
+            ),
         )
 
     async def start_turn(

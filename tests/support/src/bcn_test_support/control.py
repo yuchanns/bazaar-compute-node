@@ -57,7 +57,6 @@ class TestControl:
                 session_id: len(messages)
                 for session_id, messages in self._storage.inbound_messages.items()
             },
-            "runtime_sessions": sorted(self._storage.runtime_sessions),
             "cursors": {
                 session_id: {
                     "delivered_through_seq": cursor.delivered_through_seq,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ class NodeConfiguration:
     effort: str | None = None
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
+    runtime_idle_timeout_seconds: float = 0
     runtime_env_include: tuple[str, ...] = ()
     wecom_bot_id: str | None = None
     wecom_websocket_url: str | None = None
@@ -81,6 +83,13 @@ def load_node_configuration(path: Path | None = None) -> NodeConfiguration:
     network_access = runtime.get("network_access", True)
     if not isinstance(network_access, bool):
         raise ConfigurationError("runtime.network_access must be a boolean")
+    idle_timeout = runtime.get("idle_timeout", 0)
+    if (
+        isinstance(idle_timeout, bool)
+        or not isinstance(idle_timeout, int | float)
+        or not math.isfinite(idle_timeout)
+    ):
+        raise ConfigurationError("runtime.idle_timeout must be a finite number")
     return NodeConfiguration(
         channel=_optional_text(node.get("channel"), "node.channel"),
         runtime=_optional_text(node.get("runtime"), "node.runtime"),
@@ -92,6 +101,7 @@ def load_node_configuration(path: Path | None = None) -> NodeConfiguration:
         effort=_optional_text(runtime.get("effort"), "runtime.effort"),
         sandbox_mode=parsed_sandbox_mode,
         network_access=network_access,
+        runtime_idle_timeout_seconds=float(idle_timeout),
         runtime_env_include=_text_list(
             runtime_env.get("include", []), "runtime.env.include"
         ),

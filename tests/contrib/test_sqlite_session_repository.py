@@ -14,7 +14,6 @@ from bazaar_compute_node.core.models import (
     ConsumerCursor,
     InboundAttachment,
     InboundMessage,
-    RuntimeSession,
 )
 
 
@@ -63,27 +62,6 @@ def make_bcn_session(
     )
 
 
-def make_runtime_session(
-    *,
-    session_id: str = "runtime-1",
-    bcn_session_id: str = "bcn-1",
-    channel_session_id: str = "channel-1",
-    workspace_id: str = "workspace-1",
-    updated_at_ms: int = 100,
-) -> RuntimeSession:
-    return RuntimeSession(
-        id=session_id,
-        bcn_session_id=bcn_session_id,
-        channel_session_id=channel_session_id,
-        runtime="test",
-        workspace_id=workspace_id,
-        created_at_ms=100,
-        updated_at_ms=updated_at_ms,
-        provider_thread_id="runtime-thread-1",
-        metadata={"version": 1},
-    )
-
-
 def make_inbound_message(
     *,
     session_id: str = "bcn-1",
@@ -124,7 +102,6 @@ async def save_session_graph(database: SqliteDatabase) -> None:
     async with database.transaction() as transaction:
         await transaction.save_channel_session(make_channel_session())
         await transaction.save_bcn_session(make_bcn_session())
-        await transaction.save_runtime_session(make_runtime_session())
 
 
 async def save_channel_and_bcn_session(
@@ -170,10 +147,6 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
         )
         assert await transaction.find_bcn_session("channel-1") == make_bcn_session()
         assert await transaction.get_bcn_session("bcn-1") == make_bcn_session()
-        assert await transaction.find_runtime_session("bcn-1") == make_runtime_session()
-        assert (
-            await transaction.get_runtime_session("runtime-1") == make_runtime_session()
-        )
 
     await database.stop(timeout=2)
     restarted = SqliteDatabase()
@@ -182,10 +155,6 @@ async def test_sqlite_session_graph_persists_and_supports_recovery_lookups(
         await restarted.initialize(node_id="node-1", workspace_id="workspace-1")
         async with restarted.transaction() as transaction:
             assert await transaction.find_bcn_session("channel-1") == make_bcn_session()
-            assert (
-                await transaction.find_runtime_session("bcn-1")
-                == make_runtime_session()
-            )
     finally:
         await restarted.stop(timeout=2)
 
@@ -572,12 +541,6 @@ async def test_sqlite_session_graph_rejects_duplicate_bindings(
         async with database.transaction() as transaction:
             await transaction.save_bcn_session(make_bcn_session(session_id="bcn-2"))
 
-    with pytest.raises(ValueError, match="bcn session is already bound"):
-        async with database.transaction() as transaction:
-            await transaction.save_runtime_session(
-                make_runtime_session(session_id="runtime-2")
-            )
-
 
 @pytest.mark.asyncio
 async def test_sqlite_session_updates_validate_bindings_and_timestamps(
@@ -585,42 +548,16 @@ async def test_sqlite_session_updates_validate_bindings_and_timestamps(
 ) -> None:
     await save_session_graph(database)
 
-    updated_runtime = replace(
-        make_runtime_session(),
-        updated_at_ms=101,
-        metadata={"version": 2},
-    )
-    async with database.transaction() as transaction:
-        await transaction.save_runtime_session(updated_runtime)
-
-    async with database.transaction() as transaction:
-        assert await transaction.get_runtime_session("runtime-1") == updated_runtime
-
     with pytest.raises(ValueError, match="updated_at_ms"):
         async with database.transaction() as transaction:
             await transaction.save_channel_session(
                 replace(make_channel_session(), updated_at_ms=99)
             )
 
-    with pytest.raises(ValueError, match="binding cannot change"):
-        async with database.transaction() as transaction:
-            await transaction.save_runtime_session(
-                replace(make_runtime_session(), runtime="other-runtime")
-            )
-
     with pytest.raises(ValueError, match="workspace"):
         async with database.transaction() as transaction:
             await transaction.save_bcn_session(
                 make_bcn_session(session_id="bcn-2", workspace_id="workspace-2")
-            )
-
-    with pytest.raises(ValueError, match="does not match bcn session"):
-        async with database.transaction() as transaction:
-            await transaction.save_runtime_session(
-                make_runtime_session(
-                    session_id="runtime-2",
-                    channel_session_id="other-channel",
-                )
             )
 
 
@@ -632,13 +569,11 @@ async def test_sqlite_session_graph_rolls_back_as_one_transaction(
         async with database.transaction() as transaction:
             await transaction.save_channel_session(make_channel_session())
             await transaction.save_bcn_session(make_bcn_session())
-            await transaction.save_runtime_session(make_runtime_session())
             raise RuntimeError("rollback")
 
     async with database.transaction() as transaction:
         assert await transaction.get_channel_session("channel-1") is None
         assert await transaction.get_bcn_session("bcn-1") is None
-        assert await transaction.get_runtime_session("runtime-1") is None
 
 
 @pytest.mark.asyncio

@@ -84,12 +84,11 @@ async def wait_for_messages(
 
 async def wait_for_runtime_session(node: NodeApplication) -> RuntimeSession:
     for _ in range(200):
-        async with node.storage.transaction() as transaction:
-            runtime_session = await transaction.find_runtime_session("bcn-a")
+        runtime_session = node.orchestrator.runtime_session("bcn-a")
         if runtime_session is not None:
             return runtime_session
         await asyncio.sleep(0.01)
-    raise AssertionError("runtime session was not persisted")
+    raise AssertionError("runtime session did not become live")
 
 
 async def run_bcc(

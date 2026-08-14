@@ -16,7 +16,7 @@ from bazaar_compute_node.core.models import (
     OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
-    RuntimeSession,
+    RuntimeAttempt,
 )
 
 
@@ -55,23 +55,6 @@ def make_bcn_session(
     )
 
 
-def make_runtime_session(
-    *,
-    session_id: str = "runtime-1",
-    bcn_session_id: str = "bcn-1",
-    channel_session_id: str = "channel-1",
-) -> RuntimeSession:
-    return RuntimeSession(
-        id=session_id,
-        bcn_session_id=bcn_session_id,
-        channel_session_id=channel_session_id,
-        runtime="test",
-        workspace_id="workspace-1",
-        created_at_ms=100,
-        updated_at_ms=100,
-    )
-
-
 def make_inbound_message(
     *, session_id: str = "bcn-1", channel_session_id: str = "channel-1"
 ) -> InboundMessage:
@@ -91,12 +74,11 @@ def make_inbound_message(
     )
 
 
-async def save_runtime_graph(
+async def save_session_graph(
     database: SqliteDatabase,
     *,
     bcn_session_id: str = "bcn-1",
     channel_session_id: str = "channel-1",
-    runtime_id: str = "runtime-1",
 ) -> None:
     async with database.transaction() as transaction:
         await transaction.save_channel_session(
@@ -105,13 +87,6 @@ async def save_runtime_graph(
         await transaction.save_bcn_session(
             make_bcn_session(
                 session_id=bcn_session_id,
-                channel_session_id=channel_session_id,
-            )
-        )
-        await transaction.save_runtime_session(
-            make_runtime_session(
-                session_id=runtime_id,
-                bcn_session_id=bcn_session_id,
                 channel_session_id=channel_session_id,
             )
         )
@@ -150,7 +125,7 @@ def make_draft(
 async def test_sqlite_outbound_repository_persists_delivery_and_fresh_check_audit(
     database: SqliteDatabase,
 ) -> None:
-    await save_runtime_graph(database)
+    await save_session_graph(database)
 
     async with database.transaction() as transaction:
         draft = await transaction.save_outbound_message(make_draft())
@@ -249,7 +224,7 @@ async def test_sqlite_outbound_repository_persists_delivery_and_fresh_check_audi
 async def test_sqlite_outbound_repository_rolls_back_and_rejects_identity_changes(
     database: SqliteDatabase,
 ) -> None:
-    await save_runtime_graph(database)
+    await save_session_graph(database)
     draft = make_draft(outbound_message_id="rollback-outbound")
 
     with pytest.raises(RuntimeError, match="rollback outbound"):
@@ -264,3 +239,24 @@ async def test_sqlite_outbound_repository_rolls_back_and_rejects_identity_change
             await transaction.save_outbound_message(replace(persisted, body="tampered"))
         with pytest.raises(ValueError, match="identity cannot change"):
             await transaction.save_outbound_message(replace(persisted, attachments=()))
+
+
+@pytest.mark.asyncio
+async def test_sqlite_runtime_attempt_is_independent_and_immutable(
+    database: SqliteDatabase,
+) -> None:
+    attempt = RuntimeAttempt(
+        turn_id="turn-1",
+        session_id="runtime-1",
+        client_user_message_id="message-1",
+        started_at_ms=1,
+    )
+
+    async with database.transaction() as transaction:
+        await transaction.save_runtime_attempt(attempt)
+        await transaction.save_runtime_attempt(attempt)
+        assert await transaction.get_runtime_attempt("turn-1") == attempt
+        with pytest.raises(ValueError, match="immutable"):
+            await transaction.save_runtime_attempt(
+                replace(attempt, session_id="runtime-2")
+            )

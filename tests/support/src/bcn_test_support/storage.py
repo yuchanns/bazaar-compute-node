@@ -18,7 +18,6 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeSession,
 )
 from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, NodeIdentity
 
@@ -33,7 +32,6 @@ class MemoryStorage(IStorage, IAsyncLifecycle):
     def __init__(self) -> None:
         self.channel_sessions: dict[str, ChannelSession] = {}
         self.bcn_sessions: dict[str, BcnSession] = {}
-        self.runtime_sessions: dict[str, RuntimeSession] = {}
         self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
         self.inbound_messages: dict[str, list[InboundMessage]] = {}
@@ -76,7 +74,6 @@ class MemoryStorage(IStorage, IAsyncLifecycle):
 _Snapshot = tuple[
     dict[str, ChannelSession],
     dict[str, BcnSession],
-    dict[str, RuntimeSession],
     dict[str, RuntimeAttempt],
     dict[str, ConsumerCursor],
     dict[str, list[InboundMessage]],
@@ -94,7 +91,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
         self._snapshot = (
             deepcopy(self._storage.channel_sessions),
             deepcopy(self._storage.bcn_sessions),
-            deepcopy(self._storage.runtime_sessions),
             deepcopy(self._storage.runtime_attempts),
             deepcopy(self._storage.cursors),
             deepcopy(self._storage.inbound_messages),
@@ -112,7 +108,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
             (
                 self._storage.channel_sessions,
                 self._storage.bcn_sessions,
-                self._storage.runtime_sessions,
                 self._storage.runtime_attempts,
                 self._storage.cursors,
                 self._storage.inbound_messages,
@@ -155,21 +150,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
             raise ValueError(
                 "multiple bcn sessions are bound to the channel session: "
                 f"{channel_session_id}"
-            )
-        return matches[0] if matches else None
-
-    async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        return self._storage.runtime_sessions.get(session_id)
-
-    async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        matches = [
-            session
-            for session in self._storage.runtime_sessions.values()
-            if session.bcn_session_id == session_id
-        ]
-        if len(matches) > 1:
-            raise ValueError(
-                f"multiple runtime sessions are bound to the bcn session: {session_id}"
             )
         return matches[0] if matches else None
 
@@ -289,37 +269,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
                 raise ValueError(f"channel session is already bound to {duplicate.id}")
         self._storage.bcn_sessions[session.id] = session
 
-    async def save_runtime_session(self, session: RuntimeSession) -> None:
-        self._require_workspace(session.workspace_id)
-        existing = self._storage.runtime_sessions.get(session.id)
-        bcn_session = self._storage.bcn_sessions.get(session.bcn_session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {session.bcn_session_id}")
-        if bcn_session.channel_session_id not in self._storage.channel_sessions:
-            raise ValueError(
-                f"unknown channel session: {bcn_session.channel_session_id}"
-            )
-        if (
-            bcn_session.channel_session_id != session.channel_session_id
-            or bcn_session.workspace_id != session.workspace_id
-        ):
-            raise ValueError("runtime session binding does not match bcn session")
-        if existing is not None:
-            if (
-                existing.bcn_session_id != session.bcn_session_id
-                or existing.channel_session_id != session.channel_session_id
-                or existing.runtime != session.runtime
-                or existing.workspace_id != session.workspace_id
-                or existing.created_at_ms != session.created_at_ms
-            ):
-                raise ValueError("runtime session binding cannot change")
-            session = _validate_runtime_session_update(existing, session)
-        else:
-            duplicate = await self.find_runtime_session(session.bcn_session_id)
-            if duplicate is not None:
-                raise ValueError(f"bcn session is already bound to {duplicate.id}")
-        self._storage.runtime_sessions[session.id] = session
-
     def _require_workspace(self, workspace_id: str) -> None:
         identity = self._storage.node_identity
         if identity is None:
@@ -332,8 +281,6 @@ class _MemoryStorageTransaction(IStorageTransaction):
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
         if not isinstance(attempt, RuntimeAttempt):
             raise TypeError("attempt must be a RuntimeAttempt")
-        if attempt.session_id not in self._storage.runtime_sessions:
-            raise ValueError(f"unknown runtime session: {attempt.session_id}")
         existing = self._storage.runtime_attempts.get(attempt.turn_id)
         if existing is not None and existing != attempt:
             raise ValueError("runtime attempt is immutable")
@@ -689,26 +636,5 @@ def _validate_bcn_session_update(
         existing,
         updated_at_ms=incoming.updated_at_ms,
         last_activity_at_ms=incoming.last_activity_at_ms,
-        metadata=incoming.metadata,
-    )
-
-
-def _validate_runtime_session_update(
-    existing: RuntimeSession,
-    incoming: RuntimeSession,
-) -> RuntimeSession:
-    if (
-        existing.bcn_session_id != incoming.bcn_session_id
-        or existing.channel_session_id != incoming.channel_session_id
-        or existing.runtime != incoming.runtime
-        or existing.workspace_id != incoming.workspace_id
-        or existing.created_at_ms != incoming.created_at_ms
-    ):
-        raise ValueError("runtime session binding cannot change")
-    _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
-    return replace(
-        existing,
-        updated_at_ms=incoming.updated_at_ms,
-        provider_thread_id=incoming.provider_thread_id,
         metadata=incoming.metadata,
     )

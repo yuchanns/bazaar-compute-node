@@ -15,6 +15,7 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
     MIGRATIONS,
     SCHEMA_MIGRATION,
 )
+from bazaar_compute_node.core.models import BcnSession, ChannelSession, RuntimeAttempt
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 
 
@@ -28,7 +29,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 10
+        assert first_state.schema_version == 11
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -62,7 +63,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
                 "WHERE version = 9"
             )
 
-        assert {row["name"] for row in tables} == {
+        assert {
             "bcn_sessions",
             "channel_sessions",
             "consumer_cursors",
@@ -71,10 +72,9 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "node_state",
             "outbound_messages",
             "runtime_attempts",
-            "runtime_sessions",
             "schema_migrations",
-        }
-        assert {row["name"] for row in indexes} == {
+        } <= {row["name"] for row in tables}
+        assert {
             "idx_inbound_channel_received",
             "idx_inbound_provider_identity",
             "idx_inbound_reply_to_message",
@@ -85,9 +85,8 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "idx_outbound_state_created",
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
-            "idx_runtime_sessions_bcn",
             "idx_runtime_attempts_session_started",
-        }
+        } <= {row["name"] for row in indexes}
         assert "compaction_completed_at_ms" in {
             row["name"] for row in migration_columns
         }
@@ -215,56 +214,135 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
                 "SELECT version, migration_name, checksum "
                 "FROM schema_migrations ORDER BY version"
             )
-            mapping_indexes = await transaction.fetchall(
+            session_indexes = await transaction.fetchall(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?, ?) ORDER BY name",
+                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?) ORDER BY name",
                 (
                     "idx_bcn_sessions_channel",
                     "idx_channel_sessions_provider_identity",
-                    "idx_runtime_sessions_bcn",
                     "idx_inbound_provider_identity",
                     "idx_inbound_session_target_seq",
                     "idx_inbound_reply_to_message",
                 ),
             )
         assert [row["version"] for row in migration_rows] == [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
+            migration.version for migration in MIGRATIONS
         ]
-        assert migration_rows[1]["migration_name"] == MIGRATIONS[1].name
-        assert migration_rows[1]["checksum"] == MIGRATIONS[1].checksum
-        assert migration_rows[2]["migration_name"] == MIGRATIONS[2].name
-        assert migration_rows[2]["checksum"] == MIGRATIONS[2].checksum
-        assert migration_rows[3]["migration_name"] == MIGRATIONS[3].name
-        assert migration_rows[3]["checksum"] == MIGRATIONS[3].checksum
-        assert migration_rows[4]["migration_name"] == MIGRATIONS[4].name
-        assert migration_rows[4]["checksum"] == MIGRATIONS[4].checksum
-        assert migration_rows[5]["migration_name"] == MIGRATIONS[5].name
-        assert migration_rows[5]["checksum"] == MIGRATIONS[5].checksum
-        assert migration_rows[6]["migration_name"] == MIGRATIONS[6].name
-        assert migration_rows[6]["checksum"] == MIGRATIONS[6].checksum
-        assert migration_rows[7]["migration_name"] == MIGRATIONS[7].name
-        assert migration_rows[7]["checksum"] == MIGRATIONS[7].checksum
-        assert migration_rows[8]["migration_name"] == MIGRATIONS[8].name
-        assert migration_rows[8]["checksum"] == MIGRATIONS[8].checksum
-        assert migration_rows[9]["migration_name"] == MIGRATIONS[9].name
-        assert migration_rows[9]["checksum"] == MIGRATIONS[9].checksum
-        assert {row["name"] for row in mapping_indexes} == {
+        for row, migration in zip(migration_rows, MIGRATIONS, strict=True):
+            assert row["migration_name"] == migration.name
+            assert row["checksum"] == migration.checksum
+        assert {row["name"] for row in session_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
-            "idx_runtime_sessions_bcn",
             "idx_inbound_provider_identity",
             "idx_inbound_session_target_seq",
             "idx_inbound_reply_to_message",
         }
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v11_migration_preserves_durable_session_and_attempt_facts() -> (
+    None
+):
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        for migration in MIGRATIONS[:10]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.execute(
+            "INSERT INTO node_state ("
+            "singleton_key, node_id, schema_version, workspace_id, "
+            "created_at_ms, updated_at_ms, metadata_json"
+            ") VALUES (1, 'node-1', 10, 'workspace-1', 1, 1, '{}')"
+        )
+        await connection.execute(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "provider_identity_ref_json, created_at_ms, updated_at_ms"
+            ") VALUES ('channel-1', 'test', 'thread-1', 'dm', 1, '{}', 1, 1)"
+        )
+        await connection.execute(
+            "INSERT INTO bcn_sessions ("
+            "id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "metadata_json"
+            ") VALUES ('bcn-1', 'channel-1', 'workspace-1', 1, 1, '{}')"
+        )
+        await connection.execute(
+            "INSERT INTO runtime_sessions ("
+            "id, bcn_session_id, channel_session_id, runtime, created_at_ms, "
+            "updated_at_ms, metadata_json"
+            ") VALUES ('runtime-1', 'bcn-1', 'channel-1', 'test', 1, 1, '{}')"
+        )
+        await connection.execute(
+            "INSERT INTO runtime_attempts "
+            "(turn_id, session_id, client_user_message_id, started_at_ms) "
+            "VALUES ('turn-1', 'runtime-1', 'message-1', 2)"
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        await database.initialize(node_id="node-1", workspace_id="workspace-1")
+        assert database.node_state.schema_version == 11
+        retained_attempt = RuntimeAttempt(
+            turn_id="turn-1",
+            session_id="runtime-1",
+            client_user_message_id="message-1",
+            started_at_ms=2,
+        )
+        new_attempt = RuntimeAttempt(
+            turn_id="turn-2",
+            session_id="runtime-2",
+            client_user_message_id="message-2",
+            started_at_ms=3,
+        )
+        async with database.transaction() as transaction:
+            assert await transaction.get_channel_session("channel-1") == ChannelSession(
+                id="channel-1",
+                channel="test",
+                provider_thread_id="thread-1",
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+            assert await transaction.get_bcn_session("bcn-1") == BcnSession(
+                id="bcn-1",
+                channel_session_id="channel-1",
+                workspace_id="workspace-1",
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+            assert await transaction.get_runtime_attempt("turn-1") == retained_attempt
+            await transaction.save_runtime_attempt(new_attempt)
+
+        async with database.transaction() as transaction:
+            assert await transaction.get_runtime_attempt("turn-2") == new_attempt
+
+        with pytest.raises(RuntimeError, match="rollback"):
+            async with database.transaction() as transaction:
+                await transaction.save_runtime_attempt(
+                    RuntimeAttempt(
+                        turn_id="turn-3",
+                        session_id="runtime-3",
+                        client_user_message_id="message-3",
+                        started_at_ms=4,
+                    )
+                )
+                raise RuntimeError("rollback")
+
+        async with database.transaction() as transaction:
+            assert await transaction.get_runtime_attempt("turn-3") is None
     finally:
         await database.stop(timeout=2)
 

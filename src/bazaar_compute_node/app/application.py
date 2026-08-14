@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import math
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from ..core.orchestration import SessionOrchestrator
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
 from ..core.storage import IStorage, NodeIdentity
+from ..core.timerwheel import TimerWheel
 from .attachments import AttachmentMaterializer
 from .command import (
     CommandDispatcher,
@@ -64,6 +66,7 @@ class NodeApplication:
         runtime_options: Mapping[str, str] | None = None,
         runtime_sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE,
         runtime_network_access: bool = True,
+        runtime_idle_timeout_seconds: float = 0,
         channel_options: Mapping[str, object] | None = None,
         runtime_environment_include: Sequence[str] = (),
         timeout_budget: TimeoutBudget | None = None,
@@ -81,8 +84,7 @@ class NodeApplication:
         self.command_log: list[CommandRecord] = []
         self._wrapper_path: Path | None = None
         self._identity: NodeIdentity | None = None
-        self._session_capabilities: dict[str, str] = {}
-        self._runtime_session_ids: dict[str, str] = {}
+        self._session_capabilities: dict[str, tuple[str, str]] = {}
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_environment_include = tuple(runtime_environment_include)
@@ -106,6 +108,23 @@ class NodeApplication:
             startup_timeout_seconds=self.timeout_budget.startup_seconds,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
+        if (
+            isinstance(runtime_idle_timeout_seconds, bool)
+            or not isinstance(runtime_idle_timeout_seconds, int | float)
+            or not math.isfinite(runtime_idle_timeout_seconds)
+        ):
+            raise ValueError("runtime_idle_timeout_seconds must be a finite number")
+        self.timer_wheel = TimerWheel()
+        if (
+            runtime_idle_timeout_seconds > 0
+            and runtime_idle_timeout_seconds * 1_000 > self.timer_wheel.maximum_delay_ms
+        ):
+            raise ValueError("runtime_idle_timeout_seconds exceeds the timer horizon")
+        runtime_idle_timeout_ms = (
+            math.ceil(runtime_idle_timeout_seconds * 1_000)
+            if runtime_idle_timeout_seconds > 0
+            else 0
+        )
         self.orchestrator = SessionOrchestrator(
             node_id=node_id,
             workspace_id=workspace_id,
@@ -114,6 +133,8 @@ class NodeApplication:
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
+            timer_wheel=self.timer_wheel,
+            runtime_idle_timeout_ms=runtime_idle_timeout_ms,
             workspace=self._workspace_path,
             on_node_initialized=self._ensure_workspace,
         )
@@ -147,12 +168,16 @@ class NodeApplication:
             install_bcc_wrapper, self.data_dir / "bin"
         )
         try:
+            await self.timer_wheel.start()
             await self.command_server.start()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
         except BaseException:
-            await self.stop()
+            try:
+                await self.stop()
+            finally:
+                await self.timer_wheel.close()
             raise
         self._started = True
         self._stopped.clear()
@@ -168,7 +193,10 @@ class NodeApplication:
                 try:
                     await self.command_server.stop()
                 finally:
-                    await self._cleanup_bcc_wrapper()
+                    try:
+                        await self._cleanup_bcc_wrapper()
+                    finally:
+                        await self.timer_wheel.close()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -188,7 +216,10 @@ class NodeApplication:
                     try:
                         await self._cleanup_bcc_wrapper()
                     finally:
-                        self._stopped.set()
+                        try:
+                            await self.timer_wheel.close()
+                        finally:
+                            self._stopped.set()
 
     async def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path
@@ -278,18 +309,19 @@ class NodeApplication:
                     "SESSION_NOT_FOUND",
                     f"unknown bcn session: {session_id}",
                 )
-            runtime_session = await transaction.find_runtime_session(session_id)
-        if runtime_session is None or runtime_session_id != (runtime_session.id):
+        runtime_session = self.orchestrator.runtime_session(session_id)
+        if runtime_session is None or runtime_session_id != runtime_session.id:
             raise CommandDispatchError(
                 "SESSION_BINDING_FAILED",
                 "runtime session binding is invalid",
             )
-        expected_capability = self._session_capabilities.get(session_id)
+        capability_binding = self._session_capabilities.get(session_id)
         if (
-            expected_capability is None
+            capability_binding is None
+            or capability_binding[0] != runtime_session.id
             or not isinstance(session_capability, str)
             or not hmac.compare_digest(
-                session_capability.encode(), expected_capability.encode()
+                session_capability.encode(), capability_binding[1].encode()
             )
         ):
             raise CommandDispatchError(
@@ -298,7 +330,9 @@ class NodeApplication:
             )
 
     def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
-        self._runtime_session_ids[session.bcn_session_id] = session.id
+        runtime_session = self.orchestrator.runtime_session(session.bcn_session_id)
+        if runtime_session is None or runtime_session.id != session.id:
+            raise RuntimeError("runtime session is not the current live binding")
         return self._build_command_environment(
             session.bcn_session_id,
             session.id,
@@ -316,10 +350,11 @@ class NodeApplication:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
-        session_capability = self._session_capabilities.setdefault(
-            session_id,
-            secrets.token_urlsafe(32),
-        )
+        capability_binding = self._session_capabilities.get(session_id)
+        if capability_binding is None or capability_binding[0] != runtime_session_id:
+            capability_binding = (runtime_session_id, secrets.token_urlsafe(32))
+            self._session_capabilities[session_id] = capability_binding
+        session_capability = capability_binding[1]
         wrapper_directory = str(wrapper_path.parent)
         allowed = set(_PLATFORM_ENVIRONMENT)
         for name in self.runtime.environment_variable_names():
@@ -368,13 +403,12 @@ class NodeApplication:
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((session_id, tuple(arguments)))
-        runtime_session_id = self._runtime_session_ids.get(
-            session_id,
-            f"runtime-{session_id}",
-        )
+        runtime_session = self.orchestrator.runtime_session(session_id)
+        if runtime_session is None:
+            raise RuntimeError("runtime session is not live")
         environment = self._build_command_environment(
             session_id,
-            runtime_session_id,
+            runtime_session.id,
         )
         process = await asyncio.create_subprocess_exec(
             str(wrapper_path),

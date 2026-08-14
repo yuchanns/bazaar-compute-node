@@ -576,6 +576,19 @@ OUTBOUND_ATTACHMENTS_MIGRATION = Migration(
     ),
 )
 
+RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION = Migration(
+    version=11,
+    name="remove_runtime_session_mapping",
+    statements=(
+        """
+        DROP INDEX idx_runtime_sessions_bcn
+        """,
+        """
+        DROP TABLE runtime_sessions
+        """,
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
@@ -587,6 +600,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     TRANSIENT_STREAM_EVENT_MIGRATION,
     RUNTIME_EVENTS_REMOVAL_MIGRATION,
     OUTBOUND_ATTACHMENTS_MIGRATION,
+    RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION,
 )
 
 
