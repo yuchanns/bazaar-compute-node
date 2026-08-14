@@ -43,6 +43,14 @@ class CodexErrorInfo:
     error_type: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CodexFsChangedInfo:
+    """Provider-local filesystem watch notification."""
+
+    watch_id: str
+    changed_paths: tuple[Path, ...]
+
+
 def build_initialize_params(
     client_info: ClientInfo,
 ) -> dict[str, object]:
@@ -53,6 +61,15 @@ def build_initialize_params(
         },
         "capabilities": {"experimentalApi": True},
     }
+
+
+def build_fs_watch_params(path: Path, watch_id: str) -> dict[str, object]:
+    if not isinstance(path, Path):
+        raise TypeError("path must be a Path")
+    if not path.is_absolute():
+        raise ValueError("path must be absolute")
+    _validate_non_empty_string("watch_id", watch_id)
+    return {"watchId": watch_id, "path": str(path)}
 
 
 def build_thread_start_params(
@@ -212,6 +229,19 @@ class CodexAppServerClient:
             timeout=timeout,
         )
 
+    async def watch_path(
+        self,
+        path: Path,
+        watch_id: str,
+        *,
+        timeout: float,
+    ) -> JsonlMessage:
+        return await self.supervisor.request(
+            "fs/watch",
+            build_fs_watch_params(path, watch_id),
+            timeout=timeout,
+        )
+
     async def resume_thread(
         self,
         thread_id: str,
@@ -334,6 +364,52 @@ def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
     )
 
 
+def parse_initialize_response(response: Mapping[str, object]) -> Path:
+    result = _require_mapping(response, "result")
+    path = Path(_require_text(result, "codexHome", "result.codexHome"))
+    if not path.is_absolute():
+        raise CodexAppServerProtocolError("result.codexHome must be absolute")
+    return path
+
+
+def parse_fs_watch_response(response: Mapping[str, object]) -> Path:
+    result = _require_mapping(response, "result")
+    path = Path(_require_text(result, "path", "result.path"))
+    if not path.is_absolute():
+        raise CodexAppServerProtocolError("result.path must be absolute")
+    return path
+
+
+def parse_skills_changed_notification(message: Mapping[str, object]) -> None:
+    _require_mapping(message, "params")
+
+
+def parse_fs_changed_notification(
+    message: Mapping[str, object],
+) -> CodexFsChangedInfo:
+    params = _require_mapping(message, "params")
+    watch_id = _require_text(params, "watchId", "params.watchId")
+    raw_paths = params.get("changedPaths")
+    if not isinstance(raw_paths, list):
+        raise CodexAppServerProtocolError("params.changedPaths must be an array")
+    changed_paths: list[Path] = []
+    for index, value in enumerate(raw_paths):
+        if not isinstance(value, str) or not value:
+            raise CodexAppServerProtocolError(
+                f"params.changedPaths[{index}] must be non-empty text"
+            )
+        path = Path(value)
+        if not path.is_absolute():
+            raise CodexAppServerProtocolError(
+                f"params.changedPaths[{index}] must be absolute"
+            )
+        changed_paths.append(path)
+    return CodexFsChangedInfo(
+        watch_id=watch_id,
+        changed_paths=tuple(changed_paths),
+    )
+
+
 def parse_turn_response(response: Mapping[str, object]) -> CodexTurnInfo:
     result = _require_mapping(response, "result")
     return _parse_turn(_require_mapping(result, "turn"))
@@ -448,14 +524,20 @@ __all__ = [
     "CodexAppServerClient",
     "CodexAppServerProtocolError",
     "CodexErrorInfo",
+    "CodexFsChangedInfo",
     "CodexThreadInfo",
     "CodexTurnInfo",
+    "build_fs_watch_params",
     "build_initialize_params",
     "build_thread_resume_params",
     "build_thread_start_params",
     "build_turn_interrupt_params",
     "build_turn_start_params",
     "parse_error_notification",
+    "parse_fs_changed_notification",
+    "parse_fs_watch_response",
+    "parse_initialize_response",
+    "parse_skills_changed_notification",
     "parse_thread_response",
     "parse_turn_notification",
     "parse_turn_response",

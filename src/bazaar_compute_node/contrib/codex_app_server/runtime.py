@@ -32,6 +32,10 @@ from ...core.runtime import (
 )
 from .client import (
     CodexAppServerClient,
+    parse_fs_changed_notification,
+    parse_fs_watch_response,
+    parse_initialize_response,
+    parse_skills_changed_notification,
     parse_thread_response,
     parse_turn_response,
     parse_turn_steer_response,
@@ -50,6 +54,8 @@ from .protocol import (
 
 _INITIALIZE_ATTEMPTS = 2
 _RECONCILE_ATTEMPTS = 2
+_WORKSPACE_AGENTS_WATCH_ID = "bcn-agents-workspace"
+_CODEX_HOME_AGENTS_WATCH_ID = "bcn-agents-codex-home"
 
 
 @dataclass(slots=True)
@@ -547,21 +553,59 @@ class CodexAppServerRuntime(IRuntime, IAsyncLifecycle):
             await asyncio.to_thread(workspace.chmod, 0o700)
         environment = dict(self._context.environment_for_session(session))
         for attempt in range(_INITIALIZE_ATTEMPTS):
+            watch_targets: dict[str, Path] = {}
+
+            def route_notification(
+                message: dict[str, object],
+                *,
+                targets: dict[str, Path] = watch_targets,
+                runtime_session_id: str = session.id,
+            ) -> bool:
+                method = message.get("method")
+                if method == "skills/changed":
+                    parse_skills_changed_notification(message)
+                    self._expire_events.put_nowait(RuntimeExpire(runtime_session_id))
+                    return True
+                if method != "fs/changed":
+                    return False
+                changed = parse_fs_changed_notification(message)
+                target = targets.get(changed.watch_id)
+                if target is None or target not in changed.changed_paths:
+                    return False
+                self._expire_events.put_nowait(RuntimeExpire(runtime_session_id))
+                return True
+
             supervisor = JsonlProcessSupervisor(
                 JsonlProcessSpec(
                     executable=executable,
                     arguments=("app-server", "--stdio"),
                     cwd=workspace,
                     environment=environment,
-                )
+                ),
+                notification_router=route_notification,
             )
             client = CodexAppServerClient(supervisor)
             await supervisor.start(timeout=self._context.startup_timeout_seconds)
             try:
-                await client.initialize(
+                initialize_response = await client.initialize(
                     client_info=self._context.client_info,
                     timeout=self._context.startup_timeout_seconds,
                 )
+                codex_home = parse_initialize_response(initialize_response)
+                for watch_id, target in (
+                    (_WORKSPACE_AGENTS_WATCH_ID, workspace / "AGENTS.md"),
+                    (_CODEX_HOME_AGENTS_WATCH_ID, codex_home / "AGENTS.md"),
+                ):
+                    watch_targets[watch_id] = target
+                    watch_response = await client.watch_path(
+                        target,
+                        watch_id,
+                        timeout=self._context.startup_timeout_seconds,
+                    )
+                    if parse_fs_watch_response(watch_response) != target:
+                        raise CodexAppServerProtocolError(
+                            "fs/watch returned a different path"
+                        )
             except JsonlRequestTimeout:
                 await supervisor.stop(timeout=timeout)
                 if attempt + 1 == _INITIALIZE_ATTEMPTS:

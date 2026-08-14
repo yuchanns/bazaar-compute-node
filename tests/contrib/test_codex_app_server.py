@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time_ns
@@ -29,6 +29,7 @@ from bazaar_compute_node.contrib.codex_app_server import (
     JsonlProcessSupervisor,
     JsonlProtocolError,
     JsonlRemoteError,
+    build_fs_watch_params,
     build_initialize_params,
     build_thread_resume_params,
     build_thread_start_params,
@@ -36,6 +37,10 @@ from bazaar_compute_node.contrib.codex_app_server import (
     build_turn_start_params,
     build_turn_steer_params,
     parse_error_notification,
+    parse_fs_changed_notification,
+    parse_fs_watch_response,
+    parse_initialize_response,
+    parse_skills_changed_notification,
     parse_thread_response,
     parse_turn_notification,
     parse_turn_response,
@@ -60,6 +65,7 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
+    RuntimeExpire,
     RuntimeSandboxMode,
     RuntimeSessionUnavailable,
 )
@@ -178,12 +184,17 @@ def test_build_thread_start_params_maps_rendered_instructions() -> None:
 
 
 def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None:
+    watched_path = Path.cwd() / "AGENTS.md"
     assert build_initialize_params(CLIENT_INFO) == {
         "clientInfo": {
             "name": "bcn",
             "version": CLIENT_INFO.version,
         },
         "capabilities": {"experimentalApi": True},
+    }
+    assert build_fs_watch_params(watched_path, "agents-workspace") == {
+        "watchId": "agents-workspace",
+        "path": str(watched_path),
     }
     assert build_thread_start_params("instructions") == {
         "developerInstructions": "instructions",
@@ -308,6 +319,26 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     )
     assert error.will_retry is True
     assert error.error_type == "usageLimit"
+    codex_home = Path.cwd() / ".codex"
+    assert (
+        parse_initialize_response({"result": {"codexHome": str(codex_home)}})
+        == codex_home
+    )
+    assert (
+        parse_fs_watch_response({"result": {"path": str(watched_path)}}) == watched_path
+    )
+    parse_skills_changed_notification({"method": "skills/changed", "params": {}})
+    fs_change = parse_fs_changed_notification(
+        {
+            "method": "fs/changed",
+            "params": {
+                "watchId": "agents-workspace",
+                "changedPaths": [str(watched_path)],
+            },
+        }
+    )
+    assert fs_change.watch_id == "agents-workspace"
+    assert fs_change.changed_paths == (watched_path,)
 
 
 def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
@@ -807,6 +838,95 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
             target.unlink()
         if storage.is_started:
             await storage.stop(timeout=10)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_local_codex_runtime_maps_context_changes_to_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex = shutil.which("codex")
+    if codex is None:
+        pytest.fail("codex CLI is required for the App Server integration test")
+
+    home = tmp_path / "home"
+    codex_home = home / ".codex"
+    skill_file = codex_home / "skills" / "context-probe" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: context-probe\ndescription: Initial context probe.\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    async def unexpected_command(
+        session_id: str,
+        arguments: Sequence[str],
+        body: str | None,
+    ) -> None:
+        raise AssertionError(
+            f"context watch unexpectedly invoked bcc for {session_id}: "
+            f"{arguments!r} {body!r}"
+        )
+
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id=f"runtime-context-{uuid7()}",
+        bcn_session_id=f"bcn-context-{uuid7()}",
+        channel_session_id=f"channel-context-{uuid7()}",
+        runtime="codex",
+        workspace_id=f"workspace-context-{uuid7()}",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    runtime = CodexAppServerRuntime(
+        RuntimeCommandContext(
+            run_command=unexpected_command,
+            environment_for_session=lambda _session: dict(os.environ),
+        ),
+        executable=codex,
+    )
+
+    async def assert_change_expires(change: Callable[[], object]) -> None:
+        while not runtime._expire_events.empty():
+            runtime._expire_events.get_nowait()
+        change()
+        async with asyncio.timeout(20):
+            assert await runtime.receive_expire() == RuntimeExpire(session.id)
+        await asyncio.sleep(0.3)
+
+    await runtime.start(timeout=10)
+    try:
+        started = await runtime.start_session(session, timeout=20)
+        assert started.value is not None
+        connection = runtime._connections[session.id]
+        workspace_agents = connection.workspace / "AGENTS.md"
+        codex_home_agents = codex_home / "AGENTS.md"
+
+        await assert_change_expires(
+            lambda: workspace_agents.write_text(
+                "First workspace instruction.\n", encoding="utf-8"
+            )
+        )
+        await assert_change_expires(
+            lambda: workspace_agents.write_text(
+                "Updated workspace instruction.\n", encoding="utf-8"
+            )
+        )
+
+        replacement = codex_home / "AGENTS.md.next"
+        replacement.write_text("Atomic home instruction.\n", encoding="utf-8")
+        await assert_change_expires(lambda: replacement.replace(codex_home_agents))
+        await assert_change_expires(
+            lambda: skill_file.write_text(
+                "---\nname: context-probe\ndescription: Updated context probe.\n---\n",
+                encoding="utf-8",
+            )
+        )
+    finally:
+        await runtime.stop(timeout=20)
 
 
 @pytest.mark.e2e
