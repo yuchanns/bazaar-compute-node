@@ -12,7 +12,6 @@ from .models import (
     InboundMessage,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeSession,
 )
 
 
@@ -59,14 +58,6 @@ class IStorageTransaction(Protocol):
         """Find the bcn session bound to one channel session for recovery."""
         ...
 
-    async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        """Load one durable runtime binding by local id."""
-        ...
-
-    async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        """Find the runtime session bound to one bcn session for recovery."""
-        ...
-
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         """Load one immutable runtime attempt correlation record."""
         ...
@@ -111,10 +102,6 @@ class IStorageTransaction(Protocol):
 
     async def save_bcn_session(self, session: BcnSession) -> None:
         """Persist a validated bcn session binding update."""
-        ...
-
-    async def save_runtime_session(self, session: RuntimeSession) -> None:
-        """Persist a validated runtime binding update."""
         ...
 
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:

@@ -18,7 +18,6 @@ from ...core.models import (
     InboundMessage,
     OutboundMessage,
     RuntimeAttempt,
-    RuntimeSession,
 )
 from .codec import (
     _bcn_session_from_row,
@@ -31,7 +30,6 @@ from .codec import (
     _required_non_negative_int,
     _required_positive_int,
     _runtime_attempt_from_row,
-    _runtime_session_from_row,
     _validate_bcn_session_update,
     _validate_channel_session_input,
     _validate_channel_session_update,
@@ -45,7 +43,6 @@ from .codec import (
     _validate_outbound_message_input,
     _validate_outbound_update,
     _validate_positive_int,
-    _validate_runtime_session_update,
 )
 
 if TYPE_CHECKING:
@@ -174,38 +171,6 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "channel-to-bcn session binding",
         )
         return _bcn_session_from_row(row) if row is not None else None
-
-    async def get_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        row = await self.fetchone(
-            "SELECT runtime_sessions.id, "
-            "runtime_sessions.bcn_session_id, runtime_sessions.channel_session_id, "
-            "runtime_sessions.runtime, bcn_sessions.workspace_id AS workspace_id, "
-            "runtime_sessions.provider_thread_id, runtime_sessions.created_at_ms, "
-            "runtime_sessions.updated_at_ms, "
-            "runtime_sessions.metadata_json "
-            "FROM runtime_sessions LEFT JOIN bcn_sessions "
-            "ON bcn_sessions.id = runtime_sessions.bcn_session_id "
-            "WHERE runtime_sessions.id = ?",
-            (session_id,),
-        )
-        return _runtime_session_from_row(row) if row is not None else None
-
-    async def find_runtime_session(self, session_id: str) -> RuntimeSession | None:
-        row = await self._fetch_one_or_conflict(
-            "SELECT runtime_sessions.id, "
-            "runtime_sessions.bcn_session_id, runtime_sessions.channel_session_id, "
-            "runtime_sessions.runtime, bcn_sessions.workspace_id AS workspace_id, "
-            "runtime_sessions.provider_thread_id, runtime_sessions.created_at_ms, "
-            "runtime_sessions.updated_at_ms, "
-            "runtime_sessions.metadata_json FROM runtime_sessions "
-            "LEFT JOIN bcn_sessions ON bcn_sessions.id = "
-            "runtime_sessions.bcn_session_id "
-            "WHERE runtime_sessions.bcn_session_id = ? "
-            "ORDER BY runtime_sessions.rowid",
-            (session_id,),
-            "bcn-to-runtime session binding",
-        )
-        return _runtime_session_from_row(row) if row is not None else None
 
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         row = await self.fetchone(
@@ -768,64 +733,9 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             ),
         )
 
-    async def save_runtime_session(self, session: RuntimeSession) -> None:
-        self._require_workspace(session.workspace_id)
-        bcn_session = await self.get_bcn_session(session.bcn_session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {session.bcn_session_id}")
-        if await self.get_channel_session(bcn_session.channel_session_id) is None:
-            raise ValueError(
-                f"unknown channel session: {bcn_session.channel_session_id}"
-            )
-        if (
-            bcn_session.channel_session_id != session.channel_session_id
-            or bcn_session.workspace_id != session.workspace_id
-        ):
-            raise ValueError("runtime session binding does not match bcn session")
-
-        existing = await self.get_runtime_session(session.id)
-        if existing is None:
-            duplicate = await self.find_runtime_session(session.bcn_session_id)
-            if duplicate is not None:
-                raise ValueError(f"bcn session is already bound to {duplicate.id}")
-            await self.execute(
-                "INSERT INTO runtime_sessions ("
-                "id, bcn_session_id, channel_session_id, "
-                "runtime, runtime_version, provider_thread_id, "
-                "created_at_ms, updated_at_ms, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    session.id,
-                    session.bcn_session_id,
-                    session.channel_session_id,
-                    session.runtime,
-                    None,
-                    session.provider_thread_id,
-                    session.created_at_ms,
-                    session.updated_at_ms,
-                    _encode_metadata(session.metadata),
-                ),
-            )
-            return
-
-        session = _validate_runtime_session_update(existing, session)
-        await self.execute(
-            "UPDATE runtime_sessions SET provider_thread_id = ?, "
-            "updated_at_ms = ?, metadata_json = ? "
-            "WHERE id = ?",
-            (
-                session.provider_thread_id,
-                session.updated_at_ms,
-                _encode_metadata(session.metadata),
-                session.id,
-            ),
-        )
-
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
         if not isinstance(attempt, RuntimeAttempt):
             raise TypeError("attempt must be a RuntimeAttempt")
-        if await self.get_runtime_session(attempt.session_id) is None:
-            raise ValueError(f"unknown runtime session: {attempt.session_id}")
         existing = await self.get_runtime_attempt(attempt.turn_id)
         if existing is not None:
             if existing != attempt:
