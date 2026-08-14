@@ -1475,6 +1475,114 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        await asyncio.gather(
+            orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1)),
+            orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1)),
+        )
+        first_a = orchestrator.runtime_session("bcn-a")
+        first_b = orchestrator.runtime_session("bcn-b")
+        assert first_a is not None
+        assert first_b is not None
+
+        runtime.emit_expire(first_a.id)
+        runtime.emit_expire(first_a.id)
+        await wait_until(
+            lambda: (
+                orchestrator.runtime_session("bcn-a") is None
+                and orchestrator.runtime_session("bcn-b") is None
+            )
+        )
+
+        assert {session.id for session in runtime.stopped_sessions} == {
+            first_a.id,
+            first_b.id,
+        }
+        assert len(runtime.stopped_sessions) == 2
+        assert len(runtime.started_sessions) == 2
+
+        await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=2))
+        second_a = orchestrator.runtime_session("bcn-a")
+        assert second_a is not None
+        assert second_a.id != first_a.id
+        runtime.emit_expire(second_a.id)
+        await wait_until(lambda: orchestrator.runtime_session("bcn-a") is None)
+
+        assert runtime.stopped_sessions.count(second_a) == 1
+        assert len(runtime.started_sessions) == 3
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_context_expire_waits_for_active_turn_then_precedes_pending_inbound() -> (
+    None
+):
+    orchestrator, _, runtime, _, _ = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    first_task = orchestrator.dispatch_inbound(make_message(seq=1))
+    try:
+        await runtime.turn_started.wait()
+        first_runtime = orchestrator.runtime_session("bcn-1")
+        assert first_runtime is not None
+
+        runtime.emit_expire(first_runtime.id)
+        await wait_until(lambda: first_runtime.id in orchestrator._expired_runtime_ids)
+        assert runtime.stopped_sessions == []
+
+        runtime.queue_turn_plan(TestTurnPlan())
+        second_task = orchestrator.dispatch_inbound(make_message(seq=2))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+        next(iter(runtime.active_streams)).release()
+        first_turn, second_turn = await asyncio.gather(first_task, second_task)
+
+        second_runtime = orchestrator.runtime_session("bcn-1")
+        assert first_turn is not None
+        assert second_turn is not None
+        assert second_runtime is not None
+        assert second_runtime.id != first_runtime.id
+        assert runtime.stopped_sessions.count(first_runtime) == 1
+        assert [session.id for session in runtime.started_sessions] == [
+            first_runtime.id,
+            second_runtime.id,
+        ]
+    finally:
+        if not first_task.done():
+            first_task.cancel()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context_first", (True, False))
+async def test_context_and_timer_expiry_stop_the_runtime_once(
+    context_first: bool,
+) -> None:
+    orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
+    try:
+        await orchestrator.handle_inbound(make_message(seq=1))
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+
+        if context_first:
+            runtime.emit_expire(runtime_session.id)
+        else:
+            await asyncio.sleep(0.06)
+        await wait_until(lambda: orchestrator.runtime_session("bcn-1") is None)
+
+        if context_first:
+            await asyncio.sleep(0.06)
+        else:
+            runtime.emit_expire(runtime_session.id)
+            await asyncio.sleep(0)
+        assert runtime.stopped_sessions == [runtime_session]
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
+
+
+@pytest.mark.asyncio
 async def test_quiet_inbound_refreshes_a_live_runtime_idle_deadline() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
