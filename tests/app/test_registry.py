@@ -51,7 +51,7 @@ def test_provider_entry_points_keep_test_adapters_out_of_production() -> None:
         (
             "bazaar_compute_node.runtimes",
             "codex",
-            "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime",
+            "bazaar_compute_node.contrib.codex.plugin:create_runtime",
         ),
         (
             "bazaar_compute_node.storages",

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from bcn_test_support import temporary_test_directory
 
-_owned_basetemp: Path | None = None
+_owned_basetemp: AbstractContextManager[Path] | None = None
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -18,15 +19,20 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.option.basetemp is not None:
         return
 
-    root = Path("/tmp") if os.name == "posix" else Path(tempfile.gettempdir())
-    _owned_basetemp = root / f"bcn-pytest-{os.getpid()}-{uuid4().hex[:8]}"
-    config.option.basetemp = _owned_basetemp
+    _owned_basetemp = temporary_test_directory(prefix="bcn-pytest-")
+    config.option.basetemp = _owned_basetemp.__enter__()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     del config
     if _owned_basetemp is not None:
-        shutil.rmtree(_owned_basetemp, ignore_errors=True)
+        _owned_basetemp.__exit__(None, None, None)
+
+
+@pytest.fixture
+def system_temp_dir() -> Iterator[Path]:
+    with temporary_test_directory(prefix="bcn-test-") as directory:
+        yield directory
 
 
 @pytest.fixture(autouse=True)

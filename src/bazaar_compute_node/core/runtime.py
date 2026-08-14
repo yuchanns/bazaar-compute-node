@@ -27,6 +27,17 @@ type RuntimeStreamItem = RuntimeEvent | StreamEvent
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeExpire:
+    """Request expiry of one live runtime session."""
+
+    runtime_session_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime_session_id, str) or not self.runtime_session_id:
+            raise ValueError("runtime_session_id must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeCommandContext:
     """Generic command capability made available to a runtime adapter."""
 
@@ -80,6 +91,10 @@ class IRuntime(IAsyncLifecycle, Protocol):
 
     def environment_variable_names(self) -> Sequence[str]:
         """Return optional daemon environment names required by this runtime."""
+        ...
+
+    async def receive_expire(self) -> RuntimeExpire:
+        """Wait for the provider to report one expired runtime session."""
         ...
 
     async def start_session(

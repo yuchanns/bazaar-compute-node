@@ -19,7 +19,7 @@ Repository = "https://github.com/yuchanns/bazaar-compute-node"
 bcn = "bazaar_compute_node.cli:main"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
-codex = "bazaar_compute_node.contrib.codex_app_server.plugin:create_runtime"
+codex = "bazaar_compute_node.contrib.codex.plugin:create_runtime"
 
 [project.entry-points."bazaar_compute_node.channels"]
 wecom = "bazaar_compute_node.contrib.wecom.plugin:create_channel"

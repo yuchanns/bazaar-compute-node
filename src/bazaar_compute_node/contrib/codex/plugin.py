@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from ...core.runtime import IRuntime, RuntimeCommandContext
-from .runtime import CodexAppServerRuntime
+from .runtime import Runtime
 
 
 def create_runtime(context: RuntimeCommandContext) -> IRuntime:
-    return CodexAppServerRuntime(
+    return Runtime(
         context,
         model=context.runtime_options.get("model"),
         effort=context.runtime_options.get("effort"),

@@ -7,24 +7,24 @@ from pathlib import Path
 from ...core.client import ClientInfo
 from .process import JsonlProcessSupervisor
 from .protocol import (
-    CodexAppServerProtocolError,
+    AppServerProtocolError,
     JsonlMessage,
 )
 
 
 @dataclass(frozen=True, slots=True)
-class CodexThreadInfo:
+class ThreadInfo:
     """Provider-local thread identity returned by App Server."""
 
     thread_id: str
     session_id: str | None = None
     path: str | None = None
     status: str | None = None
-    turns: tuple[CodexTurnInfo, ...] = ()
+    turns: tuple[TurnInfo, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
-class CodexTurnInfo:
+class TurnInfo:
     """Provider-local turn identity and terminal status."""
 
     turn_id: str
@@ -33,7 +33,7 @@ class CodexTurnInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class CodexErrorInfo:
+class ErrorInfo:
     """Provider-local error notification fields needed by the runtime adapter."""
 
     thread_id: str
@@ -41,6 +41,14 @@ class CodexErrorInfo:
     will_retry: bool
     message: str
     error_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FsChangedInfo:
+    """Provider-local filesystem watch notification."""
+
+    watch_id: str
+    changed_paths: tuple[Path, ...]
 
 
 def build_initialize_params(
@@ -53,6 +61,15 @@ def build_initialize_params(
         },
         "capabilities": {"experimentalApi": True},
     }
+
+
+def build_fs_watch_params(path: Path, watch_id: str) -> dict[str, object]:
+    if not isinstance(path, Path):
+        raise TypeError("path must be a Path")
+    if not path.is_absolute():
+        raise ValueError("path must be absolute")
+    _validate_non_empty_string("watch_id", watch_id)
+    return {"watchId": watch_id, "path": str(path)}
 
 
 def build_thread_start_params(
@@ -170,7 +187,7 @@ def build_turn_steer_params(
     }
 
 
-class CodexAppServerClient:
+class Client:
     """Typed facade over the adapter-local Codex JSONL supervisor."""
 
     def __init__(self, supervisor: JsonlProcessSupervisor) -> None:
@@ -209,6 +226,19 @@ class CodexAppServerClient:
                 cwd=cwd,
                 ephemeral=ephemeral,
             ),
+            timeout=timeout,
+        )
+
+    async def watch_path(
+        self,
+        path: Path,
+        watch_id: str,
+        *,
+        timeout: float,
+    ) -> JsonlMessage:
+        return await self.supervisor.request(
+            "fs/watch",
+            build_fs_watch_params(path, watch_id),
             timeout=timeout,
         )
 
@@ -305,7 +335,7 @@ class CodexAppServerClient:
         return await self.supervisor.receive(timeout=timeout)
 
 
-def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
+def parse_thread_response(response: Mapping[str, object]) -> ThreadInfo:
     result = _require_mapping(response, "result")
     thread = _require_mapping(result, "thread")
     thread_id = _require_text(thread, "id", "thread.id")
@@ -319,13 +349,13 @@ def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
         )
     raw_turns = thread.get("turns", [])
     if not isinstance(raw_turns, list):
-        raise CodexAppServerProtocolError("thread.turns must be an array")
+        raise AppServerProtocolError("thread.turns must be an array")
     turns = tuple(
         _parse_turn(value) for value in raw_turns if isinstance(value, Mapping)
     )
     if len(turns) != len(raw_turns):
-        raise CodexAppServerProtocolError("thread.turns items must be objects")
-    return CodexThreadInfo(
+        raise AppServerProtocolError("thread.turns items must be objects")
+    return ThreadInfo(
         thread_id=thread_id,
         session_id=_optional_text(thread.get("sessionId"), "thread.sessionId"),
         path=_optional_text(thread.get("path"), "thread.path"),
@@ -334,7 +364,53 @@ def parse_thread_response(response: Mapping[str, object]) -> CodexThreadInfo:
     )
 
 
-def parse_turn_response(response: Mapping[str, object]) -> CodexTurnInfo:
+def parse_initialize_response(response: Mapping[str, object]) -> Path:
+    result = _require_mapping(response, "result")
+    path = Path(_require_text(result, "codexHome", "result.codexHome"))
+    if not path.is_absolute():
+        raise AppServerProtocolError("result.codexHome must be absolute")
+    return path
+
+
+def parse_fs_watch_response(response: Mapping[str, object]) -> Path:
+    result = _require_mapping(response, "result")
+    path = Path(_require_text(result, "path", "result.path"))
+    if not path.is_absolute():
+        raise AppServerProtocolError("result.path must be absolute")
+    return path
+
+
+def parse_skills_changed_notification(message: Mapping[str, object]) -> None:
+    _require_mapping(message, "params")
+
+
+def parse_fs_changed_notification(
+    message: Mapping[str, object],
+) -> FsChangedInfo:
+    params = _require_mapping(message, "params")
+    watch_id = _require_text(params, "watchId", "params.watchId")
+    raw_paths = params.get("changedPaths")
+    if not isinstance(raw_paths, list):
+        raise AppServerProtocolError("params.changedPaths must be an array")
+    changed_paths: list[Path] = []
+    for index, value in enumerate(raw_paths):
+        if not isinstance(value, str) or not value:
+            raise AppServerProtocolError(
+                f"params.changedPaths[{index}] must be non-empty text"
+            )
+        path = Path(value)
+        if not path.is_absolute():
+            raise AppServerProtocolError(
+                f"params.changedPaths[{index}] must be absolute"
+            )
+        changed_paths.append(path)
+    return FsChangedInfo(
+        watch_id=watch_id,
+        changed_paths=tuple(changed_paths),
+    )
+
+
+def parse_turn_response(response: Mapping[str, object]) -> TurnInfo:
     result = _require_mapping(response, "result")
     return _parse_turn(_require_mapping(result, "turn"))
 
@@ -344,24 +420,24 @@ def parse_turn_steer_response(response: Mapping[str, object]) -> str:
     return _require_text(result, "turnId", "result.turnId")
 
 
-def parse_turn_notification(message: Mapping[str, object]) -> tuple[str, CodexTurnInfo]:
+def parse_turn_notification(message: Mapping[str, object]) -> tuple[str, TurnInfo]:
     params = _require_mapping(message, "params")
     thread_id = _require_text(params, "threadId", "params.threadId")
     turn = _parse_turn(_require_mapping(params, "turn"))
     return thread_id, turn
 
 
-def parse_error_notification(message: Mapping[str, object]) -> CodexErrorInfo:
+def parse_error_notification(message: Mapping[str, object]) -> ErrorInfo:
     params = _require_mapping(message, "params")
     thread_id = _require_text(params, "threadId", "params.threadId")
     turn_id = _require_text(params, "turnId", "params.turnId")
     will_retry = params.get("willRetry")
     if not isinstance(will_retry, bool):
-        raise CodexAppServerProtocolError("params.willRetry must be a bool")
+        raise AppServerProtocolError("params.willRetry must be a bool")
     error = _require_mapping(params, "error")
     message_text = _require_text(error, "message", "params.error.message")
     error_type = _error_type(error.get("codexErrorInfo"))
-    return CodexErrorInfo(
+    return ErrorInfo(
         thread_id=thread_id,
         turn_id=turn_id,
         will_retry=will_retry,
@@ -370,20 +446,20 @@ def parse_error_notification(message: Mapping[str, object]) -> CodexErrorInfo:
     )
 
 
-def _parse_turn(value: Mapping[str, object]) -> CodexTurnInfo:
+def _parse_turn(value: Mapping[str, object]) -> TurnInfo:
     turn_id = _require_text(value, "id", "turn.id")
     status = _require_text(value, "status", "turn.status")
     error_value = value.get("error")
     error_message = None
     if error_value is not None:
         if not isinstance(error_value, Mapping):
-            raise CodexAppServerProtocolError("turn.error must be an object")
+            raise AppServerProtocolError("turn.error must be an object")
         error_message = _require_text(
             error_value,
             "message",
             "turn.error.message",
         )
-    return CodexTurnInfo(
+    return TurnInfo(
         turn_id=turn_id,
         status=status,
         error_message=error_message,
@@ -397,16 +473,16 @@ def _error_type(value: object) -> str | None:
         return value
     if isinstance(value, Mapping):
         if len(value) != 1:
-            raise CodexAppServerProtocolError(
+            raise AppServerProtocolError(
                 "params.error.codexErrorInfo must contain one error type"
             )
         key = next(iter(value))
         if not isinstance(key, str) or not key:
-            raise CodexAppServerProtocolError(
+            raise AppServerProtocolError(
                 "params.error.codexErrorInfo has an invalid error type"
             )
         return key
-    raise CodexAppServerProtocolError(
+    raise AppServerProtocolError(
         "params.error.codexErrorInfo must be text, an object, or null"
     )
 
@@ -414,14 +490,14 @@ def _error_type(value: object) -> str | None:
 def _require_mapping(value: Mapping[str, object], key: str) -> Mapping[str, object]:
     nested = value.get(key)
     if not isinstance(nested, Mapping):
-        raise CodexAppServerProtocolError(f"{key} must be an object")
+        raise AppServerProtocolError(f"{key} must be an object")
     return nested
 
 
 def _require_text(value: Mapping[str, object], key: str, field_name: str) -> str:
     nested = value.get(key)
     if not isinstance(nested, str) or not nested:
-        raise CodexAppServerProtocolError(f"{field_name} must be non-empty text")
+        raise AppServerProtocolError(f"{field_name} must be non-empty text")
     return nested
 
 
@@ -429,7 +505,7 @@ def _optional_text(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise CodexAppServerProtocolError(f"{field_name} must be non-empty text")
+        raise AppServerProtocolError(f"{field_name} must be non-empty text")
     return value
 
 
@@ -445,17 +521,22 @@ def _validate_non_empty_string(name: str, value: str) -> None:
 
 
 __all__ = [
-    "CodexAppServerClient",
-    "CodexAppServerProtocolError",
-    "CodexErrorInfo",
-    "CodexThreadInfo",
-    "CodexTurnInfo",
+    "Client",
+    "ErrorInfo",
+    "FsChangedInfo",
+    "ThreadInfo",
+    "TurnInfo",
+    "build_fs_watch_params",
     "build_initialize_params",
     "build_thread_resume_params",
     "build_thread_start_params",
     "build_turn_interrupt_params",
     "build_turn_start_params",
     "parse_error_notification",
+    "parse_fs_changed_notification",
+    "parse_fs_watch_response",
+    "parse_initialize_response",
+    "parse_skills_changed_notification",
     "parse_thread_response",
     "parse_turn_notification",
     "parse_turn_response",

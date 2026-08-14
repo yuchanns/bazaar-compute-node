@@ -25,6 +25,7 @@ from .protocol import (
 )
 
 StderrHandler = Callable[[str], Awaitable[None] | None]
+NotificationRouter = Callable[[JsonlMessage], bool]
 
 
 class JsonlProcessState(StrEnum):
@@ -74,12 +75,14 @@ class JsonlProcessSupervisor:
         *,
         stderr_tail_limit: int = 64,
         stderr_handler: StderrHandler | None = None,
+        notification_router: NotificationRouter | None = None,
     ) -> None:
         if stderr_tail_limit <= 0:
             raise ValueError("stderr_tail_limit must be positive")
         self.spec = spec
         self._stderr_tail: deque[str] = deque(maxlen=stderr_tail_limit)
         self._stderr_handler = stderr_handler
+        self._notification_router = notification_router
         self._process: asyncio.subprocess.Process | None = None
         self._state = JsonlProcessState.STOPPED
         self._returncode: int | None = None
@@ -452,6 +455,26 @@ class JsonlProcessSupervisor:
                 return
             future.set_result(payload)
             return
+        if raw_id is None and self._notification_router is not None:
+            try:
+                consumed = self._notification_router(payload)
+            except Exception as error:  # noqa: BLE001
+                protocol_error = JsonlProtocolError(
+                    f"JSONL notification router failed: {type(error).__name__}"
+                )
+                if self._fatal_error is None:
+                    self._fatal_error = protocol_error
+                pending = tuple(self._pending.values())
+                self._pending.clear()
+                for future in pending:
+                    if not future.done():
+                        future.set_exception(protocol_error)
+                process = self._process
+                if process is not None and process.returncode is None:
+                    _terminate_process(process)
+                return
+            if consumed:
+                return
         self._incoming.put_nowait(payload)
 
     async def _protocol_failure(

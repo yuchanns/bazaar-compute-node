@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time_ns
@@ -20,14 +20,16 @@ from test_orchestration import (
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
-from bazaar_compute_node.contrib.codex_app_server import (
-    CodexAppServerClient,
-    CodexAppServerRuntime,
-    CodexTurnEventStream,
+from bazaar_compute_node.contrib.codex import (
+    Client,
     JsonlProcessSpec,
     JsonlProcessState,
     JsonlProcessSupervisor,
+    JsonlProtocolError,
     JsonlRemoteError,
+    Runtime,
+    TurnEventStream,
+    build_fs_watch_params,
     build_initialize_params,
     build_thread_resume_params,
     build_thread_start_params,
@@ -35,12 +37,16 @@ from bazaar_compute_node.contrib.codex_app_server import (
     build_turn_start_params,
     build_turn_steer_params,
     parse_error_notification,
+    parse_fs_changed_notification,
+    parse_fs_watch_response,
+    parse_initialize_response,
+    parse_skills_changed_notification,
     parse_thread_response,
     parse_turn_notification,
     parse_turn_response,
     parse_turn_steer_response,
 )
-from bazaar_compute_node.contrib.codex_app_server.plugin import create_runtime
+from bazaar_compute_node.contrib.codex.plugin import create_runtime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.client import CLIENT_INFO
@@ -56,9 +62,10 @@ from bazaar_compute_node.core.models import (
     StreamEvent,
     StreamEventKind,
 )
-from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
+    RuntimeExpire,
     RuntimeSandboxMode,
     RuntimeSessionUnavailable,
 )
@@ -88,7 +95,7 @@ class _NoopApprovalHandler(IApprovalHandler):
 
 
 def test_codex_turn_stream_normalizes_transient_updates() -> None:
-    stream = CodexTurnEventStream(
+    stream = TurnEventStream(
         JsonlProcessSupervisor(JsonlProcessSpec(executable="unused")),
         session_id="bcn-1",
         runtime_session_id="runtime-1",
@@ -177,12 +184,17 @@ def test_build_thread_start_params_maps_rendered_instructions() -> None:
 
 
 def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None:
+    watched_path = Path.cwd() / "AGENTS.md"
     assert build_initialize_params(CLIENT_INFO) == {
         "clientInfo": {
             "name": "bcn",
             "version": CLIENT_INFO.version,
         },
         "capabilities": {"experimentalApi": True},
+    }
+    assert build_fs_watch_params(watched_path, "agents-workspace") == {
+        "watchId": "agents-workspace",
+        "path": str(watched_path),
     }
     assert build_thread_start_params("instructions") == {
         "developerInstructions": "instructions",
@@ -307,6 +319,26 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     )
     assert error.will_retry is True
     assert error.error_type == "usageLimit"
+    codex_home = Path.cwd() / ".codex"
+    assert (
+        parse_initialize_response({"result": {"codexHome": str(codex_home)}})
+        == codex_home
+    )
+    assert (
+        parse_fs_watch_response({"result": {"path": str(watched_path)}}) == watched_path
+    )
+    parse_skills_changed_notification({"method": "skills/changed", "params": {}})
+    fs_change = parse_fs_changed_notification(
+        {
+            "method": "fs/changed",
+            "params": {
+                "watchId": "agents-workspace",
+                "changedPaths": [str(watched_path)],
+            },
+        }
+    )
+    assert fs_change.watch_id == "agents-workspace"
+    assert fs_change.changed_paths == (watched_path,)
 
 
 def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
@@ -335,7 +367,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
         )
     )
 
-    assert isinstance(configured, CodexAppServerRuntime)
+    assert isinstance(configured, Runtime)
     assert configured._model == TEST_MODEL
     assert configured._effort == TEST_EFFORT
     assert configured._context.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
@@ -346,7 +378,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
         "CODEX_CA_CERTIFICATE",
         "SSL_CERT_FILE",
     )
-    assert isinstance(defaulted, CodexAppServerRuntime)
+    assert isinstance(defaulted, Runtime)
     assert defaulted._model is None
     assert defaulted._effort is None
     assert defaulted._context.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
@@ -362,7 +394,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
     ) -> None:
         return None
 
-    runtime = CodexAppServerRuntime(
+    runtime = Runtime(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
@@ -410,7 +442,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
     ) -> None:
         return None
 
-    runtime = CodexAppServerRuntime(
+    runtime = Runtime(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
@@ -517,9 +549,73 @@ for line in sys.stdin:
     assert supervisor.state is JsonlProcessState.STOPPED
 
 
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_routes_only_consumed_notifications() -> None:
+    routed: list[dict[str, object]] = []
+
+    def route_notification(message: dict[str, object]) -> bool:
+        routed.append(message)
+        return message.get("method") == "context/changed"
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=route_notification,
+    )
+    consumed = {"method": "context/changed", "params": {}}
+    retained = {"method": "turn/completed", "params": {"turnId": "turn-1"}}
+    provider_request = {
+        "id": "request-1",
+        "method": "item/commandExecution/requestApproval",
+        "params": {},
+    }
+
+    supervisor._route_message(consumed)
+    supervisor._route_message(retained)
+    supervisor._route_message(provider_request)
+
+    assert routed == [consumed, retained]
+    assert await supervisor.receive(timeout=0.1) == retained
+    assert await supervisor.receive(timeout=0.1) == provider_request
+
+
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> None:
+    def reject_notification(_message: dict[str, object]) -> bool:
+        raise AssertionError("response reached the notification router")
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=reject_notification,
+    )
+    response = {"id": 7, "result": {}}
+
+    supervisor._route_message(response)
+
+    assert await supervisor.receive(timeout=0.1) == response
+
+
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_fails_pending_requests_when_router_raises() -> None:
+    def reject_notification(_message: dict[str, object]) -> bool:
+        raise ValueError("invalid notification")
+
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(executable="unused"),
+        notification_router=reject_notification,
+    )
+    pending = asyncio.get_running_loop().create_future()
+    supervisor._pending[1] = pending
+
+    supervisor._route_message({"method": "context/changed", "params": {}})
+
+    assert isinstance(supervisor.fatal_error, JsonlProtocolError)
+    with pytest.raises(JsonlProtocolError, match="notification router failed"):
+        await pending
+
+
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
+async def test_local_codex_uses_required_model_and_effort() -> None:
     codex = shutil.which("codex")
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
@@ -537,7 +633,7 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
                 cwd=workspace,
             )
         )
-        client = CodexAppServerClient(supervisor)
+        client = Client(supervisor)
         await supervisor.start(timeout=10)
         try:
             initialize = await client.initialize(
@@ -648,7 +744,7 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
                 timeout=30,
             )
             assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
-            stream = CodexTurnEventStream(
+            stream = TurnEventStream(
                 supervisor,
                 session_id="bcn-test",
                 runtime_session_id="session-test",
@@ -680,9 +776,9 @@ async def test_local_codex_app_server_uses_required_model_and_effort() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox() -> (
-    None
-):
+async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox(
+    system_temp_dir: Path,
+) -> None:
     codex = shutil.which("codex")
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
@@ -700,7 +796,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     node = NodeApplication(
         factories=AdapterFactories(
             channel=lambda _context: channel,
-            runtime=lambda context: CodexAppServerRuntime(
+            runtime=lambda context: Runtime(
                 context,
                 executable=codex,
                 model=TEST_MODEL,
@@ -709,7 +805,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
             storage=lambda: storage,
             audit=lambda: audit,
         ),
-        endpoint_path=resolve_data_dir() / f"sandbox-acceptance-{uuid7()}.sock",
+        endpoint_path=system_temp_dir / "sandbox-acceptance.sock",
         node_id=identity.node_id,
         workspace_id=identity.workspace_id,
     )
@@ -746,6 +842,95 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
+async def test_local_codex_runtime_maps_context_changes_to_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex = shutil.which("codex")
+    if codex is None:
+        pytest.fail("codex CLI is required for the App Server integration test")
+
+    home = tmp_path / "home"
+    codex_home = home / ".codex"
+    skill_file = codex_home / "skills" / "context-probe" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: context-probe\ndescription: Initial context probe.\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    async def unexpected_command(
+        session_id: str,
+        arguments: Sequence[str],
+        body: str | None,
+    ) -> None:
+        raise AssertionError(
+            f"context watch unexpectedly invoked bcc for {session_id}: "
+            f"{arguments!r} {body!r}"
+        )
+
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id=f"runtime-context-{uuid7()}",
+        bcn_session_id=f"bcn-context-{uuid7()}",
+        channel_session_id=f"channel-context-{uuid7()}",
+        runtime="codex",
+        workspace_id=f"workspace-context-{uuid7()}",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    runtime = Runtime(
+        RuntimeCommandContext(
+            run_command=unexpected_command,
+            environment_for_session=lambda _session: dict(os.environ),
+        ),
+        executable=codex,
+    )
+
+    async def assert_change_expires(change: Callable[[], object]) -> None:
+        while not runtime._expire_events.empty():
+            runtime._expire_events.get_nowait()
+        change()
+        async with asyncio.timeout(20):
+            assert await runtime.receive_expire() == RuntimeExpire(session.id)
+        await asyncio.sleep(0.3)
+
+    await runtime.start(timeout=10)
+    try:
+        started = await runtime.start_session(session, timeout=20)
+        assert started.value is not None
+        connection = runtime._connections[session.id]
+        workspace_agents = connection.workspace / "AGENTS.md"
+        codex_home_agents = codex_home / "AGENTS.md"
+
+        await assert_change_expires(
+            lambda: workspace_agents.write_text(
+                "First workspace instruction.\n", encoding="utf-8"
+            )
+        )
+        await assert_change_expires(
+            lambda: workspace_agents.write_text(
+                "Updated workspace instruction.\n", encoding="utf-8"
+            )
+        )
+
+        replacement = codex_home / "AGENTS.md.next"
+        replacement.write_text("Atomic home instruction.\n", encoding="utf-8")
+        await assert_change_expires(lambda: replacement.replace(codex_home_agents))
+        await assert_change_expires(
+            lambda: skill_file.write_text(
+                "---\nname: context-probe\ndescription: Updated context probe.\n---\n",
+                encoding="utf-8",
+            )
+        )
+    finally:
+        await runtime.stop(timeout=20)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
 async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> None:
     codex = shutil.which("codex")
     if codex is None:
@@ -765,7 +950,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         )
 
     async def consume_turn(
-        runtime: CodexAppServerRuntime,
+        runtime: Runtime,
         session: RuntimeSession,
         label: str,
     ) -> tuple[str, str, tuple[str, ...]]:
@@ -830,13 +1015,13 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             environment_for_session=lambda _session: dict(os.environ),
             node_id=identity.node_id,
         )
-        first_runtime = CodexAppServerRuntime(
+        first_runtime = Runtime(
             context,
             executable=codex,
             model=TEST_MODEL,
             effort=TEST_EFFORT,
         )
-        second_runtime = CodexAppServerRuntime(
+        second_runtime = Runtime(
             context,
             executable=codex,
             model=TEST_MODEL,
@@ -922,7 +1107,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             assert recovered_runtime_events[-1].state.value == "completed"
 
             await first_runtime.stop(timeout=20)
-            resumed_runtime = CodexAppServerRuntime(
+            resumed_runtime = Runtime(
                 context,
                 executable=codex,
                 model=TEST_MODEL,
@@ -957,19 +1142,20 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_local_codex_runtime_preserves_natural_conversation_session_behavior() -> (
-    None
-):
+async def test_local_codex_runtime_preserves_natural_conversation_session_behavior(
+    system_temp_dir: Path,
+) -> None:
     codex = shutil.which("codex")
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
 
     await run_natural_conversation_contract(
         channel=TestChannel,
-        runtime=lambda context: CodexAppServerRuntime(
+        runtime=lambda context: Runtime(
             context,
             executable=codex,
             model=TEST_MODEL,
             effort=TEST_EFFORT,
         ),
+        endpoint_root=system_temp_dir,
     )

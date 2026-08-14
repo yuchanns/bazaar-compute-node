@@ -118,7 +118,7 @@ src/bazaar_compute_node/
 │   └── orchestration/   # session routing and per-session lifecycle
 ├── contrib/
 │   ├── sqlite/          # SQLite schema, migrations and repositories
-│   ├── codex_app_server/# async App Server process and protocol adapter
+│   ├── codex/# async App Server process and protocol adapter
 │   ├── logging/         # local operational audit sink
 │   └── wecom/           # WeCom intelligent Bot WebSocket adapter and message mapping
 └── app/

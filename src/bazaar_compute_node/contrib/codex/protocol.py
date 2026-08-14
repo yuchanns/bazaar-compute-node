@@ -72,7 +72,7 @@ class JsonlRemoteError(JsonlTransportError):
         )
 
 
-class CodexAppServerProtocolError(ValueError):
+class AppServerProtocolError(ValueError):
     """The Codex App Server response does not match its provider contract."""
 
 
@@ -89,7 +89,7 @@ def is_request_id(value: object) -> bool:
 
 
 __all__ = [
-    "CodexAppServerProtocolError",
+    "AppServerProtocolError",
     "JsonlMessage",
     "JsonlProcessExited",
     "JsonlProcessNotRunning",
