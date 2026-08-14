@@ -43,6 +43,7 @@ def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
     assert args.audit == "logging"
     assert args.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert args.network_access is True
+    assert args.runtime_idle_timeout_seconds == 0
 
 
 def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
@@ -130,7 +131,8 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
         'storage = "config-storage"\naudit = "config-audit"\n'
         'endpoint = "config.sock"\n\n'
         '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n'
-        'sandbox_mode = "danger-full-access"\nnetwork_access = false\n\n'
+        'sandbox_mode = "danger-full-access"\nnetwork_access = false\n'
+        "idle_timeout = 2.25\n\n"
         '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
         '[channel.wecom]\nbot_id = "test-bot"\n'
         'websocket_url = "wss://wecom.example.test"\n',
@@ -149,6 +151,7 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
     assert config_args.effort == "config-effort"
     assert config_args.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
     assert config_args.network_access is False
+    assert config_args.runtime_idle_timeout_seconds == 2.25
     assert config_args.runtime_env_include == ("CUSTOM_CA",)
     assert config_args.channel_options == {
         "bot_id": "test-bot",
@@ -202,6 +205,42 @@ def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
     )
     with pytest.raises(ConfigurationError, match="runtime.network_access"):
         load_node_configuration()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"one"', "true", "nan", "inf", "-inf"],
+)
+def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.toml").write_text(
+        f"[runtime]\nidle_timeout = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="runtime.idle_timeout"):
+        load_node_configuration()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_seconds"),
+    [("0", 0), ("-1", -1), ("1", 1), ("0.0001", 0.0001)],
+)
+def test_node_configuration_parses_runtime_idle_timeout(
+    value: str,
+    expected_seconds: float,
+) -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.toml").write_text(
+        f"[runtime]\nidle_timeout = {value}\n",
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration()
+
+    assert configuration.runtime_idle_timeout_seconds == expected_seconds
 
 
 def test_help_works_in_a_real_process() -> None:

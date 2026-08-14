@@ -115,9 +115,12 @@ Runtime 即可。
 [runtime]
 sandbox_mode = "workspace-write"
 network_access = true
+idle_timeout = 0
 ```
 
 如需覆盖 Codex 的默认模型或推理强度，可以在 `[runtime]` 中增加 `model` 和 `effort`。
+`idle_timeout` 以秒为单位并支持小数；默认值 `0` 与所有 `<= 0` 的值表示 runtime session
+常驻。设置为正值后，每条新收到的消息都会刷新空闲回收期限。
 除非你明确需要使用运行用户已有的主机权限，否则不要将 `sandbox_mode` 改为
 `danger-full-access`。
 

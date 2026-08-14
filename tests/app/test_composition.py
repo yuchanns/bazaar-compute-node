@@ -198,7 +198,9 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     )
     assert before_start["code"] == "SERVICE_NOT_READY"
     await node.start()
+    assert node.timer_wheel._driver_task is not None
     await node.stop()
+    assert node.timer_wheel._driver_task is None
     after_stop = await node.command_dispatcher(
         {"kind": "control", "operation": "health"}
     )

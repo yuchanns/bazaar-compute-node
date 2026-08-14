@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import math
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from ..core.orchestration import SessionOrchestrator
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
 from ..core.storage import IStorage, NodeIdentity
+from ..core.timerwheel import TimerWheel
 from .attachments import AttachmentMaterializer
 from .command import (
     CommandDispatcher,
@@ -64,6 +66,7 @@ class NodeApplication:
         runtime_options: Mapping[str, str] | None = None,
         runtime_sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE,
         runtime_network_access: bool = True,
+        runtime_idle_timeout_seconds: float = 0,
         channel_options: Mapping[str, object] | None = None,
         runtime_environment_include: Sequence[str] = (),
         timeout_budget: TimeoutBudget | None = None,
@@ -105,6 +108,23 @@ class NodeApplication:
             startup_timeout_seconds=self.timeout_budget.startup_seconds,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
+        if (
+            isinstance(runtime_idle_timeout_seconds, bool)
+            or not isinstance(runtime_idle_timeout_seconds, int | float)
+            or not math.isfinite(runtime_idle_timeout_seconds)
+        ):
+            raise ValueError("runtime_idle_timeout_seconds must be a finite number")
+        self.timer_wheel = TimerWheel()
+        if (
+            runtime_idle_timeout_seconds > 0
+            and runtime_idle_timeout_seconds * 1_000 > self.timer_wheel.maximum_delay_ms
+        ):
+            raise ValueError("runtime_idle_timeout_seconds exceeds the timer horizon")
+        runtime_idle_timeout_ms = (
+            math.ceil(runtime_idle_timeout_seconds * 1_000)
+            if runtime_idle_timeout_seconds > 0
+            else 0
+        )
         self.orchestrator = SessionOrchestrator(
             node_id=node_id,
             workspace_id=workspace_id,
@@ -113,6 +133,8 @@ class NodeApplication:
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
+            timer_wheel=self.timer_wheel,
+            runtime_idle_timeout_ms=runtime_idle_timeout_ms,
             workspace=self._workspace_path,
             on_node_initialized=self._ensure_workspace,
         )
@@ -146,12 +168,16 @@ class NodeApplication:
             install_bcc_wrapper, self.data_dir / "bin"
         )
         try:
+            await self.timer_wheel.start()
             await self.command_server.start()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
         except BaseException:
-            await self.stop()
+            try:
+                await self.stop()
+            finally:
+                await self.timer_wheel.close()
             raise
         self._started = True
         self._stopped.clear()
@@ -167,7 +193,10 @@ class NodeApplication:
                 try:
                     await self.command_server.stop()
                 finally:
-                    await self._cleanup_bcc_wrapper()
+                    try:
+                        await self._cleanup_bcc_wrapper()
+                    finally:
+                        await self.timer_wheel.close()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -187,7 +216,10 @@ class NodeApplication:
                     try:
                         await self._cleanup_bcc_wrapper()
                     finally:
-                        self._stopped.set()
+                        try:
+                            await self.timer_wheel.close()
+                        finally:
+                            self._stopped.set()
 
     async def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path
