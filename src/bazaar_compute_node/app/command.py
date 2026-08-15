@@ -100,7 +100,7 @@ SessionBindingValidator = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 
 class CommandDispatcher:
-    """Translate local JSON requests into core command results."""
+    """Translate resource-scoped local JSON requests into core command results."""
 
     def __init__(
         self,
@@ -222,20 +222,40 @@ class CommandDispatcher:
     async def _dispatch_command(
         self, request: Mapping[str, object]
     ) -> Mapping[str, object]:
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        resource = request.get("resource")
+        if not isinstance(resource, str) or not resource:
             raise CommandDispatchError(
-                "SESSION_REQUIRED", "session_id must be a non-empty string"
+                "RESOURCE_REQUIRED", "resource must be a non-empty string"
             )
         command = request.get("command")
         if not isinstance(command, str) or not command:
             raise CommandDispatchError(
                 "COMMAND_REQUIRED", "command must be a non-empty string"
             )
+        if resource == "message":
+            if command not in {"check", "read", "send"}:
+                raise CommandDispatchError(
+                    "UNKNOWN_COMMAND", f"unsupported message command: {command}"
+                )
+        elif resource == "thread":
+            if command != "unfollow":
+                raise CommandDispatchError(
+                    "UNKNOWN_COMMAND", f"unsupported thread command: {command}"
+                )
+        else:
+            raise CommandDispatchError(
+                "UNKNOWN_RESOURCE", f"unsupported command resource: {resource}"
+            )
+
+        session_id = request.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise CommandDispatchError(
+                "SESSION_REQUIRED", "session_id must be a non-empty string"
+            )
         if self._session_binding_validator is not None:
             await self._session_binding_validator(session_id, request)
 
-        if command == "check":
+        if resource == "message" and command == "check":
             result = await self._service.check(session_id)
             return {
                 "ok": True,
@@ -252,7 +272,7 @@ class CommandDispatcher:
                 },
             }
 
-        if command == "read":
+        if resource == "message" and command == "read":
             target = request.get("target")
             if not isinstance(target, str) or not target:
                 raise CommandDispatchError(
@@ -290,7 +310,7 @@ class CommandDispatcher:
                 },
             }
 
-        if command == "send":
+        if resource == "message" and command == "send":
             target = request.get("target")
             body = request.get("body")
             command_id = request.get("command_id")
@@ -343,7 +363,7 @@ class CommandDispatcher:
                 "result": {"outbound": serialize_outbound(result)},
             }
 
-        if command == "unfollow":
+        if resource == "thread" and command == "unfollow":
             target = request.get("target")
             if not isinstance(target, str) or not target:
                 raise CommandDispatchError(
@@ -352,7 +372,7 @@ class CommandDispatcher:
             changed = await self._service.unfollow(session_id, target=target)
             return {"ok": True, "result": {"changed": changed}}
 
-        raise CommandDispatchError("UNKNOWN_COMMAND", f"unsupported command: {command}")
+        raise AssertionError("validated command route has no handler")
 
 
 def format_message_time(timestamp_ms: int) -> str:

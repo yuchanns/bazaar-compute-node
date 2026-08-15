@@ -4,6 +4,20 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .models import InboundMessage, OutboundMessage
+from .reminder import (
+    ReminderCancelRequest,
+    ReminderCancelResult,
+    ReminderCheckRequest,
+    ReminderCheckResult,
+    ReminderListRequest,
+    ReminderListResult,
+    ReminderScheduleRequest,
+    ReminderScheduleResult,
+    ReminderSnoozeRequest,
+    ReminderSnoozeResult,
+    ReminderUpdateRequest,
+    ReminderUpdateResult,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,3 +98,43 @@ class ICommandService(Protocol):
     async def unfollow(self, session_id: str, *, target: str) -> bool:
         """Disable future group notifications and report whether state changed."""
         ...
+
+
+class IReminderService(Protocol):
+    """Session-scoped Reminder command surface used by the local wrapper."""
+
+    async def schedule(
+        self,
+        session_id: str,
+        request: ReminderScheduleRequest,
+    ) -> ReminderScheduleResult: ...
+
+    async def check(
+        self,
+        session_id: str,
+        request: ReminderCheckRequest,
+    ) -> ReminderCheckResult: ...
+
+    async def list(
+        self,
+        session_id: str,
+        request: ReminderListRequest,
+    ) -> ReminderListResult: ...
+
+    async def snooze(
+        self,
+        session_id: str,
+        request: ReminderSnoozeRequest,
+    ) -> ReminderSnoozeResult: ...
+
+    async def update(
+        self,
+        session_id: str,
+        request: ReminderUpdateRequest,
+    ) -> ReminderUpdateResult: ...
+
+    async def cancel(
+        self,
+        session_id: str,
+        request: ReminderCancelRequest,
+    ) -> ReminderCancelResult: ...

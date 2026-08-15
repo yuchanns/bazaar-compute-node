@@ -29,7 +29,7 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         identity = await database.initialize(node_id="node-1")
         first_state = database.node_state
         assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 11
+        assert first_state.schema_version == 12
         assert identity.workspace_id == first_state.workspace_id
         assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
 
@@ -243,7 +243,7 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_v11_migration_preserves_durable_session_and_attempt_facts() -> (
+async def test_sqlite_v12_migration_preserves_durable_session_and_attempt_facts() -> (
     None
 ):
     data_dir = resolve_data_dir()
@@ -295,7 +295,7 @@ async def test_sqlite_v11_migration_preserves_durable_session_and_attempt_facts(
     await database.start(timeout=2)
     try:
         await database.initialize(node_id="node-1", workspace_id="workspace-1")
-        assert database.node_state.schema_version == 11
+        assert database.node_state.schema_version == 12
         retained_attempt = RuntimeAttempt(
             turn_id="turn-1",
             session_id="runtime-1",

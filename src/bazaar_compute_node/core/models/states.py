@@ -262,6 +262,12 @@ class ApprovalDecision(StrEnum):
     REJECTED = "rejected"
 
 
+class ReminderState(StrEnum):
+    SCHEDULED = "scheduled"
+    FIRED = "fired"
+    CANCELED = "canceled"
+
+
 class StateTransitionError(ValueError):
     def __init__(self, aggregate: str, current: Enum, target: Enum) -> None:
         self.aggregate = aggregate
@@ -282,6 +288,13 @@ def ensure_transition[StateT: Enum](
         return
     if target not in transitions.get(current, frozenset()):
         raise StateTransitionError(aggregate, current, target)
+
+
+REMINDER_TRANSITIONS: Mapping[ReminderState, frozenset[ReminderState]] = {
+    ReminderState.SCHEDULED: frozenset({ReminderState.FIRED, ReminderState.CANCELED}),
+    ReminderState.FIRED: frozenset({ReminderState.SCHEDULED}),
+    ReminderState.CANCELED: frozenset(),
+}
 
 
 RUNTIME_TURN_TRANSITIONS: Mapping[RuntimeTurnState, frozenset[RuntimeTurnState]] = {
