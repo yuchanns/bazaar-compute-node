@@ -92,6 +92,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             endpoint,
             {
                 "kind": "command",
+                "resource": "message",
                 "command": "check",
                 "session_id": "missing-session",
             },
@@ -131,6 +132,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             endpoint,
             {
                 "kind": "command",
+                "resource": "message",
                 "command": "check",
                 "session_id": "bcn-a",
                 "runtime_session_id": runtime_a.id,
@@ -141,6 +143,7 @@ async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
             endpoint,
             {
                 "kind": "command",
+                "resource": "message",
                 "command": "check",
                 "session_id": "bcn-b",
                 "runtime_session_id": runtime_b.id,
@@ -232,6 +235,7 @@ async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> N
             response = await node.command_dispatcher(
                 {
                     "kind": "command",
+                    "resource": "message",
                     "command": "check",
                     "session_id": "blocked-by-storage-lock",
                 }

@@ -16,16 +16,15 @@ from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import ReminderScheduler, SessionOrchestrator
+from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
 from ..core.storage import IStorage, NodeIdentity
 from ..core.timerwheel import TimerWheel
 from .attachments import AttachmentMaterializer
-from .command import (
-    CommandDispatcher,
-    CommandDispatchError,
-)
+from .command import CommandDispatchError
 from .registry import AdapterFactories
+from .reminder_dispatch import CommandDispatcher
 from .transport import LocalCommandServer
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
@@ -147,12 +146,18 @@ class NodeApplication:
             concurrency=self._concurrency,
             publish_wake=self.orchestrator.publish_reminder_wake,
         )
+        self.reminder_service = ReminderCommandService(
+            storage=self.storage,
+            concurrency=self._concurrency,
+            poke=self.reminder_scheduler.poke,
+        )
         self.command_service = self.orchestrator.command_service
         control_handler = None
         if factories.control is not None:
             control_handler = factories.control(self._adapter_context())
         self.command_dispatcher = CommandDispatcher(
             self.command_service,
+            reminder_service=self.reminder_service,
             timeout_budget=self.timeout_budget,
             control_handler=self._handle_control,
             session_binding_validator=self._validate_session_binding,
