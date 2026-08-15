@@ -87,7 +87,6 @@ class NodeApplication:
         self._identity: NodeIdentity | None = None
         self._session_capabilities: dict[str, tuple[str, str]] = {}
         self._concurrency = SessionLockRegistry()
-        self._pending_reminder_wake_sessions: set[str] = set()
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_environment_include = tuple(runtime_environment_include)
@@ -146,7 +145,7 @@ class NodeApplication:
             storage=self.storage,
             timer_wheel=self.timer_wheel,
             concurrency=self._concurrency,
-            publish_wake=self._record_reminder_wake,
+            publish_wake=self.orchestrator.publish_reminder_wake,
         )
         self.command_service = self.orchestrator.command_service
         control_handler = None
@@ -214,10 +213,7 @@ class NodeApplication:
                         try:
                             await self._cleanup_bcc_wrapper()
                         finally:
-                            try:
-                                await self.timer_wheel.close()
-                            finally:
-                                self._pending_reminder_wake_sessions.clear()
+                            await self.timer_wheel.close()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -245,7 +241,6 @@ class NodeApplication:
                             try:
                                 await self.timer_wheel.close()
                             finally:
-                                self._pending_reminder_wake_sessions.clear()
                                 self._stopped.set()
 
     async def _cleanup_bcc_wrapper(self) -> None:
@@ -286,11 +281,6 @@ class NodeApplication:
     async def _referenced_attachment_paths(self) -> set[str]:
         async with self.storage.transaction() as transaction:
             return set(await transaction.list_ready_attachment_paths())
-
-    async def _record_reminder_wake(self, session_id: str) -> None:
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        self._pending_reminder_wake_sessions.add(session_id)
 
     def _adapter_context(self) -> Mapping[str, object]:
         return {

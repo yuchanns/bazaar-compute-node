@@ -89,6 +89,14 @@ def inbox_notice(session_id: str, unread_count: int) -> str:
     )
 
 
+def reminder_notice(session_id: str, pending_count: int) -> str:
+    return (
+        f"[reminder notice session={session_id}]\n"
+        f"Reminders pending: {pending_count}. "
+        "Use `bcc reminder check` to read them."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     channel_session: ChannelSession
@@ -210,8 +218,10 @@ class SessionTurnCoordinator:
         context: SessionContext,
         turn: RuntimeTurn,
         *,
-        unread_count: int,
+        input_text: str,
     ) -> RuntimeTurn:
+        if not isinstance(input_text, str) or not input_text:
+            raise ValueError("turn input_text must be a non-empty string")
         turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
         try:
@@ -226,7 +236,7 @@ class SessionTurnCoordinator:
                 stream = await self._runtime.start_turn(
                     context.runtime_session,
                     turn,
-                    inbox_notice(context.bcn_session.id, unread_count),
+                    input_text,
                     approval_handler,
                     timeout=self._timeout_budget.provider_call_seconds,
                 )
@@ -358,13 +368,15 @@ class SessionTurnCoordinator:
         context: SessionContext,
         turn: RuntimeTurn,
         *,
-        unread_count: int,
+        input_text: str,
     ) -> None:
+        if not isinstance(input_text, str) or not input_text:
+            raise ValueError("turn input_text must be a non-empty string")
         try:
             accepted = await self._runtime.steer_turn(
                 context.runtime_session,
                 turn,
-                inbox_notice(context.bcn_session.id, unread_count),
+                input_text,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         except asyncio.CancelledError:
@@ -388,10 +400,7 @@ class SessionTurnCoordinator:
                 ),
                 state=RuntimeEventState.COMPLETED,
                 correlation=self.turn_correlation(message, context, turn),
-                metadata={
-                    "provider_method": "turn/steer",
-                    "unread_count": unread_count,
-                },
+                metadata={"provider_method": "turn/steer"},
             )
         except asyncio.CancelledError:
             raise
