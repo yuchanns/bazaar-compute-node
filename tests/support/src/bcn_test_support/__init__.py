@@ -8,8 +8,8 @@ from .environment import (
     temporary_test_directory,
 )
 from .lifecycle import wait_for_turn_terminal
+from .reminder_storage import MemoryStorage
 from .runtime import TestRuntime, TestTurnPlan
-from .storage import MemoryStorage
 
 __all__ = [
     "IsolatedTestEnvironment",

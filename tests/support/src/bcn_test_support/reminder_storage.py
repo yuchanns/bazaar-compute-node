@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+from contextlib import AbstractAsyncContextManager
+from copy import deepcopy
+from dataclasses import replace
+from types import TracebackType
+from typing import Self
+from uuid import uuid7
+
+from bazaar_compute_node.core.models import (
+    InboundMessage,
+    Reminder,
+    ReminderOccurrence,
+    ReminderState,
+)
+from bazaar_compute_node.core.reminder import canonical_id_reference
+from bazaar_compute_node.core.storage import IStorageTransaction
+
+from .storage import (
+    MemoryStorage as _BaseMemoryStorage,
+)
+from .storage import (
+    _MemoryStorageTransaction as _BaseMemoryStorageTransaction,
+)
+
+
+class MemoryStorage(_BaseMemoryStorage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reminders: dict[str, Reminder] = {}
+        self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
+
+    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
+        return _ReminderMemoryStorageTransaction(self)
+
+
+class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
+    def __init__(self, storage: MemoryStorage) -> None:
+        super().__init__(storage)
+        self._reminder_storage = storage
+        self._reminder_snapshot: (
+            tuple[
+                dict[str, Reminder],
+                dict[str, ReminderOccurrence],
+            ]
+            | None
+        ) = None
+
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
+        self._reminder_snapshot = (
+            deepcopy(self._reminder_storage.reminders),
+            deepcopy(self._reminder_storage.reminder_occurrences),
+        )
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        if exc_type is not None and self._reminder_snapshot is not None:
+            (
+                self._reminder_storage.reminders,
+                self._reminder_storage.reminder_occurrences,
+            ) = self._reminder_snapshot
+        return await super().__aexit__(exc_type, exc_value, traceback)
+
+    async def resolve_inbound_message(
+        self,
+        session_id: str,
+        message_id_or_prefix: str,
+    ) -> InboundMessage | None:
+        _require_non_empty_text(session_id, "session_id")
+        reference = canonical_id_reference(message_id_or_prefix)
+        matches = [
+            message
+            for message in self._reminder_storage.inbound_messages.get(session_id, [])
+            if (
+                message.message_id == reference
+                if len(reference) == 36
+                else message.message_id.startswith(reference)
+            )
+        ]
+        if len(matches) > 1:
+            raise ValueError("inbound message id prefix is ambiguous")
+        return matches[0] if matches else None
+
+    async def get_reminder(
+        self,
+        owner_session_id: str,
+        reminder_id_or_prefix: str,
+    ) -> Reminder | None:
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        reference = canonical_id_reference(reminder_id_or_prefix)
+        matches = [
+            reminder
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.owner_session_id == owner_session_id
+            and (
+                reminder.reminder_id == reference
+                if len(reference) == 36
+                else reminder.reminder_id.startswith(reference)
+            )
+        ]
+        if len(matches) > 1:
+            raise ValueError("reminder id prefix is ambiguous")
+        return matches[0] if matches else None
+
+    async def list_reminders(
+        self,
+        owner_session_id: str,
+        statuses: frozenset[ReminderState],
+    ) -> tuple[Reminder, ...]:
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        if not isinstance(statuses, frozenset) or not statuses:
+            raise ValueError("statuses must be a non-empty frozenset")
+        if not all(isinstance(status, ReminderState) for status in statuses):
+            raise TypeError("statuses must contain ReminderState values")
+        reminders = [
+            reminder
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.owner_session_id == owner_session_id
+            and reminder.state in statuses
+        ]
+        reminders.sort(
+            key=lambda reminder: (-reminder.updated_at_ms, reminder.reminder_id)
+        )
+        return tuple(reminders)
+
+    async def save_new_reminder(self, reminder: Reminder) -> Reminder:
+        if not isinstance(reminder, Reminder):
+            raise TypeError("reminder must be a Reminder")
+        if reminder.state is not ReminderState.SCHEDULED:
+            raise ValueError("a new reminder must be scheduled")
+        if reminder.revision != 1 or reminder.last_occurrence_no != 0:
+            raise ValueError("a new reminder must start at revision 1 with no history")
+        if reminder.last_fired_at_ms is not None or reminder.canceled_at_ms is not None:
+            raise ValueError("a new reminder cannot contain terminal history")
+        if reminder.owner_session_id not in self._reminder_storage.bcn_sessions:
+            raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
+        anchor_reference = canonical_id_reference(reminder.anchor_message_id)
+        if len(anchor_reference) != 36:
+            raise ValueError("anchor_message_id must be a full local message id")
+        anchor = await self.resolve_inbound_message(
+            reminder.owner_session_id, anchor_reference
+        )
+        if anchor is None:
+            raise ValueError("anchor message does not belong to the reminder owner")
+        canonical = replace(reminder, reminder_id=str(uuid7()))
+        self._reminder_storage.reminders[canonical.reminder_id] = canonical
+        return canonical
+
+    async def save_reminder_transition(
+        self,
+        expected_revision: int,
+        reminder: Reminder,
+    ) -> Reminder:
+        _require_positive_int(expected_revision, "expected_revision")
+        if not isinstance(reminder, Reminder):
+            raise TypeError("reminder must be a Reminder")
+        existing = await self.get_reminder(
+            reminder.owner_session_id, reminder.reminder_id
+        )
+        if existing is None:
+            raise ValueError("reminder not found")
+        _validate_expected_revision(existing, expected_revision)
+        _validate_reminder_identity(existing, reminder)
+        if reminder.revision != expected_revision + 1:
+            raise ValueError("reminder revision must advance by exactly one")
+        if reminder.updated_at_ms < existing.updated_at_ms:
+            raise ValueError("reminder updated_at_ms cannot move backwards")
+        if (
+            reminder.last_occurrence_no != existing.last_occurrence_no
+            or reminder.last_fired_at_ms != existing.last_fired_at_ms
+        ):
+            raise ValueError("non-fire transition cannot change occurrence history")
+        if existing.state is ReminderState.CANCELED:
+            raise ValueError("a canceled reminder cannot transition")
+        if reminder.state is ReminderState.FIRED:
+            raise ValueError("reminder fire must use save_fired_occurrence")
+        if existing.state is ReminderState.FIRED:
+            if reminder.state is not ReminderState.SCHEDULED:
+                raise ValueError("a fired reminder can only be snoozed to scheduled")
+        elif reminder.state not in {
+            ReminderState.SCHEDULED,
+            ReminderState.CANCELED,
+        }:
+            raise ValueError("scheduled reminder transition is invalid")
+        self._reminder_storage.reminders[reminder.reminder_id] = reminder
+        return reminder
+
+    async def get_next_scheduled_reminder(self) -> Reminder | None:
+        reminders = [
+            reminder
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.state is ReminderState.SCHEDULED
+        ]
+        if not reminders:
+            return None
+        return min(
+            reminders,
+            key=lambda reminder: (
+                reminder.next_fire_at_ms
+                if reminder.next_fire_at_ms is not None
+                else -1,
+                reminder.reminder_id,
+            ),
+        )
+
+    async def list_due_reminders(
+        self,
+        now_ms: int,
+        *,
+        limit: int,
+    ) -> tuple[Reminder, ...]:
+        _require_non_negative_int(now_ms, "now_ms")
+        _require_positive_int(limit, "limit")
+        reminders = [
+            reminder
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.state is ReminderState.SCHEDULED
+            and reminder.next_fire_at_ms is not None
+            and reminder.next_fire_at_ms <= now_ms
+        ]
+        reminders.sort(
+            key=lambda reminder: (
+                reminder.next_fire_at_ms
+                if reminder.next_fire_at_ms is not None
+                else -1,
+                reminder.reminder_id,
+            )
+        )
+        return tuple(reminders[:limit])
+
+    async def save_fired_occurrence(
+        self,
+        expected_revision: int,
+        reminder: Reminder,
+        occurrence: ReminderOccurrence,
+    ) -> ReminderOccurrence:
+        _require_positive_int(expected_revision, "expected_revision")
+        if not isinstance(reminder, Reminder):
+            raise TypeError("reminder must be a Reminder")
+        if not isinstance(occurrence, ReminderOccurrence):
+            raise TypeError("occurrence must be a ReminderOccurrence")
+        existing = await self.get_reminder(
+            reminder.owner_session_id, reminder.reminder_id
+        )
+        if existing is None:
+            raise ValueError("reminder not found")
+        _validate_expected_revision(existing, expected_revision)
+        _validate_reminder_identity(existing, reminder)
+        if existing.state is not ReminderState.SCHEDULED:
+            raise ValueError("only a scheduled reminder can fire")
+        if reminder.revision != expected_revision + 1:
+            raise ValueError("reminder revision must advance by exactly one")
+        if reminder.last_occurrence_no != existing.last_occurrence_no + 1:
+            raise ValueError("reminder occurrence number must advance by exactly one")
+        if reminder.last_fired_at_ms != occurrence.fired_at_ms:
+            raise ValueError("reminder fire time does not match occurrence")
+        if reminder.updated_at_ms != occurrence.fired_at_ms:
+            raise ValueError("reminder update time does not match occurrence fire")
+        if reminder.title != existing.title:
+            raise ValueError("fire cannot change reminder title")
+        if reminder.repeat_rule != existing.repeat_rule:
+            raise ValueError("fire cannot change reminder cadence")
+        if occurrence.reminder_id != existing.reminder_id:
+            raise ValueError("occurrence reminder binding does not match")
+        if occurrence.owner_session_id != existing.owner_session_id:
+            raise ValueError("occurrence owner binding does not match")
+        if occurrence.anchor_message_id != existing.anchor_message_id:
+            raise ValueError("occurrence anchor binding does not match")
+        if occurrence.occurrence_no != reminder.last_occurrence_no:
+            raise ValueError("occurrence number does not match reminder history")
+        if occurrence.scheduled_for_ms != existing.next_fire_at_ms:
+            raise ValueError("occurrence scheduled slot does not match reminder")
+        if occurrence.next_fire_at_ms != reminder.next_fire_at_ms:
+            raise ValueError("occurrence next fire does not match reminder")
+        if occurrence.overdue != (occurrence.fired_at_ms > occurrence.scheduled_for_ms):
+            raise ValueError("occurrence overdue flag does not match fire time")
+        if occurrence.read_at_ms is not None:
+            raise ValueError("a new occurrence must be pending")
+        if any(
+            persisted.reminder_id == existing.reminder_id
+            and persisted.occurrence_no == occurrence.occurrence_no
+            for persisted in self._reminder_storage.reminder_occurrences.values()
+        ):
+            raise ValueError("reminder occurrence number is already persisted")
+        canonical = replace(occurrence, occurrence_id=str(uuid7()))
+        self._reminder_storage.reminder_occurrences[canonical.occurrence_id] = canonical
+        self._reminder_storage.reminders[reminder.reminder_id] = reminder
+        return canonical
+
+    async def list_pending_reminder_occurrences(
+        self,
+        owner_session_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ReminderOccurrence, ...]:
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        _require_positive_int(limit, "limit")
+        occurrences = [
+            occurrence
+            for occurrence in self._reminder_storage.reminder_occurrences.values()
+            if occurrence.owner_session_id == owner_session_id and occurrence.pending
+        ]
+        occurrences.sort(
+            key=lambda occurrence: (occurrence.fired_at_ms, occurrence.occurrence_id)
+        )
+        return tuple(occurrences[:limit])
+
+    async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        return sum(
+            occurrence.owner_session_id == owner_session_id and occurrence.pending
+            for occurrence in self._reminder_storage.reminder_occurrences.values()
+        )
+
+    async def mark_reminder_occurrences_read(
+        self,
+        owner_session_id: str,
+        occurrence_ids: tuple[str, ...],
+        *,
+        read_at_ms: int,
+    ) -> tuple[ReminderOccurrence, ...]:
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        _require_non_negative_int(read_at_ms, "read_at_ms")
+        if not isinstance(occurrence_ids, tuple):
+            raise TypeError("occurrence_ids must be a tuple")
+        if not occurrence_ids:
+            return ()
+        if len(set(occurrence_ids)) != len(occurrence_ids):
+            raise ValueError("occurrence_ids cannot contain duplicates")
+        marked: list[ReminderOccurrence] = []
+        for occurrence_id in occurrence_ids:
+            reference = canonical_id_reference(occurrence_id)
+            if len(reference) != 36:
+                raise ValueError("occurrence ids must be full UUIDs")
+            occurrence = self._reminder_storage.reminder_occurrences.get(reference)
+            if occurrence is None or occurrence.owner_session_id != owner_session_id:
+                raise ValueError("reminder occurrence does not belong to owner")
+            updated = occurrence.mark_read(at_ms=read_at_ms)
+            self._reminder_storage.reminder_occurrences[reference] = updated
+            marked.append(updated)
+        return tuple(marked)
+
+    async def list_sessions_with_pending_reminders(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    occurrence.owner_session_id
+                    for occurrence in self._reminder_storage.reminder_occurrences.values()
+                    if occurrence.pending
+                }
+            )
+        )
+
+
+def _require_non_empty_text(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _require_non_negative_int(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
+def _require_positive_int(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+
+
+def _validate_expected_revision(
+    existing: Reminder,
+    expected_revision: int,
+) -> None:
+    if existing.revision != expected_revision:
+        raise ValueError(
+            "reminder revision conflict: "
+            f"expected {expected_revision}, found {existing.revision}"
+        )
+
+
+def _validate_reminder_identity(
+    existing: Reminder,
+    incoming: Reminder,
+) -> None:
+    if (
+        existing.reminder_id != incoming.reminder_id
+        or existing.owner_session_id != incoming.owner_session_id
+        or existing.anchor_message_id != incoming.anchor_message_id
+        or existing.timezone != incoming.timezone
+        or existing.created_at_ms != incoming.created_at_ms
+    ):
+        raise ValueError("reminder identity cannot change")
+
+
+__all__ = ["MemoryStorage"]

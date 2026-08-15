@@ -19,10 +19,10 @@ from bazaar_compute_node.core.models import (
     OutboundMessage,
     RuntimeAttempt,
 )
-from bazaar_compute_node.core.storage import IStorage, IStorageTransaction, NodeIdentity
+from bazaar_compute_node.core.storage import NodeIdentity
 
 
-class MemoryStorage(IStorage, IAsyncLifecycle):
+class MemoryStorage(IAsyncLifecycle):
     """Transactional in-memory storage for behavior-level integration tests."""
 
     @property
@@ -67,7 +67,7 @@ class MemoryStorage(IStorage, IAsyncLifecycle):
         self.node_identity = identity
         return identity
 
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
+    def transaction(self) -> AbstractAsyncContextManager[object]:
         return _MemoryStorageTransaction(self)
 
 
@@ -81,7 +81,7 @@ _Snapshot = tuple[
 ]
 
 
-class _MemoryStorageTransaction(IStorageTransaction):
+class _MemoryStorageTransaction:
     def __init__(self, storage: MemoryStorage) -> None:
         self._storage = storage
         self._snapshot: _Snapshot | None = None

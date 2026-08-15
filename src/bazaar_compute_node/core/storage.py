@@ -11,6 +11,9 @@ from .models import (
     ConsumerCursor,
     InboundMessage,
     OutboundMessage,
+    Reminder,
+    ReminderOccurrence,
+    ReminderState,
     RuntimeAttempt,
 )
 
@@ -79,6 +82,14 @@ class IStorageTransaction(Protocol):
         """Load the canonical inbound bound to one external message identity."""
         ...
 
+    async def resolve_inbound_message(
+        self,
+        session_id: str,
+        message_id_or_prefix: str,
+    ) -> InboundMessage | None:
+        """Resolve a full local inbound id or unique short prefix in one session."""
+        ...
+
     async def list_ready_attachment_paths(self) -> tuple[str, ...]:
         """List workspace-relative paths retained by ready descriptors."""
         ...
@@ -124,6 +135,83 @@ class IStorageTransaction(Protocol):
 
     async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
         """Persist a draft or delivery transition and return its canonical row."""
+        ...
+
+    async def get_reminder(
+        self,
+        owner_session_id: str,
+        reminder_id_or_prefix: str,
+    ) -> Reminder | None:
+        """Resolve one owner-scoped Reminder by full id or unique short prefix."""
+        ...
+
+    async def list_reminders(
+        self,
+        owner_session_id: str,
+        statuses: frozenset[ReminderState],
+    ) -> tuple[Reminder, ...]:
+        """List Reminder definitions for one owner and explicit status set."""
+        ...
+
+    async def save_new_reminder(self, reminder: Reminder) -> Reminder:
+        """Persist a newly scheduled Reminder and assign its canonical local id."""
+        ...
+
+    async def save_reminder_transition(
+        self,
+        expected_revision: int,
+        reminder: Reminder,
+    ) -> Reminder:
+        """Persist one non-fire Reminder transition guarded by revision."""
+        ...
+
+    async def get_next_scheduled_reminder(self) -> Reminder | None:
+        """Return the globally earliest scheduled Reminder frontier."""
+        ...
+
+    async def list_due_reminders(
+        self,
+        now_ms: int,
+        *,
+        limit: int,
+    ) -> tuple[Reminder, ...]:
+        """List scheduled Reminders whose next slot is due at or before now."""
+        ...
+
+    async def save_fired_occurrence(
+        self,
+        expected_revision: int,
+        reminder: Reminder,
+        occurrence: ReminderOccurrence,
+    ) -> ReminderOccurrence:
+        """Atomically persist one occurrence and its Reminder fire transition."""
+        ...
+
+    async def list_pending_reminder_occurrences(
+        self,
+        owner_session_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ReminderOccurrence, ...]:
+        """List unread Reminder occurrences for one owner."""
+        ...
+
+    async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
+        """Count unread Reminder occurrences for one owner."""
+        ...
+
+    async def mark_reminder_occurrences_read(
+        self,
+        owner_session_id: str,
+        occurrence_ids: tuple[str, ...],
+        *,
+        read_at_ms: int,
+    ) -> tuple[ReminderOccurrence, ...]:
+        """Mark the specified still-pending owner occurrences as read."""
+        ...
+
+    async def list_sessions_with_pending_reminders(self) -> tuple[str, ...]:
+        """List owner session ids that currently have unread occurrences."""
         ...
 
 

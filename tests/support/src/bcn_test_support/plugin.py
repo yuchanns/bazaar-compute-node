@@ -11,8 +11,8 @@ from bazaar_compute_node.core.storage import IStorage
 from .audit import RecordingAudit
 from .channel import TestChannel
 from .control import TestControl
+from .reminder_storage import MemoryStorage
 from .runtime import TestRuntime
-from .storage import MemoryStorage
 
 
 def create_channel(_context: ChannelContext) -> IChannel:
