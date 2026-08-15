@@ -7,7 +7,7 @@ from unicodedata import category
 from uuid import UUID
 
 from .models import Reminder, ReminderOccurrence, ReminderState
-from .reminder_time import (
+from .reminder_schedule import (
     RecurrenceKind,
     ReminderDuration,
     ReminderRecurrence,

@@ -11,10 +11,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ..core.channel import ChannelContext, IChannel
+from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
-from ..core.orchestration import SessionOrchestrator
+from ..core.orchestration import ReminderScheduler, SessionOrchestrator
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
 from ..core.storage import IStorage, NodeIdentity
@@ -85,6 +86,8 @@ class NodeApplication:
         self._wrapper_path: Path | None = None
         self._identity: NodeIdentity | None = None
         self._session_capabilities: dict[str, tuple[str, str]] = {}
+        self._concurrency = SessionLockRegistry()
+        self._pending_reminder_wake_sessions: set[str] = set()
         self._started = False
         self._stopped = asyncio.Event()
         self._runtime_environment_include = tuple(runtime_environment_include)
@@ -136,7 +139,14 @@ class NodeApplication:
             timer_wheel=self.timer_wheel,
             runtime_idle_timeout_ms=runtime_idle_timeout_ms,
             workspace=self._workspace_path,
+            concurrency=self._concurrency,
             on_node_initialized=self._ensure_workspace,
+        )
+        self.reminder_scheduler = ReminderScheduler(
+            storage=self.storage,
+            timer_wheel=self.timer_wheel,
+            concurrency=self._concurrency,
+            publish_wake=self._record_reminder_wake,
         )
         self.command_service = self.orchestrator.command_service
         control_handler = None
@@ -173,30 +183,41 @@ class NodeApplication:
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
+            self._started = True
+            await self.reminder_scheduler.start(
+                timeout=self.timeout_budget.startup_seconds,
+            )
         except BaseException:
             try:
                 await self.stop()
             finally:
                 await self.timer_wheel.close()
             raise
-        self._started = True
         self._stopped.clear()
         self.command_dispatcher.start_accepting()
 
     async def stop(self) -> None:
         if not self._started:
             try:
-                await self.command_dispatcher.drain(
+                await self.reminder_scheduler.stop(
                     timeout=self.timeout_budget.shutdown_seconds,
                 )
             finally:
                 try:
-                    await self.command_server.stop()
+                    await self.command_dispatcher.drain(
+                        timeout=self.timeout_budget.shutdown_seconds,
+                    )
                 finally:
                     try:
-                        await self._cleanup_bcc_wrapper()
+                        await self.command_server.stop()
                     finally:
-                        await self.timer_wheel.close()
+                        try:
+                            await self._cleanup_bcc_wrapper()
+                        finally:
+                            try:
+                                await self.timer_wheel.close()
+                            finally:
+                                self._pending_reminder_wake_sessions.clear()
             return
         self._started = False
         self.command_dispatcher.stop_accepting()
@@ -206,20 +227,26 @@ class NodeApplication:
             )
         finally:
             try:
-                await self.orchestrator.stop(
+                await self.reminder_scheduler.stop(
                     timeout=self.timeout_budget.shutdown_seconds,
                 )
             finally:
                 try:
-                    await self.command_server.stop()
+                    await self.orchestrator.stop(
+                        timeout=self.timeout_budget.shutdown_seconds,
+                    )
                 finally:
                     try:
-                        await self._cleanup_bcc_wrapper()
+                        await self.command_server.stop()
                     finally:
                         try:
-                            await self.timer_wheel.close()
+                            await self._cleanup_bcc_wrapper()
                         finally:
-                            self._stopped.set()
+                            try:
+                                await self.timer_wheel.close()
+                            finally:
+                                self._pending_reminder_wake_sessions.clear()
+                                self._stopped.set()
 
     async def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path
@@ -259,6 +286,11 @@ class NodeApplication:
     async def _referenced_attachment_paths(self) -> set[str]:
         async with self.storage.transaction() as transaction:
             return set(await transaction.list_ready_attachment_paths())
+
+    async def _record_reminder_wake(self, session_id: str) -> None:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        self._pending_reminder_wake_sessions.add(session_id)
 
     def _adapter_context(self) -> Mapping[str, object]:
         return {
