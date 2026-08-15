@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.8 - 2026-08-15
+
+## What's Changed
+* chore: upgrade GitHub Actions by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/10
+* feat: add bcc reminder support by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/12
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.7...v0.1.8
+
 ## 0.1.7 - 2026-08-14
 
 ## What's Changed
