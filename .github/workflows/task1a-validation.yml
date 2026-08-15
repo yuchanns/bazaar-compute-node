@@ -1,0 +1,57 @@
+name: Task 1A Validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.2"
+
+      - name: Install Python
+        run: uv python install 3.14
+
+      - name: Sync locked environment
+        run: uv sync --locked
+
+      - name: Run focused tests
+        run: uv run --frozen pytest -q tests/core/test_reminder.py
+
+      - name: Check formatting
+        run: uv run --frozen ruff format --check .
+
+      - name: Run Ruff
+        run: uv run --frozen ruff check .
+
+      - name: Run Pyright on Task 1A files
+        run: |
+          npx --yes pyright@1.1.412 \
+            --pythonversion 3.14 \
+            --pythonpath .venv/bin/python \
+            src/bazaar_compute_node/core/command.py \
+            src/bazaar_compute_node/core/models/__init__.py \
+            src/bazaar_compute_node/core/models/reminder.py \
+            src/bazaar_compute_node/core/models/states.py \
+            src/bazaar_compute_node/core/reminder.py \
+            src/bazaar_compute_node/core/reminder_time.py \
+            tests/core/test_reminder.py
+
+      - name: Compile Python sources
+        run: uv run --frozen python -m compileall -q src tests
+
+      - name: Verify lock and diff
+        run: |
+          uv lock --check
+          git diff --check HEAD~2
