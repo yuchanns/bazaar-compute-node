@@ -751,7 +751,7 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
                 turn_id="local-turn-1",
                 provider_thread_id=thread_id,
                 provider_turn_id=provider_turn.turn_id,
-                approval_handler=TestChannel(),
+                approval_handler=_NoopApprovalHandler(),
             )
             events = []
             async with asyncio.timeout(120):

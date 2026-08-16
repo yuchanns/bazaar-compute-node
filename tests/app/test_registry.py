@@ -45,6 +45,11 @@ def test_provider_entry_points_keep_test_adapters_out_of_production() -> None:
         ),
         (
             "bazaar_compute_node.channels",
+            "telegram",
+            "bazaar_compute_node.contrib.telegram.plugin:builder",
+        ),
+        (
+            "bazaar_compute_node.channels",
             "wecom",
             "bazaar_compute_node.contrib.wecom.plugin:builder",
         ),

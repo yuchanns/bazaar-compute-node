@@ -23,6 +23,7 @@ codex = "bazaar_compute_node.contrib.codex.plugin:create_runtime"
 
 [project.entry-points."bazaar_compute_node.channels"]
 wecom = "bazaar_compute_node.contrib.wecom.plugin:builder"
+telegram = "bazaar_compute_node.contrib.telegram.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.storages"]
 sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
