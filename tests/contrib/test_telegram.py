@@ -10,6 +10,7 @@ import pytest
 
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.api import (
+    TelegramApiError,
     TelegramBotApi,
     TelegramTransportError,
 )
@@ -25,14 +26,26 @@ from bazaar_compute_node.contrib.telegram.identity import (
     parse_provider_thread_id,
 )
 from bazaar_compute_node.contrib.telegram.markdown import RichMessageRenderer
+from bazaar_compute_node.contrib.telegram.outbound import (
+    TelegramOutboundChannel,
+    split_rich_markdown,
+)
 from bazaar_compute_node.contrib.telegram.plugin import TelegramBuilder
-from bazaar_compute_node.core.channel import ChannelApprovalRequest, ChannelContext
+from bazaar_compute_node.core.channel import (
+    ChannelApprovalRequest,
+    ChannelContext,
+    ChannelSendRequest,
+)
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
+    FreshCheckState,
     InboundMessage,
+    OutboundDeliveryState,
+    OutboundMessage,
 )
+from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
 
 async def _referenced_paths() -> set[str]:
@@ -185,6 +198,245 @@ class _FakeTelegramApi:
 
 def _telegram_api(fake: _FakeTelegramApi) -> TelegramBotApi:
     return cast(TelegramBotApi, fake)
+
+
+class _FakeOutboundTelegramApi:
+    def __init__(self, outcomes: list[dict[str, object] | BaseException]) -> None:
+        self.outcomes = outcomes
+        self.payloads: list[dict[str, object]] = []
+
+    async def send_rich_message(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout: float,
+    ) -> dict[str, object]:
+        del timeout
+        self.payloads.append(payload)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _outbound_channel(
+    tmp_path: Path,
+    fake: _FakeOutboundTelegramApi,
+) -> TelegramOutboundChannel:
+    channel = TelegramOutboundChannel(_context(tmp_path), token="telegram-test-token")
+    channel._bot_id = 123
+    channel._bot_username = "runtime_bot"
+    channel._api = cast(TelegramBotApi, fake)
+    return channel
+
+
+def _outbound_request(
+    body: str,
+    *,
+    target_kind: ChannelTargetKind = ChannelTargetKind.GROUP,
+    provider_thread_id: str = "telegram:123:456:0",
+    provider_reply_to_message_id: str | None = None,
+) -> ChannelSendRequest:
+    return ChannelSendRequest(
+        outbound=OutboundMessage(
+            outbound_message_id="outbound-1",
+            command_id="command-1",
+            session_id="session-1",
+            channel_session_id="channel-session-1",
+            target="telegram",
+            body=body,
+            state=OutboundDeliveryState.PENDING,
+            fresh_check_state=FreshCheckState.PASSED,
+            created_at_ms=1,
+        ),
+        target_kind=target_kind,
+        provider_thread_id=provider_thread_id,
+        provider_reply_to_message_id=provider_reply_to_message_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_outbound_sends_markdown_with_route_and_reply(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeOutboundTelegramApi([{"message_id": 501}])
+    channel = _outbound_channel(tmp_path, fake)
+
+    result = await channel.send(
+        _outbound_request(
+            "**hello**\n\n世界 🌏",
+            target_kind=ChannelTargetKind.DM,
+            provider_reply_to_message_id="17",
+        ),
+        timeout=1,
+    )
+
+    assert result.status is ProviderCallStatus.CONFIRMED
+    assert result.value is not None
+    assert result.value.provider_message_id == "501"
+    assert result.receipt == {
+        "total_parts": 1,
+        "confirmed_parts": 1,
+        "parts": (
+            {
+                "ordinal": 1,
+                "kind": "rich_message",
+                "format": "markdown",
+                "fallback_from": None,
+                "state": "confirmed",
+                "provider_message_id": "501",
+            },
+        ),
+        "provider_message_id": "501",
+        "provider_receipt_ref": "501",
+    }
+    assert fake.payloads == [
+        {
+            "chat_id": 456,
+            "rich_message": {"markdown": "**hello**\n\n世界 🌏"},
+            "reply_parameters": {"message_id": 17},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("provider_thread_id", "expected_topic"),
+    (
+        ("telegram:123:-100456:0", None),
+        ("telegram:123:-100456:42", 42),
+    ),
+)
+@pytest.mark.asyncio
+async def test_telegram_outbound_preserves_group_topic_route(
+    tmp_path: Path,
+    provider_thread_id: str,
+    expected_topic: int | None,
+) -> None:
+    fake = _FakeOutboundTelegramApi([{"message_id": 502}])
+    channel = _outbound_channel(tmp_path, fake)
+
+    result = await channel.send(
+        _outbound_request("topic response", provider_thread_id=provider_thread_id),
+        timeout=1,
+    )
+
+    assert result.status is ProviderCallStatus.CONFIRMED
+    assert fake.payloads[0]["chat_id"] == -100456
+    if expected_topic is None:
+        assert "message_thread_id" not in fake.payloads[0]
+    else:
+        assert fake.payloads[0]["message_thread_id"] == expected_topic
+
+
+def test_telegram_rich_markdown_splits_utf8_blocks_and_fences() -> None:
+    markdown = "intro\n\n" + "```python\n" + ("中" * 20_000) + "\n```"
+
+    parts = split_rich_markdown(markdown)
+
+    assert len(split_rich_markdown("x" * 32_768)) == 1
+    assert len(split_rich_markdown("x" * 32_769)) == 2
+    assert len(parts) >= 3
+    assert [part.ordinal for part in parts] == list(range(1, len(parts) + 1))
+    assert all(len(part.markdown.encode("utf-8")) <= 32_768 for part in parts)
+    assert parts[0].markdown == "intro"
+    for part in parts[1:]:
+        assert part.markdown.startswith("```python\n")
+        assert part.markdown.endswith("\n```")
+
+
+@pytest.mark.asyncio
+async def test_telegram_outbound_falls_back_to_plain_rich_blocks(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeOutboundTelegramApi(
+        [
+            TelegramApiError(
+                "sendRichMessage",
+                http_status=400,
+                error_code=400,
+                description="can't parse entities",
+            ),
+            {"message_id": 503},
+        ]
+    )
+    channel = _outbound_channel(tmp_path, fake)
+
+    result = await channel.send(_outbound_request("bad *markdown*"), timeout=1)
+
+    assert result.status is ProviderCallStatus.CONFIRMED
+    assert len(fake.payloads) == 2
+    assert fake.payloads[1]["rich_message"] == {
+        "blocks": [{"type": "paragraph", "text": "bad *markdown*"}],
+        "skip_entity_detection": True,
+    }
+    assert result.receipt["parts"] == (
+        {
+            "ordinal": 1,
+            "kind": "rich_message",
+            "format": "blocks",
+            "fallback_from": "markdown",
+            "state": "confirmed",
+            "provider_message_id": "503",
+        },
+    )
+    assert channel.health["outbound_markdown_fallbacks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_telegram_outbound_reports_partial_delivery_in_order(
+    tmp_path: Path,
+) -> None:
+    body = "a" * 20_000 + "\n\n" + "b" * 20_000
+    fake = _FakeOutboundTelegramApi(
+        [
+            {"message_id": 504},
+            TelegramApiError(
+                "sendRichMessage",
+                http_status=403,
+                error_code=403,
+                description="forbidden",
+            ),
+        ]
+    )
+    channel = _outbound_channel(tmp_path, fake)
+
+    result = await channel.send(
+        _outbound_request(body, provider_reply_to_message_id="18"),
+        timeout=1,
+    )
+
+    assert result.status is ProviderCallStatus.PARTIAL
+    assert result.value is not None
+    assert result.value.provider_message_id == "504"
+    assert result.receipt["total_parts"] == 2
+    assert result.receipt["confirmed_parts"] == 1
+    parts = cast(tuple[dict[str, object], ...], result.receipt["parts"])
+    assert [part["state"] for part in parts] == ["confirmed", "failed"]
+    assert fake.payloads[0]["reply_parameters"] == {"message_id": 18}
+    assert "reply_parameters" not in fake.payloads[1]
+
+
+@pytest.mark.asyncio
+async def test_telegram_outbound_reports_unknown_provider_outcome(
+    tmp_path: Path,
+) -> None:
+    body = "a" * 20_000 + "\n\n" + "b" * 20_000
+    fake = _FakeOutboundTelegramApi(
+        [
+            {"message_id": 505},
+            TelegramTransportError("sendRichMessage", "TimeoutError"),
+        ]
+    )
+    channel = _outbound_channel(tmp_path, fake)
+
+    result = await channel.send(_outbound_request(body), timeout=1)
+
+    assert result.status is ProviderCallStatus.UNKNOWN
+    assert result.value is None
+    assert result.error_kind == "send_unknown"
+    assert result.receipt["confirmed_parts"] == 1
+    parts = cast(tuple[dict[str, object], ...], result.receipt["parts"])
+    assert parts[-1]["state"] == "unknown"
 
 
 def _approval_request(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from ...core.channel import ChannelContext, IChannel, IChannelBuilder
-from .approval import TelegramApprovalChannel
+from .outbound import TelegramOutboundChannel
 
 
 class TelegramBuilder(IChannelBuilder):
@@ -11,7 +11,7 @@ class TelegramBuilder(IChannelBuilder):
         token = os.environ.get("BCN_TELEGRAM_BOT_TOKEN")
         if token is None or not token.strip():
             raise ValueError("BCN_TELEGRAM_BOT_TOKEN is required")
-        return TelegramApprovalChannel(context, token=token)
+        return TelegramOutboundChannel(context, token=token)
 
 
 builder = TelegramBuilder()
