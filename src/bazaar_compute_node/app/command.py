@@ -376,6 +376,8 @@ class CommandDispatcher:
 
 
 def format_message_time(timestamp_ms: int) -> str:
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).strftime(
-        "%Y-%m-%d %H:%M:%S"
+    return (
+        datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S")
     )
