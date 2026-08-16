@@ -119,3 +119,11 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
         """Deliver one outbound message without hiding unknown provider status."""
         ...
+
+
+class IChannelBuilder(Protocol):
+    """Construct one Channel adapter from its provider-owned context."""
+
+    def build(self, context: ChannelContext) -> IChannel:
+        """Build one configured channel adapter."""
+        ...

@@ -46,7 +46,7 @@ def test_provider_entry_points_keep_test_adapters_out_of_production() -> None:
         (
             "bazaar_compute_node.channels",
             "wecom",
-            "bazaar_compute_node.contrib.wecom.plugin:create_channel",
+            "bazaar_compute_node.contrib.wecom.plugin:builder",
         ),
         (
             "bazaar_compute_node.runtimes",
@@ -68,7 +68,7 @@ def test_provider_entry_points_keep_test_adapters_out_of_production() -> None:
         (
             "bazaar_compute_node.channels",
             "test",
-            "bcn_test_support.plugin:create_channel",
+            "bcn_test_support.plugin:builder",
         ),
         (
             "bazaar_compute_node.controls",

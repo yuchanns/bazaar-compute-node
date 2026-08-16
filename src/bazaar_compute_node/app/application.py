@@ -92,7 +92,7 @@ class NodeApplication:
         self._attachment_materializer = AttachmentMaterializer(
             self._workspace_path, self._referenced_attachment_paths
         )
-        self.channel: IChannel = factories.channel(
+        self.channel: IChannel = factories.channel.build(
             ChannelContext(
                 attachments=self._attachment_materializer,
                 options=dict(channel_options or {}),

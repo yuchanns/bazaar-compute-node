@@ -5,9 +5,11 @@ from collections import deque
 from collections.abc import AsyncIterator, Mapping
 
 from bazaar_compute_node.core.channel import (
+    ChannelContext,
     ChannelDeliveryReceipt,
     ChannelSendRequest,
     IChannel,
+    IChannelBuilder,
 )
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
@@ -140,3 +142,13 @@ class TestChannel(IChannel):
             )
         self.approval_results.append(result)
         return result
+
+
+class StaticChannelBuilder(IChannelBuilder):
+    def __init__(self, channel: IChannel | None = None) -> None:
+        self._channel = channel
+
+    def build(self, context: ChannelContext) -> IChannel:
+        if self._channel is not None:
+            return self._channel
+        return TestChannel()

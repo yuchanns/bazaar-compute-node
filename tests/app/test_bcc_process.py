@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from bcn_test_support import RecordingAudit, TestChannel, TestRuntime
+from bcn_test_support import (
+    RecordingAudit,
+    StaticChannelBuilder,
+    TestChannel,
+    TestRuntime,
+)
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.registry import AdapterFactories
@@ -36,7 +41,7 @@ def make_factories() -> AdapterFactories:
         return SqliteDatabase()
 
     return AdapterFactories(
-        channel=lambda _context: TestChannel(),
+        channel=StaticChannelBuilder(),
         runtime=create_runtime,
         storage=create_storage,
         audit=RecordingAudit,

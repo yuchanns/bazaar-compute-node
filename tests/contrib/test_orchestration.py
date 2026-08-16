@@ -11,6 +11,7 @@ import pytest
 from bcn_test_support import (
     MemoryStorage,
     RecordingAudit,
+    StaticChannelBuilder,
     TestChannel,
     TestRuntime,
     TestTurnPlan,
@@ -303,9 +304,7 @@ async def run_natural_conversation_contract(
         audit = _AcceptanceAudit()
         node = NodeApplication(
             factories=AdapterFactories(
-                channel=lambda _context, channel_instance=channel_instance: cast(
-                    IChannel, channel_instance
-                ),
+                channel=StaticChannelBuilder(cast(IChannel, channel_instance)),
                 runtime=runtime,
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
