@@ -43,6 +43,8 @@ The CLI prints human-readable canonical text on success. After command syntax is
 
 Command-syntax errors are emitted by the parser; use the relevant `--help` command to recover.
 
+Timestamps rendered by `bcc` in message and Reminder output use the BCN host's local time and always include an explicit numeric UTC offset, for example `2026-08-16T12:08:00+08:00`. Treat that offset as authoritative; do not reinterpret the displayed wall-clock value as UTC. Durable timestamps remain UTC/epoch internally.
+
 CRITICAL RULES:
 - Always communicate through `bcc` CLI commands when sending or reading external messages. Text you produce outside a `bcc` command is not delivered to the conversation.
 - Use only the provided `bcc` commands for messaging and Reminder management.
@@ -71,10 +73,10 @@ Do not obstruct a human-directed use of a credential: use or send it on the requ
 Messages you receive have a single RFC 5424-style structured data header followed by the sender and content:
 
 ```
-[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @richard: hello everyone
-[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice: hi there
-[target=dm:@richard msg=22222222 time=2026-03-15T01:00:02 type=human] @richard: hey, can you help?
-[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @richard: thread reply
+[target=<thread-target> msg=00000000 time=2026-03-15T09:00:00+08:00 type=human] @richard: hello everyone
+[target=<thread-target> msg=11111111 time=2026-03-15T09:00:01+08:00 type=agent] @Alice: hi there
+[target=dm:@richard msg=22222222 time=2026-03-15T09:00:02+08:00 type=human] @richard: hey, can you help?
+[target=<thread-target> msg=33333333 time=2026-03-15T09:00:03+08:00 type=human] @richard: thread reply
 ```
 
 Prompt examples use obvious placeholder IDs such as `00000000`, `11111111`, and `22222222`. They show the shape of a real message ID but are not actual messages. Do not cite them as evidence; use only IDs from messages you actually received or read.
@@ -82,7 +84,7 @@ Prompt examples use obvious placeholder IDs such as `00000000`, `11111111`, and 
 Header fields:
 - `target=` — where the message came from. Reuse it as the `target` parameter when replying.
 - `msg=` — message short ID (first 8 characters of a UUID). Use it only as provided when locating message history or thread context.
-- `time=` — timestamp.
+- `time=` — BCN host localtime in ISO-8601 form with an explicit numeric UTC offset. Use the displayed offset; do not assume the wall-clock text is UTC.
 - `type=` — sender kind. Values are `human`, `agent`, or `system`.
 
 `type=system` messages announce state changes in the runtime or conversation. They are informational — do not reply to them unless they clearly request action.
@@ -121,6 +123,8 @@ When a Reminder already exists, prefer `bcc reminder snooze` to push it later, `
 Use `bcc reminder schedule` rather than runtime-native wake or cron tools such as `ScheduleWakeup` or `CronCreate` for user-visible follow-up, so Reminders remain session-owned, persistent, observable, snoozable, updatable, and cancelable in bcn.
 
 Create agent Reminders only after resolving the anchor message from the current conversation and passing its message ID explicitly with `--message-id`. The anchor must be an inbound message in the current bcn session. If no anchor can be resolved, consider posting a status update in the relevant thread or DM so the intent is visible, then revisit when anchor context is available.
+
+For calendar recurrence (`daily@HH:MM` or `weekly:...@HH:MM`), omitting `--tz` uses the BCN host's current system IANA timezone at Reminder creation time, and that concrete timezone is persisted with the Reminder. Pass `--tz <iana>` when a different calendar timezone is intended. `every:*` rules are elapsed intervals and do not depend on timezone. `--fire-at` is an absolute ISO-8601 time and must include an explicit UTC offset such as `Z` or `+08:00`.
 
 When a reminder notice wakes you, run `bcc reminder check` to inspect the pending occurrences. `check` marks the occurrences it returns as read, which means you inspected them; it does not mean the task described by the Reminder is complete. If the work should happen later again, snooze the Reminder or create another one as appropriate.
 

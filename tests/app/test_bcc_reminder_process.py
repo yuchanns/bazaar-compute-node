@@ -137,6 +137,7 @@ async def test_bcc_reminder_commands_use_real_wrapper_ipc_and_sqlite(
             )
         assert len(reminders) == 1
         reminder = reminders[0]
+        assert reminder.timezone == "UTC"
 
         list_code, list_stdout, list_stderr = await run_bcc(
             node,
@@ -219,11 +220,22 @@ async def test_bcc_reminder_commands_use_real_wrapper_ipc_and_sqlite(
                 "Due reminder",
                 "--delay-seconds",
                 "1",
+                "--tz",
+                "UTC",
                 "--message-id",
                 ANCHOR_ID,
             ),
         )
         assert due_code == 0, due_stderr
+        async with node.storage.transaction() as transaction:
+            all_reminders = await transaction.list_reminders(
+                "bcn-a",
+                frozenset(ReminderState),
+            )
+        due_reminder = next(
+            item for item in all_reminders if item.title == "Due reminder"
+        )
+        assert due_reminder.timezone == "UTC"
 
         for _ in range(400):
             async with node.storage.transaction() as transaction:

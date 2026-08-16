@@ -39,6 +39,7 @@ _PLATFORM_ENVIRONMENT = {
     "TMPDIR",
     "TEMP",
     "TMP",
+    "TZ",
     "SystemRoot",
     "ComSpec",
     "PATHEXT",

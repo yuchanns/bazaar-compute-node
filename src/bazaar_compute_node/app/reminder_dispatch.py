@@ -8,12 +8,14 @@ from ..core.lifecycle import TimeoutBudget
 from ..core.models import Reminder, ReminderOccurrence, ReminderState
 from ..core.orchestration.reminder_command import ReminderCommandFailure
 from ..core.reminder import (
+    RecurrenceKind,
     ReminderCancelRequest,
     ReminderCheckRequest,
     ReminderListRequest,
     ReminderScheduleRequest,
     ReminderSnoozeRequest,
     ReminderUpdateRequest,
+    parse_repeat_rule,
 )
 from .command import CommandDispatcher as _MessageCommandDispatcher
 from .command import (
@@ -21,6 +23,7 @@ from .command import (
     ControlHandler,
     SessionBindingValidator,
 )
+from .localtime import system_timezone_name
 
 
 def serialize_reminder(reminder: Reminder) -> dict[str, object]:
@@ -173,13 +176,20 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     "REMINDER_TIME_REQUIRED",
                     "--fire-at must be a non-empty ISO-8601 timestamp.",
                 )
-            if repeat_rule is not None and (
-                not isinstance(repeat_rule, str) or not repeat_rule
-            ):
-                raise CommandDispatchError(
-                    "REMINDER_REPEAT_INVALID",
-                    "--repeat must be a non-empty recurrence rule.",
-                )
+            recurrence = None
+            if repeat_rule is not None:
+                if not isinstance(repeat_rule, str) or not repeat_rule:
+                    raise CommandDispatchError(
+                        "REMINDER_REPEAT_INVALID",
+                        "--repeat must be a non-empty recurrence rule.",
+                    )
+                try:
+                    recurrence = parse_repeat_rule(repeat_rule)
+                except ValueError as error:
+                    raise CommandDispatchError(
+                        "REMINDER_REPEAT_INVALID",
+                        str(error),
+                    ) from error
             if timezone is not None and (not isinstance(timezone, str) or not timezone):
                 raise CommandDispatchError(
                     "REMINDER_TIMEZONE_INVALID",
@@ -190,11 +200,24 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     "REMINDER_TIME_CONFLICT",
                     "--delay-seconds and --fire-at are mutually exclusive.",
                 )
-            if delay_seconds is None and fire_at is None and repeat_rule is None:
+            if delay_seconds is None and fire_at is None and recurrence is None:
                 raise CommandDispatchError(
                     "REMINDER_TIME_REQUIRED",
                     "A Reminder requires --delay-seconds, --fire-at, or --repeat.",
                 )
+            if (
+                timezone is None
+                and recurrence is not None
+                and recurrence.kind in {RecurrenceKind.DAILY, RecurrenceKind.WEEKLY}
+            ):
+                try:
+                    timezone = system_timezone_name()
+                except ValueError as error:
+                    raise CommandDispatchError(
+                        "REMINDER_TIMEZONE_INVALID",
+                        str(error),
+                        next_action="Pass an explicit IANA timezone with `--tz` and retry.",
+                    ) from error
             try:
                 typed = ReminderScheduleRequest.from_options(
                     title=title,

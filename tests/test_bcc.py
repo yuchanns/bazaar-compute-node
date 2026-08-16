@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 import pytest
 
+from bazaar_compute_node.app import localtime
 from bazaar_compute_node.bcc import (
     BccCommandError,
     _print_error,
@@ -10,6 +13,11 @@ from bazaar_compute_node.bcc import (
     serialize_read,
     serialize_send,
 )
+
+
+@pytest.fixture(autouse=True)
+def _use_utc_localtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(localtime, "get_localzone", lambda: ZoneInfo("UTC"))
 
 
 def message_payload(
@@ -49,7 +57,7 @@ def test_check_serializer_matches_canonical_text() -> None:
 
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
-        "time=2023-11-14 22:13:20 "
+        "time=2023-11-14T22:13:20+00:00 "
         "type=human mentioned=false] @sender: message body"
     )
 
@@ -64,7 +72,7 @@ def test_check_serializer_preserves_zero_provider_timestamp() -> None:
         "delivered_through_seq": 1,
     }
 
-    assert "time=1970-01-01 00:00:00" in serialize_check(result)
+    assert "time=1970-01-01T00:00:00+00:00" in serialize_check(result)
 
 
 def test_check_serializer_renders_referenced_message_before_current_message() -> None:
@@ -186,7 +194,7 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
     assert serialize_read(result) == (
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
-        "time=2023-11-14 22:13:20 type=human replyTarget=#work:parent123 "
+        "time=2023-11-14T22:13:20+00:00 type=human replyTarget=#work:parent123 "
         "mentioned=false] @sender: message body"
     )
 

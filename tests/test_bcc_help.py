@@ -8,10 +8,20 @@ from bazaar_compute_node.bcc import build_parser
 @pytest.mark.parametrize(
     ("argv", "expected"),
     (
-        (("--help",), ("resources:", "message", "thread", "reminder")),
+        (
+            ("--help",),
+            ("resources:", "message", "thread", "reminder", "host localtime"),
+        ),
         (
             ("message", "--help"),
-            ("Message operations", "message commands:", "check", "read", "send"),
+            (
+                "Message operations",
+                "message commands:",
+                "check",
+                "read",
+                "send",
+                "explicit numeric UTC offset",
+            ),
         ),
         (
             ("message", "check", "--help"),
@@ -44,6 +54,7 @@ from bazaar_compute_node.bcc import build_parser
                 "snooze",
                 "update",
                 "cancel",
+                "host localtime",
             ),
         ),
         (
@@ -56,6 +67,10 @@ from bazaar_compute_node.bcc import build_parser
                 "--tz <iana>",
                 "--message-id <id>",
                 "weekly:mon,fri@09:00",
+                "system IANA timezone",
+                "persists that timezone",
+                "explicit UTC offset",
+                "every:* rules are elapsed intervals",
             ),
         ),
         (

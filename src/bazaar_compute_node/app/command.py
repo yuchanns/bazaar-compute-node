@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
 from time import time_ns
 
 from ..core.command import (
@@ -11,6 +10,7 @@ from ..core.command import (
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import InboundMessage, OutboundMessage
+from .localtime import format_local_timestamp
 
 
 def serialize_inbound(message: InboundMessage) -> dict[str, object]:
@@ -376,6 +376,4 @@ class CommandDispatcher:
 
 
 def format_message_time(timestamp_ms: int) -> str:
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    return format_local_timestamp(timestamp_ms)

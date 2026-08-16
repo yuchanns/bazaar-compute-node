@@ -64,6 +64,23 @@ def test_developer_instructions_define_bcn_reminder_semantics() -> None:
     assert "`CronCreate`" in rendered
 
 
+def test_developer_instructions_define_localtime_and_calendar_timezone_semantics() -> (
+    None
+):
+    rendered = _rendered_instructions()
+
+    assert "BCN host's local time" in rendered
+    assert "explicit numeric UTC offset" in rendered
+    assert "do not reinterpret the displayed wall-clock value as UTC" in rendered
+    assert "Durable timestamps remain UTC/epoch internally" in rendered
+    assert "time=2026-03-15T09:00:00+08:00" in rendered
+    assert "system IANA timezone at Reminder creation time" in rendered
+    assert "that concrete timezone is persisted with the Reminder" in rendered
+    assert "`every:*` rules are elapsed intervals" in rendered
+    assert "`--fire-at` is an absolute ISO-8601 time" in rendered
+    assert "must include an explicit UTC offset" in rendered
+
+
 def test_developer_instructions_match_runtime_notice_contracts() -> None:
     rendered = _rendered_instructions()
 

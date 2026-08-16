@@ -11,8 +11,9 @@ from typing import NoReturn
 from uuid import uuid7
 
 from .app.command import format_message_time
+from .app.localtime import format_local_timestamp
 from .app.transport import LocalCommandClient
-from .core.reminder import format_utc_timestamp, short_id
+from .core.reminder import short_id
 
 
 class BccCommandError(RuntimeError):
@@ -37,7 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Session-scoped collaboration commands for a Bazaar Compute Node. "
             "Use these commands from the current agent session to inspect messages, "
-            "send replies, manage thread attention, and schedule persistent reminders."
+            "send replies, manage thread attention, and schedule persistent reminders. "
+            "Displayed message and Reminder timestamps use the BCN host localtime "
+            "with an explicit numeric UTC offset."
         ),
         epilog=(
             "Run `bcc <resource> --help` or "
@@ -54,7 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     message_parser = subparsers.add_parser(
         "message",
         help="Message operations",
-        description="Message operations",
+        description=(
+            "Message operations. Displayed timestamps use the BCN host localtime "
+            "as ISO-8601 text with an explicit numeric UTC offset."
+        ),
     )
     message_subparsers = message_parser.add_subparsers(
         dest="command",
@@ -149,7 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
     reminder_parser = subparsers.add_parser(
         "reminder",
         help="Reminder operations",
-        description="Reminder operations",
+        description=(
+            "Reminder operations. Displayed Reminder timestamps use the BCN host "
+            "localtime with an explicit numeric UTC offset."
+        ),
     )
     reminder_subparsers = reminder_parser.add_subparsers(
         dest="command",
@@ -169,8 +178,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Recurrence rules: every:15m | every:2h | every:1d | daily@09:00 | "
-            "weekly:mon,fri@09:00. Use --tz with calendar recurrences when a specific "
-            "IANA timezone is required."
+            "weekly:mon,fri@09:00. For daily/weekly calendar recurrence, omitting "
+            "--tz uses the BCN host system IANA timezone at creation time and "
+            "persists that timezone on the Reminder. Explicit --tz overrides it. "
+            "every:* rules are elapsed intervals and do not depend on timezone."
         ),
     )
     schedule_parser.add_argument(
@@ -187,7 +198,10 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser.add_argument(
         "--fire-at",
         metavar="<iso>",
-        help="Absolute ISO-8601 timestamp for the first fire.",
+        help=(
+            "Absolute ISO-8601 timestamp for the first fire; an explicit UTC offset "
+            "is required, for example 2026-08-16T09:00:00+08:00 or ...Z."
+        ),
     )
     schedule_parser.add_argument(
         "--repeat",
@@ -197,7 +211,10 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser.add_argument(
         "--tz",
         metavar="<iana>",
-        help="IANA timezone for calendar recurrence, for example Asia/Shanghai.",
+        help=(
+            "IANA timezone for daily/weekly calendar recurrence, for example "
+            "Asia/Shanghai. If omitted, the BCN host system timezone is used and persisted."
+        ),
     )
     schedule_parser.add_argument(
         "--message-id",
@@ -733,7 +750,7 @@ def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
         _invalid_response("scheduled Reminder response has no next fire time")
     return (
         f"Reminder scheduled: #{reminder_id} ({_reminder_label(reminder)}) "
-        f"{_quoted_title(reminder)}\nNext: {format_utc_timestamp(next_fire)}"
+        f"{_quoted_title(reminder)}\nNext: {format_local_timestamp(next_fire)}"
     )
 
 
@@ -758,10 +775,10 @@ def serialize_reminder_check(result: Mapping[str, object]) -> str:
         occurrence_no = _require_non_negative_int(occurrence, "occurrence_no")
         if occurrence_no <= 0:
             _invalid_response("Reminder occurrence number must be positive")
-        scheduled = format_utc_timestamp(
+        scheduled = format_local_timestamp(
             _require_non_negative_int(occurrence, "scheduled_for_ms")
         )
-        fired = format_utc_timestamp(
+        fired = format_local_timestamp(
             _require_non_negative_int(occurrence, "fired_at_ms")
         )
         overdue = occurrence.get("overdue")
@@ -769,7 +786,7 @@ def serialize_reminder_check(result: Mapping[str, object]) -> str:
             _invalid_response("Reminder occurrence overdue must be boolean")
         next_fire_at_ms = _optional_non_negative_int(occurrence, "next_fire_at_ms")
         next_text = (
-            format_utc_timestamp(next_fire_at_ms)
+            format_local_timestamp(next_fire_at_ms)
             if next_fire_at_ms is not None
             else "none"
         )
@@ -811,7 +828,7 @@ def serialize_reminder_list(result: Mapping[str, object]) -> str:
                 _invalid_response("scheduled Reminder has no next fire time")
             lines.append(
                 f"#{reminder_id} [scheduled] ({label}) "
-                f"next={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
+                f"next={format_local_timestamp(timestamp)} {title} anchor={anchor}"
             )
         elif state == "fired":
             timestamp = _optional_non_negative_int(reminder, "last_fired_at_ms")
@@ -819,7 +836,7 @@ def serialize_reminder_list(result: Mapping[str, object]) -> str:
                 _invalid_response("fired Reminder has no fired time")
             lines.append(
                 f"#{reminder_id} [fired] (one-time) "
-                f"fired_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
+                f"fired_at={format_local_timestamp(timestamp)} {title} anchor={anchor}"
             )
         elif state == "canceled":
             timestamp = _optional_non_negative_int(reminder, "canceled_at_ms")
@@ -827,7 +844,7 @@ def serialize_reminder_list(result: Mapping[str, object]) -> str:
                 _invalid_response("canceled Reminder has no canceled time")
             lines.append(
                 f"#{reminder_id} [canceled] ({label}) "
-                f"canceled_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
+                f"canceled_at={format_local_timestamp(timestamp)} {title} anchor={anchor}"
             )
         else:
             _invalid_response("command response contains an invalid Reminder state")
@@ -848,7 +865,7 @@ def _serialize_reminder_mutation(
     next_fire = _optional_non_negative_int(reminder, "next_fire_at_ms")
     if next_fire is None:
         _invalid_response(f"Reminder {verb} response has no next fire time")
-    return f"{line}\nNext: {format_utc_timestamp(next_fire)}"
+    return f"{line}\nNext: {format_local_timestamp(next_fire)}"
 
 
 def serialize_reminder_snooze(result: Mapping[str, object]) -> str:

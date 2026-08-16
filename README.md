@@ -10,6 +10,7 @@ Harness 工具。
 
 - **自由组合**：根据使用场景分别选择 Channel 与 Runtime，并可独立替换和扩展。
 - **持续会话**：每个用户和对话拥有独立上下文，节点重启后仍可继续之前的任务。
+- **持久 Reminder**：Agent 可以创建一次性或周期性定时任务；节点重启后仍会恢复未读到期任务并唤醒原会话。
 - **真实工作区**：Runtime 可以在独立工作区中分析、创建和修改文件，而不局限于文本回答。
 - **双向附件**：Channel 收到的媒体会进入会话工作区，Runtime 也可以通过 Channel 交付工作区中的文件。
 - **可靠交付**：自动处理长结果的分批发送并记录交付状态，避免任务结果静默丢失。
@@ -18,10 +19,45 @@ Harness 工具。
 
 ## 当前支持
 
-当前版本提供首组可用组合：
+当前版本提供首组可用组合与节点级 Reminder：
 
 - **WeCom Channel**：通过企业微信与 Agent Runtime 持续沟通；
-- **Codex Runtime**：使用 Codex 作为 Agent Harness 工具完成任务。
+- **Codex Runtime**：使用 Codex 作为 Agent Harness 工具完成任务；
+- **Reminder / 定时任务**：支持一次性与周期性提醒、snooze/update/cancel、daemon restart recovery，以及 session-owned runtime wake。
+
+Reminder 由创建它的 BCN session 持有，并锚定到该 session 中的一条 inbound message。Reminder
+到期时只唤醒 owner runtime，不会自动向企业微信或其他外部 Channel 发送消息；Agent 如需通知用户，
+仍通过正常的 `bcc message send` 完成。
+
+Agent 通过 `bcc` 管理 Reminder，例如：
+
+```bash
+# 30 分钟后唤醒当前 session。
+bcc reminder schedule \
+  --title "Check deployment status" \
+  --delay-seconds 1800 \
+  --message-id <message-id>
+
+# 每天当地时间 09:00；未传 --tz 时使用运行 BCN 的主机系统时区。
+bcc reminder schedule \
+  --title "Daily follow-up" \
+  --repeat daily@09:00 \
+  --message-id <message-id>
+
+# 显式固定日历时区。
+bcc reminder schedule \
+  --title "New York morning follow-up" \
+  --repeat daily@09:00 \
+  --tz America/New_York \
+  --message-id <message-id>
+```
+
+所有 Reminder deadline、message timestamp 和 occurrence timestamp 在持久层仍使用 UTC/epoch
+milliseconds。`bcc` 面向 Agent 展示时间时会转换为运行 BCN 主机的 localtime，并携带明确的数字
+UTC offset，例如 `2026-08-16T12:08:00+08:00`，避免把 UTC wall-clock 误认为当地时间。
+`daily@...` / `weekly:...@...` 在省略 `--tz` 时会读取主机系统 IANA timezone，并把解析后的具体
+时区写入 Reminder；之后主机时区发生变化也不会静默改变已有周期 Reminder 的语义。显式
+`--tz` 始终优先。`--fire-at` 是绝对时间，必须提供带 offset 的 ISO-8601 timestamp。
 
 ## Roadmap
 
@@ -42,10 +78,6 @@ bcn 将沿着可组合的 Channel、Runtime 与节点通用能力继续扩展。
 
 - **Claude Code**：支持选择 Claude Code 作为 Agent Harness；
 - **pi**：支持选择 pi 作为 Agent Harness。
-
-### 节点能力
-
-- **定时任务**：创建一次性或周期性任务，由节点按计划自动执行并返回结果。
 
 ## 安装
 
