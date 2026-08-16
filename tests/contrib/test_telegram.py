@@ -13,6 +13,7 @@ from bazaar_compute_node.contrib.telegram.api import (
     TelegramBotApi,
     TelegramTransportError,
 )
+from bazaar_compute_node.contrib.telegram.approval import TelegramApprovalChannel
 from bazaar_compute_node.contrib.telegram.attachments import (
     TelegramAttachmentSource,
     attachment_sources,
@@ -25,8 +26,13 @@ from bazaar_compute_node.contrib.telegram.identity import (
 )
 from bazaar_compute_node.contrib.telegram.markdown import RichMessageRenderer
 from bazaar_compute_node.contrib.telegram.plugin import TelegramBuilder
-from bazaar_compute_node.core.channel import ChannelContext
-from bazaar_compute_node.core.models import ChannelTargetKind, InboundMessage
+from bazaar_compute_node.core.channel import ChannelApprovalRequest, ChannelContext
+from bazaar_compute_node.core.models import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ChannelTargetKind,
+    InboundMessage,
+)
 
 
 async def _referenced_paths() -> set[str]:
@@ -141,6 +147,9 @@ class _FakeTelegramApi:
         self.download_error = download_error
         self.file_requests: list[str] = []
         self.download_requests: list[str] = []
+        self.approval_payloads: list[dict[str, object]] = []
+        self.callback_answers: list[tuple[str, str | None]] = []
+        self.prompt_sent = asyncio.Event()
 
     async def get_file(self, file_id: str) -> dict[str, object]:
         self.file_requests.append(file_id)
@@ -153,9 +162,400 @@ class _FakeTelegramApi:
         for chunk in self.downloads[file_path]:
             yield chunk
 
+    async def send_rich_message(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout: float,
+    ) -> dict[str, object]:
+        self.approval_payloads.append(payload)
+        self.prompt_sent.set()
+        return {"message_id": 500}
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str | None = None,
+        show_alert: bool = False,
+        timeout: float,
+    ) -> None:
+        self.callback_answers.append((callback_query_id, text))
+
 
 def _telegram_api(fake: _FakeTelegramApi) -> TelegramBotApi:
     return cast(TelegramBotApi, fake)
+
+
+def _approval_request(
+    *,
+    request_id: str = "approval-1",
+    action: str = "run_command",
+    description: str | None = "echo `hello`",
+    target_kind: ChannelTargetKind = ChannelTargetKind.GROUP,
+    provider_thread_id: str = "telegram:123:-100456:7",
+    provider_reply_to_message_id: str | None = "42",
+    provider_sender_id: str | None = "789",
+) -> ChannelApprovalRequest:
+    return ChannelApprovalRequest(
+        approval=ApprovalRequest(
+            request_id=request_id,
+            session_id="session-1",
+            runtime_session_id="runtime-1",
+            action=action,
+            created_at_ms=1,
+            description=description,
+        ),
+        target_kind=target_kind,
+        provider_thread_id=provider_thread_id,
+        provider_reply_to_message_id=provider_reply_to_message_id,
+        provider_sender_id=provider_sender_id,
+    )
+
+
+def _approval_callback(
+    *,
+    data: str,
+    sender_id: int = 789,
+    chat_id: int = -100456,
+    message_id: int = 500,
+    topic_id: int = 7,
+    chat_type: str = "supergroup",
+) -> dict[str, object]:
+    return {
+        "callback_query": {
+            "id": "callback-1",
+            "data": data,
+            "from": {"id": sender_id},
+            "message": {
+                "message_id": message_id,
+                "message_thread_id": topic_id,
+                "chat": {"id": chat_id, "type": chat_type},
+            },
+        }
+    }
+
+
+def _approval_channel(
+    tmp_path: Path,
+    fake: _FakeTelegramApi,
+) -> TelegramApprovalChannel:
+    channel = TelegramApprovalChannel(_context(tmp_path), token="telegram-test-token")
+    channel._bot_id = 123
+    channel._bot_username = "runtime_bot"
+    channel._api = _telegram_api(fake)
+    return channel
+
+
+def _approval_callback_data(fake: _FakeTelegramApi, action: str) -> str:
+    assert fake.approval_payloads
+    payload = fake.approval_payloads[-1]
+    markup = cast(dict[str, object], payload["reply_markup"])
+    keyboard = cast(list[object], markup["inline_keyboard"])
+    buttons = cast(list[object], keyboard[0])
+    for value in buttons:
+        button = cast(dict[str, object], value)
+        callback_data = cast(str, button["callback_data"])
+        if callback_data.startswith(f"bcn:{action}:"):
+            return callback_data
+    raise AssertionError(f"missing {action} callback")
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "provider_thread_id", "chat_id", "topic_id", "chat_type"),
+    (
+        (ChannelTargetKind.DM, "telegram:123:456:0", 456, 0, "private"),
+        (ChannelTargetKind.GROUP, "telegram:123:-100456:7", -100456, 7, "supergroup"),
+    ),
+)
+@pytest.mark.parametrize(
+    ("action", "expected_decision", "expected_answer"),
+    (
+        ("approve", ApprovalDecision.APPROVED, "Approved"),
+        ("reject", ApprovalDecision.REJECTED, "Rejected"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_telegram_approval_prompts_and_resolves_from_inline_keyboard(
+    tmp_path: Path,
+    target_kind: ChannelTargetKind,
+    provider_thread_id: str,
+    chat_id: int,
+    topic_id: int,
+    chat_type: str,
+    action: str,
+    expected_decision: ApprovalDecision,
+    expected_answer: str,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    request = _approval_request(
+        target_kind=target_kind,
+        provider_thread_id=provider_thread_id,
+    )
+    task = asyncio.create_task(channel.request_approval(request, timeout=1))
+
+    try:
+        await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+        assert not task.done()
+        assert fake.approval_payloads == [
+            {
+                "chat_id": chat_id,
+                "rich_message": {
+                    "markdown": (
+                        "## Approval required\n\n"
+                        "**Action:** run command\n\n"
+                        "```\n"
+                        "echo `hello`\n"
+                        "```"
+                    ),
+                    "skip_entity_detection": True,
+                },
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Approve",
+                                "callback_data": _approval_callback_data(
+                                    fake, "approve"
+                                ),
+                                "style": "success",
+                            },
+                            {
+                                "text": "Reject",
+                                "callback_data": _approval_callback_data(
+                                    fake, "reject"
+                                ),
+                                "style": "danger",
+                            },
+                        ]
+                    ]
+                },
+                **({"message_thread_id": topic_id} if topic_id else {}),
+                "reply_parameters": {"message_id": 42},
+            }
+        ]
+
+        callback_data = _approval_callback_data(fake, action)
+        await channel._dispatch_update(
+            _approval_callback(
+                data=callback_data,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                chat_type=chat_type,
+            ),
+            update_id=1,
+        )
+        result = await task
+
+        assert result.request_id == request.approval.request_id
+        assert result.decision is expected_decision
+        assert result.reason is None
+        assert fake.callback_answers[-1] == ("callback-1", expected_answer)
+        assert channel.health["approval_decisions"] == 1
+        assert channel.health["pending_approvals"] == 0
+        assert channel.health["callback_updates_received"] == 1
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    ("action", "description", "expected_markdown"),
+    (
+        (
+            "run_command",
+            "echo `hello`",
+            "## Approval required\n\n**Action:** run command\n\n```\necho `hello`\n```",
+        ),
+        (
+            "file_change",
+            "Update `README.md`",
+            "## Approval required\n\n**Action:** file change\n\n```\nUpdate `README.md`\n```",
+        ),
+        (
+            "request_permission",
+            "Allow network access",
+            "## Approval required\n\n**Action:** request permission\n\n```\nAllow network access\n```",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_telegram_approval_renders_provider_neutral_descriptions(
+    tmp_path: Path,
+    action: str,
+    description: str,
+    expected_markdown: str,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(
+        channel.request_approval(
+            _approval_request(action=action, description=description),
+            timeout=0.05,
+        )
+    )
+
+    await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+    assert fake.approval_payloads[0]["rich_message"] == {
+        "markdown": expected_markdown,
+        "skip_entity_detection": True,
+    }
+    result = await task
+    assert result.decision is ApprovalDecision.REJECTED
+    assert result.reason == "approval_timeout"
+
+
+@pytest.mark.asyncio
+async def test_telegram_approval_rejects_different_sender_then_accepts_expected_sender(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(channel.request_approval(_approval_request(), timeout=1))
+
+    try:
+        await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+        callback_data = _approval_callback_data(fake, "approve")
+        await channel._dispatch_update(
+            _approval_callback(data=callback_data, sender_id=999),
+            update_id=1,
+        )
+
+        assert not task.done()
+        assert fake.callback_answers[-1] == (
+            "callback-1",
+            "This approval belongs to another user",
+        )
+        assert channel.health["approval_callback_rejections"] == 1
+
+        await channel._dispatch_update(
+            _approval_callback(data=callback_data),
+            update_id=2,
+        )
+        result = await task
+        assert result.decision is ApprovalDecision.APPROVED
+        assert channel.health["approval_callback_rejections"] == 1
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    ("invalid_chat_id", "invalid_topic_id"),
+    ((-100999, 7), (-100456, 8)),
+)
+@pytest.mark.asyncio
+async def test_telegram_approval_rejects_callback_route_mismatch(
+    tmp_path: Path,
+    invalid_chat_id: int,
+    invalid_topic_id: int,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(channel.request_approval(_approval_request(), timeout=1))
+
+    try:
+        await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+        callback_data = _approval_callback_data(fake, "approve")
+        await channel._dispatch_update(
+            _approval_callback(
+                data=callback_data,
+                chat_id=invalid_chat_id,
+                topic_id=invalid_topic_id,
+            ),
+            update_id=1,
+        )
+
+        assert not task.done()
+        assert fake.callback_answers[-1] == (
+            "callback-1",
+            "Approval is no longer valid",
+        )
+        assert channel.health["approval_callback_rejections"] == 1
+
+        await channel._dispatch_update(
+            _approval_callback(data=callback_data),
+            update_id=2,
+        )
+        result = await task
+        assert result.decision is ApprovalDecision.APPROVED
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_approval_timeout_expires_callback_token(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(
+        channel.request_approval(_approval_request(), timeout=0.05)
+    )
+
+    await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+    callback_data = _approval_callback_data(fake, "approve")
+    result = await task
+
+    assert result.decision is ApprovalDecision.REJECTED
+    assert result.reason == "approval_timeout"
+    assert channel.health["approval_timeouts"] == 1
+    assert channel.health["pending_approvals"] == 0
+
+    await channel._dispatch_update(
+        _approval_callback(data=callback_data),
+        update_id=1,
+    )
+    assert fake.callback_answers[-1] == ("callback-1", "Approval expired")
+    assert channel.health["approval_callback_rejections"] == 1
+
+
+@pytest.mark.asyncio
+async def test_telegram_approval_duplicate_callback_is_reported_as_resolved(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(channel.request_approval(_approval_request(), timeout=1))
+
+    await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+    callback_data = _approval_callback_data(fake, "approve")
+    await channel._dispatch_update(
+        _approval_callback(data=callback_data),
+        update_id=1,
+    )
+    result = await task
+    assert result.decision is ApprovalDecision.APPROVED
+
+    await channel._dispatch_update(
+        _approval_callback(data=callback_data),
+        update_id=2,
+    )
+    assert fake.callback_answers[-1] == ("callback-1", "Already approved")
+    assert channel.health["approval_callback_rejections"] == 1
+
+
+@pytest.mark.asyncio
+async def test_telegram_approval_stop_resolves_pending_request_and_cleans_maps(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeTelegramApi(files={}, downloads={})
+    channel = _approval_channel(tmp_path, fake)
+    task = asyncio.create_task(channel.request_approval(_approval_request(), timeout=1))
+
+    await asyncio.wait_for(fake.prompt_sent.wait(), timeout=1)
+    await channel.stop(timeout=1)
+    result = await task
+
+    assert result.decision is ApprovalDecision.REJECTED
+    assert result.reason == "channel_stopped"
+    assert channel.health["pending_approvals"] == 0
+    assert channel.health["state"] == "stopped"
 
 
 def test_telegram_rich_renderer_preserves_blocks_and_mentions() -> None:
@@ -348,6 +748,7 @@ def test_telegram_builder_builds_channel(
 
     channel = TelegramBuilder().build(_context(tmp_path))
 
+    assert isinstance(channel, TelegramApprovalChannel)
     assert channel.name == "telegram"
     assert channel.health["state"] == "stopped"
 

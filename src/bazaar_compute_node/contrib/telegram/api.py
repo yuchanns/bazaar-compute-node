@@ -99,6 +99,49 @@ class TelegramBotApi:
             )
         return result
 
+    async def send_rich_message(
+        self,
+        payload: Mapping[str, object],
+        *,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        result = await self._request("sendRichMessage", payload, timeout=timeout)
+        if not isinstance(result, Mapping):
+            raise TelegramApiError(
+                "sendRichMessage",
+                http_status=200,
+                error_code=None,
+                description="provider result is not a message object",
+            )
+        return result
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str | None = None,
+        show_alert: bool = False,
+        timeout: float,
+    ) -> None:
+        if not isinstance(callback_query_id, str) or not callback_query_id:
+            raise ValueError("Telegram callback_query_id must be non-empty")
+        payload: dict[str, object] = {
+            "callback_query_id": callback_query_id,
+            "show_alert": show_alert,
+        }
+        if text is not None:
+            if not isinstance(text, str) or not text:
+                raise ValueError("Telegram callback answer text must be non-empty")
+            payload["text"] = text
+        result = await self._request("answerCallbackQuery", payload, timeout=timeout)
+        if result is not True:
+            raise TelegramApiError(
+                "answerCallbackQuery",
+                http_status=200,
+                error_code=None,
+                description="provider result is not true",
+            )
+
     async def download_file(self, file_path: str) -> AsyncIterator[bytes]:
         if not isinstance(file_path, str) or not file_path:
             raise ValueError("Telegram file_path must be non-empty")
