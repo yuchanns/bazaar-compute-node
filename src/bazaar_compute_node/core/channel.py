@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
 from .models import (
+    ApprovalRequest,
+    ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
@@ -58,6 +59,31 @@ class ChannelSendRequest:
             raise ValueError("provider_reply_to_message_id must be non-empty")
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelApprovalRequest:
+    """Runtime approval plus the Channel route that owns the active turn."""
+
+    approval: ApprovalRequest
+    target_kind: ChannelTargetKind
+    provider_thread_id: str
+    provider_reply_to_message_id: str | None = None
+    provider_sender_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.approval, ApprovalRequest):
+            raise TypeError("approval must be an ApprovalRequest")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.provider_thread_id, str) or not self.provider_thread_id:
+            raise ValueError("provider_thread_id must be non-empty")
+        for value, field_name in (
+            (self.provider_reply_to_message_id, "provider_reply_to_message_id"),
+            (self.provider_sender_id, "provider_sender_id"),
+        ):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{field_name} must be non-empty text when present")
+
+
 class IAttachmentMaterializer(Protocol):
     async def materialize(
         self,
@@ -89,8 +115,14 @@ class ChannelContext:
     workspace: Callable[[], Path]
 
 
-class IApproval(IApprovalHandler, Protocol):
+class IApproval(Protocol):
     """Channel-owned approval policy for one bcn session."""
+
+    async def request_approval(
+        self, request: ChannelApprovalRequest, *, timeout: float
+    ) -> ApprovalResult:
+        """Present one approval request in the current Channel route."""
+        ...
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
-from ..channel import IChannel
+from ..channel import ChannelApprovalRequest, IChannel
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
@@ -184,7 +184,16 @@ class SessionTurnCoordinator:
                 metadata={"action": request.action},
             )
             try:
-                result = await self._channel.request_approval(request, timeout=timeout)
+                channel_request = ChannelApprovalRequest(
+                    approval=request,
+                    target_kind=context.channel_session.target_kind,
+                    provider_thread_id=context.channel_session.provider_thread_id,
+                    provider_reply_to_message_id=message.provider_message_id,
+                    provider_sender_id=message.sender,
+                )
+                result = await self._channel.request_approval(
+                    channel_request, timeout=timeout
+                )
                 if result.request_id != request_id:
                     raise ValueError("channel approval result correlation mismatch")
             except Exception as error:

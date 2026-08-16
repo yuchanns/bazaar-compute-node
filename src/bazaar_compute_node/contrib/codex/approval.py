@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -21,6 +22,7 @@ from .protocol import (
 _COMMAND_METHOD = "item/commandExecution/requestApproval"
 _FILE_CHANGE_METHOD = "item/fileChange/requestApproval"
 _PERMISSIONS_METHOD = "item/permissions/requestApproval"
+_MAX_APPROVAL_DESCRIPTION = 4_000
 
 _APPROVAL_METHODS = frozenset(
     {
@@ -90,13 +92,57 @@ def parse_approval_request(
         _FILE_CHANGE_METHOD: "file_change",
         _PERMISSIONS_METHOD: "permissions",
     }[method]
-    if method == _PERMISSIONS_METHOD and not isinstance(
-        params.get("permissions"), Mapping
-    ):
+    permissions = params.get("permissions")
+    if method == _PERMISSIONS_METHOD and not isinstance(permissions, Mapping):
         raise AppServerProtocolError(
             "permissions approval request has no permissions object"
         )
 
+    description_parts: list[str] = []
+    reason = params.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        description_parts.append(reason.strip())
+    if method == _COMMAND_METHOD:
+        command = params.get("command")
+        if isinstance(command, str) and command.strip():
+            description_parts.append(f"Command: {command.strip()}")
+        elif (
+            isinstance(command, list)
+            and command
+            and all(isinstance(argument, str) and argument for argument in command)
+        ):
+            description_parts.append(f"Command: {' '.join(command)}")
+        cwd = params.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            description_parts.append(f"Working directory: {cwd}")
+    elif method == _FILE_CHANGE_METHOD:
+        grant_root = params.get("grantRoot")
+        if isinstance(grant_root, str) and grant_root:
+            description_parts.append(f"Grant root: {grant_root}")
+        cwd = params.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            description_parts.append(f"Working directory: {cwd}")
+    elif isinstance(permissions, Mapping):
+        cwd = params.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            description_parts.append(f"Working directory: {cwd}")
+        try:
+            encoded_permissions = json.dumps(
+                dict(permissions),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except TypeError, ValueError:
+            encoded_permissions = None
+        if encoded_permissions:
+            description_parts.append(f"Permissions: {encoded_permissions}")
+
+    description: str | None = None
+    if description_parts:
+        description = "\n".join(description_parts)
+        if len(description) > _MAX_APPROVAL_DESCRIPTION:
+            description = description[: _MAX_APPROVAL_DESCRIPTION - 1] + "…"
     metadata: dict[str, object] = {
         "provider_method": method,
         "provider_item_id": provider_item_id,
@@ -119,6 +165,7 @@ def parse_approval_request(
             action=action,
             created_at_ms=started_at_ms,
             turn_id=turn_id,
+            description=description,
             metadata=metadata,
         ),
     )

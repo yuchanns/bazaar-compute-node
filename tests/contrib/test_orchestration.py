@@ -660,6 +660,13 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         )
 
         assert channel.approval_requests == [request]
+        assert len(channel.channel_approval_requests) == 1
+        channel_request = channel.channel_approval_requests[0]
+        assert channel_request.approval == request
+        assert channel_request.target_kind is ChannelTargetKind.DM
+        assert channel_request.provider_thread_id == "thread-bcn-1"
+        assert channel_request.provider_reply_to_message_id == "provider-bcn-1-2"
+        assert channel_request.provider_sender_id == "Sender"
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
         assert any(event.event_name == "approval.decided" for event in audit.events)

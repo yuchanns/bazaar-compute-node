@@ -17,6 +17,7 @@ import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ...core.channel import (
+    ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
     ChannelSendRequest,
@@ -24,7 +25,6 @@ from ...core.channel import (
 )
 from ...core.models import (
     ApprovalDecision,
-    ApprovalRequest,
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
@@ -764,10 +764,10 @@ class WeComChannel(IChannel):
         )
 
     async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
+        self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
         return ApprovalResult(
-            request_id=request.request_id,
+            request_id=request.approval.request_id,
             decision=ApprovalDecision.APPROVED,
             decided_at_ms=time_ns() // 1_000_000,
         )
