@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from time import time_ns
 
 import aiohttp
@@ -17,15 +18,28 @@ from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
     ChannelTargetKind,
+    InboundAttachment,
     InboundMessage,
     StreamEvent,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
+from .attachments import attachment_sources, materialize_attachments
 from .identity import TelegramThreadIdentity
+from .markdown import RichMessageRenderer
 
 _STOP = object()
 _MAX_RECONNECT_DELAY_SECONDS = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class _InboundContent:
+    body: str
+    message_type: str
+    entities: tuple[Mapping[str, object], ...]
+    rich_mentions_agent: bool
+    rich_message: bool
+    attachments: tuple[InboundAttachment, ...]
 
 
 class TelegramChannel(IChannel):
@@ -57,6 +71,7 @@ class TelegramChannel(IChannel):
         self._activation_messages = 0
         self._quoted_messages_queued = 0
         self._callback_updates_received = 0
+        self._attachment_failures = 0
 
     @property
     def name(self) -> str:
@@ -85,6 +100,7 @@ class TelegramChannel(IChannel):
             "activation_messages": self._activation_messages,
             "quoted_messages_queued": self._quoted_messages_queued,
             "callback_updates_received": self._callback_updates_received,
+            "attachment_failures": self._attachment_failures,
         }
 
     async def start(self, *, timeout: float) -> None:
@@ -355,8 +371,12 @@ class TelegramChannel(IChannel):
             self._last_update_disposition = "invalid_message_identity"
             return
 
-        body, message_type, entities = self._text_projection(message)
-        if body is None:
+        content = await self._content(
+            message,
+            bot_id=bot_id,
+            bot_username=bot_username,
+        )
+        if content is None:
             self._message_updates_filtered += 1
             self._last_update_disposition = "unsupported_message_content"
             return
@@ -370,11 +390,14 @@ class TelegramChannel(IChannel):
             ChannelTargetKind.DM if chat_type == "private" else ChannelTargetKind.GROUP
         )
         sender_id, sender_is_bot = self._sender_fields(message)
-        explicit_mention = self._explicitly_mentions_current_bot(
-            body,
-            entities,
-            bot_id=bot_id,
-            bot_username=bot_username,
+        explicit_mention = (
+            content.rich_mentions_agent
+            or self._explicitly_mentions_current_bot(
+                content.body,
+                content.entities,
+                bot_id=bot_id,
+                bot_username=bot_username,
+            )
         )
         reply = message.get("reply_to_message")
         reply_to_current_bot = False
@@ -422,16 +445,17 @@ class TelegramChannel(IChannel):
                 provider_message_id=str(provider_message_id),
                 received_at_ms=received_at_ms,
                 sender=sender_id,
-                message_type=message_type,
+                message_type=content.message_type,
                 canonical_target=(
                     f"dm:{channel_session_id}"
                     if target_kind is ChannelTargetKind.DM
                     else f"group:{channel_session_id}"
                 ),
-                body=body,
+                body=content.body,
                 target_kind=target_kind,
                 mentions_agent=activates_agent,
                 notifies_runtime=notifies_runtime,
+                attachments=content.attachments,
                 provider_time_ms=provider_time_s * 1_000,
                 reply_to_message_id=reply_to_message_id,
                 metadata={
@@ -442,6 +466,7 @@ class TelegramChannel(IChannel):
                     "sender_is_bot": sender_is_bot,
                     "historical": historical,
                     "activation_reason": activation_reason,
+                    "rich_message": content.rich_message,
                 },
             )
         )
@@ -474,11 +499,18 @@ class TelegramChannel(IChannel):
         topic_id = self._message_topic_id(reply, fallback=identity.topic_id)
         if topic_id is None or topic_id != identity.topic_id:
             return None
+        bot_id = self._bot_id
+        bot_username = self._bot_username
+        if bot_id is None or bot_username is None:
+            raise RuntimeError("Telegram bot identity is not initialized")
+        content = await self._content(
+            reply,
+            bot_id=bot_id,
+            bot_username=bot_username,
+        )
+        if content is None:
+            return None
 
-        body, message_type, _entities = self._text_projection(reply)
-        if body is None:
-            body = ""
-            message_type = "message"
         sender_id, sender_is_bot = self._sender_fields(reply)
         provider_time_s = reply.get("date")
         provider_time_ms: int | None = None
@@ -504,16 +536,17 @@ class TelegramChannel(IChannel):
                 provider_message_id=str(provider_message_id),
                 received_at_ms=received_at_ms,
                 sender=sender_id,
-                message_type=message_type,
+                message_type=content.message_type,
                 canonical_target=(
                     f"dm:{channel_session_id}"
                     if target_kind is ChannelTargetKind.DM
                     else f"group:{channel_session_id}"
                 ),
-                body=body,
+                body=content.body,
                 target_kind=target_kind,
                 mentions_agent=False,
                 notifies_runtime=False,
+                attachments=content.attachments,
                 provider_time_ms=provider_time_ms,
                 metadata={
                     "telegram_update_id": update_id,
@@ -524,12 +557,62 @@ class TelegramChannel(IChannel):
                     "historical": historical,
                     "activation_reason": "none",
                     "quoted_backfill": True,
+                    "rich_message": content.rich_message,
                 },
             )
         )
         self._messages_queued += 1
         self._quoted_messages_queued += 1
         return message_id
+
+    async def _content(
+        self,
+        message: Mapping[str, object],
+        *,
+        bot_id: int,
+        bot_username: str,
+    ) -> _InboundContent | None:
+        body, message_type, entities = self._text_projection(message)
+        rich_message = message.get("rich_message")
+        rich_mentions_agent = False
+        has_rich_message = isinstance(rich_message, Mapping)
+        if has_rich_message:
+            rich_view = RichMessageRenderer(
+                bot_id=bot_id,
+                bot_username=bot_username,
+            ).render(rich_message)
+            rich_mentions_agent = rich_view.mentions_agent
+            if body is None:
+                body = rich_view.body
+                message_type = "rich_message"
+
+        sources = attachment_sources(message)
+        attachments: tuple[InboundAttachment, ...] = ()
+        if sources:
+            api = self._api
+            if api is None:
+                raise RuntimeError("Telegram API client is not initialized")
+            attachments = await materialize_attachments(
+                api,
+                self._context.attachments,
+                sources,
+            )
+        self._attachment_failures += sum(
+            1 for attachment in attachments if attachment.state == "failed"
+        )
+        if body is None:
+            if not attachments:
+                return None
+            body = ""
+            message_type = "rich_message" if has_rich_message else sources[0].kind
+        return _InboundContent(
+            body=body,
+            message_type=message_type,
+            entities=entities,
+            rich_mentions_agent=rich_mentions_agent,
+            rich_message=has_rich_message,
+            attachments=attachments,
+        )
 
     @staticmethod
     def _message_topic_id(

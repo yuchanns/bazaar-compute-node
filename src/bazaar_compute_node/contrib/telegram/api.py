@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 
 import aiohttp
 
 _API_BASE_URL = "https://api.telegram.org"
 _POLL_TIMEOUT_SECONDS = 50
 _POLL_HTTP_TIMEOUT_SECONDS = 60
+_FILE_HTTP_TIMEOUT_SECONDS = 60
 _CONNECT_TIMEOUT_SECONDS = 10
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 _MAX_ERROR_DESCRIPTION = 256
 
 
@@ -79,6 +81,53 @@ class TelegramBotApi:
                 description="provider result is not an array of updates",
             )
         return tuple(dict(update) for update in result)
+
+    async def get_file(self, file_id: str) -> Mapping[str, object]:
+        if not isinstance(file_id, str) or not file_id:
+            raise ValueError("Telegram file_id must be non-empty")
+        result = await self._request(
+            "getFile",
+            {"file_id": file_id},
+            timeout=_FILE_HTTP_TIMEOUT_SECONDS,
+        )
+        if not isinstance(result, Mapping):
+            raise TelegramApiError(
+                "getFile",
+                http_status=200,
+                error_code=None,
+                description="provider result is not an object",
+            )
+        return result
+
+    async def download_file(self, file_path: str) -> AsyncIterator[bytes]:
+        if not isinstance(file_path, str) or not file_path:
+            raise ValueError("Telegram file_path must be non-empty")
+        client_timeout = aiohttp.ClientTimeout(
+            total=_FILE_HTTP_TIMEOUT_SECONDS,
+            connect=_CONNECT_TIMEOUT_SECONDS,
+            sock_connect=_CONNECT_TIMEOUT_SECONDS,
+        )
+        url = f"{_API_BASE_URL}/file/bot{self._token}/{file_path.lstrip('/')}"
+        try:
+            async with self._session.get(url, timeout=client_timeout) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise TelegramApiError(
+                        "downloadFile",
+                        http_status=response.status,
+                        error_code=None,
+                        description="provider rejected file download",
+                    )
+                async for chunk in response.content.iter_chunked(_DOWNLOAD_CHUNK_BYTES):
+                    if chunk:
+                        yield bytes(chunk)
+        except TelegramApiError:
+            raise
+        except TimeoutError:
+            raise TelegramTransportError("downloadFile", "TimeoutError") from None
+        except aiohttp.ClientError as error:
+            raise TelegramTransportError("downloadFile", type(error).__name__) from None
+        except OSError as error:
+            raise TelegramTransportError("downloadFile", type(error).__name__) from None
 
     async def _request(
         self,
