@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 import os
 import tomllib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from ..core.paths import resolve_data_dir
 from ..core.runtime import RuntimeSandboxMode
@@ -28,8 +30,9 @@ class NodeConfiguration:
     network_access: bool = True
     runtime_idle_timeout_seconds: float = 0
     runtime_env_include: tuple[str, ...] = ()
-    wecom_bot_id: str | None = None
-    wecom_websocket_url: str | None = None
+    channel_options: Mapping[str, Mapping[str, object]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 class ConfigurationError(ValueError):
@@ -67,9 +70,13 @@ def load_node_configuration(path: Path | None = None) -> NodeConfiguration:
     channel = payload.get("channel", {})
     if not isinstance(channel, dict):
         raise ConfigurationError("[channel] must be a TOML table")
-    wecom = channel.get("wecom", {})
-    if not isinstance(wecom, dict):
-        raise ConfigurationError("[channel.wecom] must be a TOML table")
+    channel_options: dict[str, Mapping[str, object]] = {}
+    for channel_name, options in channel.items():
+        if not channel_name:
+            raise ConfigurationError("channel name must be non-empty text")
+        if not isinstance(options, dict):
+            raise ConfigurationError(f"[channel.{channel_name}] must be a TOML table")
+        channel_options[channel_name] = MappingProxyType(dict(options))
     sandbox_mode = runtime.get("sandbox_mode", RuntimeSandboxMode.WORKSPACE_WRITE.value)
     if not isinstance(sandbox_mode, str):
         raise ConfigurationError("runtime.sandbox_mode must be text")
@@ -105,10 +112,7 @@ def load_node_configuration(path: Path | None = None) -> NodeConfiguration:
         runtime_env_include=_text_list(
             runtime_env.get("include", []), "runtime.env.include"
         ),
-        wecom_bot_id=_optional_text(wecom.get("bot_id"), "channel.wecom.bot_id"),
-        wecom_websocket_url=_optional_text(
-            wecom.get("websocket_url"), "channel.wecom.websocket_url"
-        ),
+        channel_options=MappingProxyType(channel_options),
     )
 
 

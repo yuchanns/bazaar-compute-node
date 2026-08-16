@@ -174,10 +174,7 @@ def _apply_runtime_configuration(
         args.audit = DEFAULT_AUDIT
     args.runtime_env_include = configuration.runtime_env_include
     args.runtime_idle_timeout_seconds = configuration.runtime_idle_timeout_seconds
-    args.channel_options = {
-        "bot_id": configuration.wecom_bot_id,
-        "websocket_url": configuration.wecom_websocket_url,
-    }
+    args.channel_options = dict(configuration.channel_options.get(args.channel, {}))
 
 
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -191,7 +188,7 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         runtime_sandbox_mode=args.sandbox_mode,
         runtime_network_access=args.network_access,
         runtime_idle_timeout_seconds=args.runtime_idle_timeout_seconds,
-        channel_options=args.channel_options if args.channel == "wecom" else {},
+        channel_options=args.channel_options,
         runtime_environment_include=args.runtime_env_include,
     )
     await node.start()
