@@ -9,7 +9,6 @@ from time import time_ns
 import aiosqlite
 
 from ...core.paths import resolve_data_dir
-from ...core.storage import NodeIdentity
 from .migrations import (
     RUNTIME_EVENTS_REMOVAL_MIGRATION,
     MigrationChecksumError,
@@ -54,8 +53,8 @@ class SqliteDatabase:
         self._busy_timeout_ms = busy_timeout_ms
         self._connection: aiosqlite.Connection | None = None
         self._schema_version: int | None = None
-        self._agent_id: str | None = None
-        self._agent_name = "default"
+        self._active_agent_id: str | None = None
+        self._active_agent_name: str | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._transaction_lock = asyncio.Lock()
 
@@ -70,6 +69,7 @@ class SqliteDatabase:
             if self._connection is not None:
                 return
             connection: aiosqlite.Connection | None = None
+            compaction_row: aiosqlite.Row | None = None
             try:
                 async with asyncio.timeout(timeout):
                     await asyncio.to_thread(
@@ -112,7 +112,6 @@ class SqliteDatabase:
                             transaction,
                             clock=_current_time_ms,
                         )
-                    compaction_row: aiosqlite.Row | None = None
                     async with SqliteTransaction(self) as transaction:
                         compaction_row = await transaction.fetchone(
                             "SELECT compaction_completed_at_ms "
@@ -148,7 +147,7 @@ class SqliteDatabase:
             except BaseException:
                 self._connection = None
                 self._schema_version = None
-                self._agent_id = None
+                self._clear_agent_scope()
                 if connection is not None:
                     await connection.close()
                 raise
@@ -167,29 +166,7 @@ class SqliteDatabase:
             finally:
                 self._connection = None
                 self._schema_version = None
-                self._agent_id = None
-
-    async def initialize(
-        self,
-        *,
-        node_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> NodeIdentity:
-        """Bind the current single-Agent composition without persistent node state."""
-
-        if node_id is not None and (not isinstance(node_id, str) or not node_id):
-            raise ValueError("node_id must be a non-empty string")
-        if not isinstance(workspace_id, str) or not workspace_id:
-            raise ValueError("workspace_id must be a non-empty string")
-        async with self._lifecycle_lock:
-            self._require_connection()
-            if self._agent_id is not None and self._agent_id != workspace_id:
-                raise RuntimeError("SQLite storage is already bound to another agent")
-            self._agent_id = workspace_id
-            return NodeIdentity(
-                node_id=node_id or f"bcn-agent-{workspace_id}",
-                workspace_id=workspace_id,
-            )
+                self._clear_agent_scope()
 
     def transaction(self) -> AbstractAsyncContextManager[SqliteTransaction]:
         return SqliteTransaction(self)
@@ -199,13 +176,29 @@ class SqliteDatabase:
             raise RuntimeError("SQLite database has not been started")
         return self._connection
 
+    def _bind_agent_scope(self, agent_id: str, agent_name: str) -> None:
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+        if not isinstance(agent_name, str) or not agent_name:
+            raise ValueError("agent_name must be a non-empty string")
+        if self._active_agent_id is not None:
+            raise RuntimeError("SQLite Agent scope is already active")
+        self._active_agent_id = agent_id
+        self._active_agent_name = agent_name
+
+    def _clear_agent_scope(self) -> None:
+        self._active_agent_id = None
+        self._active_agent_name = None
+
     def _current_agent_id(self) -> str:
-        if self._agent_id is None:
-            raise RuntimeError("SQLite Agent scope has not been initialized")
-        return self._agent_id
+        if self._active_agent_id is None:
+            raise RuntimeError("SQLite Agent scope is not active")
+        return self._active_agent_id
 
     def _current_agent_name(self) -> str:
-        return self._agent_name
+        if self._active_agent_name is None:
+            raise RuntimeError("SQLite Agent scope is not active")
+        return self._active_agent_name
 
 
 def _current_time_ms() -> int:

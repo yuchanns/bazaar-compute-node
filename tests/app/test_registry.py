@@ -19,9 +19,10 @@ PROVIDER_GROUPS = frozenset(
 
 def test_unknown_adapter_name_fails_before_composition() -> None:
     with pytest.raises(ProviderLoadError, match="not installed"):
-        AdapterRegistry().load(
+        AdapterRegistry().load_agent(
             channel="missing-channel",
             runtime="test",
+            storage="sqlite",
         )
 
 

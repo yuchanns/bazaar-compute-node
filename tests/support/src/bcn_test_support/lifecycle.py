@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from bazaar_compute_node.core.models import AgentState, OutboundMessage
+from bazaar_compute_node.core.models import OutboundMessage, SessionRuntimeState
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 
 from .channel import TestChannel
@@ -18,7 +18,7 @@ async def wait_for_turn_terminal(
     timeout: float = 600,
     expect_runtime_discarded: bool = False,
 ) -> tuple[OutboundMessage, ...]:
-    """Wait for provider-neutral outbound, turn, and Agent lifecycle completion."""
+    """Wait for provider-neutral outbound, turn, and session-runtime lifecycle completion."""
 
     if not session_id:
         raise ValueError("session_id must be a non-empty string")
@@ -39,7 +39,7 @@ async def wait_for_turn_terminal(
 
     outbound: tuple[OutboundMessage, ...] = ()
     active_turn = False
-    state = orchestrator.agent_state(session_id)
+    state = orchestrator.session_runtime_state(session_id)
     try:
         async with asyncio.timeout(timeout):
             while True:
@@ -52,11 +52,11 @@ async def wait_for_turn_terminal(
                     turn.client_user_message_id == client_user_message_id
                     for turn in orchestrator._runtime_turns.values()  # pyright: ignore[reportPrivateUsage]
                 )
-                state = orchestrator.agent_state(session_id)
+                state = orchestrator.session_runtime_state(session_id)
                 lifecycle_terminal = (
                     state is None and orchestrator.runtime_session(session_id) is None
                     if expect_runtime_discarded
-                    else state is AgentState.IDLE
+                    else state is SessionRuntimeState.IDLE
                 )
                 if outbound and lifecycle_terminal and not active_turn:
                     return outbound
@@ -65,6 +65,6 @@ async def wait_for_turn_terminal(
         raise AssertionError(
             "turn did not reach the provider-neutral terminal contract: "
             f"session_id={session_id!r}, outbound_count={len(outbound)}, "
-            f"agent_state={state!r}, active_turn={active_turn}, "
+            f"session_runtime_state={state!r}, active_turn={active_turn}, "
             f"runtime_live={orchestrator.runtime_session(session_id) is not None}"
         ) from error

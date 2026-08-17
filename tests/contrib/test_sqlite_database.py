@@ -26,13 +26,10 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
 
     await database.start(timeout=2)
     try:
-        identity = await database.initialize(
-            node_id="node-1",
-            workspace_id="agent-1",
-        )
-        assert identity.node_id == "node-1"
-        assert identity.workspace_id == "agent-1"
-        assert not (data_dir / "workspaces" / identity.workspace_id).exists()
+        scope = database.scope("agent-1", "Test Agent")
+        assert scope.agent_id == "agent-1"
+        assert scope.agent_name == "Test Agent"
+        assert not (data_dir / "workspaces" / scope.agent_id).exists()
 
         async with database.transaction() as transaction:
             tables = await transaction.fetchall(
@@ -139,11 +136,9 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
     restarted = SqliteDatabase()
     await restarted.start(timeout=2)
     try:
-        restarted_identity = await restarted.initialize(
-            node_id="node-1",
-            workspace_id="agent-1",
-        )
-        assert restarted_identity == identity
+        restarted_scope = restarted.scope("agent-1", "Test Agent")
+        assert restarted_scope.agent_id == scope.agent_id
+        assert restarted_scope.agent_name == scope.agent_name
     finally:
         await restarted.stop(timeout=2)
 
@@ -310,8 +305,8 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
-        await database.initialize(node_id="node-1", workspace_id="workspace-1")
-        async with database.transaction() as transaction:
+        scope = database.scope("workspace-1", "default")
+        async with scope.transaction() as transaction:
             schema_version = await transaction.fetchone(
                 "SELECT MAX(version) AS version FROM schema_migrations"
             )
@@ -346,7 +341,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
             client_user_message_id="message-2",
             started_at_ms=3,
         )
-        async with database.transaction() as transaction:
+        async with scope.transaction() as transaction:
             assert await transaction.get_channel_session("channel-1") == ChannelSession(
                 id="channel-1",
                 channel="test",
@@ -364,11 +359,11 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
             assert await transaction.get_runtime_attempt("turn-1") == retained_attempt
             await transaction.save_runtime_attempt(new_attempt)
 
-        async with database.transaction() as transaction:
+        async with scope.transaction() as transaction:
             assert await transaction.get_runtime_attempt("turn-2") == new_attempt
 
         with pytest.raises(RuntimeError, match="rollback"):
-            async with database.transaction() as transaction:
+            async with scope.transaction() as transaction:
                 await transaction.save_runtime_attempt(
                     RuntimeAttempt(
                         turn_id="turn-3",
@@ -379,7 +374,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 )
                 raise RuntimeError("rollback")
 
-        async with database.transaction() as transaction:
+        async with scope.transaction() as transaction:
             assert await transaction.get_runtime_attempt("turn-3") is None
     finally:
         await database.stop(timeout=2)

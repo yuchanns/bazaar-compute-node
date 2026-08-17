@@ -63,9 +63,10 @@ kind = "test"
     assert args.configuration.version == "2"
     assert args.configuration.agents[0].channel.kind == "test"
     assert args.configuration.agents[0].runtime.kind == "test"
-    assert args.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
-    assert args.network_access is True
-    assert args.runtime_idle_timeout_seconds == 0
+    runtime = args.configuration.agents[0].runtime
+    assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
+    assert runtime.network_access is True
+    assert runtime.idle_timeout_seconds == 0
 
 
 def test_cli_forwards_explicit_config_and_database_name(tmp_path: Path) -> None:
@@ -245,13 +246,12 @@ def test_help_works_in_a_real_process() -> None:
     assert "usage: bcn" in result.stdout
 
 
-def test_run_requires_explicit_channel_and_runtime() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "bazaar_compute_node.cli", "run"],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
+    config_path = tmp_path / "empty-config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
 
-    assert result.returncode == 2
-    assert "requires exactly one configured agent" in result.stderr
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", str(config_path), "--foreground"])
+    _apply_runtime_configuration(args, parser)
+
+    assert args.configuration.agents == ()

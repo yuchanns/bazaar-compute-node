@@ -31,12 +31,17 @@ class MemoryStorage(_BaseMemoryStorage):
         self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
 
     def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return _ReminderMemoryStorageTransaction(self)
+        return self._transaction_for_agent(None)
+
+    def _transaction_for_agent(
+        self, agent_id: str | None
+    ) -> AbstractAsyncContextManager[IStorageTransaction]:
+        return _ReminderMemoryStorageTransaction(self, agent_id=agent_id)
 
 
 class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
-    def __init__(self, storage: MemoryStorage) -> None:
-        super().__init__(storage)
+    def __init__(self, storage: MemoryStorage, *, agent_id: str | None = None) -> None:
+        super().__init__(storage, agent_id=agent_id)
         self._reminder_storage = storage
         self._reminder_snapshot: (
             tuple[

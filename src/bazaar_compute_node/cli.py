@@ -14,17 +14,15 @@ from .app.application import NodeApplication
 from .app.config import (
     DEFAULT_AUDIT,
     DEFAULT_STORAGE,
-    AgentConfiguration,
     ConfigurationError,
     NodeConfiguration,
     load_control_configuration,
     load_node_configuration,
     resolve_config_path,
 )
-from .app.registry import AdapterFactories, AdapterRegistry, ProviderLoadError
+from .app.registry import AdapterRegistry, ProviderLoadError, SharedAdapterFactories
 from .app.transport import LocalCommandClient, local_endpoint_for_path
 from .core.paths import resolve_data_dir
-from .core.runtime import RuntimeSandboxMode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,8 +86,6 @@ def _apply_runtime_configuration(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> None:
-    """Upgrade/load v2 config and expose one agent to the current composition."""
-
     raw_storage = args.storage
     raw_audit = args.audit
     raw_endpoint = args.endpoint
@@ -118,29 +114,6 @@ def _apply_runtime_configuration(
     )
     args.database_name = configuration.database_name
 
-    if len(configuration.agents) != 1:
-        args.channel = None
-        args.runtime = None
-        args.model = None
-        args.effort = None
-        args.sandbox_mode = RuntimeSandboxMode.WORKSPACE_WRITE
-        args.network_access = True
-        args.runtime_env_include = ()
-        args.runtime_idle_timeout_seconds = 0
-        args.channel_options = {}
-        return
-
-    agent = configuration.agents[0]
-    args.channel = agent.channel.kind
-    args.runtime = agent.runtime.kind
-    args.model = agent.runtime.model
-    args.effort = agent.runtime.effort
-    args.sandbox_mode = agent.runtime.sandbox_mode
-    args.network_access = agent.runtime.network_access
-    args.runtime_env_include = agent.runtime.env_include
-    args.runtime_idle_timeout_seconds = agent.runtime.idle_timeout_seconds
-    args.channel_options = dict(agent.channel.options)
-
 
 def _apply_control_configuration(
     args: argparse.Namespace,
@@ -156,29 +129,22 @@ def _apply_control_configuration(
         args.endpoint = Path(configuration.endpoint).expanduser()
 
 
-def _require_single_agent(
+def _configuration(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
-) -> AgentConfiguration:
+) -> NodeConfiguration:
     configuration = getattr(args, "configuration", None)
     if not isinstance(configuration, NodeConfiguration):
         parser.error("startup configuration has not been loaded")
-    if len(configuration.agents) != 1:
-        parser.error(
-            "current application composition requires exactly one configured agent"
-        )
-    return configuration.agents[0]
+    return configuration
 
 
-def _load_factories(
+def _load_shared_factories(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
-) -> AdapterFactories:
-    agent = _require_single_agent(parser, args)
+) -> SharedAdapterFactories:
     try:
-        return AdapterRegistry().load(
-            channel=agent.channel.kind,
-            runtime=agent.runtime.kind,
+        return AdapterRegistry().load_shared(
             storage=args.storage,
             audit=args.audit,
             storage_options={"database_name": args.database_name}
@@ -189,37 +155,26 @@ def _load_factories(
         parser.error(str(error))
 
 
-def _runtime_options(args: argparse.Namespace) -> dict[str, str]:
-    return {
-        name: value
-        for name, value in (
-            ("model", args.model),
-            ("effort", args.effort),
-        )
-        if value is not None
-    }
-
-
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    agent = _require_single_agent(parser, args)
-    factories = await asyncio.to_thread(_load_factories, args, parser)
-
+    configuration = _configuration(parser, args)
+    shared_factories = await asyncio.to_thread(
+        _load_shared_factories,
+        args,
+        parser,
+    )
     data_dir = resolve_data_dir()
     node = NodeApplication(
-        factories=factories,
+        configuration=configuration,
+        shared_factories=shared_factories,
+        registry=AdapterRegistry(),
         endpoint_path=_endpoint_path(args, data_dir),
-        workspace_id=agent.id,
-        runtime_options=_runtime_options(args),
-        runtime_sandbox_mode=args.sandbox_mode,
-        runtime_network_access=args.network_access,
-        runtime_idle_timeout_seconds=args.runtime_idle_timeout_seconds,
-        channel_options=args.channel_options,
-        runtime_environment_include=args.runtime_env_include,
     )
     await node.start()
     print(
-        f"bcn ready agent={agent.name} channel={agent.channel.kind} "
-        f"runtime={agent.runtime.kind} endpoint={node.endpoint}",
+        f"bcn ready configured={len(configuration.agents)} "
+        f"started={len(node.agents)} "
+        f"failed={len(configuration.agents) - len(node.agents)} "
+        f"endpoint={node.endpoint}",
         flush=True,
     )
     try:
@@ -275,11 +230,7 @@ def _spawn_daemon(
         )
 
 
-async def _endpoint_is_reachable(
-    endpoint: str,
-    *,
-    timeout: float,
-) -> bool:
+async def _endpoint_is_reachable(endpoint: str, *, timeout: float) -> bool:
     try:
         response = await LocalCommandClient.request(
             endpoint,
@@ -310,11 +261,7 @@ async def _wait_for_endpoint(
     raise TimeoutError(f"daemon did not become ready within {timeout:g} seconds")
 
 
-async def _wait_for_endpoint_exit(
-    endpoint: str,
-    *,
-    timeout: float,
-) -> bool:
+async def _wait_for_endpoint_exit(endpoint: str, *, timeout: float) -> bool:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         if not await _endpoint_is_reachable(endpoint, timeout=0.5):
@@ -327,8 +274,8 @@ async def _start_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    agent = _require_single_agent(parser, args)
-    await asyncio.to_thread(_load_factories, args, parser)
+    configuration = _configuration(parser, args)
+    await asyncio.to_thread(_load_shared_factories, args, parser)
     data_dir = await asyncio.to_thread(resolve_data_dir)
     await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
     endpoint_path = _endpoint_path(args, data_dir)
@@ -339,8 +286,11 @@ async def _start_daemon(
         parser.error(f"bcn endpoint already exists: {endpoint_path}")
 
     log_path = data_dir / "bcn.log"
-    daemon_command = _daemon_command(args, data_dir)
-    process = await asyncio.to_thread(_spawn_daemon, daemon_command, log_path)
+    process = await asyncio.to_thread(
+        _spawn_daemon,
+        _daemon_command(args, data_dir),
+        log_path,
+    )
     try:
         await _wait_for_endpoint(endpoint, process, timeout=10)
     except BaseException:
@@ -349,8 +299,8 @@ async def _start_daemon(
             await asyncio.to_thread(process.wait, 5)
         raise
     print(
-        f"bcn started pid={process.pid} agent={agent.name} "
-        f"channel={agent.channel.kind} runtime={agent.runtime.kind} endpoint={endpoint}",
+        f"bcn started pid={process.pid} configured={len(configuration.agents)} "
+        f"endpoint={endpoint}",
         flush=True,
     )
     return 0

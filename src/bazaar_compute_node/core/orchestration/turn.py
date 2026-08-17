@@ -12,9 +12,6 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
 from ..models import (
-    AgentSignal,
-    AgentTick,
-    AgentTickSource,
     ApprovalRequest,
     ApprovalResult,
     BcnSession,
@@ -25,11 +22,14 @@ from ..models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    SessionRuntimeObservation,
+    SessionRuntimeObservationSource,
+    SessionRuntimeSignal,
     StreamEvent,
 )
 from ..runtime import IRuntime, IRuntimeTurnStream, RuntimeSessionUnavailable
-from ..storage import IStorage
-from .services import SessionAuditRecorder, SessionStateWriter
+from ..storage import IStorageScope
+from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 
 
 def _is_compaction_event(event_name: str) -> bool:
@@ -40,36 +40,36 @@ def _is_turn_event(event_name: str) -> bool:
     return "turn" in event_name.casefold()
 
 
-def _runtime_event_agent_signal(event: RuntimeEvent) -> AgentSignal:
+def _runtime_event_signal(event: RuntimeEvent) -> SessionRuntimeSignal:
     if _is_compaction_event(event.event_name):
         normalized = event.event_name.casefold()
         if any(token in normalized for token in ("start", "begin")):
-            return AgentSignal.COMPACTION_STARTED
+            return SessionRuntimeSignal.COMPACTION_STARTED
         if any(token in normalized for token in ("complete", "finish", "end")):
-            return AgentSignal.COMPACTION_COMPLETED
+            return SessionRuntimeSignal.COMPACTION_COMPLETED
         if event.state is RuntimeEventState.COMPLETED:
-            return AgentSignal.COMPACTION_COMPLETED
-        return AgentSignal.COMPACTION_IN_PROGRESS
+            return SessionRuntimeSignal.COMPACTION_COMPLETED
+        return SessionRuntimeSignal.COMPACTION_IN_PROGRESS
 
     if not _is_turn_event(event.event_name):
         if event.state is RuntimeEventState.UNKNOWN:
-            return AgentSignal.UNKNOWN
+            return SessionRuntimeSignal.UNKNOWN
         if (
             event.state is RuntimeEventState.FAILED
             or "error" in event.event_name.casefold()
         ):
-            return AgentSignal.FAILED
-        return AgentSignal.WORKING_OBSERVED
+            return SessionRuntimeSignal.FAILED
+        return SessionRuntimeSignal.WORKING_OBSERVED
 
     if event.state is RuntimeEventState.STARTED:
-        return AgentSignal.TURN_STARTED
+        return SessionRuntimeSignal.TURN_STARTED
     if event.state is RuntimeEventState.COMPLETED:
-        return AgentSignal.TURN_COMPLETED
+        return SessionRuntimeSignal.TURN_COMPLETED
     if event.state is RuntimeEventState.FAILED:
-        return AgentSignal.TURN_FAILED
+        return SessionRuntimeSignal.TURN_FAILED
     if event.state is RuntimeEventState.CANCELLED:
-        return AgentSignal.TURN_CANCELLED
-    return AgentSignal.UNKNOWN
+        return SessionRuntimeSignal.TURN_CANCELLED
+    return SessionRuntimeSignal.UNKNOWN
 
 
 def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
@@ -123,26 +123,28 @@ class SessionTurnCoordinator:
     def __init__(
         self,
         *,
+        agent_id: str,
         channel: IChannel,
         runtime: IRuntime,
-        storage: IStorage,
+        storage: IStorageScope,
         audit: SessionAuditRecorder,
-        state_writer: SessionStateWriter,
+        state_machine: SessionRuntimeStateMachine,
         timeout_budget: TimeoutBudget,
         concurrency: ISessionConcurrency,
         turns: dict[str, RuntimeTurn],
-        node_id: Callable[[], str],
         clock: Callable[[], int],
     ) -> None:
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+        self._agent_id = agent_id
         self._channel = channel
         self._runtime = runtime
         self._storage = storage
         self._audit = audit
-        self._state_writer = state_writer
+        self._state_machine = state_machine
         self._timeout_budget = timeout_budget
         self._concurrency = concurrency
         self._turns = turns
-        self._node_id = node_id
         self._clock = clock
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
 
@@ -168,7 +170,7 @@ class SessionTurnCoordinator:
             if not current_binding.matches(request):
                 raise ValueError("runtime approval request correlation mismatch")
             approval_correlation = CorrelationContext(
-                node_id=self._node_id(),
+                node_id=self._agent_id,
                 channel=context.channel_session.channel,
                 channel_session_id=context.channel_session.id,
                 bcn_session_id=context.bcn_session.id,
@@ -192,7 +194,8 @@ class SessionTurnCoordinator:
                     provider_sender_id=message.sender,
                 )
                 result = await self._channel.request_approval(
-                    channel_request, timeout=timeout
+                    channel_request,
+                    timeout=timeout,
                 )
                 if result.request_id != request_id:
                     raise ValueError("channel approval result correlation mismatch")
@@ -452,18 +455,18 @@ class SessionTurnCoordinator:
             )
             self._turns.pop(turn.turn_id, None)
             if state is RuntimeTurnState.COMPLETED:
-                agent_signal = AgentSignal.TURN_COMPLETED
+                signal = SessionRuntimeSignal.TURN_COMPLETED
             elif state is RuntimeTurnState.FAILED:
-                agent_signal = AgentSignal.TURN_FAILED
+                signal = SessionRuntimeSignal.TURN_FAILED
             elif state is RuntimeTurnState.CANCELLED:
-                agent_signal = AgentSignal.TURN_CANCELLED
+                signal = SessionRuntimeSignal.TURN_CANCELLED
             else:
-                agent_signal = AgentSignal.UNKNOWN
-            self._state_writer.apply_observation(
+                signal = SessionRuntimeSignal.UNKNOWN
+            self._state_machine.apply_observation(
                 session_id,
-                AgentTick(
-                    source=AgentTickSource.RUNTIME,
-                    signal=agent_signal,
+                SessionRuntimeObservation(
+                    source=SessionRuntimeObservationSource.RUNTIME,
+                    signal=signal,
                     observed_at_ms=self._clock(),
                     error_kind=error_kind.value if error_kind else None,
                     error_message=error_message,
@@ -488,7 +491,7 @@ class SessionTurnCoordinator:
 
     async def _apply_runtime_event(
         self,
-        message,
+        message: InboundMessage,
         context: SessionContext,
         turn: RuntimeTurn,
         event: RuntimeEvent,
@@ -496,7 +499,7 @@ class SessionTurnCoordinator:
         if event.turn_id is not None and event.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         async with self._concurrency.for_session(message.session_id):
-            agent_signal = _runtime_event_agent_signal(event)
+            signal = _runtime_event_signal(event)
             if not _is_turn_event(event.event_name):
                 target_state = turn.state
             elif event.state is RuntimeEventState.STARTED:
@@ -539,9 +542,9 @@ class SessionTurnCoordinator:
                     updated_turn,
                     provider_turn_id=provider_turn_id,
                 )
-            agent_tick = AgentTick(
-                source=AgentTickSource.RUNTIME,
-                signal=agent_signal,
+            observation = SessionRuntimeObservation(
+                source=SessionRuntimeObservationSource.RUNTIME,
+                signal=signal,
                 observed_at_ms=self._clock(),
                 error_kind=error_kind,
                 error_message=event.error_message,
@@ -550,9 +553,9 @@ class SessionTurnCoordinator:
                 self._turns.pop(turn.turn_id, None)
             else:
                 self._turns[turn.turn_id] = updated_turn
-            self._state_writer.apply_observation(
+            self._state_machine.apply_observation(
                 context.bcn_session.id,
-                agent_tick,
+                observation,
             )
         try:
             audit_kind = ErrorKind(event.error_kind) if event.error_kind else None
@@ -579,7 +582,7 @@ class SessionTurnCoordinator:
         turn: RuntimeTurn,
     ) -> CorrelationContext:
         return CorrelationContext(
-            node_id=self._node_id(),
+            node_id=self._agent_id,
             channel=context.channel_session.channel,
             channel_session_id=context.channel_session.id,
             bcn_session_id=context.bcn_session.id,

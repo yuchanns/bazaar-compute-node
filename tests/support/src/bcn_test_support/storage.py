@@ -5,10 +5,9 @@ from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 from uuid import uuid7
 
-from bazaar_compute_node.core.lifecycle import IAsyncLifecycle
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
@@ -19,10 +18,14 @@ from bazaar_compute_node.core.models import (
     OutboundMessage,
     RuntimeAttempt,
 )
-from bazaar_compute_node.core.storage import NodeIdentity
+from bazaar_compute_node.core.storage import (
+    IStorage,
+    IStorageScope,
+    IStorageTransaction,
+)
 
 
-class MemoryStorage(IAsyncLifecycle):
+class MemoryStorage(IStorage):
     """Transactional in-memory storage for behavior-level integration tests."""
 
     @property
@@ -36,7 +39,6 @@ class MemoryStorage(IAsyncLifecycle):
         self.cursors: dict[str, ConsumerCursor] = {}
         self.inbound_messages: dict[str, list[InboundMessage]] = {}
         self.outbound_messages: dict[str, OutboundMessage] = {}
-        self.node_identity: NodeIdentity | None = None
         self.started = False
         self.stopped = False
         self._lock = asyncio.Lock()
@@ -48,27 +50,60 @@ class MemoryStorage(IAsyncLifecycle):
     async def stop(self, *, timeout: float) -> None:
         self.stopped = True
 
-    async def initialize(
-        self,
-        *,
-        node_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> NodeIdentity:
-        identity = self.node_identity
-        if identity is None:
-            identity = NodeIdentity(
-                node_id=node_id or "test-node",
-                workspace_id=workspace_id or str(uuid7()),
-            )
-        elif node_id is not None and identity.node_id != node_id:
-            raise ValueError("requested node_id does not match test identity")
-        elif workspace_id is not None and identity.workspace_id != workspace_id:
-            raise ValueError("requested workspace_id does not match test identity")
-        self.node_identity = identity
-        return identity
+    def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
+        return _MemoryStorageScope(self, agent_id, agent_name)
 
-    def transaction(self) -> AbstractAsyncContextManager[object]:
-        return _MemoryStorageTransaction(self)
+    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
+        return self._transaction_for_agent(None)
+
+    def _transaction_for_agent(
+        self, agent_id: str | None
+    ) -> AbstractAsyncContextManager[IStorageTransaction]:
+        return cast(
+            AbstractAsyncContextManager[IStorageTransaction],
+            _MemoryStorageTransaction(self, agent_id=agent_id),
+        )
+
+
+class _MemoryStorageScope(IStorageScope):
+    def __init__(self, storage: MemoryStorage, agent_id: str, agent_name: str) -> None:
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+        if not isinstance(agent_name, str) or not agent_name:
+            raise ValueError("agent_name must be a non-empty string")
+        self._storage = storage
+        self._agent_id = agent_id
+        self._agent_name = agent_name
+
+    @property
+    def name(self) -> str:
+        return self._storage.name
+
+    @property
+    def agent_id(self) -> str:
+        return self._agent_id
+
+    @property
+    def agent_name(self) -> str:
+        return self._agent_name
+
+    async def start(self, *, timeout: float) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if not self._storage.started:
+            raise RuntimeError("shared memory storage is not started")
+
+    async def stop(self, *, timeout: float) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+
+    def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
+        if agent_id != self.agent_id or agent_name != self.agent_name:
+            raise ValueError("a test storage scope cannot be rebound")
+        return self
+
+    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
+        return self._storage._transaction_for_agent(self.agent_id)
 
 
 _Snapshot = tuple[
@@ -82,8 +117,9 @@ _Snapshot = tuple[
 
 
 class _MemoryStorageTransaction:
-    def __init__(self, storage: MemoryStorage) -> None:
+    def __init__(self, storage: MemoryStorage, *, agent_id: str | None = None) -> None:
         self._storage = storage
+        self._agent_id = agent_id
         self._snapshot: _Snapshot | None = None
 
     async def __aenter__(self) -> Self:
@@ -270,12 +306,9 @@ class _MemoryStorageTransaction:
         self._storage.bcn_sessions[session.id] = session
 
     def _require_workspace(self, workspace_id: str) -> None:
-        identity = self._storage.node_identity
-        if identity is None:
-            raise RuntimeError("memory storage identity has not been initialized")
-        if workspace_id != identity.workspace_id:
+        if self._agent_id is not None and workspace_id != self._agent_id:
             raise ValueError(
-                "session workspace does not match the persisted node workspace"
+                "session workspace does not match the scoped Agent workspace"
             )
 
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:

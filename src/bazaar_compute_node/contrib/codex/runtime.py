@@ -14,10 +14,10 @@ from ...core.approval import IApprovalHandler
 from ...core.instruction import DeveloperInstructionContext
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
-    AgentState,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
+    SessionRuntimeState,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.paths import resolve_workspace_dir
@@ -68,7 +68,7 @@ class _Connection:
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
-    """Run one persistent Codex App Server process per bcn runtime session."""
+    """Run one persistent Codex App Server process per BCN runtime session."""
 
     @property
     def name(self) -> str:
@@ -92,8 +92,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
     ) -> None:
         if not executable:
             raise ValueError("executable must be a non-empty string")
-        if not context.node_id:
-            raise ValueError("runtime context node_id must be non-empty")
+        if not context.agent_id:
+            raise ValueError("runtime context agent_id must be non-empty")
         if model is not None and not model:
             raise ValueError("model must be a non-empty string or None")
         if effort is not None and not effort:
@@ -133,7 +133,10 @@ class Runtime(IRuntime, IAsyncLifecycle):
         return await self._expire_events.get()
 
     async def start_session(
-        self, session: RuntimeSession, *, timeout: float
+        self,
+        session: RuntimeSession,
+        *,
+        timeout: float,
     ) -> ProviderCallResult[RuntimeSession]:
         self._ensure_started()
         existing = self._connections.pop(session.id, None)
@@ -144,7 +147,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             connection = await self._open_connection(session, timeout=timeout)
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
-                    node_id=self._context.node_id,
+                    node_id=self._context.agent_id,
                     runtime_session_id=session.id,
                     runtime=session.runtime,
                     workspace=str(connection.workspace),
@@ -188,9 +191,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_failed",
-                error_message=(
-                    "cannot reconcile a runtime session without a provider thread"
-                ),
+                error_message="cannot reconcile a runtime session without a provider thread",
             )
         connection = self._connections.pop(session.id, None)
         if connection is not None and not connection.supervisor.is_running:
@@ -243,14 +244,15 @@ class Runtime(IRuntime, IAsyncLifecycle):
                         approval_handler=approval_handler,
                         approval_timeout=timeout,
                         on_closed=lambda: self._clear_active_turn(
-                            session.id, turn.turn_id
+                            session.id,
+                            turn.turn_id,
                         ),
                     )
                     return ProviderCallResult(
                         status=ProviderCallStatus.CONFIRMED,
                         value=RuntimeSessionReconciliation(
                             session=replace(session, updated_at_ms=_now_ms()),
-                            state=AgentState.WORKING,
+                            state=SessionRuntimeState.WORKING,
                             stream=stream,
                         ),
                         receipt={
@@ -280,9 +282,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                         "%s",
                         json.dumps(
                             {
-                                "event_name": (
-                                    "runtime.process.reconcile.retry_succeeded"
-                                ),
+                                "event_name": "runtime.process.reconcile.retry_succeeded",
                                 "metadata": {
                                     "attempt": attempt + 1,
                                     "session_id": session.bcn_session_id,
@@ -300,7 +300,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                             provider_thread_id=thread.thread_id,
                             updated_at_ms=_now_ms(),
                         ),
-                        state=AgentState.IDLE,
+                        state=SessionRuntimeState.IDLE,
                     ),
                     receipt={"provider_thread_id": thread.thread_id},
                 )
@@ -319,9 +319,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                         "%s",
                         json.dumps(
                             {
-                                "event_name": (
-                                    "runtime.process.reconcile.retry_exhausted"
-                                ),
+                                "event_name": "runtime.process.reconcile.retry_exhausted",
                                 "metadata": {
                                     "attempt": attempt + 1,
                                     "error_type": type(error).__name__,
@@ -517,7 +515,10 @@ class Runtime(IRuntime, IAsyncLifecycle):
         return True
 
     async def stop_session(
-        self, session: RuntimeSession, *, timeout: float
+        self,
+        session: RuntimeSession,
+        *,
+        timeout: float,
     ) -> ProviderCallResult[RuntimeSession]:
         connection = self._connections.pop(session.id, None)
         if connection is None:
@@ -547,7 +548,10 @@ class Runtime(IRuntime, IAsyncLifecycle):
             raise FileNotFoundError(f"Codex executable not found: {self._executable}")
         workspace = resolve_workspace_dir(session.workspace_id)
         await asyncio.to_thread(
-            workspace.mkdir, parents=True, exist_ok=True, mode=0o700
+            workspace.mkdir,
+            parents=True,
+            exist_ok=True,
+            mode=0o700,
         )
         if os.name != "nt":
             await asyncio.to_thread(workspace.chmod, 0o700)
@@ -647,7 +651,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:
     if isinstance(
-        error, (JsonlProcessExited, JsonlProcessNotRunning, JsonlRequestTimeout)
+        error,
+        (JsonlProcessExited, JsonlProcessNotRunning, JsonlRequestTimeout),
     ):
         return ProviderCallResult(
             status=ProviderCallStatus.UNKNOWN,

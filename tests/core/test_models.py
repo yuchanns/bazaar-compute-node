@@ -3,10 +3,6 @@ from __future__ import annotations
 import pytest
 
 from bazaar_compute_node.core.models import (
-    AgentSignal,
-    AgentState,
-    AgentTick,
-    AgentTickSource,
     BcnSession,
     ChannelSession,
     FreshCheckState,
@@ -14,8 +10,12 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeSession,
+    SessionRuntimeObservation,
+    SessionRuntimeObservationSource,
+    SessionRuntimeSignal,
+    SessionRuntimeState,
     StateTransitionError,
-    reduce_agent_tick,
+    reduce_session_runtime_state,
 )
 
 
@@ -101,130 +101,132 @@ def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:
         )
 
 
-def test_agent_ticks_are_idempotent_and_reject_invalid_order() -> None:
-    state = AgentState.CREATED
-    start = AgentTick(
-        source=AgentTickSource.SESSION,
-        signal=AgentSignal.START_REQUESTED,
+def test_session_runtime_observations_are_idempotent_and_reject_invalid_order() -> None:
+    state = SessionRuntimeState.CREATED
+    start = SessionRuntimeObservation(
+        source=SessionRuntimeObservationSource.SESSION,
+        signal=SessionRuntimeSignal.START_REQUESTED,
         observed_at_ms=2,
     )
-    state = reduce_agent_tick(state, start)
-    assert state is AgentState.STARTING
-    assert reduce_agent_tick(state, start) is state
+    state = reduce_session_runtime_state(state, start)
+    assert state is SessionRuntimeState.STARTING
+    assert reduce_session_runtime_state(state, start) is state
 
-    state = reduce_agent_tick(
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.START_CONFIRMED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.START_CONFIRMED,
             observed_at_ms=3,
         ),
     )
-    state = reduce_agent_tick(
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.CHANNEL,
-            signal=AgentSignal.TURN_STARTED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.CHANNEL,
+            signal=SessionRuntimeSignal.TURN_STARTED,
             observed_at_ms=4,
         ),
     )
-    assert state is AgentState.WORKING
-    state = reduce_agent_tick(
+    assert state is SessionRuntimeState.WORKING
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.TURN_COMPLETED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.TURN_COMPLETED,
             observed_at_ms=5,
         ),
     )
-    assert state is AgentState.IDLE
+    assert state is SessionRuntimeState.IDLE
 
     with pytest.raises(StateTransitionError):
-        reduce_agent_tick(
-            AgentState.IDLE,
-            AgentTick(
-                source=AgentTickSource.RUNTIME,
-                signal=AgentSignal.START_REQUESTED,
+        reduce_session_runtime_state(
+            SessionRuntimeState.IDLE,
+            SessionRuntimeObservation(
+                source=SessionRuntimeObservationSource.RUNTIME,
+                signal=SessionRuntimeSignal.START_REQUESTED,
                 observed_at_ms=6,
             ),
         )
 
 
-def test_agent_unknown_state_requires_reconciliation() -> None:
-    state = reduce_agent_tick(
-        AgentState.CREATED,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.UNKNOWN,
+def test_session_runtime_unknown_state_requires_reconciliation() -> None:
+    state = reduce_session_runtime_state(
+        SessionRuntimeState.CREATED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.UNKNOWN,
             observed_at_ms=2,
         ),
     )
-    assert state is AgentState.UNKNOWN
-    state = reduce_agent_tick(
+    assert state is SessionRuntimeState.UNKNOWN
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RECOVERY,
-            signal=AgentSignal.RECONCILE_REQUESTED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RECOVERY,
+            signal=SessionRuntimeSignal.RECONCILE_REQUESTED,
             observed_at_ms=3,
         ),
     )
-    state = reduce_agent_tick(
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RECOVERY,
-            signal=AgentSignal.RECONCILE_CONFIRMED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RECOVERY,
+            signal=SessionRuntimeSignal.RECONCILE_CONFIRMED,
             observed_at_ms=4,
         ),
     )
-    assert state is AgentState.IDLE
+    assert state is SessionRuntimeState.IDLE
 
 
-def test_agent_compaction_has_explicit_start_progress_and_completion_states() -> None:
-    state = reduce_agent_tick(
-        AgentState.CREATED,
-        AgentTick(
-            source=AgentTickSource.SESSION,
-            signal=AgentSignal.WORKING_OBSERVED,
+def test_session_runtime_compaction_has_explicit_start_progress_and_completion_states() -> (
+    None
+):
+    state = reduce_session_runtime_state(
+        SessionRuntimeState.CREATED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.SESSION,
+            signal=SessionRuntimeSignal.WORKING_OBSERVED,
             observed_at_ms=2,
         ),
     )
-    state = reduce_agent_tick(
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.COMPACTION_STARTED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.COMPACTION_STARTED,
             observed_at_ms=3,
         ),
     )
-    assert state is AgentState.COMPACTION_STARTING
-    state = reduce_agent_tick(
+    assert state is SessionRuntimeState.COMPACTION_STARTING
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.COMPACTION_IN_PROGRESS,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.COMPACTION_IN_PROGRESS,
             observed_at_ms=4,
         ),
     )
-    assert state is AgentState.COMPACTING
-    state = reduce_agent_tick(
+    assert state is SessionRuntimeState.COMPACTING
+    state = reduce_session_runtime_state(
         state,
-        AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.COMPACTION_COMPLETED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.COMPACTION_COMPLETED,
             observed_at_ms=5,
         ),
     )
-    assert state is AgentState.COMPACTION_COMPLETED
+    assert state is SessionRuntimeState.COMPACTION_COMPLETED
 
-    fallback = reduce_agent_tick(
-        AgentState.CREATED,
-        AgentTick(
-            source=AgentTickSource.CHANNEL,
-            signal=AgentSignal.WORKING_OBSERVED,
+    fallback = reduce_session_runtime_state(
+        SessionRuntimeState.CREATED,
+        SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.CHANNEL,
+            signal=SessionRuntimeSignal.WORKING_OBSERVED,
             observed_at_ms=2,
         ),
     )
-    assert fallback is AgentState.WORKING
+    assert fallback is SessionRuntimeState.WORKING
 
 
 def test_outbound_delivery_requires_a_passed_fresh_check() -> None:

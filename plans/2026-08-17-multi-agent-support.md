@@ -479,7 +479,11 @@ Focused tests：真实 version 12 fixture upgrade、legacy id 全表 backfill、
 - `src/bazaar_compute_node/app/registry.py`
 - `src/bazaar_compute_node/core/channel.py`
 - `src/bazaar_compute_node/core/runtime.py`
+- `src/bazaar_compute_node/core/models/states.py`
+- `src/bazaar_compute_node/core/models/__init__.py`
 - `src/bazaar_compute_node/core/orchestration/session.py`
+- `src/bazaar_compute_node/core/orchestration/services.py`
+- `src/bazaar_compute_node/core/orchestration/turn.py`
 - `src/bazaar_compute_node/contrib/telegram/plugin.py`
 - `src/bazaar_compute_node/contrib/wecom/plugin.py`
 - Runtime/Channel test support
@@ -492,17 +496,18 @@ Focused tests：真实 version 12 fixture upgrade、legacy id 全表 backfill、
 
 实施动作：
 
-1. 把 current one-channel/one-runtime composition 抽为 AgentApplication；NodeApplication 持有 shared facilities 与 Agent map。
-2. 将 storage lifecycle 提升到 NodeApplication，SessionOrchestrator 只启动/停止自己的 Runtime 和 Channel。
-3. 按 Agent config 多次加载同一种 Channel/Runtime provider，使用各自 options 与 workspace。
-4. Telegram/WeCom 通过 token_env/secret_env 解析 credential；缺失 credential 是 Agent-local startup failure。
-5. Runtime environment 删除 forbidden list，只保留正向 allowlist。
-6. 实现 Agent 独立 startup cleanup、status、health record 与零成功 ready。
-7. shutdown 逐个收敛所有 Agent，不因单个 Agent failure 中断。
+1. 在引入配置级 Agent runtime composition 前先清理旧 session-runtime lifecycle 术语，避免两种完全不同的 `Agent` 概念共存：`AgentState` -> `SessionRuntimeState`、`AgentSignal` -> `SessionRuntimeSignal`、`AgentTick` -> `SessionRuntimeObservation`、`AgentTickSource` -> `SessionRuntimeObservationSource`、`reduce_agent_tick` -> `reduce_session_runtime_state`、`_agent_states` -> `_session_runtime_states`、`agent_state(session_id)` -> `session_runtime_state(session_id)`，并将 `SessionStateWriter` 改为 `SessionRuntimeStateMachine`。
+2. 把 current one-channel/one-runtime composition 抽为 AgentApplication；NodeApplication 持有 shared facilities 与 Agent map。
+3. 将 storage lifecycle 提升到 NodeApplication，SessionOrchestrator 只启动/停止自己的 Runtime 和 Channel，并移除 Task 1.2 阶段保留的单 Agent storage identity/initialize 桥接。
+4. 按 Agent config 多次加载同一种 Channel/Runtime provider，使用各自 options 与 workspace。
+5. Telegram/WeCom 通过 token_env/secret_env 解析 credential；缺失 credential 是 Agent-local startup failure。
+6. Runtime environment 删除 forbidden list，只保留正向 allowlist。
+7. 实现 Agent 独立 startup cleanup、status、health record 与零成功 ready。
+8. shutdown 逐个收敛所有 Agent，不因单个 Agent failure 中断。
 
-Focused tests：两个 Telegram Agent 不同 env、Telegram + WeCom、两个 Codex Runtime 不同 options、一个成功一个失败、全部失败、零 Agent、shared storage 只 start/stop 一次、Agent channel ingress 不跨 orchestrator、Agent stop error 聚合。
+Focused tests：session-runtime lifecycle terminology 不再使用配置级 `Agent*` 命名、两个 Telegram Agent 不同 env、Telegram + WeCom、两个 Codex Runtime 不同 options、一个成功一个失败、全部失败、零 Agent、shared storage 只 start/stop 一次、Agent channel ingress 不跨 orchestrator、Agent stop error 聚合。
 
-完成条件与停止点：一个 daemon 能稳定持有多个隔离 AgentApplication，并允许部分或零成功；提交 Task 1.3 diff，停下等待 review。
+完成条件与停止点：一个 daemon 能稳定持有多个隔离 AgentApplication，并允许部分或零成功；配置级 Agent 与 session-runtime lifecycle terminology 无歧义；提交 Task 1.3 diff，停下等待 review。
 
 ### Task 1.4：单一全局 ReminderScheduler 与 Agent wake map
 

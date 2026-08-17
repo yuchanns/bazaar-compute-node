@@ -1,176 +1,95 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
-import math
+import json
+import logging
 import os
-import re
-import secrets
 import signal
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-from ..core.channel import ChannelContext, IChannel
-from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import RuntimeSession
 from ..core.observability import IAudit
-from ..core.orchestration import ReminderScheduler, SessionOrchestrator
-from ..core.orchestration.reminder_command import ReminderCommandService
-from ..core.paths import resolve_data_dir, resolve_workspace_dir
-from ..core.runtime import IRuntime, RuntimeCommandContext, RuntimeSandboxMode
-from ..core.storage import IStorage, NodeIdentity
+from ..core.paths import resolve_data_dir
+from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
-from .attachments import AttachmentMaterializer
-from .command import CommandDispatchError
-from .registry import AdapterFactories
-from .reminder_dispatch import CommandDispatcher
+from .agent import AgentApplication
+from .config import AgentConfiguration, NodeConfiguration
+from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
-CommandRecord = tuple[str, tuple[str, ...]]
 
-_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PLATFORM_ENVIRONMENT = {
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "PATH",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "SystemRoot",
-    "ComSpec",
-    "PATHEXT",
-    "USERPROFILE",
-}
-_FORBIDDEN_ENVIRONMENT = {
-    "BCN_WECOM_BOT_SECRET",
-    "DATABASE_URL",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "OPENAI_API_KEY",
-}
+@dataclass(frozen=True, slots=True)
+class AgentStartupResult:
+    agent_id: str
+    name: str
+    channel: str
+    runtime: str
+    status: str
+    error_type: str | None = None
+    error: str | None = None
+
+    def as_health_record(self) -> dict[str, object]:
+        record: dict[str, object] = {
+            "agent_id": self.agent_id,
+            "name": self.name,
+            "status": self.status,
+            "channel": self.channel,
+            "runtime": self.runtime,
+        }
+        if self.error_type is not None:
+            record["error_type"] = self.error_type
+        if self.error is not None:
+            record["error"] = self.error
+        return record
 
 
 class NodeApplication:
-    """Generic application lifecycle for one dynamically composed node."""
+    """Single-process daemon composition root for shared facilities and Agents."""
 
     def __init__(
         self,
         *,
-        factories: AdapterFactories,
+        configuration: NodeConfiguration,
+        shared_factories: SharedAdapterFactories,
+        registry: AdapterRegistry | None = None,
         endpoint_path: Path | None = None,
-        node_id: str = "bcn-node",
-        workspace_id: str | None = None,
-        runtime_options: Mapping[str, str] | None = None,
-        runtime_sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE,
-        runtime_network_access: bool = True,
-        runtime_idle_timeout_seconds: float = 0,
-        channel_options: Mapping[str, object] | None = None,
-        runtime_environment_include: Sequence[str] = (),
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
+        self.configuration = configuration
         self.data_dir = resolve_data_dir()
-        self.runtime_options = dict(runtime_options or {})
         self.timeout_budget = timeout_budget or TimeoutBudget(
             startup_seconds=60,
             provider_call_seconds=600,
             command_seconds=10,
             shutdown_seconds=5,
         )
-        self.storage: IStorage = factories.storage()
-        self.audit: IAudit = factories.audit()
-        self.command_log: list[CommandRecord] = []
-        self._wrapper_path: Path | None = None
-        self._identity: NodeIdentity | None = None
-        self._session_capabilities: dict[str, tuple[str, str]] = {}
-        self._concurrency = SessionLockRegistry()
-        self._started = False
-        self._stopped = asyncio.Event()
-        self._runtime_environment_include = tuple(runtime_environment_include)
-        self._attachment_materializer = AttachmentMaterializer(
-            self._workspace_path, self._referenced_attachment_paths
-        )
-        self.channel: IChannel = factories.channel.build(
-            ChannelContext(
-                attachments=self._attachment_materializer,
-                options=dict(channel_options or {}),
-                workspace=self._workspace_path,
-            )
-        )
-        self._runtime_context = RuntimeCommandContext(
-            run_command=self._run_runtime_command,
-            environment_for_session=self._runtime_environment,
-            node_id=node_id,
-            runtime_options=self.runtime_options,
-            sandbox_mode=runtime_sandbox_mode,
-            network_access=runtime_network_access,
-            startup_timeout_seconds=self.timeout_budget.startup_seconds,
-        )
-        self.runtime: IRuntime = factories.runtime(self._runtime_context)
-        if (
-            isinstance(runtime_idle_timeout_seconds, bool)
-            or not isinstance(runtime_idle_timeout_seconds, int | float)
-            or not math.isfinite(runtime_idle_timeout_seconds)
-        ):
-            raise ValueError("runtime_idle_timeout_seconds must be a finite number")
+        self.storage: IStorage = shared_factories.storage()
+        self.audit: IAudit = shared_factories.audit()
         self.timer_wheel = TimerWheel()
-        if (
-            runtime_idle_timeout_seconds > 0
-            and runtime_idle_timeout_seconds * 1_000 > self.timer_wheel.maximum_delay_ms
-        ):
-            raise ValueError("runtime_idle_timeout_seconds exceeds the timer horizon")
-        runtime_idle_timeout_ms = (
-            math.ceil(runtime_idle_timeout_seconds * 1_000)
-            if runtime_idle_timeout_seconds > 0
-            else 0
-        )
-        self.orchestrator = SessionOrchestrator(
-            node_id=node_id,
-            workspace_id=workspace_id,
-            channel=self.channel,
-            runtime=self.runtime,
-            storage=self.storage,
-            audit=self.audit,
-            timeout_budget=self.timeout_budget,
-            timer_wheel=self.timer_wheel,
-            runtime_idle_timeout_ms=runtime_idle_timeout_ms,
-            workspace=self._workspace_path,
-            concurrency=self._concurrency,
-            on_node_initialized=self._ensure_workspace,
-        )
-        self.reminder_scheduler = ReminderScheduler(
-            storage=self.storage,
-            timer_wheel=self.timer_wheel,
-            concurrency=self._concurrency,
-            publish_wake=self.orchestrator.publish_reminder_wake,
-        )
-        self.reminder_service = ReminderCommandService(
-            storage=self.storage,
-            concurrency=self._concurrency,
-            poke=self.reminder_scheduler.poke,
-        )
-        self.command_service = self.orchestrator.command_service
-        control_handler = None
-        if factories.control is not None:
-            control_handler = factories.control(self._adapter_context())
-        self.command_dispatcher = CommandDispatcher(
-            self.command_service,
-            reminder_service=self.reminder_service,
-            timeout_budget=self.timeout_budget,
-            control_handler=self._handle_control,
-            session_binding_validator=self._validate_session_binding,
-        )
         self.command_server = LocalCommandServer(
-            self.command_dispatcher,
+            self._dispatch,
             endpoint_path=endpoint_path,
         )
-        self._provider_control_handler = control_handler
+        self.agents: dict[str, AgentApplication] = {}
+        self.agent_startup_results: dict[str, AgentStartupResult] = {}
+        self._registry = registry or AdapterRegistry()
+        self._wrapper_path: Path | None = None
+        self._started = False
+        self._ready = False
+        self._accepting = False
+        self._stopped = asyncio.Event()
+        self._logger = logging.getLogger("bazaar_compute_node.application")
 
     @property
     def endpoint(self) -> str:
         return self.command_server.endpoint
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
 
     async def start(self) -> None:
         if self._started:
@@ -179,81 +98,129 @@ class NodeApplication:
         if os.name != "nt":
             await asyncio.to_thread(self.data_dir.chmod, 0o700)
         self._wrapper_path = await asyncio.to_thread(
-            install_bcc_wrapper, self.data_dir / "bin"
+            install_bcc_wrapper,
+            self.data_dir / "bin",
         )
         try:
+            await self.storage.start(timeout=self.timeout_budget.startup_seconds)
             await self.timer_wheel.start()
             await self.command_server.start()
-            await self.orchestrator.start(
-                timeout=self.timeout_budget.startup_seconds,
-            )
-            self._started = True
-            await self.reminder_scheduler.start(
-                timeout=self.timeout_budget.startup_seconds,
-            )
         except BaseException:
-            try:
-                await self.stop()
-            finally:
-                await self.timer_wheel.close()
+            await self._stop_shared_after_failed_start()
             raise
+
+        self._started = True
         self._stopped.clear()
-        self.command_dispatcher.start_accepting()
+        for agent_configuration in self.configuration.agents:
+            await self._start_agent(agent_configuration)
+        self._ready = True
+        self._accepting = True
+        started_count = len(self.agents)
+        failed_count = len(self.configuration.agents) - started_count
+        self._log(
+            "bcn.ready",
+            configured=len(self.configuration.agents),
+            started=started_count,
+            failed=failed_count,
+            endpoint=self.endpoint,
+        )
+
+    async def _start_agent(self, configuration: AgentConfiguration) -> None:
+        application: AgentApplication | None = None
+        try:
+            factories = await asyncio.to_thread(
+                self._registry.load_agent,
+                channel=configuration.channel.kind,
+                runtime=configuration.runtime.kind,
+                storage=self.configuration.storage,
+            )
+            storage_scope = self.storage.scope(configuration.id, configuration.name)
+            wrapper_path = self._wrapper_path
+            if wrapper_path is None:
+                raise RuntimeError("bcc wrapper is not installed")
+            application = AgentApplication(
+                configuration=configuration,
+                factories=factories,
+                storage=storage_scope,
+                audit=self.audit,
+                timer_wheel=self.timer_wheel,
+                endpoint=lambda: self.endpoint,
+                wrapper_path=wrapper_path,
+                timeout_budget=self.timeout_budget,
+            )
+            await application.start()
+        except asyncio.CancelledError:
+            if application is not None:
+                await self._stop_agent_after_failed_start(application)
+            raise
+        except Exception as error:  # noqa: BLE001
+            if application is not None:
+                await self._stop_agent_after_failed_start(application)
+            result = AgentStartupResult(
+                agent_id=configuration.id,
+                name=configuration.name,
+                channel=configuration.channel.kind,
+                runtime=configuration.runtime.kind,
+                status="failed",
+                error_type=type(error).__name__,
+                error=_safe_error(error),
+            )
+            self.agent_startup_results[configuration.id] = result
+            self._log("agent.start.failed", **result.as_health_record())
+            return
+
+        self.agents[configuration.id] = application
+        result = AgentStartupResult(
+            agent_id=configuration.id,
+            name=configuration.name,
+            channel=configuration.channel.kind,
+            runtime=configuration.runtime.kind,
+            status="started",
+        )
+        self.agent_startup_results[configuration.id] = result
+        self._log("agent.start.succeeded", **result.as_health_record())
 
     async def stop(self) -> None:
         if not self._started:
-            try:
-                await self.reminder_scheduler.stop(
-                    timeout=self.timeout_budget.shutdown_seconds,
-                )
-            finally:
-                try:
-                    await self.command_dispatcher.drain(
-                        timeout=self.timeout_budget.shutdown_seconds,
-                    )
-                finally:
-                    try:
-                        await self.command_server.stop()
-                    finally:
-                        try:
-                            await self._cleanup_bcc_wrapper()
-                        finally:
-                            await self.timer_wheel.close()
+            await self._stop_shared_after_failed_start()
             return
-        self._started = False
-        self.command_dispatcher.stop_accepting()
+        self._ready = False
+        self._accepting = False
+        errors: list[str] = []
+        for agent_id, agent in tuple(self.agents.items()):
+            try:
+                await agent.stop()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"agent[{agent_id}].stop:{type(error).__name__}")
+                self._log(
+                    "agent.stop.failed",
+                    agent_id=agent_id,
+                    error_type=type(error).__name__,
+                    error=_safe_error(error),
+                )
+        self.agents.clear()
         try:
-            await self.command_dispatcher.drain(
-                timeout=self.timeout_budget.shutdown_seconds,
-            )
-        finally:
-            try:
-                await self.reminder_scheduler.stop(
-                    timeout=self.timeout_budget.shutdown_seconds,
-                )
-            finally:
-                try:
-                    await self.orchestrator.stop(
-                        timeout=self.timeout_budget.shutdown_seconds,
-                    )
-                finally:
-                    try:
-                        await self.command_server.stop()
-                    finally:
-                        try:
-                            await self._cleanup_bcc_wrapper()
-                        finally:
-                            try:
-                                await self.timer_wheel.close()
-                            finally:
-                                self._stopped.set()
-
-    async def _cleanup_bcc_wrapper(self) -> None:
-        wrapper_path = self._wrapper_path
-        if wrapper_path is None:
-            return
-        await asyncio.to_thread(remove_bcc_wrapper, wrapper_path)
-        self._wrapper_path = None
+            await self.command_server.stop()
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"command_server.stop:{type(error).__name__}")
+        try:
+            await self.timer_wheel.close()
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"timer_wheel.close:{type(error).__name__}")
+        try:
+            await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"storage.stop:{type(error).__name__}")
+        try:
+            await self._cleanup_bcc_wrapper()
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"bcc.cleanup:{type(error).__name__}")
+        self._started = False
+        self._stopped.set()
+        if errors:
+            self._log("bcn.stop.errors", errors=errors)
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()
@@ -264,199 +231,149 @@ class NodeApplication:
                 pass
         await self._stopped.wait()
 
-    async def _ensure_workspace(self, identity: NodeIdentity) -> None:
-        self._identity = identity
-        workspace_dir = resolve_workspace_dir(identity.workspace_id)
-        await asyncio.to_thread(
-            workspace_dir.mkdir,
-            parents=True,
-            exist_ok=True,
-            mode=0o700,
-        )
-        if os.name != "nt":
-            await asyncio.to_thread(workspace_dir.chmod, 0o700)
-        await self._attachment_materializer.reconcile()
-
-    def _workspace_path(self) -> Path:
-        identity = self._identity
-        if identity is None:
-            raise RuntimeError("node identity has not been initialized")
-        return resolve_workspace_dir(identity.workspace_id)
-
-    async def _referenced_attachment_paths(self) -> set[str]:
-        async with self.storage.transaction() as transaction:
-            return set(await transaction.list_ready_attachment_paths())
-
-    def _adapter_context(self) -> Mapping[str, object]:
-        return {
-            "channel": self.channel,
-            "runtime": self.runtime,
-            "storage": self.storage,
-            "audit": self.audit,
-            "command_log": self.command_log,
-            "is_started": lambda: self._started,
-        }
-
-    async def _handle_control(
-        self, request: Mapping[str, object]
-    ) -> Mapping[str, object]:
-        if request.get("operation") == "health":
-            identity = self._identity
-            return {
-                "started": self._started,
-                "accepting": self.command_dispatcher.accepting,
-                "channel": self.channel.name,
-                "channel_health": dict(self.channel.health),
-                "runtime": self.runtime.name,
-                "storage": self.storage.name,
-                "audit": self.audit.name,
-                "node_id": identity.node_id if identity is not None else None,
-                "workspace_id": (
-                    identity.workspace_id if identity is not None else None
-                ),
-            }
-        if request.get("operation") == "shutdown":
-            self._stopped.set()
-            return {"accepted": True, "operation": "shutdown"}
-        if self._provider_control_handler is None:
-            raise ValueError("control operation is not supported")
-        return await self._provider_control_handler(request)
-
-    async def _validate_session_binding(
+    async def _dispatch(
         self,
-        session_id: str,
         request: Mapping[str, object],
-    ) -> None:
-        runtime_session_id = request.get("runtime_session_id")
-        session_capability = request.get("session_capability")
-        async with self.storage.transaction() as transaction:
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise CommandDispatchError(
-                    "SESSION_NOT_FOUND",
-                    f"unknown bcn session: {session_id}",
-                )
-        runtime_session = self.orchestrator.runtime_session(session_id)
-        if runtime_session is None or runtime_session_id != runtime_session.id:
-            raise CommandDispatchError(
-                "SESSION_BINDING_FAILED",
-                "runtime session binding is invalid",
-            )
-        capability_binding = self._session_capabilities.get(session_id)
-        if (
-            capability_binding is None
-            or capability_binding[0] != runtime_session.id
-            or not isinstance(session_capability, str)
-            or not hmac.compare_digest(
-                session_capability.encode(), capability_binding[1].encode()
-            )
-        ):
-            raise CommandDispatchError(
-                "SESSION_BINDING_FAILED",
-                "session capability is invalid",
-            )
-
-    def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
-        runtime_session = self.orchestrator.runtime_session(session.bcn_session_id)
-        if runtime_session is None or runtime_session.id != session.id:
-            raise RuntimeError("runtime session is not the current live binding")
-        return self._build_command_environment(
-            session.bcn_session_id,
-            session.id,
-        )
-
-    def _build_command_environment(
-        self,
-        session_id: str,
-        runtime_session_id: str,
-    ) -> dict[str, str]:
-        if not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        if not runtime_session_id:
-            raise ValueError("runtime_session_id must be a non-empty string")
-        wrapper_path = self._wrapper_path
-        if wrapper_path is None:
-            raise RuntimeError("bcc wrapper is not installed")
-        capability_binding = self._session_capabilities.get(session_id)
-        if capability_binding is None or capability_binding[0] != runtime_session_id:
-            capability_binding = (runtime_session_id, secrets.token_urlsafe(32))
-            self._session_capabilities[session_id] = capability_binding
-        session_capability = capability_binding[1]
-        wrapper_directory = str(wrapper_path.parent)
-        allowed = set(_PLATFORM_ENVIRONMENT)
-        for name in self.runtime.environment_variable_names():
-            if not _ENVIRONMENT_NAME.fullmatch(name):
-                raise ValueError(f"runtime environment name is invalid: {name}")
-            if name.startswith("BCN_") or name in _FORBIDDEN_ENVIRONMENT:
-                raise ValueError(f"runtime environment name is reserved: {name}")
-            allowed.add(name)
-        for name in self._runtime_environment_include:
-            if not _ENVIRONMENT_NAME.fullmatch(name):
-                raise ValueError(f"runtime environment name is invalid: {name}")
-            if name.startswith("BCN_") or name in _FORBIDDEN_ENVIRONMENT:
-                raise ValueError(f"runtime environment name is reserved: {name}")
-            if name not in os.environ:
-                raise ValueError(f"runtime environment variable is missing: {name}")
-            allowed.add(name)
-        environment = {
-            name: os.environ[name] for name in sorted(allowed) if os.environ.get(name)
-        }
-        environment["PATH"] = os.pathsep.join(
-            (wrapper_directory, environment.get("PATH", os.defpath))
-        )
-        environment.update(
-            {
-                "BCN_ENDPOINT": self.endpoint,
-                "BCN_SESSION_ID": session_id,
-                "BCN_RUNTIME_SESSION_ID": runtime_session_id,
-                "BCN_COMMAND_CAPABILITY": session_capability,
+    ) -> Mapping[str, object]:
+        kind = request.get("kind")
+        if kind == "control":
+            operation = request.get("operation")
+            if operation == "health":
+                return {"ok": True, "result": self._health()}
+            if operation == "shutdown":
+                self._stopped.set()
+                return {
+                    "ok": True,
+                    "result": {"accepted": True, "operation": "shutdown"},
+                }
+            return {
+                "ok": False,
+                "code": "INVALID_COMMAND",
+                "error": "control operation is not supported",
             }
-        )
-        return environment
+        if kind != "command":
+            return {
+                "ok": False,
+                "code": "INVALID_COMMAND",
+                "error": "request kind is not supported",
+            }
+        if not self._accepting:
+            return {
+                "ok": False,
+                "code": "SERVICE_NOT_READY",
+                "error": "command service is not accepting requests",
+            }
+        session_id = request.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return {
+                "ok": False,
+                "code": "SESSION_REQUIRED",
+                "error": "session_id must be a non-empty string",
+            }
+        owner: AgentApplication | None = None
+        for agent in self.agents.values():
+            if await agent.has_session(session_id):
+                if owner is not None:
+                    return {
+                        "ok": False,
+                        "code": "SESSION_BINDING_FAILED",
+                        "error": "session is bound to multiple Agents",
+                    }
+                owner = agent
+        if owner is None:
+            return {
+                "ok": False,
+                "code": "SESSION_NOT_FOUND",
+                "error": f"unknown bcn session: {session_id}",
+            }
+        return await owner.dispatch(request)
 
-    async def _run_runtime_command(
-        self,
-        session_id: str,
-        arguments: Sequence[str],
-        body: str | None,
-    ) -> None:
-        if not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        if not arguments or any(
-            not isinstance(argument, str) for argument in arguments
-        ):
-            raise ValueError("runtime command arguments must be non-empty text")
+    def _health(self) -> dict[str, object]:
+        records: list[dict[str, object]] = []
+        for configuration in self.configuration.agents:
+            agent = self.agents.get(configuration.id)
+            if agent is not None:
+                records.append(agent.health_record())
+                continue
+            result = self.agent_startup_results.get(configuration.id)
+            if result is not None:
+                records.append(result.as_health_record())
+                continue
+            records.append(
+                {
+                    "agent_id": configuration.id,
+                    "name": configuration.name,
+                    "status": "pending",
+                    "channel": configuration.channel.kind,
+                    "runtime": configuration.runtime.kind,
+                }
+            )
+        return {
+            "started": self._started,
+            "ready": self._ready,
+            "accepting": self._accepting,
+            "storage": self.storage.name,
+            "audit": self.audit.name,
+            "configured": len(self.configuration.agents),
+            "started_agents": len(self.agents),
+            "failed_agents": sum(
+                1
+                for result in self.agent_startup_results.values()
+                if result.status == "failed"
+            ),
+            "agents": records,
+        }
+
+    async def _stop_agent_after_failed_start(self, agent: AgentApplication) -> None:
+        try:
+            await agent.stop()
+        except BaseException as error:
+            self._logger.debug(
+                "agent cleanup after failed start failed",
+                extra={"agent_id": agent.agent_id},
+                exc_info=error,
+            )
+
+    async def _stop_shared_after_failed_start(self) -> None:
+        try:
+            await self.command_server.stop()
+        except BaseException as error:
+            self._logger.debug("command server cleanup failed", exc_info=error)
+        try:
+            await self.timer_wheel.close()
+        except BaseException as error:
+            self._logger.debug("timer wheel cleanup failed", exc_info=error)
+        try:
+            await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
+        except BaseException as error:
+            self._logger.debug("storage cleanup failed", exc_info=error)
+        try:
+            await self._cleanup_bcc_wrapper()
+        except BaseException as error:
+            self._logger.debug("bcc wrapper cleanup failed", exc_info=error)
+
+    async def _cleanup_bcc_wrapper(self) -> None:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
-            raise RuntimeError("bcc wrapper is not installed")
-        self.command_log.append((session_id, tuple(arguments)))
-        runtime_session = self.orchestrator.runtime_session(session_id)
-        if runtime_session is None:
-            raise RuntimeError("runtime session is not live")
-        environment = self._build_command_environment(
-            session_id,
-            runtime_session.id,
+            return
+        await asyncio.to_thread(remove_bcc_wrapper, wrapper_path)
+        self._wrapper_path = None
+
+    def _log(self, event_name: str, **metadata: object) -> None:
+        self._logger.info(
+            "%s",
+            json.dumps(
+                {"event_name": event_name, "metadata": metadata},
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ),
         )
-        process = await asyncio.create_subprocess_exec(
-            str(wrapper_path),
-            *arguments,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=environment,
-        )
-        input_data = body.encode() if body is not None else None
-        try:
-            _stdout, stderr = await process.communicate(input=input_data)
-        except asyncio.CancelledError:
-            if process.returncode is None:
-                process.terminate()
-                await process.wait()
-            raise
-        if process.returncode != 0:
-            error = stderr.decode(errors="replace").strip()
-            command = " ".join(arguments)
-            raise RuntimeError(f"bcc command failed ({command}): {error}")
 
 
-__all__ = ["CommandRecord", "NodeApplication"]
+def _safe_error(error: BaseException) -> str:
+    message = str(error).strip()
+    return message or type(error).__name__
+
+
+__all__ = ["AgentStartupResult", "NodeApplication"]

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 
 
-class AgentState(StrEnum):
-    """Provider-neutral lifecycle state for one bcn agent session."""
+class SessionRuntimeState(StrEnum):
+    """Provider-neutral runtime lifecycle state for one BCN session."""
 
     CREATED = "created"
     STARTING = "starting"
@@ -26,8 +26,8 @@ class ChannelTargetKind(StrEnum):
     GROUP = "group"
 
 
-class AgentTickSource(StrEnum):
-    """Origin of an observation; the orchestrator remains the state writer."""
+class SessionRuntimeObservationSource(StrEnum):
+    """Origin of one session-runtime observation."""
 
     SESSION = "session"
     CHANNEL = "channel"
@@ -35,8 +35,8 @@ class AgentTickSource(StrEnum):
     RECOVERY = "recovery"
 
 
-class AgentSignal(StrEnum):
-    """Provider-neutral facts that the core reducer can apply to an agent."""
+class SessionRuntimeSignal(StrEnum):
+    """Provider-neutral fact applied to one session runtime lifecycle."""
 
     START_REQUESTED = "start_requested"
     START_CONFIRMED = "start_confirmed"
@@ -56,20 +56,20 @@ class AgentSignal(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class AgentTick:
-    """An immutable, provider-neutral lifecycle observation."""
+class SessionRuntimeObservation:
+    """An immutable, provider-neutral session-runtime lifecycle observation."""
 
-    source: AgentTickSource
-    signal: AgentSignal
+    source: SessionRuntimeObservationSource
+    signal: SessionRuntimeSignal
     observed_at_ms: int
     error_kind: str | None = None
     error_message: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.source, AgentTickSource):
-            raise TypeError("agent tick source is invalid")
-        if not isinstance(self.signal, AgentSignal):
-            raise TypeError("agent tick signal is invalid")
+        if not isinstance(self.source, SessionRuntimeObservationSource):
+            raise TypeError("session runtime observation source is invalid")
+        if not isinstance(self.signal, SessionRuntimeSignal):
+            raise TypeError("session runtime observation signal is invalid")
         if not isinstance(self.observed_at_ms, int) or self.observed_at_ms < 0:
             raise ValueError("observed_at_ms must be a non-negative integer")
         if self.error_kind is not None and (
@@ -80,133 +80,147 @@ class AgentTick:
             raise TypeError("error_message must be a string when provided")
 
 
-AGENT_TICK_TRANSITIONS: Mapping[AgentState, Mapping[AgentSignal, AgentState]] = {
-    AgentState.CREATED: {
-        AgentSignal.START_REQUESTED: AgentState.STARTING,
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+SESSION_RUNTIME_OBSERVATION_TRANSITIONS: Mapping[
+    SessionRuntimeState, Mapping[SessionRuntimeSignal, SessionRuntimeState]
+] = {
+    SessionRuntimeState.CREATED: {
+        SessionRuntimeSignal.START_REQUESTED: SessionRuntimeState.STARTING,
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.STARTING: {
-        AgentSignal.START_REQUESTED: AgentState.STARTING,
-        AgentSignal.START_CONFIRMED: AgentState.IDLE,
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.STARTING: {
+        SessionRuntimeSignal.START_REQUESTED: SessionRuntimeState.STARTING,
+        SessionRuntimeSignal.START_CONFIRMED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.IDLE: {
-        AgentSignal.START_CONFIRMED: AgentState.IDLE,
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.TURN_STARTED: AgentState.WORKING,
-        AgentSignal.TURN_COMPLETED: AgentState.IDLE,
-        AgentSignal.TURN_FAILED: AgentState.IDLE,
-        AgentSignal.TURN_CANCELLED: AgentState.IDLE,
-        AgentSignal.COMPACTION_STARTED: AgentState.COMPACTION_STARTING,
-        AgentSignal.COMPACTION_IN_PROGRESS: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_COMPLETED: AgentState.COMPACTION_COMPLETED,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
-        AgentSignal.RECONCILE_CONFIRMED: AgentState.IDLE,
+    SessionRuntimeState.IDLE: {
+        SessionRuntimeSignal.START_CONFIRMED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.TURN_FAILED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.TURN_CANCELLED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
+        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
+        SessionRuntimeSignal.RECONCILE_CONFIRMED: SessionRuntimeState.IDLE,
     },
-    AgentState.WORKING: {
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.TURN_STARTED: AgentState.WORKING,
-        AgentSignal.TURN_COMPLETED: AgentState.IDLE,
-        AgentSignal.TURN_FAILED: AgentState.IDLE,
-        AgentSignal.TURN_CANCELLED: AgentState.IDLE,
-        AgentSignal.COMPACTION_STARTED: AgentState.COMPACTION_STARTING,
-        AgentSignal.COMPACTION_IN_PROGRESS: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_COMPLETED: AgentState.COMPACTION_COMPLETED,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.WORKING: {
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.TURN_FAILED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.TURN_CANCELLED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
+        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.COMPACTION_STARTING: {
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.COMPACTION_STARTED: AgentState.COMPACTION_STARTING,
-        AgentSignal.COMPACTION_IN_PROGRESS: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_COMPLETED: AgentState.COMPACTION_COMPLETED,
-        AgentSignal.TURN_STARTED: AgentState.WORKING,
-        AgentSignal.TURN_COMPLETED: AgentState.IDLE,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.COMPACTION_STARTING: {
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
+        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
+        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.COMPACTING: {
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.COMPACTION_STARTED: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_IN_PROGRESS: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_COMPLETED: AgentState.COMPACTION_COMPLETED,
-        AgentSignal.TURN_STARTED: AgentState.WORKING,
-        AgentSignal.TURN_COMPLETED: AgentState.IDLE,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.COMPACTING: {
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
+        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.COMPACTION_COMPLETED: {
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.COMPACTION_STARTED: AgentState.COMPACTION_STARTING,
-        AgentSignal.COMPACTION_IN_PROGRESS: AgentState.COMPACTING,
-        AgentSignal.COMPACTION_COMPLETED: AgentState.COMPACTION_COMPLETED,
-        AgentSignal.TURN_STARTED: AgentState.WORKING,
-        AgentSignal.TURN_COMPLETED: AgentState.IDLE,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.COMPACTION_COMPLETED: {
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
+        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
+        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
+        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.STOPPING: {
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.STOPPING: {
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.FAILED: {
-        AgentSignal.START_REQUESTED: AgentState.STARTING,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.TURN_FAILED: AgentState.FAILED,
-        AgentSignal.TURN_CANCELLED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.FAILED: {
+        SessionRuntimeSignal.START_REQUESTED: SessionRuntimeState.STARTING,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.TURN_FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.TURN_CANCELLED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.UNKNOWN: {
-        AgentSignal.RECONCILE_REQUESTED: AgentState.RECONCILING,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.UNKNOWN: {
+        SessionRuntimeSignal.RECONCILE_REQUESTED: SessionRuntimeState.RECONCILING,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
-    AgentState.RECONCILING: {
-        AgentSignal.START_REQUESTED: AgentState.STARTING,
-        AgentSignal.START_CONFIRMED: AgentState.IDLE,
-        AgentSignal.WORKING_OBSERVED: AgentState.WORKING,
-        AgentSignal.RECONCILE_REQUESTED: AgentState.RECONCILING,
-        AgentSignal.RECONCILE_CONFIRMED: AgentState.IDLE,
-        AgentSignal.STOP_REQUESTED: AgentState.STOPPING,
-        AgentSignal.FAILED: AgentState.FAILED,
-        AgentSignal.UNKNOWN: AgentState.UNKNOWN,
+    SessionRuntimeState.RECONCILING: {
+        SessionRuntimeSignal.START_REQUESTED: SessionRuntimeState.STARTING,
+        SessionRuntimeSignal.START_CONFIRMED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
+        SessionRuntimeSignal.RECONCILE_REQUESTED: SessionRuntimeState.RECONCILING,
+        SessionRuntimeSignal.RECONCILE_CONFIRMED: SessionRuntimeState.IDLE,
+        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
+        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
+        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
     },
 }
 
 
-AGENT_STATE_TRANSITIONS: Mapping[AgentState, frozenset[AgentState]] = {
+SESSION_RUNTIME_STATE_TRANSITIONS: Mapping[
+    SessionRuntimeState, frozenset[SessionRuntimeState]
+] = {
     current: frozenset(
         target for target in signal_targets.values() if target is not current
     )
-    for current, signal_targets in AGENT_TICK_TRANSITIONS.items()
+    for current, signal_targets in SESSION_RUNTIME_OBSERVATION_TRANSITIONS.items()
 }
 
 
-def reduce_agent_tick(current: AgentState, tick: AgentTick) -> AgentState:
-    """Reduce one tick without mutating state or performing I/O."""
+def reduce_session_runtime_state(
+    current: SessionRuntimeState,
+    observation: SessionRuntimeObservation,
+) -> SessionRuntimeState:
+    """Reduce one session-runtime observation without mutating state or doing I/O."""
 
-    if not isinstance(current, AgentState):
-        raise TypeError("agent state is invalid")
-    if not isinstance(tick, AgentTick):
-        raise TypeError("agent tick is invalid")
-    target = AGENT_TICK_TRANSITIONS.get(current, {}).get(tick.signal)
+    if not isinstance(current, SessionRuntimeState):
+        raise TypeError("session runtime state is invalid")
+    if not isinstance(observation, SessionRuntimeObservation):
+        raise TypeError("session runtime observation is invalid")
+    target = SESSION_RUNTIME_OBSERVATION_TRANSITIONS.get(current, {}).get(
+        observation.signal
+    )
     if target is None:
-        raise StateTransitionError("agent", current, tick.signal)
-    ensure_transition("agent", current, target, AGENT_STATE_TRANSITIONS)
+        raise StateTransitionError("session_runtime", current, observation.signal)
+    ensure_transition(
+        "session_runtime",
+        current,
+        target,
+        SESSION_RUNTIME_STATE_TRANSITIONS,
+    )
     return target
 
 

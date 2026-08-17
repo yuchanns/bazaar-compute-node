@@ -765,10 +765,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         return rows[0] if rows else None
 
     def _require_workspace(self, workspace_id: str) -> None:
-        if workspace_id != self._database.workspace_id:
-            raise ValueError(
-                "session workspace does not match the persisted node workspace"
-            )
+        raise RuntimeError("an Agent-scoped storage transaction is required")
 
     def _require_active_connection(self) -> aiosqlite.Connection:
         if not self._active or self._connection is None:

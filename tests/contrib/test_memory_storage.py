@@ -9,7 +9,8 @@ from bazaar_compute_node.core.models import BcnSession, ChannelSession, RuntimeA
 @pytest.mark.asyncio
 async def test_storage_transaction_rolls_back_on_error() -> None:
     storage = MemoryStorage()
-    await storage.initialize(node_id="node-1", workspace_id="workspace-1")
+    await storage.start(timeout=1)
+    scope = storage.scope("workspace-1", "Test Agent")
     channel_session = ChannelSession(
         id="channel-1",
         channel="test",
@@ -26,7 +27,7 @@ async def test_storage_transaction_rolls_back_on_error() -> None:
     )
 
     with pytest.raises(RuntimeError):
-        async with storage.transaction() as transaction:
+        async with scope.transaction() as transaction:
             await transaction.save_channel_session(channel_session)
             await transaction.save_bcn_session(session)
             raise RuntimeError("rollback")
