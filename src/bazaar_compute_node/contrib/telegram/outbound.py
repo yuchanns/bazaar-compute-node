@@ -7,12 +7,18 @@ from dataclasses import dataclass
 
 from ...core.channel import ChannelContext, ChannelDeliveryReceipt, ChannelSendRequest
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from .api import TelegramApiError, TelegramTransportError
+from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .approval import TelegramApprovalChannel
+from .attachments import PreparedTelegramAttachment, prepare_outbound_attachments
 from .identity import parse_provider_thread_id
 
 _MAX_RICH_MARKDOWN_BYTES = 32_768
+_MAX_RATE_LIMIT_RETRIES = 3
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+class _DeliveryDeadlineExpired(TimeoutError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +36,9 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         self._outbound_failed_requests = 0
         self._outbound_unknown_requests = 0
         self._outbound_parts_confirmed = 0
+        self._outbound_documents_confirmed = 0
         self._outbound_markdown_fallbacks = 0
+        self._outbound_rate_limit_retries = 0
 
     @property
     def health(self) -> Mapping[str, object]:
@@ -43,7 +51,9 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "outbound_failed_requests": self._outbound_failed_requests,
                 "outbound_unknown_requests": self._outbound_unknown_requests,
                 "outbound_parts_confirmed": self._outbound_parts_confirmed,
+                "outbound_documents_confirmed": self._outbound_documents_confirmed,
                 "outbound_markdown_fallbacks": self._outbound_markdown_fallbacks,
+                "outbound_rate_limit_retries": self._outbound_rate_limit_retries,
             }
         )
         return health
@@ -61,18 +71,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             return self._failed(
                 "connection_unavailable",
                 "Telegram channel is not ready for outbound delivery",
-            )
-
-        message = request.outbound
-        if message.attachments:
-            return self._failed(
-                "telegram_attachment_delivery_unavailable",
-                "Telegram outbound attachments are not available yet",
-            )
-        if not message.body.strip():
-            return self._failed(
-                "empty_message",
-                "Telegram outbound message must contain visible text",
             )
 
         try:
@@ -100,31 +98,47 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     "Telegram reply message id must be positive",
                 )
 
-        try:
-            parts = split_rich_markdown(message.body)
-        except (TypeError, ValueError) as error:
-            return self._failed("invalid_markdown", str(error))
-        if not parts:
-            return self._failed(
-                "empty_message",
-                "Telegram outbound message must contain visible text",
-            )
-
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        message = request.outbound
+        try:
+            parts = split_rich_markdown(message.body) if message.body.strip() else ()
+        except (TypeError, ValueError) as error:
+            return self._failed("invalid_markdown", str(error))
+        try:
+            if message.attachments:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError
+                attachments = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        prepare_outbound_attachments,
+                        self._context.workspace(),
+                        message.attachments,
+                    ),
+                    timeout=remaining,
+                )
+            else:
+                attachments = ()
+        except TimeoutError:
+            return self._failed(
+                "delivery_timeout",
+                "Telegram attachment preflight timed out",
+            )
+        except (OSError, TypeError, ValueError) as error:
+            return self._failed("invalid_attachment", str(error))
+
+        total_parts = len(parts) + len(attachments)
+        if total_parts == 0:
+            return self._failed(
+                "empty_message",
+                "Telegram outbound message must contain text or an attachment",
+            )
+
         receipts: list[dict[str, object]] = []
         confirmed = 0
-        for part in parts:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return self._clear_failure(
-                    total=len(parts),
-                    confirmed=confirmed,
-                    receipts=receipts,
-                    error_kind="delivery_timeout",
-                    error_message="Telegram delivery timed out before the next part",
-                )
 
+        for part in parts:
             payload: dict[str, object] = {
                 "chat_id": identity.chat_id,
                 "rich_message": {"markdown": part.markdown},
@@ -137,25 +151,33 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             delivery_format = "markdown"
             fallback_from: str | None = None
             try:
-                provider_message = await api.send_rich_message(
+                provider_message = await self._send_rich_message_with_retry(
+                    api,
                     payload,
-                    timeout=remaining,
+                    deadline=deadline,
                 )
             except asyncio.CancelledError:
                 raise
+            except _DeliveryDeadlineExpired:
+                return self._clear_failure(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="delivery_timeout",
+                    error_message="Telegram delivery deadline expired",
+                )
             except TelegramApiError as error:
                 if not is_rich_markdown_rejection(error.error_code, str(error)):
                     receipts.append(
-                        {
-                            "ordinal": part.ordinal,
-                            "kind": "rich_message",
-                            "format": delivery_format,
-                            "state": "failed",
-                            "provider_error_code": error.error_code,
-                        }
+                        self._failed_part(
+                            ordinal=part.ordinal,
+                            kind="rich_message",
+                            delivery_format=delivery_format,
+                            error=error,
+                        )
                     )
                     return self._clear_failure(
-                        total=len(parts),
+                        total=total_parts,
                         confirmed=confirmed,
                         receipts=receipts,
                         error_kind="provider_rejected_part",
@@ -166,35 +188,36 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 fallback_from = "markdown"
                 delivery_format = "blocks"
                 payload["rich_message"] = plain_rich_message(part.markdown)
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    return self._clear_failure(
-                        total=len(parts),
-                        confirmed=confirmed,
-                        receipts=receipts,
-                        error_kind="delivery_timeout",
-                        error_message="Telegram delivery timed out before formatting fallback",
-                    )
                 try:
-                    provider_message = await api.send_rich_message(
+                    provider_message = await self._send_rich_message_with_retry(
+                        api,
                         payload,
-                        timeout=remaining,
+                        deadline=deadline,
                     )
                 except asyncio.CancelledError:
                     raise
-                except TelegramApiError as fallback_error:
-                    receipts.append(
-                        {
-                            "ordinal": part.ordinal,
-                            "kind": "rich_message",
-                            "format": delivery_format,
-                            "fallback_from": fallback_from,
-                            "state": "failed",
-                            "provider_error_code": fallback_error.error_code,
-                        }
-                    )
+                except _DeliveryDeadlineExpired:
                     return self._clear_failure(
-                        total=len(parts),
+                        total=total_parts,
+                        confirmed=confirmed,
+                        receipts=receipts,
+                        error_kind="delivery_timeout",
+                        error_message=(
+                            "Telegram delivery deadline expired before "
+                            "formatting fallback"
+                        ),
+                    )
+                except TelegramApiError as fallback_error:
+                    receipt = self._failed_part(
+                        ordinal=part.ordinal,
+                        kind="rich_message",
+                        delivery_format=delivery_format,
+                        error=fallback_error,
+                    )
+                    receipt["fallback_from"] = fallback_from
+                    receipts.append(receipt)
+                    return self._clear_failure(
+                        total=total_parts,
                         confirmed=confirmed,
                         receipts=receipts,
                         error_kind="provider_rejected_part",
@@ -212,7 +235,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                         }
                     )
                     return self._unknown(
-                        total=len(parts),
+                        total=total_parts,
                         confirmed=confirmed,
                         receipts=receipts,
                         error_kind="send_unknown",
@@ -229,19 +252,15 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     }
                 )
                 return self._unknown(
-                    total=len(parts),
+                    total=total_parts,
                     confirmed=confirmed,
                     receipts=receipts,
                     error_kind="send_unknown",
                     error_message="Telegram Rich Message delivery outcome is unknown",
                 )
 
-            provider_message_id = provider_message.get("message_id")
-            if (
-                not isinstance(provider_message_id, int)
-                or isinstance(provider_message_id, bool)
-                or provider_message_id <= 0
-            ):
+            provider_message_id = self._outbound_provider_message_id(provider_message)
+            if provider_message_id is None:
                 receipts.append(
                     {
                         "ordinal": part.ordinal,
@@ -253,7 +272,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     }
                 )
                 return self._unknown(
-                    total=len(parts),
+                    total=total_parts,
                     confirmed=confirmed,
                     receipts=receipts,
                     error_kind="invalid_send_ack",
@@ -267,18 +286,207 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     "format": delivery_format,
                     "fallback_from": fallback_from,
                     "state": "confirmed",
-                    "provider_message_id": str(provider_message_id),
+                    "provider_message_id": provider_message_id,
                 }
             )
             confirmed += 1
             self._outbound_parts_confirmed += 1
 
+        for attachment_index, attachment in enumerate(attachments, start=1):
+            ordinal = len(parts) + attachment_index
+            payload: dict[str, object] = {"chat_id": identity.chat_id}
+            if identity.topic_id:
+                payload["message_thread_id"] = identity.topic_id
+            if not parts and attachment_index == 1 and reply_to_message_id is not None:
+                payload["reply_parameters"] = {"message_id": reply_to_message_id}
+
+            receipt_base: dict[str, object] = {
+                "ordinal": ordinal,
+                "kind": "document",
+                "name": attachment.descriptor.name,
+                "media_type": attachment.media_type,
+                "size_bytes": attachment.size_bytes,
+            }
+            try:
+                provider_message = await self._send_document_with_retry(
+                    api,
+                    payload,
+                    attachment,
+                    deadline=deadline,
+                )
+            except asyncio.CancelledError:
+                raise
+            except _DeliveryDeadlineExpired:
+                return self._clear_failure(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="delivery_timeout",
+                    error_message="Telegram delivery deadline expired",
+                )
+            except TelegramApiError as error:
+                receipt = dict(receipt_base)
+                receipt.update(
+                    {
+                        "state": "failed",
+                        "provider_error_code": error.error_code,
+                    }
+                )
+                if error.retry_after is not None:
+                    receipt["retry_after"] = error.retry_after
+                receipts.append(receipt)
+                return self._clear_failure(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="provider_rejected_part",
+                    error_message="Telegram rejected an outbound document part",
+                )
+            except TelegramTransportError as error:
+                receipt = dict(receipt_base)
+                receipt.update(
+                    {
+                        "state": "unknown",
+                        "error_type": error.error_type,
+                    }
+                )
+                receipts.append(receipt)
+                return self._unknown(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="send_unknown",
+                    error_message="Telegram document delivery outcome is unknown",
+                )
+            except (OSError, TypeError, ValueError) as error:
+                receipt = dict(receipt_base)
+                receipt.update(
+                    {
+                        "state": "failed",
+                        "error_type": type(error).__name__,
+                    }
+                )
+                receipts.append(receipt)
+                return self._clear_failure(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="invalid_attachment",
+                    error_message="Telegram attachment changed after preflight",
+                )
+
+            provider_message_id = self._outbound_provider_message_id(provider_message)
+            if provider_message_id is None:
+                receipt = dict(receipt_base)
+                receipt.update(
+                    {
+                        "state": "unknown",
+                        "error_type": "InvalidAcknowledgement",
+                    }
+                )
+                receipts.append(receipt)
+                return self._unknown(
+                    total=total_parts,
+                    confirmed=confirmed,
+                    receipts=receipts,
+                    error_kind="invalid_send_ack",
+                    error_message="Telegram send acknowledgement omitted message_id",
+                )
+
+            receipt = dict(receipt_base)
+            receipt.update(
+                {
+                    "state": "confirmed",
+                    "provider_message_id": provider_message_id,
+                }
+            )
+            receipts.append(receipt)
+            confirmed += 1
+            self._outbound_parts_confirmed += 1
+            self._outbound_documents_confirmed += 1
+
         self._outbound_confirmed_requests += 1
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
             value=self._channel_receipt(receipts),
-            receipt=self._delivery_receipt(len(parts), confirmed, receipts),
+            receipt=self._delivery_receipt(total_parts, confirmed, receipts),
         )
+
+    async def _send_rich_message_with_retry(
+        self,
+        api: TelegramBotApi,
+        payload: Mapping[str, object],
+        *,
+        deadline: float,
+    ) -> Mapping[str, object]:
+        retries = 0
+        loop = asyncio.get_running_loop()
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise _DeliveryDeadlineExpired
+            try:
+                return await api.send_rich_message(payload, timeout=remaining)
+            except TelegramApiError as error:
+                if not await self._retry_after(
+                    error,
+                    deadline=deadline,
+                    retries=retries,
+                ):
+                    raise
+                retries += 1
+
+    async def _send_document_with_retry(
+        self,
+        api: TelegramBotApi,
+        payload: Mapping[str, object],
+        attachment: PreparedTelegramAttachment,
+        *,
+        deadline: float,
+    ) -> Mapping[str, object]:
+        retries = 0
+        loop = asyncio.get_running_loop()
+        while True:
+            if deadline - loop.time() <= 0:
+                raise _DeliveryDeadlineExpired
+            try:
+                with attachment.open() as document:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise _DeliveryDeadlineExpired
+                    return await api.send_document(
+                        payload,
+                        document,
+                        filename=attachment.descriptor.name,
+                        media_type=attachment.media_type,
+                        timeout=remaining,
+                    )
+            except TelegramApiError as error:
+                if not await self._retry_after(
+                    error,
+                    deadline=deadline,
+                    retries=retries,
+                ):
+                    raise
+                retries += 1
+
+    async def _retry_after(
+        self,
+        error: TelegramApiError,
+        *,
+        deadline: float,
+        retries: int,
+    ) -> bool:
+        retry_after = error.retry_after
+        if retry_after is None or retry_after < 0 or retries >= _MAX_RATE_LIMIT_RETRIES:
+            return False
+        remaining = deadline - asyncio.get_running_loop().time()
+        delay = float(retry_after)
+        if remaining <= 0 or delay >= remaining:
+            raise _DeliveryDeadlineExpired
+        self._outbound_rate_limit_retries += 1
+        await asyncio.sleep(delay)
+        return True
 
     def _failed(
         self,
@@ -335,6 +543,36 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             error_message=error_message,
             receipt=self._delivery_receipt(total, confirmed, receipts),
         )
+
+    @staticmethod
+    def _failed_part(
+        *,
+        ordinal: int,
+        kind: str,
+        delivery_format: str,
+        error: TelegramApiError,
+    ) -> dict[str, object]:
+        receipt: dict[str, object] = {
+            "ordinal": ordinal,
+            "kind": kind,
+            "format": delivery_format,
+            "state": "failed",
+            "provider_error_code": error.error_code,
+        }
+        if error.retry_after is not None:
+            receipt["retry_after"] = error.retry_after
+        return receipt
+
+    @staticmethod
+    def _outbound_provider_message_id(message: Mapping[str, object]) -> str | None:
+        provider_message_id = message.get("message_id")
+        if (
+            not isinstance(provider_message_id, int)
+            or isinstance(provider_message_id, bool)
+            or provider_message_id <= 0
+        ):
+            return None
+        return str(provider_message_id)
 
     @staticmethod
     def _delivery_receipt(

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable, Mapping
+import hashlib
+import os
+import stat
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from ...core.channel import IAttachmentMaterializer
-from ...core.models import InboundAttachment
+from ...core.models import InboundAttachment, OutboundAttachment
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 
 _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_RICH_BLOCKS = 500
 _MAX_RICH_DEPTH = 16
+_READ_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +40,34 @@ class TelegramAttachmentSource:
             or self.file_size < 0
         ):
             raise ValueError("Telegram attachment file_size must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTelegramAttachment:
+    descriptor: OutboundAttachment
+    workspace: Path
+    media_type: str
+    size_bytes: int
+    device: int
+    inode: int
+    modified_at_ns: int
+
+    def open(self) -> BinaryIO:
+        descriptor, file_stat = _open_outbound_file(
+            self.workspace,
+            self.descriptor,
+        )
+        if (
+            file_stat.st_size != self.size_bytes
+            or file_stat.st_dev != self.device
+            or file_stat.st_ino != self.inode
+            or file_stat.st_mtime_ns != self.modified_at_ns
+        ):
+            os.close(descriptor)
+            raise ValueError(
+                f"Telegram attachment changed after preflight: {self.descriptor.name}"
+            )
+        return os.fdopen(descriptor, "rb")
 
 
 def attachment_sources(
@@ -150,7 +185,66 @@ async def materialize_attachments(
     return tuple(attachments)
 
 
-async def _bounded_stream(source: AsyncIterable[bytes]):
+def prepare_outbound_attachments(
+    workspace: Path,
+    attachments: tuple[OutboundAttachment, ...],
+) -> tuple[PreparedTelegramAttachment, ...]:
+    root = workspace.resolve(strict=True)
+    prepared: list[PreparedTelegramAttachment] = []
+    for attachment in attachments:
+        if "\r" in attachment.name or "\n" in attachment.name:
+            raise ValueError(
+                "Telegram attachment filename contains a line break: "
+                f"{attachment.name!r}"
+            )
+        media_type = attachment.media_type or "application/octet-stream"
+        if "\r" in media_type or "\n" in media_type:
+            raise ValueError(
+                "Telegram attachment media type contains a line break: "
+                f"{attachment.name}"
+            )
+        descriptor, file_stat = _open_outbound_file(root, attachment)
+        digest = hashlib.sha256()
+        size_bytes = 0
+        try:
+            while chunk := os.read(descriptor, _READ_CHUNK_BYTES):
+                size_bytes += len(chunk)
+                if size_bytes > _MAX_UPLOAD_BYTES:
+                    raise ValueError(
+                        f"Telegram attachment exceeds 50 MB: {attachment.name}"
+                    )
+                digest.update(chunk)
+        finally:
+            os.close(descriptor)
+        if size_bytes != file_stat.st_size:
+            raise ValueError(
+                f"Telegram attachment changed during preflight: {attachment.name}"
+            )
+        if size_bytes != attachment.size_bytes:
+            raise ValueError(
+                "Telegram attachment size does not match its descriptor: "
+                f"{attachment.name}"
+            )
+        if digest.hexdigest() != attachment.sha256:
+            raise ValueError(
+                "Telegram attachment digest does not match its descriptor: "
+                f"{attachment.name}"
+            )
+        prepared.append(
+            PreparedTelegramAttachment(
+                descriptor=attachment,
+                workspace=root,
+                media_type=media_type,
+                size_bytes=size_bytes,
+                device=file_stat.st_dev,
+                inode=file_stat.st_ino,
+                modified_at_ns=file_stat.st_mtime_ns,
+            )
+        )
+    return tuple(prepared)
+
+
+async def _bounded_stream(source: AsyncIterable[bytes]) -> AsyncIterator[bytes]:
     total = 0
     async for chunk in source:
         if not isinstance(chunk, bytes):
@@ -220,8 +314,9 @@ def _collect_rich_media(
                 if not isinstance(item, Mapping):
                     continue
                 remaining[0] -= 1
-                if isinstance(item.get("blocks"), list):
-                    nested_blocks.extend(item["blocks"])
+                item_blocks = item.get("blocks")
+                if isinstance(item_blocks, list):
+                    nested_blocks.extend(item_blocks)
         if nested_blocks:
             _collect_rich_media(
                 nested_blocks,
@@ -296,8 +391,52 @@ def _source_from_file(
     )
 
 
+def _open_outbound_file(
+    workspace: Path,
+    attachment: OutboundAttachment,
+) -> tuple[int, os.stat_result]:
+    relative = PurePosixPath(attachment.relative_path)
+    current = workspace
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(
+                f"Telegram attachment path contains a symlink: {attachment.name}"
+            )
+    resolved = current.resolve(strict=True)
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as error:
+        raise ValueError(
+            f"Telegram attachment path leaves the workspace: {attachment.name}"
+        ) from error
+    descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        file_stat = os.fstat(descriptor)
+        opened_stat = os.stat(resolved, follow_symlinks=False)
+        if (
+            file_stat.st_dev != opened_stat.st_dev
+            or file_stat.st_ino != opened_stat.st_ino
+        ):
+            raise ValueError(
+                f"Telegram attachment changed while it was opened: {attachment.name}"
+            )
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError(
+                f"Telegram attachment is not a regular file: {attachment.name}"
+            )
+        if file_stat.st_size > _MAX_UPLOAD_BYTES:
+            raise ValueError(f"Telegram attachment exceeds 50 MB: {attachment.name}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, file_stat
+
+
 __all__ = [
+    "PreparedTelegramAttachment",
     "TelegramAttachmentSource",
     "attachment_sources",
     "materialize_attachments",
+    "prepare_outbound_attachments",
 ]

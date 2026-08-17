@@ -38,8 +38,8 @@ class TelegramApprovalChannel(TelegramChannel):
         self._approval_callbacks = 0
         self._approval_callback_rejections = 0
         self._approval_callback_answer_failures = 0
+        self._approval_feedback_failures = 0
         self._approval_decisions = 0
-        self._approval_timeouts = 0
 
     @property
     def health(self) -> Mapping[str, object]:
@@ -53,8 +53,8 @@ class TelegramApprovalChannel(TelegramChannel):
                 "approval_callback_answer_failures": (
                     self._approval_callback_answer_failures
                 ),
+                "approval_feedback_failures": self._approval_feedback_failures,
                 "approval_decisions": self._approval_decisions,
-                "approval_timeouts": self._approval_timeouts,
             }
         )
         return health
@@ -93,20 +93,11 @@ class TelegramApprovalChannel(TelegramChannel):
         identity = parse_provider_thread_id(request.provider_thread_id)
         if identity.bot_id != bot_id:
             raise ValueError("Telegram approval route belongs to another bot")
-        if timeout <= 0:
-            self._approval_timeouts += 1
-            return ApprovalResult(
-                request_id=request_id,
-                decision=ApprovalDecision.REJECTED,
-                decided_at_ms=time_ns() // 1_000_000,
-                reason="approval_timeout",
-            )
 
         reply_to_message_id = self._provider_message_id(
             request.provider_reply_to_message_id
         )
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         token = secrets.token_urlsafe(12)
         future: asyncio.Future[ApprovalResult] = loop.create_future()
         pending = _PendingApproval(
@@ -132,14 +123,12 @@ class TelegramApprovalChannel(TelegramChannel):
                 "inline_keyboard": [
                     [
                         {
-                            "text": "Approve",
+                            "text": "✅ Approve",
                             "callback_data": f"{_CALLBACK_PREFIX}:approve:{token}",
-                            "style": "success",
                         },
                         {
-                            "text": "Reject",
+                            "text": "❎ Reject",
                             "callback_data": f"{_CALLBACK_PREFIX}:reject:{token}",
-                            "style": "danger",
                         },
                     ]
                 ]
@@ -151,10 +140,7 @@ class TelegramApprovalChannel(TelegramChannel):
             payload["reply_parameters"] = {"message_id": reply_to_message_id}
 
         try:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return self._approval_timeout(pending)
-            prompt = await api.send_rich_message(payload, timeout=remaining)
+            prompt = await api.send_rich_message(payload, timeout=timeout)
             provider_prompt_message_id = prompt.get("message_id")
             if (
                 not isinstance(provider_prompt_message_id, int)
@@ -173,18 +159,9 @@ class TelegramApprovalChannel(TelegramChannel):
 
             if future.done():
                 if future.cancelled():
-                    return self._approval_timeout(pending)
+                    raise asyncio.CancelledError
                 return future.result()
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return self._approval_timeout(pending)
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(future),
-                    timeout=remaining,
-                )
-            except TimeoutError:
-                return self._approval_timeout(pending)
+            return await future
         finally:
             self._pending_approvals.pop(token, None)
             self._approval_tokens_by_request.pop(request_id, None)
@@ -298,10 +275,52 @@ class TelegramApprovalChannel(TelegramChannel):
         self._approval_decisions += 1
         pending.future.set_result(result)
         self._last_update_disposition = f"approval_{state}"
+        await self._send_approval_feedback(
+            pending,
+            message_id=message_id,
+            decision=decision,
+        )
         await self._answer_callback(
             query_id,
             "Approved" if decision is ApprovalDecision.APPROVED else "Rejected",
         )
+
+    async def _send_approval_feedback(
+        self,
+        pending: _PendingApproval,
+        *,
+        message_id: int,
+        decision: ApprovalDecision,
+    ) -> None:
+        api = self._api
+        if api is None:
+            self._approval_feedback_failures += 1
+            return
+        action = "approved" if decision is ApprovalDecision.APPROVED else "rejected"
+        payload: dict[str, object] = {
+            "chat_id": pending.chat_id,
+            "rich_message": {
+                "markdown": f"Action {action}",
+                "skip_entity_detection": True,
+            },
+            "reply_parameters": {"message_id": message_id},
+        }
+        if pending.topic_id:
+            payload["message_thread_id"] = pending.topic_id
+        try:
+            await api.send_rich_message(
+                payload,
+                timeout=_CALLBACK_ANSWER_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (
+            TelegramApiError,
+            TelegramTransportError,
+            TimeoutError,
+            ValueError,
+        ):
+            self._approval_feedback_failures += 1
 
     async def _answer_callback(self, query_id: str, text: str) -> None:
         api = self._api
@@ -316,20 +335,13 @@ class TelegramApprovalChannel(TelegramChannel):
             )
         except asyncio.CancelledError:
             raise
-        except TelegramApiError, TelegramTransportError, TimeoutError, ValueError:
+        except (
+            TelegramApiError,
+            TelegramTransportError,
+            TimeoutError,
+            ValueError,
+        ):
             self._approval_callback_answer_failures += 1
-
-    def _approval_timeout(self, pending: _PendingApproval) -> ApprovalResult:
-        self._approval_timeouts += 1
-        self._remember_resolved(pending.token, "expired")
-        if not pending.future.done():
-            pending.future.cancel()
-        return ApprovalResult(
-            request_id=pending.request_id,
-            decision=ApprovalDecision.REJECTED,
-            decided_at_ms=time_ns() // 1_000_000,
-            reason="approval_timeout",
-        )
 
     def _remember_resolved(self, token: str, state: str) -> None:
         self._resolved_approval_tokens[token] = state
@@ -393,7 +405,7 @@ class TelegramApprovalChannel(TelegramChannel):
             return "Already approved"
         if state == "rejected":
             return "Already rejected"
-        return "Approval expired"
+        return "Approval is no longer valid"
 
 
 __all__ = ["TelegramApprovalChannel"]

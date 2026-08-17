@@ -243,6 +243,9 @@ async def request_approval(
 ) -> ApprovalResult: ...
 ```
 
+`timeout` 用于本次 provider prompt 请求的传输 deadline；approval completion
+由有效 callback、channel stop 或当前 task cancellation 驱动。
+
 `SessionTurnCoordinator.approval_handler()` 使用当前已有的：
 
 ```text
@@ -697,7 +700,7 @@ Quoted message 使用同一附件处理逻辑。
 3. 创建 pending approval。
 4. 调用 `sendRichMessage`。
 5. 在同一 chat/topic 中回复触发当前 turn 的消息。
-6. 等待 callback 或 timeout。
+6. 等待有效 callback、channel stop 或当前 task cancellation。
 7. 返回 `ApprovalResult`。
 
 Prompt：
@@ -713,7 +716,7 @@ Prompt：
 Inline keyboard：
 
 ```text
-[Approve] [Reject]
+[✅ Approve] [❎ Reject]
 ```
 
 ### 7.2 Pending approval state
@@ -772,10 +775,15 @@ approve:
 reject:
     ApprovalDecision.REJECTED
 
-timeout:
+channel stop:
     ApprovalDecision.REJECTED
-    reason = approval_timeout
+    reason = channel_stopped
 ```
+
+每个首个有效 callback 在完成 approval future 后，使用同一 chat/topic 的
+`sendRichMessage` 回复 approval 卡片，发送 `Action approved` 或
+`Action rejected`。同时调用 `answerCallbackQuery` 结束 Telegram 客户端的按钮
+等待状态。
 
 Resolved token 的后续 callback 返回 resolved notification。
 
@@ -783,8 +791,9 @@ Resolved token 的后续 callback 返回 resolved notification。
 
 Channel stop 时完成所有 pending approval future，并清理 maps。
 
-Polling reconnect 不影响 pending approval，因为 callback token 与 future 保存在
-TelegramChannel 实例中。
+当前 channel 实例内的 polling reconnect 不影响 pending approval，因为 callback
+token 与 future 保存在实例中。进程重启后由新的 Codex turn 重新建立 approval
+request。
 
 ## 8. Rich Markdown Outbound
 
@@ -1249,7 +1258,8 @@ tests/contrib/test_orchestration.py
 - callback sender validation；
 - `answerCallbackQuery`；
 - approve/reject result；
-- timeout result；
+- visible `Action approved` / `Action rejected` feedback；
+- channel stop result；
 - stop cleanup；
 - audit correlation verification。
 
@@ -1415,8 +1425,9 @@ all modified Python files: LSP diagnostics clean
 9. **Approval callback 状态**  
    First valid callback 完成 future；后续 callback 读取 resolved 状态。
 
-10. **Approval timeout**  
-    Timeout 产生明确 rejected result 并清理 pending state。
+10. **Approval feedback**
+    First valid callback 完成 pending state，并在相同 chat/topic 回复
+    `Action approved` 或 `Action rejected`。
 
 11. **Long-poll cancellation**  
     Channel stop 取消当前 HTTP wait 并关闭共享 session。

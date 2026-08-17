@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Mapping
+from typing import BinaryIO
 
 import aiohttp
 
@@ -115,6 +117,67 @@ class TelegramBotApi:
             )
         return result
 
+    async def send_document(
+        self,
+        payload: Mapping[str, object],
+        document: BinaryIO,
+        *,
+        filename: str,
+        media_type: str,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        if not isinstance(filename, str) or not filename:
+            raise ValueError("Telegram document filename must be non-empty")
+        if "\r" in filename or "\n" in filename:
+            raise ValueError("Telegram document filename must not contain line breaks")
+        if not isinstance(media_type, str) or not media_type:
+            raise ValueError("Telegram document media type must be non-empty")
+        if "\r" in media_type or "\n" in media_type:
+            raise ValueError(
+                "Telegram document media type must not contain line breaks"
+            )
+
+        form = aiohttp.FormData(quote_fields=False)
+        for field_name, value in payload.items():
+            if not isinstance(field_name, str) or not field_name:
+                raise ValueError("Telegram multipart field name must be non-empty")
+            if isinstance(value, (Mapping, list, tuple)):
+                field_value = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            elif isinstance(value, bool):
+                field_value = "true" if value else "false"
+            elif isinstance(value, (str, int, float)):
+                field_value = str(value)
+            else:
+                raise TypeError(
+                    f"Telegram multipart field has unsupported value: {field_name}"
+                )
+            form.add_field(field_name, field_value)
+        form.add_field(
+            "document",
+            document,
+            filename=filename,
+            content_type=media_type,
+        )
+
+        result = await self._request(
+            "sendDocument",
+            {},
+            timeout=timeout,
+            form=form,
+        )
+        if not isinstance(result, Mapping):
+            raise TelegramApiError(
+                "sendDocument",
+                http_status=200,
+                error_code=None,
+                description="provider result is not a message object",
+            )
+        return result
+
     async def answer_callback_query(
         self,
         callback_query_id: str,
@@ -178,6 +241,7 @@ class TelegramBotApi:
         payload: Mapping[str, object],
         *,
         timeout: float,
+        form: aiohttp.FormData | None = None,
     ) -> object:
         if timeout <= 0:
             raise TimeoutError(f"Telegram {method} deadline expired")
@@ -188,11 +252,16 @@ class TelegramBotApi:
         )
         url = f"{_API_BASE_URL}/bot{self._token}/{method}"
         try:
-            async with self._session.post(
-                url,
-                json=dict(payload),
-                timeout=client_timeout,
-            ) as response:
+            request = (
+                self._session.post(url, data=form, timeout=client_timeout)
+                if form is not None
+                else self._session.post(
+                    url,
+                    json=dict(payload),
+                    timeout=client_timeout,
+                )
+            )
+            async with request as response:
                 http_status = response.status
                 try:
                     body = await response.json(content_type=None)
