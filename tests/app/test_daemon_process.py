@@ -80,8 +80,23 @@ def start_test_process(
     data_dir.mkdir(parents=True, exist_ok=True)
     config_path = data_dir / "test_config.toml"
     config_path.write_text(
-        f'[node]\nchannel = "test"\nruntime = "test"\n'
-        f'storage = "test"\nendpoint = "{endpoint_text}"\n',
+        f"""
+version = "2"
+
+[node]
+storage = "test"
+endpoint = "{endpoint_text}"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "test-agent"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
         encoding="utf-8",
     )
     environment = os.environ.copy()
@@ -99,12 +114,6 @@ def start_test_process(
             str(config_path),
             "--database-name",
             "test.sqlite3",
-            "--channel",
-            "test",
-            "--runtime",
-            "test",
-            "--storage",
-            "test",
             "--endpoint",
             str(endpoint),
         ],

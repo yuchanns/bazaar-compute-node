@@ -34,55 +34,56 @@ def test_runtime_version_matches_distribution_metadata() -> None:
     assert CLIENT_INFO.version == distribution_version
 
 
-def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
+def test_cli_loads_v2_agent_configuration_and_defaults_node_options(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
+        encoding="utf-8",
+    )
     parser = build_parser()
-    args = parser.parse_args(["run", "--channel", "test", "--runtime", "test"])
+    args = parser.parse_args(["run", "--config", str(config_path)])
     _apply_runtime_configuration(args, parser)
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
+    assert args.configuration.version == "2"
+    assert args.configuration.agents[0].channel.kind == "test"
+    assert args.configuration.agents[0].runtime.kind == "test"
     assert args.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert args.network_access is True
     assert args.runtime_idle_timeout_seconds == 0
 
 
-def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "start",
-            "--channel",
-            "codex",
-            "--runtime",
-            "codex",
-            "--model",
-            "gpt-5.6-luna",
-            "--effort",
-            "max",
-            "--sandbox-mode",
-            "danger-full-access",
-            "--no-network-access",
-        ]
-    )
-    _apply_runtime_configuration(args, parser)
-
-    command = _daemon_command(args, tmp_path)
-
-    assert command[-7:] == [
-        "--model",
-        "gpt-5.6-luna",
-        "--effort",
-        "max",
-        "--sandbox-mode",
-        "danger-full-access",
-        "--no-network-access",
-    ]
-
-
 def test_cli_forwards_explicit_config_and_database_name(tmp_path: Path) -> None:
     config_path = tmp_path / "task-config.toml"
     config_path.write_text(
-        '[node]\nchannel = "test"\nruntime = "test"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
         encoding="utf-8",
     )
     parser = build_parser()
@@ -110,8 +111,10 @@ def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> N
     configuration = load_node_configuration(config_path)
 
     assert config_path.is_file()
-    assert configuration.channel is None
-    assert configuration.runtime is None
+    assert configuration.version == "2"
+    assert configuration.agents == ()
+    assert configuration.storage == "sqlite"
+    assert configuration.audit == "logging"
     assert configuration.database_name is None
 
 
@@ -123,84 +126,45 @@ def test_database_name_rejects_paths(value: str) -> None:
         parser.parse_args(["run", "--database-name", value])
 
 
-def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
-    data_dir = resolve_data_dir()
-    data_dir.mkdir(parents=True)
-    (data_dir / "config.toml").write_text(
-        '[node]\nchannel = "config-channel"\nruntime = "config-runtime"\n'
-        'storage = "config-storage"\naudit = "config-audit"\n'
-        'endpoint = "config.sock"\n\n'
-        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n'
-        'sandbox_mode = "danger-full-access"\nnetwork_access = false\n'
-        "idle_timeout = 2.25\n\n"
-        '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
-        '[channel.config-channel]\nbot_id = "test-bot"\n'
-        'websocket_url = "wss://wecom.example.test"\n',
-        encoding="utf-8",
-    )
-    parser = build_parser()
-    config_args = parser.parse_args(["run"])
-    _apply_runtime_configuration(config_args, parser)
-    assert config_args.channel == "config-channel"
-    assert config_args.runtime == "config-runtime"
-    assert config_args.storage == "config-storage"
-    assert config_args.audit == "config-audit"
-    assert config_args.endpoint == Path("config.sock")
-    assert config_args.database_name is None
-    assert config_args.model == "config-model"
-    assert config_args.effort == "config-effort"
-    assert config_args.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
-    assert config_args.network_access is False
-    assert config_args.runtime_idle_timeout_seconds == 2.25
-    assert config_args.runtime_env_include == ("CUSTOM_CA",)
-    assert config_args.channel_options == {
-        "bot_id": "test-bot",
-        "websocket_url": "wss://wecom.example.test",
-    }
-
-    flag_args = parser.parse_args(
-        [
-            "run",
-            "--channel",
-            "codex",
-            "--runtime",
-            "codex",
-            "--storage",
-            "flag-storage",
-            "--audit",
-            "flag-audit",
-            "--endpoint",
-            "flag.sock",
-            "--model",
-            "flag-model",
-            "--effort",
-            "flag-effort",
-        ]
-    )
-    _apply_runtime_configuration(flag_args, parser)
-
-    assert flag_args.model == "flag-model"
-    assert flag_args.effort == "flag-effort"
-    assert flag_args.channel == "codex"
-    assert flag_args.runtime == "codex"
-    assert flag_args.storage == "flag-storage"
-    assert flag_args.audit == "flag-audit"
-    assert flag_args.endpoint == Path("flag.sock")
-
-
 def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     config_path = data_dir / "config.toml"
     config_path.write_text(
-        '[runtime]\nsandbox_mode = "host-unrestricted"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+sandbox_mode = "host-unrestricted"
+""".lstrip(),
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="runtime.sandbox_mode"):
         load_node_configuration()
 
     config_path.write_text(
-        '[runtime]\nnetwork_access = "yes"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+network_access = "yes"
+""".lstrip(),
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="runtime.network_access"):
@@ -215,7 +179,20 @@ def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> 
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
-        f"[runtime]\nidle_timeout = {value}\n",
+        f"""
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+idle_timeout = {value}
+""".lstrip(),
         encoding="utf-8",
     )
 
@@ -225,7 +202,7 @@ def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> 
 
 @pytest.mark.parametrize(
     ("value", "expected_seconds"),
-    [("0", 0), ("-1", -1), ("1", 1), ("0.0001", 0.0001)],
+    [("0", 0), ("1", 1), ("0.0001", 0.0001)],
 )
 def test_node_configuration_parses_runtime_idle_timeout(
     value: str,
@@ -234,13 +211,26 @@ def test_node_configuration_parses_runtime_idle_timeout(
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
-        f"[runtime]\nidle_timeout = {value}\n",
+        f"""
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+idle_timeout = {value}
+""".lstrip(),
         encoding="utf-8",
     )
 
     configuration = load_node_configuration()
 
-    assert configuration.runtime_idle_timeout_seconds == expected_seconds
+    assert configuration.agents[0].runtime.idle_timeout_seconds == expected_seconds
 
 
 def test_help_works_in_a_real_process() -> None:
@@ -264,4 +254,4 @@ def test_run_requires_explicit_channel_and_runtime() -> None:
     )
 
     assert result.returncode == 2
-    assert "--channel and --runtime must be provided together" in result.stderr
+    assert "requires exactly one configured agent" in result.stderr

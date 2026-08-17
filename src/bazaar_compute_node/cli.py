@@ -6,18 +6,25 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
 from .app.application import NodeApplication
-from .app.config import ConfigurationError, load_node_configuration
+from .app.config import (
+    DEFAULT_AUDIT,
+    DEFAULT_STORAGE,
+    AgentConfiguration,
+    ConfigurationError,
+    NodeConfiguration,
+    load_control_configuration,
+    load_node_configuration,
+    resolve_config_path,
+)
 from .app.registry import AdapterFactories, AdapterRegistry, ProviderLoadError
 from .app.transport import LocalCommandClient, local_endpoint_for_path
 from .core.paths import resolve_data_dir
 from .core.runtime import RuntimeSandboxMode
-
-DEFAULT_AUDIT = "logging"
-DEFAULT_STORAGE = "sqlite"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,31 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         choices=("start", "stop", "restart", "run"),
-        help="Daemon command; providing adapter options without a command means start.",
-    )
-    parser.add_argument("--channel")
-    parser.add_argument("--runtime")
-    parser.add_argument(
-        "--model",
-        type=_non_empty_option,
-        help="Optional model override passed to the selected runtime.",
-    )
-    parser.add_argument(
-        "--effort",
-        type=_non_empty_option,
-        help="Optional reasoning effort passed to the selected runtime.",
-    )
-    parser.add_argument(
-        "--sandbox-mode",
-        type=RuntimeSandboxMode,
-        choices=tuple(RuntimeSandboxMode),
-        help="Filesystem sandbox mode applied to runtime turns.",
-    )
-    parser.add_argument(
-        "--network-access",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Allow runtime commands to access the network.",
+        help="Daemon command; providing node options without a command means start.",
     )
     parser.add_argument("--storage")
     parser.add_argument("--audit")
@@ -89,12 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _non_empty_option(value: str) -> str:
-    if not value:
-        raise argparse.ArgumentTypeError("option value must be non-empty")
-    return value
-
-
 def _database_name(value: str) -> str:
     if not value or value in {".", ".."} or "/" in value or "\\" in value:
         raise argparse.ArgumentTypeError(
@@ -107,22 +84,101 @@ def _endpoint_path(args: argparse.Namespace, data_dir: Path) -> Path:
     return (args.endpoint or data_dir / "bcn.sock").expanduser()
 
 
-def _require_adapters(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
+def _apply_runtime_configuration(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
 ) -> None:
-    if args.channel is None or args.runtime is None:
-        parser.error("--channel and --runtime must be provided together")
+    """Upgrade/load v2 config and expose one agent to the current composition."""
+
+    raw_storage = args.storage
+    raw_audit = args.audit
+    raw_endpoint = args.endpoint
+    raw_database_name = args.database_name
+    try:
+        configuration = load_node_configuration(args.config)
+    except ConfigurationError as error:
+        parser.error(str(error))
+
+    configuration = replace(
+        configuration,
+        storage=raw_storage or configuration.storage or DEFAULT_STORAGE,
+        audit=raw_audit or configuration.audit or DEFAULT_AUDIT,
+        endpoint=(
+            str(raw_endpoint) if raw_endpoint is not None else configuration.endpoint
+        ),
+        database_name=raw_database_name or configuration.database_name,
+    )
+    args.configuration = configuration
+    args.storage = configuration.storage
+    args.audit = configuration.audit
+    args.endpoint = (
+        Path(configuration.endpoint).expanduser()
+        if configuration.endpoint is not None
+        else None
+    )
+    args.database_name = configuration.database_name
+
+    if len(configuration.agents) != 1:
+        args.channel = None
+        args.runtime = None
+        args.model = None
+        args.effort = None
+        args.sandbox_mode = RuntimeSandboxMode.WORKSPACE_WRITE
+        args.network_access = True
+        args.runtime_env_include = ()
+        args.runtime_idle_timeout_seconds = 0
+        args.channel_options = {}
+        return
+
+    agent = configuration.agents[0]
+    args.channel = agent.channel.kind
+    args.runtime = agent.runtime.kind
+    args.model = agent.runtime.model
+    args.effort = agent.runtime.effort
+    args.sandbox_mode = agent.runtime.sandbox_mode
+    args.network_access = agent.runtime.network_access
+    args.runtime_env_include = agent.runtime.env_include
+    args.runtime_idle_timeout_seconds = agent.runtime.idle_timeout_seconds
+    args.channel_options = dict(agent.channel.options)
+
+
+def _apply_control_configuration(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    if args.endpoint is not None:
+        return
+    try:
+        configuration = load_control_configuration(args.config)
+    except ConfigurationError as error:
+        parser.error(str(error))
+    if configuration.endpoint is not None:
+        args.endpoint = Path(configuration.endpoint).expanduser()
+
+
+def _require_single_agent(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> AgentConfiguration:
+    configuration = getattr(args, "configuration", None)
+    if not isinstance(configuration, NodeConfiguration):
+        parser.error("startup configuration has not been loaded")
+    if len(configuration.agents) != 1:
+        parser.error(
+            "current application composition requires exactly one configured agent"
+        )
+    return configuration.agents[0]
 
 
 def _load_factories(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> AdapterFactories:
-    _require_adapters(parser, args)
+    agent = _require_single_agent(parser, args)
     try:
         return AdapterRegistry().load(
-            channel=args.channel,
-            runtime=args.runtime,
+            channel=agent.channel.kind,
+            runtime=agent.runtime.kind,
             storage=args.storage,
             audit=args.audit,
             storage_options={"database_name": args.database_name}
@@ -144,46 +200,15 @@ def _runtime_options(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
-def _apply_runtime_configuration(
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
-) -> None:
-    try:
-        configuration = load_node_configuration(args.config)
-    except ConfigurationError as error:
-        parser.error(str(error))
-    for name in (
-        "channel",
-        "runtime",
-        "storage",
-        "audit",
-        "model",
-        "effort",
-        "sandbox_mode",
-        "network_access",
-    ):
-        if getattr(args, name) is None:
-            setattr(args, name, getattr(configuration, name))
-    if args.endpoint is None and configuration.endpoint is not None:
-        args.endpoint = Path(configuration.endpoint).expanduser()
-    if args.database_name is None:
-        args.database_name = configuration.database_name
-    if args.storage is None:
-        args.storage = DEFAULT_STORAGE
-    if args.audit is None:
-        args.audit = DEFAULT_AUDIT
-    args.runtime_env_include = configuration.runtime_env_include
-    args.runtime_idle_timeout_seconds = configuration.runtime_idle_timeout_seconds
-    args.channel_options = dict(configuration.channel_options.get(args.channel, {}))
-
-
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    agent = _require_single_agent(parser, args)
     factories = await asyncio.to_thread(_load_factories, args, parser)
 
     data_dir = resolve_data_dir()
     node = NodeApplication(
         factories=factories,
         endpoint_path=_endpoint_path(args, data_dir),
+        workspace_id=agent.id,
         runtime_options=_runtime_options(args),
         runtime_sandbox_mode=args.sandbox_mode,
         runtime_network_access=args.network_access,
@@ -193,7 +218,8 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
     )
     await node.start()
     print(
-        f"bcn ready channel={args.channel} runtime={args.runtime} endpoint={node.endpoint}",
+        f"bcn ready agent={agent.name} channel={agent.channel.kind} "
+        f"runtime={agent.runtime.kind} endpoint={node.endpoint}",
         flush=True,
     )
     try:
@@ -209,10 +235,6 @@ def _daemon_command(args: argparse.Namespace, data_dir: Path) -> list[str]:
         "-m",
         "bazaar_compute_node.cli",
         "run",
-        "--channel",
-        args.channel,
-        "--runtime",
-        args.runtime,
         "--storage",
         args.storage,
         "--audit",
@@ -224,11 +246,6 @@ def _daemon_command(args: argparse.Namespace, data_dir: Path) -> list[str]:
         command.extend(("--config", str(args.config)))
     if args.database_name is not None:
         command.extend(("--database-name", args.database_name))
-    for name in ("model", "effort", "sandbox_mode"):
-        value = getattr(args, name)
-        if value is not None:
-            command.extend((f"--{name.replace('_', '-')}", value))
-    command.append("--network-access" if args.network_access else "--no-network-access")
     return command
 
 
@@ -310,6 +327,7 @@ async def _start_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
+    agent = _require_single_agent(parser, args)
     await asyncio.to_thread(_load_factories, args, parser)
     data_dir = await asyncio.to_thread(resolve_data_dir)
     await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
@@ -331,8 +349,8 @@ async def _start_daemon(
             await asyncio.to_thread(process.wait, 5)
         raise
     print(
-        f"bcn started pid={process.pid} channel={args.channel} "
-        f"runtime={args.runtime} endpoint={endpoint}",
+        f"bcn started pid={process.pid} agent={agent.name} "
+        f"channel={agent.channel.kind} runtime={agent.runtime.kind} endpoint={endpoint}",
         flush=True,
     )
     return 0
@@ -371,10 +389,6 @@ async def _restart_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    if (args.channel is None) != (args.runtime is None):
-        parser.error("--channel and --runtime must be provided together")
-    if args.channel is None or args.runtime is None:
-        parser.error("restart requires --channel and --runtime when config is missing")
     await _stop_daemon(args, parser)
     return await _start_daemon(args, parser)
 
@@ -383,7 +397,8 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     parser, args = await asyncio.to_thread(_prepare_cli_arguments, argv)
     command = args.command
     if command is None:
-        if args.channel is None and args.runtime is None:
+        configuration = getattr(args, "configuration", None)
+        if not isinstance(configuration, NodeConfiguration) or not configuration.agents:
             parser.print_help()
             return 0
         command = "start"
@@ -405,7 +420,27 @@ def _prepare_cli_arguments(
     args = parser.parse_args(argv)
     if args.config is not None:
         args.config = args.config.expanduser().resolve()
-    _apply_runtime_configuration(args, parser)
+
+    if args.command == "stop":
+        _apply_control_configuration(args, parser)
+        return parser, args
+
+    config_path = args.config or resolve_config_path()
+    should_prepare_startup = (
+        args.command in {"start", "restart", "run"}
+        or config_path.exists()
+        or any(
+            value is not None
+            for value in (
+                args.storage,
+                args.audit,
+                args.endpoint,
+                args.database_name,
+            )
+        )
+    )
+    if should_prepare_startup:
+        _apply_runtime_configuration(args, parser)
     return parser, args
 
 

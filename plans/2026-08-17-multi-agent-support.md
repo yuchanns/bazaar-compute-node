@@ -102,7 +102,9 @@ network_access = false
 2. `version = "2"`：直接按 v2 schema 校验和加载。
 3. 其他值：配置错误，禁止改写。
 
-v1 迁移使用旧配置与本次 invocation 中仍被 parser 接收的 legacy adapter flags 计算一次 effective legacy composition；这些 flags 只服务于迁移输入。配置反写为 v2 后，后续 startup 只读取 `[[agent]]`，不会继续运行单 Agent compatibility path。
+v1 迁移只使用旧配置计算一次 effective legacy composition；CLI 不再接收单 Agent
+的 v1 adapter flags。配置反写为 v2 后，后续 startup 只读取 `[[agent]]`，不会继续运行
+单 Agent compatibility path。
 
 若 effective v1 配置没有 channel/runtime，则迁移为合法的零 Agent v2 配置。若存在一组 channel/runtime，则创建一个迁移 Agent：
 
@@ -124,14 +126,18 @@ name = "default"
 
 ### Legacy Agent ID 解析
 
-迁移 helper 只用于配置/数据升级，按以下顺序解析首个 Agent ID：
+v1 配置升级只读取旧 SQLite `node_state` singleton row 的
+`workspace_id` 作为一次性 migration 输入；不扫描 workspace 目录，也不从部分
+durable rows 猜测 identity。
 
-1. 现有 SQLite `node_state` singleton row 的 `workspace_id`；
-2. 数据库已完成部分升级时，从 durable rows 中取得唯一 legacy `agent_id`，用于崩溃恢复；
-3. 数据库没有 identity，但 `~/.bcn/workspaces` 下只有一个合法 legacy workspace 时，使用其目录名；
-4. 没有 legacy identity 或 durable data 时生成新的 UUIDv7。
+- 已有 `workspace_id`：直接将其写入迁移后的 v2 `agent.id`。
+- 数据库没有旧 identity：按 fresh start 走新的 Agent 配置初始化，生成一个新的
+  UUIDv7 `agent.id`。
+- v2 配置不再进入这条路径，也不保留 v1/v2 并行运行逻辑。
 
-迁移得到的 ID 同时写入 v2 config。数据库 migration 使用同一 legacy workspace identity backfill 所有旧 durable rows，因此 config、data ownership 和原 workspace 路径保持一致。
+后续数据库 migration 使用迁移后的 Agent ID backfill durable rows，并删除旧
+`node_state` 表。旧 workspace identity 只存在于这次迁移输入中，不成为新的
+SQLite runtime API。
 
 ### 原子反写
 
@@ -407,7 +413,6 @@ failed Agent 返回 redacted error type/summary，便于在零成功启动时诊
 
 - `src/bazaar_compute_node/app/config.py`
 - `src/bazaar_compute_node/cli.py`
-- `src/bazaar_compute_node/contrib/sqlite/` 下仅用于 legacy identity 解析的 migration helper
 - `tests/app/test_config.py`
 - `tests/test_cli.py`
 - `tests/app/test_daemon_process.py`
@@ -416,13 +421,16 @@ failed Agent 返回 redacted error type/summary，便于在零成功启动时诊
 实施动作：
 
 1. 定义 v2 Node/Agent/Channel/Runtime immutable configuration model，校验 version、UUIDv7、unique id/name、kind、runtime settings 和 env names。
-2. 实现 v1 effective composition -> v2 document 的一次性迁移，覆盖旧 config 字段与当前 invocation legacy flags。
-3. 从 legacy workspace identity 生成迁移 Agent ID；无 legacy composition 时写出零 Agent v2。
+2. 实现 v1 effective composition -> v2 document 的一次性迁移，覆盖旧 config 字段；CLI 只接受 v2 node-level options。
+3. 从旧 `node_state.workspace_id` 复用迁移 Agent ID；没有旧 identity 时按 fresh start
+   生成 UUIDv7；无 legacy composition 时写出零 Agent v2。
 4. 原子反写 `config.toml`，随后只使用 v2 loader。
-5. 调整 start/run/restart argument preparation，使 daemon child 不再承载单一 channel/runtime composition；v2 配置下 legacy adapter flags 拒绝继续覆盖 Agent。
+5. 调整 start/run/restart argument preparation，使 daemon child 不再承载单一 Agent composition；CLI 不再注册或转发 v1 adapter flags。
 6. 覆盖 future version rejection、迁移失败不破坏原 config、重复 identity 拒绝和确定性 TOML 输出。
 
-Focused tests：空 v1、完整 WeCom v1、完整 Telegram v1、CLI-only legacy composition、legacy workspace ID 复用、无 identity 时 UUIDv7、原子 replace failure、v2 round-trip、unknown version fail closed。
+Focused tests：空 v1、完整 WeCom v1、完整 Telegram v1、v2 CLI Agent composition、旧 CLI
+agent flags 拒绝、旧 `node_state.workspace_id` 复用、fresh start UUIDv7、原子 replace
+failure、v2 round-trip、unknown version fail closed。
 
 完成条件与停止点：任何 startup 都先得到稳定 v2 configuration；提交 Task 1.1 diff，停下等待 review，不进入数据库或 application composition 改造。
 
