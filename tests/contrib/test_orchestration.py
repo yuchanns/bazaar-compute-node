@@ -11,6 +11,7 @@ import pytest
 from bcn_test_support import (
     MemoryStorage,
     RecordingAudit,
+    StaticChannelBuilder,
     TestChannel,
     TestRuntime,
     TestTurnPlan,
@@ -34,6 +35,7 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeEvent,
     RuntimeEventState,
     RuntimeTurnState,
 )
@@ -303,9 +305,7 @@ async def run_natural_conversation_contract(
         audit = _AcceptanceAudit()
         node = NodeApplication(
             factories=AdapterFactories(
-                channel=lambda _context, channel_instance=channel_instance: cast(
-                    IChannel, channel_instance
-                ),
+                channel=StaticChannelBuilder(cast(IChannel, channel_instance)),
                 runtime=runtime,
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
@@ -482,6 +482,13 @@ async def test_stream_events_bypass_durable_storage_and_audit() -> None:
         )
 
         assert len(channel.stream_events) == 20_000
+        runtime_events = [
+            item for item in channel.events if isinstance(item, RuntimeEvent)
+        ]
+        assert [event.state for event in runtime_events] == [
+            RuntimeEventState.STARTED,
+            RuntimeEventState.COMPLETED,
+        ]
         assert {event.session_id for event in channel.stream_events} == {"bcn-1"}
         assert channel.stream_events[0].content == "delta-1"
         assert channel.stream_events[-1].content == "delta-20000"
@@ -661,6 +668,13 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         )
 
         assert channel.approval_requests == [request]
+        assert len(channel.channel_approval_requests) == 1
+        channel_request = channel.channel_approval_requests[0]
+        assert channel_request.approval == request
+        assert channel_request.target_kind is ChannelTargetKind.DM
+        assert channel_request.provider_thread_id == "thread-bcn-1"
+        assert channel_request.provider_reply_to_message_id == "provider-bcn-1-2"
+        assert channel_request.provider_sender_id == "Sender"
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
         assert any(event.event_name == "approval.decided" for event in audit.events)

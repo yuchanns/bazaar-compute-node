@@ -5,16 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .approval import IApprovalHandler
 from .lifecycle import IAsyncLifecycle
 from .models import (
+    ApprovalRequest,
+    ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
     OutboundMessage,
-    StreamEvent,
 )
 from .outcomes import ProviderCallResult
+from .runtime import RuntimeStreamItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,31 @@ class ChannelSendRequest:
             raise ValueError("provider_reply_to_message_id must be non-empty")
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelApprovalRequest:
+    """Runtime approval plus the Channel route that owns the active turn."""
+
+    approval: ApprovalRequest
+    target_kind: ChannelTargetKind
+    provider_thread_id: str
+    provider_reply_to_message_id: str | None = None
+    provider_sender_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.approval, ApprovalRequest):
+            raise TypeError("approval must be an ApprovalRequest")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.provider_thread_id, str) or not self.provider_thread_id:
+            raise ValueError("provider_thread_id must be non-empty")
+        for value, field_name in (
+            (self.provider_reply_to_message_id, "provider_reply_to_message_id"),
+            (self.provider_sender_id, "provider_sender_id"),
+        ):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{field_name} must be non-empty text when present")
+
+
 class IAttachmentMaterializer(Protocol):
     async def materialize(
         self,
@@ -89,8 +115,14 @@ class ChannelContext:
     workspace: Callable[[], Path]
 
 
-class IApproval(IApprovalHandler, Protocol):
+class IApproval(Protocol):
     """Channel-owned approval policy for one bcn session."""
+
+    async def request_approval(
+        self, request: ChannelApprovalRequest, *, timeout: float
+    ) -> ApprovalResult:
+        """Present one approval request in the current Channel route."""
+        ...
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
@@ -110,12 +142,25 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         """Return a cancellable stream of normalized inbound messages."""
         ...
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
-        """Offer one transient event without waiting for channel delivery."""
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
+        """Accept one transient runtime stream item without waiting for delivery."""
         ...
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
         """Deliver one outbound message without hiding unknown provider status."""
+        ...
+
+
+class IChannelBuilder(Protocol):
+    """Construct one Channel adapter from its provider-owned context."""
+
+    def build(self, context: ChannelContext) -> IChannel:
+        """Build one configured channel adapter."""
         ...

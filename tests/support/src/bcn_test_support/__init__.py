@@ -1,7 +1,7 @@
 """Deterministic adapters used by the Phase 1 end-to-end harness."""
 
 from .audit import RecordingAudit
-from .channel import TestChannel
+from .channel import StaticChannelBuilder, TestChannel
 from .environment import (
     IsolatedTestEnvironment,
     isolated_test_environment,
@@ -15,6 +15,7 @@ __all__ = [
     "IsolatedTestEnvironment",
     "MemoryStorage",
     "RecordingAudit",
+    "StaticChannelBuilder",
     "TestChannel",
     "TestRuntime",
     "TestTurnPlan",

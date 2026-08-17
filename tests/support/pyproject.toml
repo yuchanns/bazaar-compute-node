@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.entry-points."bazaar_compute_node.channels"]
-test = "bcn_test_support.plugin:create_channel"
+test = "bcn_test_support.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
 test = "bcn_test_support.plugin:create_runtime"

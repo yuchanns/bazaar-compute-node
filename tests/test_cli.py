@@ -134,7 +134,7 @@ def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
         'sandbox_mode = "danger-full-access"\nnetwork_access = false\n'
         "idle_timeout = 2.25\n\n"
         '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
-        '[channel.wecom]\nbot_id = "test-bot"\n'
+        '[channel.config-channel]\nbot_id = "test-bot"\n'
         'websocket_url = "wss://wecom.example.test"\n',
         encoding="utf-8",
     )

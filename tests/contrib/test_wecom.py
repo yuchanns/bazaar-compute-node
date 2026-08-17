@@ -16,8 +16,14 @@ from bazaar_compute_node.contrib.wecom.outbound import (
     prepare_attachments,
     visible_message_body,
 )
-from bazaar_compute_node.core.channel import ChannelContext, ChannelSendRequest
+from bazaar_compute_node.core.channel import (
+    ChannelApprovalRequest,
+    ChannelContext,
+    ChannelSendRequest,
+)
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
+    ApprovalRequest,
     ChannelTargetKind,
     FreshCheckState,
     InboundMessage,
@@ -61,6 +67,42 @@ def test_wecom_filename_decodes_provider_content_disposition() -> None:
         == "\u62a5\u544a.pdf"
     )
     assert WeComChannel._filename(None, "video") == "video.bin"
+
+
+@pytest.mark.asyncio
+async def test_wecom_approval_uses_nested_request_identity(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+    approval = ApprovalRequest(
+        request_id="approval-1",
+        session_id="session-1",
+        runtime_session_id="runtime-1",
+        action="command_execution",
+        created_at_ms=1,
+    )
+
+    result = await channel.request_approval(
+        ChannelApprovalRequest(
+            approval=approval,
+            target_kind=ChannelTargetKind.DM,
+            provider_thread_id="thread-1",
+        ),
+        timeout=1,
+    )
+
+    assert result.request_id == approval.request_id
+    assert result.decision is ApprovalDecision.APPROVED
 
 
 def test_wecom_outbound_request_codec_uses_explicit_chat_type() -> None:

@@ -468,6 +468,7 @@ class ApprovalRequest:
     action: str
     created_at_ms: int
     turn_id: str | None = None
+    description: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -481,6 +482,8 @@ class ApprovalRequest:
         _validate_non_negative(self.created_at_ms, "created_at_ms")
         if self.turn_id is not None:
             _validate_text(self.turn_id, "turn_id")
+        if self.description is not None:
+            _validate_text(self.description, "description")
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,6 +17,7 @@ import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ...core.channel import (
+    ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
     ChannelSendRequest,
@@ -24,14 +25,13 @@ from ...core.channel import (
 )
 from ...core.models import (
     ApprovalDecision,
-    ApprovalRequest,
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
-    StreamEvent,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from ...core.runtime import RuntimeStreamItem
 from .markdown import split_markdown
 from .outbound import (
     AttachmentReader,
@@ -184,7 +184,12 @@ class WeComChannel(IChannel):
                 raise TypeError("WeCom inbound queue contained an invalid message")
             yield item
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
         return None
 
     async def send(
@@ -764,10 +769,10 @@ class WeComChannel(IChannel):
         )
 
     async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
+        self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
         return ApprovalResult(
-            request_id=request.request_id,
+            request_id=request.approval.request_id,
             decision=ApprovalDecision.APPROVED,
             decided_at_ms=time_ns() // 1_000_000,
         )

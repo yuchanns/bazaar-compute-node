@@ -10,7 +10,7 @@ from time import time_ns
 from uuid import uuid7
 
 import pytest
-from bcn_test_support import RecordingAudit, TestChannel
+from bcn_test_support import RecordingAudit, StaticChannelBuilder, TestChannel
 from test_orchestration import (
     _wait_for_audit_event,
     _wait_for_inbound_messages,
@@ -751,7 +751,7 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
                 turn_id="local-turn-1",
                 provider_thread_id=thread_id,
                 provider_turn_id=provider_turn.turn_id,
-                approval_handler=TestChannel(),
+                approval_handler=_NoopApprovalHandler(),
             )
             events = []
             async with asyncio.timeout(120):
@@ -795,7 +795,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     audit = RecordingAudit()
     node = NodeApplication(
         factories=AdapterFactories(
-            channel=lambda _context: channel,
+            channel=StaticChannelBuilder(channel),
             runtime=lambda context: Runtime(
                 context,
                 executable=codex,

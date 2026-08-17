@@ -60,7 +60,7 @@ bcn stop
 | Status / 状态 | Channel / 渠道 |
 | --- | --- |
 | ✅ | WeCom / 企业微信 |
-| 🚧 | Telegram |
+| ✅ | Telegram |
 | 🚧 | GitHub |
 | 🚧 | GitLab |
 

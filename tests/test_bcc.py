@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from bazaar_compute_node.bcc import (
@@ -39,6 +41,14 @@ def message_payload(
     }
 
 
+def local_time(timestamp_ms: int) -> str:
+    return (
+        datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+
 def test_check_serializer_matches_canonical_text() -> None:
     result = {
         "messages": [message_payload()],
@@ -49,7 +59,7 @@ def test_check_serializer_matches_canonical_text() -> None:
 
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
-        "time=2023-11-14 22:13:20 "
+        f"time={local_time(1_700_000_000_000)} "
         "type=human mentioned=false] @sender: message body"
     )
 
@@ -64,7 +74,7 @@ def test_check_serializer_preserves_zero_provider_timestamp() -> None:
         "delivered_through_seq": 1,
     }
 
-    assert "time=1970-01-01 00:00:00" in serialize_check(result)
+    assert f"time={local_time(0)}" in serialize_check(result)
 
 
 def test_check_serializer_renders_referenced_message_before_current_message() -> None:
@@ -186,7 +196,8 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
     assert serialize_read(result) == (
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
-        "time=2023-11-14 22:13:20 type=human replyTarget=#work:parent123 "
+        f"time={local_time(1_700_000_000_000)} "
+        "type=human replyTarget=#work:parent123 "
         "mentioned=false] @sender: message body"
     )
 

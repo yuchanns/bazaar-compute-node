@@ -5,9 +5,12 @@ from collections import deque
 from collections.abc import AsyncIterator, Mapping
 
 from bazaar_compute_node.core.channel import (
+    ChannelApprovalRequest,
+    ChannelContext,
     ChannelDeliveryReceipt,
     ChannelSendRequest,
     IChannel,
+    IChannelBuilder,
 )
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
@@ -18,6 +21,7 @@ from bazaar_compute_node.core.models import (
     StreamEvent,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.runtime import RuntimeStreamItem
 
 
 class TestChannel(IChannel):
@@ -47,7 +51,9 @@ class TestChannel(IChannel):
         self.queued_messages: list[OutboundMessage] = []
         self.sent_messages: list[OutboundMessage] = []
         self.approval_requests: list[ApprovalRequest] = []
+        self.channel_approval_requests: list[ChannelApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
+        self.events: list[RuntimeStreamItem] = []
         self.stream_events: list[StreamEvent] = []
         self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
@@ -87,10 +93,17 @@ class TestChannel(IChannel):
                 raise TypeError("test channel queue contained an invalid message")
             yield item
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
         if self.stream_event_error is not None:
             raise self.stream_event_error
-        self.stream_events.append(event)
+        self.events.append(item)
+        if isinstance(item, StreamEvent):
+            self.stream_events.append(item)
 
     def queue_send_result(
         self, result: ProviderCallResult[ChannelDeliveryReceipt]
@@ -127,16 +140,28 @@ class TestChannel(IChannel):
         return result
 
     async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
+        self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
-        self.approval_requests.append(request)
+        self.channel_approval_requests.append(request)
+        approval = request.approval
+        self.approval_requests.append(approval)
         if self._approval_results:
             result = self._approval_results.popleft()
         else:
             result = ApprovalResult(
-                request_id=request.request_id,
+                request_id=approval.request_id,
                 decision=ApprovalDecision.APPROVED,
-                decided_at_ms=request.created_at_ms,
+                decided_at_ms=approval.created_at_ms,
             )
         self.approval_results.append(result)
         return result
+
+
+class StaticChannelBuilder(IChannelBuilder):
+    def __init__(self, channel: IChannel | None = None) -> None:
+        self._channel = channel
+
+    def build(self, context: ChannelContext) -> IChannel:
+        if self._channel is not None:
+            return self._channel
+        return TestChannel()

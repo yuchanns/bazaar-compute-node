@@ -6,7 +6,7 @@ from functools import partial
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, cast
 
-from ..core.channel import ChannelContext, IChannel
+from ..core.channel import IChannelBuilder
 from ..core.observability import IAudit
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage
@@ -18,7 +18,6 @@ STORAGE_ENTRY_POINT_GROUP = "bazaar_compute_node.storages"
 AUDIT_ENTRY_POINT_GROUP = "bazaar_compute_node.audits"
 CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
-ChannelFactory = Callable[[ChannelContext], IChannel]
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[], IAudit]
@@ -26,7 +25,7 @@ AuditFactory = Callable[[], IAudit]
 
 @dataclass(frozen=True, slots=True)
 class AdapterFactories:
-    channel: ChannelFactory
+    channel: IChannelBuilder
     runtime: RuntimeFactory
     storage: StorageFactory
     audit: AuditFactory
@@ -60,10 +59,7 @@ class AdapterRegistry:
         if storage_options:
             storage_factory = partial(storage_factory, dict(storage_options))
         return AdapterFactories(
-            channel=cast(
-                ChannelFactory,
-                self._load(CHANNEL_ENTRY_POINT_GROUP, channel),
-            ),
+            channel=self._load_channel_builder(channel),
             runtime=cast(
                 RuntimeFactory,
                 self._load(RUNTIME_ENTRY_POINT_GROUP, runtime),
@@ -78,6 +74,27 @@ class AdapterRegistry:
                 control,
             ),
         )
+
+    def _load_channel_builder(self, name: str) -> IChannelBuilder:
+        entry_point = self._find(CHANNEL_ENTRY_POINT_GROUP, name)
+        if entry_point is None:
+            raise ProviderLoadError(
+                f"provider '{name}' is not installed for entry point group "
+                f"'{CHANNEL_ENTRY_POINT_GROUP}'"
+            )
+        try:
+            builder = entry_point.load()
+        except Exception as error:
+            raise ProviderLoadError(
+                f"failed to load provider '{name}' from "
+                f"'{CHANNEL_ENTRY_POINT_GROUP}': {error}"
+            ) from error
+        if not callable(getattr(builder, "build", None)):
+            raise ProviderLoadError(
+                f"provider '{name}' from '{CHANNEL_ENTRY_POINT_GROUP}' "
+                "does not provide a callable build method"
+            )
+        return cast(IChannelBuilder, builder)
 
     def _load(self, group: str, name: str) -> Any:
         entry_point = self._find(group, name)

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
-from ..channel import IChannel
+from ..channel import ChannelApprovalRequest, IChannel
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
@@ -184,7 +184,16 @@ class SessionTurnCoordinator:
                 metadata={"action": request.action},
             )
             try:
-                result = await self._channel.request_approval(request, timeout=timeout)
+                channel_request = ChannelApprovalRequest(
+                    approval=request,
+                    target_kind=context.channel_session.target_kind,
+                    provider_thread_id=context.channel_session.provider_thread_id,
+                    provider_reply_to_message_id=message.provider_message_id,
+                    provider_sender_id=message.sender,
+                )
+                result = await self._channel.request_approval(
+                    channel_request, timeout=timeout
+                )
                 if result.request_id != request_id:
                     raise ValueError("channel approval result correlation mismatch")
             except Exception as error:
@@ -320,11 +329,21 @@ class SessionTurnCoordinator:
                         )
                         continue
                     try:
-                        self._channel.offer_stream_event(event)
+                        self._channel.accept_turn_event(
+                            event,
+                            session_id=context.bcn_session.id,
+                        )
                     except Exception:
-                        self._logger.exception("channel rejected stream event")
+                        self._logger.exception("channel rejected turn event")
                     continue
                 turn = await self._apply_runtime_event(message, context, turn, event)
+                try:
+                    self._channel.accept_turn_event(
+                        event,
+                        session_id=context.bcn_session.id,
+                    )
+                except Exception:
+                    self._logger.exception("channel rejected runtime event")
                 if _is_terminal_turn_event(event):
                     observed_terminal = True
                     break
