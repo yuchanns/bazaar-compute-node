@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.9 - 2026-08-17
+
+## What's Changed
+* docs: update README overview and feature matrix by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/15
+* fix: render bcc message times in local timezone by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/16
+* feat: add Telegram channel support by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/17
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.8...v0.1.9
+
 ## 0.1.8 - 2026-08-15
 
 ## What's Changed
