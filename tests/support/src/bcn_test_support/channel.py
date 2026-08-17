@@ -21,6 +21,7 @@ from bazaar_compute_node.core.models import (
     StreamEvent,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.runtime import RuntimeStreamItem
 
 
 class TestChannel(IChannel):
@@ -52,6 +53,7 @@ class TestChannel(IChannel):
         self.approval_requests: list[ApprovalRequest] = []
         self.channel_approval_requests: list[ChannelApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
+        self.events: list[RuntimeStreamItem] = []
         self.stream_events: list[StreamEvent] = []
         self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
@@ -91,10 +93,17 @@ class TestChannel(IChannel):
                 raise TypeError("test channel queue contained an invalid message")
             yield item
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
         if self.stream_event_error is not None:
             raise self.stream_event_error
-        self.stream_events.append(event)
+        self.events.append(item)
+        if isinstance(item, StreamEvent):
+            self.stream_events.append(item)
 
     def queue_send_result(
         self, result: ProviderCallResult[ChannelDeliveryReceipt]

@@ -329,11 +329,21 @@ class SessionTurnCoordinator:
                         )
                         continue
                     try:
-                        self._channel.offer_stream_event(event)
+                        self._channel.accept_turn_event(
+                            event,
+                            session_id=context.bcn_session.id,
+                        )
                     except Exception:
-                        self._logger.exception("channel rejected stream event")
+                        self._logger.exception("channel rejected turn event")
                     continue
                 turn = await self._apply_runtime_event(message, context, turn, event)
+                try:
+                    self._channel.accept_turn_event(
+                        event,
+                        session_id=context.bcn_session.id,
+                    )
+                except Exception:
+                    self._logger.exception("channel rejected runtime event")
                 if _is_terminal_turn_event(event):
                     observed_terminal = True
                     break

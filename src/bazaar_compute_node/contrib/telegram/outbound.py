@@ -82,6 +82,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "invalid_route",
                 "Telegram outbound route belongs to another bot",
             )
+        self._stream_routes[request.outbound.session_id] = identity
 
         reply_to_message_id: int | None = None
         if request.provider_reply_to_message_id is not None:
@@ -450,7 +451,8 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             if deadline - loop.time() <= 0:
                 raise _DeliveryDeadlineExpired
             try:
-                with attachment.open() as document:
+                document = await asyncio.to_thread(attachment.open)
+                try:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         raise _DeliveryDeadlineExpired
@@ -461,6 +463,8 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                         media_type=attachment.media_type,
                         timeout=remaining,
                     )
+                finally:
+                    await asyncio.to_thread(document.close)
             except TelegramApiError as error:
                 if not await self._retry_after(
                     error,

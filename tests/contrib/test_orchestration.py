@@ -35,6 +35,7 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundDeliveryState,
     OutboundMessage,
+    RuntimeEvent,
     RuntimeEventState,
     RuntimeTurnState,
 )
@@ -481,6 +482,13 @@ async def test_stream_events_bypass_durable_storage_and_audit() -> None:
         )
 
         assert len(channel.stream_events) == 20_000
+        runtime_events = [
+            item for item in channel.events if isinstance(item, RuntimeEvent)
+        ]
+        assert [event.state for event in runtime_events] == [
+            RuntimeEventState.STARTED,
+            RuntimeEventState.COMPLETED,
+        ]
         assert {event.session_id for event in channel.stream_events} == {"bcn-1"}
         assert channel.stream_events[0].content == "delta-1"
         assert channel.stream_events[-1].content == "delta-20000"

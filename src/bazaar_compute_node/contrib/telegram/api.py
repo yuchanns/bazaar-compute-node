@@ -84,6 +84,36 @@ class TelegramBotApi:
             )
         return tuple(dict(update) for update in result)
 
+    async def send_chat_action(
+        self,
+        *,
+        chat_id: int,
+        action: str,
+        message_thread_id: int | None = None,
+        timeout: float,
+    ) -> None:
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id == 0:
+            raise ValueError("Telegram chat_id must be a non-zero integer")
+        if not isinstance(action, str) or not action:
+            raise ValueError("Telegram chat action must be non-empty")
+        payload: dict[str, object] = {"chat_id": chat_id, "action": action}
+        if message_thread_id is not None:
+            if (
+                not isinstance(message_thread_id, int)
+                or isinstance(message_thread_id, bool)
+                or message_thread_id <= 0
+            ):
+                raise ValueError("Telegram message_thread_id must be positive")
+            payload["message_thread_id"] = message_thread_id
+        result = await self._request("sendChatAction", payload, timeout=timeout)
+        if result is not True:
+            raise TelegramApiError(
+                "sendChatAction",
+                http_status=200,
+                error_code=None,
+                description="provider result is not true",
+            )
+
     async def get_file(self, file_id: str) -> Mapping[str, object]:
         if not isinstance(file_id, str) or not file_id:
             raise ValueError("Telegram file_id must be non-empty")

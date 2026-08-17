@@ -20,9 +20,11 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
-    StreamEvent,
+    RuntimeEvent,
+    RuntimeEventState,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from ...core.runtime import RuntimeStreamItem
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .attachments import attachment_sources, materialize_attachments
 from .identity import TelegramThreadIdentity
@@ -30,6 +32,8 @@ from .markdown import RichMessageRenderer
 
 _STOP = object()
 _MAX_RECONNECT_DELAY_SECONDS = 30.0
+_TYPING_REFRESH_SECONDS = 4.0
+_TYPING_REQUEST_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,12 @@ class _InboundContent:
     rich_mentions_agent: bool
     rich_message: bool
     attachments: tuple[InboundAttachment, ...]
+
+
+@dataclass(slots=True)
+class _TypingLease:
+    identity: TelegramThreadIdentity
+    next_due_at: float
 
 
 class TelegramChannel(IChannel):
@@ -72,6 +82,12 @@ class TelegramChannel(IChannel):
         self._quoted_messages_queued = 0
         self._callback_updates_received = 0
         self._attachment_failures = 0
+        self._typing_wakeup = asyncio.Event()
+        self._typing_runner: asyncio.Task[None] | None = None
+        self._stream_routes: dict[str, TelegramThreadIdentity] = {}
+        self._typing_leases: dict[str, _TypingLease] = {}
+        self._typing_action_requests = 0
+        self._typing_action_failures = 0
 
     @property
     def name(self) -> str:
@@ -101,6 +117,9 @@ class TelegramChannel(IChannel):
             "quoted_messages_queued": self._quoted_messages_queued,
             "callback_updates_received": self._callback_updates_received,
             "attachment_failures": self._attachment_failures,
+            "typing_action_requests": self._typing_action_requests,
+            "typing_action_failures": self._typing_action_failures,
+            "typing_sessions": len(self._typing_leases),
         }
 
     async def start(self, *, timeout: float) -> None:
@@ -113,6 +132,9 @@ class TelegramChannel(IChannel):
         self._state = "starting"
         self._stopping.clear()
         self._ready.clear()
+        self._typing_wakeup.clear()
+        self._typing_leases.clear()
+        self._stream_routes.clear()
         session = aiohttp.ClientSession()
         api = TelegramBotApi(session, token=self._token)
         self._session = session
@@ -135,6 +157,10 @@ class TelegramChannel(IChannel):
                 raise ValueError("Telegram getMe returned an invalid bot identity")
             self._bot_id = bot_id
             self._bot_username = username
+            self._typing_runner = asyncio.create_task(
+                self._run_typing_dispatcher(),
+                name="bcn-telegram-typing",
+            )
             self._runner = asyncio.create_task(
                 self._run(),
                 name="bcn-telegram-channel",
@@ -145,13 +171,20 @@ class TelegramChannel(IChannel):
             await asyncio.wait_for(self._ready.wait(), timeout=remaining)
         except BaseException:
             self._stopping.set()
-            runner = self._runner
-            if runner is not None:
+            runners = tuple(
+                runner
+                for runner in (self._runner, self._typing_runner)
+                if runner is not None
+            )
+            for runner in runners:
                 runner.cancel()
-                await asyncio.gather(runner, return_exceptions=True)
+            if runners:
+                await asyncio.gather(*runners, return_exceptions=True)
             self._runner = None
+            self._typing_runner = None
             self._api = None
             self._session = None
+            self._typing_leases.clear()
             await session.close()
             self._state = "stopped"
             raise
@@ -159,17 +192,25 @@ class TelegramChannel(IChannel):
     async def stop(self, *, timeout: float) -> None:
         self._state = "stopping"
         self._stopping.set()
-        runner = self._runner
-        if runner is not None:
+        runners = tuple(
+            runner
+            for runner in (self._runner, self._typing_runner)
+            if runner is not None
+        )
+        for runner in runners:
             runner.cancel()
+        if runners:
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(runner, return_exceptions=True),
+                    asyncio.gather(*runners, return_exceptions=True),
                     timeout=max(0.0, timeout),
                 )
             except TimeoutError:
                 pass
         self._runner = None
+        self._typing_runner = None
+        self._typing_leases.clear()
+        self._typing_wakeup.set()
         session = self._session
         self._api = None
         self._session = None
@@ -188,8 +229,83 @@ class TelegramChannel(IChannel):
                 raise TypeError("Telegram inbound queue contained an invalid message")
             yield item
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
-        return None
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
+        if isinstance(item, RuntimeEvent):
+            if "turn" in item.event_name.casefold() and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                self._typing_leases.pop(session_id, None)
+                self._typing_wakeup.set()
+            return
+        identity = self._stream_routes.get(item.session_id)
+        if identity is None or self._typing_runner is None:
+            return
+        if item.session_id not in self._typing_leases:
+            self._typing_leases[item.session_id] = _TypingLease(
+                identity=identity,
+                next_due_at=0.0,
+            )
+        self._typing_wakeup.set()
+
+    async def _run_typing_dispatcher(self) -> None:
+        loop = asyncio.get_running_loop()
+        while not self._stopping.is_set():
+            if not self._typing_leases:
+                self._typing_wakeup.clear()
+                await self._typing_wakeup.wait()
+                continue
+
+            now = loop.time()
+            due = tuple(
+                (session_id, lease)
+                for session_id, lease in self._typing_leases.items()
+                if lease.next_due_at <= now
+            )
+            if not due:
+                next_due_at = min(
+                    lease.next_due_at for lease in self._typing_leases.values()
+                )
+                self._typing_wakeup.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._typing_wakeup.wait(),
+                        timeout=max(0.0, next_due_at - loop.time()),
+                    )
+                except TimeoutError:
+                    pass
+                continue
+
+            for session_id, lease in due:
+                if self._typing_leases.get(session_id) is not lease:
+                    continue
+                await self._send_typing_action(lease.identity)
+                if self._typing_leases.get(session_id) is lease:
+                    lease.next_due_at = loop.time() + _TYPING_REFRESH_SECONDS
+
+    async def _send_typing_action(self, identity: TelegramThreadIdentity) -> None:
+        api = self._api
+        if api is None:
+            return
+        self._typing_action_requests += 1
+        try:
+            await api.send_chat_action(
+                chat_id=identity.chat_id,
+                message_thread_id=identity.topic_id or None,
+                action="typing",
+                timeout=_TYPING_REQUEST_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            self._typing_action_failures += 1
 
     async def send(
         self,
@@ -386,6 +502,7 @@ class TelegramChannel(IChannel):
             chat_id=chat_id,
             topic_id=topic_id,
         )
+        self._stream_routes[identity.session_id] = identity
         target_kind = (
             ChannelTargetKind.DM if chat_type == "private" else ChannelTargetKind.GROUP
         )

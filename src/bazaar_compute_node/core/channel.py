@@ -13,9 +13,9 @@ from .models import (
     InboundAttachment,
     InboundMessage,
     OutboundMessage,
-    StreamEvent,
 )
 from .outcomes import ProviderCallResult
+from .runtime import RuntimeStreamItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +142,13 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         """Return a cancellable stream of normalized inbound messages."""
         ...
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
-        """Offer one transient event without waiting for channel delivery."""
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
+        """Accept one transient runtime stream item without waiting for delivery."""
         ...
 
     async def send(

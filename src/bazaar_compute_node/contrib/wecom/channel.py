@@ -29,9 +29,9 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
-    StreamEvent,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from ...core.runtime import RuntimeStreamItem
 from .markdown import split_markdown
 from .outbound import (
     AttachmentReader,
@@ -184,7 +184,12 @@ class WeComChannel(IChannel):
                 raise TypeError("WeCom inbound queue contained an invalid message")
             yield item
 
-    def offer_stream_event(self, event: StreamEvent) -> None:
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None:
         return None
 
     async def send(

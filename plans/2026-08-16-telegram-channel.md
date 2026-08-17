@@ -2,11 +2,11 @@
 
 ## 状态
 
-- 模式：Plan
-- 状态：待 review；review 通过后只进入 Phase 1 Task 1A。
-- 基线：`main`，当前提交为 `f7fabcd5e480f1ada40a22cff7e6e37348486db7`。
+- 模式：Code
+- 状态：Task 3D 已完成；验证通过，保留未提交 diff 停在 review，当前不执行 commit/push。
+- 基线：`main`，Telegram outbound delivery 已完成于 `a9e3efa629464a662e40dd976536ddf57895e0d0`。
 - 当前更新定义 Channel builder、通用 Channel 配置、Telegram polling、thread/topic、
-  inbound、reply、approval、Rich Markdown、附件和验证边界。
+  inbound、reply、approval、Rich Markdown、附件、runtime stream 生命周期和验证边界。
 - 所有 Task 按本文顺序串行实施；每完成一个 Task，运行 focused checks，发送业务 diff，
   并停在 review。
 
@@ -27,7 +27,7 @@ bcn selects channel=telegram
     -> inbound message enters the existing durable inbox
     -> existing DM/following/mention policy decides runtime notice
     -> runtime reads the inbox and performs one turn
-    -> runtime StreamEvent continues to be offered to TelegramChannel
+    -> runtime stream items are accepted by TelegramChannel
     -> approval request is rendered as a Telegram inline keyboard when required
     -> runtime produces a final outbound message
     -> TelegramChannel sends Rich Markdown to the same chat/topic
@@ -50,11 +50,17 @@ bcn selects channel=telegram
 12. 顶层 sender 为当前 bot 的 update 在 Telegram ingress 过滤；引用中的当前 bot 消息正常
     进入 history。
 13. 其他 bot 与人类统一映射为 inbound sender ID。
-14. Runtime `StreamEvent` 继续传递到 Channel；TelegramChannel 当前实现接收后立即返回。
-15. 出站正文使用 `sendRichMessage` 与 Rich Markdown。
-16. Approval 使用同一 chat/topic 中的 inline keyboard。
-17. Telegram Bot API transport 直接使用项目现有 `aiohttp`。
-18. `getUpdates` long-poll timeout 固定为 50 秒。
+14. Runtime stream 的 `RuntimeEvent | StreamEvent` 全部通过统一的 `accept_turn_event` 传递到
+    Channel；Telegram 只把活跃 stream 映射为同一 chat/topic 的 `typing` 状态，不发送
+    channel 流式正文。
+15. 现有 terminal `RuntimeEvent` 通过统一的 `accept_turn_event` 到达 Channel，Telegram
+    清理对应 typing lease。
+16. Telegram channel 只运行一个长期 typing dispatcher；每个 session 只保留一条 lease，
+    按固定周期续期，provider 失败只记录 health，不阻塞 runtime turn。
+17. 出站正文使用 `sendRichMessage` 与 Rich Markdown。
+18. Approval 使用同一 chat/topic 中的 inline keyboard。
+19. Telegram Bot API transport 直接使用项目现有 `aiohttp`。
+20. `getUpdates` long-poll timeout 固定为 50 秒。
 
 ## 2. Channel Builder 与通用配置
 
@@ -422,14 +428,25 @@ if isinstance(sender, Mapping) and sender.get("id") == self._bot_id:
 建立本地 reply reference
 ```
 
-### 4.6 Stream events
+### 4.6 Stream events 与 typing 状态
 
-```python
-def offer_stream_event(self, event: StreamEvent) -> None:
-    return None
+Runtime stream 的 `RuntimeEvent | StreamEvent` 继续同步提供给 Channel。Telegram 不发送
+stream 正文；收到属于当前 session 的 `StreamEvent` 后，按 `session_id` 建立一条 typing
+lease，并由 channel 级单一 dispatcher 调用：
+
+```text
+sendChatAction(
+    chat_id=identity.chat_id,
+    message_thread_id=identity.topic_id,
+    action="typing",
+)
 ```
 
-Channel contract 和 runtime stream pipeline 保持现状。
+`TelegramChannel` 保存 `session_id -> TelegramThreadIdentity` 路由。首个 lease 立即
+发送 typing，随后按固定周期续期。所有 runtime turn events 通过 `accept_turn_event`
+进入 Channel；现有 terminal `RuntimeEvent` 到达时，Telegram 删除对应 lease。单一
+dispatcher 不按 event 或 session 创建 task；channel stop 取消 dispatcher 并清理 lease。
+typing provider 失败只增加 health failure counter，不能改变 runtime turn 结果。
 
 ## 5. Telegram Thread Identity
 
@@ -1104,7 +1121,7 @@ uv.lock
 - 实现 transport reconnect。
 - 实现 receive queue。
 - 实现 lifecycle health。
-- 实现 `offer_stream_event` immediate return。
+- 实现 `accept_turn_event` immediate return。
 
 Focused tests：
 
@@ -1381,6 +1398,57 @@ all modified Python files: LSP diagnostics clean
 依赖：Task 3B。  
 产出：完整 Telegram Channel review candidate。
 
+#### Task 3D：Runtime stream typing status
+
+修改：
+
+```text
+src/bazaar_compute_node/core/orchestration/turn.py
+src/bazaar_compute_node/core/channel.py
+src/bazaar_compute_node/contrib/telegram/api.py
+src/bazaar_compute_node/contrib/telegram/channel.py
+src/bazaar_compute_node/contrib/telegram/outbound.py
+src/bazaar_compute_node/contrib/wecom/channel.py
+tests/contrib/test_orchestration.py
+tests/support/src/bcn_test_support/channel.py
+```
+
+实施：
+
+- 将现有 `RuntimeEvent | StreamEvent` 通过统一 `accept_turn_event` 原样转发给 Channel。
+- 复用现有 terminal `RuntimeEvent`，由 Channel 在 `accept_turn_event` 内清理 typing lease。
+- Telegram 建立 session 到 DM/group/topic 的 route，使用一个 channel-level dispatcher 管理
+  typing lease。
+- 首个 stream event 立即向精确 chat/topic 发送 `sendChatAction(typing)`，后续按固定周期续期。
+- 收到 terminal `RuntimeEvent` 或 channel stop 时清理 lease；typing provider 错误只记录 health。
+
+Focused tests：
+
+- transient stream event 仍不进入 durable storage 或 audit；
+- `RuntimeEvent | StreamEvent` 均通过 `accept_turn_event` 到达 Channel；
+- terminal `RuntimeEvent` 到达时清理对应 typing lease；
+- channel rejected stream event 不改变 turn 结果；
+- 其他 session 的 stream event 不触发当前 turn 的 typing route。
+
+完成条件：focused checks、full pytest、Ruff、Pyright、compileall、lock check、LSP 和
+diff check 全部通过；保留未提交 diff，停在 review。
+
+依赖：Task 3C；Hanchin 已确认 terminal `RuntimeEvent` 与单 dispatcher 设计。
+产出：Telegram runtime stream typing status。
+
+Phase 验收：
+
+```text
+runtime stream event
+    -> exact DM/group/topic typing status
+runtime terminal event
+    -> accept_turn_event(RuntimeEvent)
+    -> typing lease cleanup
+provider typing failure
+    -> health counter
+    -> runtime turn remains unchanged
+```
+
 ## 10. 验证原则
 
 - Builder tests 从 entry point 和 `NodeApplication` composition 进入。
@@ -1460,6 +1528,7 @@ Task 顺序：
 3A Inline keyboard approval
 3B Rich Markdown outbound
 3C Attachments and end-to-end verification
+3D Runtime stream typing status
 ```
 
 每个 Task 完成后执行 focused checks、发送业务 diff并停在 review。
