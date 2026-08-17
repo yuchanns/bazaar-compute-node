@@ -20,18 +20,19 @@ from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_d
 
 
 @pytest.mark.asyncio
-async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
+async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
     data_dir = resolve_data_dir()
     database = SqliteDatabase()
 
     await database.start(timeout=2)
     try:
-        identity = await database.initialize(node_id="node-1")
-        first_state = database.node_state
-        assert first_state.node_id == "node-1"
-        assert first_state.schema_version == 12
-        assert identity.workspace_id == first_state.workspace_id
-        assert not (data_dir / "workspaces" / first_state.workspace_id).exists()
+        identity = await database.initialize(
+            node_id="node-1",
+            workspace_id="agent-1",
+        )
+        assert identity.node_id == "node-1"
+        assert identity.workspace_id == "agent-1"
+        assert not (data_dir / "workspaces" / identity.workspace_id).exists()
 
         async with database.transaction() as transaction:
             tables = await transaction.fetchall(
@@ -58,6 +59,9 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             migration_columns = await transaction.fetchall(
                 "PRAGMA table_info(schema_migrations)"
             )
+            schema_version = await transaction.fetchone(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            )
             compaction_row = await transaction.fetchone(
                 "SELECT compaction_completed_at_ms FROM schema_migrations "
                 "WHERE version = 9"
@@ -69,8 +73,9 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "consumer_cursors",
             "inbound_attachments",
             "inbound_messages",
-            "node_state",
             "outbound_messages",
+            "reminder_occurrences",
+            "reminders",
             "runtime_attempts",
             "schema_migrations",
         } <= {row["name"] for row in tables}
@@ -86,10 +91,16 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_attempts_session_started",
+            "idx_reminders_state_next",
+            "idx_reminders_owner_state_updated",
+            "idx_reminder_occurrences_owner_read_fired",
+            "idx_reminder_occurrences_reminder_number",
         } <= {row["name"] for row in indexes}
         assert "compaction_completed_at_ms" in {
             row["name"] for row in migration_columns
         }
+        assert schema_version is not None
+        assert schema_version["version"] == 13
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
@@ -98,9 +109,13 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
         assert inbound_primary_keys["seq"] == 0
         assert "reply_to_message_id" in inbound_primary_keys
         assert "reply_to_provider_message_id" not in inbound_primary_keys
+        assert "agent_id" in inbound_primary_keys
         assert outbound_primary_keys["outbound_message_id"] == 1
         assert "attachments_json" in outbound_primary_keys
+        assert "agent_id" in outbound_primary_keys
+        assert "agent_name" in outbound_primary_keys
         assert [row["name"] for row in provider_identity_columns] == [
+            "agent_id",
             "channel",
             "provider_thread_id",
             "provider_message_id",
@@ -124,10 +139,11 @@ async def test_sqlite_bootstrap_persists_node_and_workspace_state() -> None:
     restarted = SqliteDatabase()
     await restarted.start(timeout=2)
     try:
-        restarted_identity = await restarted.initialize(node_id="node-1")
-        assert restarted_identity.workspace_id == first_state.workspace_id
-        assert restarted.workspace_id == first_state.workspace_id
-        assert restarted.node_state.created_at_ms == first_state.created_at_ms
+        restarted_identity = await restarted.initialize(
+            node_id="node-1",
+            workspace_id="agent-1",
+        )
+        assert restarted_identity == identity
     finally:
         await restarted.stop(timeout=2)
 
@@ -243,7 +259,7 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_v12_migration_preserves_durable_session_and_attempt_facts() -> (
+async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts() -> (
     None
 ):
     data_dir = resolve_data_dir()
@@ -295,7 +311,29 @@ async def test_sqlite_v12_migration_preserves_durable_session_and_attempt_facts(
     await database.start(timeout=2)
     try:
         await database.initialize(node_id="node-1", workspace_id="workspace-1")
-        assert database.node_state.schema_version == 12
+        async with database.transaction() as transaction:
+            schema_version = await transaction.fetchone(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            )
+            node_state = await transaction.fetchone(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'node_state'"
+            )
+            ownership_rows = await transaction.fetchall(
+                "SELECT agent_id FROM channel_sessions WHERE id = 'channel-1' "
+                "UNION ALL "
+                "SELECT agent_id FROM bcn_sessions WHERE id = 'bcn-1' "
+                "UNION ALL "
+                "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
+            )
+        assert schema_version is not None
+        assert schema_version["version"] == 13
+        assert node_state is None
+        assert [row["agent_id"] for row in ownership_rows] == [
+            "workspace-1",
+            "workspace-1",
+            "workspace-1",
+        ]
         retained_attempt = RuntimeAttempt(
             turn_id="turn-1",
             session_id="runtime-1",
@@ -348,7 +386,7 @@ async def test_sqlite_v12_migration_preserves_durable_session_and_attempt_facts(
 
 
 @pytest.mark.asyncio
-async def test_sqlite_removes_runtime_events_and_compacts_existing_database() -> None:
+async def test_sqlite_removes_runtime_events_and_node_state() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
@@ -399,8 +437,12 @@ async def test_sqlite_removes_runtime_events_and_compacts_existing_database() ->
                 "SELECT name FROM sqlite_master WHERE name = 'runtime_events' "
                 "OR name LIKE 'idx_runtime_events_%'"
             )
-            retained = await transaction.fetchone(
-                "SELECT node_id, workspace_id FROM node_state WHERE singleton_key = 1"
+            node_state = await transaction.fetchone(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'node_state'"
+            )
+            schema_version = await transaction.fetchone(
+                "SELECT MAX(version) AS version FROM schema_migrations"
             )
             marker = await transaction.fetchone(
                 "SELECT compaction_completed_at_ms FROM schema_migrations "
@@ -410,11 +452,9 @@ async def test_sqlite_removes_runtime_events_and_compacts_existing_database() ->
             quick_check = await transaction.fetchone("PRAGMA quick_check")
 
         assert not runtime_objects
-        assert retained is not None
-        assert (retained["node_id"], retained["workspace_id"]) == (
-            "node-retained",
-            "workspace-retained",
-        )
+        assert node_state is None
+        assert schema_version is not None
+        assert schema_version["version"] == 13
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -442,6 +482,12 @@ async def test_sqlite_v10_migration_preserves_existing_outbound_drafts() -> None
                 "VALUES (?, ?, ?, ?, ?)",
                 (migration.version, migration.name, migration.checksum, 1, 0),
             )
+        await connection.execute(
+            "INSERT INTO node_state ("
+            "singleton_key, node_id, schema_version, workspace_id, "
+            "created_at_ms, updated_at_ms, metadata_json"
+            ") VALUES (1, 'node-legacy', 9, 'agent-legacy', 1, 1, '{}')"
+        )
         await connection.execute(
             "INSERT INTO outbound_messages ("
             "outbound_message_id, command_id, session_id, channel_session_id, "
@@ -556,6 +602,12 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
                 "VALUES (?, ?, ?, ?, ?)",
                 (migration.version, migration.name, migration.checksum, 1, 0),
             )
+        await connection.execute(
+            "INSERT INTO node_state ("
+            "singleton_key, node_id, schema_version, workspace_id, "
+            "created_at_ms, updated_at_ms, metadata_json"
+            ") VALUES (1, 'node-legacy', 4, 'agent-legacy', 1, 1, '{}')"
+        )
         for message_id, seq, session_id, provider_message_id, reply_id in (
             (
                 "message-cross-session",
