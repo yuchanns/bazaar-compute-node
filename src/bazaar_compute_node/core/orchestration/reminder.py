@@ -8,7 +8,13 @@ from uuid import uuid7
 
 from ..concurrency import ISessionConcurrency
 from ..lifecycle import IAsyncLifecycle
-from ..models import Reminder, ReminderOccurrence, ReminderState
+from ..models import (
+    OwnedReminder,
+    OwnedReminderOccurrence,
+    ReminderOccurrence,
+    ReminderOwner,
+    ReminderState,
+)
 from ..reminder import next_recurrence_ms
 from ..storage import IStorage
 from ..timerwheel import (
@@ -27,7 +33,7 @@ def _current_time_ms() -> int:
 
 
 class ReminderScheduler(IAsyncLifecycle):
-    """Materialize durable Reminder occurrences with one frontier timer."""
+    """Materialize durable Reminder occurrences with one global frontier timer."""
 
     def __init__(
         self,
@@ -35,7 +41,7 @@ class ReminderScheduler(IAsyncLifecycle):
         storage: IStorage,
         timer_wheel: TimerWheel,
         concurrency: ISessionConcurrency,
-        publish_wake: Callable[[str], Awaitable[None]],
+        publish_wake: Callable[[str, str], Awaitable[bool]],
         clock: Callable[[], int] | None = None,
     ) -> None:
         self._storage = storage
@@ -107,12 +113,12 @@ class ReminderScheduler(IAsyncLifecycle):
                 if self._stopping:
                     return
                 async with self._storage.transaction() as transaction:
-                    frontier = await transaction.get_next_scheduled_reminder()
+                    frontier = await transaction.get_next_scheduled_owned_reminder()
                 if frontier is None:
                     await self._poke.wait()
                     self._poke.clear()
                     continue
-                next_fire_at_ms = frontier.next_fire_at_ms
+                next_fire_at_ms = frontier.reminder.next_fire_at_ms
                 if next_fire_at_ms is None:
                     raise RuntimeError(
                         "scheduled reminder frontier has no next fire time"
@@ -167,43 +173,53 @@ class ReminderScheduler(IAsyncLifecycle):
 
     async def _publish_pending_recovery(self) -> None:
         async with self._storage.transaction() as transaction:
-            owners = await transaction.list_sessions_with_pending_reminders()
-        for owner_session_id in owners:
-            await self._publish_wake(owner_session_id)
+            owners = await transaction.list_pending_reminder_owners()
+        for owner in owners:
+            await self._publish_owner(owner)
 
     async def _materialize_due_batches(self) -> None:
         while not self._stopping:
             now_ms = self._clock()
             async with self._storage.transaction() as transaction:
-                due = await transaction.list_due_reminders(
+                due = await transaction.list_due_owned_reminders(
                     now_ms,
                     limit=_DUE_BATCH_SIZE,
                 )
             if not due:
                 return
-            owners: set[str] = set()
+            owners: set[ReminderOwner] = set()
             for reminder in due:
                 owner = await self._materialize_due_reminder(reminder)
                 if owner is not None:
                     owners.add(owner)
-            for owner_session_id in sorted(owners):
-                await self._publish_wake(owner_session_id)
+            for owner in sorted(
+                owners,
+                key=lambda item: (item.agent_id, item.owner_session_id),
+            ):
+                await self._publish_owner(owner)
             await asyncio.sleep(0)
 
-    async def _materialize_due_reminder(self, snapshot: Reminder) -> str | None:
+    async def _materialize_due_reminder(
+        self,
+        snapshot: OwnedReminder,
+    ) -> ReminderOwner | None:
+        owner = snapshot.owner
         async with (
-            self._concurrency.for_session(snapshot.owner_session_id),
+            self._concurrency.for_session(owner.owner_session_id),
             self._storage.transaction() as transaction,
         ):
-            current = await transaction.get_reminder(
-                snapshot.owner_session_id,
-                snapshot.reminder_id,
+            current_owned = await transaction.get_owned_reminder(
+                owner.agent_id,
+                owner.owner_session_id,
+                snapshot.reminder.reminder_id,
             )
+            if current_owned is None:
+                return None
+            current = current_owned.reminder
             if (
-                current is None
-                or current.state is not ReminderState.SCHEDULED
-                or current.revision != snapshot.revision
-                or current.next_fire_at_ms != snapshot.next_fire_at_ms
+                current.state is not ReminderState.SCHEDULED
+                or current.revision != snapshot.reminder.revision
+                or current.next_fire_at_ms != snapshot.reminder.next_fire_at_ms
             ):
                 return None
             scheduled_for_ms = current.next_fire_at_ms
@@ -239,12 +255,26 @@ class ReminderScheduler(IAsyncLifecycle):
                 read_at_ms=None,
                 created_at_ms=fired_at_ms,
             )
-            await transaction.save_fired_occurrence(
+            await transaction.save_owned_fired_occurrence(
                 current.revision,
-                fired,
-                occurrence,
+                OwnedReminder(owner.agent_id, fired),
+                OwnedReminderOccurrence(owner.agent_id, occurrence),
             )
-            return current.owner_session_id
+            return owner
+
+    async def _publish_owner(self, owner: ReminderOwner) -> None:
+        try:
+            await self._publish_wake(owner.agent_id, owner.owner_session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception(
+                "reminder wake publish failed",
+                extra={
+                    "agent_id": owner.agent_id,
+                    "owner_session_id": owner.owner_session_id,
+                },
+            )
 
 
 __all__ = ["ReminderScheduler"]

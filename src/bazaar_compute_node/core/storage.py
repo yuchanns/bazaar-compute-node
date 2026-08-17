@@ -10,8 +10,11 @@ from .models import (
     ConsumerCursor,
     InboundMessage,
     OutboundMessage,
+    OwnedReminder,
+    OwnedReminderOccurrence,
     Reminder,
     ReminderOccurrence,
+    ReminderOwner,
     ReminderState,
     RuntimeAttempt,
 )
@@ -117,6 +120,31 @@ class IStorageTransaction(Protocol):
     ) -> tuple[ReminderOccurrence, ...]: ...
 
     async def list_sessions_with_pending_reminders(self) -> tuple[str, ...]: ...
+
+    async def get_owned_reminder(
+        self,
+        agent_id: str,
+        owner_session_id: str,
+        reminder_id: str,
+    ) -> OwnedReminder | None: ...
+
+    async def get_next_scheduled_owned_reminder(self) -> OwnedReminder | None: ...
+
+    async def list_due_owned_reminders(
+        self,
+        now_ms: int,
+        *,
+        limit: int,
+    ) -> tuple[OwnedReminder, ...]: ...
+
+    async def save_owned_fired_occurrence(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        occurrence: OwnedReminderOccurrence,
+    ) -> OwnedReminderOccurrence: ...
+
+    async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]: ...
 
 
 class IStorage(IAsyncLifecycle, Protocol):

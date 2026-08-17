@@ -39,11 +39,11 @@ from .reminder_repository import (
     _INBOUND_COLUMNS,
     _OCCURRENCE_COLUMNS,
     _REMINDER_COLUMNS,
-    ReminderSqliteTransaction,
 )
+from .reminder_repository import ReminderTransaction as _ReminderTransaction
 
 
-class ScopedReminderSqliteTransaction(ReminderSqliteTransaction):
+class ReminderTransaction(_ReminderTransaction):
     """One serialized SQLite transaction bound to one configured Agent."""
 
     def __init__(self, database, *, agent_id: str, agent_name: str) -> None:
@@ -771,4 +771,4 @@ class ScopedReminderSqliteTransaction(ReminderSqliteTransaction):
         )
 
 
-__all__ = ["ScopedReminderSqliteTransaction"]
+__all__ = ["ReminderTransaction"]

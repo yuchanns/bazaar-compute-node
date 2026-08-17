@@ -9,8 +9,11 @@ from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
     InboundMessage,
+    OwnedReminder,
+    OwnedReminderOccurrence,
     Reminder,
     ReminderOccurrence,
+    ReminderOwner,
     ReminderState,
 )
 from bazaar_compute_node.core.reminder import canonical_id_reference
@@ -239,6 +242,66 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         )
         return tuple(reminders[:limit])
 
+    async def get_owned_reminder(
+        self,
+        agent_id: str,
+        owner_session_id: str,
+        reminder_id: str,
+    ) -> OwnedReminder | None:
+        _require_non_empty_text(agent_id, "agent_id")
+        _require_non_empty_text(owner_session_id, "owner_session_id")
+        _require_non_empty_text(reminder_id, "reminder_id")
+        reminder = await self.get_reminder(owner_session_id, reminder_id)
+        if reminder is None or self._agent_id_for_session(owner_session_id) != agent_id:
+            return None
+        return OwnedReminder(agent_id=agent_id, reminder=reminder)
+
+    async def get_next_scheduled_owned_reminder(self) -> OwnedReminder | None:
+        reminders = [
+            owned
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.state is ReminderState.SCHEDULED
+            and reminder.next_fire_at_ms is not None
+            for owned in [self._owned_reminder(reminder)]
+            if owned is not None
+        ]
+        if not reminders:
+            return None
+        return min(
+            reminders,
+            key=lambda owned: (
+                owned.reminder.next_fire_at_ms,
+                owned.agent_id,
+                owned.reminder.reminder_id,
+            ),
+        )
+
+    async def list_due_owned_reminders(
+        self,
+        now_ms: int,
+        *,
+        limit: int,
+    ) -> tuple[OwnedReminder, ...]:
+        _require_non_negative_int(now_ms, "now_ms")
+        _require_positive_int(limit, "limit")
+        reminders = [
+            owned
+            for reminder in self._reminder_storage.reminders.values()
+            if reminder.state is ReminderState.SCHEDULED
+            and reminder.next_fire_at_ms is not None
+            and reminder.next_fire_at_ms <= now_ms
+            for owned in [self._owned_reminder(reminder)]
+            if owned is not None
+        ]
+        reminders.sort(
+            key=lambda owned: (
+                owned.reminder.next_fire_at_ms,
+                owned.agent_id,
+                owned.reminder.reminder_id,
+            )
+        )
+        return tuple(reminders[:limit])
+
     async def save_fired_occurrence(
         self,
         expected_revision: int,
@@ -297,6 +360,35 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         self._reminder_storage.reminder_occurrences[canonical.occurrence_id] = canonical
         self._reminder_storage.reminders[reminder.reminder_id] = reminder
         return canonical
+
+    async def save_owned_fired_occurrence(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        occurrence: OwnedReminderOccurrence,
+    ) -> OwnedReminderOccurrence:
+        _require_positive_int(expected_revision, "expected_revision")
+        if not isinstance(reminder, OwnedReminder):
+            raise TypeError("reminder must be an OwnedReminder")
+        if not isinstance(occurrence, OwnedReminderOccurrence):
+            raise TypeError("occurrence must be an OwnedReminderOccurrence")
+        if reminder.agent_id != occurrence.agent_id:
+            raise ValueError("Reminder and occurrence Agent ownership does not match")
+        if (
+            await self.get_owned_reminder(
+                reminder.agent_id,
+                reminder.reminder.owner_session_id,
+                reminder.reminder.reminder_id,
+            )
+            is None
+        ):
+            raise ValueError("reminder not found")
+        canonical = await self.save_fired_occurrence(
+            expected_revision,
+            reminder.reminder,
+            occurrence.occurrence,
+        )
+        return OwnedReminderOccurrence(reminder.agent_id, canonical)
 
     async def list_pending_reminder_occurrences(
         self,
@@ -361,6 +453,33 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
                 }
             )
         )
+
+    async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]:
+        owners: set[ReminderOwner] = set()
+        for occurrence in self._reminder_storage.reminder_occurrences.values():
+            if not occurrence.pending:
+                continue
+            agent_id = self._agent_id_for_session(occurrence.owner_session_id)
+            if agent_id is not None:
+                owners.add(
+                    ReminderOwner(
+                        agent_id=agent_id,
+                        owner_session_id=occurrence.owner_session_id,
+                    )
+                )
+        return tuple(
+            sorted(owners, key=lambda owner: (owner.agent_id, owner.owner_session_id))
+        )
+
+    def _owned_reminder(self, reminder: Reminder) -> OwnedReminder | None:
+        agent_id = self._agent_id_for_session(reminder.owner_session_id)
+        if agent_id is None:
+            return None
+        return OwnedReminder(agent_id=agent_id, reminder=reminder)
+
+    def _agent_id_for_session(self, session_id: str) -> str | None:
+        session = self._reminder_storage.bcn_sessions.get(session_id)
+        return session.workspace_id if session is not None else None
 
 
 def _require_non_empty_text(value: str, field_name: str) -> None:

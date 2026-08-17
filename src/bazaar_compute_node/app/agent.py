@@ -11,11 +11,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
-from ..core.concurrency import SessionLockRegistry
+from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import RuntimeSession
 from ..core.observability import IAudit
-from ..core.orchestration import ReminderScheduler, SessionOrchestrator
+from ..core.orchestration import SessionOrchestrator
 from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
@@ -56,6 +56,8 @@ class AgentApplication:
         storage: IStorageScope,
         audit: IAudit,
         timer_wheel: TimerWheel,
+        reminder_concurrency: ISessionConcurrency,
+        reminder_poke: Callable[[], None],
         endpoint: Callable[[], str],
         wrapper_path: Path,
         timeout_budget: TimeoutBudget,
@@ -135,16 +137,10 @@ class AgentApplication:
             workspace=self.workspace_path,
             concurrency=self._concurrency,
         )
-        self.reminder_scheduler = ReminderScheduler(
-            storage=self.storage,
-            timer_wheel=self.timer_wheel,
-            concurrency=self._concurrency,
-            publish_wake=self.orchestrator.publish_reminder_wake,
-        )
         self.reminder_service = ReminderCommandService(
             storage=self.storage,
-            concurrency=self._concurrency,
-            poke=self.reminder_scheduler.poke,
+            concurrency=reminder_concurrency,
+            poke=reminder_poke,
         )
         control_handler = None
         if factories.control is not None:
@@ -183,9 +179,6 @@ class AgentApplication:
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
-            await self.reminder_scheduler.start(
-                timeout=self.timeout_budget.startup_seconds,
-            )
         except BaseException:
             await self._cleanup_partial_start()
             raise
@@ -201,12 +194,6 @@ class AgentApplication:
         errors: list[BaseException] = []
         try:
             await self.command_dispatcher.drain(
-                timeout=self.timeout_budget.shutdown_seconds,
-            )
-        except BaseException as error:  # noqa: BLE001
-            errors.append(error)
-        try:
-            await self.reminder_scheduler.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
         except BaseException as error:  # noqa: BLE001
@@ -235,6 +222,11 @@ class AgentApplication:
         async with self.storage.transaction() as transaction:
             return await transaction.get_bcn_session(session_id) is not None
 
+    async def publish_reminder_wake(self, session_id: str) -> None:
+        if not self._started:
+            raise RuntimeError("Agent application is not started")
+        await self.orchestrator.publish_reminder_wake(session_id)
+
     def health_record(self) -> dict[str, object]:
         return {
             "agent_id": self.agent_id,
@@ -246,12 +238,6 @@ class AgentApplication:
         }
 
     async def _cleanup_partial_start(self) -> None:
-        try:
-            await self.reminder_scheduler.stop(
-                timeout=self.timeout_budget.shutdown_seconds,
-            )
-        except BaseException as error:
-            self._logger.debug("reminder scheduler cleanup failed", exc_info=error)
         try:
             await self.orchestrator.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
@@ -301,8 +287,7 @@ class AgentApplication:
             or capability_binding[0] != runtime_session.id
             or not isinstance(session_capability, str)
             or not hmac.compare_digest(
-                session_capability.encode(),
-                capability_binding[1].encode(),
+                session_capability.encode(), capability_binding[1].encode()
             )
         ):
             raise CommandDispatchError(

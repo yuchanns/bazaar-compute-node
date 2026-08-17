@@ -20,10 +20,6 @@ class TestControl:
         storage = context.get("storage")
         command_log = context.get("command_log")
         is_started = context.get("is_started")
-        if not isinstance(channel, TestChannel):
-            raise TypeError("test control requires a TestChannel")
-        if not isinstance(storage, MemoryStorage):
-            raise TypeError("test control requires a MemoryStorage")
         if not isinstance(command_log, list):
             raise TypeError("test control requires a command log")
         if not callable(is_started):
@@ -36,6 +32,8 @@ class TestControl:
     async def handle(self, request: Mapping[str, object]) -> Mapping[str, object]:
         operation = request.get("operation")
         if operation == "inject":
+            if not isinstance(self._channel, TestChannel):
+                raise RuntimeError("test control inject requires a TestChannel")
             payload = request.get("message")
             if not isinstance(payload, Mapping):
                 raise ValueError("control inject requires a message object")
@@ -47,29 +45,39 @@ class TestControl:
                 "message_id": message.message_id,
             }
         if operation == "status":
-            return self._status()
+            storage = self._storage
+            channel = self._channel
+            if not isinstance(storage, MemoryStorage):
+                raise RuntimeError("test control status requires a MemoryStorage")
+            if not isinstance(channel, TestChannel):
+                raise RuntimeError("test control status requires a TestChannel")
+            return self._status(storage, channel)
         raise ValueError(f"unsupported test control operation: {operation}")
 
-    def _status(self) -> dict[str, object]:
+    def _status(
+        self,
+        storage: MemoryStorage,
+        channel: TestChannel,
+    ) -> dict[str, object]:
         return {
             "started": self._is_started(),
             "inbound_messages": {
                 session_id: len(messages)
-                for session_id, messages in self._storage.inbound_messages.items()
+                for session_id, messages in storage.inbound_messages.items()
             },
             "cursors": {
                 session_id: {
                     "delivered_through_seq": cursor.delivered_through_seq,
                     "inbox_snapshot_seq": cursor.inbox_snapshot_seq,
                 }
-                for session_id, cursor in self._storage.cursors.items()
+                for session_id, cursor in storage.cursors.items()
             },
             "outbound_messages": [
                 _serialize_outbound(message)
-                for message in self._storage.outbound_messages.values()
+                for message in storage.outbound_messages.values()
             ],
             "sent_messages": [
-                _serialize_outbound(message) for message in self._channel.sent_messages
+                _serialize_outbound(message) for message in channel.sent_messages
             ],
             "bcc_commands": [
                 {"session_id": session_id, "command": list(command)}

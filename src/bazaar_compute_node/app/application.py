@@ -9,8 +9,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.observability import IAudit
+from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
@@ -69,6 +71,13 @@ class NodeApplication:
         self.storage: IStorage = shared_factories.storage()
         self.audit: IAudit = shared_factories.audit()
         self.timer_wheel = TimerWheel()
+        self._reminder_concurrency = SessionLockRegistry()
+        self.reminder_scheduler = ReminderScheduler(
+            storage=self.storage,
+            timer_wheel=self.timer_wheel,
+            concurrency=self._reminder_concurrency,
+            publish_wake=self._publish_reminder_wake,
+        )
         self.command_server = LocalCommandServer(
             self._dispatch,
             endpoint_path=endpoint_path,
@@ -113,6 +122,13 @@ class NodeApplication:
         self._stopped.clear()
         for agent_configuration in self.configuration.agents:
             await self._start_agent(agent_configuration)
+        try:
+            await self.reminder_scheduler.start(
+                timeout=self.timeout_budget.startup_seconds,
+            )
+        except BaseException:
+            await self.stop()
+            raise
         self._ready = True
         self._accepting = True
         started_count = len(self.agents)
@@ -144,6 +160,8 @@ class NodeApplication:
                 storage=storage_scope,
                 audit=self.audit,
                 timer_wheel=self.timer_wheel,
+                reminder_concurrency=self._reminder_concurrency,
+                reminder_poke=self.reminder_scheduler.poke,
                 endpoint=lambda: self.endpoint,
                 wrapper_path=wrapper_path,
                 timeout_budget=self.timeout_budget,
@@ -187,6 +205,14 @@ class NodeApplication:
         self._ready = False
         self._accepting = False
         errors: list[str] = []
+        try:
+            await self.reminder_scheduler.stop(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"reminder_scheduler.stop:{type(error).__name__}")
         for agent_id, agent in tuple(self.agents.items()):
             try:
                 await agent.stop()
@@ -230,6 +256,30 @@ class NodeApplication:
             except NotImplementedError, RuntimeError:
                 pass
         await self._stopped.wait()
+
+    async def _publish_reminder_wake(self, agent_id: str, session_id: str) -> bool:
+        agent = self.agents.get(agent_id)
+        if agent is None or not agent.started:
+            self._log(
+                "reminder.wake.agent_unavailable",
+                agent_id=agent_id,
+                owner_session_id=session_id,
+            )
+            return False
+        try:
+            await agent.publish_reminder_wake(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._log(
+                "reminder.wake.failed",
+                agent_id=agent_id,
+                owner_session_id=session_id,
+                error_type=type(error).__name__,
+                error=_safe_error(error),
+            )
+            return False
+        return True
 
     async def _dispatch(
         self,
@@ -335,6 +385,12 @@ class NodeApplication:
             )
 
     async def _stop_shared_after_failed_start(self) -> None:
+        try:
+            await self.reminder_scheduler.stop(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
+        except BaseException as error:
+            self._logger.debug("reminder scheduler cleanup failed", exc_info=error)
         try:
             await self.command_server.stop()
         except BaseException as error:
