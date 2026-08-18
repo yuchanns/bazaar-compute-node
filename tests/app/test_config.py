@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import stat
 import tomllib
@@ -27,7 +28,8 @@ def test_empty_legacy_config_is_upgraded_to_zero_agent_v2(tmp_path: Path) -> Non
         "version": "2",
         "node": {"storage": "sqlite", "audit": "logging"},
     }
-    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 
 def test_wecom_legacy_config_reuses_sqlite_workspace_identity(
