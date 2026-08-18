@@ -21,15 +21,20 @@ CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[], IAudit]
+ControlFactory = Callable[[Mapping[str, object]], ControlHandler]
 
 
 @dataclass(frozen=True, slots=True)
-class AdapterFactories:
-    channel: IChannelBuilder
-    runtime: RuntimeFactory
+class SharedAdapterFactories:
     storage: StorageFactory
     audit: AuditFactory
-    control: Callable[[Mapping[str, object]], ControlHandler] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentAdapterFactories:
+    channel: IChannelBuilder
+    runtime: RuntimeFactory
+    control: ControlFactory | None = None
 
 
 class ProviderLoadError(RuntimeError):
@@ -37,41 +42,45 @@ class ProviderLoadError(RuntimeError):
 
 
 class AdapterRegistry:
-    """Discover provider factories through Python package entry points."""
+    """Discover shared and Agent-scoped provider factories."""
 
-    def load(
+    def load_shared(
         self,
         *,
-        channel: str,
-        runtime: str,
         storage: str = "sqlite",
         audit: str = "logging",
         storage_options: Mapping[str, object] | None = None,
-    ) -> AdapterFactories:
-        control = self._load_optional(
-            CONTROL_ENTRY_POINT_GROUP,
-            f"{channel}+{runtime}+{storage}",
-        )
+    ) -> SharedAdapterFactories:
         storage_factory = cast(
             Callable[[Mapping[str, object]], IStorage] | StorageFactory,
             self._load(STORAGE_ENTRY_POINT_GROUP, storage),
         )
         if storage_options:
             storage_factory = partial(storage_factory, dict(storage_options))
-        return AdapterFactories(
+        return SharedAdapterFactories(
+            storage=cast(StorageFactory, storage_factory),
+            audit=cast(AuditFactory, self._load(AUDIT_ENTRY_POINT_GROUP, audit)),
+        )
+
+    def load_agent(
+        self,
+        *,
+        channel: str,
+        runtime: str,
+        storage: str,
+    ) -> AgentAdapterFactories:
+        return AgentAdapterFactories(
             channel=self._load_channel_builder(channel),
             runtime=cast(
                 RuntimeFactory,
                 self._load(RUNTIME_ENTRY_POINT_GROUP, runtime),
             ),
-            storage=cast(StorageFactory, storage_factory),
-            audit=cast(
-                AuditFactory,
-                self._load(AUDIT_ENTRY_POINT_GROUP, audit),
-            ),
             control=cast(
-                Callable[[Mapping[str, object]], ControlHandler] | None,
-                control,
+                ControlFactory | None,
+                self._load_optional(
+                    CONTROL_ENTRY_POINT_GROUP,
+                    f"{channel}+{runtime}+{storage}",
+                ),
             ),
         )
 

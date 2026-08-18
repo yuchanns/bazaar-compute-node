@@ -3,11 +3,20 @@ from __future__ import annotations
 from dataclasses import replace
 from uuid import uuid7
 
-from ...core.models import InboundMessage, Reminder, ReminderOccurrence, ReminderState
+from ...core.models import (
+    InboundMessage,
+    OwnedReminder,
+    OwnedReminderOccurrence,
+    Reminder,
+    ReminderOccurrence,
+    ReminderOwner,
+    ReminderState,
+)
 from ...core.reminder import canonical_id_reference
 from .codec import (
     _inbound_message_from_row,
     _required_non_negative_int,
+    _required_text,
     _validate_non_empty_text,
     _validate_non_negative_int,
     _validate_positive_int,
@@ -32,9 +41,10 @@ _INBOUND_COLUMNS = (
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
     "provider_payload_ref, metadata_json"
 )
+_OWNED_REMINDER_COLUMNS = f"agent_id, {_REMINDER_COLUMNS}"
 
 
-class ReminderSqliteTransaction(SqliteTransaction):
+class ReminderTransaction(SqliteTransaction):
     async def resolve_inbound_message(
         self,
         session_id: str,
@@ -215,6 +225,211 @@ class ReminderSqliteTransaction(SqliteTransaction):
             (ReminderState.SCHEDULED.value, now_ms, limit),
         )
         return tuple(reminder_from_row(row) for row in rows)
+
+    async def get_owned_reminder(
+        self,
+        agent_id: str,
+        owner_session_id: str,
+        reminder_id: str,
+    ) -> OwnedReminder | None:
+        _validate_non_empty_text(agent_id, "agent_id")
+        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        _validate_non_empty_text(reminder_id, "reminder_id")
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None and bound_agent_id != agent_id:
+            return None
+        effective_agent_id = bound_agent_id or agent_id
+        row = await self.fetchone(
+            f"SELECT {_OWNED_REMINDER_COLUMNS} FROM reminders "
+            "WHERE agent_id = ? AND owner_session_id = ? AND reminder_id = ?",
+            (effective_agent_id, owner_session_id, reminder_id),
+        )
+        return self._owned_reminder_from_row(row) if row is not None else None
+
+    async def get_next_scheduled_owned_reminder(self) -> OwnedReminder | None:
+        predicates = ["state = ?"]
+        parameters: list[object] = [ReminderState.SCHEDULED.value]
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None:
+            predicates.append("agent_id = ?")
+            parameters.append(bound_agent_id)
+        row = await self.fetchone(
+            f"SELECT {_OWNED_REMINDER_COLUMNS} FROM reminders "
+            f"WHERE {' AND '.join(predicates)} "
+            "ORDER BY next_fire_at_ms, agent_id, reminder_id LIMIT 1",
+            parameters,
+        )
+        return self._owned_reminder_from_row(row) if row is not None else None
+
+    async def list_due_owned_reminders(
+        self,
+        now_ms: int,
+        *,
+        limit: int,
+    ) -> tuple[OwnedReminder, ...]:
+        _validate_non_negative_int(now_ms, "now_ms")
+        _validate_positive_int(limit, "limit")
+        predicates = ["state = ?", "next_fire_at_ms <= ?"]
+        parameters: list[object] = [ReminderState.SCHEDULED.value, now_ms]
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None:
+            predicates.append("agent_id = ?")
+            parameters.append(bound_agent_id)
+        rows = await self.fetchall(
+            f"SELECT {_OWNED_REMINDER_COLUMNS} FROM reminders "
+            f"WHERE {' AND '.join(predicates)} "
+            "ORDER BY next_fire_at_ms, agent_id, reminder_id LIMIT ?",
+            (*parameters, limit),
+        )
+        return tuple(self._owned_reminder_from_row(row) for row in rows)
+
+    async def save_owned_fired_occurrence(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        occurrence: OwnedReminderOccurrence,
+    ) -> OwnedReminderOccurrence:
+        _validate_positive_int(expected_revision, "expected_revision")
+        if not isinstance(reminder, OwnedReminder):
+            raise TypeError("reminder must be an OwnedReminder")
+        if not isinstance(occurrence, OwnedReminderOccurrence):
+            raise TypeError("occurrence must be an OwnedReminderOccurrence")
+        if reminder.agent_id != occurrence.agent_id:
+            raise ValueError("Reminder and occurrence Agent ownership does not match")
+
+        incoming = reminder.reminder
+        incoming_occurrence = occurrence.occurrence
+        existing_owned = await self.get_owned_reminder(
+            reminder.agent_id,
+            incoming.owner_session_id,
+            incoming.reminder_id,
+        )
+        if existing_owned is None:
+            raise ValueError("reminder not found")
+        existing = existing_owned.reminder
+        self._validate_expected_revision(existing, expected_revision)
+        self._validate_reminder_identity(existing, incoming)
+        if existing.state is not ReminderState.SCHEDULED:
+            raise ValueError("only a scheduled reminder can fire")
+        if incoming.revision != expected_revision + 1:
+            raise ValueError("reminder revision must advance by exactly one")
+        if incoming.last_occurrence_no != existing.last_occurrence_no + 1:
+            raise ValueError("reminder occurrence number must advance by exactly one")
+        if incoming.last_fired_at_ms != incoming_occurrence.fired_at_ms:
+            raise ValueError("reminder fire time does not match occurrence")
+        if incoming.updated_at_ms != incoming_occurrence.fired_at_ms:
+            raise ValueError("reminder update time does not match occurrence fire")
+        if incoming.title != existing.title:
+            raise ValueError("fire cannot change reminder title")
+        if incoming.repeat_rule != existing.repeat_rule:
+            raise ValueError("fire cannot change reminder cadence")
+        if incoming_occurrence.reminder_id != existing.reminder_id:
+            raise ValueError("occurrence reminder binding does not match")
+        if incoming_occurrence.owner_session_id != existing.owner_session_id:
+            raise ValueError("occurrence owner binding does not match")
+        if incoming_occurrence.anchor_message_id != existing.anchor_message_id:
+            raise ValueError("occurrence anchor binding does not match")
+        if incoming_occurrence.occurrence_no != incoming.last_occurrence_no:
+            raise ValueError("occurrence number does not match reminder history")
+        if incoming_occurrence.scheduled_for_ms != existing.next_fire_at_ms:
+            raise ValueError("occurrence scheduled slot does not match reminder")
+        if incoming_occurrence.next_fire_at_ms != incoming.next_fire_at_ms:
+            raise ValueError("occurrence next fire does not match reminder")
+        if incoming_occurrence.overdue != (
+            incoming_occurrence.fired_at_ms > incoming_occurrence.scheduled_for_ms
+        ):
+            raise ValueError("occurrence overdue flag does not match fire time")
+        if incoming_occurrence.read_at_ms is not None:
+            raise ValueError("a new occurrence must be pending")
+
+        duplicate = await self.fetchone(
+            "SELECT 1 FROM reminder_occurrences "
+            "WHERE agent_id = ? AND reminder_id = ? AND occurrence_no = ?",
+            (
+                reminder.agent_id,
+                existing.reminder_id,
+                incoming_occurrence.occurrence_no,
+            ),
+        )
+        if duplicate is not None:
+            raise ValueError("reminder occurrence number is already persisted")
+
+        canonical = replace(incoming_occurrence, occurrence_id=str(uuid7()))
+        await self.execute(
+            "INSERT INTO reminder_occurrences ("
+            "agent_id, occurrence_id, reminder_id, owner_session_id, occurrence_no, "
+            "anchor_message_id, scheduled_for_ms, fired_at_ms, next_fire_at_ms, "
+            "overdue, read_at_ms, created_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                reminder.agent_id,
+                canonical.occurrence_id,
+                canonical.reminder_id,
+                canonical.owner_session_id,
+                canonical.occurrence_no,
+                canonical.anchor_message_id,
+                canonical.scheduled_for_ms,
+                canonical.fired_at_ms,
+                canonical.next_fire_at_ms,
+                int(canonical.overdue),
+                canonical.read_at_ms,
+                canonical.created_at_ms,
+            ),
+        )
+        await self.execute(
+            "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "
+            "repeat_rule = ?, timezone = ?, revision = ?, last_occurrence_no = ?, "
+            "updated_at_ms = ?, last_fired_at_ms = ?, canceled_at_ms = ? "
+            "WHERE agent_id = ? AND reminder_id = ? AND owner_session_id = ?",
+            (
+                incoming.title,
+                incoming.state.value,
+                incoming.next_fire_at_ms,
+                incoming.repeat_rule,
+                incoming.timezone,
+                incoming.revision,
+                incoming.last_occurrence_no,
+                incoming.updated_at_ms,
+                incoming.last_fired_at_ms,
+                incoming.canceled_at_ms,
+                reminder.agent_id,
+                incoming.reminder_id,
+                incoming.owner_session_id,
+            ),
+        )
+        return OwnedReminderOccurrence(reminder.agent_id, canonical)
+
+    async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]:
+        parameters: tuple[object, ...] = ()
+        predicate = "read_at_ms IS NULL"
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None:
+            predicate += " AND agent_id = ?"
+            parameters = (bound_agent_id,)
+        rows = await self.fetchall(
+            "SELECT DISTINCT agent_id, owner_session_id FROM reminder_occurrences "
+            f"WHERE {predicate} ORDER BY agent_id, owner_session_id",
+            parameters,
+        )
+        return tuple(
+            ReminderOwner(
+                agent_id=_required_text(row["agent_id"], "agent_id"),
+                owner_session_id=_required_text(
+                    row["owner_session_id"], "owner_session_id"
+                ),
+            )
+            for row in rows
+        )
+
+    def _bound_agent_id(self) -> str | None:
+        return getattr(self, "agent_id", None)
+
+    @staticmethod
+    def _owned_reminder_from_row(row) -> OwnedReminder:
+        return OwnedReminder(
+            agent_id=_required_text(row["agent_id"], "agent_id"),
+            reminder=reminder_from_row(row),
+        )
 
     async def save_fired_occurrence(
         self,
@@ -417,4 +632,4 @@ class ReminderSqliteTransaction(SqliteTransaction):
             raise ValueError("reminder identity cannot change")
 
 
-__all__ = ["ReminderSqliteTransaction"]
+__all__ = ["ReminderTransaction"]

@@ -54,6 +54,7 @@ def _channel(tmp_path: Path) -> TelegramOutboundChannel:
         )
     channel = TelegramBuilder().build(
         ChannelContext(
+            agent_id="agent-telegram-e2e",
             attachments=AttachmentMaterializer(lambda: tmp_path, _referenced_paths),
             options={},
             workspace=lambda: tmp_path,

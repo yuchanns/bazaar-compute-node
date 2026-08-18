@@ -76,6 +76,7 @@ async def test_wecom_approval_uses_nested_request_identity(tmp_path: Path) -> No
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
@@ -304,6 +305,7 @@ def test_wecom_failure_after_visible_part_is_partial(tmp_path: Path) -> None:
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
@@ -347,6 +349,7 @@ def test_wecom_failure_before_visible_part_is_failed(tmp_path: Path) -> None:
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
@@ -385,6 +388,7 @@ async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
@@ -431,6 +435,7 @@ async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(
                 lambda: tmp_path,
                 referenced_paths,
@@ -472,6 +477,7 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
@@ -510,6 +516,7 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
 
     channel = WeComChannel(
         ChannelContext(
+            agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,

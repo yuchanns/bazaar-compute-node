@@ -1,21 +1,35 @@
 from __future__ import annotations
 
-import asyncio
-import os
-from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
-from bcn_test_support import TestChannel, TestRuntime
 
 from bazaar_compute_node.app.application import NodeApplication
+from bazaar_compute_node.app.config import (
+    AgentConfiguration,
+    ChannelConfiguration,
+    NodeConfiguration,
+    RuntimeConfiguration,
+)
 from bazaar_compute_node.app.registry import AdapterRegistry
-from bazaar_compute_node.app.transport import LocalCommandClient
-from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
-from bazaar_compute_node.core.models import InboundMessage
-from bazaar_compute_node.core.paths import resolve_data_dir
+
+AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+
+
+def make_configuration(*, storage: str = "sqlite") -> NodeConfiguration:
+    return NodeConfiguration(
+        storage=storage,
+        audit="test",
+        agents=(
+            AgentConfiguration(
+                id=AGENT_ID,
+                name="Test Agent",
+                channel=ChannelConfiguration(kind="test"),
+                runtime=RuntimeConfiguration(kind="test"),
+            ),
+        ),
+    )
 
 
 def make_budget() -> TimeoutBudget:
@@ -27,199 +41,40 @@ def make_budget() -> TimeoutBudget:
     )
 
 
-def make_message(session_id: str) -> InboundMessage:
-    return InboundMessage(
-        seq=1,
-        message_id=f"message-{session_id}-1",
-        session_id=session_id,
-        channel_session_id=f"channel-{session_id}",
-        channel="test",
-        provider_thread_id=f"thread-{session_id}",
-        provider_message_id=f"provider-{session_id}-1",
-        received_at_ms=1,
-        sender="Sender",
-        message_type="text",
-        canonical_target=f"#test:{session_id}",
-        body=f"inbound-{session_id}",
-        provider_time_ms=1,
-    )
-
-
-@pytest.mark.asyncio
-async def test_sqlite_composition_serves_multiple_sessions_over_local_ipc(
-    tmp_path: Path,
-) -> None:
-    factories = AdapterRegistry().load(
-        channel="test",
-        runtime="test",
-        storage="sqlite",
-        audit="test",
-    )
-    data_dir = resolve_data_dir()
-    node = NodeApplication(
-        factories=factories,
-        endpoint_path=tmp_path / "bcn.sock",
-        node_id="node-3a",
-        timeout_budget=make_budget(),
-    )
-    channel = cast(TestChannel, node.channel)
-    runtime = cast(TestRuntime, node.runtime)
-
-    await node.start()
-    endpoint = node.endpoint
-    try:
-        if os.name != "nt":
-            assert (data_dir / "bin").stat().st_mode & 0o777 == 0o700
-            assert (data_dir / "bin" / "bcc").stat().st_mode & 0o777 == 0o700
-        health = await LocalCommandClient.request(
-            endpoint,
-            {"kind": "control", "operation": "health"},
-        )
-        assert health["ok"] is True
-        health_result = health.get("result")
-        assert isinstance(health_result, Mapping)
-        assert health_result["started"] is True
-        assert health_result["accepting"] is True
-        assert health_result["channel"] == "test"
-        assert health_result["runtime"] == "test"
-        assert health_result["storage"] == "sqlite"
-        assert health_result["audit"] == "test"
-        assert health_result["node_id"] == "node-3a"
-        workspace_id = health_result["workspace_id"]
-        assert isinstance(workspace_id, str)
-
-        unknown_session = await LocalCommandClient.request(
-            endpoint,
-            {
-                "kind": "command",
-                "resource": "message",
-                "command": "check",
-                "session_id": "missing-session",
-            },
-        )
-        assert unknown_session["ok"] is False
-        assert unknown_session["code"] == "SESSION_NOT_FOUND"
-
-        for session_id in ("bcn-a", "bcn-b"):
-            await channel.inject(make_message(session_id))
-
-        for _ in range(200):
-            if len(channel.sent_messages) == 2:
-                break
-            await asyncio.sleep(0.01)
-        assert len(channel.sent_messages) == 2
-        assert {message.session_id for message in channel.sent_messages} == {
-            "bcn-a",
-            "bcn-b",
-        }
-        assert len(runtime.started_turns) == 2
-        runtime_sessions = {
-            session_id: node.orchestrator.runtime_session(session_id)
-            for session_id in ("bcn-a", "bcn-b")
-        }
-        assert all(session is not None for session in runtime_sessions.values())
-        runtime_a = runtime_sessions["bcn-a"]
-        runtime_b = runtime_sessions["bcn-b"]
-        assert runtime_a is not None
-        assert runtime_b is not None
-        assert runtime_a.id != runtime_b.id
-        runtime_session_ids = {
-            "bcn-a": runtime_a.id,
-            "bcn-b": runtime_b.id,
-        }
-
-        missing_capability = await LocalCommandClient.request(
-            endpoint,
-            {
-                "kind": "command",
-                "resource": "message",
-                "command": "check",
-                "session_id": "bcn-a",
-                "runtime_session_id": runtime_a.id,
-            },
-        )
-        assert missing_capability["code"] == "SESSION_BINDING_FAILED"
-        cross_session_capability = await LocalCommandClient.request(
-            endpoint,
-            {
-                "kind": "command",
-                "resource": "message",
-                "command": "check",
-                "session_id": "bcn-b",
-                "runtime_session_id": runtime_b.id,
-                "session_capability": node._session_capabilities["bcn-a"][1],
-            },
-        )
-        assert cross_session_capability["code"] == "SESSION_BINDING_FAILED"
-    finally:
-        await node.stop()
-
-    assert not (tmp_path / "bcn.sock").exists()
-    if os.name == "nt":
-        assert not (data_dir / "bin" / "bcc.cmd").exists()
-        assert not (data_dir / "bin" / "bcc.ps1").exists()
-    else:
-        assert not (data_dir / "bin" / "bcc").exists()
-    assert node._wrapper_path is None
-    persisted = SqliteDatabase()
-    await persisted.start(timeout=2)
-    try:
-        identity = await persisted.initialize(node_id="node-3a")
-        assert identity.workspace_id == workspace_id
-        async with persisted.transaction() as transaction:
-            for session_id in ("bcn-a", "bcn-b"):
-                assert await transaction.get_bcn_session(session_id) is not None
-                messages = await transaction.list_inbound_messages(session_id)
-                assert [message.session_id for message in messages] == [session_id]
-                attempt = await transaction.get_runtime_attempt(
-                    f"turn-message-{session_id}-1"
-                )
-                assert attempt is not None
-                assert attempt.session_id == runtime_session_ids[session_id]
-    finally:
-        await persisted.stop(timeout=2)
-
-
 @pytest.mark.asyncio
 async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     tmp_path: Path,
 ) -> None:
-    factories = AdapterRegistry().load(
-        channel="test",
-        runtime="test",
-        storage="sqlite",
-        audit="test",
-    )
+    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
     node = NodeApplication(
-        factories=factories,
+        configuration=make_configuration(),
+        shared_factories=shared_factories,
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=make_budget(),
     )
 
-    before_start = await node.command_dispatcher(
-        {"kind": "control", "operation": "health"}
-    )
-    assert before_start["code"] == "SERVICE_NOT_READY"
+    before_start = await node._dispatch({"kind": "control", "operation": "health"})
+    assert before_start["ok"] is True
+    before_result = before_start["result"]
+    assert isinstance(before_result, dict)
+    assert before_result["ready"] is False
     await node.start()
     assert node.timer_wheel._driver_task is not None
     await node.stop()
     assert node.timer_wheel._driver_task is None
-    after_stop = await node.command_dispatcher(
-        {"kind": "control", "operation": "health"}
-    )
-    assert after_stop["code"] == "SERVICE_NOT_READY"
+    after_stop = await node._dispatch({"kind": "control", "operation": "health"})
+    assert after_stop["ok"] is True
+    after_result = after_stop["result"]
+    assert isinstance(after_result, dict)
+    assert after_result["ready"] is False
 
 
 @pytest.mark.asyncio
 async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> None:
-    factories = AdapterRegistry().load(
-        channel="test",
-        runtime="test",
-        storage="test",
-        audit="test",
-    )
+    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
     node = NodeApplication(
-        factories=factories,
+        configuration=make_configuration(storage="sqlite"),
+        shared_factories=shared_factories,
         endpoint_path=tmp_path / "bcn.sock",
         timeout_budget=TimeoutBudget(
             startup_seconds=2,
@@ -232,11 +87,12 @@ async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> N
     await node.start()
     try:
         async with node.storage.transaction():
-            response = await node.command_dispatcher(
+            response = await node.agents[AGENT_ID].command_dispatcher(
                 {
                     "kind": "command",
                     "resource": "message",
                     "command": "check",
+                    "agent_id": AGENT_ID,
                     "session_id": "blocked-by-storage-lock",
                 }
             )

@@ -9,16 +9,19 @@ from .channel import WeComChannel
 class WeComBuilder(IChannelBuilder):
     def build(self, context: ChannelContext) -> IChannel:
         bot_id = context.options.get("bot_id")
+        secret_env = context.options.get("secret_env")
         websocket_url = context.options.get("websocket_url")
         if not isinstance(bot_id, str) or not bot_id:
-            raise ValueError("channel.wecom.bot_id is required")
+            raise ValueError("agent.channel.bot_id is required for wecom")
+        if not isinstance(secret_env, str) or not secret_env:
+            raise ValueError("agent.channel.secret_env is required for wecom")
         if websocket_url is not None and (
             not isinstance(websocket_url, str) or not websocket_url
         ):
-            raise ValueError("channel.wecom.websocket_url must be non-empty text")
-        secret = os.environ.get("BCN_WECOM_BOT_SECRET")
-        if not secret:
-            raise ValueError("BCN_WECOM_BOT_SECRET is required")
+            raise ValueError("agent.channel.websocket_url must be non-empty text")
+        secret = os.environ.get(secret_env)
+        if secret is None or not secret.strip():
+            raise ValueError(f"wecom credential environment is missing: {secret_env}")
         return WeComChannel(
             context,
             bot_id=bot_id,

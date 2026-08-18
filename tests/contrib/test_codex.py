@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time_ns
-from uuid import uuid7
+from uuid import NAMESPACE_URL, uuid5, uuid7
 
 import pytest
 from bcn_test_support import RecordingAudit, StaticChannelBuilder, TestChannel
@@ -19,7 +19,17 @@ from test_orchestration import (
 )
 
 from bazaar_compute_node.app.application import NodeApplication
-from bazaar_compute_node.app.registry import AdapterFactories
+from bazaar_compute_node.app.config import (
+    AgentConfiguration,
+    ChannelConfiguration,
+    NodeConfiguration,
+    RuntimeConfiguration,
+)
+from bazaar_compute_node.app.registry import (
+    AdapterRegistry,
+    AgentAdapterFactories,
+    SharedAdapterFactories,
+)
 from bazaar_compute_node.contrib.codex import (
     Client,
     JsonlProcessSpec,
@@ -49,16 +59,17 @@ from bazaar_compute_node.contrib.codex import (
 from bazaar_compute_node.contrib.codex.plugin import create_runtime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.approval import IApprovalHandler
+from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.core.models import (
-    AgentState,
     ApprovalRequest,
     ApprovalResult,
     RuntimeEvent,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    SessionRuntimeState,
     StreamEvent,
     StreamEventKind,
 )
@@ -72,6 +83,30 @@ from bazaar_compute_node.core.runtime import (
 
 TEST_MODEL = "gpt-5.6-luna"
 TEST_EFFORT = "max"
+
+
+class _StaticRegistry(AdapterRegistry):
+    def __init__(
+        self,
+        *,
+        channel: IChannel,
+        runtime: Callable[[RuntimeCommandContext], Runtime],
+    ) -> None:
+        self._channel = channel
+        self._runtime = runtime
+
+    def load_agent(
+        self,
+        *,
+        channel: str,
+        runtime: str,
+        storage: str,
+    ) -> AgentAdapterFactories:
+        del channel, runtime, storage
+        return AgentAdapterFactories(
+            channel=StaticChannelBuilder(self._channel),
+            runtime=self._runtime,
+        )
 
 
 def python_process(script: str, *, cwd: Path | None = None) -> JsonlProcessSpec:
@@ -356,6 +391,8 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=environment,
+            agent_name="Test Agent",
+            agent_id="agent-test",
             runtime_options={"model": TEST_MODEL, "effort": TEST_EFFORT},
             sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
             network_access=False,
@@ -363,7 +400,10 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     )
     defaulted = create_runtime(
         RuntimeCommandContext(
-            run_command=run_command, environment_for_session=environment
+            run_command=run_command,
+            environment_for_session=environment,
+            agent_name="Test Agent",
+            agent_id="agent-test",
         )
     )
 
@@ -398,6 +438,8 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
+            agent_name="Test Agent",
+            agent_id="agent-test",
         )
     )
     now_ms = time_ns() // 1_000_000
@@ -446,6 +488,8 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
+            agent_name="Test Agent",
+            agent_id="agent-test",
         )
     )
     now_ms = time_ns() // 1_000_000
@@ -620,158 +664,150 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
 
-    database = SqliteDatabase()
-    await database.start(timeout=10)
-    try:
-        identity = await database.initialize()
-        workspace = resolve_workspace_dir(identity.workspace_id)
-        workspace.mkdir(parents=True, exist_ok=True)
-        supervisor = JsonlProcessSupervisor(
-            JsonlProcessSpec(
-                executable=codex,
-                arguments=("app-server", "--stdio"),
-                cwd=workspace,
-            )
+    agent_id = str(uuid7())
+    workspace = resolve_workspace_dir(agent_id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    supervisor = JsonlProcessSupervisor(
+        JsonlProcessSpec(
+            executable=codex,
+            arguments=("app-server", "--stdio"),
+            cwd=workspace,
         )
-        client = Client(supervisor)
-        await supervisor.start(timeout=10)
-        try:
-            initialize = await client.initialize(
-                client_info=CLIENT_INFO,
-                timeout=20,
-            )
-            assert isinstance(initialize.get("result"), dict)
-            model_responses = await asyncio.gather(
-                supervisor.request("model/list", {}, timeout=20),
-                supervisor.request("model/list", {}, timeout=20),
-            )
-            model_catalogs: list[list[object]] = []
-            for model_response in model_responses:
-                model_result = model_response.get("result")
-                assert isinstance(model_result, dict)
-                models = model_result.get("data")
-                assert isinstance(models, list)
-                model_catalogs.append(models)
-            models = model_catalogs[0]
-            luna = next(
-                (
-                    entry
-                    for entry in models
-                    if isinstance(entry, dict) and entry.get("id") == TEST_MODEL
-                ),
-                None,
-            )
-            assert isinstance(luna, dict)
-            efforts = luna.get("supportedReasoningEfforts")
-            assert isinstance(efforts, list)
-            assert any(
-                isinstance(entry, dict) and entry.get("reasoningEffort") == TEST_EFFORT
-                for entry in efforts
-            )
-            with pytest.raises(JsonlRemoteError) as raised:
-                await supervisor.request("method/does-not-exist", {}, timeout=20)
-            assert raised.value.kind == "remote_error"
-            thread_response = await client.start_thread(
-                DeveloperInstructionContext(
-                    node_id="node-test",
-                    runtime_session_id="session-test",
-                    runtime="codex",
-                    workspace=str(workspace),
-                ).render(),
-                model=TEST_MODEL,
-                cwd=workspace,
-                timeout=20,
-            )
-            result = thread_response.get("result")
-            assert isinstance(result, dict)
-            assert result.get("model") == TEST_MODEL
-            thread_info = parse_thread_response(thread_response)
-            thread_id = thread_info.thread_id
-            assert thread_info.path is not None
-            thread_started = False
-            async with asyncio.timeout(10):
-                while not thread_started:
-                    incoming = await supervisor.receive(timeout=5)
-                    if incoming.get("method") != "thread/started":
-                        continue
-                    params = incoming.get("params")
-                    if not isinstance(params, dict):
-                        continue
-                    started_thread = params.get("thread")
-                    thread_started = (
-                        isinstance(started_thread, dict)
-                        and started_thread.get("id") == thread_id
-                    )
-            assert thread_started
-            turn_response = await client.start_turn(
-                thread_id,
-                "Run `sleep 5`, then reply with one short sentence.",
-                client_user_message_id="task4b-message-1",
-                model=TEST_MODEL,
-                effort=TEST_EFFORT,
-                timeout=30,
-            )
-            turn_result = turn_response.get("result")
-            assert isinstance(turn_result, dict)
-            provider_turn = parse_turn_response(turn_response)
-            assert provider_turn.status == "inProgress"
-            command_started = False
-            async with asyncio.timeout(30):
-                while not command_started:
-                    incoming = await supervisor.receive(timeout=10)
-                    method = incoming.get("method")
-                    params = incoming.get("params")
-                    if not isinstance(params, dict):
-                        continue
-                    if params.get("turnId") != provider_turn.turn_id:
-                        continue
-                    command_started = method in {
-                        "item/commandExecution/started",
-                        "item/started",
-                    } and (
-                        method == "item/commandExecution/started"
-                        or (
-                            isinstance(params.get("item"), dict)
-                            and params["item"].get("type") == "commandExecution"
-                        )
-                    )
-            assert command_started
-            steer_response = await client.steer_turn(
-                thread_id,
-                provider_turn.turn_id,
-                "A teammate just confirmed that the inbox update is expected. "
-                "Please acknowledge that in the same brief reply.",
-                timeout=30,
-            )
-            assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
-            stream = TurnEventStream(
-                supervisor,
-                session_id="bcn-test",
+    )
+    client = Client(supervisor)
+    await supervisor.start(timeout=10)
+    try:
+        initialize = await client.initialize(
+            client_info=CLIENT_INFO,
+            timeout=20,
+        )
+        assert isinstance(initialize.get("result"), dict)
+        model_responses = await asyncio.gather(
+            supervisor.request("model/list", {}, timeout=20),
+            supervisor.request("model/list", {}, timeout=20),
+        )
+        model_catalogs: list[list[object]] = []
+        for model_response in model_responses:
+            model_result = model_response.get("result")
+            assert isinstance(model_result, dict)
+            models = model_result.get("data")
+            assert isinstance(models, list)
+            model_catalogs.append(models)
+        models = model_catalogs[0]
+        luna = next(
+            (
+                entry
+                for entry in models
+                if isinstance(entry, dict) and entry.get("id") == TEST_MODEL
+            ),
+            None,
+        )
+        assert isinstance(luna, dict)
+        efforts = luna.get("supportedReasoningEfforts")
+        assert isinstance(efforts, list)
+        assert any(
+            isinstance(entry, dict) and entry.get("reasoningEffort") == TEST_EFFORT
+            for entry in efforts
+        )
+        with pytest.raises(JsonlRemoteError) as raised:
+            await supervisor.request("method/does-not-exist", {}, timeout=20)
+        assert raised.value.kind == "remote_error"
+        thread_response = await client.start_thread(
+            DeveloperInstructionContext(
+                agent_name="Test Agent",
+                agent_id="agent-test",
                 runtime_session_id="session-test",
-                turn_id="local-turn-1",
-                provider_thread_id=thread_id,
-                provider_turn_id=provider_turn.turn_id,
-                approval_handler=_NoopApprovalHandler(),
-            )
-            events = []
-            async with asyncio.timeout(120):
-                async for event in stream:
-                    events.append(event)
-            durable_events = [
-                event for event in events if isinstance(event, RuntimeEvent)
-            ]
-            assert durable_events[0].state.value == "started"
-            assert durable_events[-1].state.value == "completed"
-            assert (
-                durable_events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
-            )
-        finally:
-            await supervisor.stop(timeout=10)
-
-        assert supervisor.returncode is not None
-        assert not supervisor.is_running
+                runtime="codex",
+                workspace=str(workspace),
+            ).render(),
+            model=TEST_MODEL,
+            cwd=workspace,
+            timeout=20,
+        )
+        result = thread_response.get("result")
+        assert isinstance(result, dict)
+        assert result.get("model") == TEST_MODEL
+        thread_info = parse_thread_response(thread_response)
+        thread_id = thread_info.thread_id
+        assert thread_info.path is not None
+        thread_started = False
+        async with asyncio.timeout(10):
+            while not thread_started:
+                incoming = await supervisor.receive(timeout=5)
+                if incoming.get("method") != "thread/started":
+                    continue
+                params = incoming.get("params")
+                if not isinstance(params, dict):
+                    continue
+                started_thread = params.get("thread")
+                thread_started = (
+                    isinstance(started_thread, dict)
+                    and started_thread.get("id") == thread_id
+                )
+        assert thread_started
+        turn_response = await client.start_turn(
+            thread_id,
+            "Run `sleep 5`, then reply with one short sentence.",
+            client_user_message_id="task4b-message-1",
+            model=TEST_MODEL,
+            effort=TEST_EFFORT,
+            timeout=30,
+        )
+        turn_result = turn_response.get("result")
+        assert isinstance(turn_result, dict)
+        provider_turn = parse_turn_response(turn_response)
+        assert provider_turn.status == "inProgress"
+        command_started = False
+        async with asyncio.timeout(30):
+            while not command_started:
+                incoming = await supervisor.receive(timeout=10)
+                method = incoming.get("method")
+                params = incoming.get("params")
+                if not isinstance(params, dict):
+                    continue
+                if params.get("turnId") != provider_turn.turn_id:
+                    continue
+                command_started = method in {
+                    "item/commandExecution/started",
+                    "item/started",
+                } and (
+                    method == "item/commandExecution/started"
+                    or (
+                        isinstance(params.get("item"), dict)
+                        and params["item"].get("type") == "commandExecution"
+                    )
+                )
+        assert command_started
+        steer_response = await client.steer_turn(
+            thread_id,
+            provider_turn.turn_id,
+            "A teammate just confirmed that the inbox update is expected. "
+            "Please acknowledge that in the same brief reply.",
+            timeout=30,
+        )
+        assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
+        stream = TurnEventStream(
+            supervisor,
+            session_id="bcn-test",
+            runtime_session_id="session-test",
+            turn_id="local-turn-1",
+            provider_thread_id=thread_id,
+            provider_turn_id=provider_turn.turn_id,
+            approval_handler=_NoopApprovalHandler(),
+        )
+        events = []
+        async with asyncio.timeout(120):
+            async for event in stream:
+                events.append(event)
+        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
+        assert durable_events[0].state.value == "started"
+        assert durable_events[-1].state.value == "completed"
+        assert durable_events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
     finally:
-        await database.stop(timeout=10)
+        await supervisor.stop(timeout=10)
+
+    assert supervisor.returncode is not None
+    assert not supervisor.is_running
 
 
 @pytest.mark.e2e
@@ -783,10 +819,10 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
 
+    agent_id = str(uuid7())
+    agent_name = "Codex Test Agent"
     storage = SqliteDatabase()
-    await storage.start(timeout=10)
-    identity = await storage.initialize()
-    workspace = resolve_workspace_dir(identity.workspace_id)
+    workspace = resolve_workspace_dir(agent_id)
     filename = "sandbox-acceptance.md"
     target = workspace / filename
     if target.exists():
@@ -794,22 +830,44 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     channel = TestChannel()
     audit = RecordingAudit()
     node = NodeApplication(
-        factories=AdapterFactories(
-            channel=StaticChannelBuilder(channel),
+        configuration=NodeConfiguration(
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=agent_id,
+                    name=agent_name,
+                    channel=ChannelConfiguration(kind="test"),
+                    runtime=RuntimeConfiguration(
+                        kind="codex",
+                        model=TEST_MODEL,
+                        effort=TEST_EFFORT,
+                    ),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: storage,
+            audit=lambda: audit,
+        ),
+        registry=_StaticRegistry(
+            channel=channel,
             runtime=lambda context: Runtime(
                 context,
                 executable=codex,
                 model=TEST_MODEL,
                 effort=TEST_EFFORT,
             ),
-            storage=lambda: storage,
-            audit=lambda: audit,
         ),
         endpoint_path=system_temp_dir / "sandbox-acceptance.sock",
-        node_id=identity.node_id,
-        workspace_id=identity.workspace_id,
     )
     session_id = f"sandbox-acceptance-{uuid7()}"
+    scoped_session_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"bcn:{agent_id}:bcn-session:{session_id}",
+        )
+    )
     message = make_message(
         session_id=session_id,
         body=(
@@ -821,10 +879,14 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     try:
         await node.start()
         await channel.inject(message)
-        persisted = await _wait_for_inbound_messages(storage, session_id, 1)
+        persisted = await _wait_for_inbound_messages(
+            storage.scope(agent_id, agent_name),
+            scoped_session_id,
+            1,
+        )
         await _wait_for_audit_event(
             audit,
-            session_id=session_id,
+            session_id=scoped_session_id,
             event_suffix="turn.completed",
             turn_id=f"turn-{persisted[0].message_id}",
         )
@@ -836,8 +898,6 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
         await node.stop()
         if target.exists():
             target.unlink()
-        if storage.is_started:
-            await storage.stop(timeout=10)
 
 
 @pytest.mark.e2e
@@ -885,6 +945,8 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
         RuntimeCommandContext(
             run_command=unexpected_command,
             environment_for_session=lambda _session: dict(os.environ),
+            agent_name="Test Agent",
+            agent_id="agent-test",
         ),
         executable=codex,
     )
@@ -936,9 +998,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
     if codex is None:
         pytest.fail("codex CLI is required for the App Server integration test")
 
-    database = SqliteDatabase()
-    await database.start(timeout=10)
-
     async def unexpected_command(
         session_id: str,
         arguments: Sequence[str],
@@ -989,15 +1048,15 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             tuple(event.event_name for event in durable_events),
         )
 
+    agent_id = str(uuid7())
     try:
-        identity = await database.initialize()
         now = time_ns() // 1_000_000
         first_session = RuntimeSession(
             id=f"runtime-first-{uuid7()}",
             bcn_session_id=f"bcn-first-{uuid7()}",
             channel_session_id=f"channel-first-{uuid7()}",
             runtime="codex",
-            workspace_id=identity.workspace_id,
+            workspace_id=agent_id,
             created_at_ms=now,
             updated_at_ms=now,
         )
@@ -1006,14 +1065,15 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             bcn_session_id=f"bcn-second-{uuid7()}",
             channel_session_id=f"channel-second-{uuid7()}",
             runtime="codex",
-            workspace_id=identity.workspace_id,
+            workspace_id=agent_id,
             created_at_ms=now,
             updated_at_ms=now,
         )
         context = RuntimeCommandContext(
             run_command=unexpected_command,
             environment_for_session=lambda _session: dict(os.environ),
-            node_id=identity.node_id,
+            agent_name="Test Agent",
+            agent_id=agent_id,
         )
         first_runtime = Runtime(
             context,
@@ -1094,7 +1154,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 timeout=30,
             )
             assert active_result.value is not None
-            assert active_result.value.state is AgentState.WORKING
+            assert active_result.value.state is SessionRuntimeState.WORKING
             recovered_stream = active_result.value.stream
             assert recovered_stream is not None
             recovered_events = []
@@ -1122,7 +1182,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                     timeout=30,
                 )
                 assert resumed_result.value is not None
-                assert resumed_result.value.state is AgentState.IDLE
+                assert resumed_result.value.state is SessionRuntimeState.IDLE
                 resumed = resumed_result.value.session
                 assert resumed.provider_thread_id == first_thread
                 resumed_thread, resumed_turn, _ = await consume_turn(
@@ -1137,7 +1197,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         finally:
             await second_runtime.stop(timeout=20)
     finally:
-        await database.stop(timeout=10)
+        pass
 
 
 @pytest.mark.e2e

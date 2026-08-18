@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import version
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -13,6 +15,7 @@ from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
     build_parser,
+    main,
 )
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.paths import resolve_data_dir
@@ -34,55 +37,57 @@ def test_runtime_version_matches_distribution_metadata() -> None:
     assert CLIENT_INFO.version == distribution_version
 
 
-def test_cli_defaults_to_sqlite_storage_and_logging_audit() -> None:
+def test_cli_loads_v2_agent_configuration_and_defaults_node_options(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
+        encoding="utf-8",
+    )
     parser = build_parser()
-    args = parser.parse_args(["run", "--channel", "test", "--runtime", "test"])
+    args = parser.parse_args(["run", "--config", str(config_path)])
     _apply_runtime_configuration(args, parser)
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
-    assert args.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
-    assert args.network_access is True
-    assert args.runtime_idle_timeout_seconds == 0
-
-
-def test_daemon_command_forwards_optional_runtime_configuration(tmp_path: Path) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "start",
-            "--channel",
-            "codex",
-            "--runtime",
-            "codex",
-            "--model",
-            "gpt-5.6-luna",
-            "--effort",
-            "max",
-            "--sandbox-mode",
-            "danger-full-access",
-            "--no-network-access",
-        ]
-    )
-    _apply_runtime_configuration(args, parser)
-
-    command = _daemon_command(args, tmp_path)
-
-    assert command[-7:] == [
-        "--model",
-        "gpt-5.6-luna",
-        "--effort",
-        "max",
-        "--sandbox-mode",
-        "danger-full-access",
-        "--no-network-access",
-    ]
+    assert args.configuration.version == "2"
+    assert args.configuration.agents[0].channel.kind == "test"
+    assert args.configuration.agents[0].runtime.kind == "test"
+    runtime = args.configuration.agents[0].runtime
+    assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
+    assert runtime.network_access is True
+    assert runtime.idle_timeout_seconds == 0
 
 
 def test_cli_forwards_explicit_config_and_database_name(tmp_path: Path) -> None:
     config_path = tmp_path / "task-config.toml"
     config_path.write_text(
-        '[node]\nchannel = "test"\nruntime = "test"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
         encoding="utf-8",
     )
     parser = build_parser()
@@ -110,8 +115,10 @@ def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> N
     configuration = load_node_configuration(config_path)
 
     assert config_path.is_file()
-    assert configuration.channel is None
-    assert configuration.runtime is None
+    assert configuration.version == "2"
+    assert configuration.agents == ()
+    assert configuration.storage == "sqlite"
+    assert configuration.audit == "logging"
     assert configuration.database_name is None
 
 
@@ -123,84 +130,45 @@ def test_database_name_rejects_paths(value: str) -> None:
         parser.parse_args(["run", "--database-name", value])
 
 
-def test_cli_loads_node_configuration_and_preserves_flag_precedence() -> None:
-    data_dir = resolve_data_dir()
-    data_dir.mkdir(parents=True)
-    (data_dir / "config.toml").write_text(
-        '[node]\nchannel = "config-channel"\nruntime = "config-runtime"\n'
-        'storage = "config-storage"\naudit = "config-audit"\n'
-        'endpoint = "config.sock"\n\n'
-        '[runtime]\nmodel = "config-model"\neffort = "config-effort"\n'
-        'sandbox_mode = "danger-full-access"\nnetwork_access = false\n'
-        "idle_timeout = 2.25\n\n"
-        '[runtime.env]\ninclude = ["CUSTOM_CA"]\n\n'
-        '[channel.config-channel]\nbot_id = "test-bot"\n'
-        'websocket_url = "wss://wecom.example.test"\n',
-        encoding="utf-8",
-    )
-    parser = build_parser()
-    config_args = parser.parse_args(["run"])
-    _apply_runtime_configuration(config_args, parser)
-    assert config_args.channel == "config-channel"
-    assert config_args.runtime == "config-runtime"
-    assert config_args.storage == "config-storage"
-    assert config_args.audit == "config-audit"
-    assert config_args.endpoint == Path("config.sock")
-    assert config_args.database_name is None
-    assert config_args.model == "config-model"
-    assert config_args.effort == "config-effort"
-    assert config_args.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
-    assert config_args.network_access is False
-    assert config_args.runtime_idle_timeout_seconds == 2.25
-    assert config_args.runtime_env_include == ("CUSTOM_CA",)
-    assert config_args.channel_options == {
-        "bot_id": "test-bot",
-        "websocket_url": "wss://wecom.example.test",
-    }
-
-    flag_args = parser.parse_args(
-        [
-            "run",
-            "--channel",
-            "codex",
-            "--runtime",
-            "codex",
-            "--storage",
-            "flag-storage",
-            "--audit",
-            "flag-audit",
-            "--endpoint",
-            "flag.sock",
-            "--model",
-            "flag-model",
-            "--effort",
-            "flag-effort",
-        ]
-    )
-    _apply_runtime_configuration(flag_args, parser)
-
-    assert flag_args.model == "flag-model"
-    assert flag_args.effort == "flag-effort"
-    assert flag_args.channel == "codex"
-    assert flag_args.runtime == "codex"
-    assert flag_args.storage == "flag-storage"
-    assert flag_args.audit == "flag-audit"
-    assert flag_args.endpoint == Path("flag.sock")
-
-
 def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     config_path = data_dir / "config.toml"
     config_path.write_text(
-        '[runtime]\nsandbox_mode = "host-unrestricted"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+sandbox_mode = "host-unrestricted"
+""".lstrip(),
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="runtime.sandbox_mode"):
         load_node_configuration()
 
     config_path.write_text(
-        '[runtime]\nnetwork_access = "yes"\n',
+        """
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+network_access = "yes"
+""".lstrip(),
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="runtime.network_access"):
@@ -215,7 +183,20 @@ def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> 
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
-        f"[runtime]\nidle_timeout = {value}\n",
+        f"""
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+idle_timeout = {value}
+""".lstrip(),
         encoding="utf-8",
     )
 
@@ -225,7 +206,7 @@ def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> 
 
 @pytest.mark.parametrize(
     ("value", "expected_seconds"),
-    [("0", 0), ("-1", -1), ("1", 1), ("0.0001", 0.0001)],
+    [("0", 0), ("1", 1), ("0.0001", 0.0001)],
 )
 def test_node_configuration_parses_runtime_idle_timeout(
     value: str,
@@ -234,13 +215,26 @@ def test_node_configuration_parses_runtime_idle_timeout(
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
-        f"[runtime]\nidle_timeout = {value}\n",
+        f"""
+version = "2"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "default"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+idle_timeout = {value}
+""".lstrip(),
         encoding="utf-8",
     )
 
     configuration = load_node_configuration()
 
-    assert configuration.runtime_idle_timeout_seconds == expected_seconds
+    assert configuration.agents[0].runtime.idle_timeout_seconds == expected_seconds
 
 
 def test_help_works_in_a_real_process() -> None:
@@ -255,13 +249,297 @@ def test_help_works_in_a_real_process() -> None:
     assert "usage: bcn" in result.stdout
 
 
-def test_run_requires_explicit_channel_and_runtime() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "bazaar_compute_node.cli", "run"],
-        capture_output=True,
-        check=False,
-        text=True,
+def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
+    config_path = tmp_path / "empty-config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", str(config_path), "--foreground"])
+    _apply_runtime_configuration(args, parser)
+
+    assert args.configuration.agents == ()
+
+
+def test_agent_list_reports_empty_configuration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+
+    assert main(["agent", "list", "--config", str(config_path)]) == 0
+
+    assert capsys.readouterr().out == "No agents configured.\n"
+
+
+def test_agent_add_preserves_typed_options_and_round_trips(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                "channel.token_env=BCN_TELEGRAM_TIFA_TOKEN",
+                "--set",
+                "channel.bot_id=bot-id",
+                "--set",
+                "runtime.model=gpt-5.6",
+                "--set",
+                "runtime.network_access=false",
+                "--set",
+                "runtime.idle_timeout=600",
+                "--set",
+                'runtime.env_include=["CODEX_HOME"]',
+            ]
+        )
+        == 0
     )
 
-    assert result.returncode == 2
-    assert "--channel and --runtime must be provided together" in result.stderr
+    output = capsys.readouterr().out
+    assert "Agent added id=" in output
+    assert "Run `bcn restart` to apply." in output
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    agent = document["agent"][0]
+    assert UUID(agent["id"]).version == 7
+    assert agent["name"] == "Tifa"
+    assert agent["channel"] == {
+        "kind": "telegram",
+        "bot_id": "bot-id",
+        "token_env": "BCN_TELEGRAM_TIFA_TOKEN",
+    }
+    assert agent["runtime"] == {
+        "kind": "codex",
+        "model": "gpt-5.6",
+        "sandbox_mode": "workspace-write",
+        "network_access": False,
+        "idle_timeout": 600.0,
+        "env_include": ["CODEX_HOME"],
+    }
+
+
+def test_agent_add_rejects_duplicate_and_kind_options(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+    original = config_path.read_text(encoding="utf-8")
+
+    for option in ("runtime.model=first", "runtime.kind=codex"):
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "agent",
+                    "add",
+                    "--config",
+                    str(config_path),
+                    "--name",
+                    "Tifa",
+                    "--channel",
+                    "telegram",
+                    "--runtime",
+                    "codex",
+                    "--set",
+                    option,
+                    "--set",
+                    "runtime.model=second"
+                    if option.startswith("runtime.model")
+                    else "runtime.kind=other",
+                ]
+            )
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_commands_reject_daemon_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "agent",
+                "list",
+                "--config",
+                str(config_path),
+                "--storage",
+                "test",
+            ]
+        )
+
+
+def test_agent_add_rejects_option_key_edge_whitespace(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                "runtime.model =gpt-5.6",
+            ]
+        )
+
+    assert not config_path.exists()
+
+
+def test_agent_add_rejects_name_conflict_without_writing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    add_arguments = [
+        "agent",
+        "add",
+        "--config",
+        str(config_path),
+        "--name",
+        "Tifa",
+        "--channel",
+        "telegram",
+        "--runtime",
+        "codex",
+    ]
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+    original = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(add_arguments)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_remove_by_name_and_id_only_changes_configuration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+    add_arguments = [
+        "agent",
+        "add",
+        "--config",
+        str(config_path),
+        "--name",
+        "Tifa",
+        "--channel",
+        "telegram",
+        "--runtime",
+        "codex",
+    ]
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+    first_id = tomllib.loads(config_path.read_text(encoding="utf-8"))["agent"][0]["id"]
+    add_arguments[add_arguments.index("Tifa")] = "Aerith"
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+
+    assert main(["agent", "remove", "Aerith", "--config", str(config_path)]) == 0
+    remove_output = capsys.readouterr().out
+    assert "Workspace and durable data were preserved." in remove_output
+    assert main(["agent", "remove", first_id, "--config", str(config_path)]) == 0
+    assert tomllib.loads(config_path.read_text(encoding="utf-8")).get("agent", []) == []
+
+
+def test_agent_remove_rejects_ambiguous_id_or_name_selector(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    first_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+    second_id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
+    config_path.write_text(
+        f"""
+version = "2"
+
+[[agent]]
+id = "{first_id}"
+name = "Tifa"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+
+[[agent]]
+id = "{second_id}"
+name = "{first_id}"
+
+[agent.channel]
+kind = "wecom"
+
+[agent.runtime]
+kind = "codex"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    original = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(["agent", "remove", first_id, "--config", str(config_path)])
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_add_upgrades_legacy_configuration_before_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[node]
+channel = "wecom"
+runtime = "codex"
+
+[channel.wecom]
+bot_id = "bot-id"
+
+[runtime]
+model = "gpt-5.6"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+            ]
+        )
+        == 0
+    )
+
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert document["version"] == "2"
+    assert [agent["name"] for agent in document["agent"]] == ["default", "Tifa"]

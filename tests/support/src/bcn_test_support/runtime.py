@@ -10,13 +10,13 @@ from typing import ClassVar
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.models import (
-    AgentState,
     ApprovalRequest,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    SessionRuntimeState,
     StreamEvent,
     StreamEventKind,
 )
@@ -170,7 +170,7 @@ class TestRuntime(IRuntime):
                 status=ProviderCallStatus.CONFIRMED,
                 value=RuntimeSessionReconciliation(
                     session=session,
-                    state=AgentState.WORKING,
+                    state=SessionRuntimeState.WORKING,
                     stream=stream,
                 ),
             )
@@ -178,7 +178,7 @@ class TestRuntime(IRuntime):
             status=ProviderCallStatus.CONFIRMED,
             value=RuntimeSessionReconciliation(
                 session=session,
-                state=AgentState.IDLE,
+                state=SessionRuntimeState.IDLE,
             ),
         )
 

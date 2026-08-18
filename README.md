@@ -28,14 +28,15 @@ bcn --version
 # Upgrade
 uv tool upgrade bazaar-compute-node
 
-# Start daemon
-export BCN_WECOM_BOT_SECRET='your-bot-secret'
+# Add an Agent
+bcn agent add \
+  --name Tifa \
+  --channel telegram \
+  --runtime codex \
+  --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN
 
-bcn start --channel wecom --runtime codex \
-  --model gpt-5.6-luna --effort max \
-  --sandbox-mode workspace-write \
-  --network-access true \
-  --idle-timeout 600
+# Start daemon
+bcn start
 
 # Stop daemon
 bcn stop

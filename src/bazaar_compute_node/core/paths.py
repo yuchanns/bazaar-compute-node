@@ -22,11 +22,9 @@ def resolve_data_dir() -> Path:
     return Path.home() / resolve_data_name()
 
 
-def resolve_workspace_dir(
-    workspace_id: str,
-) -> Path:
-    """Resolve the persistent shared workspace for one node identity."""
+def resolve_workspace_dir(agent_id: str) -> Path:
+    """Resolve the persistent workspace owned by one configured Agent."""
 
-    if not isinstance(workspace_id, str) or not workspace_id:
-        raise ValueError("workspace_id must be a non-empty string")
-    return resolve_data_dir() / "workspaces" / workspace_id
+    if not isinstance(agent_id, str) or not agent_id:
+        raise ValueError("agent_id must be a non-empty string")
+    return resolve_data_dir() / "workspaces" / agent_id

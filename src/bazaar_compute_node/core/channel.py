@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from .lifecycle import IAsyncLifecycle
 from .models import (
@@ -13,6 +14,7 @@ from .models import (
     InboundAttachment,
     InboundMessage,
     OutboundMessage,
+    StreamEvent,
 )
 from .outcomes import ProviderCallResult
 from .runtime import RuntimeStreamItem
@@ -92,9 +94,7 @@ class IAttachmentMaterializer(Protocol):
         name: str,
         kind: str,
         media_type: str | None = None,
-    ) -> InboundAttachment:
-        """Persist one bounded plaintext attachment in the shared workspace."""
-        ...
+    ) -> InboundAttachment: ...
 
     def failed(
         self,
@@ -103,44 +103,96 @@ class IAttachmentMaterializer(Protocol):
         kind: str,
         error: str,
         media_type: str | None = None,
-    ) -> InboundAttachment:
-        """Create a terminal descriptor without exposing provider references."""
-        ...
+    ) -> InboundAttachment: ...
 
 
 @dataclass(frozen=True, slots=True)
 class ChannelContext:
+    agent_id: str
     attachments: IAttachmentMaterializer
     options: Mapping[str, object]
     workspace: Callable[[], Path]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.agent_id, str) or not self.agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+
 
 class IApproval(Protocol):
-    """Channel-owned approval policy for one bcn session."""
-
     async def request_approval(
-        self, request: ChannelApprovalRequest, *, timeout: float
-    ) -> ApprovalResult:
-        """Present one approval request in the current Channel route."""
-        ...
+        self,
+        request: ChannelApprovalRequest,
+        *,
+        timeout: float,
+    ) -> ApprovalResult: ...
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
-    """Normalized inbound, outbound delivery, and approval contract."""
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def health(self) -> Mapping[str, object]: ...
+
+    def receive(self) -> AsyncIterator[InboundMessage]: ...
+
+    def accept_turn_event(
+        self,
+        item: RuntimeStreamItem,
+        *,
+        session_id: str,
+    ) -> None: ...
+
+    async def send(
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]: ...
+
+
+class AgentScopedChannel(IChannel):
+    """Namespace provider-normalized conversation IDs by owning Agent."""
+
+    def __init__(self, agent_id: str, channel: IChannel) -> None:
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+        self._agent_id = agent_id
+        self._channel = channel
+        self._provider_session_ids: dict[str, str] = {}
 
     @property
     def name(self) -> str:
-        """Return the stable entry-point identity of this adapter."""
-        ...
+        return self._channel.name
 
     @property
     def health(self) -> Mapping[str, object]:
-        """Return non-sensitive lifecycle and ingress capability details."""
-        ...
+        return self._channel.health
 
-    def receive(self) -> AsyncIterator[InboundMessage]:
-        """Return a cancellable stream of normalized inbound messages."""
-        ...
+    async def start(self, *, timeout: float) -> None:
+        await self._channel.start(timeout=timeout)
+
+    async def stop(self, *, timeout: float) -> None:
+        try:
+            await self._channel.stop(timeout=timeout)
+        finally:
+            self._provider_session_ids.clear()
+
+    async def receive(self) -> AsyncIterator[InboundMessage]:
+        async for message in self._channel.receive():
+            provider_session_id = message.session_id
+            channel_session_id = self._local_id(
+                "channel-session",
+                message.channel_session_id,
+            )
+            session_id = self._local_id("bcn-session", provider_session_id)
+            self._provider_session_ids[session_id] = provider_session_id
+            yield replace(
+                message,
+                session_id=session_id,
+                channel_session_id=channel_session_id,
+                canonical_target=f"{message.target_kind.value}:{channel_session_id}",
+            )
 
     def accept_turn_event(
         self,
@@ -148,19 +200,40 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         *,
         session_id: str,
     ) -> None:
-        """Accept one transient runtime stream item without waiting for delivery."""
-        ...
+        provider_session_id = self._provider_session_ids.get(session_id, session_id)
+        if isinstance(item, StreamEvent) and item.session_id == session_id:
+            item = replace(item, session_id=provider_session_id)
+        self._channel.accept_turn_event(
+            item,
+            session_id=provider_session_id,
+        )
 
     async def send(
-        self, request: ChannelSendRequest, *, timeout: float
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        """Deliver one outbound message without hiding unknown provider status."""
-        ...
+        return await self._channel.send(request, timeout=timeout)
+
+    async def request_approval(
+        self,
+        request: ChannelApprovalRequest,
+        *,
+        timeout: float,
+    ) -> ApprovalResult:
+        return await self._channel.request_approval(request, timeout=timeout)
+
+    def _local_id(self, kind: str, provider_local_id: str) -> str:
+        if not isinstance(provider_local_id, str) or not provider_local_id:
+            raise ValueError(f"{kind} id must be non-empty")
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                f"bcn:{self._agent_id}:{kind}:{provider_local_id}",
+            )
+        )
 
 
 class IChannelBuilder(Protocol):
-    """Construct one Channel adapter from its provider-owned context."""
-
-    def build(self, context: ChannelContext) -> IChannel:
-        """Build one configured channel adapter."""
-        ...
+    def build(self, context: ChannelContext) -> IChannel: ...

@@ -6,20 +6,22 @@ from bazaar_compute_node.core.orchestration.turn import inbox_notice, reminder_n
 
 def _rendered_instructions() -> str:
     return DeveloperInstructionContext(
-        node_id="node-test",
+        agent_name="Test Agent",
+        agent_id="agent-test",
         runtime_session_id="session-test",
         runtime="test-runtime",
-        workspace="workspace-from-node",
+        workspace="workspace-from-agent",
     ).render()
 
 
 def test_developer_instructions_render_runtime_context() -> None:
     rendered = _rendered_instructions()
 
-    assert "Node ID: node-test" in rendered
+    assert 'You are "Test Agent", an AI agent in bcn' in rendered
+    assert "Agent ID: agent-test" in rendered
     assert "Runtime session ID: session-test" in rendered
     assert "Runtime: test-runtime" in rendered
-    assert "Workspace: workspace-from-node" in rendered
+    assert "Workspace: workspace-from-agent" in rendered
     assert '`--attachment "<path>"`' in rendered
     assert "stdin body is optional when at least one attachment is present" in rendered
     assert "{{" not in rendered

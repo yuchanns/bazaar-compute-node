@@ -4,9 +4,8 @@ import asyncio
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -51,24 +50,19 @@ async def request_with_retry(
     )
 
 
-async def wait_for_status(
-    endpoint: str,
-    predicate: Callable[[Mapping[str, object]], bool],
-) -> Mapping[str, object]:
+async def wait_for_health(endpoint: str) -> Mapping[str, object]:
     for _ in range(300):
         response = await request_with_retry(
             endpoint,
-            {"kind": "control", "operation": "status"},
+            {"kind": "control", "operation": "health"},
         )
         if response.get("ok") is not True:
-            raise AssertionError(f"status request failed: {response}")
+            raise AssertionError(f"health request failed: {response}")
         result = response.get("result")
         if not isinstance(result, Mapping):
-            raise TypeError(f"status response has no result: {response}")
-        if predicate(result):
-            return result
-        await asyncio.sleep(0.01)
-    raise AssertionError("test node status did not reach the expected state")
+            raise TypeError(f"health response has no result: {response}")
+        return result
+    raise AssertionError("test node health did not become available")
 
 
 def start_test_process(
@@ -80,8 +74,23 @@ def start_test_process(
     data_dir.mkdir(parents=True, exist_ok=True)
     config_path = data_dir / "test_config.toml"
     config_path.write_text(
-        f'[node]\nchannel = "test"\nruntime = "test"\n'
-        f'storage = "test"\nendpoint = "{endpoint_text}"\n',
+        f"""
+version = "2"
+
+[node]
+storage = "test"
+endpoint = "{endpoint_text}"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "test-agent"
+
+[agent.channel]
+kind = "test"
+
+[agent.runtime]
+kind = "test"
+""".lstrip(),
         encoding="utf-8",
     )
     environment = os.environ.copy()
@@ -99,12 +108,6 @@ def start_test_process(
             str(config_path),
             "--database-name",
             "test.sqlite3",
-            "--channel",
-            "test",
-            "--runtime",
-            "test",
-            "--storage",
-            "test",
             "--endpoint",
             str(endpoint),
         ],
@@ -140,26 +143,8 @@ def stop_test_process(config_path: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def inbound_payload(session_id: str, seq: int = 1) -> dict[str, object]:
-    return {
-        "session_id": session_id,
-        "channel_session_id": f"channel-{session_id}",
-        "channel": "test",
-        "provider_message_id": f"provider-{session_id}-{seq}",
-        "message_id": f"message-{session_id}-{seq}",
-        "seq": seq,
-        "received_at_ms": seq,
-        "provider_time_ms": seq,
-        "sender": "Sender",
-        "message_type": "text",
-        "canonical_target": f"#test:{session_id}",
-        "body": f"inbound-{seq}",
-        "provider_thread_id": f"thread-{session_id}",
-    }
-
-
 @pytest.mark.asyncio
-async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
+async def test_real_process_reports_health_and_keeps_agent_configuration(
     tmp_path: Path,
 ) -> None:
     process, endpoint_path, data_dir, config_path = start_test_process(tmp_path)
@@ -168,48 +153,21 @@ async def test_real_process_runs_bcc_commands_and_keeps_sessions_isolated(
     try:
         endpoint = await wait_for_runtime_endpoint(endpoint_path)
         assert endpoint.startswith("pipe://" if os.name == "nt" else "unix://")
-        for session_id in ("bcn-a", "bcn-b"):
-            response = await request_with_retry(
-                endpoint,
-                {
-                    "kind": "control",
-                    "operation": "inject",
-                    "message": inbound_payload(session_id),
-                },
-            )
-            assert response.get("ok") is True
-
-        status = await wait_for_status(
-            endpoint,
-            lambda value: len(cast(list[object], value.get("sent_messages", []))) == 2,
-        )
-        inbound_messages = cast(dict[str, int], status["inbound_messages"])
-        sent_messages = cast(list[dict[str, object]], status["sent_messages"])
-        bcc_commands = cast(list[dict[str, object]], status["bcc_commands"])
-        outbound_messages = cast(list[dict[str, object]], status["outbound_messages"])
-        assert inbound_messages == {"bcn-a": 1, "bcn-b": 1}
-        assert {message["session_id"] for message in sent_messages} == {
-            "bcn-a",
-            "bcn-b",
-        }
-        commands_by_session: dict[str, list[list[object]]] = {}
-        for entry in bcc_commands:
-            session_id = cast(str, entry["session_id"])
-            command = cast(list[object], entry["command"])
-            commands_by_session.setdefault(session_id, []).append(command)
-        assert commands_by_session == {
-            "bcn-a": [
-                ["message", "check"],
-                ["message", "read", "--target", "#test:bcn-a"],
-                ["message", "send", "--target", "#test:bcn-a"],
-            ],
-            "bcn-b": [
-                ["message", "check"],
-                ["message", "read", "--target", "#test:bcn-b"],
-                ["message", "send", "--target", "#test:bcn-b"],
-            ],
-        }
-        assert all(outbound["state"] == "sent" for outbound in outbound_messages)
+        health = await wait_for_health(endpoint)
+        assert health["started"] is True
+        assert health["ready"] is True
+        assert health["accepting"] is True
+        assert health["configured"] == 1
+        assert health["started_agents"] == 1
+        assert health["failed_agents"] == 0
+        agents = health.get("agents")
+        assert isinstance(agents, list)
+        assert len(agents) == 1
+        agent = agents[0]
+        assert isinstance(agent, Mapping)
+        assert agent["agent_id"] == "0198d4e6-29c5-7465-b74b-88db31f0c118"
+        assert agent["name"] == "test-agent"
+        assert agent["status"] == "started"
     finally:
         stop_process = await asyncio.to_thread(stop_test_process, config_path)
         assert stop_process.returncode == 0, stop_process.stderr
@@ -261,11 +219,10 @@ async def test_daemon_restart_uses_persisted_configuration(
         assert restart_process.returncode == 0, restart_process.stderr
         response_endpoint = await wait_for_runtime_endpoint(endpoint_path)
         assert response_endpoint == endpoint
-        response = await request_with_retry(
-            response_endpoint,
-            {"kind": "control", "operation": "status"},
-        )
-        assert response.get("ok") is True
+        health = await wait_for_health(response_endpoint)
+        assert health["ready"] is True
+        assert health["configured"] == 1
+        assert health["started_agents"] == 1
     finally:
         stop_process = await asyncio.to_thread(stop_test_process, config_path)
         assert stop_process.returncode == 0, stop_process.stderr

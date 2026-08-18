@@ -8,9 +8,12 @@ from .outbound import TelegramOutboundChannel
 
 class TelegramBuilder(IChannelBuilder):
     def build(self, context: ChannelContext) -> IChannel:
-        token = os.environ.get("BCN_TELEGRAM_BOT_TOKEN")
+        token_env = context.options.get("token_env")
+        if not isinstance(token_env, str) or not token_env:
+            raise ValueError("agent.channel.token_env is required for telegram")
+        token = os.environ.get(token_env)
         if token is None or not token.strip():
-            raise ValueError("BCN_TELEGRAM_BOT_TOKEN is required")
+            raise ValueError(f"telegram credential environment is missing: {token_env}")
         return TelegramOutboundChannel(context, token=token)
 
 

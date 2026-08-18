@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, cast
-from uuid import UUID, uuid7
+from uuid import NAMESPACE_URL, UUID, uuid5, uuid7
 
 import pytest
 from bcn_test_support import (
@@ -19,17 +19,23 @@ from bcn_test_support import (
 )
 
 from bazaar_compute_node.app.application import NodeApplication
-from bazaar_compute_node.app.registry import AdapterFactories
+from bazaar_compute_node.app.config import (
+    AgentConfiguration,
+    ChannelConfiguration,
+    NodeConfiguration,
+    RuntimeConfiguration,
+)
+from bazaar_compute_node.app.registry import (
+    AdapterRegistry,
+    AgentAdapterFactories,
+    SharedAdapterFactories,
+)
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
-    AgentSignal,
-    AgentState,
-    AgentTick,
-    AgentTickSource,
     ApprovalRequest,
     ChannelTargetKind,
     InboundMessage,
@@ -38,6 +44,10 @@ from bazaar_compute_node.core.models import (
     RuntimeEvent,
     RuntimeEventState,
     RuntimeTurnState,
+    SessionRuntimeObservation,
+    SessionRuntimeObservationSource,
+    SessionRuntimeSignal,
+    SessionRuntimeState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -46,8 +56,31 @@ from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
     RuntimeSessionReconciliation,
 )
-from bazaar_compute_node.core.storage import IStorage, NodeIdentity
+from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
+
+ACCEPTANCE_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+
+
+class _AcceptanceRegistry(AdapterRegistry):
+    def __init__(
+        self, *, channel: IChannel, runtime: Callable[[RuntimeCommandContext], IRuntime]
+    ) -> None:
+        self._channel = channel
+        self._runtime = runtime
+
+    def load_agent(
+        self,
+        *,
+        channel: str,
+        runtime: str,
+        storage: str,
+    ) -> AgentAdapterFactories:
+        del channel, runtime, storage
+        return AgentAdapterFactories(
+            channel=StaticChannelBuilder(self._channel),
+            runtime=self._runtime,
+        )
 
 
 def make_message(
@@ -96,12 +129,12 @@ async def make_node(
     runtime = TestRuntime()
     storage = MemoryStorage()
     audit = RecordingAudit()
+    await storage.start(timeout=1)
     orchestrator = SessionOrchestrator(
-        node_id="node-1",
-        workspace_id="workspace-1",
+        agent_id="workspace-1",
         channel=channel,
         runtime=runtime,
-        storage=storage,
+        storage=storage.scope("workspace-1", "Test Agent"),
         audit=audit,
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
@@ -123,14 +156,14 @@ async def make_idle_timeout_node(
     channel = TestChannel()
     runtime = TestRuntime()
     storage = MemoryStorage()
+    await storage.start(timeout=1)
     wheel = TimerWheel()
     await wheel.start()
     orchestrator = SessionOrchestrator(
-        node_id="node-1",
-        workspace_id="workspace-1",
+        agent_id="workspace-1",
         channel=channel,
         runtime=runtime,
-        storage=storage,
+        storage=storage.scope("workspace-1", "Test Agent"),
         audit=RecordingAudit(),
         timeout_budget=make_budget(),
         timer_wheel=wheel,
@@ -143,31 +176,25 @@ async def make_idle_timeout_node(
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_initializes_storage_identity_before_runtime() -> None:
+async def test_orchestrator_uses_agent_scoped_storage_before_runtime() -> None:
     channel = TestChannel()
     runtime = TestRuntime()
     storage = MemoryStorage()
     audit = RecordingAudit()
-    seen: list[NodeIdentity] = []
-
-    async def on_node_initialized(identity: NodeIdentity) -> None:
-        assert not runtime.started
-        seen.append(identity)
+    await storage.start(timeout=1)
 
     orchestrator = SessionOrchestrator(
+        agent_id="workspace-1",
         channel=channel,
         runtime=runtime,
-        storage=storage,
+        storage=storage.scope("workspace-1", "Test Agent"),
         audit=audit,
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
-        on_node_initialized=on_node_initialized,
     )
     await orchestrator.start(timeout=1)
     try:
-        assert storage.node_identity is not None
-        assert seen == [storage.node_identity]
         assert runtime.started
         assert channel.started
     finally:
@@ -299,20 +326,37 @@ async def run_natural_conversation_contract(
             body=third_body,
         )
         channel_instance = cast(_AcceptanceChannel, channel())
+        scoped_session_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"bcn:{ACCEPTANCE_AGENT_ID}:bcn-session:{session_id}",
+            )
+        )
         storage = SqliteDatabase()
-        await storage.start(timeout=30)
-        identity = await storage.initialize()
         audit = _AcceptanceAudit()
+        storage_scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
         node = NodeApplication(
-            factories=AdapterFactories(
-                channel=StaticChannelBuilder(cast(IChannel, channel_instance)),
-                runtime=runtime,
+            configuration=NodeConfiguration(
+                storage="sqlite",
+                audit="test",
+                agents=(
+                    AgentConfiguration(
+                        id=ACCEPTANCE_AGENT_ID,
+                        name="Test Agent",
+                        channel=ChannelConfiguration(kind="test"),
+                        runtime=RuntimeConfiguration(kind="test"),
+                    ),
+                ),
+            ),
+            shared_factories=SharedAdapterFactories(
                 storage=lambda storage=storage: storage,
                 audit=lambda audit=audit: audit,
             ),
+            registry=_AcceptanceRegistry(
+                channel=cast(IChannel, channel_instance),
+                runtime=runtime,
+            ),
             endpoint_path=endpoint_root / f"natural-{scenario_name}.sock",
-            node_id=identity.node_id,
-            workspace_id=identity.workspace_id,
             timeout_budget=TimeoutBudget(
                 startup_seconds=30,
                 provider_call_seconds=30,
@@ -324,14 +368,14 @@ async def run_natural_conversation_contract(
             await node.start()
             await channel_instance.inject(first)
             persisted = await _wait_for_inbound_messages(
-                storage,
-                session_id,
+                storage_scope,
+                scoped_session_id,
                 1,
             )
             first_row = persisted[0]
             await _wait_for_audit_event(
                 audit,
-                session_id=session_id,
+                session_id=scoped_session_id,
                 event_suffix="turn.started",
                 turn_id=f"turn-{first_row.message_id}",
             )
@@ -339,8 +383,8 @@ async def run_natural_conversation_contract(
                 await audit.first_check_completed.wait()
             await channel_instance.inject(second)
             persisted = await _wait_for_inbound_messages(
-                storage,
-                session_id,
+                storage_scope,
+                scoped_session_id,
                 2,
             )
             second_row = persisted[1]
@@ -352,24 +396,24 @@ async def run_natural_conversation_contract(
 
             await _wait_for_audit_event(
                 audit,
-                session_id=session_id,
+                session_id=scoped_session_id,
                 event_suffix="turn.completed",
                 turn_id=f"turn-{first_row.message_id}",
             )
-            async with storage.transaction() as transaction:
-                cursor = await transaction.get_consumer_cursor(session_id)
+            async with storage_scope.transaction() as transaction:
+                cursor = await transaction.get_consumer_cursor(scoped_session_id)
             if cursor is None or cursor.delivered_through_seq < second_row.seq:
                 await _wait_for_audit_event(
                     audit,
-                    session_id=session_id,
+                    session_id=scoped_session_id,
                     event_suffix="turn.completed",
                     turn_id=f"turn-{second_row.message_id}",
                 )
 
             await channel_instance.inject(third)
             persisted = await _wait_for_inbound_messages(
-                storage,
-                session_id,
+                storage_scope,
+                scoped_session_id,
                 3,
             )
             third_row = persisted[2]
@@ -380,7 +424,7 @@ async def run_natural_conversation_contract(
             ]
             await _wait_for_audit_event(
                 audit,
-                session_id=session_id,
+                session_id=scoped_session_id,
                 event_suffix="turn.completed",
                 turn_id=f"turn-{third_row.message_id}",
             )
@@ -389,7 +433,7 @@ async def run_natural_conversation_contract(
                     event.correlation.outbound_message_id
                     for event in audit.events
                     if (
-                        event.correlation.bcn_session_id == session_id
+                        event.correlation.bcn_session_id == scoped_session_id
                         and event.event_name == "channel.outbound.sent"
                         and event.correlation.inbound_seq == inbound.seq
                         and event.correlation.outbound_message_id is not None
@@ -401,7 +445,7 @@ async def run_natural_conversation_contract(
                         event.correlation.outbound_message_id
                         for event in audit.events
                         if (
-                            event.correlation.bcn_session_id == session_id
+                            event.correlation.bcn_session_id == scoped_session_id
                             and event.event_name == "bcc.send.fresh_check.passed"
                             and event.correlation.inbound_seq == inbound.seq
                             and event.correlation.outbound_message_id is not None
@@ -418,7 +462,7 @@ async def run_natural_conversation_contract(
                 event.correlation.outbound_message_id
                 for event in audit.events
                 if (
-                    event.correlation.bcn_session_id == session_id
+                    event.correlation.bcn_session_id == scoped_session_id
                     and event.event_name == "bcc.send.fresh_check.failed"
                     and event.correlation.outbound_message_id is not None
                 )
@@ -432,8 +476,6 @@ async def run_natural_conversation_contract(
         finally:
             audit.release_first_check.set()
             await node.stop()
-            if storage.is_started:
-                await storage.stop(timeout=30)
 
 
 @pytest.mark.asyncio
@@ -451,7 +493,7 @@ async def test_channel_storage_runtime_turn_path() -> None:
         )
 
         assert storage.inbound_messages["bcn-1"] == [message]
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert runtime.started_turns
         assert any(
             event.correlation.bcn_session_id == "bcn-1"
@@ -515,7 +557,7 @@ async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
         )
 
         assert not channel.stream_events
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -925,7 +967,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
-    assert orchestrator.agent_state("bcn-1") is AgentState.WORKING
+    assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.WORKING
 
     await orchestrator.stop(timeout=1)
     result = await asyncio.gather(task, return_exceptions=True)
@@ -939,8 +981,8 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     assert runtime.closed_streams
     assert runtime.stopped
     assert channel.stopped
-    assert storage.stopped
-    assert orchestrator.agent_state("bcn-1") is None
+    assert not storage.stopped
+    assert orchestrator.session_runtime_state("bcn-1") is None
 
 
 @pytest.mark.asyncio
@@ -998,50 +1040,62 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_tick_api_serializes_duplicate_runtime_and_channel_ticks() -> None:
+async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
+    None
+):
     orchestrator, channel, _runtime, storage, _audit = await make_node()
     try:
         await channel.inject(make_message())
         await wait_until(
             lambda: (
                 storage.bcn_sessions.get("bcn-1") is not None
-                and orchestrator.agent_state("bcn-1") is AgentState.IDLE
+                and orchestrator.session_runtime_state("bcn-1")
+                is SessionRuntimeState.IDLE
             )
         )
 
-        started_tick = AgentTick(
-            source=AgentTickSource.CHANNEL,
-            signal=AgentSignal.TURN_STARTED,
+        started_observation = SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.CHANNEL,
+            signal=SessionRuntimeSignal.TURN_STARTED,
             observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
         )
         started = await asyncio.gather(
-            orchestrator.tick("bcn-1", started_tick),
-            orchestrator.tick("bcn-1", started_tick),
+            orchestrator.observe_runtime("bcn-1", started_observation),
+            orchestrator.observe_runtime("bcn-1", started_observation),
         )
-        assert set(started) == {AgentState.WORKING}
+        assert set(started) == {SessionRuntimeState.WORKING}
 
-        completed_tick = AgentTick(
-            source=AgentTickSource.RUNTIME,
-            signal=AgentSignal.TURN_COMPLETED,
+        completed_observation = SessionRuntimeObservation(
+            source=SessionRuntimeObservationSource.RUNTIME,
+            signal=SessionRuntimeSignal.TURN_COMPLETED,
             observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
         )
         completed = await asyncio.gather(
-            orchestrator.tick("bcn-1", completed_tick),
-            orchestrator.tick("bcn-1", completed_tick),
+            orchestrator.observe_runtime("bcn-1", completed_observation),
+            orchestrator.observe_runtime("bcn-1", completed_observation),
         )
-        assert set(completed) == {AgentState.IDLE}
+        assert set(completed) == {SessionRuntimeState.IDLE}
 
         for signal, expected in (
-            (AgentSignal.COMPACTION_STARTED, AgentState.COMPACTION_STARTING),
-            (AgentSignal.COMPACTION_IN_PROGRESS, AgentState.COMPACTING),
-            (AgentSignal.COMPACTION_COMPLETED, AgentState.COMPACTION_COMPLETED),
-            (AgentSignal.WORKING_OBSERVED, AgentState.WORKING),
+            (
+                SessionRuntimeSignal.COMPACTION_STARTED,
+                SessionRuntimeState.COMPACTION_STARTING,
+            ),
+            (
+                SessionRuntimeSignal.COMPACTION_IN_PROGRESS,
+                SessionRuntimeState.COMPACTING,
+            ),
+            (
+                SessionRuntimeSignal.COMPACTION_COMPLETED,
+                SessionRuntimeState.COMPACTION_COMPLETED,
+            ),
+            (SessionRuntimeSignal.WORKING_OBSERVED, SessionRuntimeState.WORKING),
         ):
             current = storage.bcn_sessions["bcn-1"]
-            updated = await orchestrator.tick(
+            updated = await orchestrator.observe_runtime(
                 "bcn-1",
-                AgentTick(
-                    source=AgentTickSource.RUNTIME,
+                SessionRuntimeObservation(
+                    source=SessionRuntimeObservationSource.RUNTIME,
                     signal=signal,
                     observed_at_ms=current.updated_at_ms,
                 ),
@@ -1215,7 +1269,7 @@ async def test_runtime_start_failure_replaces_session_for_current_inbound() -> N
 
         assert result is not None
         assert result.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
         assert len(runtime.started_sessions) == 2
@@ -1253,7 +1307,7 @@ async def test_unconfirmed_reconcile_clears_session_before_next_inbound(
         assert first_turn is not None
         assert first_turn.state is RuntimeTurnState.UNKNOWN
         assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
         assert len(runtime.reconciled_sessions) == 1
         first_runtime = runtime.reconciled_sessions[0]
 
@@ -1283,7 +1337,7 @@ async def test_unknown_turn_reconciles_immediately() -> None:
         assert turn.state is RuntimeTurnState.UNKNOWN
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
     finally:
         await orchestrator.stop(timeout=1)
@@ -1302,7 +1356,7 @@ async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
                 status=ProviderCallStatus.CONFIRMED,
                 value=RuntimeSessionReconciliation(
                     session=current_runtime,
-                    state=AgentState.FAILED,
+                    state=SessionRuntimeState.FAILED,
                 ),
             )
         )
@@ -1316,7 +1370,7 @@ async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
         assert second_turn.state is RuntimeTurnState.UNKNOWN
         assert runtime.stopped_sessions[-1] == current_runtime
         assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1341,7 +1395,9 @@ async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() ->
         )
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
-        assert orchestrator.agent_state("bcn-1") is AgentState.WORKING
+        assert (
+            orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.WORKING
+        )
 
         second_task = orchestrator.dispatch_inbound(make_message(seq=2))
         await wait_until(lambda: len(runtime.steered_turns) == 1)
@@ -1358,7 +1414,7 @@ async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() ->
         assert second_turn is not None
         assert second_turn.state is RuntimeTurnState.COMPLETED
         assert orchestrator.runtime_session("bcn-1") == current_runtime
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
     finally:
         if not first_task.done():
@@ -1378,7 +1434,7 @@ async def test_confirmed_stop_replaces_runtime_session_on_next_inbound() -> None
         await orchestrator._stop_runtime_session(first_runtime, timeout=1)
 
         assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
         second_turn = await orchestrator.handle_inbound(make_message(seq=2))
         assert second_turn is not None
         second_runtime = orchestrator.runtime_session("bcn-1")
@@ -1422,7 +1478,7 @@ async def test_unconfirmed_stop_clears_runtime_session(
         await orchestrator._stop_runtime_session(first_runtime, timeout=1)
 
         assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
         second_turn = await orchestrator.handle_inbound(make_message(seq=2))
         assert second_turn is not None
         replacement = orchestrator.runtime_session("bcn-1")
@@ -1450,11 +1506,10 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
     channel = TestChannel()
     runtime = TestRuntime()
     second = SessionOrchestrator(
-        node_id="node-1",
-        workspace_id="workspace-1",
+        agent_id="workspace-1",
         channel=channel,
         runtime=runtime,
-        storage=storage,
+        storage=storage.scope("workspace-1", "Test Agent"),
         audit=RecordingAudit(),
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
@@ -1484,7 +1539,7 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
 
         assert result is None
         assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
         async with storage.transaction() as transaction:
             assert await transaction.get_consumer_cursor("bcn-1") is None
     finally:
@@ -1769,9 +1824,9 @@ async def test_runtime_replacement_cancels_the_previous_timer_generation() -> No
         first_runtime = orchestrator.runtime_session("bcn-1")
         first_binding = orchestrator._runtime_timers["bcn-1"]
         assert first_runtime is not None
-        orchestrator._state_writer.apply_reconciliation(
+        orchestrator._state_machine.apply_reconciliation(
             "bcn-1",
-            AgentState.FAILED,
+            SessionRuntimeState.FAILED,
         )
 
         await orchestrator.handle_inbound(make_message(seq=2))
@@ -1811,7 +1866,7 @@ async def test_pre_start_failure_reconciles_and_retries_the_current_inbound() ->
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.agent_state("bcn-1") is AgentState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert len(runtime.reconciled_sessions) == 1
         assert runtime.reconciled_sessions[0].provider_thread_id is not None
         assert len(runtime.started_turns) == 2
@@ -1841,7 +1896,7 @@ async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.FAILED
-        assert orchestrator.agent_state("bcn-1") is None
+        assert orchestrator.session_runtime_state("bcn-1") is None
         assert orchestrator.runtime_session("bcn-1") is None
         assert len(runtime.reconciled_sessions) == 1
         assert len(runtime.started_turns) == 1
