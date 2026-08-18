@@ -32,11 +32,15 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
             command_path.write_text(
                 "@echo off\n"
                 f'set "BCN_AGENT_ID={agent_id}"\n'
+                'set "PYTHONUTF8=1"\n'
+                'set "PYTHONIOENCODING=utf-8"\n'
                 f'"{python_executable}" -m bazaar_compute_node.bcc %*\n',
                 encoding="utf-8",
             )
             (bin_dir / "bcc.ps1").write_text(
                 f"$env:BCN_AGENT_ID = '{agent_id}'\n"
+                "$env:PYTHONUTF8 = '1'\n"
+                "$env:PYTHONIOENCODING = 'utf-8'\n"
                 f'& "{python_executable}" -m bazaar_compute_node.bcc @args\n'
                 "exit $LASTEXITCODE\n",
                 encoding="utf-8",

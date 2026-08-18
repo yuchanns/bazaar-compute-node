@@ -224,10 +224,14 @@ def test_install_bcc_wrapper_renders_windows_variants(
         assert command_path.read_text(encoding="utf-8").splitlines() == [
             "@echo off",
             'set "BCN_AGENT_ID=agent-a"',
+            'set "PYTHONUTF8=1"',
+            'set "PYTHONIOENCODING=utf-8"',
             '"C:\\Python\\python.exe" -m bazaar_compute_node.bcc %*',
         ]
         assert (tmp_path / "bcc.ps1").read_text(encoding="utf-8").splitlines() == [
             "$env:BCN_AGENT_ID = 'agent-a'",
+            "$env:PYTHONUTF8 = '1'",
+            "$env:PYTHONIOENCODING = 'utf-8'",
             '& "C:\\Python\\python.exe" -m bazaar_compute_node.bcc @args',
             "exit $LASTEXITCODE",
         ]
