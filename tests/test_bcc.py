@@ -64,6 +64,17 @@ def test_check_serializer_matches_canonical_text() -> None:
     )
 
 
+def test_check_serializer_renders_provider_username_as_sender() -> None:
+    result = {
+        "messages": [message_payload(sender="realyuchanns")],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@realyuchanns: message body" in serialize_check(result)
+
+
 def test_check_serializer_preserves_zero_provider_timestamp() -> None:
     result = {
         "messages": [

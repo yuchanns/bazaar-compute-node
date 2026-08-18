@@ -2,10 +2,10 @@
 
 ## 状态
 
-- 当前阶段：Code，Task 1 implementation 与验证已完成，未提交 diff 等待 review。
+- 当前阶段：Code，Task 2 implementation 与验证已完成，未提交 diff 等待 review。
 - 工作分支：`f-20260818-channel-identity`。
 - 基线：`main@1f5a24f13536c1bf5c6fc19b8ad7f2afd3e41aca`。
-- Plan 已作为独立 commit `53d4e29` 推送；Task 1 尚未 commit 或 push。
+- Plan 已作为独立 commit `53d4e29` 推送；Task 1 已提交并推送为 `08f0dfe`，Task 2 尚未 commit 或 push。
 - 每个 Task 串行开发；完成实现与验证后停下 review。commit 和 push 分别等待明确授权。
 - 本计划不包含旧消息回填、schema migration、配置迁移、PR、merge、发布或部署。
 
@@ -156,7 +156,7 @@ else:
 - 不使用 `first_name`、`last_name` 或 chat title 冒充稳定 handle。
 - 当前消息与 quoted/replied message 复用同一 extraction。
 - 顶层 current-bot filtering 继续比较 numeric bot ID，不使用可变 username。
-- `metadata.sender_is_bot` 继续来自 `User.is_bot`；`sender_chat` 没有等价字段时保持 `None`。
+- 移除无业务消费方的 `metadata.sender_is_bot`，避免保留无效的 provider metadata。
 - message type、canonical target、provider route、mention activation 和 dedupe 语义不变。
 
 ## Approval 边界
@@ -243,7 +243,7 @@ opaque random token
 1. `Message.from` 使用 `username -> id`。
 2. `sender_chat` 使用 `username -> id`。
 3. current message 与 quoted message 共享同一投影。
-4. 保留 numeric bot filtering、`sender_is_bot`、routing、activation 和 dedupe。
+4. 移除无消费方的 `sender_is_bot` metadata，保留 numeric bot filtering、routing、activation 和 dedupe。
 
 验证至少覆盖：
 
