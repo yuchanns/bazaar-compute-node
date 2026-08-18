@@ -25,11 +25,8 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
-    FreshCheckState,
     InboundMessage,
     OutboundAttachment,
-    OutboundDeliveryState,
-    OutboundMessage,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
@@ -416,21 +413,10 @@ async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
         secret="secret",
         websocket_url="wss://example.invalid",
     )
-    outbound = OutboundMessage(
-        outbound_message_id="outbound-1",
-        command_id="command-1",
-        session_id="session-1",
-        channel_session_id="channel-session-1",
-        target="dm:user-id",
-        body="hello",
-        state=OutboundDeliveryState.PENDING,
-        fresh_check_state=FreshCheckState.PASSED,
-        created_at_ms=1,
-        snapshot_seq=1,
-        current_inbound_seq=1,
-    )
     request = ChannelSendRequest(
-        outbound=outbound,
+        session_id="session-1",
+        body="hello",
+        attachments=(),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id="user-id",
     )

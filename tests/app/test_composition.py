@@ -13,14 +13,20 @@ from bazaar_compute_node.app.config import (
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
+from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 
-def make_configuration(*, storage: str = "sqlite") -> NodeConfiguration:
+def make_configuration(
+    *,
+    storage: str = "sqlite",
+    lang: str | None = None,
+) -> NodeConfiguration:
     return NodeConfiguration(
         storage=storage,
         audit="test",
+        lang=lang,
         agents=(
             AgentConfiguration(
                 id=AGENT_ID,
@@ -39,6 +45,42 @@ def make_budget() -> TimeoutBudget:
         command_seconds=2,
         shutdown_seconds=2,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_language", "system_language", "expected"),
+    (
+        ("zh-CN", "en_US", SIMPLIFIED_CHINESE),
+        (None, "zh_CN", SIMPLIFIED_CHINESE),
+        (None, "zh_TW", ENGLISH),
+    ),
+)
+async def test_node_composes_one_translator_for_all_agents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_language: str | None,
+    system_language: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(
+        "bazaar_compute_node.i18n.catalog.locale.getlocale",
+        lambda: (system_language, "UTF-8"),
+    )
+    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
+    node = NodeApplication(
+        configuration=make_configuration(lang=configured_language),
+        shared_factories=shared_factories,
+        endpoint_path=tmp_path / "bcn.sock",
+        timeout_budget=make_budget(),
+    )
+
+    assert node.translator.language == expected
+    await node.start()
+    try:
+        assert node.agents[AGENT_ID].translator is node.translator
+    finally:
+        await node.stop()
 
 
 @pytest.mark.asyncio

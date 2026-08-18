@@ -90,6 +90,7 @@ class NodeConfiguration:
     agents: tuple[AgentConfiguration, ...] = ()
     storage: str = DEFAULT_STORAGE
     audit: str = DEFAULT_AUDIT
+    lang: str | None = None
     endpoint: str | None = None
     database_name: str | None = None
     version: str = CONFIG_VERSION
@@ -101,6 +102,7 @@ class NodeConfiguration:
             )
         _required_text(self.storage, "node.storage")
         _required_text(self.audit, "node.audit")
+        _optional_text(self.lang, "node.lang")
         _optional_text(self.endpoint, "node.endpoint")
         _optional_text(self.database_name, "node.database_name")
         _validate_database_name(self.database_name)
@@ -235,6 +237,7 @@ def _parse_v2_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
         agents=agents,
         storage=_optional_text(node.get("storage"), "node.storage") or DEFAULT_STORAGE,
         audit=_optional_text(node.get("audit"), "node.audit") or DEFAULT_AUDIT,
+        lang=_optional_text(node.get("lang"), "node.lang"),
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         database_name=_optional_text(node.get("database_name"), "node.database_name"),
     )
@@ -453,6 +456,8 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
     lines = [f"version = {_toml_value(configuration.version)}", "", "[node]"]
     lines.append(f"storage = {_toml_value(configuration.storage)}")
     lines.append(f"audit = {_toml_value(configuration.audit)}")
+    if configuration.lang is not None:
+        lines.append(f"lang = {_toml_value(configuration.lang)}")
     if configuration.database_name is not None:
         lines.append(f"database_name = {_toml_value(configuration.database_name)}")
     if configuration.endpoint is not None:

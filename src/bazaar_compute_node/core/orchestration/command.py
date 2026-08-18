@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from ..audit import ErrorKind
-from ..channel import ChannelSendRequest, IChannel
+from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
     MessageCheckResult,
@@ -29,8 +29,8 @@ from ..models import (
     OutboundMessage,
     RuntimeEventState,
 )
-from ..outcomes import ProviderCallStatus
 from ..storage import IStorage, IStorageTransaction
+from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
 
@@ -112,19 +112,17 @@ class SessionCommandService(ICommandService):
     def __init__(
         self,
         *,
-        channel: IChannel,
+        delivery: OutboundDeliveryService,
         storage: IStorage,
         audit: SessionAuditRecorder,
-        provider_call_timeout: float,
         concurrency: ISessionConcurrency,
         node_id: Callable[[], str],
         workspace: Callable[[], Path],
         clock: Callable[[], int],
     ) -> None:
-        self._channel = channel
+        self._delivery = delivery
         self._storage = storage
         self._audit = audit
-        self._provider_call_timeout = provider_call_timeout
         self._concurrency = concurrency
         self._node_id = node_id
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
@@ -513,122 +511,49 @@ class SessionCommandService(ICommandService):
                 state=RuntimeEventState.STARTED,
                 correlation=audit_context,
             )
-            try:
-                provider_result = await self._channel.send(
-                    ChannelSendRequest(
-                        outbound=outbound,
-                        target_kind=channel_session.target_kind,
-                        provider_thread_id=channel_session.provider_thread_id,
-                        provider_reply_to_message_id=(reply_to_provider_message_id),
-                    ),
-                    timeout=self._provider_call_timeout,
+            delivery_result = await self._delivery.deliver(
+                ChannelSendRequest(
+                    session_id=outbound.session_id,
+                    body=outbound.body,
+                    attachments=outbound.attachments,
+                    target_kind=channel_session.target_kind,
+                    provider_thread_id=channel_session.provider_thread_id,
+                    provider_reply_to_message_id=reply_to_provider_message_id,
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001
-                provider_result = None
-                provider_error = error
-            else:
-                provider_error = None
-
+            )
             attempted_at_ms = outbound.provider_attempted_at_ms or self._clock()
             outbound = replace(outbound, provider_attempted_at_ms=attempted_at_ms)
-            if provider_result is None:
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.UNKNOWN,
-                    at_ms=self._clock(),
-                    error_kind=ErrorKind.PROVIDER_UNKNOWN.value,
-                    error_message=str(provider_error),
-                    next_action="reconcile channel delivery before retrying",
-                )
-                terminal_kind = ErrorKind.PROVIDER_UNKNOWN
-                terminal_state = RuntimeEventState.UNKNOWN
-            elif provider_result.status is ProviderCallStatus.CONFIRMED:
-                receipt = provider_result.value
-                if receipt is None:
-                    raise ValueError("confirmed channel delivery has no receipt")
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.SENT,
-                    at_ms=self._clock(),
-                    provider_message_id=receipt.provider_message_id,
-                    provider_receipt_ref=receipt.provider_receipt_ref,
-                )
+            outbound = outbound.transition_to(
+                delivery_result.state,
+                at_ms=self._clock(),
+                provider_message_id=delivery_result.provider_message_id,
+                provider_receipt_ref=delivery_result.provider_receipt_ref,
+                error_kind=delivery_result.error_kind,
+                error_message=delivery_result.error_message,
+                next_action=delivery_result.next_action,
+            )
+            if delivery_result.state is OutboundDeliveryState.SENT:
                 terminal_kind = None
                 terminal_state = RuntimeEventState.COMPLETED
-            elif provider_result.status is ProviderCallStatus.QUEUED:
-                receipt = provider_result.value
-                if receipt is None:
-                    raise ValueError("queued channel delivery has no receipt")
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.QUEUED,
-                    at_ms=self._clock(),
-                    provider_message_id=receipt.provider_message_id,
-                    provider_receipt_ref=receipt.provider_receipt_ref,
-                )
+            elif delivery_result.state is OutboundDeliveryState.QUEUED:
                 terminal_kind = None
                 terminal_state = RuntimeEventState.STARTED
-            elif provider_result.status is ProviderCallStatus.PARTIAL:
-                receipt = provider_result.value
-                if receipt is None:
-                    raise ValueError("partial channel delivery has no receipt")
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.PARTIAL,
-                    at_ms=self._clock(),
-                    provider_message_id=receipt.provider_message_id,
-                    provider_receipt_ref=receipt.provider_receipt_ref,
-                    error_kind=provider_result.error_kind
-                    or ErrorKind.PROVIDER_PARTIAL.value,
-                    error_message=provider_result.error_message,
-                    next_action="do not retry the complete message automatically",
-                )
+            elif delivery_result.state is OutboundDeliveryState.PARTIAL:
                 terminal_kind = ErrorKind.PROVIDER_PARTIAL
                 terminal_state = RuntimeEventState.FAILED
-            elif provider_result.status is ProviderCallStatus.FAILED:
-                provider_receipt_ref = provider_result.receipt.get(
-                    "provider_receipt_ref"
-                )
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.FAILED,
-                    at_ms=self._clock(),
-                    provider_receipt_ref=(
-                        provider_receipt_ref
-                        if isinstance(provider_receipt_ref, str)
-                        and provider_receipt_ref
-                        else None
-                    ),
-                    error_kind=provider_result.error_kind
-                    or ErrorKind.PROVIDER_FAILED.value,
-                    error_message=provider_result.error_message,
-                )
+            elif delivery_result.state is OutboundDeliveryState.FAILED:
                 terminal_kind = ErrorKind.PROVIDER_FAILED
                 terminal_state = RuntimeEventState.FAILED
             else:
-                provider_receipt_ref = provider_result.receipt.get(
-                    "provider_receipt_ref"
-                )
-                outbound = outbound.transition_to(
-                    OutboundDeliveryState.UNKNOWN,
-                    at_ms=self._clock(),
-                    provider_receipt_ref=(
-                        provider_receipt_ref
-                        if isinstance(provider_receipt_ref, str)
-                        and provider_receipt_ref
-                        else None
-                    ),
-                    error_kind=provider_result.error_kind
-                    or ErrorKind.PROVIDER_UNKNOWN.value,
-                    error_message=provider_result.error_message,
-                    next_action="reconcile channel delivery before retrying",
-                )
                 terminal_kind = ErrorKind.PROVIDER_UNKNOWN
                 terminal_state = RuntimeEventState.UNKNOWN
 
-            if provider_result is not None and provider_result.receipt:
+            if delivery_result.receipt:
                 outbound = replace(
                     outbound,
                     metadata={
                         **outbound.metadata,
-                        "delivery_receipt": dict(provider_result.receipt),
+                        "delivery_receipt": dict(delivery_result.receipt),
                     },
                 )
 
@@ -640,7 +565,7 @@ class SessionCommandService(ICommandService):
                 correlation=audit_context,
                 error_kind=terminal_kind,
                 error_message=outbound.error_message,
-                metadata=provider_result.receipt if provider_result is not None else {},
+                metadata=delivery_result.receipt,
             )
             await self._audit.append_tool(
                 operation="bcc.message.send",

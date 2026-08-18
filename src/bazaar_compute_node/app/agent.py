@@ -22,6 +22,7 @@ from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
+from ..i18n import Translator
 from .attachments import AttachmentMaterializer
 from .command import CommandDispatchError
 from .config import AgentConfiguration
@@ -53,6 +54,7 @@ class _SessionCapabilityBinding:
     bcn_session_id: str
     runtime_session_id: str
     capability: str
+    token_values: tuple[str, ...]
 
 
 class AgentApplication:
@@ -70,6 +72,7 @@ class AgentApplication:
         reminder_poke: Callable[[], None],
         endpoint: Callable[[], str],
         timeout_budget: TimeoutBudget,
+        translator: Translator,
     ) -> None:
         self.configuration = configuration
         self.agent_id = configuration.id
@@ -78,6 +81,7 @@ class AgentApplication:
         self.audit = audit
         self.timer_wheel = timer_wheel
         self.timeout_budget = timeout_budget
+        self.translator = translator
         self._endpoint = endpoint
         self._wrapper_path: Path | None = None
         self.command_log: list[CommandRecord] = []
@@ -146,6 +150,8 @@ class AgentApplication:
             timer_wheel=self.timer_wheel,
             runtime_idle_timeout_ms=runtime_idle_timeout_ms,
             workspace=self.workspace_path,
+            translator=self.translator,
+            error_feedback_detail=self._error_feedback_detail,
             concurrency=self._concurrency,
         )
         self.reminder_service = ReminderCommandService(
@@ -391,11 +397,20 @@ class AgentApplication:
             raise RuntimeError("bcc wrapper is not installed")
         binding = self._session_capabilities.get(session_id)
         if binding is None or binding.runtime_session_id != runtime_session_id:
+            capability = secrets.token_urlsafe(32)
+            token_values = [capability]
+            for name in self._runtime_environment_include:
+                if name != "TOKEN" and not name.endswith("_TOKEN"):
+                    continue
+                value = os.environ.get(name)
+                if value and value not in token_values:
+                    token_values.append(value)
             binding = _SessionCapabilityBinding(
                 agent_id=self.agent_id,
                 bcn_session_id=session_id,
                 runtime_session_id=runtime_session_id,
-                capability=secrets.token_urlsafe(32),
+                capability=capability,
+                token_values=tuple(token_values),
             )
             self._session_capabilities[session_id] = binding
         allowed = set(_PLATFORM_ENVIRONMENT)
@@ -425,6 +440,22 @@ class AgentApplication:
             }
         )
         return environment
+
+    def _error_feedback_detail(
+        self,
+        session_id: str,
+        error_message: str,
+    ) -> str:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        if not isinstance(error_message, str):
+            raise TypeError("error_message must be text")
+        binding = self._session_capabilities.get(session_id)
+        if binding is None:
+            return error_message
+        for token in binding.token_values:
+            error_message = error_message.replace(token, "<redacted>")
+        return error_message
 
     async def _run_runtime_command(
         self,

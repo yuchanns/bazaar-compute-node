@@ -24,6 +24,7 @@ def test_empty_legacy_config_is_upgraded_to_zero_agent_v2(tmp_path: Path) -> Non
 
     assert configuration.version == "2"
     assert configuration.agents == ()
+    assert configuration.lang is None
     assert tomllib.loads(config_path.read_text(encoding="utf-8")) == {
         "version": "2",
         "node": {"storage": "sqlite", "audit": "logging"},
@@ -136,6 +137,7 @@ version = "2"
 [node]
 storage = "sqlite"
 audit = "logging"
+lang = "zh-CN"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -170,10 +172,34 @@ network_access = false
     second = load_node_configuration(config_path)
 
     assert first == second
+    assert first.lang == "zh-CN"
     assert [agent.name for agent in first.agents] == ["CloudStrife", "Tifa"]
     assert first.agents[0].runtime.idle_timeout_seconds == 60
     assert first.agents[1].runtime.network_access is False
     assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_v2_configuration_requires_non_empty_lang(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'version = "2"\n\n[node]\nlang = ""\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="node.lang must be non-empty text"):
+        load_node_configuration(config_path)
+
+
+def test_v2_configuration_preserves_unknown_lang(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'version = "2"\n\n[node]\nlang = "ja"\n',
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration(config_path)
+
+    assert configuration.lang == "ja"
 
 
 def test_future_configuration_version_is_rejected_without_rewrite(

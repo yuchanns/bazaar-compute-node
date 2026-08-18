@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import cast
 
+from bazaar_compute_node.core.channel import ChannelSendRequest
 from bazaar_compute_node.core.models import (
     InboundMessage,
     OutboundMessage,
@@ -81,7 +82,7 @@ class TestControl:
                 for message in storage.outbound_messages.values()
             ],
             "sent_messages": [
-                _serialize_outbound(message) for message in channel.sent_messages
+                _serialize_channel_send(message) for message in channel.sent_messages
             ],
             "bcc_commands": [
                 {"session_id": session_id, "command": list(command)}
@@ -188,6 +189,26 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "error_kind": message.error_kind,
         "error_message": message.error_message,
         "next_action": message.next_action,
+    }
+
+
+def _serialize_channel_send(request: ChannelSendRequest) -> dict[str, object]:
+    return {
+        "session_id": request.session_id,
+        "body": request.body,
+        "attachments": [
+            {
+                "name": attachment.name,
+                "relative_path": attachment.relative_path,
+                "media_type": attachment.media_type,
+                "size_bytes": attachment.size_bytes,
+                "sha256": attachment.sha256,
+            }
+            for attachment in request.attachments
+        ],
+        "target_kind": request.target_kind.value,
+        "provider_thread_id": request.provider_thread_id,
+        "provider_reply_to_message_id": request.provider_reply_to_message_id,
     }
 
 

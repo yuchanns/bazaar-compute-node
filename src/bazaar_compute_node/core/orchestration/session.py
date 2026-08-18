@@ -9,6 +9,7 @@ from pathlib import Path
 from time import time_ns
 from uuid import uuid7
 
+from ...i18n import Translator
 from ..approval import IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import IChannel
@@ -48,6 +49,8 @@ from ..timerwheel import (
     TimerWheelClosedError,
 )
 from .command import SessionCommandService
+from .delivery import OutboundDeliveryService
+from .error_feedback import RuntimeErrorReporter
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
     SessionContext,
@@ -140,6 +143,8 @@ class SessionOrchestrator(IAsyncLifecycle):
         timer_wheel: TimerWheel,
         runtime_idle_timeout_ms: int = 0,
         workspace: Callable[[], Path],
+        translator: Translator,
+        error_feedback_detail: Callable[[str, str], str],
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -180,11 +185,21 @@ class SessionOrchestrator(IAsyncLifecycle):
             concurrency=self._concurrency,
             states=self._session_runtime_states,
         )
+        self._delivery = OutboundDeliveryService(
+            channel,
+            timeout=timeout_budget.provider_call_seconds,
+        )
+        self._error_reporter = RuntimeErrorReporter(
+            agent_id=agent_id,
+            delivery=self._delivery,
+            audit=self._audit,
+            translator=translator,
+            detail=error_feedback_detail,
+        )
         self._command_service = SessionCommandService(
-            channel=channel,
+            delivery=self._delivery,
             storage=storage,
             audit=self._audit,
-            provider_call_timeout=timeout_budget.provider_call_seconds,
             concurrency=self._concurrency,
             node_id=lambda: self.agent_id,
             workspace=workspace,
@@ -734,6 +749,17 @@ class SessionOrchestrator(IAsyncLifecycle):
                     queue_item_consumed = False
 
                 result = turn_task.result()
+                route_message = (
+                    batch[0].message
+                    if isinstance(batch[0], _RuntimeNotification)
+                    else batch[0].anchor_message
+                )
+                try:
+                    await self._error_reporter.report(route_message, result)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._logger.exception("runtime error feedback failed")
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)

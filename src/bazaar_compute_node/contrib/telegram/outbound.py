@@ -82,7 +82,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "invalid_route",
                 "Telegram outbound route belongs to another bot",
             )
-        self._stream_routes[request.outbound.session_id] = identity
+        self._stream_routes[request.session_id] = identity
 
         reply_to_message_id: int | None = None
         if request.provider_reply_to_message_id is not None:
@@ -101,13 +101,12 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        message = request.outbound
         try:
-            parts = split_rich_markdown(message.body) if message.body.strip() else ()
+            parts = split_rich_markdown(request.body) if request.body.strip() else ()
         except (TypeError, ValueError) as error:
             return self._failed("invalid_markdown", str(error))
         try:
-            if message.attachments:
+            if request.attachments:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise TimeoutError
@@ -115,7 +114,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     asyncio.to_thread(
                         prepare_outbound_attachments,
                         self._context.workspace(),
-                        message.attachments,
+                        request.attachments,
                     ),
                     timeout=remaining,
                 )

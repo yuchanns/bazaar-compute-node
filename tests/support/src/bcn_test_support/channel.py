@@ -18,7 +18,6 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
     InboundMessage,
-    OutboundMessage,
     StreamEvent,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -48,9 +47,9 @@ class TestChannel(IChannel):
         self.receive_closed = False
         self.injected_messages: list[InboundMessage] = []
         self.send_requests: list[ChannelSendRequest] = []
-        self.send_attempts: list[OutboundMessage] = []
-        self.queued_messages: list[OutboundMessage] = []
-        self.sent_messages: list[OutboundMessage] = []
+        self.send_attempts: list[ChannelSendRequest] = []
+        self.queued_messages: list[ChannelSendRequest] = []
+        self.sent_messages: list[ChannelSendRequest] = []
         self.approval_requests: list[ApprovalRequest] = []
         self.channel_approval_requests: list[ChannelApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
@@ -122,8 +121,7 @@ class TestChannel(IChannel):
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
         self.send_requests.append(request)
-        message = request.outbound
-        self.send_attempts.append(message)
+        self.send_attempts.append(request)
         if not self.started or self.stopped:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
@@ -135,13 +133,13 @@ class TestChannel(IChannel):
             result = ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
                 value=ChannelDeliveryReceipt(
-                    provider_message_id=f"test-message-{message.outbound_message_id}"
+                    provider_message_id=f"test-message-{len(self.send_attempts)}"
                 ),
             )
         if result.status is ProviderCallStatus.CONFIRMED:
-            self.sent_messages.append(message)
+            self.sent_messages.append(request)
         elif result.status is ProviderCallStatus.QUEUED:
-            self.queued_messages.append(message)
+            self.queued_messages.append(request)
         return result
 
     async def request_approval(

@@ -13,7 +13,7 @@ from .models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
-    OutboundMessage,
+    OutboundAttachment,
     StreamEvent,
 )
 from .outcomes import ProviderCallResult
@@ -65,19 +65,32 @@ class ChannelDeliveryReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ChannelSendRequest:
-    """Transient provider mapping resolved behind the runtime command boundary."""
+    """Transient provider mapping for one logical outbound message."""
 
-    outbound: OutboundMessage
+    session_id: str
+    body: str
+    attachments: tuple[OutboundAttachment, ...]
     target_kind: ChannelTargetKind
     provider_thread_id: str
     provider_reply_to_message_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.provider_thread_id:
+        if not isinstance(self.session_id, str) or not self.session_id:
+            raise ValueError("session_id must be non-empty")
+        if not isinstance(self.body, str):
+            raise TypeError("body must be text")
+        if not isinstance(self.attachments, tuple) or not all(
+            isinstance(attachment, OutboundAttachment)
+            for attachment in self.attachments
+        ):
+            raise TypeError("attachments must be a tuple of OutboundAttachment values")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.provider_thread_id, str) or not self.provider_thread_id:
             raise ValueError("provider_thread_id must be non-empty")
-        if (
-            self.provider_reply_to_message_id is not None
-            and not self.provider_reply_to_message_id
+        if self.provider_reply_to_message_id is not None and (
+            not isinstance(self.provider_reply_to_message_id, str)
+            or not self.provider_reply_to_message_id
         ):
             raise ValueError("provider_reply_to_message_id must be non-empty")
 
