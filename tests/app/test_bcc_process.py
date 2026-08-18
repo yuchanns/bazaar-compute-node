@@ -26,7 +26,11 @@ from bazaar_compute_node.app.transport import LocalCommandClient
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity, IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
-from bazaar_compute_node.core.models import InboundMessage, RuntimeSession
+from bazaar_compute_node.core.models import (
+    InboundMessage,
+    RuntimeSession,
+    SenderIdentity,
+)
 from bazaar_compute_node.core.orchestration.command import OutboundAttachmentResolver
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 
@@ -117,7 +121,7 @@ def _make_message() -> InboundMessage:
         provider_thread_id="provider-thread-a",
         provider_message_id="provider-message-a",
         received_at_ms=1,
-        sender="sender",
+        sender=SenderIdentity(id="sender-id", name="sender"),
         message_type="text",
         canonical_target="dm:provider-channel-a",
         body="hello",
@@ -133,7 +137,7 @@ async def _wait_for_runtime_session(runtime: TestRuntime) -> RuntimeSession:
 
 
 @pytest.mark.asyncio
-async def test_runtime_agent_name_prefers_channel_name_then_id_then_config(
+async def test_runtime_bot_name_prefers_channel_name_then_id(
     tmp_path: Path,
 ) -> None:
     node, channels, _runtimes = _make_node(tmp_path)
@@ -142,14 +146,15 @@ async def test_runtime_agent_name_prefers_channel_name_then_id_then_config(
 
     await node.start()
     try:
-        agent_name = node.agents[AGENT_A_ID]._runtime_context.agent_name
-        assert agent_name() == "Provider Name"
+        context = node.agents[AGENT_A_ID]._runtime_context
+        assert context.agent_name == AGENT_NAMES[AGENT_A_ID]
+        assert context.bot_name() == "Provider Name"
 
         channel.identity = ChannelIdentity(id="provider-id")
-        assert agent_name() == "provider-id"
+        assert context.bot_name() == "provider-id"
 
         channel.identity = None
-        assert agent_name() == AGENT_NAMES[AGENT_A_ID]
+        assert context.bot_name() is None
     finally:
         await node.stop()
 

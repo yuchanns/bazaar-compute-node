@@ -22,7 +22,11 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         "channel": message.channel,
         "received_at_ms": message.received_at_ms,
         "provider_time_ms": message.provider_time_ms,
-        "sender": message.sender,
+        "sender": (
+            None
+            if message.sender is None
+            else {"id": message.sender.id, "name": message.sender.name}
+        ),
         "message_type": message.message_type,
         "canonical_target": message.canonical_target,
         "target_kind": message.target_kind.value,

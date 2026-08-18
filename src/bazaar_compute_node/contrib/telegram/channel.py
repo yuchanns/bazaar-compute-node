@@ -23,6 +23,7 @@ from ...core.models import (
     InboundMessage,
     RuntimeEvent,
     RuntimeEventState,
+    SenderIdentity,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -755,26 +756,24 @@ class TelegramChannel(IChannel):
         return value
 
     @staticmethod
-    def _sender(message: Mapping[str, object]) -> str | None:
+    def _sender(message: Mapping[str, object]) -> SenderIdentity | None:
         sender = message.get("from")
         if isinstance(sender, Mapping):
             sender_id = sender.get("id")
             if isinstance(sender_id, int) and not isinstance(sender_id, bool):
                 username = sender.get("username")
-                return (
-                    username
-                    if isinstance(username, str) and username
-                    else str(sender_id)
+                return SenderIdentity(
+                    id=str(sender_id),
+                    name=username if isinstance(username, str) and username else None,
                 )
         sender_chat = message.get("sender_chat")
         if isinstance(sender_chat, Mapping):
             sender_chat_id = sender_chat.get("id")
             if isinstance(sender_chat_id, int) and not isinstance(sender_chat_id, bool):
                 username = sender_chat.get("username")
-                return (
-                    username
-                    if isinstance(username, str) and username
-                    else str(sender_chat_id)
+                return SenderIdentity(
+                    id=str(sender_chat_id),
+                    name=username if isinstance(username, str) and username else None,
                 )
         return None
 

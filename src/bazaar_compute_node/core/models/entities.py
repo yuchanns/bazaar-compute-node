@@ -239,6 +239,28 @@ class OutboundAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class SenderIdentity:
+    id: str | None = None
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.id is None and self.name is None:
+            raise ValueError("sender identity requires an id or name")
+        if self.id is not None:
+            _validate_text(self.id, "sender.id")
+        if self.name is not None:
+            _validate_text(self.name, "sender.name")
+
+    @property
+    def display_name(self) -> str:
+        if self.name is not None:
+            return self.name
+        if self.id is None:
+            raise RuntimeError("sender identity has no display value")
+        return self.id
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     seq: int
     message_id: str
@@ -248,7 +270,7 @@ class InboundMessage:
     provider_thread_id: str
     provider_message_id: str
     received_at_ms: int
-    sender: str | None
+    sender: SenderIdentity | None
     message_type: str
     canonical_target: str
     body: str
@@ -275,8 +297,8 @@ class InboundMessage:
         ):
             _validate_text(value, field_name)
         _validate_non_negative(self.received_at_ms, "received_at_ms")
-        if self.sender is not None:
-            _validate_text(self.sender, "sender")
+        if self.sender is not None and not isinstance(self.sender, SenderIdentity):
+            raise TypeError("sender must be a SenderIdentity")
         if self.reply_to_message_id is not None:
             _validate_text(self.reply_to_message_id, "reply_to_message_id")
         if not isinstance(self.target_kind, ChannelTargetKind):

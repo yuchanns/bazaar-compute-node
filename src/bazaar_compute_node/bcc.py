@@ -480,9 +480,27 @@ def _message_header_fields(
 ) -> tuple[str, str, str, str, str | None, str]:
     target = _require_text(message, "canonical_target")
     message_id = _require_text(message, "message_id")
-    sender = message.get("sender")
-    if sender is not None and (not isinstance(sender, str) or not sender):
-        _invalid_response("command response contains an invalid message sender")
+    sender_value = message.get("sender")
+    sender: str | None = None
+    if sender_value is not None:
+        if isinstance(sender_value, str) and sender_value:
+            sender = sender_value
+        elif not isinstance(sender_value, Mapping):
+            _invalid_response("command response contains an invalid message sender")
+        else:
+            sender_id = sender_value.get("id")
+            sender_name = sender_value.get("name")
+            if sender_id is not None and (
+                not isinstance(sender_id, str) or not sender_id
+            ):
+                _invalid_response("command response contains an invalid sender id")
+            if sender_name is not None and (
+                not isinstance(sender_name, str) or not sender_name
+            ):
+                _invalid_response("command response contains an invalid sender name")
+            sender = sender_name or sender_id
+            if sender is None:
+                _invalid_response("command response contains an empty message sender")
     return (
         target,
         message_id,

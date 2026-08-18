@@ -15,8 +15,66 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
     MIGRATIONS,
     SCHEMA_MIGRATION,
 )
-from bazaar_compute_node.core.models import BcnSession, ChannelSession, RuntimeAttempt
+from bazaar_compute_node.core.models import (
+    BcnSession,
+    ChannelSession,
+    InboundMessage,
+    RuntimeAttempt,
+    SenderIdentity,
+)
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+
+
+@pytest.mark.asyncio
+async def test_sqlite_persists_sender_display_name_without_transient_id() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        message = InboundMessage(
+            seq=0,
+            message_id="message-1",
+            session_id=bcn_session.id,
+            channel_session_id=channel_session.id,
+            channel="telegram",
+            provider_thread_id=channel_session.provider_thread_id,
+            provider_message_id="provider-message-1",
+            received_at_ms=1,
+            sender=SenderIdentity(id="1956760814", name="realyuchanns"),
+            message_type="text",
+            canonical_target="dm:channel-1",
+            body="hello",
+        )
+
+        async with scope.transaction() as transaction:
+            await transaction.save_channel_session(channel_session)
+            await transaction.save_bcn_session(bcn_session)
+            live = await transaction.append_inbound_message(message)
+            persisted = await transaction.find_inbound_message(
+                message.channel,
+                message.provider_thread_id,
+                message.provider_message_id,
+            )
+
+        assert live.sender == SenderIdentity(id="1956760814", name="realyuchanns")
+        assert persisted is not None
+        assert persisted.sender == SenderIdentity(name="realyuchanns")
+    finally:
+        await database.stop(timeout=2)
 
 
 @pytest.mark.asyncio

@@ -147,7 +147,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
             connection = await self._open_connection(session, timeout=timeout)
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
-                    agent_name=self._context.agent_name(),
+                    agent_name=self._context.agent_name,
+                    bot_name=self._context.bot_name(),
                     agent_id=self._context.agent_id,
                     runtime_session_id=session.id,
                     runtime=session.runtime,

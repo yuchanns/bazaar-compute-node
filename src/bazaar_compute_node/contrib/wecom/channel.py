@@ -30,6 +30,7 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
+    SenderIdentity,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -1060,7 +1061,7 @@ class WeComChannel(IChannel):
                 provider_thread_id=conversation,
                 provider_message_id=provider_message_id,
                 received_at_ms=received_at_ms,
-                sender=sender_id,
+                sender=SenderIdentity(id=sender_id),
                 message_type=message_type,
                 canonical_target=canonical_target,
                 body=content.body,

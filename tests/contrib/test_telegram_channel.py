@@ -10,6 +10,7 @@ import bazaar_compute_node.contrib.telegram.channel as telegram_channel_module
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
+from bazaar_compute_node.core.models import SenderIdentity
 
 
 class _FakeSession:
@@ -40,31 +41,34 @@ class _FakeApi:
     (
         (
             {"from": {"id": 1956760814, "username": "realyuchanns", "is_bot": False}},
-            "realyuchanns",
+            SenderIdentity(id="1956760814", name="realyuchanns"),
         ),
         (
             {"from": {"id": 6820994803, "username": "bkaiBot", "is_bot": True}},
-            "bkaiBot",
+            SenderIdentity(id="6820994803", name="bkaiBot"),
         ),
-        ({"from": {"id": 1956760814, "is_bot": False}}, "1956760814"),
+        (
+            {"from": {"id": 1956760814, "is_bot": False}},
+            SenderIdentity(id="1956760814"),
+        ),
         (
             {"sender_chat": {"id": -100123, "username": "projectUpdates"}},
-            "projectUpdates",
+            SenderIdentity(id="-100123", name="projectUpdates"),
         ),
-        ({"sender_chat": {"id": -100123}}, "-100123"),
+        ({"sender_chat": {"id": -100123}}, SenderIdentity(id="-100123")),
         (
             {
                 "from": {"id": 1956760814, "username": "realyuchanns"},
                 "sender_chat": {"id": -100123, "username": "projectUpdates"},
             },
-            "realyuchanns",
+            SenderIdentity(id="1956760814", name="realyuchanns"),
         ),
         ({}, None),
     ),
 )
 def test_telegram_sender_prefers_username_with_id_fallback(
     message: dict[str, Any],
-    expected: str | None,
+    expected: SenderIdentity | None,
 ) -> None:
     assert TelegramChannel._sender(message) == expected
 
@@ -137,8 +141,8 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
                 break
 
         quoted, current = received
-        assert quoted.sender == "bkaiBot"
-        assert current.sender == "realyuchanns"
+        assert quoted.sender == SenderIdentity(id="6820994803", name="bkaiBot")
+        assert current.sender == SenderIdentity(id="1956760814", name="realyuchanns")
         assert current.reply_to_message_id == quoted.message_id
 
         filtered_before = channel._message_updates_filtered

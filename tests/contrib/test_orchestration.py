@@ -44,6 +44,7 @@ from bazaar_compute_node.core.models import (
     RuntimeEvent,
     RuntimeEventState,
     RuntimeTurnState,
+    SenderIdentity,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
@@ -100,7 +101,7 @@ def make_message(
         provider_thread_id=f"thread-{session_id}",
         provider_message_id=f"provider-{session_id}-{seq}",
         received_at_ms=seq,
-        sender="Sender",
+        sender=SenderIdentity(id="sender-id", name="Sender"),
         message_type="text",
         canonical_target=f"#test:{session_id}",
         body=body if body is not None else f"inbound-{seq}",
@@ -716,7 +717,7 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         assert channel_request.target_kind is ChannelTargetKind.DM
         assert channel_request.provider_thread_id == "thread-bcn-1"
         assert channel_request.provider_reply_to_message_id == "provider-bcn-1-2"
-        assert channel_request.provider_sender_id == "Sender"
+        assert channel_request.provider_sender_id == "sender-id"
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
         assert any(event.event_name == "approval.decided" for event in audit.events)
@@ -1016,7 +1017,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert second_body not in steer_input
         second_sender = second.sender
         assert second_sender is not None
-        assert second_sender not in steer_input
+        assert second_sender.display_name not in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()

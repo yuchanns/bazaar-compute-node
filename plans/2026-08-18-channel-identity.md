@@ -2,20 +2,20 @@
 
 ## 状态
 
-- 当前阶段：Code，Task 2 implementation 与验证已完成，未提交 diff 等待 review。
+- 当前阶段：Code，Task 3 implementation 与验证已完成，未提交 diff 等待 review。
 - 工作分支：`f-20260818-channel-identity`。
 - 基线：`main@1f5a24f13536c1bf5c6fc19b8ad7f2afd3e41aca`。
-- Plan 已作为独立 commit `53d4e29` 推送；Task 1 已提交并推送为 `08f0dfe`，Task 2 尚未 commit 或 push。
+- Plan 已作为独立 commit `53d4e29` 推送；Task 1/2 已分别提交并推送为 `08f0dfe`/`810faff`，Task 3 尚未 commit 或 push。
 - 每个 Task 串行开发；完成实现与验证后停下 review。commit 和 push 分别等待明确授权。
 - 本计划不包含旧消息回填、schema migration、配置迁移、PR、merge、发布或部署。
 
 ## 目标
 
 1. 增加 provider-neutral Channel identity contract，让 Channel 在启动后暴露当前 provider account 的 ID 和可选 name。
-2. Developer instruction 的 Agent 名称按 `Channel identity name -> Channel identity id -> config agent.name` 解析；稳定的 BCN `agent.id` 不变。
+2. Channel bot 名称只按 `Channel identity name -> Channel identity id` 解析；Developer instruction 将它与 config `agent.name` 分离表达为 `You're {bot_name}, A.K.A {agent.name}`，稳定的 BCN `agent.id` 不变。
 3. Telegram 复用现有 `getMe` 结果，同时提供 bot ID 和 username，不增加网络请求。
 4. Telegram inbound message 的说话人优先显示 username，没有 username 时显示 numeric ID；人类、其他 bot 和 quoted message 使用相同规则。
-5. Approval 仍发送到触发 turn 的 DM、group 或 topic，但任意能看到有效按钮的人都可以完成 approval。
+5. Approval 仍发送到触发 turn 的 DM、group 或 topic，仅触发 turn 的 original sender 可以完成 approval。
 6. 将可读显示、路由 identity 和授权主体明确分离，禁止 username 进入路由或权限判断。
 
 ## Telegram 能力结论
@@ -37,9 +37,9 @@ Channel self identity
     provider account id + optional provider account name
     supplies the runtime-visible Agent name
 
-Inbound speaker label
-    one display value copied when a message enters BCN
-    only tells the runtime who appeared to speak that message
+Inbound sender identity
+    transient provider sender id + durable display name
+    separates authorization from runtime-visible presentation
 ```
 
 ### BCN Agent identity
@@ -48,16 +48,16 @@ Inbound speaker label
 - Channel account ID 不能替代 `agent.id`，不能参与 workspace、storage scope、session namespace、capability binding 或 durable ownership。
 - `config.toml` 的 `agent.name` 继续用于配置唯一性、管理、health 和 outbound identity snapshot；本需求只改变 developer instruction 中的可读自称。
 
-### Inbound speaker label
+### Inbound sender identity
 
-`InboundMessage.sender` 保留现有单字段模型，但语义明确为“消息接收时固化的说话人显示值”：
+`InboundMessage.sender` 使用 `SenderIdentity(id, name)`：
 
-- Telegram 有 username 时保存 username；没有时保存 numeric ID。
+- Telegram `id` 是当前内存周期内的 numeric provider sender ID，用于 approval authorization。
+- `name` 是可选 username，只用于展示；缺失时显示 fallback 到 `id`。
+- SQLite 只存现有 `sender TEXT` 显示值，不存可恢复授权语义的独立 ID。
 - 写入后不随 Telegram 改名而更新，历史消息展示接收当时的名字。
-- 不用于 DM/group/topic 路由、reply、dedupe 或 approval authorization。
-- 路由继续由 `provider_thread_id`、`provider_message_id` 和 `target_kind` 承担。
-- 不增加 `sender_id`，因为当前没有任何路由或授权消费者需要它。
-- username 存储时不带 `@`；现有 bcc header renderer 负责输出 `@sender`，避免 `@@name`。
+- sender 不用于 DM/group/topic 路由、reply 或 dedupe；路由继续由 `provider_thread_id`、`provider_message_id` 和 `target_kind` 承担。
+- username 不带 `@`；bcc header renderer 负责输出 `@sender`，避免 `@@name`。
 
 不处理旧数据：已有 `inbound_messages.sender` 保持原值，新 ingress 上线后采用 username-first 规则；不 backfill、不双读。
 
@@ -95,29 +95,30 @@ def get_identity(self) -> ChannelIdentity | None: ...
 
 ## Developer instruction 名称解析
 
-当前 `RuntimeCommandContext.agent_name` 在 `AgentApplication.__init__` 时固定为 config name，但 Channel identity 要到 `Channel.start()` 完成后才存在。采用显式 resolver：
+当前 Channel identity 要到 `Channel.start()` 完成后才存在。Runtime context 同时保留固定 config name 和显式 bot name resolver：
 
 ```python
 @dataclass(frozen=True, slots=True)
 class RuntimeCommandContext:
-    agent_name: Callable[[], str]
+    agent_name: str
+    bot_name: Callable[[], str | None]
     agent_id: str
     # existing fields remain unchanged
 ```
 
-`AgentApplication` 构造 resolver，按以下顺序选择：
+`AgentApplication` 构造 bot resolver，按以下顺序选择：
 
 ```text
 channel.get_identity().name
     -> channel.get_identity().id
-    -> configuration.name
+    -> None
 ```
 
-Codex runtime 仅在 `start_session()` 创建新 provider thread 时调用 resolver，并把结果传给 `DeveloperInstructionContext.agent_name`。
+Codex runtime 仅在 `start_session()` 创建新 provider thread 时调用 resolver。identity 存在时，Developer instruction 首句为 `You're "{bot_name}", A.K.A "{agent.name}"`；unsupported Channel 没有 identity 时只使用 `You're "{agent.name}"`，不伪造 bot identity。
 
 当前 orchestrator 虽先启动 Runtime lifecycle、后启动 Channel lifecycle，但只有二者都成功后才接受 ingress；因此第一次 `start_session()` 发生时 Channel identity 已 ready，不需要重构 async composition。已经创建的 Codex thread 不动态改名，避免同一 provider thread 的 developer instruction 漂移。
 
-resolver 返回值继续经过 `DeveloperInstructionContext` 的非空、无换行校验；异常沿现有 runtime session startup failure 路径返回，不静默 fallback 无效值。
+config name 和 bot resolver 返回值继续经过 `DeveloperInstructionContext` 的非空、无换行校验；异常沿现有 runtime session startup failure 路径返回，不静默 fallback 无效值。
 
 ## Telegram mapping
 
@@ -140,11 +141,15 @@ Telegram sender extraction 调整为：
 
 ```text
 if message.from is valid:
-    message.from.username
-        -> str(message.from.id)
+    SenderIdentity(
+        id=str(message.from.id),
+        name=message.from.username or None,
+    )
 else if message.sender_chat is valid:
-    message.sender_chat.username
-        -> str(message.sender_chat.id)
+    SenderIdentity(
+        id=str(message.sender_chat.id),
+        name=message.sender_chat.username or None,
+    )
 else:
     None
 ```
@@ -161,16 +166,11 @@ else:
 
 ## Approval 边界
 
-当前流程把 `InboundMessage.sender` 填入 `ChannelApprovalRequest.provider_sender_id`，Telegram callback 再用 `from.id` 限制点击者。username-first 后该字段会成为显示名，继续比较 numeric callback ID 会产生错误；同时也违背“任意人可点击”的已确认语义。
+`InboundMessage.sender` 改为 provider-neutral `SenderIdentity`：`id` 是当前内存周期内的稳定 provider sender ID，`name` 是可变的显示名。runtime header 使用 `name -> id`，approval authorization 只使用 `id`。
 
-本需求删除：
+SQLite 仍只保存现有 `sender TEXT` 显示值 `name -> id`，不保存可用于授权的独立 sender ID。当 username 缺失时，numeric ID 会作为显示 fallback 写入该列，但从 SQLite 重读时它被解码为 `SenderIdentity(name=..., id=None)`，不能恢复授权语义。新收到的消息在 append 后继续使用同一个内存模型运行 turn，因此 live ID 能传递到 pending approval。Telegram pending token、expected sender ID 和 future 本来就只存在 Channel 内存中，stop/restart 后旧 approval 失效，因此不需要 sender ID persistence 或 schema migration。
 
-- `ChannelApprovalRequest.provider_sender_id`；
-- orchestration 中从 `message.sender` 到 approval request 的传递；
-- Telegram `_PendingApproval.expected_sender_id`；
-- callback sender mismatch 分支及其文案、disposition 和测试。
-
-callback 的 `from` 仍必须满足 Telegram callback query 的结构要求，但其 ID 不参与 authorization。以下 correlation 全部保留：
+Telegram callback 必须使用 `from.id` 匹配 pending approval 的 original sender ID。以下 correlation 全部保留：
 
 ```text
 opaque random token
@@ -181,17 +181,17 @@ opaque random token
     + unresolved future
 ```
 
-第一个通过全部 correlation 检查的 callback 完成 future；后续点击继续走 resolved/duplicate 语义。Approval prompt 和结果反馈仍发送到触发 turn 的原 DM、group 或 topic。
+第一个由 original sender 发出且通过全部 correlation 检查的 callback 完成 future；后续点击继续走 resolved/duplicate 语义。Approval prompt 和结果反馈仍发送到触发 turn 的原 DM、group 或 topic。
 
 ## 备选方案与取舍
 
 ### 方案 A：持久化 `sender_id + sender_name`
 
-优点是同时保留稳定 provider ID 与可读名字；缺点是引入 schema migration、codec、repository 和所有 adapter 的新字段。当前 sender 不负责路由或授权，新增 ID 没有消费者，属于过度建模，不采用。
+能跨重启恢复 sender authorization，但 Telegram approval 的 token/future 本身不持久化，重启后必须失效。因此引入 schema migration 没有业务收益，不采用。
 
-### 方案 B：继续限制为消息发送者审批
+### 方案 B：使用显示字符串限制审批
 
-优点是权限更窄；缺点是与“任意人可点击”的产品决定冲突，并且会把显示字段误当 provider ID，不采用。
+不需要 sender 模型变更，但 username 可变且无法与 callback numeric ID 稳定比较，会把展示字段误当授权主体，不采用。
 
 ### 方案 C：Channel ready 后重建 Runtime composition
 
@@ -217,15 +217,15 @@ opaque random token
 1. 增加 `ChannelIdentity` 与 `IChannel.get_identity()`。
 2. `AgentScopedChannel` 委托 identity。
 3. unsupported adapter 返回 `None`；Telegram 基于已缓存 `getMe` 返回 identity。
-4. `RuntimeCommandContext.agent_name` 改为 callable；Codex 在新 session 建立时调用。
-5. `AgentApplication` 明确实现 `name -> id -> config name` fallback。
+4. `RuntimeCommandContext` 分离固定 config `agent_name` 与 callable `bot_name`；Codex 在新 session 建立时调用 resolver。
+5. `AgentApplication` 明确实现 bot `name -> id -> None`，Developer instruction 将 bot name 与 config alias 分离。
 
 验证：
 
 - value object validation；
 - Channel 未启动、ready、stop 后的 identity；
-- name、ID、config 三层 fallback；
-- developer instruction 首句使用 resolved name，Runtime Context 的稳定 `Agent ID` 不变；
+- bot name 的 name/ID fallback 与 unsupported identity `None`；
+- developer instruction 首句分别表达 bot name 与 config alias，Runtime Context 的稳定 `Agent ID` 不变；
 - focused tests、Ruff format/check、相关文件 LSP/pyright。
 
 完成实现与验证后保持一个 Task diff，停下 review；未获授权不 commit、不 push。
@@ -257,24 +257,34 @@ opaque random token
 
 完成实现与验证后保持一个 Task diff，停下 review；未获授权不 commit、不 push。
 
-### Task 3：任意可见用户完成 Telegram approval
+### Task 3：分离 sender 显示与 Telegram approval 授权
 
 修改范围：
 
 - `src/bazaar_compute_node/core/channel.py`
+- `src/bazaar_compute_node/core/models/entities.py`
 - `src/bazaar_compute_node/core/orchestration/turn.py`
+- `src/bazaar_compute_node/app/command.py`
+- `src/bazaar_compute_node/bcc.py`
+- `src/bazaar_compute_node/contrib/sqlite/codec.py`
+- SQLite repositories（仅写入 display value，无 migration）
 - `src/bazaar_compute_node/contrib/telegram/approval.py`
 - approval 相关 core、orchestration、Telegram 和 e2e tests
 
 实现：
 
-1. 删除 approval request 的 sender authorization 字段与 plumbing。
-2. 删除 Telegram pending expected sender 与 mismatch rejection。
-3. 保留 route、prompt、token、pending/resolved 和 first-writer-wins 检查。
+1. 将 sender 收敛为 `SenderIdentity(id, name)`，header 使用 `name -> id`。
+2. SQLite 仅持久化 display value，从库重读时 ID 为 `None`。
+3. orchestration 只将 live `sender.id` 传给 approval request。
+4. Telegram pending approval 必须有 expected sender ID，callback 继续拒绝 sender mismatch。
+5. 保留 route、prompt、token、pending/resolved 和 first-writer-wins 检查。
 
 验证至少覆盖：
 
-- 不同于消息发送者的用户可以 approve 或 reject；
+- original sender 可以 approve 或 reject，其他用户仍拒绝；
+- username 变化或展示值不影响 numeric ID authorization；
+- SQLite round-trip 保留 display name 但不保留 sender ID；
+- stop/restart 后 pending approval 失效；
 - 不同 chat/topic/prompt 的 callback 仍拒绝；
 - unknown、expired、duplicate token 语义不变；
 - callback race 只产生一个 terminal decision；
@@ -290,14 +300,15 @@ uv run --with pyright pyright
 uv lock --check
 ```
 
-Telegram external e2e 在凭据存在时验证 `getMe` identity、username inbound 和 cross-user approval；凭据缺失时明确报告 skip，不把 skip 报告为通过。
+Telegram external e2e 在凭据存在时验证 `getMe` identity、username inbound 和 original-user approval；凭据缺失时明确报告 skip，不把 skip 报告为通过。
 
 最终检查：
 
 - 无 schema 或 lock 变更；
 - 无旧数据 compatibility 分支；
 - provider identity 未进入稳定 `agent.id` ownership；
-- sender 显示值未进入 routing 或 authorization；
+- sender display name 未进入 routing 或 authorization；
+- SQLite 没有可恢复授权语义的 sender ID 字段；
 - README、CHANGELOG 没有真实用户文档缺口时不制造改动。
 
 完成实现与全量验证后保持一个 Task diff，停下 review；commit、push、PR、merge 和 branch 删除分别等待明确授权。
@@ -307,14 +318,14 @@ Telegram external e2e 在凭据存在时验证 `getMe` identity、username inbou
 - 把 Telegram username 当稳定 ID：contract 分离 `id` 与 `name`，路由和过滤继续使用 numeric ID。
 - runtime 在 Channel ready 前解析 identity：resolver 只在 runtime session startup 调用，orchestrator ready 前不接受 ingress；用 lifecycle test 固化该顺序。
 - username 产生双 `@`：adapter 存原始 username，不添加 `@`，由 bcc renderer 统一展示。
-- 开放 approval 扩大群内操作人范围：这是已确认产品语义；按钮只出现在原 conversation，并保留不可猜 token、严格 route/prompt correlation 与单次完成。
+- 可变 username 进入 authorization：通过 `SenderIdentity` 分离 ID/name，callback 只比较 numeric ID。
 - 新旧消息 sender 显示不同：项目未上线且明确不处理旧数据，不引入 backfill 或 compatibility complexity。
 
 ## 完成标准
 
-- Telegram Agent 的 developer instruction 首句优先使用 `getMe.username`，缺失时使用 `getMe.id`，再 fallback 到 config `agent.name`。
+- Telegram Agent 的 developer instruction 首句使用 `getMe.username -> getMe.id` 作为 bot name，并用 `A.K.A` 独立表达 config `agent.name`。
 - Telegram inbound 中有 username 的人类和 bot 以 username 出现在 `@sender` header；无 username 时显示 ID。
 - Channel core API 不包含 Telegram-specific 类型或命名。
-- Approval 不依赖 inbound sender identity，任意能看到有效按钮的用户都可完成 pending request。
+- Approval 仅允许发起 turn 的 original sender 完成，且不依赖可变 display name。
 - 全量测试、Ruff、pyright、lock check 和相关 LSP diagnostics 通过。
 - 每个 Task 串行完成并在 review 点停止；所有 Git 写操作遵守单独授权。

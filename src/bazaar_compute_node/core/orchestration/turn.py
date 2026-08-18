@@ -191,7 +191,9 @@ class SessionTurnCoordinator:
                     target_kind=context.channel_session.target_kind,
                     provider_thread_id=context.channel_session.provider_thread_id,
                     provider_reply_to_message_id=message.provider_message_id,
-                    provider_sender_id=message.sender,
+                    provider_sender_id=(
+                        message.sender.id if message.sender is not None else None
+                    ),
                 )
                 result = await self._channel.request_approval(
                     channel_request,

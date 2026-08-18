@@ -437,7 +437,11 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 canonical.provider_message_id,
                 canonical.provider_time_ms,
                 canonical.received_at_ms,
-                canonical.sender,
+                (
+                    canonical.sender.display_name
+                    if canonical.sender is not None
+                    else None
+                ),
                 canonical.message_type,
                 canonical.canonical_target,
                 canonical.target_kind.value,

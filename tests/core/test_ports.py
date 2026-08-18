@@ -40,7 +40,7 @@ async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> Non
     assert channel.get_identity() is None
 
 
-def test_runtime_command_context_requires_agent_name_callable() -> None:
+def test_runtime_command_context_requires_bot_name_callable() -> None:
     async def run_command(
         _session_id: str,
         _arguments: Sequence[str],
@@ -48,12 +48,13 @@ def test_runtime_command_context_requires_agent_name_callable() -> None:
     ) -> None:
         return None
 
-    with pytest.raises(TypeError, match="agent_name"):
+    with pytest.raises(TypeError, match="bot_name"):
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
             agent_id="agent-test",
-            agent_name="Test Agent",  # type: ignore[arg-type]
+            agent_name="Test Agent",
+            bot_name="provider_bot",  # type: ignore[arg-type]
         )
 
 

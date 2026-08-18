@@ -10,6 +10,7 @@ def test_codex_thread_start_receives_rendered_reminder_instructions() -> None:
     workspace = Path("/workspace")
     rendered = DeveloperInstructionContext(
         agent_name="Test Agent",
+        bot_name="provider_bot",
         agent_id="agent-test",
         runtime_session_id="runtime-session-test",
         runtime="codex",
