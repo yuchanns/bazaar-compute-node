@@ -16,6 +16,7 @@ from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
+from ..i18n import create_translator
 from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
@@ -60,6 +61,7 @@ class NodeApplication:
         timeout_budget: TimeoutBudget | None = None,
     ) -> None:
         self.configuration = configuration
+        self.translator = create_translator(configuration.lang)
         self.data_dir = resolve_data_dir()
         self.timeout_budget = timeout_budget or TimeoutBudget(
             startup_seconds=60,
@@ -155,6 +157,7 @@ class NodeApplication:
                 reminder_poke=self.reminder_scheduler.poke,
                 endpoint=lambda: self.endpoint,
                 timeout_budget=self.timeout_budget,
+                translator=self.translator,
             )
             await application.start()
         except asyncio.CancelledError:

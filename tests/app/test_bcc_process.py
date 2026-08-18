@@ -76,6 +76,8 @@ class _RoutingRegistry(AdapterRegistry):
 
 def _make_node(
     tmp_path: Path,
+    *,
+    env_include: tuple[str, ...] = (),
 ) -> tuple[
     NodeApplication,
     dict[str, TestChannel],
@@ -91,7 +93,10 @@ def _make_node(
                 id=agent_id,
                 name=AGENT_NAMES[agent_id],
                 channel=ChannelConfiguration(kind="test"),
-                runtime=RuntimeConfiguration(kind="test"),
+                runtime=RuntimeConfiguration(
+                    kind="test",
+                    env_include=env_include,
+                ),
             )
             for agent_id in (AGENT_A_ID, AGENT_B_ID)
         ),
@@ -234,6 +239,36 @@ def test_install_bcc_wrapper_rejects_unsafe_agent_id(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported wrapper characters"):
         wrapper_module.install_bcc_wrapper(tmp_path, agent_id="agent;touch")
     assert not tuple(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_runtime_error_redaction_uses_injected_token_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SERVICE_TOKEN", "service-token-value")
+    monkeypatch.setenv("ORDINARY_VALUE", "ordinary-value")
+    node, _channels, _runtimes = _make_node(
+        tmp_path,
+        env_include=("SERVICE_TOKEN", "ORDINARY_VALUE"),
+    )
+    await node.start()
+    try:
+        application = node.agents[AGENT_A_ID]
+        environment = application._build_command_environment(
+            "session-agent-a",
+            "runtime-agent-a",
+        )
+        redacted = application._redact_runtime_error(
+            "session-agent-a",
+            "failure "
+            f"{environment['BCN_COMMAND_CAPABILITY']} "
+            "service-token-value ordinary-value",
+        )
+
+        assert redacted == "failure <redacted> <redacted> ordinary-value"
+    finally:
+        await node.stop()
 
 
 @pytest.mark.asyncio

@@ -2,10 +2,10 @@
 
 ## 状态
 
-- 当前阶段：Code，Task 1 implementation 与验证已完成，diff 等待 review。
+- 当前阶段：Code，Task 2 implementation 与验证已完成，diff 等待 review。
 - 工作分支：`f-20260818-runtime-error-feedback`。
 - 基线：`main@c1870911aa0b43dbcc74ac6eb20ca651088d7b8c`。
-- Plan 已作为 `fcda6c4` 推送；Task 1 diff 位于当前工作区。
+- Plan 已作为 `fcda6c4` 推送；Task 1 已作为 `39b397d` 推送；Task 2 diff 位于当前工作区。
 - 每个 Task 串行开发；完成实现与验证后停下 review。commit 和 push 分别等待明确授权。
 
 ## 目标
@@ -167,8 +167,8 @@ Reporter 根据 terminal state 选择稳定 message key：
 示例语义：
 
 ```text
-Runtime failed: ${error}
-Runtime result is unknown: ${error}
+Execution failed: ${error}
+Execution status is unknown: ${error}
 ```
 
 具体中文文案由 catalog 定义，reporter 只按 terminal state 选择 message key。
@@ -196,11 +196,11 @@ for token in token_values:
 - 使用 `<redacted>`，与当前 Telegram API error 的 `description.replace(self._token, "<redacted>")` 保持一致，并明确标识脱敏位置。
 - 算法是区分大小写的精确字符串替换，其余错误正文保持原样。
 - adapter 继续负责过滤自己持有的 provider token；Telegram 保留现有逻辑。
-- runtime reporter 只接收 runtime process 实际可见的 token：当前 session 的 `BCN_COMMAND_CAPABILITY`，以及通过 `runtime.env_include` 显式注入且变量名为 `TOKEN` 或以 `_TOKEN` 结尾的值。
-- channel adapter 继续独立持有 provider token；core reporter 的 token values 保持 runtime process 可见范围。
+- `AgentApplication` 捕获 runtime process 实际可见的 token：当前 session 的 `BCN_COMMAND_CAPABILITY`，以及通过 `runtime.env_include` 显式注入且变量名为 `TOKEN` 或以 `_TOKEN` 结尾的值。
+- channel adapter 继续独立持有 provider token；runtime token values 保持在 Agent composition boundary。
 - token 值为空时跳过，重复值在调用处内联去重。
 
-Token values 由 `AgentApplication` 的现有 session environment/capability ownership 提供给 composition，core reporter 消费不可变 values。
+`AgentApplication` 使用 session binding 中的 immutable token values 提供精确 redaction callable；core reporter 只提交 session ID 与 error text。
 
 ## i18n
 
@@ -302,7 +302,7 @@ Audit metadata 使用 terminal state、delivery state 和 provider receipt refer
 - Telegram、WeCom outbound focused tests；
 - Ruff format/check、相关文件 LSP/pyright、`git diff --check`。
 
-完成实现与验证后以 uncommitted Task 1 diff 进入 review；review 通过后再确定 commit、push 与 Task 2。
+Task 1 review 完成后作为 `39b397d` 推送，再进入 Task 2。
 
 ### Task 2：增加 i18n 与精确 token replacement
 
@@ -319,7 +319,7 @@ Audit metadata 使用 terminal state、delivery state 和 provider receipt refer
 1. 增加 immutable translator、English/简体中文 catalog、`${...}` 插值和 English fallback。
 2. 在 `[node]` 增加可选非空 `lang`；显式配置优先，只有 `zh-CN` 使用中文，其他值 fallback 到 English，缺省时解析一次 system locale。
 3. `NodeApplication` 创建 translator 并传给全部 Agent，进程生命周期内语言保持固定。
-4. 从现有 session capability 与显式 runtime token environment 收集 token values，使用精确 `<redacted>` replacement。
+4. 从现有 session capability 与显式 runtime token environment 收集 immutable token values，由 Agent composition 提供精确 `<redacted>` replacement callable。
 5. 保留 Telegram adapter 现有 provider token replacement。
 
 验证：
@@ -343,7 +343,7 @@ Audit metadata 使用 terminal state、delivery state 和 provider receipt refer
 
 实现：
 
-1. Reporter 只接收 final `RuntimeTurn`、原始 wake route、translator、token values 与共享 delivery service。
+1. Reporter 只接收 final `RuntimeTurn`、原始 wake route、translator、Agent redaction callable 与共享 delivery service。
 2. `_runtime_loop()` 在 final result 后对 `FAILED/UNKNOWN` 调用一次 reporter。
 3. 普通 inbound 与 Reminder anchor 均 reply 到原 provider message；batched notifications 只发送一次。
 4. delivery failure 只写 audit/log，原 `RuntimeTurn` 原样完成所有 notification futures。
