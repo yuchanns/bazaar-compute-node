@@ -22,10 +22,7 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
-    FreshCheckState,
     OutboundAttachment,
-    OutboundDeliveryState,
-    OutboundMessage,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
@@ -88,18 +85,9 @@ def _send_request(
 ) -> ChannelSendRequest:
     nonce = str(uuid4())
     return ChannelSendRequest(
-        outbound=OutboundMessage(
-            outbound_message_id=f"outbound-{nonce}",
-            command_id=f"command-{nonce}",
-            session_id=f"session-{nonce}",
-            channel_session_id=identity.channel_session_id,
-            target=f"{target_kind.value}:{identity.channel_session_id}",
-            body=body,
-            attachments=attachments,
-            state=OutboundDeliveryState.PENDING,
-            fresh_check_state=FreshCheckState.PASSED,
-            created_at_ms=time_ns() // 1_000_000,
-        ),
+        session_id=f"session-{nonce}",
+        body=body,
+        attachments=attachments,
         target_kind=target_kind,
         provider_thread_id=identity.provider_thread_id,
         provider_reply_to_message_id=(

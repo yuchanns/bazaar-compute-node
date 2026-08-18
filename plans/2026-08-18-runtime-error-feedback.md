@@ -2,9 +2,10 @@
 
 ## 状态
 
-- 当前阶段：Plan，边界已讨论确认，下一阶段为 Task 1。
+- 当前阶段：Code，Task 1 implementation 与验证已完成，diff 等待 review。
 - 工作分支：`f-20260818-runtime-error-feedback`。
 - 基线：`main@c1870911aa0b43dbcc74ac6eb20ca651088d7b8c`。
+- Plan 已作为 `fcda6c4` 推送；Task 1 diff 位于当前工作区。
 - 每个 Task 串行开发；完成实现与验证后停下 review。commit 和 push 分别等待明确授权。
 
 ## 目标

@@ -48,6 +48,7 @@ from ..timerwheel import (
     TimerWheelClosedError,
 )
 from .command import SessionCommandService
+from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
     SessionContext,
@@ -180,11 +181,14 @@ class SessionOrchestrator(IAsyncLifecycle):
             concurrency=self._concurrency,
             states=self._session_runtime_states,
         )
+        self._delivery = OutboundDeliveryService(
+            channel,
+            timeout=timeout_budget.provider_call_seconds,
+        )
         self._command_service = SessionCommandService(
-            channel=channel,
+            delivery=self._delivery,
             storage=storage,
             audit=self._audit,
-            provider_call_timeout=timeout_budget.provider_call_seconds,
             concurrency=self._concurrency,
             node_id=lambda: self.agent_id,
             workspace=workspace,

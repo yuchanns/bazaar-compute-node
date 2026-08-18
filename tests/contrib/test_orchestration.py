@@ -32,7 +32,11 @@ from bazaar_compute_node.app.registry import (
 )
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.audit import AuditEvent
-from bazaar_compute_node.core.channel import ChannelDeliveryReceipt, IChannel
+from bazaar_compute_node.core.channel import (
+    ChannelDeliveryReceipt,
+    ChannelSendRequest,
+    IChannel,
+)
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -40,7 +44,6 @@ from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     InboundMessage,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeTurnState,
@@ -213,7 +216,7 @@ async def wait_until(predicate: object) -> None:
 
 
 class _AcceptanceChannel(Protocol):
-    sent_messages: list[OutboundMessage]
+    sent_messages: list[ChannelSendRequest]
 
     async def inject(self, message: InboundMessage) -> None: ...
 
@@ -454,8 +457,8 @@ async def run_natural_conversation_contract(
                     }
                 )
                 assert any(
-                    message.outbound_message_id in delivery_ids
-                    and message.target == inbound.canonical_target
+                    message.session_id == scoped_session_id
+                    and message.provider_thread_id == inbound.provider_thread_id
                     and bool(message.body.strip())
                     for message in channel_instance.sent_messages
                 )
@@ -468,12 +471,13 @@ async def run_natural_conversation_contract(
                     and event.correlation.outbound_message_id is not None
                 )
             }
-            assert rejected_delivery_ids.isdisjoint(
-                {
-                    message.outbound_message_id
-                    for message in channel_instance.sent_messages
-                }
-            )
+            sent_delivery_ids = {
+                event.correlation.outbound_message_id
+                for event in audit.events
+                if event.event_name == "channel.outbound.sent"
+                and event.correlation.outbound_message_id is not None
+            }
+            assert rejected_delivery_ids.isdisjoint(sent_delivery_ids)
         finally:
             audit.release_first_check.set()
             await node.stop()
@@ -799,7 +803,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
         )
 
         assert delivered.state is OutboundDeliveryState.SENT
-        assert channel.send_requests[0].outbound.attachments == delivered.attachments
+        assert channel.send_requests[0].attachments == delivered.attachments
         assert [attachment.relative_path for attachment in delivered.attachments] == [
             "first.txt",
             "second.json",

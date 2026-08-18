@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from bazaar_compute_node.core.models import OutboundMessage, SessionRuntimeState
+from bazaar_compute_node.core.channel import ChannelSendRequest
+from bazaar_compute_node.core.models import SessionRuntimeState
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 
 from .channel import TestChannel
@@ -17,7 +18,7 @@ async def wait_for_turn_terminal(
     sent_after: int,
     timeout: float = 600,
     expect_runtime_discarded: bool = False,
-) -> tuple[OutboundMessage, ...]:
+) -> tuple[ChannelSendRequest, ...]:
     """Wait for provider-neutral outbound, turn, and session-runtime lifecycle completion."""
 
     if not session_id:
@@ -37,7 +38,7 @@ async def wait_for_turn_terminal(
     ):
         raise ValueError("timeout must be a positive number")
 
-    outbound: tuple[OutboundMessage, ...] = ()
+    outbound: tuple[ChannelSendRequest, ...] = ()
     active_turn = False
     state = orchestrator.session_runtime_state(session_id)
     try:

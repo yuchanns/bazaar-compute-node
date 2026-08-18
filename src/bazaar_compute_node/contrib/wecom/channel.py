@@ -200,12 +200,11 @@ class WeComChannel(IChannel):
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        message = request.outbound
         target_id = request.provider_thread_id
         try:
             batches = (
-                split_markdown(message.body, limit=_MAX_MARKDOWN_BYTES)
-                if message.body.strip()
+                split_markdown(request.body, limit=_MAX_MARKDOWN_BYTES)
+                if request.body.strip()
                 else ()
             )
         except ValueError as error:
@@ -220,7 +219,7 @@ class WeComChannel(IChannel):
         receipts: list[dict[str, object]] = []
         upload_receipts: list[dict[str, object]] = []
         confirmed = 0
-        total_parts = len(batches) + len(message.attachments)
+        total_parts = len(batches) + len(request.attachments)
         if total_parts == 0:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
@@ -246,7 +245,7 @@ class WeComChannel(IChannel):
                     asyncio.to_thread(
                         prepare_attachments,
                         self._context.workspace(),
-                        message.attachments,
+                        request.attachments,
                     ),
                     timeout=max(0.0, deadline - loop.time()),
                 )
