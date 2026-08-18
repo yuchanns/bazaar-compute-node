@@ -4,7 +4,11 @@ from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import cast
 
-from bazaar_compute_node.core.models import InboundMessage, OutboundMessage
+from bazaar_compute_node.core.models import (
+    InboundMessage,
+    OutboundMessage,
+    SenderIdentity,
+)
 
 from .channel import TestChannel
 from .storage import MemoryStorage
@@ -139,7 +143,11 @@ class TestControl:
             channel=cast(str, channel),
             provider_message_id=cast(str, provider_message_id),
             received_at_ms=cast(int, received_at_ms),
-            sender=cast(str | None, sender),
+            sender=(
+                SenderIdentity(id=sender, name=sender)
+                if isinstance(sender, str)
+                else None
+            ),
             message_type=cast(str, message_type),
             canonical_target=cast(str, canonical_target),
             body=body,

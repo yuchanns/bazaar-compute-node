@@ -24,7 +24,7 @@ class _PendingApproval:
     chat_id: int
     topic_id: int
     prompt_message_id: int | None
-    expected_sender_id: str | None
+    expected_sender_id: str
     future: asyncio.Future[ApprovalResult]
 
 
@@ -93,6 +93,8 @@ class TelegramApprovalChannel(TelegramChannel):
         identity = parse_provider_thread_id(request.provider_thread_id)
         if identity.bot_id != bot_id:
             raise ValueError("Telegram approval route belongs to another bot")
+        if request.provider_sender_id is None:
+            raise ValueError("Telegram approval requires the original sender id")
 
         reply_to_message_id = self._provider_message_id(
             request.provider_reply_to_message_id
@@ -242,7 +244,7 @@ class TelegramApprovalChannel(TelegramChannel):
             self._last_update_disposition = "approval_callback_message_mismatch"
             await self._answer_callback(query_id, "Approval is no longer valid")
             return
-        if pending.expected_sender_id is not None and (
+        if (
             not isinstance(sender_id, int)
             or isinstance(sender_id, bool)
             or str(sender_id) != pending.expected_sender_id

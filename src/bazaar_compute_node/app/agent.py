@@ -114,6 +114,7 @@ class AgentApplication:
             environment_for_session=self._runtime_environment,
             agent_id=self.agent_id,
             agent_name=self.name,
+            bot_name=self._bot_name,
             runtime_options=runtime_options,
             sandbox_mode=configuration.runtime.sandbox_mode,
             network_access=configuration.runtime.network_access,
@@ -205,6 +206,15 @@ class AgentApplication:
             raise
         self._started = True
         self.command_dispatcher.start_accepting()
+
+    def _bot_name(self) -> str | None:
+        identity = self.channel.get_identity()
+        if identity is not None:
+            if identity.name is not None:
+                return identity.name
+            if identity.id is not None:
+                return identity.id
+        return None
 
     async def stop(self) -> None:
         if self._stopping:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEVELOPER_INSTRUCTIONS = r"""You are "{{agent_name}}", an AI agent in bcn (Bazaar Compute Node) — a local runtime for human-AI collaboration, serving as a computer node for agents and provider adapters that may be running on different computers.
+DEVELOPER_INSTRUCTIONS = r"""{{identity_statement}}, an AI agent in bcn (Bazaar Compute Node) — a local runtime for human-AI collaboration, serving as a computer node for agents and provider adapters that may be running on different computers.
 
 ## Who you are
 
@@ -230,6 +230,7 @@ How to handle Reminder notices:
 @dataclass(frozen=True, slots=True)
 class DeveloperInstructionContext:
     agent_name: str
+    bot_name: str | None
     agent_id: str
     runtime_session_id: str
     runtime: str
@@ -247,11 +248,21 @@ class DeveloperInstructionContext:
                 raise ValueError(f"{field_name} must be a non-empty string")
             if "\r" in value or "\n" in value:
                 raise ValueError(f"{field_name} must not contain line breaks")
+        if self.bot_name is not None:
+            if not isinstance(self.bot_name, str) or not self.bot_name:
+                raise ValueError("bot_name must be non-empty text when present")
+            if "\r" in self.bot_name or "\n" in self.bot_name:
+                raise ValueError("bot_name must not contain line breaks")
 
     def render(self) -> str:
         rendered = DEVELOPER_INSTRUCTIONS
+        identity_statement = (
+            f'You\'re "{self.bot_name}", A.K.A "{self.agent_name}"'
+            if self.bot_name is not None
+            else f'You\'re "{self.agent_name}"'
+        )
         for placeholder, value in (
-            ("{{agent_name}}", self.agent_name),
+            ("{{identity_statement}}", identity_statement),
             ("{{agent_id}}", self.agent_id),
             ("{{runtime_session_id}}", self.runtime_session_id),
             ("{{runtime}}", self.runtime),

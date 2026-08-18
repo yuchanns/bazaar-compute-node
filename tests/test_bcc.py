@@ -22,7 +22,8 @@ def message_payload(
     received_at_ms: int = 1_700_000_000_001,
     target: str = "#work:parent123",
     provider_thread_id: str | None = "provider-thread-1",
-    sender: str | None = "sender",
+    sender_id: str | None = "sender-id",
+    sender_name: str | None = "sender",
     reply_to_message_id: str | None = None,
 ) -> dict[str, object]:
     return {
@@ -32,7 +33,11 @@ def message_payload(
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,
         "message_type": "human",
-        "sender": sender,
+        "sender": (
+            None
+            if sender_id is None and sender_name is None
+            else {"id": sender_id, "name": sender_name}
+        ),
         "body": "message body",
         "provider_thread_id": provider_thread_id,
         "reply_to_message_id": reply_to_message_id,
@@ -64,6 +69,41 @@ def test_check_serializer_matches_canonical_text() -> None:
     )
 
 
+def test_check_serializer_renders_provider_username_as_sender() -> None:
+    result = {
+        "messages": [message_payload(sender_name="realyuchanns")],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@realyuchanns: message body" in serialize_check(result)
+
+
+def test_check_serializer_falls_back_to_sender_id() -> None:
+    result = {
+        "messages": [message_payload(sender_name=None)],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@sender-id: message body" in serialize_check(result)
+
+
+def test_check_serializer_accepts_scalar_sender_during_rolling_upgrade() -> None:
+    message = message_payload()
+    message["sender"] = "sender"
+    result = {
+        "messages": [message],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@sender: message body" in serialize_check(result)
+
+
 def test_check_serializer_preserves_zero_provider_timestamp() -> None:
     result = {
         "messages": [
@@ -81,7 +121,8 @@ def test_check_serializer_renders_referenced_message_before_current_message() ->
     referenced = message_payload(
         message_id="referenced-message-id",
         seq=6,
-        sender=None,
+        sender_id=None,
+        sender_name=None,
     )
     referenced["body"] = "quoted body"
     current = message_payload(

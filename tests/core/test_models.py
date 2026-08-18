@@ -10,6 +10,7 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeSession,
+    SenderIdentity,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
@@ -63,6 +64,14 @@ def make_outbound_message() -> OutboundMessage:
         fresh_check_state=FreshCheckState.REQUIRED,
         created_at_ms=1,
     )
+
+
+def test_sender_identity_separates_stable_id_from_display_name() -> None:
+    named = SenderIdentity(id="1956760814", name="realyuchanns")
+    unnamed = SenderIdentity(id="1956760814")
+
+    assert named.display_name == "realyuchanns"
+    assert unnamed.display_name == "1956760814"
 
 
 def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:

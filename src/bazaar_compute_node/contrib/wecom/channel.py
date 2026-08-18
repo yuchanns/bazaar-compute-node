@@ -20,6 +20,7 @@ from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
@@ -29,6 +30,7 @@ from ...core.models import (
     ChannelTargetKind,
     InboundAttachment,
     InboundMessage,
+    SenderIdentity,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -132,6 +134,9 @@ class WeComChannel(IChannel):
             "last_message_filter_reason": self._last_message_filter_reason,
             "last_event_type": self._last_event_type,
         }
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return None
 
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:
@@ -1056,7 +1061,7 @@ class WeComChannel(IChannel):
                 provider_thread_id=conversation,
                 provider_message_id=provider_message_id,
                 received_at_ms=received_at_ms,
-                sender=sender_id,
+                sender=SenderIdentity(id=sender_id),
                 message_type=message_type,
                 canonical_target=canonical_target,
                 body=content.body,

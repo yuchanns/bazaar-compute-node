@@ -11,6 +11,7 @@ from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
@@ -22,6 +23,7 @@ from ...core.models import (
     InboundMessage,
     RuntimeEvent,
     RuntimeEventState,
+    SenderIdentity,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -122,6 +124,13 @@ class TelegramChannel(IChannel):
             "typing_sessions": len(self._typing_leases),
         }
 
+    def get_identity(self) -> ChannelIdentity | None:
+        bot_id = self._bot_id
+        bot_username = self._bot_username
+        if bot_id is None or bot_username is None:
+            return None
+        return ChannelIdentity(id=str(bot_id), name=bot_username)
+
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:
             return
@@ -184,6 +193,8 @@ class TelegramChannel(IChannel):
             self._typing_runner = None
             self._api = None
             self._session = None
+            self._bot_id = None
+            self._bot_username = None
             self._typing_leases.clear()
             await session.close()
             self._state = "stopped"
@@ -214,6 +225,8 @@ class TelegramChannel(IChannel):
         session = self._session
         self._api = None
         self._session = None
+        self._bot_id = None
+        self._bot_username = None
         if session is not None and not session.closed:
             await session.close()
         self._ready.clear()
@@ -506,7 +519,7 @@ class TelegramChannel(IChannel):
         target_kind = (
             ChannelTargetKind.DM if chat_type == "private" else ChannelTargetKind.GROUP
         )
-        sender_id, sender_is_bot = self._sender_fields(message)
+        sender = self._sender(message)
         explicit_mention = (
             content.rich_mentions_agent
             or self._explicitly_mentions_current_bot(
@@ -561,7 +574,7 @@ class TelegramChannel(IChannel):
                 provider_thread_id=identity.provider_thread_id,
                 provider_message_id=str(provider_message_id),
                 received_at_ms=received_at_ms,
-                sender=sender_id,
+                sender=sender,
                 message_type=content.message_type,
                 canonical_target=(
                     f"dm:{channel_session_id}"
@@ -580,7 +593,6 @@ class TelegramChannel(IChannel):
                     "telegram_chat_id": chat_id,
                     "telegram_message_thread_id": topic_id,
                     "telegram_chat_type": chat_type,
-                    "sender_is_bot": sender_is_bot,
                     "historical": historical,
                     "activation_reason": activation_reason,
                     "rich_message": content.rich_message,
@@ -628,7 +640,7 @@ class TelegramChannel(IChannel):
         if content is None:
             return None
 
-        sender_id, sender_is_bot = self._sender_fields(reply)
+        sender = self._sender(reply)
         provider_time_s = reply.get("date")
         provider_time_ms: int | None = None
         historical: bool | None = None
@@ -652,7 +664,7 @@ class TelegramChannel(IChannel):
                 provider_thread_id=identity.provider_thread_id,
                 provider_message_id=str(provider_message_id),
                 received_at_ms=received_at_ms,
-                sender=sender_id,
+                sender=sender,
                 message_type=content.message_type,
                 canonical_target=(
                     f"dm:{channel_session_id}"
@@ -670,7 +682,6 @@ class TelegramChannel(IChannel):
                     "telegram_chat_id": identity.chat_id,
                     "telegram_message_thread_id": identity.topic_id,
                     "telegram_chat_type": chat_type,
-                    "sender_is_bot": sender_is_bot,
                     "historical": historical,
                     "activation_reason": "none",
                     "quoted_backfill": True,
@@ -745,21 +756,26 @@ class TelegramChannel(IChannel):
         return value
 
     @staticmethod
-    def _sender_fields(
-        message: Mapping[str, object],
-    ) -> tuple[str | None, bool | None]:
+    def _sender(message: Mapping[str, object]) -> SenderIdentity | None:
         sender = message.get("from")
         if isinstance(sender, Mapping):
             sender_id = sender.get("id")
             if isinstance(sender_id, int) and not isinstance(sender_id, bool):
-                is_bot = sender.get("is_bot")
-                return str(sender_id), is_bot if isinstance(is_bot, bool) else None
+                username = sender.get("username")
+                return SenderIdentity(
+                    id=str(sender_id),
+                    name=username if isinstance(username, str) and username else None,
+                )
         sender_chat = message.get("sender_chat")
         if isinstance(sender_chat, Mapping):
             sender_chat_id = sender_chat.get("id")
             if isinstance(sender_chat_id, int) and not isinstance(sender_chat_id, bool):
-                return str(sender_chat_id), None
-        return None, None
+                username = sender_chat.get("username")
+                return SenderIdentity(
+                    id=str(sender_chat_id),
+                    name=username if isinstance(username, str) and username else None,
+                )
+        return None
 
     @staticmethod
     def _text_projection(

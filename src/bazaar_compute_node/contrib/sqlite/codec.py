@@ -18,6 +18,7 @@ from ...core.models import (
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
+    SenderIdentity,
 )
 
 
@@ -101,7 +102,11 @@ def _inbound_message_from_row(
         received_at_ms=_required_non_negative_int(
             row["received_at_ms"], "received_at_ms"
         ),
-        sender=_optional_text(row["sender"], "sender"),
+        sender=(
+            SenderIdentity(name=sender)
+            if (sender := _optional_text(row["sender"], "sender")) is not None
+            else None
+        ),
         message_type=_required_text(row["message_type"], "message_type"),
         canonical_target=_required_text(row["canonical_target"], "canonical_target"),
         body=_string_value(row["body"], "body", allow_empty=True),

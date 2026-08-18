@@ -12,6 +12,7 @@ from .entities import (
     RuntimeEvent,
     RuntimeSession,
     RuntimeTurn,
+    SenderIdentity,
     StreamEvent,
 )
 from .reminder import Reminder, ReminderOccurrence
@@ -65,6 +66,7 @@ __all__ = [
     "RuntimeSession",
     "RuntimeTurn",
     "RuntimeTurnState",
+    "SenderIdentity",
     "SessionRuntimeObservation",
     "SessionRuntimeObservationSource",
     "SessionRuntimeSignal",

@@ -7,6 +7,7 @@ from bazaar_compute_node.core.orchestration.turn import inbox_notice, reminder_n
 def _rendered_instructions() -> str:
     return DeveloperInstructionContext(
         agent_name="Test Agent",
+        bot_name="provider_bot",
         agent_id="agent-test",
         runtime_session_id="session-test",
         runtime="test-runtime",
@@ -17,7 +18,7 @@ def _rendered_instructions() -> str:
 def test_developer_instructions_render_runtime_context() -> None:
     rendered = _rendered_instructions()
 
-    assert 'You are "Test Agent", an AI agent in bcn' in rendered
+    assert 'You\'re "provider_bot", A.K.A "Test Agent", an AI agent in bcn' in rendered
     assert "Agent ID: agent-test" in rendered
     assert "Runtime session ID: session-test" in rendered
     assert "Runtime: test-runtime" in rendered
@@ -26,6 +27,20 @@ def test_developer_instructions_render_runtime_context() -> None:
     assert "stdin body is optional when at least one attachment is present" in rendered
     assert "{{" not in rendered
     assert "}}" not in rendered
+
+
+def test_developer_instructions_use_config_name_without_channel_identity() -> None:
+    rendered = DeveloperInstructionContext(
+        agent_name="Test Agent",
+        bot_name=None,
+        agent_id="agent-test",
+        runtime_session_id="session-test",
+        runtime="test-runtime",
+        workspace="workspace-from-agent",
+    ).render()
+
+    assert 'You\'re "Test Agent", an AI agent in bcn' in rendered
+    assert "A.K.A" not in rendered
 
 
 def test_developer_instructions_publish_only_real_bcc_command_families() -> None:

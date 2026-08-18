@@ -94,8 +94,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             raise ValueError("executable must be a non-empty string")
         if not context.agent_id:
             raise ValueError("runtime context agent_id must be non-empty")
-        if not context.agent_name:
-            raise ValueError("runtime context agent_name must be non-empty")
         if model is not None and not model:
             raise ValueError("model must be a non-empty string or None")
         if effort is not None and not effort:
@@ -150,6 +148,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
                     agent_name=self._context.agent_name,
+                    bot_name=self._context.bot_name(),
                     agent_id=self._context.agent_id,
                     runtime_session_id=session.id,
                     runtime=session.runtime,
