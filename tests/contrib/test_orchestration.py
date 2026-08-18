@@ -44,8 +44,10 @@ from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     InboundMessage,
     OutboundDeliveryState,
+    ReminderOccurrence,
     RuntimeEvent,
     RuntimeEventState,
+    RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
     SessionRuntimeObservation,
@@ -54,6 +56,9 @@ from bazaar_compute_node.core.models import (
     SessionRuntimeState,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration.session import (
+    _RuntimeNotification,
+)
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
     IRuntime,
@@ -62,8 +67,22 @@ from bazaar_compute_node.core.runtime import (
 )
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import (
+    ENGLISH,
+    SIMPLIFIED_CHINESE,
+    Translator,
+    create_translator,
+)
 
 ACCEPTANCE_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+_ENGLISH_TRANSLATOR = create_translator(ENGLISH)
+
+
+def unchanged_error_feedback_detail(
+    _session_id: str,
+    error_message: str,
+) -> str:
+    return error_message
 
 
 class _AcceptanceRegistry(AdapterRegistry):
@@ -85,6 +104,19 @@ class _AcceptanceRegistry(AdapterRegistry):
             channel=StaticChannelBuilder(self._channel),
             runtime=self._runtime,
         )
+
+
+class _InvalidSendResultChannel(TestChannel):
+    async def send(
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del timeout
+        self.send_requests.append(request)
+        self.send_attempts.append(request)
+        return cast(ProviderCallResult[ChannelDeliveryReceipt], object())
 
 
 def make_message(
@@ -121,7 +153,11 @@ def make_budget() -> TimeoutBudget:
 
 
 async def make_node(
-    *, workspace: Callable[[], Path] = Path.cwd
+    *,
+    workspace: Callable[[], Path] = Path.cwd,
+    translator: Translator = _ENGLISH_TRANSLATOR,
+    error_feedback_detail: Callable[[str, str], str] = unchanged_error_feedback_detail,
+    channel: TestChannel | None = None,
 ) -> tuple[
     SessionOrchestrator,
     TestChannel,
@@ -129,7 +165,7 @@ async def make_node(
     MemoryStorage,
     RecordingAudit,
 ]:
-    channel = TestChannel()
+    channel = channel or TestChannel()
     runtime = TestRuntime()
     storage = MemoryStorage()
     audit = RecordingAudit()
@@ -143,6 +179,8 @@ async def make_node(
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=workspace,
+        translator=translator,
+        error_feedback_detail=error_feedback_detail,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -173,6 +211,8 @@ async def make_idle_timeout_node(
         timer_wheel=wheel,
         runtime_idle_timeout_ms=idle_timeout_ms,
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -196,6 +236,8 @@ async def test_orchestrator_uses_agent_scoped_storage_before_runtime() -> None:
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     await orchestrator.start(timeout=1)
     try:
@@ -1238,6 +1280,230 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "language", "expected_body"),
+    (
+        (
+            RuntimeEventState.FAILED,
+            ENGLISH,
+            "Execution failed: test <redacted> failure",
+        ),
+        (
+            RuntimeEventState.UNKNOWN,
+            SIMPLIFIED_CHINESE,
+            "执行状态未知：test <redacted> failure",
+        ),
+    ),
+)
+async def test_terminal_runtime_error_replies_on_original_route(
+    state: RuntimeEventState,
+    language: str,
+    expected_body: str,
+) -> None:
+    orchestrator, channel, runtime, storage, audit = await make_node(
+        translator=create_translator(language),
+        error_feedback_detail=lambda _session_id, text: text.replace(
+            "provider", "<redacted>"
+        ),
+    )
+    message = replace(
+        make_message(),
+        target_kind=ChannelTargetKind.GROUP,
+        mentions_agent=True,
+        provider_thread_id="provider-thread-7",
+        provider_message_id="provider-message-7",
+    )
+    runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED, state)))
+    try:
+        result = await orchestrator.handle_inbound(message)
+
+        assert result is not None
+        assert result.state.value == state.value
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+        request = channel.send_attempts[0]
+        assert request.body == expected_body
+        assert request.session_id == "bcn-1"
+        assert request.target_kind is ChannelTargetKind.GROUP
+        assert request.provider_thread_id == "provider-thread-7"
+        assert request.provider_reply_to_message_id == "provider-message-7"
+        assert storage.outbound_messages == {}
+        assert [
+            event.event_name
+            for event in audit.events
+            if event.event_name.startswith("runtime.error_feedback.")
+        ] == [
+            "runtime.error_feedback.started",
+            "runtime.error_feedback.sent",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_result",
+    (
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.FAILED,
+            error_kind="provider_failed",
+            error_message="feedback failed",
+        ),
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.PARTIAL,
+            value=ChannelDeliveryReceipt(provider_receipt_ref="partial-feedback"),
+            error_kind="provider_partial",
+            error_message="feedback was partial",
+        ),
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.UNKNOWN,
+            error_kind="provider_unknown",
+            error_message="feedback outcome is unknown",
+        ),
+    ),
+)
+async def test_feedback_delivery_outcome_preserves_original_runtime_turn(
+    provider_result: ProviderCallResult[ChannelDeliveryReceipt],
+) -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    channel.queue_send_result(provider_result)
+    try:
+        result = await orchestrator.handle_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+        feedback_events = [
+            event
+            for event in audit.events
+            if event.event_name.startswith("runtime.error_feedback.")
+        ]
+        assert [event.event_name for event in feedback_events] == [
+            "runtime.error_feedback.started",
+            "runtime.error_feedback.failed",
+        ]
+        assert feedback_events[-1].metadata["delivery_state"] == (
+            provider_result.status.value
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_feedback_reporter_exception_preserves_original_runtime_turn() -> None:
+    invalid_channel = _InvalidSendResultChannel()
+    orchestrator, channel, runtime, _, _ = await make_node(channel=invalid_channel)
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        result = await orchestrator.handle_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+    first_context, first_message, first_created = await orchestrator._record_inbound(
+        make_message(seq=1)
+    )
+    second_context, second_message, second_created = await orchestrator._record_inbound(
+        make_message(seq=2)
+    )
+    assert first_context is not None
+    assert second_context is not None
+    assert first_created
+    assert second_created
+    loop = asyncio.get_running_loop()
+    first_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+    second_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    runtime_queue = orchestrator._runtime_queue_for_session("bcn-1")
+    runtime_queue.put_nowait(
+        _RuntimeNotification(
+            first_message,
+            first_context,
+            first_completion,
+            1,
+        )
+    )
+    runtime_queue.put_nowait(
+        _RuntimeNotification(
+            second_message,
+            second_context,
+            second_completion,
+            2,
+        )
+    )
+    try:
+        first_result, second_result = await asyncio.gather(
+            first_completion,
+            second_completion,
+        )
+
+        assert first_result == second_result
+        assert len(runtime.started_turns) == 1
+        assert len(channel.send_attempts) == 1
+        assert channel.send_attempts[0].provider_reply_to_message_id == (
+            first_message.provider_message_id
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
+    orchestrator, channel, runtime, storage, _ = await make_node()
+    anchor = make_message(seq=1, message_id=str(uuid7()))
+    try:
+        initial_turn = await orchestrator.handle_inbound(anchor)
+        assert initial_turn is not None
+        canonical_anchor = storage.inbound_messages["bcn-1"][0]
+        occurrence_id = str(uuid7())
+        storage.reminder_occurrences[occurrence_id] = ReminderOccurrence(
+            occurrence_id=occurrence_id,
+            reminder_id=str(uuid7()),
+            owner_session_id="bcn-1",
+            occurrence_no=1,
+            anchor_message_id=canonical_anchor.message_id,
+            scheduled_for_ms=2,
+            fired_at_ms=2,
+            next_fire_at_ms=None,
+            overdue=False,
+            read_at_ms=None,
+            created_at_ms=2,
+        )
+        runtime.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+        )
+
+        await orchestrator.publish_reminder_wake("bcn-1")
+        await wait_until(lambda: len(channel.send_attempts) == 1)
+
+        request = channel.send_attempts[0]
+        assert request.session_id == canonical_anchor.session_id
+        assert request.target_kind is canonical_anchor.target_kind
+        assert request.provider_thread_id == canonical_anchor.provider_thread_id
+        assert request.provider_reply_to_message_id == (
+            canonical_anchor.provider_message_id
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_inbound_failure_rolls_back_new_session_state() -> None:
     orchestrator, _, _, storage, _ = await make_node()
     try:
@@ -1382,7 +1648,7 @@ async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() -> None:
-    orchestrator, _, runtime, _, _ = await make_node()
+    orchestrator, channel, runtime, _, _ = await make_node()
     runtime.queue_turn_plan(
         TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
     )
@@ -1421,6 +1687,7 @@ async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() ->
         assert orchestrator.runtime_session("bcn-1") == current_runtime
         assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
+        assert channel.send_attempts == []
     finally:
         if not first_task.done():
             first_task.cancel()
@@ -1519,6 +1786,8 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     runtime.command_service = second.command_service
     await second.start(timeout=1)
@@ -1882,7 +2151,7 @@ async def test_pre_start_failure_reconciles_and_retries_the_current_inbound() ->
 
 @pytest.mark.asyncio
 async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
-    orchestrator, _, runtime, storage, _ = await make_node()
+    orchestrator, channel, runtime, storage, _ = await make_node()
     try:
         first_turn = await orchestrator.handle_inbound(
             make_message(body="Please summarize the latest project update.")
@@ -1906,5 +2175,6 @@ async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
         assert len(runtime.reconciled_sessions) == 1
         assert len(runtime.started_turns) == 1
         assert len(storage.runtime_attempts) == 2
+        assert len(channel.send_attempts) == 1
     finally:
         await orchestrator.stop(timeout=1)

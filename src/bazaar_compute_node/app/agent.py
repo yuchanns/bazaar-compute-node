@@ -150,6 +150,8 @@ class AgentApplication:
             timer_wheel=self.timer_wheel,
             runtime_idle_timeout_ms=runtime_idle_timeout_ms,
             workspace=self.workspace_path,
+            translator=self.translator,
+            error_feedback_detail=self._error_feedback_detail,
             concurrency=self._concurrency,
         )
         self.reminder_service = ReminderCommandService(
@@ -439,7 +441,11 @@ class AgentApplication:
         )
         return environment
 
-    def _redact_runtime_error(self, session_id: str, error_message: str) -> str:
+    def _error_feedback_detail(
+        self,
+        session_id: str,
+        error_message: str,
+    ) -> str:
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_id must be a non-empty string")
         if not isinstance(error_message, str):

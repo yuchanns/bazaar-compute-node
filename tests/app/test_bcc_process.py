@@ -259,14 +259,14 @@ async def test_runtime_error_redaction_uses_injected_token_values(
             "session-agent-a",
             "runtime-agent-a",
         )
-        redacted = application._redact_runtime_error(
+        detail = application._error_feedback_detail(
             "session-agent-a",
             "failure "
             f"{environment['BCN_COMMAND_CAPABILITY']} "
             "service-token-value ordinary-value",
         )
 
-        assert redacted == "failure <redacted> <redacted> ordinary-value"
+        assert detail == "failure <redacted> <redacted> ordinary-value"
     finally:
         await node.stop()
 
