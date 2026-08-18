@@ -20,29 +20,29 @@ from ...core.models import (
     RuntimeAttempt,
 )
 from .codec import (
-    _bcn_session_from_row,
-    _channel_session_from_row,
-    _consumer_cursor_from_row,
-    _encode_metadata,
-    _inbound_attachment_from_row,
-    _inbound_message_from_row,
-    _outbound_message_from_row,
     _required_non_negative_int,
     _required_positive_int,
-    _runtime_attempt_from_row,
-    _validate_bcn_session_update,
-    _validate_channel_session_input,
-    _validate_channel_session_update,
-    _validate_consumer_cursor_input,
-    _validate_consumer_cursor_update,
-    _validate_cursor_bounds,
-    _validate_inbound_message_input,
-    _validate_non_empty_text,
-    _validate_non_negative_int,
-    _validate_outbound_insert,
-    _validate_outbound_message_input,
-    _validate_outbound_update,
-    _validate_positive_int,
+    bcn_session_from_row,
+    channel_session_from_row,
+    consumer_cursor_from_row,
+    encode_metadata,
+    inbound_attachment_from_row,
+    inbound_message_from_row,
+    outbound_message_from_row,
+    runtime_attempt_from_row,
+    validate_bcn_session_update,
+    validate_channel_session_input,
+    validate_channel_session_update,
+    validate_consumer_cursor_input,
+    validate_consumer_cursor_update,
+    validate_cursor_bounds,
+    validate_inbound_message_input,
+    validate_non_empty_text,
+    validate_non_negative_int,
+    validate_outbound_insert,
+    validate_outbound_message_input,
+    validate_outbound_update,
+    validate_positive_int,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +75,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        del exc_value, traceback
         connection = self._connection
         if not self._active or connection is None:
             return False
@@ -139,7 +140,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             (channel, provider_thread_id),
             "channel provider identity",
         )
-        return _channel_session_from_row(row) if row is not None else None
+        return channel_session_from_row(row) if row is not None else None
 
     async def get_channel_session(self, session_id: str) -> ChannelSession | None:
         row = await self.fetchone(
@@ -150,7 +151,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "FROM channel_sessions WHERE id = ?",
             (session_id,),
         )
-        return _channel_session_from_row(row) if row is not None else None
+        return channel_session_from_row(row) if row is not None else None
 
     async def get_bcn_session(self, session_id: str) -> BcnSession | None:
         row = await self.fetchone(
@@ -159,7 +160,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "metadata_json FROM bcn_sessions WHERE id = ?",
             (session_id,),
         )
-        return _bcn_session_from_row(row) if row is not None else None
+        return bcn_session_from_row(row) if row is not None else None
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         row = await self._fetch_one_or_conflict(
@@ -170,7 +171,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             (channel_session_id,),
             "channel-to-bcn session binding",
         )
-        return _bcn_session_from_row(row) if row is not None else None
+        return bcn_session_from_row(row) if row is not None else None
 
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         row = await self.fetchone(
@@ -178,7 +179,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "FROM runtime_attempts WHERE turn_id = ?",
             (turn_id,),
         )
-        return _runtime_attempt_from_row(row) if row is not None else None
+        return runtime_attempt_from_row(row) if row is not None else None
 
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
         row = await self.fetchone(
@@ -188,7 +189,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "WHERE session_id = ?",
             (session_id,),
         )
-        return _consumer_cursor_from_row(row) if row is not None else None
+        return consumer_cursor_from_row(row) if row is not None else None
 
     async def get_latest_inbound_seq(self, session_id: str) -> int:
         row = await self.fetchone(
@@ -220,9 +221,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         if row is None:
             return None
-        return _inbound_message_from_row(
-            row, await self._attachments(row["message_id"])
-        )
+        return inbound_message_from_row(row, await self._attachments(row["message_id"]))
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]:
         rows = await self.fetchall(
@@ -241,14 +240,14 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
-        _validate_non_empty_text(session_id, "session_id")
+        validate_non_empty_text(session_id, "session_id")
         if after_seq is not None:
-            _validate_non_negative_int(after_seq, "after_seq")
+            validate_non_negative_int(after_seq, "after_seq")
         if target is not None:
-            _validate_non_empty_text(target, "target")
+            validate_non_empty_text(target, "target")
         if around_message_id is not None:
-            _validate_non_empty_text(around_message_id, "around_message_id")
-        _validate_positive_int(limit, "limit")
+            validate_non_empty_text(around_message_id, "around_message_id")
+        validate_positive_int(limit, "limit")
 
         predicates = ["session_id = ?"]
         parameters: list[object] = [session_id]
@@ -276,7 +275,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             messages = []
             for row in rows:
                 messages.append(
-                    _inbound_message_from_row(
+                    inbound_message_from_row(
                         row, await self._attachments(row["message_id"])
                     )
                 )
@@ -344,14 +343,14 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         messages = []
         for row in rows:
             messages.append(
-                _inbound_message_from_row(
+                inbound_message_from_row(
                     row, await self._attachments(row["message_id"])
                 )
             )
         return tuple(messages)
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
-        _validate_inbound_message_input(message)
+        validate_inbound_message_input(message)
         bcn_session = await self.get_bcn_session(message.session_id)
         if bcn_session is None:
             raise ValueError(f"unknown bcn session: {message.session_id}")
@@ -384,7 +383,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "provider inbound identity",
         )
         if existing_row is not None:
-            existing = _inbound_message_from_row(
+            existing = inbound_message_from_row(
                 existing_row, await self._attachments(existing_row["message_id"])
             )
             return existing
@@ -450,7 +449,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 int(canonical.mentions_agent),
                 int(canonical.notifies_runtime),
                 canonical.provider_payload_ref,
-                _encode_metadata(canonical.metadata),
+                encode_metadata(canonical.metadata),
             ),
         )
         for ordinal, attachment in enumerate(canonical.attachments):
@@ -480,17 +479,17 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "ORDER BY ordinal",
             (message_id,),
         )
-        return tuple(_inbound_attachment_from_row(row) for row in rows)
+        return tuple(inbound_attachment_from_row(row) for row in rows)
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
-        _validate_consumer_cursor_input(cursor)
+        validate_consumer_cursor_input(cursor)
         if await self.get_bcn_session(cursor.session_id) is None:
             raise ValueError(f"unknown bcn session: {cursor.session_id}")
         latest_seq = await self.get_latest_inbound_seq(cursor.session_id)
-        _validate_cursor_bounds(cursor, latest_seq)
+        validate_cursor_bounds(cursor, latest_seq)
         existing = await self.get_consumer_cursor(cursor.session_id)
         if existing is not None:
-            _validate_consumer_cursor_update(existing, cursor)
+            validate_consumer_cursor_update(existing, cursor)
             await self.execute(
                 "UPDATE consumer_cursors SET delivered_through_seq = ?, "
                 "inbox_snapshot_seq = ?, inbox_snapshot_source = ?, "
@@ -541,10 +540,10 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             "WHERE outbound_message_id = ?",
             (outbound_message_id,),
         )
-        return _outbound_message_from_row(row) if row is not None else None
+        return outbound_message_from_row(row) if row is not None else None
 
     async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
-        _validate_outbound_message_input(message)
+        validate_outbound_message_input(message)
         bcn_session = await self.get_bcn_session(message.session_id)
         if bcn_session is None:
             raise ValueError(f"unknown bcn session: {message.session_id}")
@@ -557,7 +556,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         existing = await self.get_outbound_message(message.outbound_message_id)
         if existing is None:
             canonical = replace(message, outbound_message_id=str(uuid7()))
-            _validate_outbound_insert(canonical)
+            validate_outbound_insert(canonical)
             await self.execute(
                 "INSERT INTO outbound_messages ("
                 "outbound_message_id, command_id, session_id, "
@@ -603,7 +602,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     canonical.error_kind,
                     canonical.error_message,
                     canonical.next_action,
-                    _encode_metadata(canonical.metadata),
+                    encode_metadata(canonical.metadata),
                 ),
             )
             return canonical
@@ -619,7 +618,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             or existing.created_at_ms != message.created_at_ms
         ):
             raise ValueError("outbound message identity cannot change")
-        canonical = _validate_outbound_update(existing, message)
+        canonical = validate_outbound_update(existing, message)
         await self.execute(
             "UPDATE outbound_messages SET state = ?, fresh_check_state = ?, "
             "snapshot_seq = ?, current_inbound_seq = ?, provider_message_id = ?, "
@@ -640,14 +639,14 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 canonical.error_kind,
                 canonical.error_message,
                 canonical.next_action,
-                _encode_metadata(canonical.metadata),
+                encode_metadata(canonical.metadata),
                 canonical.outbound_message_id,
             ),
         )
         return canonical
 
     async def save_channel_session(self, session: ChannelSession) -> None:
-        _validate_channel_session_input(session)
+        validate_channel_session_input(session)
         existing = await self.get_channel_session(session.id)
         if existing is None:
             duplicate = await self.find_channel_session(
@@ -670,7 +669,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     session.provider_thread_id,
                     session.target_kind.value,
                     int(session.following),
-                    _encode_metadata(session.metadata),
+                    encode_metadata(session.metadata),
                     session.created_at_ms,
                     session.updated_at_ms,
                     session.last_inbound_at_ms,
@@ -679,7 +678,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             )
             return
 
-        session = _validate_channel_session_update(existing, session)
+        session = validate_channel_session_update(existing, session)
         await self.execute(
             "UPDATE channel_sessions SET target_kind = ?, following = ?, "
             "updated_at_ms = ?, last_inbound_at_ms = ?, last_outbound_at_ms = ?, "
@@ -690,7 +689,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 session.updated_at_ms,
                 session.last_inbound_at_ms,
                 session.last_outbound_at_ms,
-                _encode_metadata(session.metadata),
+                encode_metadata(session.metadata),
                 session.id,
             ),
         )
@@ -719,12 +718,12 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                     session.created_at_ms,
                     session.updated_at_ms,
                     session.last_activity_at_ms,
-                    _encode_metadata(session.metadata),
+                    encode_metadata(session.metadata),
                 ),
             )
             return
 
-        session = _validate_bcn_session_update(existing, session)
+        session = validate_bcn_session_update(existing, session)
         await self.execute(
             "UPDATE bcn_sessions SET updated_at_ms = ?, "
             "last_activity_at_ms = ?, metadata_json = ? "
@@ -732,12 +731,12 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             (
                 session.updated_at_ms,
                 session.last_activity_at_ms,
-                _encode_metadata(session.metadata),
+                encode_metadata(session.metadata),
                 session.id,
             ),
         )
 
-    async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
+    async def save_runtime_attempt(self, attempt: object) -> None:
         if not isinstance(attempt, RuntimeAttempt):
             raise TypeError("attempt must be a RuntimeAttempt")
         existing = await self.get_runtime_attempt(attempt.turn_id)
@@ -768,7 +767,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             raise ValueError(f"multiple rows violate {binding_name}")
         return rows[0] if rows else None
 
-    def _require_workspace(self, workspace_id: str) -> None:
+    def _require_workspace(self, _: str) -> None:
         raise RuntimeError("an Agent-scoped storage transaction is required")
 
     def _require_active_connection(self) -> aiosqlite.Connection:

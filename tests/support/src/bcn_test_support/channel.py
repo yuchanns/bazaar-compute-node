@@ -67,6 +67,7 @@ class TestChannel(IChannel):
         return self.identity if self.accepting else None
 
     async def start(self, *, timeout: float) -> None:
+        del timeout
         self.started = True
         self.accepting = True
         self.stopped = False
@@ -74,6 +75,7 @@ class TestChannel(IChannel):
         self._stop_requested = False
 
     async def stop(self, *, timeout: float) -> None:
+        del timeout
         if self._stop_requested:
             return
         self._stop_requested = True
@@ -103,6 +105,7 @@ class TestChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
+        del session_id
         if self.stream_event_error is not None:
             raise self.stream_event_error
         self.events.append(item)
@@ -120,6 +123,7 @@ class TestChannel(IChannel):
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del timeout
         self.send_requests.append(request)
         self.send_attempts.append(request)
         if not self.started or self.stopped:
@@ -145,6 +149,7 @@ class TestChannel(IChannel):
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
+        del timeout
         self.channel_approval_requests.append(request)
         approval = request.approval
         self.approval_requests.append(approval)
@@ -165,6 +170,7 @@ class StaticChannelBuilder(IChannelBuilder):
         self._channel = channel
 
     def build(self, context: ChannelContext) -> IChannel:
+        del context
         if self._channel is not None:
             return self._channel
         return TestChannel()

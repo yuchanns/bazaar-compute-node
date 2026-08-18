@@ -126,6 +126,7 @@ class _NoopApprovalHandler(IApprovalHandler):
         *,
         timeout: float,
     ) -> ApprovalResult:
+        del timeout
         raise AssertionError(f"unexpected approval request: {request.request_id}")
 
 
@@ -377,14 +378,10 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
 
 
 def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
-    async def run_command(
-        _session_id: str,
-        _arguments: Sequence[str],
-        _body: str | None,
-    ) -> None:
+    async def run_command(*_: object) -> None:
         return None
 
-    def environment(_session: RuntimeSession) -> dict[str, str]:
+    def environment(_: RuntimeSession) -> dict[str, str]:
         return {}
 
     configured = create_runtime(
@@ -429,17 +426,13 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
 
 @pytest.mark.asyncio
 async def test_codex_runtime_reports_missing_connection_before_turn_start() -> None:
-    async def run_command(
-        _session_id: str,
-        _arguments: Sequence[str],
-        _body: str | None,
-    ) -> None:
+    async def run_command(*_: object) -> None:
         return None
 
     runtime = Runtime(
         RuntimeCommandContext(
             run_command=run_command,
-            environment_for_session=lambda _session: {},
+            environment_for_session=lambda _: {},
             agent_name="Test Agent",
             bot_name=lambda: "provider_bot",
             agent_id="agent-test",
@@ -480,17 +473,13 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
 
 @pytest.mark.asyncio
 async def test_codex_runtime_declines_steer_without_active_binding() -> None:
-    async def run_command(
-        _session_id: str,
-        _arguments: Sequence[str],
-        _body: str | None,
-    ) -> None:
+    async def run_command(*_: object) -> None:
         return None
 
     runtime = Runtime(
         RuntimeCommandContext(
             run_command=run_command,
-            environment_for_session=lambda _session: {},
+            environment_for_session=lambda _: {},
             agent_name="Test Agent",
             bot_name=lambda: "provider_bot",
             agent_id="agent-test",
@@ -628,7 +617,7 @@ async def test_jsonl_supervisor_routes_only_consumed_notifications() -> None:
 
 @pytest.mark.asyncio
 async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> None:
-    def reject_notification(_message: dict[str, object]) -> bool:
+    def reject_notification(_: dict[str, object]) -> bool:
         raise AssertionError("response reached the notification router")
 
     supervisor = JsonlProcessSupervisor(
@@ -644,7 +633,7 @@ async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> 
 
 @pytest.mark.asyncio
 async def test_jsonl_supervisor_fails_pending_requests_when_router_raises() -> None:
-    def reject_notification(_message: dict[str, object]) -> bool:
+    def reject_notification(_: dict[str, object]) -> bool:
         raise ValueError("invalid notification")
 
     supervisor = JsonlProcessSupervisor(
@@ -949,7 +938,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
     runtime = Runtime(
         RuntimeCommandContext(
             run_command=unexpected_command,
-            environment_for_session=lambda _session: dict(os.environ),
+            environment_for_session=lambda _: dict(os.environ),
             agent_name="Test Agent",
             bot_name=lambda: "provider_bot",
             agent_id="agent-test",
@@ -1077,7 +1066,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         )
         context = RuntimeCommandContext(
             run_command=unexpected_command,
-            environment_for_session=lambda _session: dict(os.environ),
+            environment_for_session=lambda _: dict(os.environ),
             agent_name="Test Agent",
             bot_name=lambda: "provider_bot",
             agent_id=agent_id,

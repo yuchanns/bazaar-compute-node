@@ -35,7 +35,7 @@ def create_translator(configured_language: str | None) -> Translator:
     language = configured_language
     if language is None:
         try:
-            system_language, _encoding = locale.getlocale()
+            system_language, _ = locale.getlocale()
         except ValueError, locale.Error:
             system_language = None
         language = SIMPLIFIED_CHINESE if system_language == "zh_CN" else ENGLISH

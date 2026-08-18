@@ -618,7 +618,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         )
 
 
-def split_rich_markdown(markdown: str) -> tuple[RichMarkdownPart, ...]:
+def split_rich_markdown(markdown: object) -> tuple[RichMarkdownPart, ...]:
     if not isinstance(markdown, str):
         raise TypeError("Telegram outbound markdown must be text")
     if not markdown.strip():

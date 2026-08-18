@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
@@ -41,17 +40,13 @@ async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> Non
 
 
 def test_runtime_command_context_requires_bot_name_callable() -> None:
-    async def run_command(
-        _session_id: str,
-        _arguments: Sequence[str],
-        _body: str | None,
-    ) -> None:
+    async def run_command(*_: object) -> None:
         return None
 
     with pytest.raises(TypeError, match="bot_name"):
         RuntimeCommandContext(
             run_command=run_command,
-            environment_for_session=lambda _session: {},
+            environment_for_session=lambda _: {},
             agent_id="agent-test",
             agent_name="Test Agent",
             bot_name="provider_bot",  # type: ignore[arg-type]

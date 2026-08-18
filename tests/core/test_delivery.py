@@ -103,6 +103,7 @@ class _ErrorChannel(TestChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del request, timeout
         raise RuntimeError("connection dropped")
 
 
@@ -125,6 +126,7 @@ class _CancelledChannel(TestChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del request, timeout
         raise asyncio.CancelledError
 
 

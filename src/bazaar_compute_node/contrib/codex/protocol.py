@@ -76,7 +76,7 @@ class AppServerProtocolError(ValueError):
     """The Codex App Server response does not match its provider contract."""
 
 
-def validate_message(payload: Mapping[str, object]) -> JsonlMessage:
+def validate_message(payload: object) -> JsonlMessage:
     """Copy a mapping into the transport's provider-local message shape."""
 
     if not isinstance(payload, Mapping):

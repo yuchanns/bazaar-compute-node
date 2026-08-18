@@ -3,5 +3,10 @@
     "src",
     "tests"
   ],
-  "pythonVersion": "3.14"
+  "pythonVersion": "3.14",
+  "pythonPlatform": "All",
+  "typeCheckingMode": "basic",
+  "reportUnreachable": "warning",
+  "reportUnusedFunction": "warning",
+  "reportUnusedVariable": "warning"
 }

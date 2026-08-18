@@ -195,7 +195,7 @@ class WeComChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
-        return None
+        del item, session_id
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
@@ -775,6 +775,7 @@ class WeComChannel(IChannel):
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
+        del timeout
         return ApprovalResult(
             request_id=request.approval.request_id,
             decision=ApprovalDecision.APPROVED,

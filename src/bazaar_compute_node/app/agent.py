@@ -101,6 +101,7 @@ class AgentApplication:
                 attachments=self._attachment_materializer,
                 options=dict(configuration.channel.options),
                 workspace=self.workspace_path,
+                translator=self.translator,
             )
         )
         self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)
@@ -443,8 +444,8 @@ class AgentApplication:
 
     def _error_feedback_detail(
         self,
-        session_id: str,
-        error_message: str,
+        session_id: object,
+        error_message: object,
     ) -> str:
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_id must be a non-empty string")
@@ -490,7 +491,7 @@ class AgentApplication:
         )
         input_data = body.encode() if body is not None else None
         try:
-            _stdout, stderr = await process.communicate(input=input_data)
+            _, stderr = await process.communicate(input=input_data)
         except asyncio.CancelledError:
             if process.returncode is None:
                 process.terminate()

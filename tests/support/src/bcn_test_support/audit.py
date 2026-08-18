@@ -15,4 +15,5 @@ class RecordingAudit(IAudit):
         self.events: list[AuditEvent] = []
 
     async def append(self, event: AuditEvent, *, timeout: float) -> None:
+        del timeout
         self.events.append(event)

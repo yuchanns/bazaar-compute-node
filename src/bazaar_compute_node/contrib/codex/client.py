@@ -63,7 +63,7 @@ def build_initialize_params(
     }
 
 
-def build_fs_watch_params(path: Path, watch_id: str) -> dict[str, object]:
+def build_fs_watch_params(path: object, watch_id: str) -> dict[str, object]:
     if not isinstance(path, Path):
         raise TypeError("path must be a Path")
     if not path.is_absolute():
@@ -78,7 +78,7 @@ def build_thread_start_params(
     model: str | None = None,
     approval_policy: str | None = None,
     cwd: Path | None = None,
-    ephemeral: bool | None = None,
+    ephemeral: object = None,
 ) -> dict[str, object]:
     """Build provider-local parameters for a Codex ``thread/start`` request."""
 
@@ -509,7 +509,7 @@ def _optional_text(value: object, field_name: str) -> str | None:
     return value
 
 
-def _path_text(value: Path, field_name: str) -> str:
+def _path_text(value: object, field_name: str) -> str:
     if not isinstance(value, Path):
         raise TypeError(f"{field_name} must be a Path")
     return str(value)

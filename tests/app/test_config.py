@@ -223,7 +223,7 @@ def test_failed_atomic_replace_preserves_legacy_configuration(
     original = '[node]\nchannel = "telegram"\nruntime = "codex"\n'
     config_path.write_text(original, encoding="utf-8")
 
-    def fail_replace(*args: object) -> None:
+    def fail_replace(*_: object) -> None:
         raise OSError("replace failed")
 
     monkeypatch.setattr(config_module.os, "replace", fail_replace)

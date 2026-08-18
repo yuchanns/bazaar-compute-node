@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
 import secrets
 import sys
 import tempfile
@@ -223,7 +224,7 @@ class LocalCommandClient:
         parsed = urlsplit(endpoint)
         request = dict(payload)
         if parsed.scheme == "pipe":
-            if sys.platform != "win32":
+            if platform.system() != "Windows":
                 raise ValueError(
                     "Windows named pipe endpoints are not supported on this platform"
                 )

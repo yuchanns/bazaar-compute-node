@@ -244,7 +244,7 @@ class RichMessageRenderer:
         if text_type == "bot_command":
             command = value.get("bot_command")
             if isinstance(command, str):
-                _name, separator, target = command.rpartition("@")
+                _, separator, target = command.rpartition("@")
                 if separator and target.casefold() == self._bot_username:
                     self._mentions_agent = True
             return text or (command if isinstance(command, str) else "")

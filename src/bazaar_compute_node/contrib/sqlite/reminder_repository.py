@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 from uuid import uuid7
 
 from ...core.models import (
@@ -14,12 +15,12 @@ from ...core.models import (
 )
 from ...core.reminder import canonical_id_reference
 from .codec import (
-    _inbound_message_from_row,
     _required_non_negative_int,
     _required_text,
-    _validate_non_empty_text,
-    _validate_non_negative_int,
-    _validate_positive_int,
+    inbound_message_from_row,
+    validate_non_empty_text,
+    validate_non_negative_int,
+    validate_positive_int,
 )
 from .reminder_codec import reminder_from_row, reminder_occurrence_from_row
 from .repository import SqliteTransaction
@@ -50,7 +51,7 @@ class ReminderTransaction(SqliteTransaction):
         session_id: str,
         message_id_or_prefix: str,
     ) -> InboundMessage | None:
-        _validate_non_empty_text(session_id, "session_id")
+        validate_non_empty_text(session_id, "session_id")
         reference = canonical_id_reference(message_id_or_prefix)
         if len(reference) == 8:
             rows = await self.fetchall(
@@ -69,16 +70,14 @@ class ReminderTransaction(SqliteTransaction):
             )
         if row is None:
             return None
-        return _inbound_message_from_row(
-            row, await self._attachments(row["message_id"])
-        )
+        return inbound_message_from_row(row, await self._attachments(row["message_id"]))
 
     async def get_reminder(
         self,
         owner_session_id: str,
         reminder_id_or_prefix: str,
     ) -> Reminder | None:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         reference = canonical_id_reference(reminder_id_or_prefix)
         if len(reference) == 8:
             rows = await self.fetchall(
@@ -103,7 +102,7 @@ class ReminderTransaction(SqliteTransaction):
         owner_session_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         if not isinstance(statuses, frozenset) or not statuses:
             raise ValueError("statuses must be a non-empty frozenset")
         if not all(isinstance(status, ReminderState) for status in statuses):
@@ -118,7 +117,7 @@ class ReminderTransaction(SqliteTransaction):
         )
         return tuple(reminder_from_row(row) for row in rows)
 
-    async def save_new_reminder(self, reminder: Reminder) -> Reminder:
+    async def save_new_reminder(self, reminder: object) -> Reminder:
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if reminder.state is not ReminderState.SCHEDULED:
@@ -166,9 +165,9 @@ class ReminderTransaction(SqliteTransaction):
     async def save_reminder_transition(
         self,
         expected_revision: int,
-        reminder: Reminder,
+        reminder: object,
     ) -> Reminder:
-        _validate_positive_int(expected_revision, "expected_revision")
+        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         existing = await self.get_reminder(
@@ -216,8 +215,8 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[Reminder, ...]:
-        _validate_non_negative_int(now_ms, "now_ms")
-        _validate_positive_int(limit, "limit")
+        validate_non_negative_int(now_ms, "now_ms")
+        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
             "WHERE state = ? AND next_fire_at_ms <= ? "
@@ -232,9 +231,9 @@ class ReminderTransaction(SqliteTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None:
-        _validate_non_empty_text(agent_id, "agent_id")
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
-        _validate_non_empty_text(reminder_id, "reminder_id")
+        validate_non_empty_text(agent_id, "agent_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(reminder_id, "reminder_id")
         bound_agent_id = self._bound_agent_id()
         if bound_agent_id is not None and bound_agent_id != agent_id:
             return None
@@ -267,8 +266,8 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[OwnedReminder, ...]:
-        _validate_non_negative_int(now_ms, "now_ms")
-        _validate_positive_int(limit, "limit")
+        validate_non_negative_int(now_ms, "now_ms")
+        validate_positive_int(limit, "limit")
         predicates = ["state = ?", "next_fire_at_ms <= ?"]
         parameters: list[object] = [ReminderState.SCHEDULED.value, now_ms]
         bound_agent_id = self._bound_agent_id()
@@ -286,10 +285,10 @@ class ReminderTransaction(SqliteTransaction):
     async def save_owned_fired_occurrence(
         self,
         expected_revision: int,
-        reminder: OwnedReminder,
-        occurrence: OwnedReminderOccurrence,
+        reminder: object,
+        occurrence: object,
     ) -> OwnedReminderOccurrence:
-        _validate_positive_int(expected_revision, "expected_revision")
+        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, OwnedReminder):
             raise TypeError("reminder must be an OwnedReminder")
         if not isinstance(occurrence, OwnedReminderOccurrence):
@@ -434,10 +433,10 @@ class ReminderTransaction(SqliteTransaction):
     async def save_fired_occurrence(
         self,
         expected_revision: int,
-        reminder: Reminder,
-        occurrence: ReminderOccurrence,
+        reminder: object,
+        occurrence: object,
     ) -> ReminderOccurrence:
-        _validate_positive_int(expected_revision, "expected_revision")
+        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if not isinstance(occurrence, ReminderOccurrence):
@@ -516,8 +515,8 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
-        _validate_positive_int(limit, "limit")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_OCCURRENCE_COLUMNS} FROM reminder_occurrences "
             "WHERE owner_session_id = ? AND read_at_ms IS NULL "
@@ -527,7 +526,7 @@ class ReminderTransaction(SqliteTransaction):
         return tuple(reminder_occurrence_from_row(row) for row in rows)
 
     async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         row = await self.fetchone(
             "SELECT COUNT(*) AS pending_count FROM reminder_occurrences "
             "WHERE owner_session_id = ? AND read_at_ms IS NULL",
@@ -540,14 +539,15 @@ class ReminderTransaction(SqliteTransaction):
     async def mark_reminder_occurrences_read(
         self,
         owner_session_id: str,
-        occurrence_ids: tuple[str, ...],
+        occurrence_ids: object,
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
-        _validate_non_negative_int(read_at_ms, "read_at_ms")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
+        occurrence_ids = cast(tuple[str, ...], occurrence_ids)
         if not occurrence_ids:
             return ()
         if len(set(occurrence_ids)) != len(occurrence_ids):

@@ -120,7 +120,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._stopping = True
         connections = tuple(self._connections.items())
         self._connections.clear()
-        for _session_id, connection in connections:
+        for _, connection in connections:
             try:
                 await connection.supervisor.stop(timeout=timeout)
             except asyncio.CancelledError:

@@ -330,7 +330,7 @@ def _require_positive_int(value: int, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a positive integer")
 
 
-def _require_reminder(value: Reminder) -> None:
+def _require_reminder(value: object) -> None:
     if not isinstance(value, Reminder):
         raise TypeError("reminder must be a Reminder")
 

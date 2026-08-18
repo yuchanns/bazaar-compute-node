@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -15,6 +16,7 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
 )
+from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
 class _FakeApprovalApi:
@@ -145,3 +147,65 @@ async def test_telegram_approval_requires_live_sender_id(
 
     with pytest.raises(ValueError, match="original sender id"):
         await channel.request_approval(_request(None), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = TelegramApprovalChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+            translator=create_translator(SIMPLIFIED_CHINESE),
+        ),
+        token="token",
+    )
+    api = _FakeApprovalApi()
+    monkeypatch.setattr(channel, "_api", api)
+    monkeypatch.setattr(channel, "_bot_id", 8688828365)
+
+    task = asyncio.create_task(
+        channel.request_approval(_request("1956760814"), timeout=1)
+    )
+    while not channel._pending_approvals:
+        await asyncio.sleep(0)
+    token = next(iter(channel._pending_approvals))
+
+    prompt = api.sent[0]
+    rich_message = prompt["rich_message"]
+    assert isinstance(rich_message, Mapping)
+    assert rich_message["markdown"] == "## 需要审批\n\n**操作：** 命令执行"
+    reply_markup = prompt["reply_markup"]
+    assert isinstance(reply_markup, Mapping)
+    inline_keyboard = reply_markup["inline_keyboard"]
+    assert isinstance(inline_keyboard, list)
+    assert isinstance(inline_keyboard[0], list)
+    buttons = cast(list[Mapping[str, object]], inline_keyboard[0])
+    assert all(isinstance(button, Mapping) for button in buttons)
+    assert [button["text"] for button in buttons] == [
+        "✅ 批准",
+        "❎ 拒绝",
+    ]
+
+    await channel._handle_callback_query(
+        _callback(query_id="original-user", token=token, sender_id=1956760814)
+    )
+    result = await task
+
+    assert result.decision is ApprovalDecision.APPROVED
+    feedback = api.sent[1]["rich_message"]
+    assert isinstance(feedback, Mapping)
+    assert feedback["markdown"] == "操作已批准"
+    assert api.answers == [("original-user", "已批准")]
+
+    await channel._handle_callback_query(
+        _callback(query_id="duplicate", token=token, sender_id=1956760814)
+    )
+    assert api.answers[-1] == ("duplicate", "已经批准")
