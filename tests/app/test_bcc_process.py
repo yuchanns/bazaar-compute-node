@@ -24,7 +24,7 @@ from bazaar_compute_node.app.registry import (
 )
 from bazaar_compute_node.app.transport import LocalCommandClient
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
-from bazaar_compute_node.core.channel import ChannelContext, IChannel
+from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity, IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import InboundMessage, RuntimeSession
 from bazaar_compute_node.core.orchestration.command import OutboundAttachmentResolver
@@ -130,6 +130,28 @@ async def _wait_for_runtime_session(runtime: TestRuntime) -> RuntimeSession:
             return runtime.started_sessions[0]
         await asyncio.sleep(0.01)
     raise AssertionError("runtime session was not started")
+
+
+@pytest.mark.asyncio
+async def test_runtime_agent_name_prefers_channel_name_then_id_then_config(
+    tmp_path: Path,
+) -> None:
+    node, channels, _runtimes = _make_node(tmp_path)
+    channel = channels[AGENT_A_ID]
+    channel.identity = ChannelIdentity(id="provider-id", name="Provider Name")
+
+    await node.start()
+    try:
+        agent_name = node.agents[AGENT_A_ID]._runtime_context.agent_name
+        assert agent_name() == "Provider Name"
+
+        channel.identity = ChannelIdentity(id="provider-id")
+        assert agent_name() == "provider-id"
+
+        channel.identity = None
+        assert agent_name() == AGENT_NAMES[AGENT_A_ID]
+    finally:
+        await node.stop()
 
 
 @pytest.mark.asyncio

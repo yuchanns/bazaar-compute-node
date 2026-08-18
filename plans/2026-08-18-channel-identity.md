@@ -2,10 +2,10 @@
 
 ## 状态
 
-- 当前阶段：Plan，implementation 尚未开始。
+- 当前阶段：Code，Task 1 implementation 与验证已完成，未提交 diff 等待 review。
 - 工作分支：`f-20260818-channel-identity`。
 - 基线：`main@1f5a24f13536c1bf5c6fc19b8ad7f2afd3e41aca`。
-- 当前 plan 文件保持未提交、未推送，先等待 review。
+- Plan 已作为独立 commit `53d4e29` 推送；Task 1 尚未 commit 或 push。
 - 每个 Task 串行开发；完成实现与验证后停下 review。commit 和 push 分别等待明确授权。
 - 本计划不包含旧消息回填、schema migration、配置迁移、PR、merge、发布或部署。
 
@@ -100,7 +100,7 @@ def get_identity(self) -> ChannelIdentity | None: ...
 ```python
 @dataclass(frozen=True, slots=True)
 class RuntimeCommandContext:
-    resolve_agent_name: Callable[[], str]
+    agent_name: Callable[[], str]
     agent_id: str
     # existing fields remain unchanged
 ```
@@ -217,7 +217,7 @@ opaque random token
 1. 增加 `ChannelIdentity` 与 `IChannel.get_identity()`。
 2. `AgentScopedChannel` 委托 identity。
 3. unsupported adapter 返回 `None`；Telegram 基于已缓存 `getMe` 返回 identity。
-4. `RuntimeCommandContext` 改为 `resolve_agent_name`；Codex 在新 session 建立时解析。
+4. `RuntimeCommandContext.agent_name` 改为 callable；Codex 在新 session 建立时调用。
 5. `AgentApplication` 明确实现 `name -> id -> config name` fallback。
 
 验证：

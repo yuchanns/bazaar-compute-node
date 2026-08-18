@@ -15,6 +15,7 @@ from bazaar_compute_node.contrib.telegram.plugin import TelegramBuilder
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
+    ChannelIdentity,
     ChannelSendRequest,
 )
 from bazaar_compute_node.core.models import (
@@ -117,6 +118,12 @@ async def test_telegram_real_provider_dm_rich_markdown_and_attachment(
     try:
         bot_id = channel.health["bot_id"]
         assert isinstance(bot_id, int)
+        bot_username = channel.health["bot_username"]
+        assert isinstance(bot_username, str)
+        assert channel.get_identity() == ChannelIdentity(
+            id=str(bot_id),
+            name=bot_username,
+        )
         identity = TelegramThreadIdentity(bot_id=bot_id, chat_id=chat_id, topic_id=0)
         nonce = uuid4()
         result = await channel.send(
@@ -139,6 +146,7 @@ async def test_telegram_real_provider_dm_rich_markdown_and_attachment(
         assert result.receipt["confirmed_parts"] == 2
     finally:
         await channel.stop(timeout=5)
+    assert channel.get_identity() is None
 
 
 @pytest.mark.asyncio

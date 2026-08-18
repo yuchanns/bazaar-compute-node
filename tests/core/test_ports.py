@@ -1,14 +1,60 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 import pytest
-from bcn_test_support import TestRuntime
+from bcn_test_support import TestChannel, TestRuntime
 
+from bazaar_compute_node.core.channel import AgentScopedChannel, ChannelIdentity
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
-from bazaar_compute_node.core.runtime import RuntimeExpire
+from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeExpire
+
+
+def test_channel_identity_requires_one_safe_provider_field() -> None:
+    assert ChannelIdentity(id="provider-id") == ChannelIdentity(id="provider-id")
+    assert ChannelIdentity(name="Provider Name").name == "Provider Name"
+
+    with pytest.raises(ValueError, match="requires an id or name"):
+        ChannelIdentity()
+    with pytest.raises(ValueError, match="id must be non-empty"):
+        ChannelIdentity(id="")
+    with pytest.raises(ValueError, match="name must not contain line breaks"):
+        ChannelIdentity(name="Provider\nName")
+
+
+@pytest.mark.asyncio
+async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> None:
+    provider = TestChannel()
+    channel = AgentScopedChannel("agent-test", provider)
+    provider.identity = ChannelIdentity(id="provider-id", name="Provider Name")
+
+    assert channel.get_identity() is None
+    await channel.start(timeout=1)
+    try:
+        assert channel.get_identity() == provider.identity
+    finally:
+        await channel.stop(timeout=1)
+    assert channel.get_identity() is None
+
+
+def test_runtime_command_context_requires_agent_name_callable() -> None:
+    async def run_command(
+        _session_id: str,
+        _arguments: Sequence[str],
+        _body: str | None,
+    ) -> None:
+        return None
+
+    with pytest.raises(TypeError, match="agent_name"):
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _session: {},
+            agent_id="agent-test",
+            agent_name="Test Agent",  # type: ignore[arg-type]
+        )
 
 
 def test_timeout_budget_requires_finite_positive_boundaries() -> None:

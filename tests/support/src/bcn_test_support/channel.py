@@ -8,6 +8,7 @@ from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
     IChannelBuilder,
@@ -54,6 +55,7 @@ class TestChannel(IChannel):
         self.channel_approval_requests: list[ChannelApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
         self.events: list[RuntimeStreamItem] = []
+        self.identity: ChannelIdentity | None = None
         self.stream_events: list[StreamEvent] = []
         self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
@@ -61,6 +63,9 @@ class TestChannel(IChannel):
         self._approval_results: deque[ApprovalResult] = deque()
         self._stop_marker = object()
         self._stop_requested = False
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return self.identity if self.accepting else None
 
     async def start(self, *, timeout: float) -> None:
         self.started = True

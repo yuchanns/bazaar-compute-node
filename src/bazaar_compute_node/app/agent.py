@@ -113,7 +113,7 @@ class AgentApplication:
             run_command=self._run_runtime_command,
             environment_for_session=self._runtime_environment,
             agent_id=self.agent_id,
-            agent_name=self.name,
+            agent_name=self._agent_name,
             runtime_options=runtime_options,
             sandbox_mode=configuration.runtime.sandbox_mode,
             network_access=configuration.runtime.network_access,
@@ -205,6 +205,15 @@ class AgentApplication:
             raise
         self._started = True
         self.command_dispatcher.start_accepting()
+
+    def _agent_name(self) -> str:
+        identity = self.channel.get_identity()
+        if identity is not None:
+            if identity.name is not None:
+                return identity.name
+            if identity.id is not None:
+                return identity.id
+        return self.name
 
     async def stop(self) -> None:
         if self._stopping:

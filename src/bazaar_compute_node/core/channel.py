@@ -21,6 +21,27 @@ from .runtime import RuntimeStreamItem
 
 
 @dataclass(frozen=True, slots=True)
+class ChannelIdentity:
+    """Provider account identity exposed after Channel startup."""
+
+    id: str | None = None
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.id is None and self.name is None:
+            raise ValueError("a channel identity requires an id or name")
+        for value, field_name in ((self.id, "id"), (self.name, "name")):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"channel identity {field_name} must be non-empty")
+            if "\r" in value or "\n" in value:
+                raise ValueError(
+                    f"channel identity {field_name} must not contain line breaks"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class ChannelDeliveryReceipt:
     """Provider receipt fields safe for the core delivery audit."""
 
@@ -134,6 +155,8 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
     @property
     def health(self) -> Mapping[str, object]: ...
 
+    def get_identity(self) -> ChannelIdentity | None: ...
+
     def receive(self) -> AsyncIterator[InboundMessage]: ...
 
     def accept_turn_event(
@@ -168,6 +191,9 @@ class AgentScopedChannel(IChannel):
     @property
     def health(self) -> Mapping[str, object]:
         return self._channel.health
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return self._channel.get_identity()
 
     async def start(self, *, timeout: float) -> None:
         await self._channel.start(timeout=timeout)

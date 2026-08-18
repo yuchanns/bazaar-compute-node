@@ -391,7 +391,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=environment,
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id="agent-test",
             runtime_options={"model": TEST_MODEL, "effort": TEST_EFFORT},
             sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
@@ -402,7 +402,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=environment,
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id="agent-test",
         )
     )
@@ -438,7 +438,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id="agent-test",
         )
     )
@@ -488,7 +488,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _session: {},
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id="agent-test",
         )
     )
@@ -945,7 +945,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
         RuntimeCommandContext(
             run_command=unexpected_command,
             environment_for_session=lambda _session: dict(os.environ),
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id="agent-test",
         ),
         executable=codex,
@@ -1072,7 +1072,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         context = RuntimeCommandContext(
             run_command=unexpected_command,
             environment_for_session=lambda _session: dict(os.environ),
-            agent_name="Test Agent",
+            agent_name=lambda: "Test Agent",
             agent_id=agent_id,
         )
         first_runtime = Runtime(

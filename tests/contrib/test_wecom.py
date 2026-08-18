@@ -34,6 +34,25 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
 
+def test_wecom_does_not_claim_provider_identity(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.invalid",
+    )
+
+    assert channel.get_identity() is None
+
+
 def test_wecom_markdown_split_preserves_unicode_and_block_boundaries() -> None:
     content = ("Heading\n\nParagraph with \u4f60\u597d.\n\n" * 20).rstrip()
 

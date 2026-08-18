@@ -20,6 +20,7 @@ from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
@@ -132,6 +133,9 @@ class WeComChannel(IChannel):
             "last_message_filter_reason": self._last_message_filter_reason,
             "last_event_type": self._last_event_type,
         }
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return None
 
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:

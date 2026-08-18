@@ -11,6 +11,7 @@ from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
@@ -122,6 +123,13 @@ class TelegramChannel(IChannel):
             "typing_sessions": len(self._typing_leases),
         }
 
+    def get_identity(self) -> ChannelIdentity | None:
+        bot_id = self._bot_id
+        bot_username = self._bot_username
+        if bot_id is None or bot_username is None:
+            return None
+        return ChannelIdentity(id=str(bot_id), name=bot_username)
+
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:
             return
@@ -184,6 +192,8 @@ class TelegramChannel(IChannel):
             self._typing_runner = None
             self._api = None
             self._session = None
+            self._bot_id = None
+            self._bot_username = None
             self._typing_leases.clear()
             await session.close()
             self._state = "stopped"
@@ -214,6 +224,8 @@ class TelegramChannel(IChannel):
         session = self._session
         self._api = None
         self._session = None
+        self._bot_id = None
+        self._bot_username = None
         if session is not None and not session.closed:
             await session.close()
         self._ready.clear()
