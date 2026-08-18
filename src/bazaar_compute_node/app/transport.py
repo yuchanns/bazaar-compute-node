@@ -206,8 +206,12 @@ class LocalCommandClient:
     ) -> Mapping[str, object]:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
+        request = dict(payload)
+        agent_id = os.environ.get("BCN_AGENT_ID")
+        if agent_id and "agent_id" not in request:
+            request["agent_id"] = agent_id
         return await asyncio.wait_for(
-            LocalCommandClient._request(endpoint, payload),
+            LocalCommandClient._request(endpoint, request),
             timeout=timeout,
         )
 

@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
@@ -26,6 +27,7 @@ from .command import CommandDispatchError
 from .config import AgentConfiguration
 from .registry import AgentAdapterFactories
 from .reminder_dispatch import CommandDispatcher
+from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 CommandRecord = tuple[str, tuple[str, ...]]
 
@@ -45,6 +47,14 @@ _PLATFORM_ENVIRONMENT = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _SessionCapabilityBinding:
+    agent_id: str
+    bcn_session_id: str
+    runtime_session_id: str
+    capability: str
+
+
 class AgentApplication:
     """Process-local composition for one configured BCN Agent."""
 
@@ -59,7 +69,6 @@ class AgentApplication:
         reminder_concurrency: ISessionConcurrency,
         reminder_poke: Callable[[], None],
         endpoint: Callable[[], str],
-        wrapper_path: Path,
         timeout_budget: TimeoutBudget,
     ) -> None:
         self.configuration = configuration
@@ -70,9 +79,9 @@ class AgentApplication:
         self.timer_wheel = timer_wheel
         self.timeout_budget = timeout_budget
         self._endpoint = endpoint
-        self._wrapper_path = wrapper_path
+        self._wrapper_path: Path | None = None
         self.command_log: list[CommandRecord] = []
-        self._session_capabilities: dict[str, tuple[str, str]] = {}
+        self._session_capabilities: dict[str, _SessionCapabilityBinding] = {}
         self._concurrency = SessionLockRegistry()
         self._started = False
         self._stopping = False
@@ -104,6 +113,7 @@ class AgentApplication:
             run_command=self._run_runtime_command,
             environment_for_session=self._runtime_environment,
             agent_id=self.agent_id,
+            agent_name=self.name,
             runtime_options=runtime_options,
             sandbox_mode=configuration.runtime.sandbox_mode,
             network_access=configuration.runtime.network_access,
@@ -142,14 +152,20 @@ class AgentApplication:
             concurrency=reminder_concurrency,
             poke=reminder_poke,
         )
-        control_handler = None
-        if factories.control is not None:
-            control_handler = factories.control(self._adapter_context())
+        self._provider_control_handler = (
+            factories.control(self._adapter_context())
+            if factories.control is not None
+            else None
+        )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             reminder_service=self.reminder_service,
             timeout_budget=self.timeout_budget,
-            control_handler=control_handler,
+            control_handler=(
+                self._handle_control
+                if self._provider_control_handler is not None
+                else None
+            ),
             session_binding_validator=self._validate_session_binding,
         )
 
@@ -174,8 +190,13 @@ class AgentApplication:
         )
         if os.name != "nt":
             await asyncio.to_thread(workspace.chmod, 0o700)
-        await self._attachment_materializer.reconcile()
         try:
+            self._wrapper_path = await asyncio.to_thread(
+                install_bcc_wrapper,
+                workspace / ".bcn" / "bin",
+                agent_id=self.agent_id,
+            )
+            await self._attachment_materializer.reconcile()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
@@ -202,6 +223,10 @@ class AgentApplication:
             await self.orchestrator.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+        try:
+            await self._cleanup_bcc_wrapper()
         except BaseException as error:  # noqa: BLE001
             errors.append(error)
         self._session_capabilities.clear()
@@ -244,7 +269,18 @@ class AgentApplication:
             )
         except BaseException as error:
             self._logger.debug("orchestrator cleanup failed", exc_info=error)
+        try:
+            await self._cleanup_bcc_wrapper()
+        except BaseException as error:
+            self._logger.debug("bcc wrapper cleanup failed", exc_info=error)
         self._session_capabilities.clear()
+
+    async def _cleanup_bcc_wrapper(self) -> None:
+        wrapper_path = self._wrapper_path
+        if wrapper_path is None:
+            return
+        await asyncio.to_thread(remove_bcc_wrapper, wrapper_path)
+        self._wrapper_path = None
 
     async def _referenced_attachment_paths(self) -> set[str]:
         async with self.storage.transaction() as transaction:
@@ -262,11 +298,36 @@ class AgentApplication:
             "is_started": lambda: self._started,
         }
 
+    async def _handle_control(
+        self,
+        request: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        session_id = request.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise CommandDispatchError(
+                "SESSION_REQUIRED",
+                "session_id must be a non-empty string",
+            )
+        await self._validate_session_binding(session_id, request)
+        handler = self._provider_control_handler
+        if handler is None:
+            raise CommandDispatchError(
+                "INVALID_COMMAND",
+                "control operation is not supported",
+            )
+        return await handler(request)
+
     async def _validate_session_binding(
         self,
         session_id: str,
         request: Mapping[str, object],
     ) -> None:
+        request_agent_id = request.get("agent_id")
+        if request_agent_id != self.agent_id:
+            raise CommandDispatchError(
+                "SESSION_BINDING_FAILED",
+                "Agent binding is invalid",
+            )
         runtime_session_id = request.get("runtime_session_id")
         session_capability = request.get("session_capability")
         async with self.storage.transaction() as transaction:
@@ -281,13 +342,15 @@ class AgentApplication:
                 "SESSION_BINDING_FAILED",
                 "runtime session binding is invalid",
             )
-        capability_binding = self._session_capabilities.get(session_id)
+        binding = self._session_capabilities.get(session_id)
         if (
-            capability_binding is None
-            or capability_binding[0] != runtime_session.id
+            binding is None
+            or binding.agent_id != self.agent_id
+            or binding.bcn_session_id != session_id
+            or binding.runtime_session_id != runtime_session.id
             or not isinstance(session_capability, str)
             or not hmac.compare_digest(
-                session_capability.encode(), capability_binding[1].encode()
+                session_capability.encode(), binding.capability.encode()
             )
         ):
             raise CommandDispatchError(
@@ -313,10 +376,18 @@ class AgentApplication:
             raise ValueError("session_id must be a non-empty string")
         if not runtime_session_id:
             raise ValueError("runtime_session_id must be a non-empty string")
-        capability_binding = self._session_capabilities.get(session_id)
-        if capability_binding is None or capability_binding[0] != runtime_session_id:
-            capability_binding = (runtime_session_id, secrets.token_urlsafe(32))
-            self._session_capabilities[session_id] = capability_binding
+        wrapper_path = self._wrapper_path
+        if wrapper_path is None:
+            raise RuntimeError("bcc wrapper is not installed")
+        binding = self._session_capabilities.get(session_id)
+        if binding is None or binding.runtime_session_id != runtime_session_id:
+            binding = _SessionCapabilityBinding(
+                agent_id=self.agent_id,
+                bcn_session_id=session_id,
+                runtime_session_id=runtime_session_id,
+                capability=secrets.token_urlsafe(32),
+            )
+            self._session_capabilities[session_id] = binding
         allowed = set(_PLATFORM_ENVIRONMENT)
         for name in self.runtime.environment_variable_names():
             if not _ENVIRONMENT_NAME.fullmatch(name):
@@ -332,14 +403,15 @@ class AgentApplication:
             name: os.environ[name] for name in sorted(allowed) if os.environ.get(name)
         }
         environment["PATH"] = os.pathsep.join(
-            (str(self._wrapper_path.parent), environment.get("PATH", os.defpath))
+            (str(wrapper_path.parent), environment.get("PATH", os.defpath))
         )
         environment.update(
             {
+                "BCN_AGENT_ID": self.agent_id,
                 "BCN_ENDPOINT": self._endpoint(),
                 "BCN_SESSION_ID": session_id,
                 "BCN_RUNTIME_SESSION_ID": runtime_session_id,
-                "BCN_COMMAND_CAPABILITY": capability_binding[1],
+                "BCN_COMMAND_CAPABILITY": binding.capability,
             }
         )
         return environment
@@ -356,6 +428,9 @@ class AgentApplication:
             not isinstance(argument, str) for argument in arguments
         ):
             raise ValueError("runtime command arguments must be non-empty text")
+        wrapper_path = self._wrapper_path
+        if wrapper_path is None:
+            raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((session_id, tuple(arguments)))
         runtime_session = self.orchestrator.runtime_session(session_id)
         if runtime_session is None:
@@ -365,7 +440,7 @@ class AgentApplication:
             runtime_session.id,
         )
         process = await asyncio.create_subprocess_exec(
-            str(self._wrapper_path),
+            str(wrapper_path),
             *arguments,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

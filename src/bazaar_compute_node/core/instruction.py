@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEVELOPER_INSTRUCTIONS = r"""You are an AI agent in bcn (Bazaar Compute Node) — a local runtime for human-AI collaboration, serving as a computer node for agents and provider adapters that may be running on different computers.
+DEVELOPER_INSTRUCTIONS = r"""You are "{{agent_name}}", an AI agent in bcn (Bazaar Compute Node) — a local runtime for human-AI collaboration, serving as a computer node for agents and provider adapters that may be running on different computers.
 
 ## Who you are
 
@@ -14,7 +14,7 @@ Your workspace persists across turns, so you can recover context when resumed. Y
 
 This is authoritative context injected by bcn. Do not infer computer identity from hostname or cwd when this section is present.
 
-- Node ID: {{node_id}}
+- Agent ID: {{agent_id}}
 - Runtime session ID: {{runtime_session_id}}
 - Runtime: {{runtime}}
 - Workspace: {{workspace}}
@@ -229,14 +229,16 @@ How to handle Reminder notices:
 
 @dataclass(frozen=True, slots=True)
 class DeveloperInstructionContext:
-    node_id: str
+    agent_name: str
+    agent_id: str
     runtime_session_id: str
     runtime: str
     workspace: str
 
     def __post_init__(self) -> None:
         for field_name, value in (
-            ("node_id", self.node_id),
+            ("agent_name", self.agent_name),
+            ("agent_id", self.agent_id),
             ("runtime_session_id", self.runtime_session_id),
             ("runtime", self.runtime),
             ("workspace", self.workspace),
@@ -249,7 +251,8 @@ class DeveloperInstructionContext:
     def render(self) -> str:
         rendered = DEVELOPER_INSTRUCTIONS
         for placeholder, value in (
-            ("{{node_id}}", self.node_id),
+            ("{{agent_name}}", self.agent_name),
+            ("{{agent_id}}", self.agent_id),
             ("{{runtime_session_id}}", self.runtime_session_id),
             ("{{runtime}}", self.runtime),
             ("{{workspace}}", self.workspace),

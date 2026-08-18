@@ -94,6 +94,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
             raise ValueError("executable must be a non-empty string")
         if not context.agent_id:
             raise ValueError("runtime context agent_id must be non-empty")
+        if not context.agent_name:
+            raise ValueError("runtime context agent_name must be non-empty")
         if model is not None and not model:
             raise ValueError("model must be a non-empty string or None")
         if effort is not None and not effort:
@@ -147,7 +149,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
             connection = await self._open_connection(session, timeout=timeout)
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
-                    node_id=self._context.agent_id,
+                    agent_name=self._context.agent_name,
+                    agent_id=self._context.agent_id,
                     runtime_session_id=session.id,
                     runtime=session.runtime,
                     workspace=str(connection.workspace),
@@ -546,7 +549,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
         executable = await asyncio.to_thread(shutil.which, self._executable)
         if executable is None:
             raise FileNotFoundError(f"Codex executable not found: {self._executable}")
-        workspace = resolve_workspace_dir(session.workspace_id)
+        if session.workspace_id != self._context.agent_id:
+            raise ValueError("runtime session workspace does not match Agent identity")
+        workspace = resolve_workspace_dir(self._context.agent_id)
         await asyncio.to_thread(
             workspace.mkdir,
             parents=True,

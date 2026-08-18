@@ -92,6 +92,7 @@ async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> N
                     "kind": "command",
                     "resource": "message",
                     "command": "check",
+                    "agent_id": AGENT_ID,
                     "session_id": "blocked-by-storage-lock",
                 }
             )

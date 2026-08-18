@@ -20,7 +20,6 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
-from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +84,6 @@ class NodeApplication:
         self.agents: dict[str, AgentApplication] = {}
         self.agent_startup_results: dict[str, AgentStartupResult] = {}
         self._registry = registry or AdapterRegistry()
-        self._wrapper_path: Path | None = None
         self._started = False
         self._ready = False
         self._accepting = False
@@ -106,10 +104,6 @@ class NodeApplication:
         await asyncio.to_thread(self.data_dir.mkdir, parents=True, exist_ok=True)
         if os.name != "nt":
             await asyncio.to_thread(self.data_dir.chmod, 0o700)
-        self._wrapper_path = await asyncio.to_thread(
-            install_bcc_wrapper,
-            self.data_dir / "bin",
-        )
         try:
             await self.storage.start(timeout=self.timeout_budget.startup_seconds)
             await self.timer_wheel.start()
@@ -151,9 +145,6 @@ class NodeApplication:
                 storage=self.configuration.storage,
             )
             storage_scope = self.storage.scope(configuration.id, configuration.name)
-            wrapper_path = self._wrapper_path
-            if wrapper_path is None:
-                raise RuntimeError("bcc wrapper is not installed")
             application = AgentApplication(
                 configuration=configuration,
                 factories=factories,
@@ -163,7 +154,6 @@ class NodeApplication:
                 reminder_concurrency=self._reminder_concurrency,
                 reminder_poke=self.reminder_scheduler.poke,
                 endpoint=lambda: self.endpoint,
-                wrapper_path=wrapper_path,
                 timeout_budget=self.timeout_budget,
             )
             await application.start()
@@ -239,10 +229,6 @@ class NodeApplication:
             await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
         except Exception as error:  # noqa: BLE001
             errors.append(f"storage.stop:{type(error).__name__}")
-        try:
-            await self._cleanup_bcc_wrapper()
-        except Exception as error:  # noqa: BLE001
-            errors.append(f"bcc.cleanup:{type(error).__name__}")
         self._started = False
         self._stopped.set()
         if errors:
@@ -296,12 +282,7 @@ class NodeApplication:
                     "ok": True,
                     "result": {"accepted": True, "operation": "shutdown"},
                 }
-            return {
-                "ok": False,
-                "code": "INVALID_COMMAND",
-                "error": "control operation is not supported",
-            }
-        if kind != "command":
+        elif kind != "command":
             return {
                 "ok": False,
                 "code": "INVALID_COMMAND",
@@ -313,30 +294,21 @@ class NodeApplication:
                 "code": "SERVICE_NOT_READY",
                 "error": "command service is not accepting requests",
             }
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        agent_id = request.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id:
             return {
                 "ok": False,
-                "code": "SESSION_REQUIRED",
-                "error": "session_id must be a non-empty string",
+                "code": "AGENT_REQUIRED",
+                "error": "agent_id must be a non-empty string",
             }
-        owner: AgentApplication | None = None
-        for agent in self.agents.values():
-            if await agent.has_session(session_id):
-                if owner is not None:
-                    return {
-                        "ok": False,
-                        "code": "SESSION_BINDING_FAILED",
-                        "error": "session is bound to multiple Agents",
-                    }
-                owner = agent
-        if owner is None:
+        agent = self.agents.get(agent_id)
+        if agent is None or not agent.started:
             return {
                 "ok": False,
-                "code": "SESSION_NOT_FOUND",
-                "error": f"unknown bcn session: {session_id}",
+                "code": "AGENT_NOT_AVAILABLE",
+                "error": "Agent is not available",
             }
-        return await owner.dispatch(request)
+        return await agent.dispatch(request)
 
     def _health(self) -> dict[str, object]:
         records: list[dict[str, object]] = []
@@ -403,17 +375,6 @@ class NodeApplication:
             await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
         except BaseException as error:
             self._logger.debug("storage cleanup failed", exc_info=error)
-        try:
-            await self._cleanup_bcc_wrapper()
-        except BaseException as error:
-            self._logger.debug("bcc wrapper cleanup failed", exc_info=error)
-
-    async def _cleanup_bcc_wrapper(self) -> None:
-        wrapper_path = self._wrapper_path
-        if wrapper_path is None:
-            return
-        await asyncio.to_thread(remove_bcc_wrapper, wrapper_path)
-        self._wrapper_path = None
 
     def _log(self, event_name: str, **metadata: object) -> None:
         self._logger.info(

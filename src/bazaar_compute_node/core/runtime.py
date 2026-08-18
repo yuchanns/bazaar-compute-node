@@ -50,6 +50,7 @@ class RuntimeCommandContext:
     run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]]
     agent_id: str
+    agent_name: str
     runtime_options: Mapping[str, str] = field(default_factory=dict)
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
@@ -57,8 +58,14 @@ class RuntimeCommandContext:
     client_info: ClientInfo = CLIENT_INFO
 
     def __post_init__(self) -> None:
-        if not isinstance(self.agent_id, str) or not self.agent_id:
-            raise ValueError("agent_id must be a non-empty string")
+        for value, field_name in (
+            (self.agent_id, "agent_id"),
+            (self.agent_name, "agent_name"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be a non-empty string")
+            if "\r" in value or "\n" in value:
+                raise ValueError(f"{field_name} must not contain line breaks")
 
 
 class IRuntimeTurnStream(Protocol):
