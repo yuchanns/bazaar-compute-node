@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
+from .app.agent_management import build_agent_parser, run_agent_command
 from .app.application import NodeApplication
 from .app.config import (
     DEFAULT_AUDIT,
@@ -42,8 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("start", "stop", "restart", "run"),
-        help="Daemon command; providing node options without a command means start.",
+        choices=("start", "stop", "restart", "run", "agent"),
+        help=(
+            "Daemon command or Agent configuration management; providing node "
+            "options without a command means start."
+        ),
     )
     parser.add_argument("--storage")
     parser.add_argument("--audit")
@@ -406,6 +410,8 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
             parser.print_help()
             return 0
         command = "start"
+    if command == "agent":
+        return await asyncio.to_thread(run_agent_command, args, parser)
     if command == "run" or (command == "start" and args.foreground):
         return await _run_node(args, parser)
     if command == "start":
@@ -421,10 +427,18 @@ def _prepare_cli_arguments(
     argv: Sequence[str] | None,
 ) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, remaining = parser.parse_known_args(argv)
+    if args.command == "agent":
+        agent_args = build_agent_parser().parse_args(remaining)
+        vars(args).update(vars(agent_args))
+    elif remaining:
+        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
+
     if args.config is not None:
         args.config = args.config.expanduser().resolve()
 
+    if args.command == "agent":
+        return parser, args
     if args.command == "stop":
         _apply_control_configuration(args, parser)
         return parser, args

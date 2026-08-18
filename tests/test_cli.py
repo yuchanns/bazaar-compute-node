@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import version
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -13,6 +15,7 @@ from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
     _daemon_command,
     build_parser,
+    main,
 )
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.paths import resolve_data_dir
@@ -255,3 +258,288 @@ def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
     _apply_runtime_configuration(args, parser)
 
     assert args.configuration.agents == ()
+
+
+def test_agent_list_reports_empty_configuration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+
+    assert main(["agent", "list", "--config", str(config_path)]) == 0
+
+    assert capsys.readouterr().out == "No agents configured.\n"
+
+
+def test_agent_add_preserves_typed_options_and_round_trips(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                "channel.token_env=BCN_TELEGRAM_TIFA_TOKEN",
+                "--set",
+                "channel.bot_id=bot-id",
+                "--set",
+                "runtime.model=gpt-5.6",
+                "--set",
+                "runtime.network_access=false",
+                "--set",
+                "runtime.idle_timeout=600",
+                "--set",
+                'runtime.env_include=["CODEX_HOME"]',
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "Agent added id=" in output
+    assert "Run `bcn restart` to apply." in output
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    agent = document["agent"][0]
+    assert UUID(agent["id"]).version == 7
+    assert agent["name"] == "Tifa"
+    assert agent["channel"] == {
+        "kind": "telegram",
+        "bot_id": "bot-id",
+        "token_env": "BCN_TELEGRAM_TIFA_TOKEN",
+    }
+    assert agent["runtime"] == {
+        "kind": "codex",
+        "model": "gpt-5.6",
+        "sandbox_mode": "workspace-write",
+        "network_access": False,
+        "idle_timeout": 600.0,
+        "env_include": ["CODEX_HOME"],
+    }
+
+
+def test_agent_add_rejects_duplicate_and_kind_options(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+    original = config_path.read_text(encoding="utf-8")
+
+    for option in ("runtime.model=first", "runtime.kind=codex"):
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "agent",
+                    "add",
+                    "--config",
+                    str(config_path),
+                    "--name",
+                    "Tifa",
+                    "--channel",
+                    "telegram",
+                    "--runtime",
+                    "codex",
+                    "--set",
+                    option,
+                    "--set",
+                    "runtime.model=second"
+                    if option.startswith("runtime.model")
+                    else "runtime.kind=other",
+                ]
+            )
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_commands_reject_daemon_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "agent",
+                "list",
+                "--config",
+                str(config_path),
+                "--storage",
+                "test",
+            ]
+        )
+
+
+def test_agent_add_rejects_option_key_edge_whitespace(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                "runtime.model =gpt-5.6",
+            ]
+        )
+
+    assert not config_path.exists()
+
+
+def test_agent_add_rejects_name_conflict_without_writing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    add_arguments = [
+        "agent",
+        "add",
+        "--config",
+        str(config_path),
+        "--name",
+        "Tifa",
+        "--channel",
+        "telegram",
+        "--runtime",
+        "codex",
+    ]
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+    original = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(add_arguments)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_remove_by_name_and_id_only_changes_configuration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "2"\n', encoding="utf-8")
+    add_arguments = [
+        "agent",
+        "add",
+        "--config",
+        str(config_path),
+        "--name",
+        "Tifa",
+        "--channel",
+        "telegram",
+        "--runtime",
+        "codex",
+    ]
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+    first_id = tomllib.loads(config_path.read_text(encoding="utf-8"))["agent"][0]["id"]
+    add_arguments[add_arguments.index("Tifa")] = "Aerith"
+    assert main(add_arguments) == 0
+    capsys.readouterr()
+
+    assert main(["agent", "remove", "Aerith", "--config", str(config_path)]) == 0
+    remove_output = capsys.readouterr().out
+    assert "Workspace and durable data were preserved." in remove_output
+    assert main(["agent", "remove", first_id, "--config", str(config_path)]) == 0
+    assert tomllib.loads(config_path.read_text(encoding="utf-8")).get("agent", []) == []
+
+
+def test_agent_remove_rejects_ambiguous_id_or_name_selector(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    first_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+    second_id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
+    config_path.write_text(
+        f"""
+version = "2"
+
+[[agent]]
+id = "{first_id}"
+name = "Tifa"
+
+[agent.channel]
+kind = "telegram"
+
+[agent.runtime]
+kind = "codex"
+
+[[agent]]
+id = "{second_id}"
+name = "{first_id}"
+
+[agent.channel]
+kind = "wecom"
+
+[agent.runtime]
+kind = "codex"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    original = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(["agent", "remove", first_id, "--config", str(config_path)])
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_agent_add_upgrades_legacy_configuration_before_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[node]
+channel = "wecom"
+runtime = "codex"
+
+[channel.wecom]
+bot_id = "bot-id"
+
+[runtime]
+model = "gpt-5.6"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+            ]
+        )
+        == 0
+    )
+
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert document["version"] == "2"
+    assert [agent["name"] for agent in document["agent"]] == ["default", "Tifa"]

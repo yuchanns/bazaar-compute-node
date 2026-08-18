@@ -597,6 +597,43 @@ Focused tests：foreground/background start、stop/restart、v1 first startup �
 
 完成条件与停止点：用户可从旧单 Agent 安装一次启动升级到 v2，并在一个 daemon 内运行多个隔离 Agent；提交 Task 1.6 diff，停下等待 final review，不创建 PR 或发布，除非收到明确指令。
 
+### Task 1.7：Agent configuration management CLI
+
+修改文件：
+
+- `src/bazaar_compute_node/cli.py`
+- `README.md`
+- `tests/test_cli.py`
+
+实施动作：
+
+1. 新增 `bcn agent list`，直接读取 authoritative `config.toml`，不依赖 daemon 是否运行；按配置顺序输出每个 Agent 的 `id / name / channel / runtime`，零 Agent 时明确报告为空。
+2. 新增 generic `bcn agent add`：
+
+   ```text
+   bcn agent add \
+     --name Tifa \
+     --channel telegram \
+     --runtime codex \
+     --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN \
+     --set runtime.model=gpt-5.6 \
+     --set runtime.idle_timeout=600
+   ```
+
+   `agent.id` 由 CLI 生成新的 canonical UUIDv7；不提供手工覆盖 ID 的参数。`--name`、`--channel`、`--runtime` 必填。
+3. `--set` contract 固定为 `<channel|runtime>.<key>=<value>`。`channel.kind` 和 `runtime.kind` 禁止通过 `--set` 覆盖。值先按 TOML value 解析，因此 `600`、`true`、数组和显式引号字符串保留类型；若不是合法 TOML value，则原样视为字符串，因此 `BCN_TELEGRAM_TIFA_TOKEN` 与 `gpt-5.6` 可不加引号。需要数字形字符串时使用显式 TOML 引号。
+4. Runtime 标准 key `model`、`effort`、`sandbox_mode`、`network_access`、`idle_timeout`、`env_include` 映射到现有 `RuntimeConfiguration` typed fields；其他 `runtime.*` 进入 provider options。所有 `channel.*`（除 `kind`）进入 Channel options，并继续复用现有 `_env` environment-name validation。
+5. 重复 `--set` 同一个 key、非法 scope/key、Agent name/id 冲突、Runtime typed field 类型错误都 fail closed；构造完整 `NodeConfiguration` 后才允许写回。
+6. 新增 `bcn agent remove <id-or-name>`。selector 对 Agent ID 和 Agent name 做 exact match；零匹配报错，多匹配视为歧义并拒绝。remove 只删除 config definition，绝不删除 `~/.bcn/workspaces/{agent_id}`、SQLite durable rows、attachments 或 Reminder history。
+7. `add/remove` 复用现有 v2 serializer 与 atomic config write（0600 temp、fsync、`os.replace`、parent fsync）。配置是唯一 authority；不新增 Agent registry table。
+8. `add/remove` 成功后明确输出 `Run bcn restart to apply.`。不自动 restart、不尝试 hot reload；daemon 未运行时同样只更新配置。
+9. `bcn agent list/add/remove` 支持 `--config` 指向非默认配置；读取 v1 配置时继续走现有一次性自动 v1 -> v2 migration，再执行 mutation。
+10. README Quick Start 增加通过 CLI 管理 Agent 的推荐流程，同时保留直接编辑 v2 TOML 作为高级用法。
+
+Focused tests：零 Agent list、多个 Agent list、generic add typed `--set`、provider option、重复 key、非法 scope、name 冲突、remove by id、remove by name、ambiguous selector、remove preserves workspace/data、custom `--config`、v1 config 首次 agent mutation 自动升级、mutation 后 serializer round-trip。
+
+完成条件与停止点：用户不再需要手工编辑 TOML 才能完成 Agent 的基本增删查；CLI 写入仍遵守 v2 validation、atomic persistence 与 restart-based lifecycle。提交 Task 1.7 diff，停下等待 review，不创建 PR 或发布，除非收到明确指令。
+
 ## 最终验证矩阵
 
 功能与隔离：
@@ -638,7 +675,6 @@ uv run pyright
 ## 明确不做
 
 - 不实现 Agent 配置热加载或 filesystem watch。
-- 不实现 `bcn agent add/remove/list`；本计划只为后续命令稳定定义 v2 schema 和 Agent ID contract。
 - 不实现一个 Channel 消息由多个 Agent 协商、竞争、handoff 或共同处理。
 - 不实现跨 Agent shared workspace、shared runtime session、shared capability 或 shared conversation。
 - 不为 Agent 增加独立 OS process、socket、database 或 scheduler。
