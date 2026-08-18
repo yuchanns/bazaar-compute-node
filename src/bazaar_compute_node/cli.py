@@ -5,7 +5,7 @@ import asyncio
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -155,6 +155,38 @@ def _load_shared_factories(
         parser.error(str(error))
 
 
+def _print_agent_startup_records(records: Sequence[Mapping[str, object]]) -> None:
+    for record in records:
+        line = (
+            f"agent startup id={record.get('agent_id')} name={record.get('name')} "
+            f"status={record.get('status')} channel={record.get('channel')} "
+            f"runtime={record.get('runtime')}"
+        )
+        error_type = record.get("error_type")
+        error = record.get("error")
+        if isinstance(error_type, str) and error_type:
+            line += f" error_type={error_type}"
+        if isinstance(error, str) and error:
+            line += f" error={error}"
+        print(line, flush=True)
+
+
+def _health_count(health: Mapping[str, object], field_name: str) -> int:
+    value = health.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"daemon health contains invalid {field_name}")
+    return value
+
+
+def _health_agents(health: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    value = health.get("agents")
+    if not isinstance(value, list) or not all(
+        isinstance(item, Mapping) for item in value
+    ):
+        raise RuntimeError("daemon health contains invalid agents")
+    return tuple(value)
+
+
 async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     configuration = _configuration(parser, args)
     shared_factories = await asyncio.to_thread(
@@ -170,6 +202,12 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         endpoint_path=_endpoint_path(args, data_dir),
     )
     await node.start()
+    records = tuple(
+        result.as_health_record()
+        for agent in configuration.agents
+        if (result := node.agent_startup_results.get(agent.id)) is not None
+    )
+    _print_agent_startup_records(records)
     print(
         f"bcn ready configured={len(configuration.agents)} "
         f"started={len(node.agents)} "
@@ -230,7 +268,11 @@ def _spawn_daemon(
         )
 
 
-async def _endpoint_is_reachable(endpoint: str, *, timeout: float) -> bool:
+async def _node_health(
+    endpoint: str,
+    *,
+    timeout: float,
+) -> Mapping[str, object] | None:
     try:
         response = await LocalCommandClient.request(
             endpoint,
@@ -238,20 +280,28 @@ async def _endpoint_is_reachable(endpoint: str, *, timeout: float) -> bool:
             timeout=timeout,
         )
     except Exception:  # noqa: BLE001
-        return False
-    return response.get("ok") is True
+        return None
+    if response.get("ok") is not True:
+        return None
+    result = response.get("result")
+    return result if isinstance(result, Mapping) else None
 
 
-async def _wait_for_endpoint(
+async def _endpoint_is_reachable(endpoint: str, *, timeout: float) -> bool:
+    return await _node_health(endpoint, timeout=timeout) is not None
+
+
+async def _wait_for_node_ready(
     endpoint: str,
     process: subprocess.Popen[bytes],
     *,
     timeout: float,
-) -> None:
+) -> Mapping[str, object]:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        if await _endpoint_is_reachable(endpoint, timeout=0.5):
-            return
+        health = await _node_health(endpoint, timeout=0.5)
+        if health is not None and health.get("ready") is True:
+            return health
         if process.poll() is not None:
             raise RuntimeError(
                 f"daemon exited before becoming ready; see "
@@ -274,7 +324,7 @@ async def _start_daemon(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    configuration = _configuration(parser, args)
+    _configuration(parser, args)
     await asyncio.to_thread(_load_shared_factories, args, parser)
     data_dir = await asyncio.to_thread(resolve_data_dir)
     await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
@@ -292,14 +342,18 @@ async def _start_daemon(
         log_path,
     )
     try:
-        await _wait_for_endpoint(endpoint, process, timeout=10)
+        health = await _wait_for_node_ready(endpoint, process, timeout=10)
     except BaseException:
         if process.poll() is None:
             process.terminate()
             await asyncio.to_thread(process.wait, 5)
         raise
+    _print_agent_startup_records(_health_agents(health))
     print(
-        f"bcn started pid={process.pid} configured={len(configuration.agents)} "
+        f"bcn started pid={process.pid} "
+        f"configured={_health_count(health, 'configured')} "
+        f"started={_health_count(health, 'started_agents')} "
+        f"failed={_health_count(health, 'failed_agents')} "
         f"endpoint={endpoint}",
         flush=True,
     )
