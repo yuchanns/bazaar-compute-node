@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.10 - 2026-08-18
+
+## What's Changed
+* feat: add multi-agent support by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/18
+* fix: complete Windows cross-platform compatibility by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/19
+* feat: add channel and sender identities by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/20
+* feat: report terminal runtime errors by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/21
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.9...v0.1.10
+
 ## 0.1.9 - 2026-08-17
 
 ## What's Changed
