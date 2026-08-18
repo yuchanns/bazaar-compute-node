@@ -53,7 +53,7 @@ bcn stop
 | --- | --- |
 | ✅ | Reminders / 定时器 |
 | ✅ | Attachments / 附件 |
-| 🚧 | Multi-Agents / 多 Agent |
+| ✅ | Multi-Agents / 多 Agent |
 | 🚧 | Teams / 团队协作 |
 
 ### Channels / 渠道
