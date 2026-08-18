@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.11 - 2026-08-18
+
+## What's Changed
+* docs: mark multi-agent support complete by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/22
+* fix: enforce UTF-8 in Windows bcc wrappers by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/23
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.10...v0.1.11
+
 ## 0.1.10 - 2026-08-18
 
 ## What's Changed
