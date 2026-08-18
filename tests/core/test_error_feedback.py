@@ -61,7 +61,7 @@ def make_reporter(
     audit: RecordingAudit,
     *,
     language: str = ENGLISH,
-    detail: Callable[[str, str], str] = lambda _session_id, text: text,
+    detail: Callable[[str, str], str] = lambda _, text: text,
 ) -> RuntimeErrorReporter:
     budget = TimeoutBudget(
         startup_seconds=1,
@@ -106,7 +106,7 @@ async def test_reporter_delivers_localized_terminal_error_detail(
         channel,
         audit,
         language=language,
-        detail=lambda _session_id, text: text.replace("secret-token", "<redacted>"),
+        detail=lambda _, text: text.replace("secret-token", "<redacted>"),
     )
 
     await reporter.report(

@@ -112,7 +112,7 @@ class ReminderSchedule:
             raise ValueError("timezone must use its canonical form")
 
 
-def parse_duration(value: str) -> ReminderDuration:
+def parse_duration(value: object) -> ReminderDuration:
     if not isinstance(value, str):
         raise TypeError("duration must be a string")
     match = _DURATION_PATTERN.fullmatch(value)
@@ -130,7 +130,7 @@ def parse_duration(value: str) -> ReminderDuration:
     return ReminderDuration(count * unit_ms, f"{count}{unit}")
 
 
-def parse_repeat_rule(value: str) -> ReminderRecurrence:
+def parse_repeat_rule(value: object) -> ReminderRecurrence:
     if not isinstance(value, str):
         raise TypeError("repeat rule must be a string")
     every = _EVERY_PATTERN.fullmatch(value)
@@ -183,7 +183,7 @@ def canonical_timezone(value: str | None) -> str:
     return _load_timezone(timezone_name).key
 
 
-def parse_fire_at(value: str) -> int:
+def parse_fire_at(value: object) -> int:
     if not isinstance(value, str):
         raise TypeError("fire_at must be a string")
     if "T" not in value:

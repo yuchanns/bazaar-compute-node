@@ -88,11 +88,12 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
         "ClientSession",
         lambda: fake_session,
     )
-    monkeypatch.setattr(
-        telegram_channel_module,
-        "TelegramBotApi",
-        lambda _session, *, token: fake_api,
-    )
+
+    def build_api(*args: object, **kwargs: object) -> _FakeApi:
+        del args, kwargs
+        return fake_api
+
+    monkeypatch.setattr(telegram_channel_module, "TelegramBotApi", build_api)
     channel = TelegramChannel(
         ChannelContext(
             agent_id="agent-test",

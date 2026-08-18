@@ -3,7 +3,7 @@
 3. 必须使用 ruff 进行代码格式检查
 4. 在没有计划的情况下，新增一个功能，必须经过讨论后编写 plans/{your_plan}.md
 5. 必须按照 plan 的 tasks 串行开发，每完成一个 task 都停下来等待 review
-6. 代码修改完成后，必须使用 LSP 检查相关文件，确保没有诊断告警
+6. 代码修改完成后，必须在仓库根目录执行 `uv run scripts/pyright_lsp_check.py --outputjson .`，并确保检查通过
 7. 禁止为了方便测试而修改生产代码加入不必要的注入函数或者可覆盖的环境变量
 8. 向 Hanchin 发送 diff 时，默认只发送业务代码，排除 test 与 lock 相关改动，直接通过消息发送，不使用附件，并放在 code fence 中
 9. 发送较大的 diff 时，每条消息的 code fence 控制在 8 KB 以内；大文件按文件或连续 hunk 拆分，保持每条消息独立可读，以保留颜色渲染

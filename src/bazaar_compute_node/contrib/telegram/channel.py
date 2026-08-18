@@ -326,6 +326,7 @@ class TelegramChannel(IChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del request, timeout
         return ProviderCallResult(
             status=ProviderCallStatus.FAILED,
             error_kind="telegram_delivery_unavailable",
@@ -338,6 +339,7 @@ class TelegramChannel(IChannel):
         *,
         timeout: float,
     ) -> ApprovalResult:
+        del timeout
         return ApprovalResult(
             request_id=request.approval.request_id,
             decision=ApprovalDecision.REJECTED,
@@ -827,7 +829,7 @@ class TelegramChannel(IChannel):
                 if entity_text.casefold() == f"@{username}":
                     return True
                 continue
-            _command, separator, target = entity_text.rpartition("@")
+            _, separator, target = entity_text.rpartition("@")
             if separator and target.casefold() == username:
                 return True
         return False

@@ -31,7 +31,7 @@ async def test_windows_rejects_unix_command_endpoint() -> None:
 async def test_local_transport_authenticates_and_restricts_tcp_fallback(
     tmp_path: Path,
 ) -> None:
-    async def handle(_request: Mapping[str, object]) -> dict[str, object]:
+    async def handle(_: Mapping[str, object]) -> dict[str, object]:
         return {"ok": True, "result": {"accepted": True}}
 
     server = LocalCommandServer(handle, endpoint_path=tmp_path / "bcn.sock")

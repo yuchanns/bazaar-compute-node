@@ -145,7 +145,7 @@ async def _wait_for_runtime_session(runtime: TestRuntime) -> RuntimeSession:
 async def test_runtime_bot_name_prefers_channel_name_then_id(
     tmp_path: Path,
 ) -> None:
-    node, channels, _runtimes = _make_node(tmp_path)
+    node, channels, _ = _make_node(tmp_path)
     channel = channels[AGENT_A_ID]
     channel.identity = ChannelIdentity(id="provider-id", name="Provider Name")
 
@@ -174,7 +174,7 @@ async def test_agents_install_isolated_wrappers_and_runtime_paths(
         "resolve_workspace_dir",
         lambda agent_id: tmp_path / "workspaces" / agent_id,
     )
-    node, _channels, _runtimes = _make_node(tmp_path)
+    node, _, _ = _make_node(tmp_path)
     await node.start()
     wrapper_name = "bcc.cmd" if os.name == "nt" else "bcc"
     try:
@@ -252,7 +252,7 @@ async def test_runtime_error_redaction_uses_injected_token_values(
 ) -> None:
     monkeypatch.setenv("SERVICE_TOKEN", "service-token-value")
     monkeypatch.setenv("ORDINARY_VALUE", "ordinary-value")
-    node, _channels, _runtimes = _make_node(
+    node, _, _ = _make_node(
         tmp_path,
         env_include=("SERVICE_TOKEN", "ORDINARY_VALUE"),
     )

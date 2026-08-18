@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import platform
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -334,7 +335,9 @@ async def _start_daemon(
     await asyncio.to_thread(data_dir.mkdir, parents=True, exist_ok=True)
     endpoint_path = _endpoint_path(args, data_dir)
     endpoint = local_endpoint_for_path(endpoint_path)
-    if os.name == "nt" and await _endpoint_is_reachable(endpoint, timeout=0.5):
+    if platform.system() == "Windows" and await _endpoint_is_reachable(
+        endpoint, timeout=0.5
+    ):
         parser.error("bcn is already running")
     if os.name != "nt" and await asyncio.to_thread(endpoint_path.exists):
         parser.error(f"bcn endpoint already exists: {endpoint_path}")

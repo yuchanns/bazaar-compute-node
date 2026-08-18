@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+from ..i18n import Translator
 from .lifecycle import IAsyncLifecycle
 from .models import (
     ApprovalRequest,
@@ -146,6 +147,7 @@ class ChannelContext:
     attachments: IAttachmentMaterializer
     options: Mapping[str, object]
     workspace: Callable[[], Path]
+    translator: Translator | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.agent_id, str) or not self.agent_id:

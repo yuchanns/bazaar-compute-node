@@ -201,8 +201,8 @@ SESSION_RUNTIME_STATE_TRANSITIONS: Mapping[
 
 
 def reduce_session_runtime_state(
-    current: SessionRuntimeState,
-    observation: SessionRuntimeObservation,
+    current: object,
+    observation: object,
 ) -> SessionRuntimeState:
     """Reduce one session-runtime observation without mutating state or doing I/O."""
 

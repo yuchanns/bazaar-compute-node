@@ -93,10 +93,12 @@ class TestRuntime(IRuntime):
         self._update_seq = 0
 
     async def start(self, *, timeout: float) -> None:
+        del timeout
         self.started = True
         self.stopped = False
 
     async def stop(self, *, timeout: float) -> None:
+        del timeout
         self.stopped = True
         streams = tuple(self.active_streams)
         for stream in streams:
@@ -128,6 +130,7 @@ class TestRuntime(IRuntime):
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
+        del timeout
         self.started_sessions.append(session)
         if self._start_results:
             return self._start_results.popleft()
@@ -217,6 +220,7 @@ class TestRuntime(IRuntime):
         *,
         timeout: float,
     ) -> ProviderCallResult[RuntimeTurn]:
+        del session, timeout
         if turn.state in {RuntimeTurnState.STARTING, RuntimeTurnState.RUNNING}:
             turn = turn.transition_to(
                 RuntimeTurnState.CANCELLED,
@@ -235,12 +239,14 @@ class TestRuntime(IRuntime):
         *,
         timeout: float,
     ) -> bool:
+        del timeout
         self.steered_turns.append((session, turn, input_text))
         return False
 
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]:
+        del timeout
         self.stopped_sessions.append(session)
         if self._stop_results:
             return self._stop_results.popleft()

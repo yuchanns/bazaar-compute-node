@@ -84,9 +84,7 @@ def split_markdown(content: str, *, limit: int) -> tuple[str, ...]:
     return tuple(chunks)
 
 
-def _preferred_boundary(
-    content: str, cursor: int, end: int, minimum: int
-) -> int | None:
+def _preferred_boundary(content: str, _: int, end: int, minimum: int) -> int | None:
     for separator in ("\n\n", "\n"):
         index = content.rfind(separator, minimum, end)
         if index >= minimum:

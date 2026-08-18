@@ -253,8 +253,8 @@ class JsonlProcessSupervisor:
         self,
         request_id: JsonlRequestId,
         *,
-        result: Mapping[str, object] | None = None,
-        error: Mapping[str, object] | None = None,
+        result: object = None,
+        error: object = None,
         timeout: float,
     ) -> None:
         """Write one response to a provider-initiated JSON-RPC request."""

@@ -22,7 +22,7 @@ from ...core.models import (
 )
 
 
-def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
+def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
     following = row["following"]
     if (
         isinstance(following, bool)
@@ -54,7 +54,7 @@ def _channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
     )
 
 
-def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
+def bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
     return BcnSession(
         id=_required_text(row["id"], "id"),
         channel_session_id=_required_text(
@@ -70,7 +70,7 @@ def _bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
     )
 
 
-def _runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
+def runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
     return RuntimeAttempt(
         turn_id=_required_text(row["turn_id"], "turn_id"),
         session_id=_required_text(row["session_id"], "session_id"),
@@ -81,7 +81,7 @@ def _runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
     )
 
 
-def _inbound_message_from_row(
+def inbound_message_from_row(
     row: aiosqlite.Row,
     attachments: tuple[InboundAttachment, ...] = (),
 ) -> InboundMessage:
@@ -133,7 +133,7 @@ def _inbound_message_from_row(
     )
 
 
-def _inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
+def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
     return InboundAttachment(
         attachment_id=_required_text(row["attachment_id"], "attachment_id"),
         name=_required_text(row["name"], "attachment.name"),
@@ -148,7 +148,7 @@ def _inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
     )
 
 
-def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
+def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
     raw_attachments = row["attachments_json"]
     if not isinstance(raw_attachments, str):
         raise TypeError("attachments_json must be text")
@@ -231,7 +231,7 @@ def _outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
     )
 
 
-def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
+def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
         session_id=_required_text(row["session_id"], "session_id"),
         delivered_through_seq=_required_non_negative_int(
@@ -258,12 +258,12 @@ def _consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     )
 
 
-def _validate_inbound_message_input(message: InboundMessage) -> None:
+def validate_inbound_message_input(message: object) -> None:
     if not isinstance(message, InboundMessage):
         raise TypeError("message must be an InboundMessage")
 
 
-def _validate_outbound_message_input(message: OutboundMessage) -> None:
+def validate_outbound_message_input(message: object) -> None:
     if not isinstance(message, OutboundMessage):
         raise TypeError("message must be an OutboundMessage")
     if not isinstance(message.state, OutboundDeliveryState):
@@ -369,7 +369,7 @@ def _validate_outbound_message_input(message: OutboundMessage) -> None:
         raise ValueError("delivered outbound message requires a provider receipt")
 
 
-def _validate_outbound_insert(message: OutboundMessage) -> None:
+def validate_outbound_insert(message: OutboundMessage) -> None:
     if message.state is not OutboundDeliveryState.DRAFT:
         raise ValueError("a new outbound message must start in draft state")
     if message.fresh_check_state is not FreshCheckState.REQUIRED:
@@ -387,7 +387,7 @@ def _validate_outbound_insert(message: OutboundMessage) -> None:
         raise ValueError("a new outbound draft cannot contain delivery timestamps")
 
 
-def _validate_outbound_update(
+def validate_outbound_update(
     existing: OutboundMessage,
     incoming: OutboundMessage,
 ) -> OutboundMessage:
@@ -496,7 +496,7 @@ def _validate_optional_input_text(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-empty string when present")
 
 
-def _validate_consumer_cursor_input(cursor: ConsumerCursor) -> None:
+def validate_consumer_cursor_input(cursor: object) -> None:
     if not isinstance(cursor, ConsumerCursor):
         raise TypeError("cursor must be a ConsumerCursor")
     source = cursor.inbox_snapshot_source
@@ -511,14 +511,14 @@ def _validate_consumer_cursor_input(cursor: ConsumerCursor) -> None:
         raise ValueError("inbox snapshot sequence requires a snapshot time")
 
 
-def _validate_cursor_bounds(cursor: ConsumerCursor, latest_seq: int) -> None:
+def validate_cursor_bounds(cursor: ConsumerCursor, latest_seq: int) -> None:
     if cursor.delivered_through_seq > latest_seq:
         raise ValueError("delivered cursor cannot exceed the latest inbound sequence")
     if cursor.inbox_snapshot_seq is not None and cursor.inbox_snapshot_seq > latest_seq:
         raise ValueError("inbox snapshot cannot exceed the latest inbound sequence")
 
 
-def _validate_consumer_cursor_update(
+def validate_consumer_cursor_update(
     existing: ConsumerCursor,
     incoming: ConsumerCursor,
 ) -> None:
@@ -553,12 +553,12 @@ def _validate_consumer_cursor_update(
             raise ValueError(f"{field_name} cannot move backwards")
 
 
-def _validate_channel_session_input(session: ChannelSession) -> None:
+def validate_channel_session_input(session: ChannelSession) -> None:
     if not isinstance(session.following, bool):
         raise TypeError("channel session following must be a boolean")
 
 
-def _validate_channel_session_update(
+def validate_channel_session_update(
     existing: ChannelSession,
     incoming: ChannelSession,
 ) -> ChannelSession:
@@ -580,7 +580,7 @@ def _validate_channel_session_update(
     )
 
 
-def _validate_bcn_session_update(
+def validate_bcn_session_update(
     existing: BcnSession,
     incoming: BcnSession,
 ) -> BcnSession:
@@ -608,15 +608,15 @@ def _required_text(value: object, field_name: str) -> str:
     return _string_value(value, field_name, allow_empty=False)
 
 
-def _validate_non_empty_text(value: object, field_name: str) -> None:
+def validate_non_empty_text(value: object, field_name: str) -> None:
     _required_text(value, field_name)
 
 
-def _validate_non_negative_int(value: object, field_name: str) -> None:
+def validate_non_negative_int(value: object, field_name: str) -> None:
     _required_non_negative_int(value, field_name)
 
 
-def _validate_positive_int(value: object, field_name: str) -> None:
+def validate_positive_int(value: object, field_name: str) -> None:
     _required_positive_int(value, field_name)
 
 
@@ -669,7 +669,7 @@ def _optional_non_negative_int(value: object, field_name: str) -> int | None:
     return _required_non_negative_int(value, field_name)
 
 
-def _encode_metadata(metadata: Mapping[str, object]) -> str:
+def encode_metadata(metadata: object) -> str:
     if not isinstance(metadata, Mapping):
         raise TypeError("metadata must be a mapping")
     if any(not isinstance(key, str) for key in metadata):

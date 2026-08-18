@@ -8,6 +8,7 @@ from time import time_ns
 
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
+from ...i18n import ENGLISH, Translator, create_translator
 from .api import TelegramApiError, TelegramTransportError
 from .channel import TelegramChannel
 from .identity import parse_provider_thread_id
@@ -15,6 +16,11 @@ from .identity import parse_provider_thread_id
 _CALLBACK_PREFIX = "bcn"
 _CALLBACK_ANSWER_TIMEOUT_SECONDS = 10.0
 _RESOLVED_TOKEN_LIMIT = 256
+_ACTION_MESSAGE_KEYS = {
+    "command_execution": "approval.action.command_execution",
+    "file_change": "approval.action.file_change",
+    "permissions": "approval.action.permissions",
+}
 
 
 @dataclass(slots=True)
@@ -31,6 +37,7 @@ class _PendingApproval:
 class TelegramApprovalChannel(TelegramChannel):
     def __init__(self, context: ChannelContext, *, token: str) -> None:
         super().__init__(context, token=token)
+        self._translator: Translator = context.translator or create_translator(ENGLISH)
         self._pending_approvals: dict[str, _PendingApproval] = {}
         self._approval_tokens_by_request: dict[str, str] = {}
         self._resolved_approval_tokens: dict[str, str] = {}
@@ -125,11 +132,11 @@ class TelegramApprovalChannel(TelegramChannel):
                 "inline_keyboard": [
                     [
                         {
-                            "text": "✅ Approve",
+                            "text": self._translator.text("approval.button.approve"),
                             "callback_data": f"{_CALLBACK_PREFIX}:approve:{token}",
                         },
                         {
-                            "text": "❎ Reject",
+                            "text": self._translator.text("approval.button.reject"),
                             "callback_data": f"{_CALLBACK_PREFIX}:reject:{token}",
                         },
                     ]
@@ -196,7 +203,10 @@ class TelegramApprovalChannel(TelegramChannel):
         if parsed is None:
             self._approval_callback_rejections += 1
             self._last_update_disposition = "unsupported_callback_query"
-            await self._answer_callback(query_id, "Unknown approval action")
+            await self._answer_callback(
+                query_id,
+                self._translator.text("approval.callback.unknown_action"),
+            )
             return
         decision, token = parsed
         pending = self._pending_approvals.get(token)
@@ -215,7 +225,10 @@ class TelegramApprovalChannel(TelegramChannel):
         if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "invalid_approval_callback"
-            await self._answer_callback(query_id, "Approval is no longer valid")
+            await self._answer_callback(
+                query_id,
+                self._translator.text("approval.callback.invalid"),
+            )
             return
         chat = message.get("chat")
         chat_id = chat.get("id") if isinstance(chat, Mapping) else None
@@ -234,7 +247,10 @@ class TelegramApprovalChannel(TelegramChannel):
         ):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "approval_callback_route_mismatch"
-            await self._answer_callback(query_id, "Approval is no longer valid")
+            await self._answer_callback(
+                query_id,
+                self._translator.text("approval.callback.invalid"),
+            )
             return
         if (
             pending.prompt_message_id is not None
@@ -242,7 +258,10 @@ class TelegramApprovalChannel(TelegramChannel):
         ):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "approval_callback_message_mismatch"
-            await self._answer_callback(query_id, "Approval is no longer valid")
+            await self._answer_callback(
+                query_id,
+                self._translator.text("approval.callback.invalid"),
+            )
             return
         if (
             not isinstance(sender_id, int)
@@ -253,7 +272,7 @@ class TelegramApprovalChannel(TelegramChannel):
             self._last_update_disposition = "approval_callback_sender_mismatch"
             await self._answer_callback(
                 query_id,
-                "This approval belongs to another user",
+                self._translator.text("approval.callback.sender_mismatch"),
             )
             return
 
@@ -284,7 +303,11 @@ class TelegramApprovalChannel(TelegramChannel):
         )
         await self._answer_callback(
             query_id,
-            "Approved" if decision is ApprovalDecision.APPROVED else "Rejected",
+            self._translator.text(
+                "approval.callback.approved"
+                if decision is ApprovalDecision.APPROVED
+                else "approval.callback.rejected"
+            ),
         )
 
     async def _send_approval_feedback(
@@ -298,11 +321,14 @@ class TelegramApprovalChannel(TelegramChannel):
         if api is None:
             self._approval_feedback_failures += 1
             return
-        action = "approved" if decision is ApprovalDecision.APPROVED else "rejected"
         payload: dict[str, object] = {
             "chat_id": pending.chat_id,
             "rich_message": {
-                "markdown": f"Action {action}",
+                "markdown": self._translator.text(
+                    "approval.feedback.approved"
+                    if decision is ApprovalDecision.APPROVED
+                    else "approval.feedback.rejected"
+                ),
                 "skip_entity_detection": True,
             },
             "reply_parameters": {"message_id": message_id},
@@ -379,10 +405,18 @@ class TelegramApprovalChannel(TelegramChannel):
             return ApprovalDecision.REJECTED, token
         return None
 
-    @staticmethod
-    def _approval_markdown(request: ChannelApprovalRequest) -> str:
-        action = request.approval.action.replace("_", " ")
-        lines = ["## Approval required", "", f"**Action:** {action}"]
+    def _approval_markdown(self, request: ChannelApprovalRequest) -> str:
+        action_key = _ACTION_MESSAGE_KEYS.get(request.approval.action)
+        action = (
+            self._translator.text(action_key)
+            if action_key is not None
+            else request.approval.action.replace("_", " ")
+        )
+        lines = [
+            self._translator.text("approval.prompt.title"),
+            "",
+            self._translator.text("approval.prompt.action", {"action": action}),
+        ]
         description = request.approval.description
         if description:
             fence = TelegramApprovalChannel._markdown_fence(description)
@@ -401,13 +435,12 @@ class TelegramApprovalChannel(TelegramChannel):
                 current = 0
         return "`" * max(3, longest + 1)
 
-    @staticmethod
-    def _resolved_callback_text(state: str | None) -> str:
+    def _resolved_callback_text(self, state: str | None) -> str:
         if state == "approved":
-            return "Already approved"
+            return self._translator.text("approval.callback.already_approved")
         if state == "rejected":
-            return "Already rejected"
-        return "Approval is no longer valid"
+            return self._translator.text("approval.callback.already_rejected")
+        return self._translator.text("approval.callback.invalid")
 
 
 __all__ = ["TelegramApprovalChannel"]

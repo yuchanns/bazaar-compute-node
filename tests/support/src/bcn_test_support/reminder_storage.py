@@ -4,7 +4,7 @@ from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
@@ -137,7 +137,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         )
         return tuple(reminders)
 
-    async def save_new_reminder(self, reminder: Reminder) -> Reminder:
+    async def save_new_reminder(self, reminder: object) -> Reminder:
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if reminder.state is not ReminderState.SCHEDULED:
@@ -163,7 +163,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def save_reminder_transition(
         self,
         expected_revision: int,
-        reminder: Reminder,
+        reminder: object,
     ) -> Reminder:
         _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
@@ -305,8 +305,8 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def save_fired_occurrence(
         self,
         expected_revision: int,
-        reminder: Reminder,
-        occurrence: ReminderOccurrence,
+        reminder: object,
+        occurrence: object,
     ) -> ReminderOccurrence:
         _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
@@ -364,8 +364,8 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def save_owned_fired_occurrence(
         self,
         expected_revision: int,
-        reminder: OwnedReminder,
-        occurrence: OwnedReminderOccurrence,
+        reminder: object,
+        occurrence: object,
     ) -> OwnedReminderOccurrence:
         _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, OwnedReminder):
@@ -418,7 +418,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def mark_reminder_occurrences_read(
         self,
         owner_session_id: str,
-        occurrence_ids: tuple[str, ...],
+        occurrence_ids: object,
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
@@ -426,6 +426,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         _require_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
+        occurrence_ids = cast(tuple[str, ...], occurrence_ids)
         if not occurrence_ids:
             return ()
         if len(set(occurrence_ids)) != len(occurrence_ids):

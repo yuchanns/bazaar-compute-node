@@ -79,7 +79,7 @@ _ENGLISH_TRANSLATOR = create_translator(ENGLISH)
 
 
 def unchanged_error_feedback_detail(
-    _session_id: str,
+    _: str,
     error_message: str,
 ) -> str:
     return error_message
@@ -271,6 +271,7 @@ class _AcceptanceAudit(RecordingAudit):
         self._first_check_blocked = False
 
     async def append(self, event: AuditEvent, *, timeout: float) -> None:
+        del timeout
         self.events.append(event)
         if (
             not self._first_check_blocked
@@ -558,7 +559,7 @@ async def test_channel_storage_runtime_turn_path() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_events_bypass_durable_storage_and_audit() -> None:
-    orchestrator, channel, runtime, _storage, audit = await make_node()
+    orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(update_count=20_000))
     try:
         await channel.inject(make_message())
@@ -590,7 +591,7 @@ async def test_stream_events_bypass_durable_storage_and_audit() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
-    orchestrator, channel, runtime, _storage, audit = await make_node()
+    orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(update_count=1))
     channel.stream_event_error = RuntimeError("stream consumer unavailable")
     try:
@@ -611,7 +612,7 @@ async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_event_for_another_session_is_discarded() -> None:
-    orchestrator, channel, runtime, _storage, audit = await make_node()
+    orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(
         TestTurnPlan(update_count=1, stream_session_id="another-session")
     )
@@ -692,7 +693,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
 @pytest.mark.asyncio
 async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
-    orchestrator, channel, _runtime, storage, _audit = await make_node()
+    orchestrator, channel, _, storage, _ = await make_node()
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
@@ -732,7 +733,7 @@ async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_is_routed_to_the_current_channel_session() -> None:
-    orchestrator, channel, runtime, _storage, audit = await make_node()
+    orchestrator, channel, runtime, _, audit = await make_node()
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
@@ -773,7 +774,7 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
 
 @pytest.mark.asyncio
 async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
-    orchestrator, channel, _runtime, storage, _audit = await make_node()
+    orchestrator, channel, _, storage, _ = await make_node()
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
@@ -827,9 +828,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
     second = tmp_path / "second.json"
     first.write_text("first\n")
     second.write_text('{"second": true}\n')
-    orchestrator, channel, _runtime, storage, _audit = await make_node(
-        workspace=lambda: tmp_path
-    )
+    orchestrator, channel, _, storage, _ = await make_node(workspace=lambda: tmp_path)
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
@@ -856,7 +855,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
 @pytest.mark.asyncio
 async def test_send_validates_target_and_preserves_provider_delivery_states() -> None:
-    orchestrator, channel, _runtime, storage, audit = await make_node()
+    orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
@@ -1090,7 +1089,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
 async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
     None
 ):
-    orchestrator, channel, _runtime, storage, _audit = await make_node()
+    orchestrator, channel, _, storage, _ = await make_node()
     try:
         await channel.inject(make_message())
         await wait_until(
@@ -1302,9 +1301,7 @@ async def test_terminal_runtime_error_replies_on_original_route(
 ) -> None:
     orchestrator, channel, runtime, storage, audit = await make_node(
         translator=create_translator(language),
-        error_feedback_detail=lambda _session_id, text: text.replace(
-            "provider", "<redacted>"
-        ),
+        error_feedback_detail=lambda _, text: text.replace("provider", "<redacted>"),
     )
     message = replace(
         make_message(),

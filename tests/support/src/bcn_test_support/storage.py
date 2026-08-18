@@ -44,10 +44,12 @@ class MemoryStorage(IStorage):
         self._lock = asyncio.Lock()
 
     async def start(self, *, timeout: float) -> None:
+        del timeout
         self.started = True
         self.stopped = False
 
     async def stop(self, *, timeout: float) -> None:
+        del timeout
         self.stopped = True
 
     def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
@@ -140,6 +142,7 @@ class _MemoryStorageTransaction:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        del exc_value, traceback
         if exc_type is not None and self._snapshot is not None:
             (
                 self._storage.channel_sessions,
@@ -311,7 +314,7 @@ class _MemoryStorageTransaction:
                 "session workspace does not match the scoped Agent workspace"
             )
 
-    async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None:
+    async def save_runtime_attempt(self, attempt: object) -> None:
         if not isinstance(attempt, RuntimeAttempt):
             raise TypeError("attempt must be a RuntimeAttempt")
         existing = self._storage.runtime_attempts.get(attempt.turn_id)
@@ -412,7 +415,7 @@ def _validate_updated_at(existing: int, incoming: int) -> None:
         raise ValueError("session updated_at_ms cannot move backwards")
 
 
-def _validate_outbound_message_input(message: OutboundMessage) -> None:
+def _validate_outbound_message_input(message: object) -> None:
     if not isinstance(message, OutboundMessage):
         raise TypeError("message must be an OutboundMessage")
     if not isinstance(message.state, OutboundDeliveryState):

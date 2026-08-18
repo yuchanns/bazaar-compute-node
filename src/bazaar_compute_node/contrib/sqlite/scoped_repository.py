@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 from uuid import NAMESPACE_URL, uuid5, uuid7
 
 from ...core.models import (
@@ -20,19 +20,19 @@ from ...core.models import (
 )
 from ...core.reminder import canonical_id_reference
 from .codec import (
-    _bcn_session_from_row,
-    _channel_session_from_row,
-    _consumer_cursor_from_row,
-    _encode_metadata,
-    _inbound_message_from_row,
-    _outbound_message_from_row,
     _required_non_negative_int,
     _required_positive_int,
-    _runtime_attempt_from_row,
-    _validate_inbound_message_input,
-    _validate_non_empty_text,
-    _validate_non_negative_int,
-    _validate_positive_int,
+    bcn_session_from_row,
+    channel_session_from_row,
+    consumer_cursor_from_row,
+    encode_metadata,
+    inbound_message_from_row,
+    outbound_message_from_row,
+    runtime_attempt_from_row,
+    validate_inbound_message_input,
+    validate_non_empty_text,
+    validate_non_negative_int,
+    validate_positive_int,
 )
 from .reminder_codec import reminder_from_row, reminder_occurrence_from_row
 from .reminder_repository import (
@@ -75,6 +75,7 @@ class ReminderTransaction(_ReminderTransaction):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        del exc_value, traceback
         connection = self._connection
         if not self._active or connection is None:
             return False
@@ -109,7 +110,7 @@ class ReminderTransaction(_ReminderTransaction):
             (channel, provider_thread_id),
             "channel provider identity",
         )
-        return _channel_session_from_row(row) if row is not None else None
+        return channel_session_from_row(row) if row is not None else None
 
     async def get_channel_session(self, session_id: str) -> ChannelSession | None:
         row = await self.fetchone(
@@ -119,7 +120,7 @@ class ReminderTransaction(_ReminderTransaction):
             "WHERE agent_id = bcn_agent_id() AND id = ?",
             (session_id,),
         )
-        return _channel_session_from_row(row) if row is not None else None
+        return channel_session_from_row(row) if row is not None else None
 
     async def get_bcn_session(self, session_id: str) -> BcnSession | None:
         row = await self.fetchone(
@@ -128,7 +129,7 @@ class ReminderTransaction(_ReminderTransaction):
             "WHERE agent_id = bcn_agent_id() AND id = ?",
             (session_id,),
         )
-        return _bcn_session_from_row(row) if row is not None else None
+        return bcn_session_from_row(row) if row is not None else None
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         row = await self._fetch_one_or_conflict(
@@ -138,7 +139,7 @@ class ReminderTransaction(_ReminderTransaction):
             (channel_session_id,),
             "channel-to-bcn session binding",
         )
-        return _bcn_session_from_row(row) if row is not None else None
+        return bcn_session_from_row(row) if row is not None else None
 
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         row = await self.fetchone(
@@ -146,7 +147,7 @@ class ReminderTransaction(_ReminderTransaction):
             "FROM runtime_attempts WHERE agent_id = bcn_agent_id() AND turn_id = ?",
             (turn_id,),
         )
-        return _runtime_attempt_from_row(row) if row is not None else None
+        return runtime_attempt_from_row(row) if row is not None else None
 
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
         if await self.get_bcn_session(session_id) is None:
@@ -157,7 +158,7 @@ class ReminderTransaction(_ReminderTransaction):
             "last_read_at_ms, updated_at_ms FROM consumer_cursors WHERE session_id = ?",
             (session_id,),
         )
-        return _consumer_cursor_from_row(row) if row is not None else None
+        return consumer_cursor_from_row(row) if row is not None else None
 
     async def get_latest_inbound_seq(self, session_id: str) -> int:
         row = await self.fetchone(
@@ -184,7 +185,7 @@ class ReminderTransaction(_ReminderTransaction):
         )
         if row is None:
             return None
-        return _inbound_message_from_row(
+        return inbound_message_from_row(
             row,
             await self._attachments(row["message_id"]),
         )
@@ -208,14 +209,14 @@ class ReminderTransaction(_ReminderTransaction):
         notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
-        _validate_non_empty_text(session_id, "session_id")
+        validate_non_empty_text(session_id, "session_id")
         if after_seq is not None:
-            _validate_non_negative_int(after_seq, "after_seq")
+            validate_non_negative_int(after_seq, "after_seq")
         if target is not None:
-            _validate_non_empty_text(target, "target")
+            validate_non_empty_text(target, "target")
         if around_message_id is not None:
-            _validate_non_empty_text(around_message_id, "around_message_id")
-        _validate_positive_int(limit, "limit")
+            validate_non_empty_text(around_message_id, "around_message_id")
+        validate_positive_int(limit, "limit")
         predicates = ["agent_id = bcn_agent_id()", "session_id = ?"]
         parameters: list[object] = [session_id]
         if after_seq is not None:
@@ -236,7 +237,7 @@ class ReminderTransaction(_ReminderTransaction):
             messages: list[InboundMessage] = []
             for row in rows:
                 messages.append(
-                    _inbound_message_from_row(
+                    inbound_message_from_row(
                         row,
                         await self._attachments(row["message_id"]),
                     )
@@ -284,7 +285,7 @@ class ReminderTransaction(_ReminderTransaction):
         messages = []
         for row in rows:
             messages.append(
-                _inbound_message_from_row(
+                inbound_message_from_row(
                     row,
                     await self._attachments(row["message_id"]),
                 )
@@ -292,7 +293,7 @@ class ReminderTransaction(_ReminderTransaction):
         return tuple(messages)
 
     async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
-        _validate_inbound_message_input(message)
+        validate_inbound_message_input(message)
         bcn_session = await self.get_bcn_session(message.session_id)
         if bcn_session is None:
             raise ValueError(f"unknown bcn session: {message.session_id}")
@@ -319,7 +320,7 @@ class ReminderTransaction(_ReminderTransaction):
             "provider inbound identity",
         )
         if existing_row is not None:
-            return _inbound_message_from_row(
+            return inbound_message_from_row(
                 existing_row,
                 await self._attachments(existing_row["message_id"]),
             )
@@ -441,7 +442,7 @@ class ReminderTransaction(_ReminderTransaction):
                 int(canonical.mentions_agent),
                 int(canonical.notifies_runtime),
                 canonical.provider_payload_ref,
-                _encode_metadata(canonical.metadata),
+                encode_metadata(canonical.metadata),
             ),
         )
         for ordinal, attachment in enumerate(canonical.attachments):
@@ -478,14 +479,14 @@ class ReminderTransaction(_ReminderTransaction):
             "WHERE agent_id = bcn_agent_id() AND outbound_message_id = ?",
             (outbound_message_id,),
         )
-        return _outbound_message_from_row(row) if row is not None else None
+        return outbound_message_from_row(row) if row is not None else None
 
     async def resolve_inbound_message(
         self,
         session_id: str,
         message_id_or_prefix: str,
     ) -> InboundMessage | None:
-        _validate_non_empty_text(session_id, "session_id")
+        validate_non_empty_text(session_id, "session_id")
         reference = canonical_id_reference(message_id_or_prefix)
         if len(reference) == 8:
             rows = await self.fetchall(
@@ -505,7 +506,7 @@ class ReminderTransaction(_ReminderTransaction):
             )
         if row is None:
             return None
-        return _inbound_message_from_row(
+        return inbound_message_from_row(
             row,
             await self._attachments(row["message_id"]),
         )
@@ -515,7 +516,7 @@ class ReminderTransaction(_ReminderTransaction):
         owner_session_id: str,
         reminder_id_or_prefix: str,
     ) -> Reminder | None:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         reference = canonical_id_reference(reminder_id_or_prefix)
         if len(reference) == 8:
             rows = await self.fetchall(
@@ -541,7 +542,7 @@ class ReminderTransaction(_ReminderTransaction):
         owner_session_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         if not isinstance(statuses, frozenset) or not statuses:
             raise ValueError("statuses must be a non-empty frozenset")
         if not all(isinstance(status, ReminderState) for status in statuses):
@@ -571,8 +572,8 @@ class ReminderTransaction(_ReminderTransaction):
         *,
         limit: int,
     ) -> tuple[Reminder, ...]:
-        _validate_non_negative_int(now_ms, "now_ms")
-        _validate_positive_int(limit, "limit")
+        validate_non_negative_int(now_ms, "now_ms")
+        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
             "WHERE agent_id = bcn_agent_id() AND state = ? AND next_fire_at_ms <= ? "
@@ -584,10 +585,10 @@ class ReminderTransaction(_ReminderTransaction):
     async def save_fired_occurrence(
         self,
         expected_revision: int,
-        reminder: Reminder,
-        occurrence: ReminderOccurrence,
+        reminder: object,
+        occurrence: object,
     ) -> ReminderOccurrence:
-        _validate_positive_int(expected_revision, "expected_revision")
+        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if not isinstance(occurrence, ReminderOccurrence):
@@ -667,8 +668,8 @@ class ReminderTransaction(_ReminderTransaction):
         *,
         limit: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
-        _validate_positive_int(limit, "limit")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_OCCURRENCE_COLUMNS} FROM reminder_occurrences "
             "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
@@ -678,7 +679,7 @@ class ReminderTransaction(_ReminderTransaction):
         return tuple(reminder_occurrence_from_row(row) for row in rows)
 
     async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
         row = await self.fetchone(
             "SELECT COUNT(*) AS pending_count FROM reminder_occurrences "
             "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
@@ -692,14 +693,15 @@ class ReminderTransaction(_ReminderTransaction):
     async def mark_reminder_occurrences_read(
         self,
         owner_session_id: str,
-        occurrence_ids: tuple[str, ...],
+        occurrence_ids: object,
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _validate_non_empty_text(owner_session_id, "owner_session_id")
-        _validate_non_negative_int(read_at_ms, "read_at_ms")
+        validate_non_empty_text(owner_session_id, "owner_session_id")
+        validate_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
+        occurrence_ids = cast(tuple[str, ...], occurrence_ids)
         if not occurrence_ids:
             return ()
         if len(set(occurrence_ids)) != len(occurrence_ids):
