@@ -68,7 +68,6 @@ def _current_time_ms() -> int:
 class _IngressItem:
     message: InboundMessage
     completion: asyncio.Future[RuntimeTurn | None]
-    activity_at_ms: int
 
 
 @dataclass(slots=True)
@@ -82,7 +81,6 @@ class _RuntimeNotification:
     message: InboundMessage
     context: _DurableSessionContext
     completion: asyncio.Future[RuntimeTurn | None]
-    activity_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,14 +90,6 @@ class _ReminderNotification:
     anchor_message: InboundMessage
     context: _DurableSessionContext
     wake_id: str
-    activity_at_ms: int
-
-
-@dataclass(slots=True)
-class _RuntimeActivity:
-    context: _DurableSessionContext
-    completion: asyncio.Future[RuntimeTurn | None]
-    activity_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,11 +102,7 @@ class _RuntimeExpiry:
 
 type _WakeNotification = _RuntimeNotification | _ReminderNotification
 type _RuntimeQueueItem = (
-    _RuntimeNotification
-    | _ReminderNotification
-    | _RuntimeActivity
-    | _RuntimeExpiry
-    | RuntimeExpire
+    _RuntimeNotification | _ReminderNotification | _RuntimeExpiry | RuntimeExpire
 )
 
 
@@ -291,7 +277,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 anchor_message=anchor_message,
                 context=context,
                 wake_id=str(uuid7()),
-                activity_at_ms=self._timer_wheel.now_ms,
             )
         )
 
@@ -348,42 +333,14 @@ class SessionOrchestrator(IAsyncLifecycle):
             binding.watcher.cancel()
         await asyncio.gather(binding.watcher, return_exceptions=True)
 
-    async def _refresh_runtime_timer(
-        self,
-        runtime_session: RuntimeSession,
-        activity_at_ms: int,
-        *,
-        full_timeout: bool = False,
-    ) -> None:
+    async def _start_runtime_timer(self, runtime_session: RuntimeSession) -> None:
         if self._runtime_idle_timeout_ms <= 0:
             return
-        binding = self._runtime_timers.get(runtime_session.bcn_session_id)
-        delay_ms = self._runtime_idle_timeout_ms
-        if not full_timeout:
-            delay_ms = max(
-                0,
-                delay_ms - (self._timer_wheel.now_ms - activity_at_ms),
-            )
-        if (
-            binding is not None
-            and binding.runtime_session_id == runtime_session.id
-            and binding.timer.active
-        ):
-            try:
-                binding.timer.reset(delay_ms)
-            except RuntimeError:
-                if binding.timer.active:
-                    raise
-            else:
-                binding.expired = False
-                return
-        if binding is not None:
-            binding.timer.cancel()
-            if not binding.watcher.done():
-                binding.watcher.cancel()
-            await asyncio.gather(binding.watcher, return_exceptions=True)
-        timer = self._timer_wheel.create(delay_ms)
-        queue = self._runtime_queues[runtime_session.bcn_session_id]
+        queue = self._runtime_queues.get(runtime_session.bcn_session_id)
+        if queue is None:
+            return
+        await self._cancel_runtime_timer(runtime_session)
+        timer = self._timer_wheel.create(self._runtime_idle_timeout_ms)
         watcher = asyncio.create_task(
             self._forward_runtime_session_expiry(runtime_session, timer, queue),
             name=f"bcn-runtime-expiry-{runtime_session.bcn_session_id}",
@@ -393,6 +350,26 @@ class SessionOrchestrator(IAsyncLifecycle):
             timer,
             watcher,
         )
+
+    async def _start_runtime_timer_if_idle(self, session_id: str) -> None:
+        runtime_session = self.runtime_session(session_id)
+        if (
+            runtime_session is None
+            or runtime_session.id in self._expired_runtime_ids
+            or self._state_machine.get(session_id) is not SessionRuntimeState.IDLE
+        ):
+            return
+        try:
+            if await self._runtime.has_background_job(
+                runtime_session,
+                timeout=self._timeout_budget.provider_call_seconds,
+            ):
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("runtime background job check failed")
+        await self._start_runtime_timer(runtime_session)
 
     async def _forward_runtime_session_expiry(
         self,
@@ -567,9 +544,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 self._ingress_loop(ingress_queue),
                 name=f"bcn-ingress-{message.channel_session_id}",
             )
-        ingress_queue.put_nowait(
-            _IngressItem(message, completion, self._timer_wheel.now_ms)
-        )
+        ingress_queue.put_nowait(_IngressItem(message, completion))
         return await completion
 
     async def _ingress_loop(self, queue: asyncio.Queue[_IngressItem]) -> None:
@@ -590,24 +565,15 @@ class SessionOrchestrator(IAsyncLifecycle):
                     or self.runtime_session(session_id) is not None
                 ):
                     runtime_queue = self._runtime_queue_for_session(session_id)
-                if runtime_queue is None:
+                if runtime_queue is None or not message.notifies_runtime:
                     if not item.completion.done():
                         item.completion.set_result(None)
-                elif message.notifies_runtime:
+                else:
                     runtime_queue.put_nowait(
                         _RuntimeNotification(
                             message,
                             context,
                             item.completion,
-                            item.activity_at_ms,
-                        )
-                    )
-                else:
-                    runtime_queue.put_nowait(
-                        _RuntimeActivity(
-                            context,
-                            item.completion,
-                            item.activity_at_ms,
                         )
                     )
             except asyncio.CancelledError:
@@ -628,22 +594,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         pending: list[_RuntimeQueueItem] = []
         while True:
             item = pending.pop(0) if pending else await queue.get()
-            if isinstance(item, _RuntimeActivity):
-                try:
-                    runtime_session = self.runtime_session(item.context.bcn_session.id)
-                    if runtime_session is not None:
-                        await self._refresh_runtime_timer(
-                            runtime_session,
-                            item.activity_at_ms,
-                        )
-                    if not item.completion.done():
-                        item.completion.set_result(None)
-                except Exception as error:  # noqa: BLE001
-                    if not item.completion.done():
-                        item.completion.set_exception(error)
-                finally:
-                    queue.task_done()
-                continue
             if isinstance(item, _RuntimeExpiry):
                 try:
                     await self._handle_runtime_expiry(
@@ -679,15 +629,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                         pending.insert(0, candidate)
                         break
                     batch.append(candidate)
-            for notification in batch:
-                runtime_session = self.runtime_session(
-                    notification.context.bcn_session.id
-                )
-                if runtime_session is not None:
-                    await self._refresh_runtime_timer(
-                        runtime_session,
-                        notification.activity_at_ms,
-                    )
+            runtime_session = self.runtime_session(batch[0].context.bcn_session.id)
+            if runtime_session is not None:
+                await self._cancel_runtime_timer(runtime_session)
             turn_task = asyncio.create_task(
                 self._run_notification(batch[0]),
                 name=f"bcn-turn-{batch[0].context.bcn_session.id}",
@@ -711,24 +655,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                                 queued_item.context.bcn_session.id
                             )
                             if runtime_session is not None:
-                                await self._refresh_runtime_timer(
-                                    runtime_session,
-                                    queued_item.activity_at_ms,
-                                )
+                                await self._cancel_runtime_timer(runtime_session)
                             pending.append(queued_item)
                             await self._steer_active_turn(queued_item)
-                        elif isinstance(queued_item, _RuntimeActivity):
-                            runtime_session = self.runtime_session(
-                                queued_item.context.bcn_session.id
-                            )
-                            if runtime_session is not None:
-                                await self._refresh_runtime_timer(
-                                    runtime_session,
-                                    queued_item.activity_at_ms,
-                                )
-                            if not queued_item.completion.done():
-                                queued_item.completion.set_result(None)
-                            queue.task_done()
                         elif isinstance(queued_item, _RuntimeExpiry):
                             await self._handle_runtime_expiry(
                                 queued_item,
@@ -749,6 +678,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                     queue_item_consumed = False
 
                 result = turn_task.result()
+                await self._start_runtime_timer_if_idle(
+                    batch[0].context.bcn_session.id,
+                )
                 route_message = (
                     batch[0].message
                     if isinstance(batch[0], _RuntimeNotification)
@@ -784,7 +716,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     queue_item_consumed = True
                 for queued_item in (*batch, *pending):
                     if (
-                        isinstance(queued_item, _RuntimeNotification | _RuntimeActivity)
+                        isinstance(queued_item, _RuntimeNotification)
                         and not queued_item.completion.done()
                     ):
                         queued_item.completion.cancel()
@@ -795,6 +727,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             except Exception as error:
                 turn_task.cancel()
                 await asyncio.gather(turn_task, return_exceptions=True)
+                await self._start_runtime_timer_if_idle(
+                    batch[0].context.bcn_session.id,
+                )
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)
@@ -1205,16 +1140,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 self._state_machine.get(context.bcn_session.id)
                 is SessionRuntimeState.IDLE
             ):
-                binding = self._runtime_timers.get(context.bcn_session.id)
-                if (
-                    binding is None
-                    or binding.runtime_session_id != context.runtime_session.id
-                ):
-                    await self._refresh_runtime_timer(
-                        context.runtime_session,
-                        notification.activity_at_ms,
-                        full_timeout=establishment_attempt > 0,
-                    )
                 break
             if establishment_attempt == 0:
                 await self._discard_runtime_session(context.runtime_session)

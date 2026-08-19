@@ -140,6 +140,10 @@ class IRuntime(IAsyncLifecycle, Protocol):
         timeout: float,
     ) -> ProviderCallResult[RuntimeTurn]: ...
 
+    async def has_background_job(
+        self, session: RuntimeSession, *, timeout: float
+    ) -> bool: ...
+
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float
     ) -> ProviderCallResult[RuntimeSession]: ...

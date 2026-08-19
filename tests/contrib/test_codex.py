@@ -46,6 +46,7 @@ from bazaar_compute_node.contrib.codex import (
     build_turn_interrupt_params,
     build_turn_start_params,
     build_turn_steer_params,
+    parse_background_terminals_response,
     parse_error_notification,
     parse_fs_changed_notification,
     parse_fs_watch_response,
@@ -56,6 +57,7 @@ from bazaar_compute_node.contrib.codex import (
     parse_turn_response,
     parse_turn_steer_response,
 )
+from bazaar_compute_node.contrib.codex import runtime as runtime_module
 from bazaar_compute_node.contrib.codex.plugin import create_runtime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.approval import IApprovalHandler
@@ -73,6 +75,7 @@ from bazaar_compute_node.core.models import (
     StreamEvent,
     StreamEventKind,
 )
+from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
@@ -328,6 +331,13 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     )
     assert turn.turn_id == "turn-1"
     assert parse_turn_steer_response({"result": {"turnId": "turn-1"}}) == "turn-1"
+    assert parse_background_terminals_response({"result": {"data": []}}) is False
+    assert (
+        parse_background_terminals_response(
+            {"result": {"data": [{"processId": "job-1"}]}}
+        )
+        is True
+    )
     thread_id, completed = parse_turn_notification(
         {
             "method": "turn/completed",
@@ -516,6 +526,118 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         )
     finally:
         await runtime.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_queues_session_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def stop(_: JsonlProcessSupervisor, *, timeout: float) -> None:
+        assert timeout == 60
+        stop_started.set()
+        await release_stop.wait()
+
+    async def run_command(*_: object) -> None:
+        return None
+
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+    monkeypatch.setattr(JsonlProcessSupervisor, "stop", stop)
+    runtime = Runtime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _: {},
+            agent_name="Test Agent",
+            bot_name=lambda: "provider_bot",
+            agent_id="agent-test",
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-queued-stop",
+        bcn_session_id="bcn-queued-stop",
+        channel_session_id="channel-queued-stop",
+        runtime="codex",
+        workspace_id="workspace-queued-stop",
+        provider_thread_id="thread-queued-stop",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    supervisor = JsonlProcessSupervisor(JsonlProcessSpec(executable="unused"))
+    runtime._connections[session.id] = runtime_module._Connection(
+        supervisor=supervisor,
+        client=Client(supervisor),
+        workspace=Path.cwd(),
+        provider_thread_id=session.provider_thread_id or "",
+    )
+
+    try:
+        result = await runtime.stop_session(session, timeout=60)
+
+        assert result.status is ProviderCallStatus.QUEUED
+        assert result.value == session
+        assert result.receipt == {"teardown": "scheduled"}
+        assert session.id not in runtime._connections
+        await asyncio.wait_for(stop_started.wait(), timeout=1)
+        assert len(runtime._teardown_tasks) == 1
+
+        repeated = await runtime.stop_session(session, timeout=60)
+        assert repeated.status is ProviderCallStatus.CONFIRMED
+        assert repeated.value == session
+    finally:
+        release_stop.set()
+        async with asyncio.timeout(1):
+            while runtime._teardown_tasks:
+                await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_reports_background_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def list_background_terminals(
+        _: Client,
+        thread_id: str,
+        *,
+        timeout: float,
+    ) -> dict[str, object]:
+        assert thread_id == "thread-background-job"
+        assert timeout == 3
+        return {"result": {"data": [{"processId": "job-1"}]}}
+
+    async def run_command(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(Client, "list_background_terminals", list_background_terminals)
+    runtime = Runtime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _: {},
+            agent_name="Test Agent",
+            bot_name=lambda: "provider_bot",
+            agent_id="agent-test",
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-background-job",
+        bcn_session_id="bcn-background-job",
+        channel_session_id="channel-background-job",
+        runtime="codex",
+        workspace_id="workspace-background-job",
+        provider_thread_id="thread-background-job",
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+    supervisor = JsonlProcessSupervisor(JsonlProcessSpec(executable="unused"))
+    runtime._connections[session.id] = runtime_module._Connection(
+        supervisor=supervisor,
+        client=Client(supervisor),
+        workspace=Path.cwd(),
+        provider_thread_id=session.provider_thread_id or "",
+    )
+
+    assert await runtime.has_background_job(session, timeout=3)
 
 
 @pytest.mark.asyncio

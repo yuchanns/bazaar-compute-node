@@ -1433,7 +1433,6 @@ async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
             first_message,
             first_context,
             first_completion,
-            1,
         )
     )
     runtime_queue.put_nowait(
@@ -1441,7 +1440,6 @@ async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
             second_message,
             second_context,
             second_completion,
-            2,
         )
     )
     try:
@@ -1971,7 +1969,7 @@ async def test_context_and_timer_expiry_stop_the_runtime_once(
 
 
 @pytest.mark.asyncio
-async def test_quiet_inbound_refreshes_a_live_runtime_idle_deadline() -> None:
+async def test_quiet_inbound_does_not_refresh_a_live_runtime_idle_deadline() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
@@ -1982,9 +1980,6 @@ async def test_quiet_inbound_refreshes_a_live_runtime_idle_deadline() -> None:
         await orchestrator.handle_inbound(
             replace(make_message(seq=2), notifies_runtime=False)
         )
-        await asyncio.sleep(0.05)
-
-        assert orchestrator.runtime_session("bcn-1") is runtime_session
         async with asyncio.timeout(1):
             while orchestrator.runtime_session("bcn-1") is not None:
                 await asyncio.sleep(0.01)
@@ -1995,7 +1990,7 @@ async def test_quiet_inbound_refreshes_a_live_runtime_idle_deadline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notifying_inbound_refreshes_the_current_runtime_deadline() -> None:
+async def test_notifying_inbound_reuses_the_current_runtime_session() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
@@ -2007,7 +2002,38 @@ async def test_notifying_inbound_refreshes_the_current_runtime_deadline() -> Non
         await asyncio.sleep(0.05)
 
         assert orchestrator.runtime_session("bcn-1") is runtime_session
+        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert binding is not None
+        assert binding.timer.active
         assert len(runtime.started_sessions) == 1
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_background_job_suppresses_runtime_idle_timeout() -> None:
+    orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
+    runtime.background_job_present = True
+    try:
+        await orchestrator.handle_inbound(make_message(seq=1))
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+        await asyncio.sleep(0.06)
+
+        assert orchestrator.runtime_session("bcn-1") is runtime_session
+        assert orchestrator._runtime_timers == {}
+        assert runtime.stopped_sessions == []
+
+        runtime.background_job_present = False
+        await orchestrator.handle_inbound(make_message(seq=2))
+        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert binding is not None
+        assert binding.timer.active
+        async with asyncio.timeout(1):
+            while orchestrator.runtime_session("bcn-1") is not None:
+                await asyncio.sleep(0.01)
+        assert runtime.stopped_sessions == [runtime_session]
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()
@@ -2049,11 +2075,16 @@ async def test_expiry_waits_for_an_active_turn_to_return_idle() -> None:
         await asyncio.sleep(0.06)
 
         assert orchestrator.runtime_session("bcn-1") is runtime_session
+        assert orchestrator._runtime_timers == {}
         assert runtime.stopped_sessions == []
 
         stream = next(iter(runtime.active_streams))
         stream.release()
         await inbound_task
+        assert orchestrator.runtime_session("bcn-1") is runtime_session
+        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert binding is not None
+        assert binding.timer.active
         async with asyncio.timeout(1):
             while orchestrator.runtime_session("bcn-1") is not None:
                 await asyncio.sleep(0.01)
