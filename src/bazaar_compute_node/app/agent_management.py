@@ -7,6 +7,7 @@ from types import MappingProxyType
 from uuid import uuid7
 
 from ..core.runtime import RuntimeSandboxMode
+from ..i18n import Translator, create_translator
 from .config import (
     AgentConfiguration,
     ChannelConfiguration,
@@ -18,18 +19,29 @@ from .config import (
 )
 
 
-def build_agent_parser() -> argparse.ArgumentParser:
+def build_agent_parser(
+    translator: Translator | None = None,
+) -> argparse.ArgumentParser:
+    translator = translator or create_translator(None)
     parser = argparse.ArgumentParser(
         prog="bcn agent",
-        description="Manage Agent definitions in the authoritative BCN config.",
+        description=translator.text("cli.agent.description"),
     )
     commands = parser.add_subparsers(dest="agent_command", required=True)
-    commands.add_parser("list", help="List configured Agents.")
+    commands.add_parser("list", help=translator.text("cli.agent.list"))
 
-    add = commands.add_parser("add", help="Add an Agent to config.toml.")
-    add.add_argument("--name", required=True, help="Human-readable Agent name.")
-    add.add_argument("--channel", required=True, help="Channel provider kind.")
-    add.add_argument("--runtime", required=True, help="Runtime provider kind.")
+    add = commands.add_parser("add", help=translator.text("cli.agent.add"))
+    add.add_argument("--name", required=True, help=translator.text("cli.agent.name"))
+    add.add_argument(
+        "--channel",
+        required=True,
+        help=translator.text("cli.agent.channel"),
+    )
+    add.add_argument(
+        "--runtime",
+        required=True,
+        help=translator.text("cli.agent.runtime"),
+    )
     add.add_argument(
         "--set",
         action="append",
@@ -37,14 +49,11 @@ def build_agent_parser() -> argparse.ArgumentParser:
         dest="agent_options",
         metavar="<scope.key=value>",
         type=_agent_option,
-        help=(
-            "Set channel/runtime configuration. Repeat as needed, for example "
-            "--set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN."
-        ),
+        help=translator.text("cli.agent.set"),
     )
 
-    remove = commands.add_parser("remove", help="Remove an Agent definition.")
-    remove.add_argument("selector", help="Exact Agent ID or Agent name.")
+    remove = commands.add_parser("remove", help=translator.text("cli.agent.remove"))
+    remove.add_argument("selector", help=translator.text("cli.agent.selector"))
     return parser
 
 
@@ -70,7 +79,7 @@ def run_agent_command(
     command = args.agent_command
     if command == "list":
         if not configuration.agents:
-            print("No agents configured.", flush=True)
+            print(create_translator(None).text("cli.agent.empty"), flush=True)
             return 0
         for agent in configuration.agents:
             print(

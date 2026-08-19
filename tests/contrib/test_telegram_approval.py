@@ -208,4 +208,4 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
     await channel._handle_callback_query(
         _callback(query_id="duplicate", token=token, sender_id=1956760814)
     )
-    assert api.answers[-1] == ("duplicate", "已经批准")
+    assert api.answers[-1] == ("duplicate", "已批准")
