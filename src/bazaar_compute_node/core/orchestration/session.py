@@ -359,6 +359,16 @@ class SessionOrchestrator(IAsyncLifecycle):
             or self._state_machine.get(session_id) is not SessionRuntimeState.IDLE
         ):
             return
+        try:
+            if await self._runtime.has_background_job(
+                runtime_session,
+                timeout=self._timeout_budget.provider_call_seconds,
+            ):
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("runtime background job check failed")
         await self._start_runtime_timer(runtime_session)
 
     async def _forward_runtime_session_expiry(

@@ -331,6 +331,19 @@ class Client:
             timeout=timeout,
         )
 
+    async def list_background_terminals(
+        self,
+        thread_id: str,
+        *,
+        timeout: float,
+    ) -> JsonlMessage:
+        _validate_non_empty_string("thread_id", thread_id)
+        return await self.supervisor.request(
+            "thread/backgroundTerminals/list",
+            {"threadId": thread_id},
+            timeout=timeout,
+        )
+
     async def receive(self, *, timeout: float | None = None) -> JsonlMessage:
         return await self.supervisor.receive(timeout=timeout)
 
@@ -418,6 +431,18 @@ def parse_turn_response(response: Mapping[str, object]) -> TurnInfo:
 def parse_turn_steer_response(response: Mapping[str, object]) -> str:
     result = _require_mapping(response, "result")
     return _require_text(result, "turnId", "result.turnId")
+
+
+def parse_background_terminals_response(
+    response: Mapping[str, object],
+) -> bool:
+    result = _require_mapping(response, "result")
+    data = result.get("data")
+    if not isinstance(data, list):
+        raise AppServerProtocolError("result.data must be an array")
+    if any(not isinstance(item, Mapping) for item in data):
+        raise AppServerProtocolError("result.data items must be objects")
+    return bool(data)
 
 
 def parse_turn_notification(message: Mapping[str, object]) -> tuple[str, TurnInfo]:
@@ -532,6 +557,7 @@ __all__ = [
     "build_thread_start_params",
     "build_turn_interrupt_params",
     "build_turn_start_params",
+    "parse_background_terminals_response",
     "parse_error_notification",
     "parse_fs_changed_notification",
     "parse_fs_watch_response",

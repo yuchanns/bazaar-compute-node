@@ -78,6 +78,8 @@ class TestRuntime(IRuntime):
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.steered_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
+        self.background_job_present = False
+        self.background_jobs: set[str] = set()
         self.approval_results = []
         self.active_streams: set[_TestTurnStream] = set()
         self.closed_streams: list[_TestTurnStream] = []
@@ -230,6 +232,12 @@ class TestRuntime(IRuntime):
             status=ProviderCallStatus.CONFIRMED,
             value=turn,
         )
+
+    async def has_background_job(
+        self, session: RuntimeSession, *, timeout: float
+    ) -> bool:
+        del timeout
+        return self.background_job_present or session.id in self.background_jobs
 
     async def steer_turn(
         self,

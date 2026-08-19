@@ -2012,6 +2012,34 @@ async def test_notifying_inbound_reuses_the_current_runtime_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_background_job_suppresses_runtime_idle_timeout() -> None:
+    orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
+    runtime.background_job_present = True
+    try:
+        await orchestrator.handle_inbound(make_message(seq=1))
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+        await asyncio.sleep(0.06)
+
+        assert orchestrator.runtime_session("bcn-1") is runtime_session
+        assert orchestrator._runtime_timers == {}
+        assert runtime.stopped_sessions == []
+
+        runtime.background_job_present = False
+        await orchestrator.handle_inbound(make_message(seq=2))
+        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert binding is not None
+        assert binding.timer.active
+        async with asyncio.timeout(1):
+            while orchestrator.runtime_session("bcn-1") is not None:
+                await asyncio.sleep(0.01)
+        assert runtime.stopped_sessions == [runtime_session]
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
+
+
+@pytest.mark.asyncio
 async def test_idle_expiry_replaces_the_runtime_on_next_notification() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     try:
