@@ -250,11 +250,24 @@ $environmentScript = {environment_script}
 $logPath = {log_path}
 
 if ($environmentScript -and (Test-Path -LiteralPath $environmentScript)) {{
-    . $environmentScript
+    try {{
+        . $environmentScript
+    }} catch {{
+        $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+        exit 1
+    }}
 }}
 
-& $executable run --config $configPath *>> $logPath
-exit $LASTEXITCODE
+# Native stderr is routed to the service log and must not terminate the wrapper.
+$ErrorActionPreference = 'Continue'
+try {{
+    & $executable run --config $configPath *>> $logPath
+    $exitCode = $LASTEXITCODE
+}} catch {{
+    $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+    exit 1
+}}
+exit $exitCode
 """
 
 

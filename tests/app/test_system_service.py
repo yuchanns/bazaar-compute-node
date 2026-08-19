@@ -66,6 +66,12 @@ def test_rendered_service_definitions_use_foreground_run(
     assert launchd["ProgramArguments"] == [str(service_context.data_dir / "bcn-run.sh")]
     assert "run --config" in windows_wrapper
     assert "bcn start" not in windows_wrapper
+    assert "$ErrorActionPreference = 'Continue'" in windows_wrapper
+    assert "$exitCode = $LASTEXITCODE" in windows_wrapper
+    assert "Add-Content -LiteralPath $logPath" in windows_wrapper
+    assert windows_wrapper.index("$ErrorActionPreference = 'Continue'") < (
+        windows_wrapper.index("& $executable run --config")
+    )
     namespace = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
     arguments = windows_task.findtext(
         f"{namespace}Actions/{namespace}Exec/{namespace}Arguments",
