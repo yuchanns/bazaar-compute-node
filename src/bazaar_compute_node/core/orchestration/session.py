@@ -204,6 +204,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             clock=self._clock,
         )
         self._active_tasks: set[asyncio.Task[RuntimeTurn | None]] = set()
+        self._runtime_teardown_tasks: set[asyncio.Task[None]] = set()
         self._ingress_queues: dict[tuple[str, str], asyncio.Queue[_IngressItem]] = {}
         self._ingress_workers: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._runtime_queues: dict[str, asyncio.Queue[_RuntimeQueueItem]] = {}
@@ -408,7 +409,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
         except BaseException:
             try:
-                await self._runtime.stop_session(
+                await self._stop_runtime_session(
                     context.runtime_session,
                     timeout=self._timeout_budget.provider_call_seconds,
                 )
@@ -496,6 +497,8 @@ class SessionOrchestrator(IAsyncLifecycle):
 
         for runtime_session in tuple(self._runtime_sessions.values()):
             await self._stop_runtime_session(runtime_session, timeout=timeout)
+
+        await self._wait_for_runtime_teardown_tasks(timeout=timeout)
 
         try:
             await self._runtime.stop(timeout=timeout)
@@ -1515,6 +1518,106 @@ class SessionOrchestrator(IAsyncLifecycle):
         async with self._concurrency.for_session(runtime_session.bcn_session_id):
             await self._stop_runtime_session_locked(runtime_session, timeout=timeout)
 
+    async def _wait_for_runtime_teardown_tasks(self, *, timeout: float) -> None:
+        tasks = tuple(self._runtime_teardown_tasks)
+        if not tasks:
+            return
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(asyncio.shield(gathered), timeout=timeout)
+        except TimeoutError:
+            self._shutdown_errors.append("runtime session teardown: shutdown timeout")
+
+    def _schedule_runtime_session_teardown(
+        self,
+        runtime_session: RuntimeSession,
+        *,
+        correlation: CorrelationContext,
+        timeout: float,
+    ) -> None:
+        task = asyncio.create_task(
+            self._complete_runtime_session_teardown(
+                runtime_session,
+                correlation=correlation,
+                timeout=timeout,
+            ),
+            name=f"bcn-runtime-teardown-{runtime_session.id}",
+        )
+        self._runtime_teardown_tasks.add(task)
+        task.add_done_callback(self._forget_runtime_teardown_task)
+
+    async def _complete_runtime_session_teardown(
+        self,
+        runtime_session: RuntimeSession,
+        *,
+        correlation: CorrelationContext,
+        timeout: float,
+    ) -> None:
+        try:
+            result = await self._runtime.stop_session(runtime_session, timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            result = None
+            stop_error = error
+        else:
+            stop_error = None
+        confirmed = result is not None and result.status is ProviderCallStatus.CONFIRMED
+        unknown = result is None or result.status in {
+            ProviderCallStatus.UNKNOWN,
+            ProviderCallStatus.QUEUED,
+        }
+        error_kind = (
+            result.error_kind
+            if result is not None
+            else ErrorKind.PROVIDER_UNKNOWN.value
+        )
+        error_message = result.error_message if result is not None else str(stop_error)
+        await self._audit.append(
+            event_name=(
+                "runtime.process.stop.completed"
+                if confirmed
+                else "runtime.process.stop.unknown"
+                if unknown
+                else "runtime.process.stop.failed"
+            ),
+            state=(
+                RuntimeEventState.COMPLETED
+                if confirmed
+                else RuntimeEventState.UNKNOWN
+                if unknown
+                else RuntimeEventState.FAILED
+            ),
+            correlation=correlation,
+            error_kind=(
+                ErrorKind(error_kind)
+                if error_kind in ErrorKind._value2member_map_
+                else ErrorKind.INTERNAL
+                if error_message
+                else None
+            )
+            if not confirmed
+            else None,
+            error_message=error_message if not confirmed else None,
+            metadata={
+                "runtime": runtime_session.runtime,
+                "workspace_id": runtime_session.workspace_id,
+            },
+        )
+
+    def _forget_runtime_teardown_task(self, task: asyncio.Task[None]) -> None:
+        self._runtime_teardown_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        self._logger.error(
+            "runtime session teardown failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
     async def _stop_runtime_session_locked(
         self,
         runtime_session: RuntimeSession,
@@ -1545,53 +1648,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                 observed_at_ms=self._clock(),
             ),
         )
-        try:
-            result = await self._runtime.stop_session(runtime_session, timeout=timeout)
-        except Exception as error:  # noqa: BLE001
-            result = None
-            stop_error = error
-        else:
-            stop_error = None
-        confirmed = result is not None and result.status is ProviderCallStatus.CONFIRMED
-        unknown = result is None or result.status in {
-            ProviderCallStatus.UNKNOWN,
-            ProviderCallStatus.QUEUED,
-        }
-        error_kind = (
-            result.error_kind
-            if result is not None
-            else ErrorKind.PROVIDER_UNKNOWN.value
-        )
-        error_message = result.error_message if result is not None else str(stop_error)
-        await self._discard_runtime_session(runtime_session)
-        await self._audit.append(
-            event_name=(
-                "runtime.process.stop.completed"
-                if confirmed
-                else "runtime.process.stop.unknown"
-                if unknown
-                else "runtime.process.stop.failed"
-            ),
-            state=(
-                RuntimeEventState.COMPLETED
-                if confirmed
-                else RuntimeEventState.UNKNOWN
-                if unknown
-                else RuntimeEventState.FAILED
-            ),
+        self._schedule_runtime_session_teardown(
+            runtime_session,
             correlation=process_correlation,
-            error_kind=(
-                ErrorKind(error_kind)
-                if error_kind in ErrorKind._value2member_map_
-                else ErrorKind.INTERNAL
-                if error_message
-                else None
-            )
-            if not confirmed
-            else None,
-            error_message=error_message if not confirmed else None,
-            metadata={
-                "runtime": runtime_session.runtime,
-                "workspace_id": runtime_session.workspace_id,
-            },
+            timeout=timeout,
         )
+        await self._discard_runtime_session(runtime_session)
