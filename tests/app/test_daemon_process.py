@@ -61,7 +61,9 @@ async def wait_for_health(endpoint: str) -> Mapping[str, object]:
         result = response.get("result")
         if not isinstance(result, Mapping):
             raise TypeError(f"health response has no result: {response}")
-        return result
+        if result.get("ready") is True:
+            return result
+        await asyncio.sleep(0.01)
     raise AssertionError("test node health did not become available")
 
 
@@ -103,7 +105,7 @@ kind = "test"
             sys.executable,
             "-m",
             "bazaar_compute_node.cli",
-            "start",
+            "run",
             "--config",
             str(config_path),
             "--database-name",
@@ -119,43 +121,27 @@ kind = "test"
     return process, endpoint, data_dir, config_path
 
 
-def stop_test_process(config_path: Path) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    source_root = str(Path(__file__).parents[2] / "src")
-    environment["PYTHONPATH"] = os.pathsep.join(
-        value for value in (source_root, environment.get("PYTHONPATH")) if value
+async def stop_test_process(endpoint_path: Path) -> Mapping[str, object]:
+    response = await request_with_retry(
+        local_endpoint_for_path(endpoint_path),
+        {"kind": "control", "operation": "shutdown"},
     )
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "bazaar_compute_node.cli",
-            "stop",
-            "--config",
-            str(config_path),
-            "--database-name",
-            "test.sqlite3",
-        ],
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if response.get("ok") is not True:
+        raise AssertionError(f"test node rejected shutdown: {response}")
+    return response
 
 
 @pytest.mark.asyncio
 async def test_real_process_reports_health_and_keeps_agent_configuration(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir, config_path = start_test_process(tmp_path)
-    await asyncio.to_thread(process.wait, 5)
-    assert process.returncode == 0, process.stderr
+    process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
     try:
         endpoint = await wait_for_runtime_endpoint(endpoint_path)
         assert endpoint.startswith("pipe://" if os.name == "nt" else "unix://")
         health = await wait_for_health(endpoint)
         assert health["started"] is True
-        assert health["ready"] is True
+        assert health["ready"] is True, health
         assert health["accepting"] is True
         assert health["configured"] == 1
         assert health["started_agents"] == 1
@@ -169,8 +155,9 @@ async def test_real_process_reports_health_and_keeps_agent_configuration(
         assert agent["name"] == "test-agent"
         assert agent["status"] == "started"
     finally:
-        stop_process = await asyncio.to_thread(stop_test_process, config_path)
-        assert stop_process.returncode == 0, stop_process.stderr
+        await stop_test_process(endpoint_path)
+        await asyncio.to_thread(process.wait, 5)
+        assert process.returncode == 0
         if process.stdout is not None:
             process.stdout.close()
         if process.stderr is not None:
@@ -186,37 +173,18 @@ async def test_real_process_reports_health_and_keeps_agent_configuration(
 
 
 @pytest.mark.asyncio
-async def test_daemon_restart_uses_persisted_configuration(
+async def test_foreground_process_restarts_with_persisted_configuration(
     tmp_path: Path,
 ) -> None:
-    process, endpoint_path, data_dir, config_path = start_test_process(tmp_path)
-    await asyncio.to_thread(process.wait, 5)
-    assert process.returncode == 0, process.stderr
+    process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
     try:
         endpoint = await wait_for_runtime_endpoint(endpoint_path)
-        environment = os.environ.copy()
-        source_root = str(Path(__file__).parents[2] / "src")
-        environment["PYTHONPATH"] = os.pathsep.join(
-            value for value in (source_root, environment.get("PYTHONPATH")) if value
-        )
-        restart_process = await asyncio.to_thread(
-            subprocess.run,
-            [
-                sys.executable,
-                "-m",
-                "bazaar_compute_node.cli",
-                "restart",
-                "--config",
-                str(config_path),
-                "--database-name",
-                "test.sqlite3",
-            ],
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert restart_process.returncode == 0, restart_process.stderr
+        await wait_for_health(endpoint)
+        await stop_test_process(endpoint_path)
+        await asyncio.to_thread(process.wait, 5)
+        assert process.returncode == 0
+
+        process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
         response_endpoint = await wait_for_runtime_endpoint(endpoint_path)
         assert response_endpoint == endpoint
         health = await wait_for_health(response_endpoint)
@@ -224,8 +192,10 @@ async def test_daemon_restart_uses_persisted_configuration(
         assert health["configured"] == 1
         assert health["started_agents"] == 1
     finally:
-        stop_process = await asyncio.to_thread(stop_test_process, config_path)
-        assert stop_process.returncode == 0, stop_process.stderr
+        if process.poll() is None:
+            await stop_test_process(endpoint_path)
+        await asyncio.to_thread(process.wait, 5)
+        assert process.returncode == 0
         if process.stdout is not None:
             process.stdout.close()
         if process.stderr is not None:

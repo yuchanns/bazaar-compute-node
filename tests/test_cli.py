@@ -10,16 +10,18 @@ from uuid import UUID
 import pytest
 
 from bazaar_compute_node import __version__
+from bazaar_compute_node.app.agent_management import build_agent_parser
 from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
+from bazaar_compute_node.app.system_service import build_system_service_parser
 from bazaar_compute_node.cli import (
     _apply_runtime_configuration,
-    _daemon_command,
     build_parser,
     main,
 )
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.paths import resolve_data_dir
 from bazaar_compute_node.core.runtime import RuntimeSandboxMode
+from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
 def test_help_shows_the_resolved_data_dir() -> None:
@@ -28,6 +30,18 @@ def test_help_shows_the_resolved_data_dir() -> None:
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
     ).replace("\n", "")
+
+
+def test_cli_help_uses_the_selected_translator() -> None:
+    translator = create_translator(SIMPLIFIED_CHINESE)
+
+    root_help = build_parser(translator).format_help()
+    agent_help = build_agent_parser(translator).format_help()
+    service_help = build_system_service_parser(translator).format_help()
+
+    assert "配置文件路径" in root_help
+    assert "管理 bcn 配置文件中的 Agent 定义" in agent_help
+    assert "管理 bcn 的用户级宿主机服务" in service_help
 
 
 def test_runtime_version_matches_distribution_metadata() -> None:
@@ -70,43 +84,6 @@ kind = "test"
     assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert runtime.network_access is True
     assert runtime.idle_timeout_seconds == 0
-
-
-def test_cli_forwards_explicit_config_and_database_name(tmp_path: Path) -> None:
-    config_path = tmp_path / "task-config.toml"
-    config_path.write_text(
-        """
-version = "2"
-
-[[agent]]
-id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
-name = "default"
-
-[agent.channel]
-kind = "test"
-
-[agent.runtime]
-kind = "test"
-""".lstrip(),
-        encoding="utf-8",
-    )
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "start",
-            "--config",
-            str(config_path),
-            "--database-name",
-            "task.sqlite3",
-        ]
-    )
-    args.config = args.config.expanduser().resolve()
-    _apply_runtime_configuration(args, parser)
-
-    command = _daemon_command(args, tmp_path)
-
-    assert command[command.index("--config") + 1] == str(config_path)
-    assert command[command.index("--database-name") + 1] == "task.sqlite3"
 
 
 def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> None:
@@ -269,7 +246,9 @@ def test_agent_list_reports_empty_configuration(
 
     assert main(["agent", "list", "--config", str(config_path)]) == 0
 
-    assert capsys.readouterr().out == "No agents configured.\n"
+    assert capsys.readouterr().out == (
+        f"{create_translator(None).text('cli.agent.empty')}\n"
+    )
 
 
 def test_agent_add_preserves_typed_options_and_round_trips(

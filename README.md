@@ -1,6 +1,7 @@
 # Bazaar Compute Node
 
 Collaborate with your Agents in the bazaar across compute nodes, through any interface, with any harness runtime.
+
 在集市里与你的 Agent 们合作，透过任意界面与任意 Harness。
 
 <p align="left">
@@ -18,28 +19,49 @@ Collaborate with your Agents in the bazaar across compute nodes, through any int
 
 ## Quick Start / 快速开始
 
-Python 3.14+ is required:
+Python 3.14+ is required.
+
+需要 Python 3.14 或更高版本：
 
 ```sh
-# Install
+# Install / 安装
 uv tool install bazaar-compute-node
 bcn --version
 
-# Upgrade
+# Upgrade / 升级
 uv tool upgrade bazaar-compute-node
 
-# Add an Agent
+# Add an Agent / 添加 Agent
 bcn agent add \
   --name Tifa \
   --channel telegram \
   --runtime codex \
   --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN
 
-# Start daemon
-bcn start
+# Configure the runtime environment / 配置运行时环境
+# Example file content / 示例文件内容:
+# BCN_TELEGRAM_TIFA_TOKEN=replace-with-your-token
 
-# Stop daemon
-bcn stop
+# Register the user-level system service / 注册用户级宿主机服务
+bcn system-service install --env-file ~/.config/bcn/runtime.env
+
+# Start the registered service / 启动已注册的服务
+bcn system-service start
+
+# Inspect registration and bcn health / 查看注册状态和 bcn 运行状态
+bcn system-service status
+
+# Restart or stop the registered service / 重启或停止已注册的服务
+bcn system-service restart
+bcn system-service stop
+```
+
+## Service logs / 服务日志
+
+```text
+Linux:   journalctl --user -u bcn.service -f
+macOS:   tail -f ~/.bcn/system-service.log
+Windows: Get-Content "$env:USERPROFILE\.bcn\system-service.log" -Wait
 ```
 
 ## Features / 功能
