@@ -113,6 +113,11 @@ class Runtime(IRuntime, IAsyncLifecycle):
         del timeout
         if self._stopping:
             raise RuntimeError("Codex App Server runtime is stopping")
+        if os.name == "nt":
+            self._logger.warning(
+                "Codex idle timeout is not supported on Windows; "
+                "see openai/codex#15461."
+            )
         self._started = True
 
     async def stop(self, *, timeout: float) -> None:
@@ -523,6 +528,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> bool:
+        if os.name == "nt":
+            # Detached OS processes are not exposed by the Windows Codex provider.
+            return True
         connection = self._connections.get(session.id)
         provider_thread_id = session.provider_thread_id
         if connection is None or not provider_thread_id:

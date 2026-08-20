@@ -596,9 +596,43 @@ async def test_codex_runtime_stops_session(
 
 
 @pytest.mark.asyncio
+async def test_windows_codex_runtime_assumes_background_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_command(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(runtime_module.os, "name", "nt")
+    runtime = Runtime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _: {},
+            agent_name="Test Agent",
+            bot_name=lambda: "provider_bot",
+            agent_id="agent-test",
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-windows-background-job",
+        bcn_session_id="bcn-windows-background-job",
+        channel_session_id="channel-windows-background-job",
+        runtime="codex",
+        workspace_id="workspace-windows-background-job",
+        provider_thread_id=None,
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+
+    assert await runtime.has_background_job(session, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_codex_runtime_reports_background_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(runtime_module.os, "name", "posix")
+
     async def list_background_terminals(
         _: Client,
         thread_id: str,
@@ -931,6 +965,10 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
 
 
 @pytest.mark.e2e
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows Codex cannot observe background tasks",
+)
 @pytest.mark.asyncio
 async def test_local_codex_core_teardown_reaps_background_terminal(
     system_temp_dir: Path,
