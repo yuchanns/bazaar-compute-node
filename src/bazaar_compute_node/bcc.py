@@ -483,24 +483,12 @@ def _message_header_fields(
     sender_value = message.get("sender")
     sender: str | None = None
     if sender_value is not None:
-        if isinstance(sender_value, str) and sender_value:
-            sender = sender_value
-        elif not isinstance(sender_value, Mapping):
+        if not isinstance(sender_value, Mapping):
             _invalid_response("command response contains an invalid message sender")
         else:
             sender_id = sender_value.get("id")
             sender_name = sender_value.get("name")
-            if sender_id is not None and (
-                not isinstance(sender_id, str) or not sender_id
-            ):
-                _invalid_response("command response contains an invalid sender id")
-            if sender_name is not None and (
-                not isinstance(sender_name, str) or not sender_name
-            ):
-                _invalid_response("command response contains an invalid sender name")
-            sender = sender_name or sender_id
-            if sender is None:
-                _invalid_response("command response contains an empty message sender")
+            sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
     return (
         target,
         message_id,
@@ -553,7 +541,7 @@ def _format_check_message(message: Mapping[str, object]) -> str:
         line += f" reply_to={reply_to_message_id}"
     line += "] "
     if sender is not None:
-        line += f"@{sender}: "
+        line += f"{sender} "
     return line + body + _attachment_suffix(message)
 
 
@@ -583,7 +571,7 @@ def _format_read_message(
         fields.append(f"replyTo={reply_to_message_id}")
     line = f"[{index}/{count} {' '.join(fields)}] "
     if sender is not None:
-        line += f"@{sender}: "
+        line += f"{sender} "
     return line + body + _attachment_suffix(message)
 
 

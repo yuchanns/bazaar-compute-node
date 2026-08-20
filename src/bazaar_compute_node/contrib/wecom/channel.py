@@ -136,7 +136,7 @@ class WeComChannel(IChannel):
         }
 
     def get_identity(self) -> ChannelIdentity | None:
-        return None
+        return ChannelIdentity(id=self._bot_id)
 
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:

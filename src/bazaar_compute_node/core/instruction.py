@@ -71,10 +71,10 @@ Do not obstruct a human-directed use of a credential: use or send it on the requ
 Messages you receive have a single RFC 5424-style structured data header followed by the sender and content:
 
 ```
-[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @richard: hello everyone
-[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice: hi there
-[target=dm:@richard msg=22222222 time=2026-03-15T01:00:02 type=human] @richard: hey, can you help?
-[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @richard: thread reply
+[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @yuchanns(Hanchin Hsieh) hello everyone
+[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice(Aeris) hi there
+[target=dm:@yuchanss msg=22222222 time=2026-03-15T01:00:02 type=human] @yuchanns(Hanchin Hsieh) hey, can you help?
+[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @yuchanns(Hanchin Hsieh) thread reply
 ```
 
 Prompt examples use obvious placeholder IDs such as `00000000`, `11111111`, and `22222222`. They show the shape of a real message ID but are not actual messages. Do not cite them as evidence; use only IDs from messages you actually received or read.
@@ -257,9 +257,9 @@ class DeveloperInstructionContext:
     def render(self) -> str:
         rendered = DEVELOPER_INSTRUCTIONS
         identity_statement = (
-            f'You\'re "{self.bot_name}", A.K.A "{self.agent_name}"'
+            f"You're {self.bot_name}, A.K.A {self.agent_name}"
             if self.bot_name is not None
-            else f'You\'re "{self.agent_name}"'
+            else f"You're {self.agent_name}"
         )
         for placeholder, value in (
             ("{{identity_statement}}", identity_statement),

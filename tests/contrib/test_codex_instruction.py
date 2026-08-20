@@ -10,7 +10,7 @@ def test_codex_thread_start_receives_rendered_reminder_instructions() -> None:
     workspace = Path("/workspace")
     rendered = DeveloperInstructionContext(
         agent_name="Test Agent",
-        bot_name="provider_bot",
+        bot_name="provider-id(provider-bot)",
         agent_id="agent-test",
         runtime_session_id="runtime-session-test",
         runtime="codex",
@@ -30,3 +30,4 @@ def test_codex_thread_start_receives_rendered_reminder_instructions() -> None:
     assert (
         "Reminder firing never sends an external Channel message by itself" in rendered
     )
+    assert "You're provider-id(provider-bot), A.K.A Test Agent" in rendered

@@ -67,11 +67,11 @@ def make_outbound_message() -> OutboundMessage:
 
 
 def test_sender_identity_separates_stable_id_from_display_name() -> None:
-    named = SenderIdentity(id="1956760814", name="realyuchanns")
-    unnamed = SenderIdentity(id="1956760814")
+    named = SenderIdentity(id="test-user-id", name="test-user")
+    unnamed = SenderIdentity(id="test-user-id")
 
-    assert named.display_name == "realyuchanns"
-    assert unnamed.display_name == "1956760814"
+    assert named.display_name == "test-user"
+    assert unnamed.display_name == "test-user-id"
 
 
 def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:

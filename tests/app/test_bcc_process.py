@@ -142,7 +142,7 @@ async def _wait_for_runtime_session(runtime: TestRuntime) -> RuntimeSession:
 
 
 @pytest.mark.asyncio
-async def test_runtime_bot_name_prefers_channel_name_then_id(
+async def test_runtime_bot_name_prefers_channel_name_with_id_fallback(
     tmp_path: Path,
 ) -> None:
     node, channels, _ = _make_node(tmp_path)

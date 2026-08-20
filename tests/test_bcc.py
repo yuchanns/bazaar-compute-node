@@ -65,19 +65,19 @@ def test_check_serializer_matches_canonical_text() -> None:
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
-        "type=human mentioned=false] @sender: message body"
+        "type=human mentioned=false] @sender-id(sender) message body"
     )
 
 
 def test_check_serializer_renders_provider_username_as_sender() -> None:
     result = {
-        "messages": [message_payload(sender_name="realyuchanns")],
+        "messages": [message_payload(sender_name="test-user")],
         "referenced_messages": [],
         "snapshot_seq": 7,
         "delivered_through_seq": 7,
     }
 
-    assert "@realyuchanns: message body" in serialize_check(result)
+    assert "@sender-id(test-user) message body" in serialize_check(result)
 
 
 def test_check_serializer_falls_back_to_sender_id() -> None:
@@ -88,20 +88,7 @@ def test_check_serializer_falls_back_to_sender_id() -> None:
         "delivered_through_seq": 7,
     }
 
-    assert "@sender-id: message body" in serialize_check(result)
-
-
-def test_check_serializer_accepts_scalar_sender_during_rolling_upgrade() -> None:
-    message = message_payload()
-    message["sender"] = "sender"
-    result = {
-        "messages": [message],
-        "referenced_messages": [],
-        "snapshot_seq": 7,
-        "delivered_through_seq": 7,
-    }
-
-    assert "@sender: message body" in serialize_check(result)
+    assert "@sender-id message body" in serialize_check(result)
 
 
 def test_check_serializer_preserves_zero_provider_timestamp() -> None:
@@ -239,7 +226,7 @@ def test_read_serializer_includes_positioning_and_canonical_reply_target() -> No
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
         "type=human replyTarget=#work:parent123 "
-        "mentioned=false] @sender: message body"
+        "mentioned=false] @sender-id(sender) message body"
     )
 
 
