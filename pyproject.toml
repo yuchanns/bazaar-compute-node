@@ -10,6 +10,7 @@ dependencies = [
     "aiohttp>=3.12.0",
     "aiosqlite>=0.20.0",
     "cryptography>=45.0.0",
+    "protobug==1.0.0",
     "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
@@ -25,6 +26,7 @@ codex = "bazaar_compute_node.contrib.codex.plugin:create_runtime"
 [project.entry-points."bazaar_compute_node.channels"]
 wecom = "bazaar_compute_node.contrib.wecom.plugin:builder"
 telegram = "bazaar_compute_node.contrib.telegram.plugin:builder"
+lark = "bazaar_compute_node.contrib.lark.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.storages"]
 sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"

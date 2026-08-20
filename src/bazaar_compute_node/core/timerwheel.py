@@ -104,6 +104,10 @@ class Timer:
         try:
             await waiter
             self._expiry_consumed = True
+        except BaseException:
+            if self._active:
+                self.cancel()
+            raise
         finally:
             self._waiting = False
             self._waiter = None
