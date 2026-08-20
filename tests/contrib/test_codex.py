@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -64,10 +65,12 @@ from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
     RuntimeEvent,
+    RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -529,7 +532,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
 
 
 @pytest.mark.asyncio
-async def test_codex_runtime_queues_session_teardown(
+async def test_codex_runtime_stops_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def stop(_: JsonlProcessSupervisor, *, timeout: float) -> None:
@@ -571,30 +574,65 @@ async def test_codex_runtime_queues_session_teardown(
         provider_thread_id=session.provider_thread_id or "",
     )
 
+    stop_task = asyncio.create_task(runtime.stop_session(session, timeout=60))
     try:
-        result = await runtime.stop_session(session, timeout=60)
-
-        assert result.status is ProviderCallStatus.QUEUED
-        assert result.value == session
-        assert result.receipt == {"teardown": "scheduled"}
-        assert session.id not in runtime._connections
         await asyncio.wait_for(stop_started.wait(), timeout=1)
-        assert len(runtime._teardown_tasks) == 1
+        assert not stop_task.done()
+        assert session.id not in runtime._connections
+
+        release_stop.set()
+        result = await asyncio.wait_for(stop_task, timeout=1)
+        assert result.status is ProviderCallStatus.CONFIRMED
+        assert result.value == session
+        assert result.receipt == {}
 
         repeated = await runtime.stop_session(session, timeout=60)
         assert repeated.status is ProviderCallStatus.CONFIRMED
         assert repeated.value == session
     finally:
         release_stop.set()
-        async with asyncio.timeout(1):
-            while runtime._teardown_tasks:
-                await asyncio.sleep(0)
+        if not stop_task.done():
+            await asyncio.wait_for(stop_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_windows_codex_runtime_assumes_background_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_command(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(runtime_module.os, "name", "nt")
+    runtime = Runtime(
+        RuntimeCommandContext(
+            run_command=run_command,
+            environment_for_session=lambda _: {},
+            agent_name="Test Agent",
+            bot_name=lambda: "provider_bot",
+            agent_id="agent-test",
+        )
+    )
+    now_ms = time_ns() // 1_000_000
+    session = RuntimeSession(
+        id="runtime-windows-background-job",
+        bcn_session_id="bcn-windows-background-job",
+        channel_session_id="channel-windows-background-job",
+        runtime="codex",
+        workspace_id="workspace-windows-background-job",
+        provider_thread_id=None,
+        created_at_ms=now_ms,
+        updated_at_ms=now_ms,
+    )
+
+    assert await runtime.has_background_job(session, timeout=3)
 
 
 @pytest.mark.asyncio
 async def test_codex_runtime_reports_background_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(runtime_module.os, "name", "posix")
+
     async def list_background_terminals(
         _: Client,
         thread_id: str,
@@ -924,6 +962,161 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
 
     assert supervisor.returncode is not None
     assert not supervisor.is_running
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows Codex cannot observe background tasks",
+)
+@pytest.mark.asyncio
+async def test_local_codex_core_teardown_reaps_background_terminal(
+    system_temp_dir: Path,
+) -> None:
+    codex = shutil.which("codex")
+    if codex is None:
+        pytest.fail("codex CLI is required for the App Server integration test")
+
+    agent_id = str(uuid7())
+    agent_name = "Codex Teardown Test Agent"
+    storage = SqliteDatabase()
+    channel = TestChannel()
+    audit = RecordingAudit()
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=agent_id,
+                    name=agent_name,
+                    channel=ChannelConfiguration(kind="test"),
+                    runtime=RuntimeConfiguration(
+                        kind="codex",
+                        model=TEST_MODEL,
+                        effort=TEST_EFFORT,
+                    ),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: storage,
+            audit=lambda: audit,
+        ),
+        registry=_StaticRegistry(
+            channel=channel,
+            runtime=lambda context: Runtime(
+                context,
+                executable=codex,
+                model=TEST_MODEL,
+                effort=TEST_EFFORT,
+            ),
+        ),
+        endpoint_path=system_temp_dir / "codex-teardown.sock",
+        timeout_budget=TimeoutBudget(
+            startup_seconds=30,
+            provider_call_seconds=30,
+            command_seconds=30,
+            shutdown_seconds=30,
+        ),
+    )
+    session_id = f"codex-teardown-{uuid7()}"
+    scoped_session_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"bcn:{agent_id}:bcn-session:{session_id}",
+        )
+    )
+    first = make_message(
+        session_id=session_id,
+        body=(
+            "I need to verify that a long-running local task can continue after you "
+            "respond. Start `sleep 60` as a background task, then tell me it is "
+            "running without waiting for completion."
+        ),
+    )
+    try:
+        await node.start()
+        await channel.inject(first)
+        storage_scope = storage.scope(agent_id, agent_name)
+        persisted = await _wait_for_inbound_messages(
+            storage_scope,
+            scoped_session_id,
+            1,
+        )
+        turn_id = f"turn-{persisted[0].message_id}"
+        try:
+            async with asyncio.timeout(120):
+                while not any(
+                    isinstance(event, RuntimeEvent)
+                    and event.event_name == "runtime.turn.completed"
+                    and event.state is RuntimeEventState.COMPLETED
+                    and event.turn_id == turn_id
+                    for event in channel.events
+                ):
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            warnings.warn(
+                "Skipping Codex teardown assertions because the provider did not "
+                "complete the turn while the long-running task was active.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            pytest.skip(
+                "Codex provider did not complete a turn with a live background task"
+            )
+
+        agent = node.agents[agent_id]
+        assert isinstance(agent.runtime, Runtime)
+        runtime = agent.runtime
+        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert runtime_session is not None
+        if not await runtime.has_background_job(runtime_session, timeout=30):
+            warnings.warn(
+                "Skipping Codex teardown assertions because turn completion was not "
+                "accompanied by a live background task.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            pytest.skip(
+                "Codex provider completed without exposing a live background task"
+            )
+
+        connection = runtime._connections.get(runtime_session.id)
+        assert connection is not None
+        assert connection.supervisor.pid is not None
+        assert connection.supervisor.is_running
+
+        await agent.orchestrator._stop_runtime_session(runtime_session, timeout=30)
+        assert agent.orchestrator.runtime_session(scoped_session_id) is None
+        async with asyncio.timeout(30):
+            while agent.orchestrator._runtime_teardown_tasks:
+                await asyncio.sleep(0.1)
+        assert not connection.supervisor.is_running
+        assert connection.supervisor.returncode is not None
+
+        second = make_message(
+            session_id=session_id,
+            seq=2,
+            body="Reply with exactly session replacement confirmed. Do not use tools.",
+        )
+        await channel.inject(second)
+        persisted = await _wait_for_inbound_messages(
+            storage_scope,
+            scoped_session_id,
+            2,
+        )
+        await _wait_for_audit_event(
+            audit,
+            session_id=scoped_session_id,
+            event_suffix="turn.completed",
+            turn_id=f"turn-{persisted[1].message_id}",
+        )
+        replacement = agent.orchestrator.runtime_session(scoped_session_id)
+        assert replacement is not None
+        assert replacement.id != runtime_session.id
+    finally:
+        await node.stop()
 
 
 @pytest.mark.e2e

@@ -104,7 +104,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._model = model
         self._effort = effort
         self._connections: dict[str, _Connection] = {}
-        self._teardown_tasks: set[asyncio.Task[None]] = set()
         self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
         self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
@@ -114,6 +113,11 @@ class Runtime(IRuntime, IAsyncLifecycle):
         del timeout
         if self._stopping:
             raise RuntimeError("Codex App Server runtime is stopping")
+        if os.name == "nt":
+            self._logger.warning(
+                "Codex idle timeout is not supported on Windows; "
+                "see openai/codex#15461."
+            )
         self._started = True
 
     async def stop(self, *, timeout: float) -> None:
@@ -524,6 +528,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> bool:
+        if os.name == "nt":
+            # Detached OS processes are not exposed by the Windows Codex provider.
+            return True
         connection = self._connections.get(session.id)
         provider_thread_id = session.provider_thread_id
         if connection is None or not provider_thread_id:
@@ -549,11 +556,10 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 status=ProviderCallStatus.CONFIRMED,
                 value=session,
             )
-        self._schedule_connection_teardown(connection, timeout=timeout)
+        await self._stop_connection(connection, timeout=timeout)
         return ProviderCallResult(
-            status=ProviderCallStatus.QUEUED,
+            status=ProviderCallStatus.CONFIRMED,
             value=session,
-            receipt={"teardown": "scheduled"},
         )
 
     async def _open_connection(
@@ -659,28 +665,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             raise
         except OSError, TimeoutError, JsonlTransportError:
             return
-
-    def _schedule_connection_teardown(
-        self,
-        connection: _Connection,
-        *,
-        timeout: float,
-    ) -> None:
-        task = asyncio.create_task(
-            self._stop_connection(connection, timeout=timeout),
-            name=f"bcn-codex-teardown-{connection.provider_thread_id}",
-        )
-        self._teardown_tasks.add(task)
-        task.add_done_callback(self._forget_teardown_task)
-
-    def _forget_teardown_task(self, task: asyncio.Task[None]) -> None:
-        self._teardown_tasks.discard(task)
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception:
-            self._logger.exception("Codex runtime connection teardown failed")
 
     def _clear_active_turn(self, session_id: str, turn_id: str) -> None:
         connection = self._connections.get(session_id)

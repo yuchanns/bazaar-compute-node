@@ -47,6 +47,7 @@ from bazaar_compute_node.core.models import (
     ReminderOccurrence,
     RuntimeEvent,
     RuntimeEventState,
+    RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
@@ -1717,6 +1718,106 @@ async def test_confirmed_stop_replaces_runtime_session_on_next_inbound() -> None
 
 
 @pytest.mark.asyncio
+async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def blocked_stop_session(
+        session: RuntimeSession,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSession]:
+        assert timeout == 1
+        runtime.stopped_sessions.append(session)
+        stop_started.set()
+        await release_stop.wait()
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=session,
+        )
+
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        first_runtime = orchestrator.runtime_session("bcn-1")
+        assert first_runtime is not None
+
+        await orchestrator._stop_runtime_session(first_runtime, timeout=1)
+        await stop_started.wait()
+
+        assert orchestrator.runtime_session("bcn-1") is None
+        assert len(orchestrator._runtime_teardown_tasks) == 1
+
+        second_turn = await asyncio.wait_for(
+            orchestrator.handle_inbound(make_message(seq=2)),
+            timeout=1,
+        )
+        assert second_turn is not None
+        second_runtime = orchestrator.runtime_session("bcn-1")
+        assert second_runtime is not None
+        assert second_runtime.id != first_runtime.id
+        assert not release_stop.is_set()
+
+        release_stop.set()
+        await wait_until(lambda: not orchestrator._runtime_teardown_tasks)
+    finally:
+        release_stop.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_shutdown_gathers_runtime_teardown_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+    shutdown_task: asyncio.Task[None] | None = None
+
+    async def blocked_stop_session(
+        session: RuntimeSession,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSession]:
+        assert timeout == 1
+        runtime.stopped_sessions.append(session)
+        stop_started.set()
+        await release_stop.wait()
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=session,
+        )
+
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+
+        await orchestrator._stop_runtime_session(runtime_session, timeout=1)
+        await stop_started.wait()
+
+        shutdown_task = asyncio.create_task(orchestrator.stop(timeout=1))
+        await asyncio.sleep(0.05)
+        assert not shutdown_task.done()
+
+        release_stop.set()
+        await shutdown_task
+        assert orchestrator._runtime_teardown_tasks == set()
+    finally:
+        release_stop.set()
+        if shutdown_task is not None and not shutdown_task.done():
+            await asyncio.wait_for(shutdown_task, timeout=2)
+        elif shutdown_task is None and not orchestrator._stopping:
+            await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     (ProviderCallStatus.FAILED, ProviderCallStatus.UNKNOWN),
@@ -1836,6 +1937,7 @@ async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
                 and orchestrator.runtime_session("bcn-b") is None
             )
         )
+        await wait_until(lambda: len(runtime.stopped_sessions) == 2)
 
         assert {session.id for session in runtime.stopped_sessions} == {
             first_a.id,
@@ -1850,6 +1952,7 @@ async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
         assert second_a.id != first_a.id
         runtime.emit_expire(second_a.id)
         await wait_until(lambda: orchestrator.runtime_session("bcn-a") is None)
+        await wait_until(lambda: len(runtime.stopped_sessions) == 3)
 
         assert runtime.stopped_sessions.count(second_a) == 1
         assert len(runtime.started_sessions) == 3
