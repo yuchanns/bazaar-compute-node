@@ -107,10 +107,15 @@ async def test_telegram_real_provider_dm_rich_markdown_and_attachment(
         bot_id = channel.health["bot_id"]
         assert isinstance(bot_id, int)
         bot_username = channel.health["bot_username"]
-        assert isinstance(bot_username, str)
+        bot_first_name = channel.health["bot_first_name"]
+        assert isinstance(bot_first_name, str)
         assert channel.get_identity() == ChannelIdentity(
             id=str(bot_id),
-            name=bot_username,
+            name=(
+                f"{bot_username}({bot_first_name})"
+                if isinstance(bot_username, str) and bot_username
+                else bot_first_name
+            ),
         )
         identity = TelegramThreadIdentity(bot_id=bot_id, chat_id=chat_id, topic_id=0)
         nonce = uuid4()

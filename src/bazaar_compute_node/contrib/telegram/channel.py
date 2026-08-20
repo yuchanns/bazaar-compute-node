@@ -67,6 +67,7 @@ class TelegramChannel(IChannel):
         self._api: TelegramBotApi | None = None
         self._bot_id: int | None = None
         self._bot_username: str | None = None
+        self._bot_first_name: str | None = None
         self._state = "stopped"
         self._poll_attempts = 0
         self._last_poll_at_ms: int | None = None
@@ -102,6 +103,7 @@ class TelegramChannel(IChannel):
             "started_at_s": self._started_at_s,
             "bot_id": self._bot_id,
             "bot_username": self._bot_username,
+            "bot_first_name": self._bot_first_name,
             "poll_timeout_seconds": 50,
             "poll_attempts": self._poll_attempts,
             "last_poll_at_ms": self._last_poll_at_ms,
@@ -127,9 +129,15 @@ class TelegramChannel(IChannel):
     def get_identity(self) -> ChannelIdentity | None:
         bot_id = self._bot_id
         bot_username = self._bot_username
-        if bot_id is None or bot_username is None:
+        bot_first_name = self._bot_first_name
+        if bot_id is None or bot_first_name is None:
             return None
-        return ChannelIdentity(id=str(bot_id), name=bot_username)
+        return ChannelIdentity(
+            id=str(bot_id),
+            name=(
+                f"{bot_username}({bot_first_name})" if bot_username else bot_first_name
+            ),
+        )
 
     async def start(self, *, timeout: float) -> None:
         if self._runner is not None:
@@ -156,16 +164,22 @@ class TelegramChannel(IChannel):
             bot_id = bot.get("id")
             is_bot = bot.get("is_bot")
             username = bot.get("username")
+            first_name = bot.get("first_name")
             if (
                 not isinstance(bot_id, int)
                 or isinstance(bot_id, bool)
                 or is_bot is not True
-                or not isinstance(username, str)
-                or not username
+                or (
+                    username is not None
+                    and (not isinstance(username, str) or not username)
+                )
+                or not isinstance(first_name, str)
+                or not first_name
             ):
                 raise ValueError("Telegram getMe returned an invalid bot identity")
             self._bot_id = bot_id
-            self._bot_username = username
+            self._bot_username = username if isinstance(username, str) else None
+            self._bot_first_name = first_name
             self._typing_runner = asyncio.create_task(
                 self._run_typing_dispatcher(),
                 name="bcn-telegram-typing",
@@ -195,6 +209,7 @@ class TelegramChannel(IChannel):
             self._session = None
             self._bot_id = None
             self._bot_username = None
+            self._bot_first_name = None
             self._typing_leases.clear()
             await session.close()
             self._state = "stopped"
@@ -227,6 +242,7 @@ class TelegramChannel(IChannel):
         self._session = None
         self._bot_id = None
         self._bot_username = None
+        self._bot_first_name = None
         if session is not None and not session.closed:
             await session.close()
         self._ready.clear()
@@ -462,8 +478,8 @@ class TelegramChannel(IChannel):
         update_id: int,
     ) -> None:
         bot_id = self._bot_id
-        bot_username = self._bot_username
-        if bot_id is None or bot_username is None:
+        bot_username = self._bot_username or ""
+        if bot_id is None:
             raise RuntimeError("Telegram bot identity is not initialized")
 
         provider_sender = message.get("from")
@@ -631,8 +647,8 @@ class TelegramChannel(IChannel):
         if topic_id is None or topic_id != identity.topic_id:
             return None
         bot_id = self._bot_id
-        bot_username = self._bot_username
-        if bot_id is None or bot_username is None:
+        bot_username = self._bot_username or ""
+        if bot_id is None:
             raise RuntimeError("Telegram bot identity is not initialized")
         content = await self._content(
             reply,
@@ -826,11 +842,11 @@ class TelegramChannel(IChannel):
             if entity_text is None:
                 continue
             if entity_type == "mention":
-                if entity_text.casefold() == f"@{username}":
+                if username and entity_text.casefold() == f"@{username}":
                     return True
                 continue
             _, separator, target = entity_text.rpartition("@")
-            if separator and target.casefold() == username:
+            if separator and username and target.casefold() == username:
                 return True
         return False
 

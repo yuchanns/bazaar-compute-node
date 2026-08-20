@@ -257,9 +257,9 @@ class DeveloperInstructionContext:
     def render(self) -> str:
         rendered = DEVELOPER_INSTRUCTIONS
         identity_statement = (
-            f'You\'re "{self.bot_name}", A.K.A "{self.agent_name}"'
+            f"You're {self.bot_name}, A.K.A {self.agent_name}"
             if self.bot_name is not None
-            else f'You\'re "{self.agent_name}"'
+            else f"You're {self.agent_name}"
         )
         for placeholder, value in (
             ("{{identity_statement}}", identity_statement),

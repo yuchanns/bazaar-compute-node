@@ -18,6 +18,11 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
+TEST_BOT_ID = 1_000_000_001
+TEST_CHAT_ID = 1_000_000_002
+TEST_ORIGINAL_SENDER_ID = 1_000_000_003
+TEST_OTHER_SENDER_ID = 1_000_000_004
+
 
 class _FakeApprovalApi:
     def __init__(self) -> None:
@@ -49,8 +54,8 @@ class _FakeApprovalApi:
 
 def _request(sender_id: str | None) -> ChannelApprovalRequest:
     identity = TelegramThreadIdentity(
-        bot_id=8688828365,
-        chat_id=1956760814,
+        bot_id=TEST_BOT_ID,
+        chat_id=TEST_CHAT_ID,
         topic_id=0,
     )
     return ChannelApprovalRequest(
@@ -74,7 +79,7 @@ def _callback(*, query_id: str, token: str, sender_id: int) -> dict[str, object]
         "from": {"id": sender_id},
         "message": {
             "message_id": 42,
-            "chat": {"id": 1956760814},
+            "chat": {"id": TEST_CHAT_ID},
         },
     }
 
@@ -98,23 +103,34 @@ async def test_telegram_approval_uses_original_sender_id_not_display_name(
     )
     api = _FakeApprovalApi()
     monkeypatch.setattr(channel, "_api", api)
-    monkeypatch.setattr(channel, "_bot_id", 8688828365)
+    monkeypatch.setattr(channel, "_bot_id", TEST_BOT_ID)
 
     task = asyncio.create_task(
-        channel.request_approval(_request("1956760814"), timeout=1)
+        channel.request_approval(
+            _request(str(TEST_ORIGINAL_SENDER_ID)),
+            timeout=1,
+        )
     )
     while not channel._pending_approvals:
         await asyncio.sleep(0)
     token = next(iter(channel._pending_approvals))
 
     await channel._handle_callback_query(
-        _callback(query_id="other-user", token=token, sender_id=6820994803)
+        _callback(
+            query_id="other-user",
+            token=token,
+            sender_id=TEST_OTHER_SENDER_ID,
+        )
     )
     assert not task.done()
     assert channel._last_update_disposition == "approval_callback_sender_mismatch"
 
     await channel._handle_callback_query(
-        _callback(query_id="original-user", token=token, sender_id=1956760814)
+        _callback(
+            query_id="original-user",
+            token=token,
+            sender_id=TEST_ORIGINAL_SENDER_ID,
+        )
     )
     result = await task
 
@@ -143,7 +159,7 @@ async def test_telegram_approval_requires_live_sender_id(
         token="token",
     )
     monkeypatch.setattr(channel, "_api", _FakeApprovalApi())
-    monkeypatch.setattr(channel, "_bot_id", 8688828365)
+    monkeypatch.setattr(channel, "_bot_id", TEST_BOT_ID)
 
     with pytest.raises(ValueError, match="original sender id"):
         await channel.request_approval(_request(None), timeout=1)
@@ -169,10 +185,13 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
     )
     api = _FakeApprovalApi()
     monkeypatch.setattr(channel, "_api", api)
-    monkeypatch.setattr(channel, "_bot_id", 8688828365)
+    monkeypatch.setattr(channel, "_bot_id", TEST_BOT_ID)
 
     task = asyncio.create_task(
-        channel.request_approval(_request("1956760814"), timeout=1)
+        channel.request_approval(
+            _request(str(TEST_ORIGINAL_SENDER_ID)),
+            timeout=1,
+        )
     )
     while not channel._pending_approvals:
         await asyncio.sleep(0)
@@ -195,7 +214,11 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
     ]
 
     await channel._handle_callback_query(
-        _callback(query_id="original-user", token=token, sender_id=1956760814)
+        _callback(
+            query_id="original-user",
+            token=token,
+            sender_id=TEST_ORIGINAL_SENDER_ID,
+        )
     )
     result = await task
 
@@ -206,6 +229,10 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
     assert api.answers == [("original-user", "已批准")]
 
     await channel._handle_callback_query(
-        _callback(query_id="duplicate", token=token, sender_id=1956760814)
+        _callback(
+            query_id="duplicate",
+            token=token,
+            sender_id=TEST_ORIGINAL_SENDER_ID,
+        )
     )
     assert api.answers[-1] == ("duplicate", "已批准")

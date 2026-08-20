@@ -54,7 +54,7 @@ async def test_sqlite_persists_sender_display_name_without_transient_id() -> Non
             provider_thread_id=channel_session.provider_thread_id,
             provider_message_id="provider-message-1",
             received_at_ms=1,
-            sender=SenderIdentity(id="1956760814", name="realyuchanns"),
+            sender=SenderIdentity(id="test-user-id", name="test-user"),
             message_type="text",
             canonical_target="dm:channel-1",
             body="hello",
@@ -70,9 +70,9 @@ async def test_sqlite_persists_sender_display_name_without_transient_id() -> Non
                 message.provider_message_id,
             )
 
-        assert live.sender == SenderIdentity(id="1956760814", name="realyuchanns")
+        assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert persisted is not None
-        assert persisted.sender == SenderIdentity(name="realyuchanns")
+        assert persisted.sender == SenderIdentity(name="test-user")
     finally:
         await database.stop(timeout=2)
 

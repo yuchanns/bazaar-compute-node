@@ -19,6 +19,7 @@ from bazaar_compute_node.contrib.wecom.outbound import (
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
+    ChannelIdentity,
     ChannelSendRequest,
 )
 from bazaar_compute_node.core.models import (
@@ -31,7 +32,7 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
 
-def test_wecom_does_not_claim_provider_identity(tmp_path: Path) -> None:
+def test_wecom_exposes_provider_id_without_display_name(tmp_path: Path) -> None:
     async def referenced_paths() -> set[str]:
         return set()
 
@@ -47,7 +48,7 @@ def test_wecom_does_not_claim_provider_identity(tmp_path: Path) -> None:
         websocket_url="wss://example.invalid",
     )
 
-    assert channel.get_identity() is None
+    assert channel.get_identity() == ChannelIdentity(id="bot-id")
 
 
 def test_wecom_markdown_split_preserves_unicode_and_block_boundaries() -> None:

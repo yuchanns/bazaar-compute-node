@@ -71,13 +71,13 @@ def test_check_serializer_matches_canonical_text() -> None:
 
 def test_check_serializer_renders_provider_username_as_sender() -> None:
     result = {
-        "messages": [message_payload(sender_name="realyuchanns")],
+        "messages": [message_payload(sender_name="test-user")],
         "referenced_messages": [],
         "snapshot_seq": 7,
         "delivered_through_seq": 7,
     }
 
-    assert "@sender-id(realyuchanns) message body" in serialize_check(result)
+    assert "@sender-id(test-user) message body" in serialize_check(result)
 
 
 def test_check_serializer_falls_back_to_sender_id() -> None:

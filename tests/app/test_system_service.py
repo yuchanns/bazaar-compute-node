@@ -127,14 +127,14 @@ def test_windows_user_resolution_falls_back_to_whoami() -> None:
             return_value=subprocess.CompletedProcess(
                 ["whoami"],
                 0,
-                "CONTOSO\\yuchanns\r\n",
+                "CONTOSO\\test-user\r\n",
                 "",
             ),
         ) as run_native,
     ):
         user = system_service._resolve_current_user()
 
-    assert user == "CONTOSO\\yuchanns"
+    assert user == "CONTOSO\\test-user"
     run_native.assert_called_once_with(["whoami"], check=False)
 
 
