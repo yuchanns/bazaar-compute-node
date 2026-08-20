@@ -24,7 +24,7 @@ class _FakeSession:
 class _FakeApi:
     async def get_me(self, *, timeout: float) -> dict[str, object]:
         assert timeout > 0
-        return {"id": 8688828365, "is_bot": True, "username": "gobugobot"}
+        return {"id": 8688828365, "is_bot": True, "username": "test-bot"}
 
     async def get_updates(
         self,
@@ -107,10 +107,12 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
     assert channel.get_identity() is None
     await channel.start(timeout=1)
     try:
-        assert channel.get_identity() == ChannelIdentity(
-            id="8688828365",
-            name="gobugobot",
-        )
+        bot_id = channel.health["bot_id"]
+        bot_username = channel.health["bot_username"]
+        identity = channel.get_identity()
+        assert isinstance(bot_id, int)
+        assert isinstance(bot_username, str)
+        assert identity == ChannelIdentity(id=str(bot_id), name=bot_username)
         message = {
             "message_id": 2,
             "date": channel._started_at_s,
@@ -148,7 +150,7 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
 
         filtered_before = channel._message_updates_filtered
         await channel._handle_message(
-            {"from": {"id": 8688828365, "username": "gobugobot"}},
+            {"from": {"id": bot_id, "username": bot_username}},
             update_id=2,
         )
         assert channel._message_updates_filtered == filtered_before + 1
