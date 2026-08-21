@@ -514,10 +514,10 @@ transport 将 WebSocket data frame 的 `type = card` 解析为 `card.action.trig
 reply API 发送审批结果反馈。`event.token` 是 provider 的卡片更新凭证，只存活在
 callback handler 内，不参与审批 correlation。
 
-`request_approval(timeout=...)` 用 monotonic deadline 覆盖 prompt send 与 future wait；deadline
-到期返回 `ApprovalDecision.REJECTED` / `reason="approval_timeout"`。channel stop 返回
-`ApprovalDecision.REJECTED` / `reason="channel_stopped"`。两种结果都记入 256 项
-resolved-token state，供重复点击返回明确 toast。
+`request_approval(timeout=...)` 只将调用 deadline 用于发送 prompt；发送成功后保持 future
+等待，直到首个有效 callback 或 channel stop，不在 Lark adapter 内给审批卡设置 provider/approval
+超时。channel stop 返回 `ApprovalDecision.REJECTED` / `reason="channel_stopped"`，并记入
+256 项 resolved-token state，供重复点击返回明确 toast。
 
 ## 11. 文件边界
 
@@ -718,20 +718,23 @@ Task 2 focused verification 至少覆盖：
 
 1. `request_approval()` 创建 random URL-safe token 和 pending future，保存 request/sender/chat/thread/
    prompt-message correlation。
-2. 使用 `interactive` card 发送 action/description 与 approve/reject buttons，button `value`
-   只包含 action 和 opaque token，card JSON 固定使用第 10 节的 CardKit 2.0 shape；
+2. 使用 `interactive` card 发送 action/description 与 approve/reject buttons，CardKit 2.0
+   button 使用 `behaviors: [{"type":"callback","value":{"action":...,"token":...}}]`，
+   callback value 只包含 action 和 opaque token；
    使用 `provider_reply_to_message_id` 调用 reply endpoint，话题 route 传
    `reply_in_thread = true`，并将 response `data.message_id` 写入 pending prompt correlation。
 3. transport dispatch `type=card` 的 `card.action.trigger`，校验 event ID、operator open_id、
    open_chat_id、open_message_id、button tag、action 与 token。
-   prompt message ID 尚未写入时返回 initializing warning toast，pending future 保持未决定。
+   prompt message ID 尚未写入时，在 operator/chat correlation 已通过后绑定 callback message ID，
+   避免发送响应与回调到达之间的竞态产生无意义的 initializing warning。
 4. first valid callback 生成 `ApprovalResult`，first-writer-wins；resolved-token map 保留 256 条最近
    决策，为 duplicate/expired callback 返回对应 toast。
 5. callback 同步回写 `code=200` 与 base64 JSON toast，目标耗时低于 3 秒；决策后使用
-   reply API 发送 approved/rejected 反馈。
-6. 一个 monotonic deadline 覆盖 prompt send 和 callback wait；timeout 返回 rejected /
-   `approval_timeout`，channel stop 返回 rejected / `channel_stopped`，两者都清理 pending map
-   并写入 256 项 resolved-token map。
+   reply API 发送 approved/rejected 反馈，并在 ACK 写回后使用 callback-local provider token
+   更新卡片，使最终卡片只保留本地化的已批准/已拒绝状态。
+6. 调用 deadline 只覆盖 prompt send；prompt 成功后等待 pending future，直到首个有效 callback
+   或 channel stop，不给审批卡设置 adapter 内超时。channel stop 返回 rejected /
+   `channel_stopped`，并清理 pending map、写入 256 项 resolved-token map。
 7. 全部功能与 project gates 通过后，在 README `Channels / 渠道` 支持矩阵新增
    `| ✅ | Lark / 飞书 |`；不在功能尚未完成时提前标记支持。
 

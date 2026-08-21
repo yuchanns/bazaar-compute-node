@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from ...core.channel import ChannelContext, IChannel, IChannelBuilder
-from .channel import LarkChannel
+from .approval import LarkApprovalChannel
 
 _REGION_BASE_URLS = {
     "feishu": "https://open.feishu.cn",
@@ -27,7 +27,7 @@ class LarkBuilder(IChannelBuilder):
             )
         if context.timer_wheel is None:
             raise ValueError("lark channel requires a timer wheel")
-        return LarkChannel(
+        return LarkApprovalChannel(
             context,
             app_id=app_id,
             app_secret=app_secret,

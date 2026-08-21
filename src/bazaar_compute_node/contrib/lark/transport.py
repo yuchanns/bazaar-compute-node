@@ -43,8 +43,33 @@ MAX_FRAGMENT_MESSAGES = 128
 MAX_FRAGMENT_COUNT = 64
 MAX_FRAGMENT_AGE_SECONDS = 5.0
 
+
+@dataclass(frozen=True, slots=True)
+class LarkAck:
+    """Optional provider ACK payload returned by a message handler."""
+
+    code: int = 200
+    payload: bytes | None = None
+    accepted: bool = True
+    post_ack: Callable[[], Awaitable[None]] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.code, int) or isinstance(self.code, bool):
+            raise TypeError("Lark ACK code must be an integer")
+        if self.code < 100 or self.code > 599:
+            raise ValueError("Lark ACK code must be an HTTP-style status code")
+        if self.payload is not None and not isinstance(self.payload, bytes):
+            raise TypeError("Lark ACK payload must be bytes")
+        if not isinstance(self.accepted, bool):
+            raise TypeError("Lark ACK accepted flag must be boolean")
+        if self.post_ack is not None and not callable(self.post_ack):
+            raise TypeError("Lark ACK post-ACK callback must be callable")
+
+
+MessageHandlerResult = bool | LarkAck | None
 MessageHandler = Callable[
-    [str, Mapping[str, object], Frame], Awaitable[bool | None] | bool | None
+    [str, Mapping[str, object], Frame],
+    Awaitable[MessageHandlerResult] | MessageHandlerResult,
 ]
 
 
@@ -73,6 +98,7 @@ class LarkTransport:
         self._send_lock = asyncio.Lock()
         self._stopping = asyncio.Event()
         self._ready = asyncio.Event()
+        self._post_ack_tasks: set[asyncio.Task[None]] = set()
         self._startup_error: BaseException | None = None
         self._startup_deadline = 0.0
         self._state = "stopped"
@@ -136,6 +162,12 @@ class LarkTransport:
     async def stop(self, *, timeout: float) -> None:
         self._state = "stopping"
         self._stopping.set()
+        post_ack_tasks = tuple(self._post_ack_tasks)
+        for task in post_ack_tasks:
+            task.cancel()
+        if post_ack_tasks:
+            await asyncio.gather(*post_ack_tasks, return_exceptions=True)
+        self._post_ack_tasks.clear()
         connection = self._connection
         if connection is not None:
             await _close_connection(connection)
@@ -400,7 +432,15 @@ class LarkTransport:
             result = handler(message_type, decoded, frame)
             if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
                 result = await result
-            if result is False:
+            ack_code = 200
+            ack_payload: bytes | None = None
+            if isinstance(result, LarkAck):
+                accepted = result.accepted
+                ack_code = result.code
+                ack_payload = result.payload
+            else:
+                accepted = result is not False
+            if not accepted:
                 self._messages_filtered += 1
                 self._last_message_disposition = "filtered"
                 self._last_message_filter_reason = "handler_filtered"
@@ -408,13 +448,32 @@ class LarkTransport:
                 self._messages_queued += 1
                 self._last_message_disposition = "queued"
                 self._last_message_filter_reason = None
-            await self._send_ack(frame, code=200, started_at=started_at)
+            await self._send_ack(
+                frame,
+                code=ack_code,
+                payload=ack_payload,
+                started_at=started_at,
+            )
+            if isinstance(result, LarkAck) and result.post_ack is not None:
+                post_ack_task = asyncio.create_task(
+                    _run_post_ack(result.post_ack),
+                    name="bcn-lark-post-ack",
+                )
+                self._post_ack_tasks.add(post_ack_task)
+                post_ack_task.add_done_callback(self._post_ack_tasks.discard)
         except Exception:  # noqa: BLE001
             self._message_mapping_failures += 1
             self._last_message_disposition = "failed"
             await self._send_ack(frame, code=500, started_at=started_at)
 
-    async def _send_ack(self, frame: Frame, *, code: int, started_at: float) -> None:
+    async def _send_ack(
+        self,
+        frame: Frame,
+        *,
+        code: int,
+        payload: bytes | None = None,
+        started_at: float,
+    ) -> None:
         headers = [
             Header(key=header.key, value=header.value) for header in frame.headers
         ]
@@ -432,7 +491,11 @@ class LarkTransport:
             headers=headers,
             payload_encoding=frame.payload_encoding,
             payload_type=frame.payload_type,
-            payload=json.dumps({"code": code}, separators=(",", ":")).encode("utf-8"),
+            payload=(
+                payload
+                if payload is not None
+                else json.dumps({"code": code}, separators=(",", ":")).encode("utf-8")
+            ),
             LogIDNew=frame.LogIDNew,
         )
         connection = self._connection
@@ -554,6 +617,15 @@ def _error_kind(error: BaseException) -> str:
     return type(error).__name__
 
 
+async def _run_post_ack(callback: Callable[[], Awaitable[None]]) -> None:
+    try:
+        await callback()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        return
+
+
 async def _close_connection(connection: Any) -> None:
     try:
         result = connection.close()
@@ -582,5 +654,6 @@ __all__ = [
     "MESSAGE_EVENT",
     "MESSAGE_PING",
     "MESSAGE_PONG",
+    "LarkAck",
     "LarkTransport",
 ]

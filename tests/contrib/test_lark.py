@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,11 @@ import pytest
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.lark import api as lark_api
 from bazaar_compute_node.contrib.lark.api import ClientConfig, LarkApi
+from bazaar_compute_node.contrib.lark.approval import (
+    LarkApprovalChannel,
+    _approval_card_content,
+    _parse_card_callback,
+)
 from bazaar_compute_node.contrib.lark.attachments import (
     LarkMention,
     LarkResourceDescriptor,
@@ -44,14 +50,23 @@ from bazaar_compute_node.contrib.lark.transport import (
     DATA_METHOD,
     HEADER_TYPE,
     MESSAGE_EVENT,
+    LarkAck,
 )
-from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
+from bazaar_compute_node.core.channel import (
+    ChannelApprovalRequest,
+    ChannelContext,
+    ChannelIdentity,
+)
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ChannelTargetKind,
     OutboundAttachment,
     RuntimeEvent,
     RuntimeEventState,
 )
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
 
 def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
@@ -403,3 +418,152 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     assert session_id not in channel._stream_routes
     assert session_id not in channel._typing_states
     assert channel._typing_queue.empty()
+
+
+def test_lark_approval_card_content_contains_bounded_action_values() -> None:
+    request = ChannelApprovalRequest(
+        approval=ApprovalRequest(
+            request_id="approval-1",
+            session_id="session-1",
+            runtime_session_id="runtime-1",
+            action="command_execution",
+            created_at_ms=1,
+            description="Run the requested command.",
+        ),
+        target_kind=ChannelTargetKind.DM,
+        provider_thread_id=LarkThreadIdentity("ou_bot", "oc_chat").provider_thread_id,
+        provider_sender_id="ou_user",
+    )
+
+    card = json.loads(
+        _approval_card_content(
+            request,
+            "approval-token",
+            translator=create_translator(ENGLISH),
+        )
+    )
+
+    assert card["schema"] == "2.0"
+    assert card["config"] == {"update_multi": True}
+    assert card["header"]["title"] == {
+        "tag": "plain_text",
+        "content": "Approval required",
+    }
+    elements = card["body"]["elements"]
+    assert elements[0]["tag"] == "markdown"
+    assert "command execution" in elements[0]["content"]
+    columns = elements[1]["columns"]
+    assert [column["elements"][0]["behaviors"][0]["value"] for column in columns] == [
+        {"action": "approve", "token": "approval-token"},
+        {"action": "reject", "token": "approval-token"},
+    ]
+
+    chinese_card = json.loads(
+        _approval_card_content(
+            request,
+            "approval-token",
+            translator=create_translator(SIMPLIFIED_CHINESE),
+        )
+    )
+    assert chinese_card["header"]["title"]["content"] == "需要审批"
+    assert [
+        column["elements"][0]["text"]["content"]
+        for column in chinese_card["body"]["elements"][1]["columns"]
+    ] == ["✅ 批准", "❎ 拒绝"]
+
+    resolved_card = json.loads(
+        _approval_card_content(
+            request,
+            "approval-token",
+            translator=create_translator(ENGLISH),
+            decision=ApprovalDecision.APPROVED,
+        )
+    )
+    assert resolved_card["body"]["elements"][1] == {
+        "tag": "markdown",
+        "content": "Approved",
+    }
+
+
+def test_lark_card_callback_parser_validates_card_button_shape() -> None:
+    payload = {
+        "header": {"event_id": "event-1"},
+        "event": {
+            "operator": {"open_id": "ou_user"},
+            "context": {
+                "open_chat_id": "oc_chat",
+                "open_message_id": "om_prompt",
+            },
+            "action": {
+                "tag": "button",
+                "value": {"action": "approve", "token": "approval-token"},
+            },
+            "token": "card-update-token",
+        },
+    }
+
+    assert _parse_card_callback(payload) == (
+        "event-1",
+        "ou_user",
+        "oc_chat",
+        "om_prompt",
+        "approve",
+        "approval-token",
+        "card-update-token",
+    )
+    payload["event"]["action"]["tag"] = "select_static"
+    assert _parse_card_callback(payload) is None
+
+
+@pytest.mark.asyncio
+async def test_lark_card_action_event_frame_uses_card_callback_dispatch(
+    tmp_path: Path,
+) -> None:
+    channel = LarkApprovalChannel(
+        _context(tmp_path, {}),
+        app_id="cli_app",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    payload = {
+        "header": {"event_id": "event-1", "event_type": "card.action.trigger"},
+        "event": {
+            "operator": {"open_id": "ou_user"},
+            "context": {
+                "open_chat_id": "oc_chat",
+                "open_message_id": "om_prompt",
+            },
+            "action": {
+                "tag": "button",
+                "value": {"action": "approve", "token": "approval-token"},
+            },
+            "token": "card-update-token",
+        },
+    }
+
+    ack = await channel._handle_event("event", payload, object())
+
+    assert isinstance(ack, LarkAck)
+    assert ack.payload is not None
+    assert channel.health["approval_callbacks"] == 1
+
+
+def test_lark_card_ack_encodes_cardkit_toast(tmp_path: Path) -> None:
+    channel = LarkApprovalChannel(
+        _context(tmp_path, {}),
+        app_id="cli_app",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+
+    ack = channel._card_ack("Approved")
+    assert ack.payload is not None
+    envelope = json.loads(ack.payload)
+    toast = json.loads(base64.b64decode(envelope["data"]))
+
+    assert envelope["code"] == 200
+    assert toast == {"toast": {"type": "success", "content": "Approved"}}

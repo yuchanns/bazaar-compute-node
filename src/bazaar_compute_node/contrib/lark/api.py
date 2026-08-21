@@ -437,6 +437,22 @@ class LarkApi:
         )
         return _response_id(body, "message_reply", "message_id")
 
+    async def update_card(
+        self,
+        token: str,
+        *,
+        card: dict[str, object],
+        timeout: float,
+    ) -> None:
+        if not isinstance(token, str) or not token or "\r" in token or "\n" in token:
+            raise ValueError("Lark card update token must be non-empty text")
+        await self._post_json(
+            "card_update",
+            "/open-apis/interactive/v1/card/update",
+            timeout=timeout,
+            json_body={"token": token, "card": card},
+        )
+
     async def upload_image(
         self,
         file: BinaryIO,

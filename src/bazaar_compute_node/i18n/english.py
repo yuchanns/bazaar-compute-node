@@ -76,6 +76,8 @@ MESSAGES = MappingProxyType(
         "approval.callback.rejected": "Rejected",
         "approval.callback.sender_mismatch": "This approval belongs to another user",
         "approval.callback.unknown_action": "Unknown approval action",
+        "approval.card.status.approved": "Approved",
+        "approval.card.status.rejected": "Rejected",
         "approval.feedback.approved": "Action approved",
         "approval.feedback.rejected": "Action rejected",
         "approval.prompt.action": "**Action:** ${action}",
