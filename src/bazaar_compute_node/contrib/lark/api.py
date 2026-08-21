@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from time import monotonic
+from typing import BinaryIO
 from urllib.parse import parse_qs, quote, urlparse
 
 import aiohttp
@@ -390,6 +391,139 @@ class LarkApi:
             params={"user_id_type": "open_id"},
         )
 
+    async def send_message(
+        self,
+        *,
+        chat_id: str,
+        message_type: str,
+        content: str,
+        uuid: str,
+        timeout: float,
+    ) -> str:
+        body = await self._post_json(
+            "message_create",
+            "/open-apis/im/v1/messages",
+            timeout=timeout,
+            params={"receive_id_type": "chat_id"},
+            json_body={
+                "receive_id": chat_id,
+                "msg_type": message_type,
+                "content": content,
+                "uuid": uuid,
+            },
+        )
+        return _response_id(body, "message_create", "message_id")
+
+    async def reply_message(
+        self,
+        *,
+        message_id: str,
+        message_type: str,
+        content: str,
+        reply_in_thread: bool,
+        uuid: str,
+        timeout: float,
+    ) -> str:
+        body = await self._post_json(
+            "message_reply",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reply",
+            timeout=timeout,
+            json_body={
+                "msg_type": message_type,
+                "content": content,
+                "reply_in_thread": reply_in_thread,
+                "uuid": uuid,
+            },
+        )
+        return _response_id(body, "message_reply", "message_id")
+
+    async def upload_image(
+        self,
+        file: BinaryIO,
+        *,
+        filename: str,
+        media_type: str,
+        timeout: float,
+    ) -> str:
+        form = aiohttp.FormData(quote_fields=False)
+        form.add_field("image_type", "message")
+        form.add_field(
+            "image",
+            file,
+            filename=filename,
+            content_type=media_type,
+        )
+        body = await self._request_multipart(
+            "image_upload",
+            "/open-apis/im/v1/images",
+            form=form,
+            timeout=timeout,
+        )
+        return _response_id(body, "image_upload", "image_key")
+
+    async def upload_file(
+        self,
+        file: BinaryIO,
+        *,
+        file_type: str,
+        filename: str,
+        media_type: str,
+        timeout: float,
+    ) -> str:
+        form = aiohttp.FormData(quote_fields=False)
+        form.add_field("file_type", file_type)
+        form.add_field("file_name", filename)
+        form.add_field(
+            "file",
+            file,
+            filename=filename,
+            content_type=media_type,
+        )
+        body = await self._request_multipart(
+            "file_upload",
+            "/open-apis/im/v1/files",
+            form=form,
+            timeout=timeout,
+        )
+        return _response_id(body, "file_upload", "file_key")
+
+    async def create_reaction(
+        self,
+        message_id: str,
+        *,
+        emoji_type: str,
+        timeout: float,
+    ) -> str:
+        body = await self._post_json(
+            "message_reaction_create",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions",
+            timeout=timeout,
+            json_body={"reaction_type": {"emoji_type": emoji_type}},
+        )
+        return _response_id(body, "message_reaction_create", "reaction_id")
+
+    async def delete_reaction(
+        self,
+        message_id: str,
+        reaction_id: str,
+        *,
+        timeout: float,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        token = await self.get_tenant_access_token(
+            timeout=max(0.0, deadline - loop.time())
+        )
+        body = await self._request_json(
+            "message_reaction_delete",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions/"
+            f"{quote(reaction_id, safe='')}",
+            timeout=max(0.0, deadline - loop.time()),
+            headers={"Authorization": f"Bearer {token}"},
+            http_method="DELETE",
+        )
+        self._check_provider_result(body, "message_reaction_delete")
+
     @asynccontextmanager
     async def open_message_resource(
         self,
@@ -465,6 +599,32 @@ class LarkApi:
         self._check_provider_result(body, method)
         return body
 
+    async def _post_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        timeout: float,
+        json_body: dict[str, object],
+        params: Mapping[str, str] | None = None,
+    ) -> Mapping[str, object]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        token = await self.get_tenant_access_token(
+            timeout=max(0.0, deadline - loop.time())
+        )
+        body = await self._request_json(
+            method,
+            path,
+            timeout=max(0.0, deadline - loop.time()),
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+            json_body=json_body,
+            http_method="POST",
+        )
+        self._check_provider_result(body, method)
+        return body
+
     async def _request_json(
         self,
         method: str,
@@ -474,6 +634,7 @@ class LarkApi:
         json_body: dict[str, object] | None = None,
         params: Mapping[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        http_method: str | None = None,
     ) -> Mapping[str, object]:
         if timeout <= 0:
             raise TimeoutError(f"Lark {method} deadline expired")
@@ -484,14 +645,15 @@ class LarkApi:
         )
         url = f"{self._base_url}{path}"
         try:
-            if json_body is None:
+            request_method = http_method or ("POST" if json_body is not None else "GET")
+            if request_method == "GET":
                 request = self._session.get(
                     url,
                     params=params,
                     headers=headers,
                     timeout=client_timeout,
                 )
-            else:
+            elif request_method == "POST":
                 request = self._session.post(
                     url,
                     json=json_body,
@@ -499,6 +661,87 @@ class LarkApi:
                     headers=headers,
                     timeout=client_timeout,
                 )
+            elif request_method == "DELETE":
+                request = self._session.delete(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=client_timeout,
+                )
+            else:
+                raise ValueError(f"unsupported Lark HTTP method: {request_method}")
+            async with request as response:
+                status = response.status
+                try:
+                    raw_body = await response.json(content_type=None)
+                except aiohttp.ClientError:
+                    raise LarkApiError(
+                        method,
+                        http_status=status,
+                        provider_code=None,
+                        message="provider returned invalid JSON",
+                    ) from None
+                except ValueError:
+                    raise LarkApiError(
+                        method,
+                        http_status=status,
+                        provider_code=None,
+                        message="provider returned invalid JSON",
+                    ) from None
+        except LarkApiError:
+            raise
+        except TimeoutError:
+            raise LarkTransportError(method, "TimeoutError") from None
+        except (aiohttp.ClientError, OSError) as error:
+            raise LarkTransportError(method, type(error).__name__) from None
+
+        if not isinstance(raw_body, dict):
+            raise LarkApiError(
+                method,
+                http_status=status,
+                provider_code=None,
+                message="provider response is not an object",
+            )
+        if status < 200 or status >= 300:
+            raise LarkApiError(
+                method,
+                http_status=status,
+                provider_code=_provider_code(raw_body.get("code")),
+                message=self._safe_provider_message(raw_body.get("msg")),
+            )
+        return raw_body
+
+    async def _request_multipart(
+        self,
+        method: str,
+        path: str,
+        *,
+        form: aiohttp.FormData,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        if timeout <= 0:
+            raise TimeoutError(f"Lark {method} deadline expired")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        token = await self.get_tenant_access_token(
+            timeout=max(0.0, deadline - loop.time())
+        )
+        remaining = max(0.0, deadline - loop.time())
+        if remaining <= 0:
+            raise TimeoutError(f"Lark {method} deadline expired")
+        client_timeout = aiohttp.ClientTimeout(
+            total=remaining,
+            connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
+            sock_connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
+        )
+        url = f"{self._base_url}{path}"
+        try:
+            request = self._session.post(
+                url,
+                data=form,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=client_timeout,
+            )
             async with request as response:
                 status = response.status
                 try:
@@ -606,6 +849,23 @@ def _provider_message(value: object) -> str:
     if not isinstance(value, str) or not value:
         return "provider rejected request"
     return value[:_MAX_ERROR_MESSAGE]
+
+
+def _response_id(
+    body: Mapping[str, object],
+    method: str,
+    field_name: str,
+) -> str:
+    data = body.get("data")
+    value = data.get(field_name) if isinstance(data, Mapping) else None
+    if not isinstance(value, str) or not value or "\r" in value or "\n" in value:
+        raise LarkApiError(
+            method,
+            http_status=200,
+            provider_code=0,
+            message=f"provider response is missing {field_name}",
+        )
+    return value
 
 
 __all__ = [

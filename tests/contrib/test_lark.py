@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -15,7 +16,11 @@ from bazaar_compute_node.contrib.lark.attachments import (
     _resource_download_type,
     project_lark_content,
 )
-from bazaar_compute_node.contrib.lark.channel import _normalize_parent_message
+from bazaar_compute_node.contrib.lark.channel import (
+    LarkChannel,
+    _normalize_parent_message,
+    _TypingState,
+)
 from bazaar_compute_node.contrib.lark.frame import (
     Frame,
     FrameDecodeError,
@@ -29,6 +34,11 @@ from bazaar_compute_node.contrib.lark.identity import (
     parse_bot_info,
     parse_provider_thread_id,
 )
+from bazaar_compute_node.contrib.lark.outbound import (
+    markdown_post_content,
+    prepare_attachments,
+    split_markdown,
+)
 from bazaar_compute_node.contrib.lark.plugin import LarkBuilder
 from bazaar_compute_node.contrib.lark.transport import (
     DATA_METHOD,
@@ -36,6 +46,12 @@ from bazaar_compute_node.contrib.lark.transport import (
     MESSAGE_EVENT,
 )
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
+from bazaar_compute_node.core.models import (
+    OutboundAttachment,
+    RuntimeEvent,
+    RuntimeEventState,
+)
+from bazaar_compute_node.core.timerwheel import TimerWheel
 
 
 def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
@@ -308,3 +324,82 @@ def test_lark_parent_message_normalizes_message_api_shape() -> None:
     sender = parent["sender"]
     assert isinstance(sender, dict)
     assert sender["sender_id"] == {"open_id": "ou_sender"}
+
+
+def test_lark_outbound_markdown_uses_post_locale_map() -> None:
+    encoded = markdown_post_content("hello **世界**")
+
+    assert json.loads(encoded) == {
+        "zh_cn": {
+            "title": "",
+            "content": [[{"tag": "md", "text": "hello **世界**"}]],
+        }
+    }
+
+
+def test_lark_outbound_markdown_splits_by_codepoints_and_preserves_fences() -> None:
+    content = "intro\n\n```python\n" + ("🙂" * 40) + "\n```\nend"
+
+    parts = split_markdown(content, limit=30)
+
+    assert len(parts) > 2
+    assert all(len(part) <= 30 for part in parts)
+    assert parts[0].startswith("intro")
+    assert all(part.startswith("```python\n") for part in parts[1:-1])
+    assert parts[-1].endswith("end")
+
+
+def test_lark_outbound_attachment_preflight_checks_size_and_digest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "note.txt"
+    payload = b"hello lark"
+    path.write_bytes(payload)
+    descriptor = OutboundAttachment(
+        name=path.name,
+        relative_path=path.name,
+        media_type="text/plain",
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+    prepared = prepare_attachments(tmp_path, (descriptor,))
+
+    assert prepared[0].message_type == "file"
+    assert prepared[0].file_type == "stream"
+    with prepared[0].open() as opened:
+        assert opened.read() == payload
+
+    path.write_bytes(b"changed!!!")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        prepare_attachments(tmp_path, (descriptor,))
+
+
+def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="cli_app",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    session_id = "session-1"
+    channel._stream_routes[session_id] = "om_message"
+    channel._typing_states[session_id] = _TypingState(
+        message_id="om_message",
+        reaction_id="reaction-1",
+    )
+
+    channel.accept_turn_event(
+        RuntimeEvent(
+            created_at_ms=1,
+            event_name="turn.completed",
+            state=RuntimeEventState.COMPLETED,
+        ),
+        session_id=session_id,
+    )
+
+    assert session_id not in channel._stream_routes
+    assert session_id not in channel._typing_states
+    assert channel._typing_queue.empty()
