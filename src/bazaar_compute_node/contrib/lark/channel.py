@@ -758,7 +758,14 @@ class LarkChannel(IChannel):
             )
         api = self._api
         identity = self._identity
-        if api is None or identity is None or self._state not in {"connected", "ready"}:
+        transport = self._transport
+        if (
+            api is None
+            or identity is None
+            or transport is None
+            or self._state not in {"connected", "ready"}
+            or transport.state != "connected"
+        ):
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="channel_unavailable",
@@ -779,6 +786,18 @@ class LarkChannel(IChannel):
                 error_message="Lark delivery timed out waiting for the send lock",
             )
         try:
+            if (
+                self._api is not api
+                or self._identity is not identity
+                or self._transport is not transport
+                or self._state not in {"connected", "ready"}
+                or transport.state != "connected"
+            ):
+                return ProviderCallResult(
+                    status=ProviderCallStatus.FAILED,
+                    error_kind="channel_unavailable",
+                    error_message="Lark channel is not available",
+                )
             return await send_outbound(
                 api,
                 identity=identity,

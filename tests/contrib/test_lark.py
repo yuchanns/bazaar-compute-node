@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import aiohttp
@@ -62,7 +63,9 @@ from bazaar_compute_node.contrib.lark.transport import (
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
+    ChannelDeliveryReceipt,
     ChannelIdentity,
+    ChannelSendRequest,
 )
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
@@ -72,6 +75,7 @@ from bazaar_compute_node.core.models import (
     RuntimeEvent,
     RuntimeEventState,
 )
+from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
@@ -156,6 +160,100 @@ async def test_lark_transport_acks_before_mapping() -> None:
     assert len(frames) == 1
     assert frames[0].payload == b'{"code":200}'
     assert transport.health["message_mapping_failures"] == 1
+
+
+@pytest.mark.parametrize("transport_state", ("reconnecting", "degraded", "stopped"))
+@pytest.mark.asyncio
+async def test_lark_channel_send_requires_live_transport_state(
+    tmp_path: Path,
+    transport_state: str,
+) -> None:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="app-id",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    channel._api = cast(LarkApi, object())
+    channel._identity = LarkBotIdentity(open_id="ou_bot")
+    channel._state = "connected"
+    channel._transport = cast(
+        LarkTransport,
+        SimpleNamespace(state=transport_state),
+    )
+    request = ChannelSendRequest(
+        session_id="session-1",
+        body="hello",
+        attachments=(),
+        target_kind=ChannelTargetKind.DM,
+        provider_thread_id="thread-1",
+    )
+
+    result = await channel.send(request, timeout=1)
+
+    assert result.status is ProviderCallStatus.FAILED
+    assert result.error_kind == "channel_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_lark_channel_send_rechecks_transport_after_send_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="app-id",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    channel._api = cast(LarkApi, object())
+    channel._identity = LarkBotIdentity(open_id="ou_bot")
+    channel._state = "connected"
+    transport = SimpleNamespace(state="connected")
+    channel._transport = cast(LarkTransport, transport)
+    request = ChannelSendRequest(
+        session_id="session-1",
+        body="hello",
+        attachments=(),
+        target_kind=ChannelTargetKind.DM,
+        provider_thread_id="thread-1",
+    )
+    calls = 0
+
+    async def fake_send_outbound(
+        *args: object,
+        **kwargs: object,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=ChannelDeliveryReceipt(provider_message_id="message-1"),
+        )
+
+    monkeypatch.setattr(
+        "bazaar_compute_node.contrib.lark.channel.send_outbound",
+        fake_send_outbound,
+    )
+    await channel._send_lock.acquire()
+    task = asyncio.create_task(channel.send(request, timeout=1))
+    try:
+        await asyncio.sleep(0)
+        transport.state = "reconnecting"
+        channel._send_lock.release()
+        result = await task
+    finally:
+        if channel._send_lock.locked():
+            channel._send_lock.release()
+
+    assert result.status is ProviderCallStatus.FAILED
+    assert result.error_kind == "channel_unavailable"
+    assert calls == 0
 
 
 def test_lark_frame_round_trip_skips_unknown_fields() -> None:
