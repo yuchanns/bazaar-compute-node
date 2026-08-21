@@ -70,7 +70,12 @@ def validate_frame(frame: object) -> None:
         if not isinstance(header, Header):
             raise FrameDecodeError("frame contains an invalid header")
         _validate_header_text(header.key, MAX_HEADER_KEY_BYTES, "header key")
-        _validate_header_text(header.value, MAX_HEADER_VALUE_BYTES, "header value")
+        _validate_header_text(
+            header.value,
+            MAX_HEADER_VALUE_BYTES,
+            "header value",
+            allow_empty=True,
+        )
     if frame.payload is not None and len(frame.payload) > MAX_FRAME_BYTES:
         raise FrameDecodeError("frame payload exceeds the size limit")
 
@@ -81,8 +86,14 @@ def header_values(headers: Iterable[Header], key: str) -> tuple[str, ...]:
     return tuple(header.value for header in headers if header.key == key)
 
 
-def _validate_header_text(value: object, limit: int, field_name: str) -> None:
-    if not isinstance(value, str) or not value:
+def _validate_header_text(
+    value: object,
+    limit: int,
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> None:
+    if not isinstance(value, str) or (not allow_empty and not value):
         raise FrameDecodeError(f"{field_name} must be non-empty text")
     try:
         size = len(value.encode("utf-8"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import aiohttp
@@ -8,6 +9,13 @@ import pytest
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.lark import api as lark_api
 from bazaar_compute_node.contrib.lark.api import ClientConfig, LarkApi
+from bazaar_compute_node.contrib.lark.attachments import (
+    LarkMention,
+    LarkResourceDescriptor,
+    _resource_download_type,
+    project_lark_content,
+)
+from bazaar_compute_node.contrib.lark.channel import _normalize_parent_message
 from bazaar_compute_node.contrib.lark.frame import (
     Frame,
     FrameDecodeError,
@@ -17,7 +25,9 @@ from bazaar_compute_node.contrib.lark.frame import (
 )
 from bazaar_compute_node.contrib.lark.identity import (
     LarkBotIdentity,
+    LarkThreadIdentity,
     parse_bot_info,
+    parse_provider_thread_id,
 )
 from bazaar_compute_node.contrib.lark.plugin import LarkBuilder
 from bazaar_compute_node.contrib.lark.transport import (
@@ -69,6 +79,21 @@ def test_lark_frame_golden_fixture() -> None:
     assert frame.service == 3
     assert frame.method == 0
     assert frame.headers == [Header(key="type", value="ping")]
+
+
+def test_lark_frame_accepts_empty_optional_header_values() -> None:
+    frame = Frame(
+        SeqID=1,
+        LogID=2,
+        service=3,
+        method=0,
+        headers=[
+            Header(key="type", value="ping"),
+            Header(key="is_ack", value=""),
+        ],
+    )
+
+    assert decode_frame(encode_frame(frame)) == frame
 
 
 @pytest.mark.parametrize(
@@ -133,6 +158,16 @@ def test_lark_identity_prefers_app_name_and_supports_name_fallback() -> None:
     assert parse_bot_info({"open_id": "ou_3"}).as_channel_identity() == ChannelIdentity(
         id="ou_3"
     )
+    thread = LarkThreadIdentity("ou_bot", "oc/chat", "omt/topic")
+    assert (
+        parse_provider_thread_id(
+            thread.provider_thread_id,
+            bot_open_id="ou_bot",
+        )
+        == thread
+    )
+    with pytest.raises(ValueError):
+        parse_provider_thread_id(thread.provider_thread_id, bot_open_id="ou_other")
 
 
 def test_lark_builder_rejects_missing_or_invalid_configuration(
@@ -182,3 +217,94 @@ async def test_lark_api_redacts_credentials_from_provider_errors() -> None:
         error = api._safe_provider_message("app-secret tenant-token")
 
     assert error == "<redacted> <redacted>"
+
+
+def test_lark_post_projection_preserves_rich_nodes() -> None:
+    projection = project_lark_content(
+        "post",
+        json.dumps(
+            {
+                "zh_cn": {
+                    "title": "Title",
+                    "content": [
+                        [
+                            {"tag": "text", "text": "Hello "},
+                            {
+                                "tag": "at",
+                                "user_id": "ou_user",
+                            },
+                            {
+                                "tag": "a",
+                                "text": "link",
+                                "href": "https://example.invalid",
+                            },
+                            {
+                                "tag": "img",
+                                "image_key": "img-key",
+                                "alt": "photo.png",
+                            },
+                        ]
+                    ],
+                }
+            }
+        ),
+        mentions={
+            "@_user_1": LarkMention(
+                key="@_user_1",
+                open_id="ou_user",
+                display_name="Alice",
+            )
+        },
+        bot_open_id="ou_bot",
+    )
+
+    assert projection.message_type == "post"
+    assert projection.body == (
+        "Title\nHello @Alicelink (https://example.invalid)[image: photo.png]"
+    )
+    assert projection.resources == (
+        LarkResourceDescriptor(
+            file_key="img-key",
+            resource_type="image",
+            name="photo.png",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "expected"),
+    (
+        ("image", "image"),
+        ("file", "file"),
+        ("audio", "file"),
+        ("media", "file"),
+        ("sticker", None),
+    ),
+)
+def test_lark_resource_download_type_matches_provider_api(
+    resource_type: str,
+    expected: str | None,
+) -> None:
+    assert _resource_download_type(resource_type) == expected
+
+
+def test_lark_parent_message_normalizes_message_api_shape() -> None:
+    parent = _normalize_parent_message(
+        {
+            "message_id": "om_parent",
+            "msg_type": "image",
+            "body": {"content": '{"image_key":"img-parent"}'},
+            "sender": {
+                "id": "ou_sender",
+                "id_type": "open_id",
+                "sender_type": "user",
+                "tenant_key": "tenant",
+            },
+        }
+    )
+
+    assert parent["message_type"] == "image"
+    assert parent["content"] == '{"image_key":"img-parent"}'
+    sender = parent["sender"]
+    assert isinstance(sender, dict)
+    assert sender["sender_id"] == {"open_id": "ou_sender"}

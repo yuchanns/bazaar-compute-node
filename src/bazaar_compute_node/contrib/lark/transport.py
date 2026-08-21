@@ -43,7 +43,9 @@ MAX_FRAGMENT_MESSAGES = 128
 MAX_FRAGMENT_COUNT = 64
 MAX_FRAGMENT_AGE_SECONDS = 5.0
 
-MessageHandler = Callable[[str, Mapping[str, object], Frame], Awaitable[None] | None]
+MessageHandler = Callable[
+    [str, Mapping[str, object], Frame], Awaitable[bool | None] | bool | None
+]
 
 
 @dataclass(slots=True)
@@ -373,7 +375,7 @@ class LarkTransport:
             raise FrameDecodeError("event payload exceeds the size limit")
         try:
             decoded = json.loads(payload.decode("utf-8"))
-        except UnicodeDecodeError, json.JSONDecodeError:
+        except ValueError:
             self._message_mapping_failures += 1
             await self._send_ack(frame, code=500, started_at=monotonic())
             self._last_message_disposition = "failed"
@@ -397,9 +399,15 @@ class LarkTransport:
                 return
             result = handler(message_type, decoded, frame)
             if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
-                await result
-            self._messages_queued += 1
-            self._last_message_disposition = "queued"
+                result = await result
+            if result is False:
+                self._messages_filtered += 1
+                self._last_message_disposition = "filtered"
+                self._last_message_filter_reason = "handler_filtered"
+            else:
+                self._messages_queued += 1
+                self._last_message_disposition = "queued"
+                self._last_message_filter_reason = None
             await self._send_ack(frame, code=200, started_at=started_at)
         except Exception:  # noqa: BLE001
             self._message_mapping_failures += 1
@@ -551,7 +559,9 @@ async def _close_connection(connection: Any) -> None:
         result = connection.close()
         if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
             await result
-    except aiohttp.ClientError, OSError:
+    except aiohttp.ClientError:
+        return
+    except OSError:
         return
 
 
