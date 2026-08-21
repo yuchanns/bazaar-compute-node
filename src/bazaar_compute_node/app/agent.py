@@ -102,6 +102,7 @@ class AgentApplication:
                 options=dict(configuration.channel.options),
                 workspace=self.workspace_path,
                 translator=self.translator,
+                timer_wheel=self.timer_wheel,
             )
         )
         self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)

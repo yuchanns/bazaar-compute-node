@@ -27,6 +27,7 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
+from ...core.timerwheel import TimerWheel
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .attachments import attachment_sources, materialize_attachments
 from .identity import TelegramThreadIdentity
@@ -58,6 +59,7 @@ class TelegramChannel(IChannel):
     def __init__(self, context: ChannelContext, *, token: str) -> None:
         self._context = context
         self._token = token
+        self._timer_wheel: TimerWheel | None = context.timer_wheel
         self._started_at_s = time_ns() // 1_000_000_000
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
         self._ready = asyncio.Event()

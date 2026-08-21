@@ -104,6 +104,10 @@ class Timer:
         try:
             await waiter
             self._expiry_consumed = True
+        except BaseException:
+            if self._active:
+                self.cancel()
+            raise
         finally:
             self._waiting = False
             self._waiter = None
@@ -137,6 +141,8 @@ class TimerWheel:
         ]
         self._entries: dict[int, _TimerEntry] = {}
         self._next_timer_id = 1
+        self._poke = asyncio.Event()
+        self._waiting_poke: asyncio.Event | None = None
         self._driver_task: asyncio.Task[None] | None = None
         self._started = False
         self._closed = False
@@ -193,10 +199,21 @@ class TimerWheel:
         timer = Timer(self, self._next_timer_id, deadline_tick)
         self._next_timer_id += 1
         self._insert(timer, deadline_tick, timer.generation)
+        if self._waiting_poke:
+            self._waiting_poke.set()
         return timer
 
     async def _run(self) -> None:
         while True:
+            if not self._entries:
+                self._waiting_poke = self._poke
+                self._poke.clear()
+                try:
+                    await self._poke.wait()
+                finally:
+                    self._waiting_poke = None
+                    self._poke.clear()
+                continue
             await asyncio.sleep(self._tick_ms / 1_000)
             self._advance_to(time.monotonic_ns() // (self._tick_ms * 1_000_000))
 

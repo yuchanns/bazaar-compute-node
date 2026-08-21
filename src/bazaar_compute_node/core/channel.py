@@ -19,6 +19,7 @@ from .models import (
 )
 from .outcomes import ProviderCallResult
 from .runtime import RuntimeStreamItem
+from .timerwheel import TimerWheel
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +149,7 @@ class ChannelContext:
     options: Mapping[str, object]
     workspace: Callable[[], Path]
     translator: Translator | None = None
+    timer_wheel: TimerWheel | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.agent_id, str) or not self.agent_id:

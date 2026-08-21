@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -488,7 +489,11 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         if remaining <= 0 or delay >= remaining:
             raise _DeliveryDeadlineExpired
         self._outbound_rate_limit_retries += 1
-        await asyncio.sleep(delay)
+        timer_wheel = self._timer_wheel
+        if timer_wheel is None:
+            raise RuntimeError("Telegram rate-limit retry requires a timer wheel")
+        timer = timer_wheel.create(math.ceil(delay * 1_000))
+        await timer.wait()
         return True
 
     def _failed(

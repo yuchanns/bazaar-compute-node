@@ -67,6 +67,25 @@ async def test_timer_allows_only_one_waiter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_waiter_cancels_timer() -> None:
+    wheel = TimerWheel()
+    await wheel.start()
+    try:
+        timer = wheel.create(1_000)
+        waiter = asyncio.create_task(timer.wait())
+        await asyncio.sleep(0)
+
+        waiter.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert timer.active is False
+        assert timer.id not in wheel._entries
+    finally:
+        await wheel.close()
+
+
+@pytest.mark.asyncio
 async def test_cancel_and_close_wake_waiters() -> None:
     wheel = TimerWheel()
     await wheel.start()

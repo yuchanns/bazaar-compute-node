@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from importlib.metadata import version
+from importlib.metadata import entry_points, version
 
 from bazaar_compute_node import __version__
 
@@ -28,6 +28,18 @@ def main() -> None:
         raise SystemExit(f"runtime version {__version__!r} != {expected_version!r}")
     if result.stdout.strip() != f"bcn {expected_version}":
         raise SystemExit(f"unexpected bcn --version output: {result.stdout!r}")
+
+    lark_entry_point = next(
+        (
+            item
+            for item in entry_points(group="bazaar_compute_node.channels")
+            if item.name == "lark"
+        ),
+        None,
+    )
+    if lark_entry_point is None:
+        raise SystemExit("lark channel entry point is missing")
+    lark_entry_point.load()
 
 
 if __name__ == "__main__":

@@ -62,6 +62,8 @@ MESSAGES = MappingProxyType(
         "approval.callback.rejected": "已拒绝",
         "approval.callback.sender_mismatch": "此审批属于其他用户",
         "approval.callback.unknown_action": "未知的审批操作",
+        "approval.card.status.approved": "已批准",
+        "approval.card.status.rejected": "已拒绝",
         "approval.feedback.approved": "操作已批准",
         "approval.feedback.rejected": "操作已拒绝",
         "approval.prompt.action": "**操作：** ${action}",

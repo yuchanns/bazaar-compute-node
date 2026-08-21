@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import random
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
+from ...core.timerwheel import TimerWheel
 from .markdown import split_markdown
 from .outbound import (
     AttachmentReader,
@@ -78,6 +80,7 @@ class WeComChannel(IChannel):
         self._bot_id = bot_id
         self._secret = secret
         self._websocket_url = websocket_url
+        self._timer_wheel: TimerWheel | None = context.timer_wheel
         self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
         self._ready = asyncio.Event()
         self._stopping = asyncio.Event()
@@ -910,7 +913,7 @@ class WeComChannel(IChannel):
         missed = 0
         last_request = ""
         while not self._stopping.is_set():
-            await asyncio.sleep(30)
+            await self._wait_for_timer(30)
             if last_request and self._heartbeat_ack != last_request:
                 missed += 1
             else:
@@ -1315,7 +1318,14 @@ class WeComChannel(IChannel):
 
     async def _backoff(self, attempt: int) -> None:
         delay = min(2 ** max(attempt - 1, 0), 30)
-        await asyncio.sleep(delay + random.uniform(0, min(delay * 0.2, 1)))
+        await self._wait_for_timer(delay + random.uniform(0, min(delay * 0.2, 1)))
+
+    async def _wait_for_timer(self, delay_seconds: float) -> None:
+        timer_wheel = self._timer_wheel
+        if timer_wheel is None:
+            raise RuntimeError("WeCom timer wheel is not configured")
+        timer = timer_wheel.create(math.ceil(max(0.0, delay_seconds) * 1_000))
+        await timer.wait()
 
 
 class _AuthenticationError(RuntimeError):
