@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 import pytest
@@ -48,9 +51,13 @@ from bazaar_compute_node.contrib.lark.outbound import (
 from bazaar_compute_node.contrib.lark.plugin import LarkBuilder
 from bazaar_compute_node.contrib.lark.transport import (
     DATA_METHOD,
+    HEADER_MESSAGE_ID,
+    HEADER_SEQ,
+    HEADER_SUM,
     HEADER_TYPE,
     MESSAGE_EVENT,
     LarkAck,
+    LarkTransport,
 )
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
@@ -79,6 +86,76 @@ def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
         options=options,
         workspace=lambda: tmp_path,
     )
+
+
+@pytest.mark.asyncio
+async def test_lark_transport_acks_before_mapping() -> None:
+    ack_sent = asyncio.Event()
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    frames: list[Frame] = []
+    handler_started_when_ack_sent: list[bool] = []
+
+    class _Connection:
+        async def send_bytes(self, payload: bytes) -> None:
+            handler_started_when_ack_sent.append(handler_started.is_set())
+            frames.append(decode_frame(payload))
+            ack_sent.set()
+
+        async def close(self) -> None:
+            return
+
+    async def handler(
+        message_type: str,
+        payload: Mapping[str, object],
+        frame: Frame,
+    ) -> bool:
+        del message_type, payload, frame
+        handler_started.set()
+        await release_handler.wait()
+        raise RuntimeError("mapping failed")
+
+    transport = LarkTransport(
+        cast(LarkApi, object()),
+        timer_wheel=TimerWheel(),
+        on_message=handler,
+    )
+    transport._connection = _Connection()
+    transport._state = "connected"
+    frame = Frame(
+        SeqID=1,
+        LogID=2,
+        service=3,
+        method=DATA_METHOD,
+        headers=[
+            Header(key=HEADER_TYPE, value=MESSAGE_EVENT),
+            Header(key=HEADER_MESSAGE_ID, value="message-1"),
+            Header(key=HEADER_SUM, value="1"),
+            Header(key=HEADER_SEQ, value="0"),
+        ],
+        payload=json.dumps(
+            {
+                "schema": "2.0",
+                "header": {
+                    "event_id": "event-1",
+                    "event_type": "im.message.receive_v1",
+                },
+                "event": {},
+            }
+        ).encode("utf-8"),
+    )
+
+    task = asyncio.create_task(transport._handle_data(frame))
+    try:
+        await asyncio.wait_for(ack_sent.wait(), timeout=0.1)
+        assert handler_started_when_ack_sent == [False]
+    finally:
+        release_handler.set()
+        await asyncio.wait_for(task, timeout=0.1)
+
+    assert len(frames) == 1
+    assert frames[0].payload == b'{"code":200}'
+    assert transport.health["message_mapping_failures"] == 1
 
 
 def test_lark_frame_round_trip_skips_unknown_fields() -> None:
