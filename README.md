@@ -84,6 +84,7 @@ Windows: Get-Content "$env:USERPROFILE\.bcn\system-service.log" -Wait
 | --- | --- |
 | ✅ | WeCom / 企业微信 |
 | ✅ | Telegram |
+| ✅ | Lark / 飞书 |
 | 🚧 | GitHub |
 | 🚧 | GitLab |
 
