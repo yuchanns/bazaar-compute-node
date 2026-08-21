@@ -41,8 +41,21 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
                 f"$env:BCN_AGENT_ID = '{agent_id}'\n"
                 "$env:PYTHONUTF8 = '1'\n"
                 "$env:PYTHONIOENCODING = 'utf-8'\n"
-                f'& "{python_executable}" -m bazaar_compute_node.bcc @args\n'
-                "exit $LASTEXITCODE\n",
+                f'$python = "{python_executable}"\n'
+                "$previousOutputEncoding = $OutputEncoding\n"
+                "$exitCode = 1\n"
+                "try {\n"
+                "    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+                "    if ($MyInvocation.ExpectingInput) {\n"
+                "        @($Input) | & $python -m bazaar_compute_node.bcc @args\n"
+                "    } else {\n"
+                "        & $python -m bazaar_compute_node.bcc @args\n"
+                "    }\n"
+                "    $exitCode = $LASTEXITCODE\n"
+                "} finally {\n"
+                "    $OutputEncoding = $previousOutputEncoding\n"
+                "}\n"
+                "exit $exitCode\n",
                 encoding="utf-8",
             )
         except BaseException:

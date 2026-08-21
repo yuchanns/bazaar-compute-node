@@ -232,8 +232,21 @@ def test_install_bcc_wrapper_renders_windows_variants(
             "$env:BCN_AGENT_ID = 'agent-a'",
             "$env:PYTHONUTF8 = '1'",
             "$env:PYTHONIOENCODING = 'utf-8'",
-            '& "C:\\Python\\python.exe" -m bazaar_compute_node.bcc @args',
-            "exit $LASTEXITCODE",
+            '$python = "C:\\Python\\python.exe"',
+            "$previousOutputEncoding = $OutputEncoding",
+            "$exitCode = 1",
+            "try {",
+            "    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+            "    if ($MyInvocation.ExpectingInput) {",
+            "        @($Input) | & $python -m bazaar_compute_node.bcc @args",
+            "    } else {",
+            "        & $python -m bazaar_compute_node.bcc @args",
+            "    }",
+            "    $exitCode = $LASTEXITCODE",
+            "} finally {",
+            "    $OutputEncoding = $previousOutputEncoding",
+            "}",
+            "exit $exitCode",
         ]
     finally:
         wrapper_module.remove_bcc_wrapper(command_path)
