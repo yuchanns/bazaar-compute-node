@@ -421,6 +421,7 @@ class LarkTransport:
         started_at = monotonic()
         self._events_received += 1
         self._last_event_at_ms = time_ns() // 1_000_000
+        ack_sent = False
         try:
             handler = self._on_message
             if handler is None:
@@ -429,6 +430,11 @@ class LarkTransport:
                 self._last_message_filter_reason = "handler_unavailable"
                 await self._send_ack(frame, code=200, started_at=started_at)
                 return
+
+            direct_response = _is_direct_response(message_type, decoded)
+            if not direct_response:
+                await self._send_ack(frame, code=200, started_at=started_at)
+                ack_sent = True
             result = handler(message_type, decoded, frame)
             if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
                 result = await result
@@ -436,8 +442,9 @@ class LarkTransport:
             ack_payload: bytes | None = None
             if isinstance(result, LarkAck):
                 accepted = result.accepted
-                ack_code = result.code
-                ack_payload = result.payload
+                if direct_response:
+                    ack_code = result.code
+                    ack_payload = result.payload
             else:
                 accepted = result is not False
             if not accepted:
@@ -448,12 +455,14 @@ class LarkTransport:
                 self._messages_queued += 1
                 self._last_message_disposition = "queued"
                 self._last_message_filter_reason = None
-            await self._send_ack(
-                frame,
-                code=ack_code,
-                payload=ack_payload,
-                started_at=started_at,
-            )
+            if direct_response:
+                await self._send_ack(
+                    frame,
+                    code=ack_code,
+                    payload=ack_payload,
+                    started_at=started_at,
+                )
+                ack_sent = True
             if isinstance(result, LarkAck) and result.post_ack is not None:
                 post_ack_task = asyncio.create_task(
                     _run_post_ack(result.post_ack),
@@ -464,7 +473,8 @@ class LarkTransport:
         except Exception:  # noqa: BLE001
             self._message_mapping_failures += 1
             self._last_message_disposition = "failed"
-            await self._send_ack(frame, code=500, started_at=started_at)
+            if not ack_sent:
+                await self._send_ack(frame, code=500, started_at=started_at)
 
     async def _send_ack(
         self,
@@ -572,6 +582,21 @@ class LarkTransport:
     async def _wait_for_timer(self, delay_ms: int) -> None:
         timer = self._timer_wheel.create(delay_ms)
         await timer.wait()
+
+
+def _is_direct_response(
+    message_type: str,
+    payload: Mapping[str, object],
+) -> bool:
+    if message_type == MESSAGE_CARD:
+        return True
+    header = payload.get("header")
+    if not isinstance(header, Mapping):
+        return False
+    return header.get("event_type") in {
+        "card.action.trigger",
+        "p2.card.action.trigger",
+    }
 
 
 def _delay_ms(seconds: float) -> int:
