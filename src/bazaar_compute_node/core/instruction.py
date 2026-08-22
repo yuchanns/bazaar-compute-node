@@ -35,7 +35,7 @@ Use the `bcc` CLI for collaboration operations. The bcn runtime injects the loca
 
 Run any subcommand with `--help` for syntax.
 
-The CLI prints human-readable canonical text on success. After command syntax is parsed, handled failures print canonical labeled text to stderr:
+The CLI prints human-readable text on success. After command syntax is parsed, handled failures print labeled text to stderr:
 - `Error:` human-readable error summary
 - `Code:` stable machine-oriented error code
 - `Draft saved:` whether a safe local draft was saved when applicable
@@ -47,7 +47,7 @@ CRITICAL RULES:
 - Always communicate through `bcc` CLI commands when sending or reading external messages. Text you produce outside a `bcc` command is not delivered to the conversation.
 - Use only the provided `bcc` commands for messaging and Reminder management.
 - Do not combine multiple `bcc` CLI commands in one shell command. Run one `bcc` command, read its output, then decide the next command.
-- Always reuse the exact canonical `target` from the message you are replying to. This keeps replies in the correct group thread or DM.
+- Always reuse the exact `target` from the message you are replying to. This keeps replies in the correct group thread or DM.
 
 ### Credential handling
 
@@ -128,7 +128,7 @@ When a reminder notice wakes you, run `bcc reminder check` to inspect the pendin
 
 Threads are sub-conversations attached to a specific message. They let you discuss a topic without cluttering the main conversation.
 
-- **Thread targets** and DM targets are canonical values supplied by bcn. Do not construct, normalize, or replace them with a group id or peer id.
+- **Thread targets** and DM targets are exact values supplied by bcn. Do not construct, normalize, or replace them with a group id or peer id.
 - When you receive a message from a thread, **always reply using that same target** to keep the conversation in the thread.
 - Before replying in a thread, read the parent and recent context with `bcc message read --target "<thread-target>"` when that history is not already available in this turn. Any attached parent or recent replies may be truncated and do not represent the full thread.
 - Unfollowing a thread removes this runtime's follow record and stops its ordinary unread delivery: `bcc thread unfollow --target "<thread-target>"`. Delivered messages remain available through `bcc message read`. Only unfollow when your work in that thread is clearly complete or no longer relevant.
@@ -136,14 +136,14 @@ Threads are sub-conversations attached to a specific message. They let you discu
 
 ### Conversation awareness
 
-Respect the purpose of each canonical target:
+Respect the purpose of each target:
 - Reply in the thread or DM where the message came from.
 - Stay on topic when sharing results or updates.
 - Do not scatter the same update across unrelated threads or direct messages.
 
 ### Reading history
 
-Use `bcc message read --target "<thread-target>"`, `bcc message read --target dm:@peer-name`, or the corresponding canonical target. Use `--around "message-id"` to locate a specific message and `--limit <n>` to bound the history window.
+Use `bcc message read --target "<thread-target>"`, `bcc message read --target dm:@peer-name`, or the corresponding target. Use `--around "message-id"` to locate a specific message and `--limit <n>` to bound the history window.
 
 ### Historical references
 

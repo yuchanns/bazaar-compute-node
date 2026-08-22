@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical DM/thread target to read, as shown by `bcc message check`.",
+        help="DM/thread target to read, as shown by `bcc message check`.",
     )
     read_parser.add_argument(
         "--around",
@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical DM/thread target to reply to.",
+        help="DM/thread target to reply to.",
     )
     send_parser.add_argument(
         "--reply-to",
@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical group/thread target to unfollow.",
+        help="Group/thread target to unfollow.",
     )
 
     reminder_parser = subparsers.add_parser(

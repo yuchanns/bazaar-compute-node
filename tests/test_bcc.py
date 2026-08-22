@@ -57,7 +57,7 @@ def local_time(timestamp_ms: int) -> str:
     )
 
 
-def test_check_serializer_matches_canonical_text() -> None:
+def test_check_serializer_matches_text() -> None:
     result = {
         "messages": [message_payload()],
         "referenced_messages": [],
@@ -241,7 +241,7 @@ def test_message_send_accepts_ordered_repeatable_attachments() -> None:
     assert args.attachment == ["first.txt", "second.png"]
 
 
-def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
+def test_read_serializer_includes_positioning_and_reply_target() -> None:
     result = {
         "messages": [message_payload()],
         "referenced_messages": [],
