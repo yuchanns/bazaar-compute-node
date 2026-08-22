@@ -239,19 +239,23 @@ class SessionCommandService(ICommandService):
             caller_session = await transaction.get_bcn_session(caller_session_id)
             if caller_session is None:
                 raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
-            catalog = await transaction.list_inbox_targets(
+            page = await transaction.list_inbox_targets(
                 limit=limit,
                 offset=offset,
             )
-            catalog = replace(
-                catalog,
-                targets=tuple(
-                    replace(
-                        target,
-                        current=target.session_id == caller_session_id,
-                    )
-                    for target in catalog.targets
-                ),
+            targets = tuple(
+                replace(
+                    target,
+                    current=target.session_id == caller_session_id,
+                )
+                for target in page.targets
+            )
+            result = InboxListResult(
+                targets=targets,
+                total=page.total,
+                shown=len(targets),
+                offset=page.offset,
+                has_more=page.has_more,
             )
         await self._audit.append_tool(
             operation="bcc.inbox.list",
@@ -264,7 +268,7 @@ class SessionCommandService(ICommandService):
                 "offset": offset,
             },
         )
-        return catalog
+        return result
 
     @staticmethod
     async def _referenced_messages(

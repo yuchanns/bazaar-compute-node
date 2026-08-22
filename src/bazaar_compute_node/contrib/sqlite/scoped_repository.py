@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5, uuid7
 
 import aiosqlite
 
-from ...core.command import InboxListResult
+from ...core.inbox import InboxTargetPage
 from ...core.models import (
     BcnSession,
     ChannelSession,
@@ -309,7 +309,7 @@ class ReminderTransaction(_ReminderTransaction):
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
-    ) -> InboxListResult:
+    ) -> InboxTargetPage:
         validate_positive_int(limit, "limit")
         validate_non_negative_int(offset, "offset")
 
@@ -331,12 +331,10 @@ class ReminderTransaction(_ReminderTransaction):
             (limit, offset),
         )
         targets = tuple(_inbox_target_summary_from_row(row) for row in rows)
-        return InboxListResult(
+        return InboxTargetPage(
             targets=targets,
             total=total,
-            shown=len(targets),
             offset=offset,
-            has_more=offset + len(targets) < total,
         )
 
     async def resolve_inbox_target(self, target: str) -> BcnSession:

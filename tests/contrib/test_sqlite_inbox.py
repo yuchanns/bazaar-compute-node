@@ -8,7 +8,7 @@ from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.sqlite.scoped_repository import (
     _INBOX_TARGET_CATALOG_CTE,
 )
-from bazaar_compute_node.core.command import InboxListResult
+from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
@@ -221,12 +221,10 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         assert second_page.shown == 1
         assert second_page.has_more is False
         assert second_page.targets[0].target == "dm:channel-empty"
-        assert empty_page == InboxListResult(
+        assert empty_page == InboxTargetPage(
             targets=(),
             total=3,
-            shown=0,
             offset=3,
-            has_more=False,
         )
         assert cursor_after == cursor_before
         assert read_cursor_after == read_cursor_before

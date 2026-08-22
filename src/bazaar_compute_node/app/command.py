@@ -7,10 +7,11 @@ from time import time_ns
 
 from ..core.command import (
     ICommandService,
+    InboxListResult,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import InboundMessage, OutboundMessage
+from ..core.models import InboundMessage, InboxTargetSummary, OutboundMessage
 
 
 def serialize_inbound(message: InboundMessage) -> dict[str, object]:
@@ -81,6 +82,38 @@ def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "error_kind": message.error_kind,
         "error_message": message.error_message,
         "next_action": message.next_action,
+    }
+
+
+def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
+    sender = summary.latest_sender
+    latest_time_ms = (
+        summary.latest_provider_time_ms
+        if summary.latest_provider_time_ms is not None
+        else summary.latest_received_at_ms
+    )
+    return {
+        "target": summary.target,
+        "session_id": summary.session_id,
+        "target_kind": summary.target_kind.value,
+        "current": summary.current,
+        "pending_count": summary.pending_count,
+        "last_activity_at_ms": summary.last_activity_at_ms,
+        "latest_message_id": summary.latest_message_id,
+        "latest_sender": (
+            None if sender is None else {"id": sender.id, "name": sender.name}
+        ),
+        "latest_time_ms": latest_time_ms,
+    }
+
+
+def serialize_inbox_list(result: InboxListResult) -> dict[str, object]:
+    return {
+        "targets": [serialize_inbox_target(target) for target in result.targets],
+        "total": result.total,
+        "shown": result.shown,
+        "offset": result.offset,
+        "has_more": result.has_more,
     }
 
 
@@ -242,6 +275,11 @@ class CommandDispatcher:
                 raise CommandDispatchError(
                     "UNKNOWN_COMMAND", f"unsupported message command: {command}"
                 )
+        elif resource == "inbox":
+            if command != "list":
+                raise CommandDispatchError(
+                    "UNKNOWN_COMMAND", f"unsupported inbox command: {command}"
+                )
         elif resource == "thread":
             if command != "unfollow":
                 raise CommandDispatchError(
@@ -276,6 +314,24 @@ class CommandDispatcher:
                     "delivered_through_seq": result.delivered_through_seq,
                 },
             }
+
+        if resource == "inbox" and command == "list":
+            limit = request.get("limit", 100)
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+                raise CommandDispatchError(
+                    "INVALID_LIMIT", "limit must be a positive integer"
+                )
+            offset = request.get("offset", 0)
+            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                raise CommandDispatchError(
+                    "INVALID_OFFSET", "offset must be a non-negative integer"
+                )
+            result = await self._service.list_inbox(
+                session_id,
+                limit=limit,
+                offset=offset,
+            )
+            return {"ok": True, "result": serialize_inbox_list(result)}
 
         if resource == "message" and command == "read":
             target = request.get("target")

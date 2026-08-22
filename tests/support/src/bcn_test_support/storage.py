@@ -8,7 +8,7 @@ from types import TracebackType
 from typing import Self, cast
 from uuid import uuid7
 
-from bazaar_compute_node.core.command import InboxListResult
+from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
@@ -187,7 +187,7 @@ class _MemoryStorageTransaction:
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
-    ) -> InboxListResult:
+    ) -> InboxTargetPage:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -203,12 +203,10 @@ class _MemoryStorageTransaction:
             )
         )
         targets = summaries[offset : offset + limit]
-        return InboxListResult(
+        return InboxTargetPage(
             targets=targets,
             total=len(summaries),
-            shown=len(targets),
             offset=offset,
-            has_more=offset + len(targets) < len(summaries),
         )
 
     async def resolve_inbox_target(self, target: str) -> BcnSession:

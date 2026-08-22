@@ -11,7 +11,7 @@ from uuid import uuid7
 
 import aiosqlite
 
-from ...core.command import InboxListResult
+from ...core.inbox import InboxTargetPage
 from ...core.models import (
     BcnSession,
     ChannelSession,
@@ -204,7 +204,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
-    ) -> InboxListResult:
+    ) -> InboxTargetPage:
         del limit, offset
         raise RuntimeError("an Agent-scoped storage transaction is required")
 

@@ -11,6 +11,7 @@ from bcn_test_support import TestChannel, TestRuntime
 
 import bazaar_compute_node.app.agent as agent_module
 import bazaar_compute_node.app.wrapper as wrapper_module
+from bazaar_compute_node import bcc as bcc_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
@@ -293,6 +294,7 @@ async def test_runtime_error_redaction_uses_injected_token_values(
 async def test_agent_capability_and_outbound_identity_are_scoped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
         agent_module,
@@ -318,7 +320,14 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             "session_capability": environment["BCN_COMMAND_CAPABILITY"],
         }
 
-        monkeypatch.setenv("BCN_AGENT_ID", AGENT_A_ID)
+        for name in (
+            "BCN_AGENT_ID",
+            "BCN_ENDPOINT",
+            "BCN_SESSION_ID",
+            "BCN_RUNTIME_SESSION_ID",
+            "BCN_COMMAND_CAPABILITY",
+        ):
+            monkeypatch.setenv(name, environment[name])
         check_response = await LocalCommandClient.request(node.endpoint, request)
         assert check_response["ok"] is True
 
@@ -331,6 +340,72 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             )
         assert len(messages) == 1
         target = messages[0].canonical_target
+
+        list_response = await LocalCommandClient.request(
+            node.endpoint,
+            {
+                **request,
+                "resource": "inbox",
+                "command": "list",
+                "limit": 10,
+                "offset": 0,
+            },
+        )
+        assert list_response["ok"] is True
+        list_result = list_response["result"]
+        assert isinstance(list_result, Mapping)
+        assert list_result["total"] == 1
+        assert list_result["shown"] == 1
+        assert list_result["offset"] == 0
+        assert list_result["has_more"] is False
+        targets = list_result["targets"]
+        assert isinstance(targets, list)
+        assert len(targets) == 1
+        target_summary = targets[0]
+        assert isinstance(target_summary, Mapping)
+        assert target_summary["target"] == target
+        assert target_summary["session_id"] == runtime_session.bcn_session_id
+        assert target_summary["current"] is True
+        assert target_summary["pending_count"] == 0
+        assert target_summary["latest_message_id"] == "message-agent-a"
+        assert target_summary["latest_time_ms"] == 1
+
+        invalid_limit = await LocalCommandClient.request(
+            node.endpoint,
+            {
+                **request,
+                "resource": "inbox",
+                "command": "list",
+                "limit": 0,
+                "offset": 0,
+            },
+        )
+        assert invalid_limit["ok"] is False
+        assert invalid_limit["code"] == "INVALID_LIMIT"
+
+        invalid_offset = await LocalCommandClient.request(
+            node.endpoint,
+            {
+                **request,
+                "resource": "inbox",
+                "command": "list",
+                "limit": 1,
+                "offset": -1,
+            },
+        )
+        assert invalid_offset["ok"] is False
+        assert invalid_offset["code"] == "INVALID_OFFSET"
+
+        assert (
+            await bcc_module.async_main(
+                ["inbox", "list", "--limit", "10", "--offset", "0"]
+            )
+            == 0
+        )
+        cli_output = capsys.readouterr().out
+        assert "Inbox targets: 1 returned, offset 0, total 1" in cli_output
+        assert f"target={target}" in cli_output
+        assert "latest-msg=message-agent-a" in cli_output
 
         send_response = await LocalCommandClient.request(
             node.endpoint,

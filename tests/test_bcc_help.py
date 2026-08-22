@@ -8,7 +8,7 @@ from bazaar_compute_node.bcc import build_parser
 @pytest.mark.parametrize(
     ("argv", "expected"),
     (
-        (("--help",), ("resources:", "message", "thread", "reminder")),
+        (("--help",), ("resources:", "message", "inbox", "thread", "reminder")),
         (
             ("message", "--help"),
             ("Message operations", "message commands:", "check", "read", "send"),
@@ -24,6 +24,18 @@ from bazaar_compute_node.bcc import build_parser
         (
             ("message", "send", "--help"),
             ("body is read from stdin", "--attachment <path>"),
+        ),
+        (
+            ("inbox", "--help"),
+            ("Inbox discovery operations", "inbox commands:", "list"),
+        ),
+        (
+            ("inbox", "list", "--help"),
+            (
+                "List available message targets",
+                "--limit <n>",
+                "--offset <n>",
+            ),
         ),
         (
             ("thread", "--help"),

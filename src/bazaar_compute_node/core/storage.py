@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
-from .command import InboxListResult
+from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
     BcnSession,
@@ -41,7 +41,7 @@ class IStorageTransaction(Protocol):
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
-    ) -> InboxListResult: ...
+    ) -> InboxTargetPage: ...
 
     async def resolve_inbox_target(self, target: str) -> BcnSession: ...
 

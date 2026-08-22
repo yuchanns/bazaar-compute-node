@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="resource",
         required=True,
-        metavar="{message,thread,reminder}",
+        metavar="{message,inbox,thread,reminder}",
         title="resources",
     )
 
@@ -90,6 +90,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         metavar="<n>",
         help="Maximum number of history messages to return (default: 100).",
+    )
+
+    inbox_parser = subparsers.add_parser(
+        "inbox",
+        help="Inbox discovery operations",
+        description="Inbox discovery operations",
+    )
+    inbox_subparsers = inbox_parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{list}",
+        title="inbox commands",
+    )
+    inbox_list_parser = inbox_subparsers.add_parser(
+        "list",
+        help="List available message targets",
+        description="List available message targets",
+    )
+    inbox_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        metavar="<n>",
+        help="Maximum number of targets to return (default: 100).",
+    )
+    inbox_list_parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        metavar="<n>",
+        help="Number of targets to skip (default: 0).",
     )
 
     send_parser = message_subparsers.add_parser(
@@ -347,6 +378,10 @@ async def _request(
             request["attachment_paths"] = await asyncio.to_thread(
                 lambda: [str(Path(path).absolute()) for path in args.attachment]
             )
+    elif args.resource == "inbox":
+        if args.command == "list":
+            request["limit"] = args.limit
+            request["offset"] = args.offset
     elif args.resource == "thread":
         request["target"] = args.target
     elif args.resource == "reminder":
@@ -460,6 +495,130 @@ def _require_message_list(
 
 def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]]:
     return _require_message_list(result, "messages")
+
+
+def _require_bool(value: Mapping[str, object], field_name: str) -> bool:
+    item = value.get(field_name)
+    if not isinstance(item, bool):
+        _invalid_response(f"command response contains an invalid {field_name}")
+    return item
+
+
+def _format_inbox_sender(value: object) -> str:
+    if value is None:
+        return "none"
+    if not isinstance(value, Mapping):
+        _invalid_response("command response contains an invalid latest sender")
+    sender_id = value.get("id")
+    sender_name = value.get("name")
+    if sender_id is not None and (not isinstance(sender_id, str) or not sender_id):
+        _invalid_response("command response contains an invalid latest sender id")
+    if sender_name is not None and (
+        not isinstance(sender_name, str) or not sender_name
+    ):
+        _invalid_response("command response contains an invalid latest sender name")
+    if sender_name is None and sender_id is None:
+        _invalid_response("command response contains an empty latest sender")
+    return f"@{sender_name or sender_id}"
+
+
+def _format_inbox_target(summary: Mapping[str, object]) -> str:
+    required_fields = (
+        "target",
+        "session_id",
+        "target_kind",
+        "current",
+        "pending_count",
+        "last_activity_at_ms",
+        "latest_message_id",
+        "latest_sender",
+        "latest_time_ms",
+    )
+    if any(field not in summary for field in required_fields):
+        _invalid_response("command response contains an incomplete inbox target")
+
+    target = _require_text(summary, "target")
+    session_id = _require_text(summary, "session_id")
+    target_kind = _require_text(summary, "target_kind")
+    if target_kind not in {"dm", "group"}:
+        _invalid_response("command response contains an invalid target kind")
+    current = _require_bool(summary, "current")
+    pending_count = _require_non_negative_int(summary, "pending_count")
+    _require_non_negative_int(
+        summary,
+        "last_activity_at_ms",
+    )
+
+    latest_message_id = summary.get("latest_message_id")
+    latest_sender = summary.get("latest_sender")
+    latest_time_ms = _optional_non_negative_int(summary, "latest_time_ms")
+    if latest_message_id is None:
+        if latest_sender is not None or latest_time_ms is not None:
+            _invalid_response("empty latest message has extra fields")
+        latest_message_text = "none"
+        latest_sender_text = "none"
+        latest_time_text = "none"
+    else:
+        if not isinstance(latest_message_id, str) or not latest_message_id:
+            _invalid_response("command response contains an invalid latest message")
+        if latest_time_ms is None:
+            _invalid_response("latest message has no timestamp")
+        latest_message_text = latest_message_id
+        latest_sender_text = _format_inbox_sender(latest_sender)
+        latest_time_text = format_message_time(latest_time_ms)
+
+    return (
+        f"[target={target} session={session_id} kind={target_kind} "
+        f"current={str(current).lower()} pending={pending_count} "
+        f"latest-msg={latest_message_text} latest-sender={latest_sender_text} "
+        f"latest-time={latest_time_text}]"
+    )
+
+
+def serialize_inbox_list(result: Mapping[str, object]) -> str:
+    targets = result.get("targets")
+    if not isinstance(targets, list) or not all(
+        isinstance(target, Mapping) for target in targets
+    ):
+        _invalid_response("command response contains invalid inbox targets")
+    total = _require_non_negative_int(result, "total")
+    shown = _require_non_negative_int(result, "shown")
+    offset = _require_non_negative_int(result, "offset")
+    has_more = _require_bool(result, "has_more")
+    if shown != len(targets) or shown > total:
+        _invalid_response("command response contains invalid inbox page bounds")
+    if has_more != (offset + shown < total):
+        _invalid_response("command response contains invalid inbox pagination")
+
+    rendered_targets: list[str] = []
+    previous_order: tuple[int, str] | None = None
+    for target in targets:
+        rendered_targets.append(_format_inbox_target(target))
+        activity = _require_non_negative_int(target, "last_activity_at_ms")
+        session_id = _require_text(target, "session_id")
+        current_order = (-activity, session_id)
+        if previous_order is not None and current_order < previous_order:
+            _invalid_response("command response inbox targets are out of order")
+        previous_order = current_order
+
+    lines = [
+        (
+            f"Inbox targets: {shown} returned, offset {offset}, total {total}, "
+            "ordered by recent activity."
+        )
+    ]
+    lines.extend(rendered_targets)
+    if total == 0:
+        lines.append("No message targets.")
+    elif not targets:
+        lines.append("No more message targets.")
+    elif has_more:
+        lines.append(
+            f"More message targets remain. Run `bcc inbox list --offset {offset + shown}`."
+        )
+    else:
+        lines.append("No more message targets.")
+    return "\n".join(lines)
 
 
 def _message_timestamp(message: Mapping[str, object]) -> int:
@@ -881,6 +1040,9 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
             print(serialize_read(result))
         elif args.command == "send":
             print(serialize_send(result))
+    elif args.resource == "inbox":
+        if args.command == "list":
+            print(serialize_inbox_list(result))
     elif args.resource == "reminder":
         serializer = {
             "schedule": serialize_reminder_schedule,

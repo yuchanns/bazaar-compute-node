@@ -61,7 +61,7 @@ def serialize_reminder_occurrence(
 
 
 class CommandDispatcher(_MessageCommandDispatcher):
-    """Resource-aware command dispatcher for message, thread, and Reminder commands."""
+    """Resource-aware dispatcher for message, inbox, thread, and Reminder commands."""
 
     def __init__(
         self,
@@ -110,6 +110,8 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     "UNKNOWN_COMMAND",
                     f"unsupported thread command: {command}",
                 )
+            return await super()._dispatch_command(request)
+        if resource == "inbox":
             return await super()._dispatch_command(request)
         if resource != "reminder":
             raise CommandDispatchError(
