@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 from collections import OrderedDict
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from contextlib import suppress
@@ -248,15 +249,21 @@ class LarkResourceCache:
                 ):
                     raise ValueError("resource_too_large")
                 name = _safe_filename(
-                    _content_disposition_filename(
-                        response.headers.get("Content-Disposition")
-                    ),
-                    fallback=name,
+                    name,
+                    fallback=resource.resource_type,
                     resource_type=resource.resource_type,
                 )
                 media_type = _safe_media_type(
                     response.headers.get("Content-Type"),
                     fallback=media_type,
+                )
+                name = _resolve_resource_name(
+                    event_name=name,
+                    response_name=_content_disposition_filename(
+                        response.headers.get("Content-Disposition")
+                    ),
+                    media_type=media_type,
+                    resource_type=resource.resource_type,
                 )
                 return await self._materializer.materialize(
                     _bounded_stream(
@@ -475,7 +482,7 @@ def _resource_from_mapping(
             break
     name = _safe_filename(
         raw_name,
-        fallback=f"{resource_type}.bin",
+        fallback=resource_type,
         resource_type=resource_type,
     )
     media_type = _safe_media_type(mapping.get("mime_type"))
@@ -550,23 +557,71 @@ def _safe_filename(
     resource_type: str,
 ) -> str:
     candidate = value if isinstance(value, str) and value else fallback
-    if (
-        not candidate
-        or len(candidate) > 255
-        or "/" in candidate
-        or "\\" in candidate
-        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
-    ):
+    if not _is_safe_filename(candidate):
         candidate = fallback
-    if (
-        not candidate
-        or len(candidate) > 255
-        or "/" in candidate
-        or "\\" in candidate
-        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
-    ):
-        return f"{resource_type}.bin"
-    return candidate
+    return candidate if _is_safe_filename(candidate) else resource_type
+
+
+def _resolve_resource_name(
+    *,
+    event_name: str,
+    response_name: str | None,
+    media_type: str | None,
+    resource_type: str,
+) -> str:
+    response_name = response_name if _is_safe_filename(response_name) else None
+    if _safe_suffix(event_name):
+        name = event_name
+    elif response_name is not None and _safe_suffix(response_name):
+        name = response_name
+    elif event_name != resource_type:
+        name = event_name
+    elif response_name is not None:
+        name = response_name
+    else:
+        name = event_name
+
+    if _safe_suffix(name):
+        return name
+    suffix = _suffix_from_media_type(media_type)
+    if not suffix and resource_type == "audio":
+        suffix = ".mp3"
+    return f"{name}{suffix}" if suffix else name
+
+
+def _is_safe_filename(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 255
+        and "/" not in value
+        and "\\" not in value
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
+
+
+def _safe_suffix(name: str) -> str:
+    dot = name.rfind(".")
+    if dot <= 0:
+        return ""
+    suffix = name[dot:]
+    return (
+        suffix
+        if 1 < len(suffix) <= 11 and suffix[1:].isascii() and suffix[1:].isalnum()
+        else ""
+    )
+
+
+def _suffix_from_media_type(media_type: str | None) -> str:
+    media_type = (media_type or "").partition(";")[0].strip().lower()
+    if not media_type or media_type.endswith("/octet-stream"):
+        return ""
+    suffix = mimetypes.guess_extension(media_type) or ""
+    return (
+        suffix
+        if 1 < len(suffix) <= 11 and suffix[1:].isascii() and suffix[1:].isalnum()
+        else ""
+    )
 
 
 def _safe_media_type(value: object, *, fallback: str | None = None) -> str | None:

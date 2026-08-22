@@ -101,6 +101,30 @@ async def test_attachment_materializer_rejects_write_size_mismatch(
 
 
 @pytest.mark.asyncio
+async def test_attachment_materializer_preserves_unknown_suffix(
+    tmp_path: Path,
+) -> None:
+    async def no_references() -> set[str]:
+        return set()
+
+    materializer = AttachmentMaterializer(
+        lambda: tmp_path,
+        no_references,
+        max_workspace_bytes=7,
+    )
+    attachment = await materializer.materialize(
+        b"audio", name="opaque", kind="audio", media_type="audio/octet-stream"
+    )
+
+    assert attachment.relative_path is not None
+    assert Path(attachment.relative_path).name == "content"
+    assert (tmp_path / attachment.relative_path).read_bytes() == b"audio"
+
+    with pytest.raises(ValueError, match="workspace quota"):
+        await materializer.materialize(b"more", name="opaque", kind="audio")
+
+
+@pytest.mark.asyncio
 async def test_attachment_reconciliation_removes_only_unreferenced_local_ids(
     tmp_path: Path,
 ) -> None:
