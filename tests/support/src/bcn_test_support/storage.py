@@ -15,11 +15,13 @@ from bazaar_compute_node.core.models import (
     ConsumerCursor,
     FreshCheckState,
     InboundMessage,
+    InboxTargetSummary,
     OutboundDeliveryState,
     OutboundMessage,
     RuntimeAttempt,
 )
 from bazaar_compute_node.core.storage import (
+    InboxTargetResolutionError,
     IStorage,
     IStorageScope,
     IStorageTransaction,
@@ -178,23 +180,65 @@ class _MemoryStorageTransaction:
         return self._storage.channel_sessions.get(session_id)
 
     async def get_bcn_session(self, session_id: str) -> BcnSession | None:
-        return self._storage.bcn_sessions.get(session_id)
+        session = self._storage.bcn_sessions.get(session_id)
+        if session is None or not self._in_scope(session):
+            return None
+        return session
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxListResult:
-        del limit, offset
-        raise RuntimeError("in-memory inbox target discovery is not implemented")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+
+        summaries = tuple(
+            sorted(
+                (
+                    self._inbox_target_summary(session)
+                    for session in self._scoped_bcn_sessions()
+                ),
+                key=lambda summary: (-summary.last_activity_at_ms, summary.session_id),
+            )
+        )
+        targets = summaries[offset : offset + limit]
+        return InboxListResult(
+            targets=targets,
+            total=len(summaries),
+            shown=len(targets),
+            offset=offset,
+            has_more=offset + len(targets) < len(summaries),
+        )
 
     async def resolve_inbox_target(self, target: str) -> BcnSession:
-        del target
-        raise RuntimeError("in-memory inbox target resolution is not implemented")
+        if not isinstance(target, str) or not target:
+            raise ValueError("target must be a non-empty string")
+        matches = []
+        for session in self._scoped_bcn_sessions():
+            channel_session = self._storage.channel_sessions.get(
+                session.channel_session_id
+            )
+            if channel_session is None:
+                continue
+            derived_target = f"{channel_session.target_kind.value}:{channel_session.id}"
+            messages = self._storage.inbound_messages.get(session.id, [])
+            if derived_target == target or any(
+                message.canonical_target == target for message in messages
+            ):
+                matches.append(session)
+        if len(matches) != 1:
+            raise InboxTargetResolutionError(
+                "inbox target does not resolve to exactly one owned session"
+            )
+        return matches[0]
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         matches = [
             session
             for session in self._storage.bcn_sessions.values()
             if session.channel_session_id == channel_session_id
+            and self._in_scope(session)
         ]
         if len(matches) > 1:
             raise ValueError(
@@ -212,6 +256,72 @@ class _MemoryStorageTransaction:
     async def get_latest_inbound_seq(self, session_id: str) -> int:
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
+
+    def _in_scope(self, session: BcnSession) -> bool:
+        return self._agent_id is None or session.workspace_id == self._agent_id
+
+    def _scoped_bcn_sessions(self) -> tuple[BcnSession, ...]:
+        return tuple(
+            session
+            for session in self._storage.bcn_sessions.values()
+            if self._in_scope(session)
+        )
+
+    def _inbox_target_summary(self, session: BcnSession) -> InboxTargetSummary:
+        channel_session = self._storage.channel_sessions.get(session.channel_session_id)
+        if channel_session is None:
+            raise ValueError(f"unknown channel session: {session.channel_session_id}")
+        messages = self._storage.inbound_messages.get(session.id, [])
+        latest = max(
+            messages,
+            key=lambda message: (message.seq, message.message_id),
+            default=None,
+        )
+        target = (
+            latest.canonical_target
+            if latest is not None
+            else f"{channel_session.target_kind.value}:{channel_session.id}"
+        )
+        cursor = self._storage.cursors.get(session.id)
+        delivered_through_seq = cursor.delivered_through_seq if cursor else 0
+        pending_count = sum(
+            message.notifies_runtime and message.seq > delivered_through_seq
+            for message in messages
+        )
+        last_activity_at_ms = next(
+            (
+                value
+                for value in (
+                    session.last_activity_at_ms,
+                    latest.received_at_ms if latest is not None else None,
+                    channel_session.last_inbound_at_ms,
+                    channel_session.last_outbound_at_ms,
+                    session.updated_at_ms,
+                    channel_session.updated_at_ms,
+                    session.created_at_ms,
+                    channel_session.created_at_ms,
+                    0,
+                )
+                if value is not None
+            ),
+            0,
+        )
+        return InboxTargetSummary(
+            target=target,
+            session_id=session.id,
+            target_kind=channel_session.target_kind,
+            current=False,
+            pending_count=pending_count,
+            last_activity_at_ms=last_activity_at_ms,
+            latest_message_id=latest.message_id if latest is not None else None,
+            latest_sender=latest.sender if latest is not None else None,
+            latest_provider_time_ms=(
+                latest.provider_time_ms if latest is not None else None
+            ),
+            latest_received_at_ms=(
+                latest.received_at_ms if latest is not None else None
+            ),
+        )
 
     async def find_inbound_message(
         self,

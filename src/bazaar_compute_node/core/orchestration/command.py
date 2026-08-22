@@ -189,36 +189,23 @@ class SessionCommandService(ICommandService):
             raise ValueError("target must be a non-empty string")
         if limit <= 0:
             raise ValueError("limit must be positive")
-        async with self._concurrency.for_session(session_id):
-            async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(session_id)
-                if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-                messages = await transaction.list_inbound_messages(
-                    session_id,
-                    target=target,
-                    around_message_id=around_message_id,
-                    limit=limit,
-                )
-                referenced_messages = await self._referenced_messages(
-                    transaction,
-                    session_id=session_id,
-                    messages=messages,
-                )
-                latest_seq = await transaction.get_latest_inbound_seq(session_id)
-                cursor = await transaction.get_consumer_cursor(session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(session_id=session_id)
-                now_ms = self._clock()
-                cursor = replace(
-                    cursor,
-                    inbox_snapshot_seq=latest_seq,
-                    inbox_snapshot_source="read",
-                    inbox_snapshot_at_ms=now_ms,
-                    last_read_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_consumer_cursor(cursor)
+        async with self._storage.transaction() as transaction:
+            caller_session = await transaction.get_bcn_session(session_id)
+            if caller_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            source_session = await transaction.resolve_inbox_target(target)
+            messages = await transaction.list_inbound_messages(
+                source_session.id,
+                target=target,
+                around_message_id=around_message_id,
+                limit=limit,
+            )
+            referenced_messages = await self._referenced_messages(
+                transaction,
+                session_id=source_session.id,
+                messages=messages,
+            )
+            latest_seq = await transaction.get_latest_inbound_seq(source_session.id)
             result = MessageReadResult(
                 messages=messages,
                 snapshot_seq=latest_seq,
@@ -232,7 +219,8 @@ class SessionCommandService(ICommandService):
             state=RuntimeEventState.COMPLETED,
             correlation=self._correlation(session_id=session_id),
             arguments={
-                "session_id": session_id,
+                "caller_session_id": session_id,
+                "source_session_id": source_session.id,
                 "target": target,
                 "around_message_id": around_message_id,
                 "limit": limit,
@@ -247,7 +235,36 @@ class SessionCommandService(ICommandService):
         limit: int = 100,
         offset: int = 0,
     ) -> InboxListResult:
-        raise NotImplementedError("inbox target discovery is not implemented")
+        async with self._storage.transaction() as transaction:
+            caller_session = await transaction.get_bcn_session(caller_session_id)
+            if caller_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
+            catalog = await transaction.list_inbox_targets(
+                limit=limit,
+                offset=offset,
+            )
+            catalog = replace(
+                catalog,
+                targets=tuple(
+                    replace(
+                        target,
+                        current=target.session_id == caller_session_id,
+                    )
+                    for target in catalog.targets
+                ),
+            )
+        await self._audit.append_tool(
+            operation="bcc.inbox.list",
+            status="completed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(session_id=caller_session_id),
+            arguments={
+                "caller_session_id": caller_session_id,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        return catalog
 
     @staticmethod
     async def _referenced_messages(

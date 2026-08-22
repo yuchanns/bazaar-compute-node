@@ -192,6 +192,35 @@ async def make_node(
     return orchestrator, channel, runtime, storage, audit
 
 
+async def make_sqlite_node() -> tuple[
+    SessionOrchestrator,
+    TestChannel,
+    TestRuntime,
+    SqliteDatabase,
+    RecordingAudit,
+]:
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = SqliteDatabase(database_name=f"task4-{uuid7()}.sqlite3")
+    audit = RecordingAudit()
+    await storage.start(timeout=2)
+    orchestrator = SessionOrchestrator(
+        agent_id="workspace-1",
+        channel=channel,
+        runtime=runtime,
+        storage=storage.scope("workspace-1", "Test Agent"),
+        audit=audit,
+        timeout_budget=make_budget(),
+        timer_wheel=TimerWheel(),
+        workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
+    )
+    runtime.command_service = orchestrator.command_service
+    await orchestrator.start(timeout=2)
+    return orchestrator, channel, runtime, storage, audit
+
+
 async def make_idle_timeout_node(
     idle_timeout_ms: int,
 ) -> tuple[
@@ -697,43 +726,42 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
-    orchestrator, channel, _, storage, _ = await make_node()
+async def test_agent_scoped_read_returns_target_messages() -> None:
+    orchestrator, _, _, storage, _ = await make_sqlite_node()
+    caller_id = "bcn-caller"
+    target_session_id = "bcn-target"
+    caller_message = make_message(session_id=caller_id)
+    target_parent = make_message(session_id=target_session_id)
+    target_reply = replace(
+        target_parent,
+        seq=2,
+        message_id="message-bcn-target-2",
+        provider_message_id="provider-bcn-target-2",
+        received_at_ms=2,
+        body="target reply",
+        reply_to_message_id=target_parent.message_id,
+    )
+    await orchestrator.handle_inbound(caller_message)
+    await orchestrator.handle_inbound(target_parent)
+    await orchestrator.handle_inbound(target_reply)
+
     try:
-        await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
-
         history = await orchestrator.command_service.read(
-            "bcn-1",
-            target="#test:bcn-1",
+            caller_id,
+            target=target_reply.canonical_target,
+            around_message_id=target_reply.message_id,
             limit=1,
         )
-        assert [message.seq for message in history.messages] == [1]
-        assert history.snapshot_seq == 1
-        assert history.first_seq == 1
-        assert history.last_seq == 1
-        assert storage.cursors["bcn-1"].delivered_through_seq == 0
-        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 1
-
-        checked = await orchestrator.command_service.check("bcn-1")
-        assert [message.seq for message in checked.messages] == [1]
-        assert checked.snapshot_seq == 1
-        assert checked.delivered_through_seq == 1
-        assert storage.cursors["bcn-1"].delivered_through_seq == 1
-
-        await channel.inject(make_message(seq=2))
-        await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
-        around = await orchestrator.command_service.read(
-            "bcn-1",
-            target="#test:bcn-1",
-            around_message_id=storage.inbound_messages["bcn-1"][1].message_id,
-            limit=1,
-        )
-        assert [message.seq for message in around.messages] == [2]
-        assert storage.cursors["bcn-1"].delivered_through_seq == 1
-        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 2
+        assert [message.message_id for message in history.messages] == [
+            target_reply.message_id
+        ]
+        assert [message.message_id for message in history.referenced_messages] == [
+            target_parent.message_id
+        ]
+        assert history.messages[0].canonical_target == target_reply.canonical_target
     finally:
         await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio
