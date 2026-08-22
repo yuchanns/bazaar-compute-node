@@ -61,7 +61,7 @@ def test_reminder_parser_exposes_only_the_six_supported_commands() -> None:
 def test_reminder_schedule_serializer_matches_canonical_text() -> None:
     output = serialize_reminder_schedule({"reminder": reminder_payload()})
     assert output == (
-        'Reminder scheduled: #019c1234 (one-time) "Inspect reminder"\n'
+        f'Reminder scheduled: #{REMINDER_ID} (one-time) "Inspect reminder"\n'
         "Next: 2027-01-15T08:00:00.000Z"
     )
 
@@ -92,7 +92,7 @@ def test_reminder_check_serializer_renders_due_snapshot_and_terminal_line() -> N
 
     output = serialize_reminder_check(result)
     assert output == (
-        "[class=due id=019c1234 occurrence=3 "
+        f"[class=due id={REMINDER_ID} occurrence=3 "
         "scheduled=2027-01-15T08:00:00.000Z "
         "fired=2027-01-15T08:00:01.000Z overdue=true "
         "next=2027-01-15T08:15:00.000Z target=dm:channel-a "
@@ -150,18 +150,18 @@ def test_reminder_list_serializer_renders_definition_states() -> None:
         ]
     }
     output = serialize_reminder_list(result)
-    assert "#019c1234 [scheduled] (one-time) next=" in output
-    assert "#019c1234 [fired] (one-time) fired_at=" in output
-    assert "#019c1234 [canceled] (every:15m) canceled_at=" in output
-    assert "anchor=019c5678" in output
+    assert f"#{REMINDER_ID} [scheduled] (one-time) next=" in output
+    assert f"#{REMINDER_ID} [fired] (one-time) fired_at=" in output
+    assert f"#{REMINDER_ID} [canceled] (every:15m) canceled_at=" in output
+    assert f"anchor={ANCHOR_ID}" in output
 
 
 def test_reminder_mutation_serializers_match_canonical_text() -> None:
     result = {"reminder": reminder_payload()}
     assert serialize_reminder_snooze(result).startswith(
-        "Reminder snoozed: #019c1234\nNext: "
+        f"Reminder snoozed: #{REMINDER_ID}\nNext: "
     )
     assert serialize_reminder_update(result).startswith(
-        "Reminder updated: #019c1234\nNext: "
+        f"Reminder updated: #{REMINDER_ID}\nNext: "
     )
-    assert serialize_reminder_cancel(result) == "Reminder canceled: #019c1234"
+    assert serialize_reminder_cancel(result) == f"Reminder canceled: #{REMINDER_ID}"

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Self
 from unicodedata import category
@@ -20,8 +19,6 @@ from .reminder_schedule import (
     parse_repeat_rule,
     resolve_schedule,
 )
-
-_ID_PREFIX_PATTERN = re.compile(r"[0-9a-fA-F]{8}\Z")
 
 __all__ = [
     "RecurrenceKind",
@@ -49,7 +46,6 @@ __all__ = [
     "parse_fire_at",
     "parse_repeat_rule",
     "resolve_schedule",
-    "short_id",
 ]
 
 
@@ -299,25 +295,13 @@ class ReminderCancelResult:
 def canonical_id_reference(value: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("id reference must be a non-empty string")
-    if _ID_PREFIX_PATTERN.fullmatch(value) is not None:
-        return value.lower()
     try:
         parsed = UUID(value)
     except ValueError as error:
-        raise ValueError(
-            "id reference must be a UUID or 8-character hexadecimal prefix"
-        ) from error
+        raise ValueError("id reference must be a canonical full UUID") from error
     if str(parsed) != value.lower():
         raise ValueError("full UUID references must use canonical hyphenated form")
     return str(parsed)
-
-
-def short_id(value: str) -> str:
-    try:
-        parsed = UUID(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError("value must be a full UUID") from error
-    return parsed.hex[:8]
 
 
 def _require_non_negative_int(value: int, field_name: str) -> None:

@@ -32,6 +32,7 @@ from ...core.models import (
     InboundAttachment,
     InboundMessage,
     SenderIdentity,
+    SenderKind,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -1005,7 +1006,7 @@ class WeComChannel(IChannel):
         canonical_target = f"{target_prefix}:{channel_session_id}"
         received_at_ms = time_ns() // 1_000_000
         content = await self._content(body, message_type)
-        metadata: dict[str, object] = {}
+        metadata: dict[str, object] = {"sender_kind": SenderKind.HUMAN.value}
         create_time = body.get("create_time")
         if isinstance(create_time, int) and not isinstance(create_time, bool):
             metadata["provider_create_time"] = create_time
@@ -1041,6 +1042,7 @@ class WeComChannel(IChannel):
                         mentions_agent=False,
                         notifies_runtime=False,
                         attachments=quote_content.attachments,
+                        metadata={"sender_kind": SenderKind.HUMAN.value},
                     )
                 )
             else:

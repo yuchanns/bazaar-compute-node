@@ -12,7 +12,7 @@ from uuid import uuid7
 
 from .app.command import format_message_time
 from .app.transport import LocalCommandClient
-from .core.reminder import format_utc_timestamp, short_id
+from .core.reminder import format_utc_timestamp
 
 
 class BccCommandError(RuntimeError):
@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser.add_argument(
         "--message-id",
         metavar="<id>",
-        help="Required full or unique short local inbound message id used as anchor.",
+        help="Required full uuid for the local inbound message used as anchor.",
     )
 
     reminder_subparsers.add_parser(
@@ -241,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--id",
         dest="reminder_id",
         metavar="<id>",
-        help="Reminder id (full uuid or short prefix)",
+        help="Reminder id (full uuid)",
     )
     snooze_parser.add_argument(
         "--by",
@@ -258,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--id",
         dest="reminder_id",
         metavar="<id>",
-        help="Reminder id (full uuid or short prefix)",
+        help="Reminder id (full uuid)",
     )
     update_parser.add_argument(
         "--fire-at",
@@ -284,14 +284,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     cancel_parser = reminder_subparsers.add_parser(
         "cancel",
-        help="Cancel a scheduled reminder by id (full uuid or 8-char prefix)",
-        description="Cancel a scheduled reminder by id (full uuid or 8-char prefix)",
+        help="Cancel a scheduled reminder by id (full uuid)",
+        description="Cancel a scheduled reminder by id (full uuid)",
     )
     cancel_parser.add_argument(
         "--id",
         dest="reminder_id",
         metavar="<id>",
-        help="Reminder id (full uuid or short prefix)",
+        help="Reminder id (full uuid)",
     )
     return parser
 
@@ -714,13 +714,6 @@ def _require_reminder(result: Mapping[str, object]) -> Mapping[str, object]:
     return reminder
 
 
-def _short_uuid(value: str) -> str:
-    try:
-        return short_id(value)
-    except ValueError as error:
-        raise BccCommandError(str(error), code="INVALID_RESPONSE") from error
-
-
 def _reminder_label(reminder: Mapping[str, object]) -> str:
     repeat_rule = reminder.get("repeat_rule")
     if repeat_rule is None:
@@ -736,7 +729,7 @@ def _quoted_title(reminder: Mapping[str, object]) -> str:
 
 def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
     reminder = _require_reminder(result)
-    reminder_id = _short_uuid(_require_text(reminder, "reminder_id"))
+    reminder_id = _require_text(reminder, "reminder_id")
     next_fire = _optional_non_negative_int(reminder, "next_fire_at_ms")
     if next_fire is None:
         _invalid_response("scheduled Reminder response has no next fire time")
@@ -763,7 +756,7 @@ def serialize_reminder_check(result: Mapping[str, object]) -> str:
         occurrence = item.get("occurrence")
         if not isinstance(occurrence, Mapping):
             _invalid_response("Reminder check item has no occurrence")
-        reminder_id = _short_uuid(_require_text(occurrence, "reminder_id"))
+        reminder_id = _require_text(occurrence, "reminder_id")
         occurrence_no = _require_non_negative_int(occurrence, "occurrence_no")
         if occurrence_no <= 0:
             _invalid_response("Reminder occurrence number must be positive")
@@ -809,8 +802,8 @@ def serialize_reminder_list(result: Mapping[str, object]) -> str:
         return "No reminders."
     lines: list[str] = []
     for reminder in reminders:
-        reminder_id = _short_uuid(_require_text(reminder, "reminder_id"))
-        anchor = _short_uuid(_require_text(reminder, "anchor_message_id"))
+        reminder_id = _require_text(reminder, "reminder_id")
+        anchor = _require_text(reminder, "anchor_message_id")
         state = _require_text(reminder, "state")
         title = _quoted_title(reminder)
         label = _reminder_label(reminder)
@@ -850,7 +843,7 @@ def _serialize_reminder_mutation(
     include_next: bool,
 ) -> str:
     reminder = _require_reminder(result)
-    reminder_id = _short_uuid(_require_text(reminder, "reminder_id"))
+    reminder_id = _require_text(reminder, "reminder_id")
     line = f"Reminder {verb}: #{reminder_id}"
     if not include_next:
         return line

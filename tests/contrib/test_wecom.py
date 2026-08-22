@@ -28,6 +28,7 @@ from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     InboundMessage,
     OutboundAttachment,
+    SenderKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
@@ -511,6 +512,7 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
     inbound = channel._inbound.get_nowait()
     assert isinstance(inbound, InboundMessage)
     assert inbound.provider_payload_ref is None
+    assert inbound.sender_kind is SenderKind.HUMAN
 
 
 @pytest.mark.asyncio
@@ -561,9 +563,11 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert isinstance(current, InboundMessage)
     assert referenced.body == "The original quoted text."
     assert referenced.sender is None
+    assert referenced.sender_kind is SenderKind.HUMAN
     assert referenced.notifies_runtime is False
     assert referenced.mentions_agent is False
     assert current.body == "Can you see the quoted text?"
+    assert current.sender_kind is SenderKind.HUMAN
     assert current.message_id != current.provider_message_id
     assert current.reply_to_message_id == referenced.message_id
     assert current.session_id == referenced.session_id

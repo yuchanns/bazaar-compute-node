@@ -42,7 +42,7 @@ class IStorageTransaction(Protocol):
     ) -> InboundMessage | None: ...
 
     async def resolve_inbound_message(
-        self, session_id: str, message_id_or_prefix: str
+        self, session_id: str, message_id: str
     ) -> InboundMessage | None: ...
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]: ...
@@ -75,7 +75,7 @@ class IStorageTransaction(Protocol):
     ) -> OutboundMessage: ...
 
     async def get_reminder(
-        self, owner_session_id: str, reminder_id_or_prefix: str
+        self, owner_session_id: str, reminder_id: str
     ) -> Reminder | None: ...
 
     async def list_reminders(

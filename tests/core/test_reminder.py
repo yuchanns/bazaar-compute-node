@@ -20,7 +20,6 @@ from bazaar_compute_node.core.reminder import (
     parse_fire_at,
     parse_repeat_rule,
     resolve_schedule,
-    short_id,
 )
 
 _REMINDER_ID = "018f0000-0000-7000-8000-000000000001"
@@ -309,8 +308,6 @@ def test_occurrence_pending_marker_is_one_way() -> None:
 
 
 def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:
-    assert canonical_id_reference("A8A4E747") == "a8a4e747"
-    assert short_id(_REMINDER_ID) == "018f0000"
     with pytest.raises(ValueError, match="UUID"):
         canonical_id_reference("not-an-id")
     with pytest.raises(ValueError, match="limit"):
@@ -320,22 +317,22 @@ def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:
         {ReminderState.SCHEDULED, ReminderState.FIRED}
     )
     snooze = ReminderSnoozeRequest.from_options(
-        reminder_id="A8A4E747",
+        reminder_id=_REMINDER_ID,
         duration="30m",
         evaluated_at_ms=1_000,
     )
     assert snooze.duration_ms == 1_800_000
-    assert ReminderCancelRequest("A8A4E747", 1_000).reminder_id == "a8a4e747"
+    assert ReminderCancelRequest(_REMINDER_ID, 1_000).reminder_id == _REMINDER_ID
 
     with pytest.raises(ValueError, match="exactly one"):
         ReminderUpdateRequest.from_options(
-            reminder_id="A8A4E747",
+            reminder_id=_REMINDER_ID,
             evaluated_at_ms=1_000,
             title="Changed",
             cadence="every:1h",
         )
     update = ReminderUpdateRequest.from_options(
-        reminder_id="A8A4E747",
+        reminder_id=_REMINDER_ID,
         evaluated_at_ms=1_000,
         cadence="every:01h",
     )

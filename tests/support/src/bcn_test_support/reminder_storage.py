@@ -78,43 +78,37 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def resolve_inbound_message(
         self,
         session_id: str,
-        message_id_or_prefix: str,
+        message_id: str,
     ) -> InboundMessage | None:
         _require_non_empty_text(session_id, "session_id")
-        reference = canonical_id_reference(message_id_or_prefix)
-        matches = [
-            message
-            for message in self._reminder_storage.inbound_messages.get(session_id, [])
-            if (
-                message.message_id == reference
-                if len(reference) == 36
-                else message.message_id.startswith(reference)
-            )
-        ]
-        if len(matches) > 1:
-            raise ValueError("inbound message id prefix is ambiguous")
-        return matches[0] if matches else None
+        reference = canonical_id_reference(message_id)
+        return next(
+            (
+                message
+                for message in self._reminder_storage.inbound_messages.get(
+                    session_id, []
+                )
+                if message.message_id == reference
+            ),
+            None,
+        )
 
     async def get_reminder(
         self,
         owner_session_id: str,
-        reminder_id_or_prefix: str,
+        reminder_id: str,
     ) -> Reminder | None:
         _require_non_empty_text(owner_session_id, "owner_session_id")
-        reference = canonical_id_reference(reminder_id_or_prefix)
-        matches = [
-            reminder
-            for reminder in self._reminder_storage.reminders.values()
-            if reminder.owner_session_id == owner_session_id
-            and (
-                reminder.reminder_id == reference
-                if len(reference) == 36
-                else reminder.reminder_id.startswith(reference)
-            )
-        ]
-        if len(matches) > 1:
-            raise ValueError("reminder id prefix is ambiguous")
-        return matches[0] if matches else None
+        reference = canonical_id_reference(reminder_id)
+        return next(
+            (
+                reminder
+                for reminder in self._reminder_storage.reminders.values()
+                if reminder.owner_session_id == owner_session_id
+                and reminder.reminder_id == reference
+            ),
+            None,
+        )
 
     async def list_reminders(
         self,
@@ -149,8 +143,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if reminder.owner_session_id not in self._reminder_storage.bcn_sessions:
             raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
-        if len(anchor_reference) != 36:
-            raise ValueError("anchor_message_id must be a full local message id")
         anchor = await self.resolve_inbound_message(
             reminder.owner_session_id, anchor_reference
         )
@@ -434,8 +426,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         marked: list[ReminderOccurrence] = []
         for occurrence_id in occurrence_ids:
             reference = canonical_id_reference(occurrence_id)
-            if len(reference) != 36:
-                raise ValueError("occurrence ids must be full UUIDs")
             occurrence = self._reminder_storage.reminder_occurrences.get(reference)
             if occurrence is None or occurrence.owner_session_id != owner_session_id:
                 raise ValueError("reminder occurrence does not belong to owner")
