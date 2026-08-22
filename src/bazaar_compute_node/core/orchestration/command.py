@@ -13,6 +13,7 @@ from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
+    InboxListResult,
     MessageCheckResult,
     MessageReadResult,
     SessionNotFoundError,
@@ -238,6 +239,15 @@ class SessionCommandService(ICommandService):
             },
         )
         return result
+
+    async def list_inbox(
+        self,
+        caller_session_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> InboxListResult:
+        raise NotImplementedError("inbox target discovery is not implemented")
 
     @staticmethod
     async def _referenced_messages(

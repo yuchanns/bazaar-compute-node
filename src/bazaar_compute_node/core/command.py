@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .models import InboundMessage, OutboundMessage
+from .models import InboundMessage, InboxTargetSummary, OutboundMessage
 from .reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
@@ -59,6 +59,40 @@ class MessageReadResult:
             raise ValueError("history sequence bounds are invalid")
 
 
+def _validate_pagination_integer(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
+@dataclass(frozen=True, slots=True)
+class InboxListResult:
+    """A non-draining, paginated catalog of targets owned by one agent."""
+
+    targets: tuple[InboxTargetSummary, ...]
+    total: int
+    shown: int
+    offset: int
+    has_more: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.targets, tuple):
+            raise TypeError("targets must be a tuple")
+        if any(not isinstance(target, InboxTargetSummary) for target in self.targets):
+            raise TypeError("targets must contain InboxTargetSummary values")
+        _validate_pagination_integer(self.total, "total")
+        _validate_pagination_integer(self.shown, "shown")
+        _validate_pagination_integer(self.offset, "offset")
+        if self.shown != len(self.targets):
+            raise ValueError("shown must equal the number of targets")
+        if self.shown > self.total:
+            raise ValueError("shown cannot exceed total")
+        if not isinstance(self.has_more, bool):
+            raise TypeError("has_more must be a bool")
+        expected_has_more = self.offset + self.shown < self.total
+        if self.has_more != expected_has_more:
+            raise ValueError("has_more does not match pagination bounds")
+
+
 class SessionNotFoundError(ValueError):
     """A command referenced a bcn session that is not persisted on this node."""
 
@@ -79,6 +113,16 @@ class ICommandService(Protocol):
         limit: int = 100,
     ) -> MessageReadResult:
         """Read history without advancing the delivery cursor."""
+        ...
+
+    async def list_inbox(
+        self,
+        caller_session_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> InboxListResult:
+        """List owned message targets without draining or changing inbox state."""
         ...
 
     async def send(

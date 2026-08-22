@@ -34,6 +34,11 @@ def _validate_non_negative(value: int, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-negative integer")
 
 
+def _validate_strict_non_negative(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelSession:
     id: str
@@ -259,6 +264,60 @@ class SenderIdentity:
         if self.id is None:
             raise RuntimeError("sender identity has no display value")
         return self.id
+
+
+@dataclass(frozen=True, slots=True)
+class InboxTargetSummary:
+    target: str
+    session_id: str
+    target_kind: ChannelTargetKind
+    current: bool
+    pending_count: int
+    last_activity_at_ms: int
+    latest_message_id: str | None = None
+    latest_sender: SenderIdentity | None = None
+    latest_provider_time_ms: int | None = None
+    latest_received_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        _validate_text(self.target, "target")
+        _validate_text(self.session_id, "session_id")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.current, bool):
+            raise TypeError("current must be a bool")
+        _validate_strict_non_negative(self.pending_count, "pending_count")
+        _validate_strict_non_negative(
+            self.last_activity_at_ms,
+            "last_activity_at_ms",
+        )
+
+        latest_fields = (
+            self.latest_sender,
+            self.latest_provider_time_ms,
+            self.latest_received_at_ms,
+        )
+        if self.latest_message_id is None:
+            if any(value is not None for value in latest_fields):
+                raise ValueError("latest message fields require latest_message_id")
+            return
+
+        _validate_text(self.latest_message_id, "latest_message_id")
+        if self.latest_sender is not None and not isinstance(
+            self.latest_sender, SenderIdentity
+        ):
+            raise TypeError("latest_sender must be a SenderIdentity")
+        if self.latest_received_at_ms is None:
+            raise ValueError("latest_received_at_ms is required with latest_message_id")
+        _validate_strict_non_negative(
+            self.latest_received_at_ms,
+            "latest_received_at_ms",
+        )
+        if self.latest_provider_time_ms is not None:
+            _validate_strict_non_negative(
+                self.latest_provider_time_ms,
+                "latest_provider_time_ms",
+            )
 
 
 @dataclass(frozen=True, slots=True)
