@@ -88,10 +88,14 @@ class AttachmentMaterializer:
             size = 0
             descriptor: int | None = None
             try:
+                open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                binary_flag = getattr(os, "O_BINARY", None)
+                if binary_flag is not None:
+                    open_flags |= binary_flag
                 descriptor = await asyncio.to_thread(
                     os.open,
                     temporary,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    open_flags,
                     0o600,
                 )
                 try:
@@ -117,6 +121,12 @@ class AttachmentMaterializer:
                                 raise ValueError("attachment workspace quota exceeded")
                             await asyncio.to_thread(_write_all, descriptor, chunk)
                     await asyncio.to_thread(os.fsync, descriptor)
+                    stored_size = await asyncio.to_thread(os.fstat, descriptor)
+                    if stored_size.st_size != size:
+                        raise OSError(
+                            "attachment write size mismatch: "
+                            f"expected {size}, got {stored_size.st_size}"
+                        )
                 finally:
                     await asyncio.to_thread(os.close, descriptor)
                     descriptor = None
@@ -165,7 +175,8 @@ class AttachmentMaterializer:
             return 0
         return sum(
             path.stat().st_size
-            for path in root.glob("*/content.*")
+            for pattern in ("*/content", "*/content.*")
+            for path in root.glob(pattern)
             if path.is_file() and not path.is_symlink()
         )
 
@@ -183,8 +194,11 @@ def _attachment_suffix(name: str, media_type: str | None) -> str:
     suffix = Path(name).suffix
     if _SAFE_SUFFIX.fullmatch(suffix):
         return suffix
-    guessed = mimetypes.guess_extension(media_type or "") or ".bin"
-    return guessed if _SAFE_SUFFIX.fullmatch(guessed) else ".bin"
+    media_type = (media_type or "").partition(";")[0].strip().lower()
+    if not media_type or media_type.endswith("/octet-stream"):
+        return ""
+    guessed = mimetypes.guess_extension(media_type) or ""
+    return guessed if _SAFE_SUFFIX.fullmatch(guessed) else ""
 
 
 __all__ = ["AttachmentMaterializer"]

@@ -23,6 +23,7 @@ from bazaar_compute_node.contrib.lark.approval import (
 from bazaar_compute_node.contrib.lark.attachments import (
     LarkMention,
     LarkResourceDescriptor,
+    _resolve_resource_name,
     _resource_download_type,
     project_lark_content,
 )
@@ -538,6 +539,54 @@ def test_lark_resource_download_type_matches_provider_api(
     expected: str | None,
 ) -> None:
     assert _resource_download_type(resource_type) == expected
+
+
+@pytest.mark.parametrize(
+    ("event_name", "response_name", "media_type", "resource_type", "expected"),
+    (
+        ("report.pdf", "opaque", "application/octet-stream", "file", "report.pdf"),
+        ("file", "download.docx", "application/octet-stream", "file", "download.docx"),
+        ("file", "opaque", "application/pdf", "file", "opaque.pdf"),
+        ("audio", "wd5kcXL3Dj", "audio/octet-stream", "audio", "wd5kcXL3Dj.mp3"),
+        ("image", "opaque", "image/jpeg", "image", "opaque.jpg"),
+        ("clip.mp4", "opaque", "video/octet-stream", "media", "clip.mp4"),
+        ("README", "opaque", None, "file", "README"),
+        ("file", "../unsafe.pdf", "application/pdf", "file", "file.pdf"),
+    ),
+)
+def test_lark_resource_name_uses_only_provider_metadata(
+    event_name: str,
+    response_name: str | None,
+    media_type: str | None,
+    resource_type: str,
+    expected: str,
+) -> None:
+    assert (
+        _resolve_resource_name(
+            event_name=event_name,
+            response_name=response_name,
+            media_type=media_type,
+            resource_type=resource_type,
+        )
+        == expected
+    )
+
+
+def test_lark_audio_without_filename_does_not_fabricate_bin_suffix() -> None:
+    projection = project_lark_content(
+        "audio",
+        {"file_key": "file-audio", "duration": 4000},
+        mentions={},
+        bot_open_id="bot",
+    )
+
+    assert projection.resources == (
+        LarkResourceDescriptor(
+            file_key="file-audio",
+            resource_type="audio",
+            name="audio",
+        ),
+    )
 
 
 def test_lark_parent_message_normalizes_message_api_shape() -> None:
