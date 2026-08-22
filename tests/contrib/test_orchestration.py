@@ -40,6 +40,7 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
     InboundMessage,
@@ -126,8 +127,10 @@ def make_message(
     seq: int = 1,
     message_id: str | None = None,
     body: str | None = None,
+    sender_kind: str = "human",
 ) -> InboundMessage:
     channel_session_id = f"channel-{session_id}"
+    metadata = {"sender_kind": sender_kind}
     return InboundMessage(
         seq=seq,
         message_id=message_id or f"message-{session_id}-{seq}",
@@ -141,6 +144,7 @@ def make_message(
         message_type="text",
         canonical_target=f"#test:{session_id}",
         body=body if body is not None else f"inbound-{seq}",
+        metadata=metadata,
     )
 
 
@@ -769,6 +773,61 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
         assert any(event.event_name == "approval.decided" for event in audit.events)
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("sender_kind", "reason"),
+    [
+        ("agent", "agent_cannot_approve"),
+        ("unknown", "unknown_sender_cannot_approve"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_human_approval_is_rejected_before_channel_call(
+    sender_kind: str,
+    reason: str,
+) -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+        request = ApprovalRequest(
+            request_id=f"approval-{sender_kind}-1",
+            session_id="bcn-1",
+            runtime_session_id=runtime_session.id,
+            action="test-action",
+            created_at_ms=1,
+            turn_id="turn-message-bcn-1-2",
+        )
+        runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
+        await channel.inject(make_message(seq=2, sender_kind=sender_kind))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-2"
+                for event in audit.events
+            )
+        )
+
+        assert channel.approval_requests == []
+        assert channel.channel_approval_requests == []
+        assert runtime.approval_results
+        result = runtime.approval_results[0]
+        assert result.request_id == request.request_id
+        assert result.decision is ApprovalDecision.REJECTED
+        assert result.reason == reason
+        requested = next(
+            event for event in audit.events if event.event_name == "approval.requested"
+        )
+        assert requested.metadata["sender_kind"] == sender_kind
+        decided = next(
+            event for event in audit.events if event.event_name == "approval.decided"
+        )
+        assert decided.metadata["reason"] == reason
     finally:
         await orchestrator.stop(timeout=1)
 

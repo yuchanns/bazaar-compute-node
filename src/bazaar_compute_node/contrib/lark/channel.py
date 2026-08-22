@@ -27,6 +27,7 @@ from ...core.models import (
     RuntimeEvent,
     RuntimeEventState,
     SenderIdentity,
+    SenderKind,
     StreamEvent,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -481,6 +482,18 @@ class LarkChannel(IChannel):
             tenant_key=tenant_key,
         )
         metadata = dict(provider_payload_metadata or {})
+        sender_type = (
+            _provider_text(sender_payload.get("sender_type"))
+            if isinstance(sender_payload, Mapping)
+            else None
+        )
+        if sender_type == "user":
+            sender_kind = SenderKind.HUMAN
+        elif sender_type in {"app", "bot", "system"}:
+            sender_kind = SenderKind.AGENT
+        else:
+            sender_kind = SenderKind.UNKNOWN
+        metadata.setdefault("sender_kind", sender_kind.value)
         if projection.content_error:
             metadata["content_parse_failed"] = True
         return InboundMessage(

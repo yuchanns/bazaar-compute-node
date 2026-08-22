@@ -480,6 +480,9 @@ def _message_header_fields(
 ) -> tuple[str, str, str, str, str | None, str]:
     target = _require_text(message, "canonical_target")
     message_id = _require_text(message, "message_id")
+    sender_kind = _require_text(message, "sender_kind")
+    if sender_kind not in {"human", "agent", "unknown"}:
+        _invalid_response("command response contains an invalid sender_kind")
     sender_value = message.get("sender")
     sender: str | None = None
     if sender_value is not None:
@@ -493,7 +496,7 @@ def _message_header_fields(
         target,
         message_id,
         _format_message_timestamp(message),
-        _require_text(message, "message_type"),
+        sender_kind,
         sender,
         _require_text(message, "body", allow_empty=True),
     )

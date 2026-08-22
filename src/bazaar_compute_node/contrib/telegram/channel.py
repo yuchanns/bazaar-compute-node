@@ -24,6 +24,7 @@ from ...core.models import (
     RuntimeEvent,
     RuntimeEventState,
     SenderIdentity,
+    SenderKind,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.runtime import RuntimeStreamItem
@@ -613,6 +614,7 @@ class TelegramChannel(IChannel):
                     "telegram_chat_id": chat_id,
                     "telegram_message_thread_id": topic_id,
                     "telegram_chat_type": chat_type,
+                    "sender_kind": self._sender_kind(message).value,
                     "historical": historical,
                     "activation_reason": activation_reason,
                     "rich_message": content.rich_message,
@@ -702,6 +704,7 @@ class TelegramChannel(IChannel):
                     "telegram_chat_id": identity.chat_id,
                     "telegram_message_thread_id": identity.topic_id,
                     "telegram_chat_type": chat_type,
+                    "sender_kind": self._sender_kind(reply).value,
                     "historical": historical,
                     "activation_reason": "none",
                     "quoted_backfill": True,
@@ -796,6 +799,17 @@ class TelegramChannel(IChannel):
                     name=username if isinstance(username, str) and username else None,
                 )
         return None
+
+    @staticmethod
+    def _sender_kind(message: Mapping[str, object]) -> SenderKind:
+        provider_sender = message.get("from")
+        if isinstance(provider_sender, Mapping):
+            is_bot = provider_sender.get("is_bot")
+            if is_bot is True:
+                return SenderKind.AGENT
+            if is_bot is False:
+                return SenderKind.HUMAN
+        return SenderKind.UNKNOWN
 
     @staticmethod
     def _text_projection(

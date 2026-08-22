@@ -10,7 +10,7 @@ import bazaar_compute_node.contrib.telegram.channel as telegram_channel_module
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
-from bazaar_compute_node.core.models import SenderIdentity
+from bazaar_compute_node.core.models import SenderIdentity, SenderKind
 
 TEST_BOT_ID = 1_000_000_001
 TEST_USER_ID = 1_000_000_002
@@ -117,6 +117,29 @@ def test_telegram_sender_prefers_username_with_id_fallback(
     assert TelegramChannel._sender(message) == expected
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        (
+            {"from": {"id": TEST_USER_ID, "is_bot": False}},
+            SenderKind.HUMAN,
+        ),
+        (
+            {"from": {"id": TEST_OTHER_BOT_ID, "is_bot": True}},
+            SenderKind.AGENT,
+        ),
+        ({"from": {"id": TEST_USER_ID}}, SenderKind.UNKNOWN),
+        ({"sender_chat": {"id": TEST_CHAT_ID}}, SenderKind.UNKNOWN),
+        ({}, SenderKind.UNKNOWN),
+    ),
+)
+def test_telegram_sender_kind_preserves_unknown_provider_identity(
+    message: dict[str, Any],
+    expected: SenderKind,
+) -> None:
+    assert TelegramChannel._sender_kind(message) is expected
+
+
 @pytest.mark.asyncio
 async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
     tmp_path: Path,
@@ -197,10 +220,12 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             id=str(TEST_OTHER_BOT_ID),
             name=TEST_OTHER_BOT_USERNAME,
         )
+        assert quoted.sender_kind is SenderKind.AGENT
         assert current.sender == SenderIdentity(
             id=str(TEST_USER_ID),
             name=TEST_USER_USERNAME,
         )
+        assert current.sender_kind is SenderKind.HUMAN
         assert current.reply_to_message_id == quoted.message_id
 
         filtered_before = channel._message_updates_filtered

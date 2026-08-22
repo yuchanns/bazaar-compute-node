@@ -27,6 +27,7 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
             if message.sender is None
             else {"id": message.sender.id, "name": message.sender.name}
         ),
+        "sender_kind": message.sender_kind.value,
         "message_type": message.message_type,
         "canonical_target": message.canonical_target,
         "target_kind": message.target_kind.value,

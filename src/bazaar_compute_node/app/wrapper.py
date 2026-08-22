@@ -32,30 +32,31 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
             command_path.write_text(
                 "@echo off\n"
                 f'set "BCN_AGENT_ID={agent_id}"\n'
-                'set "PYTHONUTF8=1"\n'
                 'set "PYTHONIOENCODING=utf-8"\n'
+                'set "PYTHONUTF8=1"\n'
+                'set "LANG=C.UTF-8"\n'
+                'set "LC_ALL=C.UTF-8"\n'
+                "chcp 65001 >NUL 2>NUL\n"
                 f'"{python_executable}" -m bazaar_compute_node.bcc %*\n',
                 encoding="utf-8",
             )
             (bin_dir / "bcc.ps1").write_text(
+                "$ErrorActionPreference = 'Stop'\n"
                 f"$env:BCN_AGENT_ID = '{agent_id}'\n"
-                "$env:PYTHONUTF8 = '1'\n"
+                "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)\n"
+                "[Console]::OutputEncoding = $utf8NoBom\n"
+                "$OutputEncoding = $utf8NoBom\n"
                 "$env:PYTHONIOENCODING = 'utf-8'\n"
+                "$env:PYTHONUTF8 = '1'\n"
+                "$env:LANG = 'C.UTF-8'\n"
+                "$env:LC_ALL = 'C.UTF-8'\n"
                 f'$python = "{python_executable}"\n'
-                "$previousOutputEncoding = $OutputEncoding\n"
-                "$exitCode = 1\n"
-                "try {\n"
-                "    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
-                "    if ($MyInvocation.ExpectingInput) {\n"
-                "        @($Input) | & $python -m bazaar_compute_node.bcc @args\n"
-                "    } else {\n"
-                "        & $python -m bazaar_compute_node.bcc @args\n"
-                "    }\n"
-                "    $exitCode = $LASTEXITCODE\n"
-                "} finally {\n"
-                "    $OutputEncoding = $previousOutputEncoding\n"
+                "if ($MyInvocation.ExpectingInput) {\n"
+                "    $input | & $python -m bazaar_compute_node.bcc @args\n"
+                "} else {\n"
+                "    & $python -m bazaar_compute_node.bcc @args\n"
                 "}\n"
-                "exit $exitCode\n",
+                "exit $LASTEXITCODE\n",
                 encoding="utf-8",
             )
         except BaseException:
