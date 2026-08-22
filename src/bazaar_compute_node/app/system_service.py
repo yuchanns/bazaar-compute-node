@@ -391,6 +391,7 @@ def _run_native_command(
     *,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     result = subprocess.run(
         command,
         capture_output=True,
@@ -398,6 +399,7 @@ def _run_native_command(
         text=True,
         encoding=locale.getencoding(),
         errors="replace",
+        creationflags=creationflags,
     )
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
