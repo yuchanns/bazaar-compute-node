@@ -88,10 +88,14 @@ class AttachmentMaterializer:
             size = 0
             descriptor: int | None = None
             try:
+                open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                binary_flag = getattr(os, "O_BINARY", None)
+                if binary_flag is not None:
+                    open_flags |= binary_flag
                 descriptor = await asyncio.to_thread(
                     os.open,
                     temporary,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    open_flags,
                     0o600,
                 )
                 try:
@@ -117,6 +121,12 @@ class AttachmentMaterializer:
                                 raise ValueError("attachment workspace quota exceeded")
                             await asyncio.to_thread(_write_all, descriptor, chunk)
                     await asyncio.to_thread(os.fsync, descriptor)
+                    stored_size = await asyncio.to_thread(os.fstat, descriptor)
+                    if stored_size.st_size != size:
+                        raise OSError(
+                            "attachment write size mismatch: "
+                            f"expected {size}, got {stored_size.st_size}"
+                        )
                 finally:
                     await asyncio.to_thread(os.close, descriptor)
                     descriptor = None
