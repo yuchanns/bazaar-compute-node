@@ -105,6 +105,43 @@ def test_native_command_uses_system_encoding_without_decode_failures() -> None:
         text=True,
         encoding=locale.getencoding(),
         errors="replace",
+        creationflags=0,
+    )
+
+
+def test_native_command_hides_windows_console() -> None:
+    completed = subprocess.CompletedProcess(
+        ["native-service"],
+        0,
+        stdout="ok",
+        stderr="",
+    )
+
+    with (
+        patch.object(system_service.os, "name", "nt"),
+        patch.object(
+            system_service.subprocess,
+            "CREATE_NO_WINDOW",
+            0x08000000,
+            create=True,
+        ),
+        patch.object(
+            system_service.subprocess,
+            "run",
+            return_value=completed,
+        ) as run,
+    ):
+        result = system_service._run_native_command(["native-service"])
+
+    assert result is completed
+    run.assert_called_once_with(
+        ["native-service"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding=locale.getencoding(),
+        errors="replace",
+        creationflags=0x08000000,
     )
 
 
