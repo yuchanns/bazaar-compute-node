@@ -6,19 +6,26 @@ from types import TracebackType
 from typing import Self, cast
 from uuid import NAMESPACE_URL, uuid5, uuid7
 
+import aiosqlite
+
+from ...core.command import InboxListResult
 from ...core.models import (
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
     ConsumerCursor,
     InboundAttachment,
     InboundMessage,
+    InboxTargetSummary,
     OutboundMessage,
     Reminder,
     ReminderOccurrence,
     ReminderState,
     RuntimeAttempt,
+    SenderIdentity,
 )
 from ...core.reminder import canonical_id_reference
+from ...core.storage import InboxTargetResolutionError
 from .codec import (
     _required_non_negative_int,
     _required_positive_int,
@@ -41,6 +48,136 @@ from .reminder_repository import (
     _REMINDER_COLUMNS,
 )
 from .reminder_repository import ReminderTransaction as _ReminderTransaction
+
+_INBOX_TARGET_CATALOG_CTE = """
+WITH latest_inbound_ranked AS (
+    SELECT
+        session_id,
+        message_id,
+        canonical_target,
+        sender,
+        provider_time_ms,
+        received_at_ms,
+        ROW_NUMBER() OVER (
+            PARTITION BY session_id
+            ORDER BY seq DESC, message_id DESC
+        ) AS inbound_rank
+    FROM inbound_messages
+    WHERE agent_id = bcn_agent_id()
+),
+latest_inbound AS (
+    SELECT
+        session_id,
+        message_id,
+        canonical_target,
+        sender,
+        provider_time_ms,
+        received_at_ms
+    FROM latest_inbound_ranked
+    WHERE inbound_rank = 1
+),
+pending_inbound AS (
+    SELECT message.session_id, COUNT(*) AS pending_count
+    FROM inbound_messages AS message
+    LEFT JOIN consumer_cursors AS cursor
+        ON cursor.session_id = message.session_id
+    WHERE message.agent_id = bcn_agent_id()
+      AND message.notifies_runtime = 1
+      AND message.seq > COALESCE(cursor.delivered_through_seq, 0)
+    GROUP BY message.session_id
+),
+target_catalog AS (
+    SELECT
+        bcn.id AS session_id,
+        COALESCE(
+            latest.canonical_target,
+            channel.target_kind || ':' || channel.id
+        ) AS target,
+        channel.target_kind AS target_kind,
+        COALESCE(pending.pending_count, 0) AS pending_count,
+        COALESCE(
+            bcn.last_activity_at_ms,
+            latest.received_at_ms,
+            channel.last_inbound_at_ms,
+            channel.last_outbound_at_ms,
+            bcn.updated_at_ms,
+            channel.updated_at_ms,
+            bcn.created_at_ms,
+            channel.created_at_ms,
+            0
+        ) AS last_activity_at_ms,
+        latest.message_id AS latest_message_id,
+        latest.sender AS latest_sender,
+        latest.provider_time_ms AS latest_provider_time_ms,
+        latest.received_at_ms AS latest_received_at_ms
+    FROM bcn_sessions AS bcn
+    JOIN channel_sessions AS channel
+        ON channel.agent_id = bcn_agent_id()
+       AND channel.id = bcn.channel_session_id
+    LEFT JOIN latest_inbound AS latest
+        ON latest.session_id = bcn.id
+    LEFT JOIN pending_inbound AS pending
+        ON pending.session_id = bcn.id
+    WHERE bcn.agent_id = bcn_agent_id()
+)
+"""
+
+
+def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
+    target = cast(str, row["target"])
+    session_id = cast(str, row["session_id"])
+    validate_non_empty_text(target, "target")
+    validate_non_empty_text(session_id, "session_id")
+
+    target_kind = ChannelTargetKind(cast(str, row["target_kind"]))
+    pending_count = _required_non_negative_int(row["pending_count"], "pending_count")
+    last_activity_at_ms = _required_non_negative_int(
+        row["last_activity_at_ms"], "last_activity_at_ms"
+    )
+
+    latest_message_id_value = row["latest_message_id"]
+    latest_message_id: str | None = None
+    if latest_message_id_value is not None:
+        latest_message_id = cast(str, latest_message_id_value)
+        validate_non_empty_text(latest_message_id, "latest_message_id")
+
+    latest_sender_value = row["latest_sender"]
+    latest_sender: SenderIdentity | None = None
+    if latest_sender_value is not None:
+        latest_sender_name = cast(str, latest_sender_value)
+        validate_non_empty_text(latest_sender_name, "latest_sender")
+        latest_sender = SenderIdentity(name=latest_sender_name)
+
+    latest_provider_time_value = row["latest_provider_time_ms"]
+    latest_provider_time_ms = (
+        None
+        if latest_provider_time_value is None
+        else _required_non_negative_int(
+            latest_provider_time_value,
+            "latest_provider_time_ms",
+        )
+    )
+    latest_received_value = row["latest_received_at_ms"]
+    latest_received_at_ms = (
+        None
+        if latest_received_value is None
+        else _required_non_negative_int(
+            latest_received_value,
+            "latest_received_at_ms",
+        )
+    )
+    return InboxTargetSummary(
+        target=target,
+        session_id=session_id,
+        target_kind=target_kind,
+        current=False,
+        pending_count=pending_count,
+        last_activity_at_ms=last_activity_at_ms,
+        latest_message_id=latest_message_id,
+        latest_sender=latest_sender,
+        latest_provider_time_ms=latest_provider_time_ms,
+        latest_received_at_ms=latest_received_at_ms,
+    )
 
 
 class ReminderTransaction(_ReminderTransaction):
@@ -169,6 +306,66 @@ class ReminderTransaction(_ReminderTransaction):
         if row is None:
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
+
+    async def list_inbox_targets(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> InboxListResult:
+        validate_positive_int(limit, "limit")
+        validate_non_negative_int(offset, "offset")
+
+        total_row = await self.fetchone(
+            _INBOX_TARGET_CATALOG_CTE + "SELECT COUNT(*) AS total FROM target_catalog"
+        )
+        if total_row is None:
+            raise RuntimeError("SQLite inbox target count query returned no row")
+        total = _required_non_negative_int(total_row["total"], "total")
+
+        rows = await self.fetchall(
+            _INBOX_TARGET_CATALOG_CTE
+            + "SELECT target, session_id, target_kind, pending_count, "
+            "last_activity_at_ms, latest_message_id, latest_sender, "
+            "latest_provider_time_ms, latest_received_at_ms "
+            "FROM target_catalog "
+            "ORDER BY last_activity_at_ms DESC, session_id "
+            "LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        targets = tuple(_inbox_target_summary_from_row(row) for row in rows)
+        return InboxListResult(
+            targets=targets,
+            total=total,
+            shown=len(targets),
+            offset=offset,
+            has_more=offset + len(targets) < total,
+        )
+
+    async def resolve_inbox_target(self, target: str) -> BcnSession:
+        validate_non_empty_text(target, "target")
+        rows = await self.fetchall(
+            "SELECT bcn.id, bcn.channel_session_id, bcn.workspace_id, "
+            "bcn.created_at_ms, bcn.updated_at_ms, bcn.last_activity_at_ms, "
+            "bcn.metadata_json "
+            "FROM bcn_sessions AS bcn "
+            "JOIN channel_sessions AS channel "
+            "ON channel.agent_id = bcn_agent_id() "
+            "AND channel.id = bcn.channel_session_id "
+            "WHERE bcn.agent_id = bcn_agent_id() "
+            "AND ("
+            "channel.target_kind || ':' || channel.id = ? "
+            "OR EXISTS ("
+            "SELECT 1 FROM inbound_messages AS message "
+            "WHERE message.agent_id = bcn_agent_id() "
+            "AND message.session_id = bcn.id "
+            "AND message.canonical_target = ?"
+            ")"
+            ") ORDER BY bcn.id",
+            (target, target),
+        )
+        if len(rows) != 1:
+            raise InboxTargetResolutionError(
+                "inbox target does not resolve to exactly one owned session"
+            )
+        return bcn_session_from_row(rows[0])
 
     async def find_inbound_message(
         self,

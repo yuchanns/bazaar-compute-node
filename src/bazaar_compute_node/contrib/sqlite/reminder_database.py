@@ -7,11 +7,13 @@ from typing import cast
 from . import scoped_repository
 from .agent_migration import install_agent_ownership_migration
 from .database import SqliteDatabase as _BaseSqliteDatabase
+from .inbox_migration import install_inbox_discovery_migration
 from .reminder_migration import install_reminder_migration
 from .reminder_repository import ReminderTransaction
 
 install_reminder_migration()
 install_agent_ownership_migration()
+install_inbox_discovery_migration()
 
 
 @dataclass(frozen=True, slots=True)

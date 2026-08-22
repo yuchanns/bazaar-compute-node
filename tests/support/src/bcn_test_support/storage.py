@@ -8,6 +8,7 @@ from types import TracebackType
 from typing import Self, cast
 from uuid import uuid7
 
+from bazaar_compute_node.core.command import InboxListResult
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
@@ -178,6 +179,16 @@ class _MemoryStorageTransaction:
 
     async def get_bcn_session(self, session_id: str) -> BcnSession | None:
         return self._storage.bcn_sessions.get(session_id)
+
+    async def list_inbox_targets(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> InboxListResult:
+        del limit, offset
+        raise RuntimeError("in-memory inbox target discovery is not implemented")
+
+    async def resolve_inbox_target(self, target: str) -> BcnSession:
+        del target
+        raise RuntimeError("in-memory inbox target resolution is not implemented")
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         matches = [

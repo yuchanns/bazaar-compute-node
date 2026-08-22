@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
+from .command import InboxListResult
 from .lifecycle import IAsyncLifecycle
 from .models import (
     BcnSession,
@@ -20,6 +21,10 @@ from .models import (
 )
 
 
+class InboxTargetResolutionError(ValueError):
+    """A target does not resolve to exactly one Agent-owned BCN session."""
+
+
 class IStorageTransaction(Protocol):
     """Explicit transaction boundary for repository operations."""
 
@@ -33,6 +38,12 @@ class IStorageTransaction(Protocol):
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None: ...
     async def get_latest_inbound_seq(self, session_id: str) -> int: ...
+
+    async def list_inbox_targets(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> InboxListResult: ...
+
+    async def resolve_inbox_target(self, target: str) -> BcnSession: ...
 
     async def find_inbound_message(
         self,

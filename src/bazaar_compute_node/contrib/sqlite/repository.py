@@ -11,6 +11,7 @@ from uuid import uuid7
 
 import aiosqlite
 
+from ...core.command import InboxListResult
 from ...core.models import (
     BcnSession,
     ChannelSession,
@@ -200,6 +201,16 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         if row is None:
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
+
+    async def list_inbox_targets(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> InboxListResult:
+        del limit, offset
+        raise RuntimeError("an Agent-scoped storage transaction is required")
+
+    async def resolve_inbox_target(self, target: str) -> BcnSession:
+        del target
+        raise RuntimeError("an Agent-scoped storage transaction is required")
 
     async def find_inbound_message(
         self,
