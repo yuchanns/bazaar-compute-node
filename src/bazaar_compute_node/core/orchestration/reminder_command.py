@@ -317,11 +317,6 @@ class ReminderCommandService(IReminderService):
         try:
             anchor = await transaction.resolve_inbound_message(session_id, message_id)
         except ValueError as error:
-            if "ambiguous" in str(error).casefold():
-                raise ReminderCommandFailure(
-                    "REMINDER_ANCHOR_AMBIGUOUS",
-                    str(error),
-                ) from error
             raise ReminderCommandFailure(
                 "REMINDER_ANCHOR_NOT_FOUND",
                 str(error),
@@ -342,11 +337,6 @@ class ReminderCommandService(IReminderService):
         try:
             reminder = await transaction.get_reminder(session_id, reminder_id)
         except ValueError as error:
-            if "ambiguous" in str(error).casefold():
-                raise ReminderCommandFailure(
-                    "REMINDER_ID_AMBIGUOUS",
-                    str(error),
-                ) from error
             raise ReminderCommandFailure(
                 "REMINDER_NOT_FOUND",
                 str(error),

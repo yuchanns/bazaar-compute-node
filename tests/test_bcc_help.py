@@ -88,7 +88,10 @@ from bazaar_compute_node.bcc import build_parser
         ),
         (
             ("reminder", "cancel", "--help"),
-            ("--id <id>", "Cancel a scheduled reminder by id"),
+            (
+                "--id <id>",
+                "Cancel a scheduled reminder by id (full uuid)",
+            ),
         ),
     ),
 )

@@ -484,26 +484,15 @@ class ReminderTransaction(_ReminderTransaction):
     async def resolve_inbound_message(
         self,
         session_id: str,
-        message_id_or_prefix: str,
+        message_id: str,
     ) -> InboundMessage | None:
         validate_non_empty_text(session_id, "session_id")
-        reference = canonical_id_reference(message_id_or_prefix)
-        if len(reference) == 8:
-            rows = await self.fetchall(
-                f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-                "WHERE agent_id = bcn_agent_id() AND session_id = ? "
-                "AND message_id LIKE ? ORDER BY seq",
-                (session_id, f"{reference}%"),
-            )
-            if len(rows) > 1:
-                raise ValueError("inbound message id prefix is ambiguous")
-            row = rows[0] if rows else None
-        else:
-            row = await self.fetchone(
-                f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-                "WHERE agent_id = bcn_agent_id() AND session_id = ? AND message_id = ?",
-                (session_id, reference),
-            )
+        reference = canonical_id_reference(message_id)
+        row = await self.fetchone(
+            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
+            "WHERE agent_id = bcn_agent_id() AND session_id = ? AND message_id = ?",
+            (session_id, reference),
+        )
         if row is None:
             return None
         return inbound_message_from_row(
@@ -514,27 +503,16 @@ class ReminderTransaction(_ReminderTransaction):
     async def get_reminder(
         self,
         owner_session_id: str,
-        reminder_id_or_prefix: str,
+        reminder_id: str,
     ) -> Reminder | None:
         validate_non_empty_text(owner_session_id, "owner_session_id")
-        reference = canonical_id_reference(reminder_id_or_prefix)
-        if len(reference) == 8:
-            rows = await self.fetchall(
-                f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-                "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
-                "AND reminder_id LIKE ? ORDER BY reminder_id",
-                (owner_session_id, f"{reference}%"),
-            )
-            if len(rows) > 1:
-                raise ValueError("reminder id prefix is ambiguous")
-            row = rows[0] if rows else None
-        else:
-            row = await self.fetchone(
-                f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-                "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
-                "AND reminder_id = ?",
-                (owner_session_id, reference),
-            )
+        reference = canonical_id_reference(reminder_id)
+        row = await self.fetchone(
+            f"SELECT {_REMINDER_COLUMNS} FROM reminders "
+            "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
+            "AND reminder_id = ?",
+            (owner_session_id, reference),
+        )
         return reminder_from_row(row) if row is not None else None
 
     async def list_reminders(
@@ -709,8 +687,6 @@ class ReminderTransaction(_ReminderTransaction):
         marked: list[ReminderOccurrence] = []
         for occurrence_id in occurrence_ids:
             reference = canonical_id_reference(occurrence_id)
-            if len(reference) != 36:
-                raise ValueError("occurrence ids must be full UUIDs")
             row = await self.fetchone(
                 f"SELECT {_OCCURRENCE_COLUMNS} FROM reminder_occurrences "
                 "WHERE agent_id = bcn_agent_id() AND occurrence_id = ? "
