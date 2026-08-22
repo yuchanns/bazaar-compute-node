@@ -16,6 +16,7 @@ from .states import (
     OutboundDeliveryState,
     RuntimeEventState,
     RuntimeTurnState,
+    SenderKind,
     StreamEventKind,
     ensure_transition,
 )
@@ -305,6 +306,18 @@ class InboundMessage:
             raise TypeError("target_kind must be a ChannelTargetKind")
         if self.provider_time_ms is not None:
             _validate_non_negative(self.provider_time_ms, "provider_time_ms")
+
+    @property
+    def sender_kind(self) -> SenderKind:
+        value = self.metadata.get("sender_kind", SenderKind.UNKNOWN.value)
+        if not isinstance(value, str):
+            raise TypeError("metadata sender_kind must be a string")
+        try:
+            return SenderKind(value)
+        except ValueError as error:
+            raise ValueError(
+                "metadata sender_kind must be human, agent, or unknown"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)

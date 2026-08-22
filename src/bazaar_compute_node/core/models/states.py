@@ -276,6 +276,12 @@ class ApprovalDecision(StrEnum):
     REJECTED = "rejected"
 
 
+class SenderKind(StrEnum):
+    HUMAN = "human"
+    AGENT = "agent"
+    UNKNOWN = "unknown"
+
+
 class ReminderState(StrEnum):
     SCHEDULED = "scheduled"
     FIRED = "fired"

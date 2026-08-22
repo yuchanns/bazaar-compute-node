@@ -21,12 +21,18 @@ from bazaar_compute_node.core.models import (
     InboundMessage,
     RuntimeAttempt,
     SenderIdentity,
+    SenderKind,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 
 
 @pytest.mark.asyncio
-async def test_sqlite_persists_sender_display_name_without_transient_id() -> None:
+@pytest.mark.parametrize(
+    "sender_kind", (SenderKind.HUMAN, SenderKind.AGENT, SenderKind.UNKNOWN)
+)
+async def test_sqlite_persists_sender_display_name_and_kind(
+    sender_kind: SenderKind,
+) -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
@@ -58,6 +64,7 @@ async def test_sqlite_persists_sender_display_name_without_transient_id() -> Non
             message_type="text",
             canonical_target="dm:channel-1",
             body="hello",
+            metadata={"sender_kind": sender_kind.value},
         )
 
         async with scope.transaction() as transaction:
@@ -71,8 +78,10 @@ async def test_sqlite_persists_sender_display_name_without_transient_id() -> Non
             )
 
         assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
+        assert live.sender_kind is sender_kind
         assert persisted is not None
         assert persisted.sender == SenderIdentity(name="test-user")
+        assert persisted.sender_kind is sender_kind
     finally:
         await database.stop(timeout=2)
 

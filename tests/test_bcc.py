@@ -24,6 +24,8 @@ def message_payload(
     provider_thread_id: str | None = "provider-thread-1",
     sender_id: str | None = "sender-id",
     sender_name: str | None = "sender",
+    sender_kind: str = "human",
+    message_type: str = "text",
     reply_to_message_id: str | None = None,
 ) -> dict[str, object]:
     return {
@@ -32,7 +34,8 @@ def message_payload(
         "canonical_target": target,
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,
-        "message_type": "human",
+        "message_type": message_type,
+        "sender_kind": sender_kind,
         "sender": (
             None
             if sender_id is None and sender_name is None
@@ -67,6 +70,32 @@ def test_check_serializer_matches_canonical_text() -> None:
         f"time={local_time(1_700_000_000_000)} "
         "type=human mentioned=false] @sender-id(sender) message body"
     )
+
+
+def test_check_serializer_renders_agent_sender_kind_separately_from_content_type() -> (
+    None
+):
+    result = {
+        "messages": [message_payload(sender_kind="agent", message_type="text")],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    output = serialize_check(result)
+    assert "type=agent" in output
+    assert "type=text" not in output
+
+
+def test_check_serializer_renders_unknown_sender_kind() -> None:
+    result = {
+        "messages": [message_payload(sender_kind="unknown")],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "type=unknown" in serialize_check(result)
 
 
 def test_check_serializer_renders_provider_username_as_sender() -> None:

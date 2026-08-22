@@ -12,6 +12,7 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
 from ..models import (
+    ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
     BcnSession,
@@ -22,6 +23,7 @@ from ..models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    SenderKind,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
@@ -179,38 +181,58 @@ class SessionTurnCoordinator:
                 request_id=request_id,
                 inbound_seq=message.seq,
             )
+            sender_kind = message.sender_kind
             await self._audit.append(
                 event_name="approval.requested",
                 state=RuntimeEventState.STARTED,
                 correlation=approval_correlation,
-                metadata={"action": request.action},
+                metadata={
+                    "action": request.action,
+                    "sender_kind": sender_kind.value,
+                },
             )
-            try:
-                channel_request = ChannelApprovalRequest(
-                    approval=request,
-                    target_kind=context.channel_session.target_kind,
-                    provider_thread_id=context.channel_session.provider_thread_id,
-                    provider_reply_to_message_id=message.provider_message_id,
-                    provider_sender_id=(
-                        message.sender.id if message.sender is not None else None
-                    ),
+            if sender_kind is not SenderKind.HUMAN:
+                rejection_reason = (
+                    "agent_cannot_approve"
+                    if sender_kind is SenderKind.AGENT
+                    else "unknown_sender_cannot_approve"
                 )
-                result = await self._channel.request_approval(
-                    channel_request,
-                    timeout=timeout,
+                result = ApprovalResult(
+                    request_id=request_id,
+                    decision=ApprovalDecision.REJECTED,
+                    decided_at_ms=self._clock(),
+                    reason=rejection_reason,
                 )
-                if result.request_id != request_id:
-                    raise ValueError("channel approval result correlation mismatch")
-            except Exception as error:
-                await self._audit.append(
-                    event_name="approval.failed",
-                    state=RuntimeEventState.FAILED,
-                    correlation=approval_correlation,
-                    error_kind=ErrorKind.PROVIDER_FAILED,
-                    error_message=f"approval failed: {type(error).__name__}",
-                    metadata={"action": request.action},
-                )
-                raise
+            else:
+                try:
+                    channel_request = ChannelApprovalRequest(
+                        approval=request,
+                        target_kind=context.channel_session.target_kind,
+                        provider_thread_id=context.channel_session.provider_thread_id,
+                        provider_reply_to_message_id=message.provider_message_id,
+                        provider_sender_id=(
+                            message.sender.id if message.sender is not None else None
+                        ),
+                    )
+                    result = await self._channel.request_approval(
+                        channel_request,
+                        timeout=timeout,
+                    )
+                    if result.request_id != request_id:
+                        raise ValueError("channel approval result correlation mismatch")
+                except Exception as error:
+                    await self._audit.append(
+                        event_name="approval.failed",
+                        state=RuntimeEventState.FAILED,
+                        correlation=approval_correlation,
+                        error_kind=ErrorKind.PROVIDER_FAILED,
+                        error_message=f"approval failed: {type(error).__name__}",
+                        metadata={
+                            "action": request.action,
+                            "sender_kind": sender_kind.value,
+                        },
+                    )
+                    raise
             await self._audit.append(
                 event_name="approval.decided",
                 state=RuntimeEventState.COMPLETED,
@@ -218,6 +240,8 @@ class SessionTurnCoordinator:
                 metadata={
                     "action": request.action,
                     "decision": result.decision.value,
+                    "sender_kind": sender_kind.value,
+                    **({"reason": result.reason} if result.reason is not None else {}),
                 },
             )
             return result

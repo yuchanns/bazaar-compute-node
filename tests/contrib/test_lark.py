@@ -74,6 +74,7 @@ from bazaar_compute_node.core.models import (
     OutboundAttachment,
     RuntimeEvent,
     RuntimeEventState,
+    SenderKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -374,6 +375,51 @@ def test_lark_identity_prefers_app_name_and_supports_name_fallback() -> None:
     )
     with pytest.raises(ValueError):
         parse_provider_thread_id(thread.provider_thread_id, bot_open_id="ou_other")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender_type", "expected"),
+    (
+        ("user", SenderKind.HUMAN),
+        ("app", SenderKind.AGENT),
+        ("unknown", SenderKind.UNKNOWN),
+    ),
+)
+async def test_lark_inbound_sender_kind_uses_provider_sender_type(
+    tmp_path: Path,
+    sender_type: str,
+    expected: SenderKind,
+) -> None:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="app-id",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    channel._identity = LarkBotIdentity(open_id="ou_bot")
+
+    inbound = await channel._build_inbound(
+        {
+            "message_id": "om_message",
+            "message_type": "text",
+            "content": json.dumps({"text": "hello"}),
+        },
+        thread_identity=LarkThreadIdentity("ou_bot", "oc_chat", "omt_thread"),
+        target_kind=ChannelTargetKind.DM,
+        sender_payload={
+            "sender_id": {"open_id": "ou_sender"},
+            "sender_type": sender_type,
+        },
+        tenant_key="tenant",
+        mentions_agent=False,
+        notifies_runtime=True,
+        received_at_ms=1,
+    )
+
+    assert inbound.sender_kind is expected
 
 
 def test_lark_builder_rejects_missing_or_invalid_configuration(
