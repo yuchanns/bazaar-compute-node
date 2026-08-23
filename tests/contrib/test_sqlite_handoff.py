@@ -3,15 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from bcn_test_support import RecordingAudit
 
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.handoff import HandoffCheckRequest, HandoffSendRequest
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ConsumerCursor,
     Handoff,
     InboundMessage,
     SenderIdentity,
 )
+from bazaar_compute_node.core.orchestration.handoff_command import (
+    HandoffCommandService,
+)
+from bazaar_compute_node.core.orchestration.services import SessionAuditRecorder
 from bazaar_compute_node.core.storage import HandoffConflictError
 
 
@@ -127,9 +135,7 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
             first = await transaction.save_handoff(
                 _handoff(1, body="First line.\n\nSecond line.")
             )
-            second = await transaction.save_handoff(
-                _handoff(2, source_message_id=None)
-            )
+            second = await transaction.save_handoff(_handoff(2, source_message_id=None))
             third = await transaction.save_handoff(_handoff(3))
 
             pending = await transaction.list_pending_handoffs(
@@ -184,17 +190,25 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
         assert any("sqlite_autoindex_handoffs" in row["detail"] for row in command_plan)
 
         async with agent_b.transaction() as transaction:
-            assert await transaction.list_pending_handoffs(
-                target_session.id,
-                limit=100,
-            ) == ()
+            assert (
+                await transaction.list_pending_handoffs(
+                    target_session.id,
+                    limit=100,
+                )
+                == ()
+            )
             assert await transaction.count_pending_handoffs(target_session.id) == 0
-            assert await transaction.get_latest_inbound_message(target_session.id) is None
-            assert await transaction.mark_handoffs_read(
-                target_session.id,
-                (first.handoff_id,),
-                read_at_ms=3_000,
-            ) == ()
+            assert (
+                await transaction.get_latest_inbound_message(target_session.id) is None
+            )
+            assert (
+                await transaction.mark_handoffs_read(
+                    target_session.id,
+                    (first.handoff_id,),
+                    read_at_ms=3_000,
+                )
+                == ()
+            )
     finally:
         await database.stop(timeout=2)
 
@@ -241,5 +255,103 @@ async def test_sqlite_handoff_save_is_idempotent_by_command_payload() -> None:
 
         assert persisted == (stored,)
         assert unscoped == _handoff(2)
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_handoff_command_send_then_check_preserves_message_cursors() -> None:
+    database = SqliteDatabase()
+    audit_sink = RecordingAudit()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-a", "Agent A")
+        async with scope.transaction() as transaction:
+            source_channel, source_session = await _create_session(
+                transaction,
+                agent_id="agent-a",
+                session_id="session-source",
+            )
+            target_channel, target_session = await _create_session(
+                transaction,
+                agent_id="agent-a",
+                session_id="session-target",
+            )
+            source_message = await _append_message(
+                transaction,
+                channel=source_channel,
+                session=source_session,
+                message_id="019d2f00-0000-7000-8000-000000000001",
+                received_at_ms=10,
+            )
+            target_message = await _append_message(
+                transaction,
+                channel=target_channel,
+                session=target_session,
+                message_id="019d2f00-0000-7000-8000-000000000002",
+                received_at_ms=20,
+            )
+            cursors = (
+                ConsumerCursor(
+                    session_id=source_session.id,
+                    delivered_through_seq=source_message.seq,
+                    inbox_snapshot_seq=source_message.seq,
+                    inbox_snapshot_source="read",
+                    inbox_snapshot_at_ms=100,
+                    updated_at_ms=100,
+                ),
+                ConsumerCursor(
+                    session_id=target_session.id,
+                    delivered_through_seq=target_message.seq,
+                    inbox_snapshot_seq=target_message.seq,
+                    inbox_snapshot_source="check",
+                    inbox_snapshot_at_ms=100,
+                    updated_at_ms=100,
+                ),
+            )
+            for cursor in cursors:
+                await transaction.save_consumer_cursor(cursor)
+
+        wakes: list[str] = []
+
+        async def publish_wake(session_id: str) -> None:
+            async with scope.transaction() as transaction:
+                assert await transaction.count_pending_handoffs(session_id) == 1
+            wakes.append(session_id)
+
+        service = HandoffCommandService(
+            storage=scope,
+            audit=SessionAuditRecorder(
+                sink=audit_sink,
+                timeout_budget=TimeoutBudget(2, 2, 2, 2),
+                clock=lambda: 2_000,
+            ),
+            publish_wake=publish_wake,
+            node_id=lambda: "node-a",
+            clock=lambda: 2_000,
+            handoff_id=lambda: "handoff-command",
+        )
+        sent = await service.send(
+            source_session.id,
+            HandoffSendRequest(
+                target="dm:session-target",
+                body="Continue task.",
+                command_id="command-send",
+                created_at_ms=1_000,
+                source_message_id=source_message.message_id,
+            ),
+        )
+        checked = await service.check(target_session.id, HandoffCheckRequest())
+
+        assert checked.items[0].handoff == sent.handoff.mark_read(at_ms=2_000)
+        assert checked.items[0].source_target == "dm:session-source"
+        assert checked.has_more is False
+        assert wakes == [target_session.id]
+        async with scope.transaction() as transaction:
+            for cursor in cursors:
+                assert (
+                    await transaction.get_consumer_cursor(cursor.session_id) == cursor
+                )
+        assert "Continue task." not in repr(audit_sink.events)
     finally:
         await database.stop(timeout=2)

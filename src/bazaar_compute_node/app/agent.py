@@ -27,7 +27,7 @@ from .attachments import AttachmentMaterializer
 from .command import CommandDispatchError
 from .config import AgentConfiguration
 from .registry import AgentAdapterFactories
-from .reminder_dispatch import CommandDispatcher
+from .resource_dispatch import CommandDispatcher
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 CommandRecord = tuple[str, tuple[str, ...]]

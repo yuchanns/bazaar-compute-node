@@ -4,11 +4,13 @@ from collections.abc import Mapping
 from time import time_ns
 from typing import Annotated, Literal, cast
 
-from pydantic import Field, StrictBool, StrictInt, StrictStr
+from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator
 
-from ..core.command import ICommandService, IReminderService
+from ..core.command import ICommandService, IHandoffService, IReminderService
+from ..core.handoff import HandoffCheckRequest, HandoffSendRequest
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import Reminder, ReminderOccurrence, ReminderState
+from ..core.models import Handoff, Reminder, ReminderOccurrence, ReminderState
+from ..core.orchestration.handoff_command import HandoffCommandFailure
 from ..core.orchestration.reminder_command import ReminderCommandFailure
 from ..core.reminder import (
     ReminderCancelRequest,
@@ -17,6 +19,7 @@ from ..core.reminder import (
     ReminderScheduleRequest,
     ReminderSnoozeRequest,
     ReminderUpdateRequest,
+    canonical_id_reference,
 )
 from .command import CommandDispatcher as _MessageCommandDispatcher
 from .command import (
@@ -65,8 +68,22 @@ def serialize_reminder_occurrence(
     }
 
 
-ReminderText = Annotated[StrictStr, Field(min_length=1)]
-ReminderPositiveInt = Annotated[StrictInt, Field(gt=0)]
+def serialize_handoff(handoff: Handoff) -> dict[str, object]:
+    return {
+        "handoff_id": handoff.handoff_id,
+        "command_id": handoff.command_id,
+        "source_session_id": handoff.source_session_id,
+        "target_session_id": handoff.target_session_id,
+        "source_message_id": handoff.source_message_id,
+        "body": handoff.body,
+        "created_at_ms": handoff.created_at_ms,
+        "read_at_ms": handoff.read_at_ms,
+    }
+
+
+NonEmptyText = Annotated[StrictStr, Field(min_length=1)]
+PositiveInt = Annotated[StrictInt, Field(gt=0)]
+NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 
 
 class _ReminderCheckRequest(_CommandRequest):
@@ -77,42 +94,71 @@ class _ReminderCheckRequest(_CommandRequest):
 class _ReminderScheduleRequest(_CommandRequest):
     resource: Literal["reminder"]
     command: Literal["schedule"]
-    title: ReminderText
-    message_id: ReminderText
-    delay_seconds: ReminderPositiveInt | None = None
-    fire_at: ReminderText | None = None
-    repeat_rule: ReminderText | None = None
-    timezone: ReminderText | None = None
+    title: NonEmptyText
+    message_id: NonEmptyText
+    delay_seconds: PositiveInt | None = None
+    fire_at: NonEmptyText | None = None
+    repeat_rule: NonEmptyText | None = None
+    timezone: NonEmptyText | None = None
 
 
 class _ReminderListRequest(_CommandRequest):
     resource: Literal["reminder"]
     command: Literal["list"]
     all: StrictBool = False
-    status: ReminderText | None = None
+    status: NonEmptyText | None = None
 
 
 class _ReminderSnoozeRequest(_CommandRequest):
     resource: Literal["reminder"]
     command: Literal["snooze"]
-    reminder_id: ReminderText
-    by: ReminderText
+    reminder_id: NonEmptyText
+    by: NonEmptyText
 
 
 class _ReminderUpdateRequest(_CommandRequest):
     resource: Literal["reminder"]
     command: Literal["update"]
-    reminder_id: ReminderText
-    fire_at: ReminderText | None = None
-    in_duration: ReminderText | None = Field(default=None, alias="in")
-    cadence: ReminderText | None = None
-    title: ReminderText | None = None
+    reminder_id: NonEmptyText
+    fire_at: NonEmptyText | None = None
+    in_duration: NonEmptyText | None = Field(default=None, alias="in")
+    cadence: NonEmptyText | None = None
+    title: NonEmptyText | None = None
 
 
 class _ReminderCancelRequest(_CommandRequest):
     resource: Literal["reminder"]
     command: Literal["cancel"]
-    reminder_id: ReminderText
+    reminder_id: NonEmptyText
+
+
+class _HandoffSendRequest(_CommandRequest):
+    resource: Literal["handoff"]
+    command: Literal["send"]
+    target: NonEmptyText
+    body: StrictStr
+    command_id: NonEmptyText
+    source_message_id: NonEmptyText | None = None
+    created_at_ms: NonNegativeInt = Field(
+        default_factory=lambda: time_ns() // 1_000_000
+    )
+
+    @field_validator("body")
+    @classmethod
+    def _require_body(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("handoff body must contain non-whitespace text")
+        return value
+
+    @field_validator("source_message_id")
+    @classmethod
+    def _require_source_message_id(cls, value: str | None) -> str | None:
+        return None if value is None else canonical_id_reference(value)
+
+
+class _HandoffCheckRequest(_CommandRequest):
+    resource: Literal["handoff"]
+    command: Literal["check"]
 
 
 _REMINDER_REQUESTS: dict[
@@ -200,15 +246,47 @@ _REMINDER_REQUESTS: dict[
     ),
 }
 
+_HANDOFF_REQUESTS: dict[
+    str, tuple[type[_CommandRequest], Mapping[str, tuple[str, str]]]
+] = {
+    "send": (
+        _HandoffSendRequest,
+        {
+            "target": (
+                "HANDOFF_TARGET_REQUIRED",
+                "Handoff --target is required.",
+            ),
+            "body": (
+                "HANDOFF_BODY_REQUIRED",
+                "Handoff body must be non-empty text read from stdin.",
+            ),
+            "command_id": (
+                "COMMAND_ID_REQUIRED",
+                "command_id must be a non-empty string",
+            ),
+            "source_message_id": (
+                "HANDOFF_SOURCE_INVALID",
+                "Handoff --message-id must be a full UUID.",
+            ),
+            "created_at_ms": (
+                "INVALID_CREATED_AT",
+                "created_at_ms must be non-negative",
+            ),
+        },
+    ),
+    "check": (_HandoffCheckRequest, {}),
+}
+
 
 class CommandDispatcher(_MessageCommandDispatcher):
-    """Resource-aware dispatcher for message, inbox, thread, and Reminder commands."""
+    """Resource-aware dispatcher for all local Agent commands."""
 
     def __init__(
         self,
         service: ICommandService,
         *,
         reminder_service: IReminderService,
+        handoff_service: IHandoffService | None = None,
         timeout_budget: TimeoutBudget,
         control_handler: ControlHandler | None = None,
         session_binding_validator: SessionBindingValidator | None = None,
@@ -220,6 +298,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             session_binding_validator=session_binding_validator,
         )
         self._reminder_service = reminder_service
+        self._handoff_service = handoff_service
 
     async def _dispatch_command(
         self,
@@ -254,6 +333,8 @@ class CommandDispatcher(_MessageCommandDispatcher):
             return await super()._dispatch_command(raw_request)
         if resource == "inbox":
             return await super()._dispatch_command(raw_request)
+        if resource == "handoff":
+            return await self._dispatch_handoff(raw_request, command)
         if resource != "reminder":
             raise CommandDispatchError(
                 "UNKNOWN_RESOURCE",
@@ -279,6 +360,74 @@ class CommandDispatcher(_MessageCommandDispatcher):
         try:
             return await self._dispatch_reminder(session_id, command, request)
         except ReminderCommandFailure as error:
+            raise CommandDispatchError(
+                error.code,
+                error.message,
+                next_action=error.next_action,
+            ) from error
+
+    async def _dispatch_handoff(
+        self,
+        raw_request: Mapping[str, object],
+        command: str,
+    ) -> Mapping[str, object]:
+        request_spec = _HANDOFF_REQUESTS.get(command)
+        if request_spec is None:
+            raise CommandDispatchError(
+                "UNKNOWN_COMMAND",
+                f"unsupported handoff command: {command}",
+            )
+        request_model, request_errors = request_spec
+        request = _parse_command_request(
+            raw_request,
+            request_model,
+            errors=request_errors,
+        )
+        session_id = request.session_id
+        if self._session_binding_validator is not None:
+            await self._session_binding_validator(session_id, raw_request)
+        service = self._handoff_service
+        if service is None:
+            raise CommandDispatchError(
+                "HANDOFF_UNAVAILABLE",
+                "Handoff service is not available.",
+            )
+        try:
+            if command == "send":
+                values = cast(_HandoffSendRequest, request)
+                result = await service.send(
+                    session_id,
+                    HandoffSendRequest(
+                        target=values.target,
+                        body=values.body,
+                        command_id=values.command_id,
+                        created_at_ms=values.created_at_ms,
+                        source_message_id=values.source_message_id,
+                    ),
+                )
+                return {
+                    "ok": True,
+                    "result": {
+                        "handoff": serialize_handoff(result.handoff),
+                        "target": result.target,
+                    },
+                }
+
+            result = await service.check(session_id, HandoffCheckRequest())
+            return {
+                "ok": True,
+                "result": {
+                    "items": [
+                        {
+                            "handoff": serialize_handoff(item.handoff),
+                            "source_target": item.source_target,
+                        }
+                        for item in result.items
+                    ],
+                    "has_more": result.has_more,
+                },
+            }
+        except HandoffCommandFailure as error:
             raise CommandDispatchError(
                 error.code,
                 error.message,
