@@ -9,6 +9,7 @@ from .models import (
     BcnSession,
     ChannelSession,
     ConsumerCursor,
+    Handoff,
     InboundMessage,
     OutboundMessage,
     OwnedReminder,
@@ -181,3 +182,35 @@ class IStorageScope(IStorage, Protocol):
 
     @property
     def agent_name(self) -> str: ...
+
+
+class IHandoffStorageTransaction(IStorageTransaction, Protocol):
+    """Storage transaction extended with handoff operations."""
+
+    async def get_latest_inbound_message(
+        self, session_id: str
+    ) -> InboundMessage | None: ...
+
+    async def save_handoff(self, handoff: Handoff) -> Handoff: ...
+
+    async def list_pending_handoffs(
+        self, target_session_id: str, *, limit: int
+    ) -> tuple[Handoff, ...]: ...
+
+    async def count_pending_handoffs(self, target_session_id: str) -> int: ...
+
+    async def mark_handoffs_read(
+        self,
+        target_session_id: str,
+        handoff_ids: tuple[str, ...],
+        *,
+        read_at_ms: int,
+    ) -> tuple[Handoff, ...]: ...
+
+
+class IHandoffStorage(IStorage, Protocol):
+    """Storage lifecycle whose transactions support handoff operations."""
+
+    def transaction(
+        self,
+    ) -> AbstractAsyncContextManager[IHandoffStorageTransaction]: ...

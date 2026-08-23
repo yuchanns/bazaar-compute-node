@@ -330,8 +330,7 @@ No more pending handoffs.
 ### Core 与表设计
 
 core 增加不可变 `Handoff` model，以及 `HandoffSendRequest/Result`、`HandoffCheckItem/Result` 与
-`IHandoffService`。model 固定验证非空 ID/session/body、nullable source message、非负时间，以及
-`read_at_ms >= created_at_ms`。
+`IHandoffService`。core 类型只承载已经过接口层 Pydantic 校验的数据，不重复执行异常值校验。
 
 SQLite migration version 15 新增一张 agent-owned 表：
 
@@ -450,13 +449,12 @@ instruction 只描述 agent 可观察的 send/check 与 notice 行为，不暴�
 
 ### Task 8：Handoff core contract
 
-- 新增 `Handoff` entity 与 send/check request/result 类型，固定一次性 inspect-once 语义、100 条 check 上限和
-  `has_more` invariant；
+- 新增 `Handoff` entity 与 send/check request/result 类型，固定一次性 inspect-once 语义与 100 条 check 上限；
 - 新增 `IHandoffService`，send 输入包含 caller session、target、body、command ID、可选 source message 与创建
   时间；check 只接收当前 session；
 - 在 storage port 增加 save、pending list/count、mark-read 与 target runtime anchor 查询；
-- 增加 model/contract tests，覆盖 multiline body、nullable source message、时间边界、batch result 与幂等 payload
-  invariant。
+- 增加 model/contract tests，覆盖 multiline body、nullable source message、read marker、batch limit 与 result
+  payload。
 
 依赖：既有 inbox target resolver、Reminder check result pattern。产出：不依赖 SQLite/runtime 的 handoff domain
 contract。
