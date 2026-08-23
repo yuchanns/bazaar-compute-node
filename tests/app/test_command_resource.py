@@ -22,6 +22,7 @@ from bazaar_compute_node.core.command import (
     ICommandService,
     IHandoffService,
     IReminderService,
+    MessageSendFreshnessHold,
     MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.handoff import (
@@ -33,7 +34,9 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     Handoff,
+    InboundMessage,
     InboxTargetSummary,
+    OutboundDeliveryState,
 )
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -189,11 +192,8 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
             )
         ),
     )
-    message_service = SimpleNamespace(
-        send=AsyncMock(return_value=MessageSendHandoffRequired(target="dm:target"))
-    )
     dispatcher = CommandDispatcher(
-        cast(ICommandService, message_service),
+        cast(ICommandService, object()),
         reminder_service=cast(IReminderService, object()),
         handoff_service=cast(IHandoffService, handoff_service),
         timeout_budget=make_budget(),
@@ -201,18 +201,6 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
     )
     dispatcher.start_accepting()
 
-    routed = await dispatcher(
-        {
-            "kind": "command",
-            "resource": "message",
-            "command": "send",
-            "session_id": "session-source",
-            "target": "dm:target",
-            "body": "Hello.",
-            "command_id": "message-command-1",
-            "created_at_ms": 900,
-        }
-    )
     sent = await dispatcher(
         {
             "kind": "command",
@@ -235,10 +223,6 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
         }
     )
 
-    assert routed == {
-        "ok": True,
-        "result": {"handoff_required": {"target": "dm:target"}},
-    }
     assert sent["ok"] is True
     sent_result = cast(Mapping[str, object], sent["result"])
     assert sent_result["target"] == "dm:target"
@@ -246,4 +230,150 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
     result = cast(Mapping[str, object], checked["result"])
     items = cast(list[Mapping[str, object]], result["items"])
     assert items[0]["source_target"] == "group:source"
-    assert bindings == ["session-source", "session-source", "session-target"]
+    assert bindings == ["session-source", "session-target"]
+
+
+@pytest.mark.asyncio
+async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
+    message = InboundMessage(
+        seq=7,
+        message_id="message-7",
+        session_id="session-source",
+        channel_session_id="channel-source",
+        channel="test",
+        provider_thread_id="provider-thread",
+        provider_message_id="provider-message",
+        received_at_ms=1_000,
+        sender=None,
+        canonical_target="dm:source",
+        message_type="text",
+        body="new context",
+    )
+    service = SimpleNamespace(
+        send=AsyncMock(
+            side_effect=(
+                MessageSendFreshnessHold(
+                    target="dm:source",
+                    messages=(message,),
+                    referenced_messages=(),
+                    newer_message_total=1,
+                    snapshot_seq=6,
+                    current_inbound_seq=7,
+                    draft_replaced=False,
+                ),
+                MessageSendHandoffRequired(target="dm:target"),
+            )
+        )
+    )
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, service),
+        reminder_service=cast(IReminderService, object()),
+        handoff_service=cast(IHandoffService, object()),
+        timeout_budget=make_budget(),
+    )
+    dispatcher.start_accepting()
+    request = {
+        "kind": "command",
+        "resource": "message",
+        "command": "send",
+        "session_id": "session-source",
+        "target": "dm:source",
+        "body": "Hello.",
+        "command_id": "message-command-1",
+        "created_at_ms": 1_100,
+    }
+
+    freshness = await dispatcher(request)
+    cross_session = await dispatcher(
+        {
+            **request,
+            "target": "dm:target",
+            "body": "",
+            "send_draft": True,
+        }
+    )
+
+    assert freshness["ok"] is True
+    freshness_result = cast(Mapping[str, object], freshness["result"])
+    freshness_text = cast(str, freshness_result["text"])
+    assert freshness_text.startswith(
+        "Unreviewed synced context for this target: 1 message."
+    )
+    assert "[1/1 seq=7 msg=message-7" in freshness_text
+    assert "End of window: 1/1 shown." in freshness_text
+    assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
+    assert cross_session["ok"] is True
+    cross_result = cast(Mapping[str, object], cross_session["result"])
+    cross_text = cast(str, cross_result["text"])
+    assert cross_text.startswith(
+        "Your message was not sent because the target belongs to another conversation."
+    )
+    assert 'bcc handoff send --target "dm:target"' in cross_text
+    assert "background, goal, and next action" in cross_text
+    assert cross_text.endswith("You can also choose not to send anything.")
+    assert service.send.await_args_list[1].kwargs["send_draft"] is True
+
+
+@pytest.mark.asyncio
+async def test_message_send_renders_provider_outcomes() -> None:
+    service = SimpleNamespace(send=AsyncMock())
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, service),
+        reminder_service=cast(IReminderService, object()),
+        handoff_service=cast(IHandoffService, object()),
+        timeout_budget=make_budget(),
+    )
+    dispatcher.start_accepting()
+    request = {
+        "kind": "command",
+        "resource": "message",
+        "command": "send",
+        "session_id": "session-source",
+        "target": "dm:source",
+        "body": "Hello.",
+        "command_id": "message-command-1",
+        "created_at_ms": 1_100,
+    }
+    outcomes = (
+        (
+            OutboundDeliveryState.QUEUED,
+            True,
+            None,
+            "Message queued to dm:source. Message ID: outbound-1",
+        ),
+        (
+            OutboundDeliveryState.PARTIAL,
+            False,
+            "SEND_PARTIAL",
+            "Do not retry the complete message automatically",
+        ),
+        (
+            OutboundDeliveryState.UNKNOWN,
+            False,
+            "SEND_UNKNOWN",
+            "Reconcile channel delivery",
+        ),
+        (
+            OutboundDeliveryState.FAILED,
+            False,
+            "SEND_FAILED",
+            "Fix the provider error",
+        ),
+    )
+
+    for state, ok, code, expected_text in outcomes:
+        service.send.return_value = SimpleNamespace(
+            state=state,
+            target="dm:source",
+            outbound_message_id="outbound-1",
+            error_message="provider outcome",
+        )
+        response = await dispatcher(request)
+
+        assert response["ok"] is ok
+        if ok:
+            result = cast(Mapping[str, object], response["result"])
+            assert result["text"] == expected_text
+        else:
+            assert response["code"] == code
+            assert expected_text in cast(str, response["next_action"])

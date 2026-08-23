@@ -21,7 +21,7 @@ from pydantic import (
     field_validator,
 )
 
-from .app.command import format_message_time
+from .app.command import format_check_message, format_message_time, format_read_message
 from .app.transport import LocalCommandClient
 from .core.reminder import canonical_id_reference, format_utc_timestamp
 
@@ -161,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="<path>",
         help="Workspace file to attach; repeat the option for multiple files.",
+    )
+    send_parser.add_argument(
+        "--send-draft",
+        action="store_true",
+        help="Send this target's active draft unchanged after rechecking freshness.",
     )
 
     thread_parser = subparsers.add_parser(
@@ -422,10 +427,16 @@ async def _request(
             request["around_message_id"] = args.around
             request["limit"] = args.limit
         elif args.command == "send":
+            if args.send_draft and (args.reply_to is not None or args.attachment):
+                raise BccCommandError(
+                    "--send-draft cannot be combined with --reply-to or --attachment",
+                    code="INVALID_SEND_DRAFT",
+                )
             request["target"] = args.target
             request["body"] = body if body is not None else ""
             request["command_id"] = f"bcc-{uuid7().hex}"
             request["reply_to_message_id"] = args.reply_to
+            request["send_draft"] = args.send_draft
             request["attachment_paths"] = await asyncio.to_thread(
                 lambda: [str(Path(path).absolute()) for path in args.attachment]
             )
@@ -561,102 +572,6 @@ def serialize_inbox_list(result: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _message_timestamp(message: Mapping[str, object]) -> int:
-    timestamp = message["provider_time_ms"]
-    if timestamp is None:
-        timestamp = message["received_at_ms"]
-    return cast(int, timestamp)
-
-
-def _format_message_timestamp(message: Mapping[str, object]) -> str:
-    return format_message_time(_message_timestamp(message))
-
-
-def _message_header_fields(
-    message: Mapping[str, object],
-) -> tuple[str, str, str, str, str | None, str]:
-    target = cast(str, message["canonical_target"])
-    message_id = cast(str, message["message_id"])
-    sender_kind = cast(str, message["sender_kind"])
-    sender_value = message["sender"]
-    sender: str | None = None
-    if sender_value is not None:
-        sender_mapping = cast(Mapping[str, object], sender_value)
-        sender_id = cast(str | None, sender_mapping.get("id"))
-        sender_name = cast(str | None, sender_mapping.get("name"))
-        sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
-    return (
-        target,
-        message_id,
-        _format_message_timestamp(message),
-        sender_kind,
-        sender,
-        cast(str, message["body"]),
-    )
-
-
-def _attachment_suffix(message: Mapping[str, object]) -> str:
-    attachments = cast(list[Mapping[str, object]], message["attachments"])
-    if not attachments:
-        return ""
-    rendered: list[str] = []
-    for attachment in attachments:
-        name = cast(str, attachment["name"])
-        attachment_id = cast(str, attachment["attachment_id"])
-        state = cast(str, attachment["state"])
-        if state == "ready":
-            path = cast(str, attachment["relative_path"])
-            rendered.append(f"{name} (id:{attachment_id}, path:{path})")
-        else:
-            error = cast(str, attachment["error"])
-            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
-    label = "attachment" if len(rendered) == 1 else "attachments"
-    return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
-
-
-def _format_check_message(message: Mapping[str, object]) -> str:
-    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
-        message
-    )
-    line = (
-        f"[target={target} msg={message_id} time={timestamp} "
-        f"type={message_type} mentioned={str(message['mentions_agent']).lower()}"
-    )
-    reply_to_message_id = message["reply_to_message_id"]
-    if reply_to_message_id is not None:
-        line += f" reply_to={cast(str, reply_to_message_id)}"
-    line += "] "
-    if sender is not None:
-        line += f"{sender} "
-    return line + body + _attachment_suffix(message)
-
-
-def _format_read_message(
-    message: Mapping[str, object],
-    *,
-    index: int,
-    count: int,
-) -> str:
-    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
-        message
-    )
-    fields = [
-        f"seq={cast(int, message['seq'])}",
-        f"msg={message_id}",
-        f"time={timestamp}",
-        f"type={message_type}",
-        f"replyTarget={target}",
-        f"mentioned={str(message['mentions_agent']).lower()}",
-    ]
-    reply_to_message_id = message["reply_to_message_id"]
-    if reply_to_message_id is not None:
-        fields.append(f"replyTo={cast(str, reply_to_message_id)}")
-    line = f"[{index}/{count} {' '.join(fields)}] "
-    if sender is not None:
-        line += f"{sender} "
-    return line + body + _attachment_suffix(message)
-
-
 def serialize_check(result: Mapping[str, object]) -> str:
     messages = cast(list[Mapping[str, object]], result["messages"])
     referenced_messages = cast(
@@ -666,7 +581,7 @@ def serialize_check(result: Mapping[str, object]) -> str:
     if referenced_messages:
         lines.append(f"Referenced messages: {len(referenced_messages)}")
         lines.extend(
-            _format_read_message(
+            format_read_message(
                 message,
                 index=index,
                 count=len(referenced_messages),
@@ -674,7 +589,7 @@ def serialize_check(result: Mapping[str, object]) -> str:
             for index, message in enumerate(referenced_messages, start=1)
         )
         lines.append("New messages:")
-    lines.extend(_format_check_message(message) for message in messages)
+    lines.extend(format_check_message(message) for message in messages)
     if not lines:
         lines.append("No more new messages.")
     return "\n".join(lines)
@@ -695,7 +610,7 @@ def serialize_read(result: Mapping[str, object]) -> str:
     if referenced_messages:
         lines.append(f"Referenced messages: {len(referenced_messages)}")
         lines.extend(
-            _format_read_message(
+            format_read_message(
                 message,
                 index=index,
                 count=len(referenced_messages),
@@ -704,64 +619,26 @@ def serialize_read(result: Mapping[str, object]) -> str:
         )
         lines.append("Window messages:")
     lines.extend(
-        _format_read_message(message, index=index, count=len(messages))
+        format_read_message(message, index=index, count=len(messages))
         for index, message in enumerate(messages, start=1)
     )
     return "\n".join(lines)
 
 
-class _MessageSendHandoffRequiredResponse(BaseModel):
+class _MessageSendResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    target: Annotated[StrictStr, Field(min_length=1)]
-
-
-class _MessageSendRoutingResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    handoff_required: _MessageSendHandoffRequiredResponse
+    text: Annotated[StrictStr, Field(min_length=1)]
 
 
 def serialize_send(result: Mapping[str, object]) -> str:
-    if "handoff_required" in result:
-        _MessageSendRoutingResponse.model_validate(result)
-        return (
-            "Use `bcc handoff send` to continue this work in the target conversation."
-        )
-
-    outbound = cast(Mapping[str, object], result["outbound"])
-    state = cast(str, outbound["state"])
-    target = cast(str, outbound["target"])
-    outbound_message_id = cast(str, outbound["outbound_message_id"])
-    if state == "sent":
-        return f"Message sent to {target}. Message ID: {outbound_message_id}"
-    if state == "queued":
-        return f"Message queued to {target}. Message ID: {outbound_message_id}"
-
-    error_kind = cast(str, outbound["error_kind"])
-    error_message = cast(str, outbound["error_message"])
-    draft_saved_at_ms = cast(int | None, outbound["draft_saved_at_ms"])
-    next_action = cast(str | None, outbound["next_action"])
-    if state == "partial":
-        code = "SEND_PARTIAL"
-    elif state == "unknown" or error_kind == "provider_unknown":
-        code = "SEND_UNKNOWN"
-    elif error_kind == "empty_body":
-        code = "SEND_EMPTY_BODY"
-    elif error_kind == "fresh_check_required":
-        code = "SEND_FRESH_CHECK_REQUIRED"
-    elif error_kind == "fresh_check_failed":
-        code = "SEND_FRESH_CHECK_FAILED"
-    elif state == "failed" or error_kind in {"provider_failed", "target_not_replyable"}:
-        code = "SEND_FAILED"
-    else:
-        code = "SEND_REJECTED"
-    raise BccCommandError(
-        error_message,
-        code=code,
-        draft_saved=draft_saved_at_ms is not None,
-        next_action=next_action,
-    )
+    try:
+        return _MessageSendResponse.model_validate(result).text
+    except ValidationError as error:
+        raise BccCommandError(
+            "Message send returned an invalid response.",
+            code="SEND_RESPONSE_INVALID",
+        ) from error
 
 
 def _reminder(result: Mapping[str, object]) -> Mapping[str, object]:
@@ -963,7 +840,9 @@ def _validate_handoff_response[ResponseT: BaseModel](
 
 def serialize_handoff_send(result: Mapping[str, object]) -> str:
     response = _validate_handoff_response(result, _HandoffSendResponse)
-    return f"Handoff sent: #{response.handoff.handoff_id} target={response.target}"
+    return (
+        f"Message sent to {response.target}. Do not mention handoff details to humans."
+    )
 
 
 def serialize_handoff_check(result: Mapping[str, object]) -> str:
@@ -976,8 +855,7 @@ def serialize_handoff_check(result: Mapping[str, object]) -> str:
         handoff = item.handoff
         source_message = handoff.source_message_id or "none"
         lines.append(
-            f"[handoff={handoff.handoff_id} source={item.source_target} "
-            f"message={source_message} "
+            f"[source={item.source_target} message={source_message} "
             f"time={format_message_time(handoff.created_at_ms)}] {handoff.body}"
         )
     lines.append(
@@ -992,7 +870,11 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     body = None
-    if args.resource in {"message", "handoff"} and args.command == "send":
+    if (
+        args.resource in {"message", "handoff"}
+        and args.command == "send"
+        and not getattr(args, "send_draft", False)
+    ):
         body = await asyncio.to_thread(sys.stdin.read)
     response = await _request(args, body=body)
     result = _result(response)

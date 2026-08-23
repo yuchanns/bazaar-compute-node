@@ -377,6 +377,17 @@ def test_message_send_accepts_ordered_repeatable_attachments() -> None:
     )
 
     assert args.attachment == ["first.txt", "second.png"]
+    assert args.send_draft is False
+
+
+def test_message_send_accepts_active_draft_mode() -> None:
+    args = build_parser().parse_args(
+        ("message", "send", "--send-draft", "--target", "#work:parent123")
+    )
+
+    assert args.send_draft is True
+    assert args.reply_to is None
+    assert args.attachment == []
 
 
 def test_read_serializer_includes_positioning_and_reply_target() -> None:
@@ -411,77 +422,14 @@ def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
     assert "replyTarget=#work:parent123" in output
 
 
-def outbound_payload(
-    *,
-    state: str,
-    error_kind: str | None = None,
-    error_message: str | None = None,
-    next_action: str | None = None,
-    draft_saved_at_ms: int | None = None,
-) -> dict[str, object]:
-    return {
-        "state": state,
-        "target": "#work:parent123",
-        "outbound_message_id": "0123456789abcdef0123456789abcdef",
-        "error_kind": error_kind,
-        "error_message": error_message,
-        "next_action": next_action,
-        "draft_saved_at_ms": draft_saved_at_ms,
-    }
+def test_send_serializer_prints_direct_text_verbatim() -> None:
+    text = "Unreviewed synced context.\nChoose the next action."
 
+    assert serialize_send({"text": text}) == text
 
-def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
-    sent = {"outbound": outbound_payload(state="sent")}
-    queued = {"outbound": outbound_payload(state="queued")}
-    handoff_required = {"handoff_required": {"target": "dm:alice"}}
-
-    assert serialize_send(sent) == (
-        "Message sent to #work:parent123. Message ID: 0123456789abcdef0123456789abcdef"
-    )
-    assert serialize_send(queued) == (
-        "Message queued to #work:parent123. "
-        "Message ID: 0123456789abcdef0123456789abcdef"
-    )
-    assert serialize_send(handoff_required) == (
-        "Use `bcc handoff send` to continue this work in the target conversation."
-    )
-
-
-def test_send_serializer_maps_refusal_to_stable_error_contract() -> None:
-    result = {
-        "outbound": outbound_payload(
-            state="rejected",
-            error_kind="fresh_check_failed",
-            error_message="New inbound message(s) arrived after the latest inbox snapshot; outbound send was refused.",
-            next_action="Run `bcc message check` before retrying.",
-            draft_saved_at_ms=10,
-        )
-    }
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_send(result)
-
-    assert error.value.code == "SEND_FRESH_CHECK_FAILED"
-    assert error.value.draft_saved is True
-    assert error.value.next_action == "Run `bcc message check` before retrying."
-
-
-def test_send_serializer_maps_empty_body_refusal() -> None:
-    result = {
-        "outbound": outbound_payload(
-            state="rejected",
-            error_kind="empty_body",
-            error_message="Outbound message body must not be empty.",
-            next_action="Provide a non-empty message body and retry.",
-        )
-    }
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_send(result)
-
-    assert error.value.code == "SEND_EMPTY_BODY"
-    assert error.value.draft_saved is False
-    assert error.value.next_action == "Provide a non-empty message body and retry."
+    with pytest.raises(BccCommandError, match="invalid response") as error:
+        serialize_send({"outbound": {}})
+    assert error.value.code == "SEND_RESPONSE_INVALID"
 
 
 def test_read_parser_accepts_history_positioning_arguments() -> None:

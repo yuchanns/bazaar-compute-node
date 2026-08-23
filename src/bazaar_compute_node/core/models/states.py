@@ -232,20 +232,12 @@ class RuntimeTurnState(StrEnum):
 
 
 class OutboundDeliveryState(StrEnum):
-    DRAFT = "draft"
     PENDING = "pending"
     QUEUED = "queued"
     SENT = "sent"
     PARTIAL = "partial"
     FAILED = "failed"
     UNKNOWN = "unknown"
-    REJECTED = "rejected"
-
-
-class FreshCheckState(StrEnum):
-    REQUIRED = "required"
-    PASSED = "passed"
-    FAILED = "failed"
 
 
 class RuntimeEventState(StrEnum):
@@ -341,9 +333,6 @@ RUNTIME_TURN_TRANSITIONS: Mapping[RuntimeTurnState, frozenset[RuntimeTurnState]]
 OUTBOUND_DELIVERY_TRANSITIONS: Mapping[
     OutboundDeliveryState, frozenset[OutboundDeliveryState]
 ] = {
-    OutboundDeliveryState.DRAFT: frozenset(
-        {OutboundDeliveryState.PENDING, OutboundDeliveryState.REJECTED}
-    ),
     OutboundDeliveryState.PENDING: frozenset(
         {
             OutboundDeliveryState.QUEUED,
@@ -371,15 +360,6 @@ OUTBOUND_DELIVERY_TRANSITIONS: Mapping[
             OutboundDeliveryState.FAILED,
         }
     ),
-    OutboundDeliveryState.REJECTED: frozenset(),
-}
-
-FRESH_CHECK_TRANSITIONS: Mapping[FreshCheckState, frozenset[FreshCheckState]] = {
-    FreshCheckState.REQUIRED: frozenset(
-        {FreshCheckState.PASSED, FreshCheckState.FAILED}
-    ),
-    FreshCheckState.PASSED: frozenset(),
-    FreshCheckState.FAILED: frozenset(),
 }
 
 RUNTIME_EVENT_TRANSITIONS: Mapping[RuntimeEventState, frozenset[RuntimeEventState]] = {

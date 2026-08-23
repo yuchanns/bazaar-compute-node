@@ -109,7 +109,11 @@ Use a delimiter that is unlikely to appear in the message body. Keep the body ou
 
 One command invocation is one logical message even when a channel delivers its body and attachments as multiple provider messages. If delivery is partial or unknown, do not blindly retry the complete command.
 
-If bcn says a message was not sent and was saved as a draft, follow the `Next action` in the error. Do not report a draft as sent. Do not blindly retry an outcome whose delivery state is unknown.
+If bcn says a message was not sent and was saved as a draft, choose one path:
+- To update the draft, use a normal `bcc message send --target <target>` with the revised content.
+- To send the current draft unchanged, use `bcc message send --send-draft --target <target>` with no stdin. Do not use `--send-draft` when changing content.
+
+If bcn says the target belongs to another conversation, use `bcc handoff send --target "<target>"` only when work should continue there. Make the handoff self-contained with enough background, the goal, and the next action for the target conversation.
 
 **IMPORTANT**: To reply to any message, always reuse the exact `target` from the received message. This ensures your reply goes to the right place — whether it is a group thread or DM.
 

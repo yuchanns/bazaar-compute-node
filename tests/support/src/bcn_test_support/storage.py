@@ -13,7 +13,6 @@ from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
     ConsumerCursor,
-    FreshCheckState,
     InboundMessage,
     InboxTargetSummary,
     OutboundDeliveryState,
@@ -248,6 +247,27 @@ class _MemoryStorageTransaction:
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
 
+    async def get_latest_inbound_message(
+        self,
+        session_id: str,
+    ) -> InboundMessage | None:
+        messages = self._storage.inbound_messages.get(session_id, [])
+        return messages[-1] if messages else None
+
+    async def count_inbound_messages(
+        self,
+        session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+    ) -> int:
+        messages = self._storage.inbound_messages.get(session_id, [])
+        return sum(
+            (after_seq is None or message.seq > after_seq)
+            and (target is None or message.canonical_target == target)
+            for message in messages
+        )
+
     def _in_scope(self, session: BcnSession) -> bool:
         return self._agent_id is None or session.workspace_id == self._agent_id
 
@@ -349,6 +369,7 @@ class _MemoryStorageTransaction:
         target: str | None = None,
         around_message_id: str | None = None,
         notifying_only: bool = False,
+        latest: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         messages = list(self._storage.inbound_messages.get(session_id, []))
@@ -375,7 +396,7 @@ class _MemoryStorageTransaction:
             start = max(around_index - before_count, 0)
             messages = messages[start : start + limit]
         else:
-            messages = messages[:limit]
+            messages = messages[-limit:] if latest else messages[:limit]
         return tuple(messages)
 
     async def save_channel_session(self, session: ChannelSession) -> None:
@@ -532,8 +553,6 @@ def _validate_outbound_message_input(message: object) -> None:
         raise TypeError("message must be an OutboundMessage")
     if not isinstance(message.state, OutboundDeliveryState):
         raise TypeError("outbound message state is invalid")
-    if not isinstance(message.fresh_check_state, FreshCheckState):
-        raise TypeError("outbound fresh-check state is invalid")
     if not isinstance(message.body, str):
         raise TypeError("outbound body must be a string")
     for value, field_name in (
@@ -542,72 +561,26 @@ def _validate_outbound_message_input(message: object) -> None:
         (message.provider_receipt_ref, "provider_receipt_ref"),
         (message.error_kind, "error_kind"),
         (message.error_message, "error_message"),
-        (message.next_action, "next_action"),
     ):
         _validate_optional_input_text(value, field_name)
-    if message.fresh_check_state is FreshCheckState.REQUIRED and (
-        message.snapshot_seq is not None or message.current_inbound_seq is not None
+    if message.current_inbound_seq > message.snapshot_seq:
+        raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
+    if message.provider_attempted_at_ms < message.created_at_ms:
+        raise ValueError("outbound provider attempt cannot precede creation")
+    if (
+        message.completed_at_ms is not None
+        and message.completed_at_ms < message.provider_attempted_at_ms
     ):
-        raise ValueError("a required outbound fresh check cannot contain evidence")
-    if message.fresh_check_state is FreshCheckState.PASSED:
-        if message.snapshot_seq is None or message.current_inbound_seq is None:
-            raise ValueError("a passed outbound fresh check requires sequence bounds")
-        if message.current_inbound_seq > message.snapshot_seq:
-            raise ValueError(
-                "outbound current inbound sequence exceeds snapshot sequence"
-            )
+        raise ValueError("outbound completion cannot precede provider attempt")
     if (
         message.state
         in {
             OutboundDeliveryState.PENDING,
             OutboundDeliveryState.QUEUED,
-            OutboundDeliveryState.SENT,
-            OutboundDeliveryState.PARTIAL,
-            OutboundDeliveryState.FAILED,
-            OutboundDeliveryState.UNKNOWN,
         }
-        and message.fresh_check_state is not FreshCheckState.PASSED
-    ):
-        raise ValueError("outbound delivery state requires a passed fresh check")
-    if (
-        message.state is OutboundDeliveryState.REJECTED
-        and message.fresh_check_state is FreshCheckState.PASSED
-    ):
-        raise ValueError("rejected outbound message cannot have a passed fresh check")
-    for value, field_name in (
-        (message.provider_attempted_at_ms, "provider_attempted_at_ms"),
-        (message.completed_at_ms, "completed_at_ms"),
-        (message.draft_saved_at_ms, "draft_saved_at_ms"),
-    ):
-        if value is not None and value < message.created_at_ms:
-            raise ValueError(f"outbound {field_name} cannot precede creation")
-    if message.state is OutboundDeliveryState.DRAFT and any(
-        value is not None
-        for value in (
-            message.provider_message_id,
-            message.provider_receipt_ref,
-            message.provider_attempted_at_ms,
-            message.completed_at_ms,
-            message.draft_saved_at_ms,
-        )
-    ):
-        raise ValueError("draft outbound message cannot contain delivery evidence")
-    if message.state in {
-        OutboundDeliveryState.PENDING,
-        OutboundDeliveryState.QUEUED,
-    } and (
-        message.completed_at_ms is not None or message.draft_saved_at_ms is not None
+        and message.completed_at_ms is not None
     ):
         raise ValueError("non-terminal outbound message cannot be terminal")
-    if message.state is OutboundDeliveryState.REJECTED and any(
-        value is not None
-        for value in (
-            message.provider_message_id,
-            message.provider_receipt_ref,
-            message.provider_attempted_at_ms,
-        )
-    ):
-        raise ValueError("rejected outbound message cannot contain provider evidence")
     if (
         message.state
         in {
@@ -615,16 +588,10 @@ def _validate_outbound_message_input(message: object) -> None:
             OutboundDeliveryState.PARTIAL,
             OutboundDeliveryState.FAILED,
             OutboundDeliveryState.UNKNOWN,
-            OutboundDeliveryState.REJECTED,
         }
         and message.completed_at_ms is None
     ):
         raise ValueError("terminal outbound message requires completed_at_ms")
-    if (
-        message.state is OutboundDeliveryState.REJECTED
-        and message.draft_saved_at_ms is None
-    ):
-        raise ValueError("rejected outbound message requires draft_saved_at_ms")
     if (
         message.state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
         and message.provider_message_id is None
@@ -634,43 +601,43 @@ def _validate_outbound_message_input(message: object) -> None:
 
 
 def _validate_outbound_insert(message: OutboundMessage) -> None:
-    if message.state is not OutboundDeliveryState.DRAFT:
-        raise ValueError("a new outbound message must start in draft state")
-    if message.fresh_check_state is not FreshCheckState.REQUIRED:
-        raise ValueError("a new outbound draft requires a required fresh check")
+    if message.state is not OutboundDeliveryState.PENDING:
+        raise ValueError("a new outbound message must start in pending state")
+    if any(
+        value is not None
+        for value in (
+            message.provider_message_id,
+            message.provider_receipt_ref,
+            message.completed_at_ms,
+            message.error_kind,
+            message.error_message,
+        )
+    ):
+        raise ValueError(
+            "a new pending outbound message cannot contain result evidence"
+        )
 
 
 def _validate_outbound_update(
     existing: OutboundMessage,
     incoming: OutboundMessage,
 ) -> OutboundMessage:
-    candidate = existing
-    sequence_changed = (
+    if (
         incoming.snapshot_seq != existing.snapshot_seq
         or incoming.current_inbound_seq != existing.current_inbound_seq
-    )
-    fresh_state_changed = incoming.fresh_check_state is not existing.fresh_check_state
-    if existing.fresh_check_state is FreshCheckState.REQUIRED:
-        if fresh_state_changed or sequence_changed:
-            candidate = existing.record_fresh_check(
-                incoming.fresh_check_state,
-                snapshot_seq=incoming.snapshot_seq,
-                current_inbound_seq=incoming.current_inbound_seq,
-            )
-    elif fresh_state_changed or sequence_changed:
-        raise ValueError("outbound fresh-check evidence cannot change")
+    ):
+        raise ValueError("outbound snapshot evidence cannot change")
 
-    if candidate.state is incoming.state:
-        transitioned = candidate
+    if existing.state is incoming.state:
+        transitioned = existing
     else:
-        transitioned = candidate.transition_to(
+        transitioned = existing.transition_to(
             incoming.state,
             at_ms=_outbound_transition_time(incoming),
             provider_message_id=incoming.provider_message_id,
             provider_receipt_ref=incoming.provider_receipt_ref,
             error_kind=incoming.error_kind,
             error_message=incoming.error_message,
-            next_action=incoming.next_action,
         )
     if (
         transitioned.completed_at_ms is not None
@@ -678,12 +645,6 @@ def _validate_outbound_update(
         and transitioned.completed_at_ms != incoming.completed_at_ms
     ):
         raise ValueError("outbound completion time cannot change")
-    if (
-        transitioned.draft_saved_at_ms is not None
-        and incoming.draft_saved_at_ms is not None
-        and transitioned.draft_saved_at_ms != incoming.draft_saved_at_ms
-    ):
-        raise ValueError("outbound draft time cannot change")
     return replace(
         transitioned,
         provider_message_id=_merge_optional_text(
@@ -704,23 +665,14 @@ def _validate_outbound_update(
         completed_at_ms=transitioned.completed_at_ms
         if transitioned.completed_at_ms is not None
         else incoming.completed_at_ms,
-        draft_saved_at_ms=transitioned.draft_saved_at_ms
-        if transitioned.draft_saved_at_ms is not None
-        else incoming.draft_saved_at_ms,
         error_kind=incoming.error_kind or transitioned.error_kind,
         error_message=incoming.error_message or transitioned.error_message,
-        next_action=incoming.next_action or transitioned.next_action,
         metadata=incoming.metadata,
     )
 
 
 def _outbound_transition_time(message: OutboundMessage) -> int:
-    return (
-        message.completed_at_ms
-        or message.draft_saved_at_ms
-        or message.provider_attempted_at_ms
-        or message.created_at_ms
-    )
+    return message.completed_at_ms or message.provider_attempted_at_ms
 
 
 def _merge_optional_text(

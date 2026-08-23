@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
 from typing import cast
 
@@ -328,8 +329,6 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             "BCN_COMMAND_CAPABILITY",
         ):
             monkeypatch.setenv(name, environment[name])
-        check_response = await LocalCommandClient.request(node.endpoint, request)
-        assert check_response["ok"] is True
 
         storage = cast(SqliteDatabase, node.storage)
         async with storage.scope(
@@ -340,6 +339,18 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             )
         assert len(messages) == 1
         target = messages[0].canonical_target
+
+        monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("reply"))
+        assert await bcc_module.async_main(["message", "send", "--target", target]) == 0
+        held_output = capsys.readouterr()
+        assert held_output.err == ""
+        assert held_output.out.startswith(
+            "Unreviewed synced context for this target: 1 message."
+        )
+        assert "Your message has been saved as a draft." in held_output.out
+
+        check_response = await LocalCommandClient.request(node.endpoint, request)
+        assert check_response["ok"] is True
 
         list_response = await LocalCommandClient.request(
             node.endpoint,
@@ -407,30 +418,21 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert f"target={target}" in cli_output
         assert "latest-msg=message-agent-a" in cli_output
 
-        send_response = await LocalCommandClient.request(
-            node.endpoint,
-            {
-                **request,
-                "command": "send",
-                "target": target,
-                "body": "reply",
-                "command_id": "command-agent-a",
-                "attachment_paths": [],
-            },
+        monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("must not be read"))
+        assert (
+            await bcc_module.async_main(
+                ["message", "send", "--send-draft", "--target", target]
+            )
+            == 0
         )
-        assert send_response["ok"] is True
-        result = send_response["result"]
-        assert isinstance(result, Mapping)
-        outbound = result["outbound"]
-        assert isinstance(outbound, Mapping)
-        outbound_id = outbound["outbound_message_id"]
-        assert isinstance(outbound_id, str)
+        sent_output = capsys.readouterr()
+        assert sent_output.err == ""
+        assert sent_output.out.startswith(f"Message sent to {target}. Message ID: ")
 
         async with storage.transaction() as transaction:
             identity = await transaction.fetchone(
                 "SELECT agent_id, agent_name FROM outbound_messages "
-                "WHERE outbound_message_id = ?",
-                (outbound_id,),
+                "ORDER BY created_at_ms DESC LIMIT 1"
             )
         assert identity is not None
         assert identity["agent_id"] == AGENT_A_ID

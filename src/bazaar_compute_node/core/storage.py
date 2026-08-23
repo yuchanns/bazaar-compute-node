@@ -43,6 +43,17 @@ class IStorageTransaction(Protocol):
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None: ...
     async def get_latest_inbound_seq(self, session_id: str) -> int: ...
+    async def get_latest_inbound_message(
+        self, session_id: str
+    ) -> InboundMessage | None: ...
+
+    async def count_inbound_messages(
+        self,
+        session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+    ) -> int: ...
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
@@ -71,6 +82,7 @@ class IStorageTransaction(Protocol):
         target: str | None = None,
         around_message_id: str | None = None,
         notifying_only: bool = False,
+        latest: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]: ...
 
@@ -190,10 +202,6 @@ class IStorageScope(IStorage, Protocol):
 
 class IHandoffStorageTransaction(IStorageTransaction, Protocol):
     """Agent-scoped transaction with handoff operations."""
-
-    async def get_latest_inbound_message(
-        self, session_id: str
-    ) -> InboundMessage | None: ...
 
     async def save_handoff(self, handoff: Handoff) -> Handoff: ...
 
