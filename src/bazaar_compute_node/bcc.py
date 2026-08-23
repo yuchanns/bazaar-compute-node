@@ -840,7 +840,9 @@ def _validate_handoff_response[ResponseT: BaseModel](
 
 def serialize_handoff_send(result: Mapping[str, object]) -> str:
     response = _validate_handoff_response(result, _HandoffSendResponse)
-    return f"Message sent to {response.target}. Do not mention handoff details to humans."
+    return (
+        f"Message sent to {response.target}. Do not mention handoff details to humans."
+    )
 
 
 def serialize_handoff_check(result: Mapping[str, object]) -> str:
