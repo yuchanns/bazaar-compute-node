@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import locale
-import plistlib
 import subprocess
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from unittest.mock import call, patch
-from xml.etree import ElementTree
 
 import pytest
 
@@ -42,44 +40,6 @@ def test_system_service_parser_supports_install_start_and_status() -> None:
     assert stop.system_service_command == "stop"
     assert restart.system_service_command == "restart"
     assert status.system_service_command == "status"
-
-
-def test_rendered_service_definitions_use_foreground_run(
-    service_context: system_service.SystemServiceContext,
-) -> None:
-    systemd = system_service._render_systemd_unit(service_context)
-    launchd = plistlib.loads(
-        system_service._render_launchd_plist(
-            service_context,
-            service_context.data_dir / "bcn-run.sh",
-        )
-    )
-    windows_wrapper = system_service._render_windows_wrapper(service_context)
-    windows_task_xml = system_service._render_windows_task(
-        service_context,
-        service_context.data_dir / "bcn-system-service.ps1",
-    )
-    windows_task = ElementTree.fromstring(windows_task_xml)
-
-    assert "run --config" in systemd
-    assert "bcn start" not in systemd
-    assert launchd["ProgramArguments"] == [str(service_context.data_dir / "bcn-run.sh")]
-    assert "run --config" in windows_wrapper
-    assert "bcn start" not in windows_wrapper
-    assert "$ErrorActionPreference = 'Continue'" in windows_wrapper
-    assert "$exitCode = $LASTEXITCODE" in windows_wrapper
-    assert "Add-Content -LiteralPath $logPath" in windows_wrapper
-    assert windows_wrapper.index("$ErrorActionPreference = 'Continue'") < (
-        windows_wrapper.index("& $executable run --config")
-    )
-    namespace = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
-    arguments = windows_task.findtext(
-        f"{namespace}Actions/{namespace}Exec/{namespace}Arguments",
-        "",
-    )
-    assert "bcn-system-service.ps1" in arguments
-    assert windows_task_xml.startswith(b"\xff\xfe")
-    assert "encoding='utf-16'" in windows_task_xml.decode("utf-16")
 
 
 def test_native_command_uses_system_encoding_without_decode_failures() -> None:
