@@ -39,6 +39,7 @@ from bazaar_compute_node.core.channel import (
 )
 from bazaar_compute_node.core.command import (
     ICommandService,
+    MessageSendFreshnessHold,
     MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
@@ -869,21 +870,27 @@ async def test_non_human_approval_is_rejected_before_channel_call(
 
 
 @pytest.mark.asyncio
-async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
+async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
     orchestrator, channel, _, storage, _ = await make_node()
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
 
-        rejected_without_snapshot = await orchestrator.command_service.send(
+        held_without_snapshot = await orchestrator.command_service.send(
             session_id="bcn-1",
             command_id="command-before-check",
             target="#test:bcn-1",
             body="reply",
             created_at_ms=2,
+            reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
         )
-        assert isinstance(rejected_without_snapshot, OutboundMessage)
-        assert rejected_without_snapshot.state is OutboundDeliveryState.REJECTED
+        assert isinstance(held_without_snapshot, MessageSendFreshnessHold)
+        assert held_without_snapshot.newer_message_total == 1
+        assert held_without_snapshot.messages == tuple(
+            storage.inbound_messages["bcn-1"]
+        )
+        assert held_without_snapshot.draft_replaced is False
+        assert storage.outbound_messages == {}
         assert not channel.send_attempts
 
         checked = await orchestrator.command_service.check("bcn-1")
@@ -892,16 +899,26 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             session_id="bcn-1",
             command_id="command-after-check",
             target="#test:bcn-1",
-            body="reply",
+            body="",
             created_at_ms=3,
-            reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
+            send_draft=True,
         )
         assert isinstance(delivered, OutboundMessage)
         assert delivered.state is OutboundDeliveryState.SENT
+        assert delivered.body == "reply"
         assert channel.send_requests[0].provider_reply_to_message_id == (
             storage.inbound_messages["bcn-1"][0].provider_message_id
         )
         assert len(channel.send_attempts) == 1
+        with pytest.raises(ValueError, match="no active draft"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-consumed-draft",
+                target="#test:bcn-1",
+                body="",
+                created_at_ms=4,
+                send_draft=True,
+            )
 
         await channel.inject(make_message(seq=2))
         await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
@@ -909,12 +926,111 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             session_id="bcn-1",
             command_id="command-stale",
             target="#test:bcn-1",
-            body="reply",
-            created_at_ms=4,
+            body="stale draft",
+            created_at_ms=5,
         )
-        assert isinstance(stale, OutboundMessage)
-        assert stale.state is OutboundDeliveryState.REJECTED
+        assert isinstance(stale, MessageSendFreshnessHold)
+        assert stale.draft_replaced is False
+        revised = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-revised",
+            target="#test:bcn-1",
+            body="revised draft",
+            created_at_ms=6,
+        )
+        assert isinstance(revised, MessageSendFreshnessHold)
+        assert revised.draft_replaced is True
         assert len(channel.send_attempts) == 1
+
+        await orchestrator.command_service.check("bcn-1")
+        delivered_revised = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-send-revised",
+            target="#test:bcn-1",
+            body="",
+            created_at_ms=7,
+            send_draft=True,
+        )
+        assert isinstance(delivered_revised, OutboundMessage)
+        assert delivered_revised.body == "revised draft"
+        assert len(channel.send_attempts) == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_freshness_hold_returns_latest_bounded_context() -> None:
+    orchestrator, channel, _, storage, _ = await make_sqlite_node()
+    try:
+        for seq in range(1, 26):
+            await orchestrator._record_inbound(make_message(seq=seq))
+
+        held = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-bounded-context",
+            target="#test:bcn-1",
+            body="reply",
+            created_at_ms=26,
+        )
+
+        assert isinstance(held, MessageSendFreshnessHold)
+        assert held.newer_message_total == 25
+        assert [message.seq for message in held.messages] == list(range(6, 26))
+        assert not channel.send_attempts
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_active_drafts_are_isolated_by_resolved_session() -> None:
+    orchestrator, channel, _, _, _ = await make_node()
+    try:
+        await orchestrator._record_inbound(make_message(session_id="bcn-a"))
+        await orchestrator._record_inbound(make_message(session_id="bcn-b"))
+
+        first_hold = await orchestrator.command_service.send(
+            session_id="bcn-a",
+            command_id="command-hold-a",
+            target="#test:bcn-a",
+            body="draft a",
+            created_at_ms=2,
+        )
+        second_hold = await orchestrator.command_service.send(
+            session_id="bcn-b",
+            command_id="command-hold-b",
+            target="#test:bcn-b",
+            body="draft b",
+            created_at_ms=2,
+        )
+        assert isinstance(first_hold, MessageSendFreshnessHold)
+        assert isinstance(second_hold, MessageSendFreshnessHold)
+
+        await orchestrator.command_service.check("bcn-a")
+        await orchestrator.command_service.check("bcn-b")
+        first_sent = await orchestrator.command_service.send(
+            session_id="bcn-a",
+            command_id="command-send-a",
+            target="#test:bcn-a",
+            body="",
+            created_at_ms=3,
+            send_draft=True,
+        )
+        second_sent = await orchestrator.command_service.send(
+            session_id="bcn-b",
+            command_id="command-send-b",
+            target="#test:bcn-b",
+            body="",
+            created_at_ms=3,
+            send_draft=True,
+        )
+
+        assert isinstance(first_sent, OutboundMessage)
+        assert isinstance(second_sent, OutboundMessage)
+        assert [request.body for request in channel.send_requests] == [
+            "draft a",
+            "draft b",
+        ]
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -974,30 +1090,24 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert storage.outbound_messages == {}
         assert not channel.send_attempts
         assert any(
-            event.event_name == "tool.bcc.message.send.handoff_required"
+            event.event_name == "tool.bcc.message.send.cross_session_hold"
             for event in audit.events
         )
 
         await orchestrator.command_service.check("bcn-1")
-        empty_body = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-empty-body",
-            target="#test:bcn-1",
-            body=" \t",
-            created_at_ms=3,
-        )
-        assert isinstance(empty_body, OutboundMessage)
-        assert empty_body.state is OutboundDeliveryState.REJECTED
-        assert empty_body.error_kind == "empty_body"
-        assert empty_body.draft_saved_at_ms is None
+        with pytest.raises(ValueError, match="must not be empty"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-empty-body",
+                target="#test:bcn-1",
+                body=" \t",
+                created_at_ms=3,
+            )
         assert all(
             message.command_id != "command-empty-body"
             for message in storage.outbound_messages.values()
         )
         assert not channel.send_attempts
-        assert any(
-            event.event_name == "bcc.send.empty_body.failed" for event in audit.events
-        )
 
         channel.queue_send_result(
             ProviderCallResult(

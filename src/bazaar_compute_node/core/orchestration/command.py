@@ -15,7 +15,9 @@ from ..command import (
     ICommandService,
     InboxListResult,
     MessageCheckResult,
+    MessageDraft,
     MessageReadResult,
+    MessageSendFreshnessHold,
     MessageSendHandoffRequired,
     MessageSendResult,
     SessionNotFoundError,
@@ -32,7 +34,7 @@ from ..models import (
     OutboundMessage,
     RuntimeEventState,
 )
-from ..storage import InboxTargetResolutionError, IStorage, IStorageTransaction
+from ..storage import IStorage, IStorageTransaction
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -128,6 +130,7 @@ class SessionCommandService(ICommandService):
         self._node_id = node_id
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
+        self._drafts: dict[str, MessageDraft] = {}
 
     async def check(self, session_id: str) -> MessageCheckResult:
         async with (
@@ -309,255 +312,203 @@ class SessionCommandService(ICommandService):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
+        send_draft: bool = False,
     ) -> MessageSendResult:
         async with self._storage.transaction() as transaction:
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
+            caller_session = await transaction.get_bcn_session(session_id)
+            if caller_session is None:
                 raise SessionNotFoundError(f"unknown bcn session: {session_id}")
             channel_session = await transaction.get_channel_session(
-                bcn_session.channel_session_id
+                caller_session.channel_session_id
             )
             if channel_session is None:
                 raise ValueError(
-                    f"unknown channel session: {bcn_session.channel_session_id}"
+                    f"unknown channel session: {caller_session.channel_session_id}"
                 )
-            try:
-                target_session = await transaction.resolve_inbox_target(target)
-            except InboxTargetResolutionError:
-                target_session = None
-        if target_session is not None and target_session.id != session_id:
-            result = MessageSendHandoffRequired(target=target)
-            await self._audit.append_tool(
-                operation="bcc.message.send",
-                status="handoff_required",
-                state=RuntimeEventState.COMPLETED,
-                correlation=self._correlation(
+            target_session = await transaction.resolve_inbox_target(target)
+
+        attachments = (
+            await asyncio.to_thread(self._attachment_resolver, attachment_paths)
+            if attachment_paths and not send_draft
+            else ()
+        )
+        if send_draft and (body or attachment_paths or reply_to_message_id is not None):
+            raise ValueError(
+                "send_draft cannot be combined with body, reply, or attachments"
+            )
+        if not send_draft and not body.strip() and not attachments:
+            raise ValueError("outbound message must not be empty")
+
+        async with self._concurrency.for_session(target_session.id):
+            if send_draft:
+                draft = self._drafts.get(target_session.id)
+                if draft is None:
+                    raise ValueError(f"no active draft for target: {target}")
+                if draft.target != target:
+                    raise ValueError(
+                        f"active draft belongs to another target: {draft.target}"
+                    )
+                payload = draft
+            else:
+                payload = MessageDraft(
+                    target=target,
+                    body=body,
+                    attachments=attachments,
+                    reply_to_message_id=reply_to_message_id,
+                    created_at_ms=created_at_ms,
+                )
+
+            async with self._storage.transaction() as transaction:
+                target_messages = await transaction.list_inbound_messages(
+                    target_session.id,
+                    target=target,
+                    limit=1,
+                )
+                if not target_messages:
+                    raise ValueError(f"thread target is not replyable: {target}")
+                reply_to_provider_message_id = None
+                if payload.reply_to_message_id is not None:
+                    reply_messages = await transaction.list_inbound_messages(
+                        target_session.id,
+                        target=target,
+                        around_message_id=payload.reply_to_message_id,
+                        limit=1,
+                    )
+                    reply_to_provider_message_id = reply_messages[0].provider_message_id
+
+                audit_context = self._correlation(
                     session_id=session_id,
                     channel=channel_session.channel,
                     channel_session_id=channel_session.id,
                     command_id=command_id,
-                ),
-                arguments={
-                    "command_id": command_id,
-                    "target": target,
-                    "target_session_id": target_session.id,
-                },
-            )
-            return result
-
-        attachments = (
-            await asyncio.to_thread(self._attachment_resolver, attachment_paths)
-            if attachment_paths
-            else ()
-        )
-        is_empty = True
-        if body.strip() or attachments:
-            is_empty = False
-        outbound_id = f"outbound-{session_id}-{command_id}"
-        async with self._concurrency.for_session(session_id):
-            async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(session_id)
-                if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-                channel_session = await transaction.get_channel_session(
-                    bcn_session.channel_session_id
                 )
-                if channel_session is None:
-                    raise ValueError(
-                        f"unknown channel session: {bcn_session.channel_session_id}"
-                    )
-                cursor = await transaction.get_consumer_cursor(session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(session_id=session_id)
-                current_seq = await transaction.get_latest_inbound_seq(session_id)
-                target_messages = await transaction.list_inbound_messages(
-                    session_id,
-                    target=target,
-                    limit=1,
-                )
-                reply_to_provider_message_id = None
-                if reply_to_message_id is not None:
-                    reply_messages = await transaction.list_inbound_messages(
-                        session_id,
-                        target=target,
-                        around_message_id=reply_to_message_id,
-                        limit=1,
-                    )
-                    reply_to_provider_message_id = reply_messages[0].provider_message_id
-                outbound = OutboundMessage(
-                    outbound_message_id=outbound_id,
-                    command_id=command_id,
-                    session_id=session_id,
-                    channel_session_id=channel_session.id,
-                    target=target,
-                    body=body,
-                    attachments=attachments,
-                    state=OutboundDeliveryState.DRAFT,
-                    fresh_check_state=FreshCheckState.REQUIRED,
-                    created_at_ms=created_at_ms,
-                    reply_to_message_id=reply_to_message_id,
-                )
-                if not is_empty:
-                    outbound = await transaction.save_outbound_message(outbound)
-                    outbound_id = outbound.outbound_message_id
-                rejection_event_name = "bcc.send.fresh_check.failed"
-                if is_empty:
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        save_draft=False,
-                        error_kind=ErrorKind.EMPTY_BODY.value,
-                        error_message="Outbound message must not be empty.",
-                        next_action="Provide a message body or attachment and retry.",
-                    )
-                    audit_context = self._correlation(
-                        session_id=session_id,
-                        channel=channel_session.channel,
-                        channel_session_id=channel_session.id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=None,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.EMPTY_BODY
-                    rejection_event_name = "bcc.send.empty_body.failed"
-                elif not target_messages:
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.TARGET_NOT_REPLYABLE.value,
-                        error_message=(
-                            f"Thread target is not found or is not replyable: {target}"
-                        ),
-                        next_action=(
-                            "Run `bcc message read` or `bcc message check` for this "
-                            "target to verify whether the message already landed; "
-                            "retry only after stable verification."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = self._correlation(
-                        session_id=session_id,
-                        channel=channel_session.channel,
-                        channel_session_id=channel_session.id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.TARGET_NOT_REPLYABLE
-                    rejection_event_name = "bcc.send.target.failed"
-                elif cursor.inbox_snapshot_seq is None:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.FAILED,
-                        snapshot_seq=None,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.FRESH_CHECK_REQUIRED.value,
-                        error_message=(
-                            "No inbox snapshot is available; outbound send was refused."
-                        ),
-                        next_action=(
-                            "Run `bcc message check` or `bcc message read` before "
-                            "retrying."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = self._correlation(
-                        session_id=session_id,
-                        channel=channel_session.channel,
-                        channel_session_id=channel_session.id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.FRESH_CHECK_REQUIRED
-                elif current_seq > cursor.inbox_snapshot_seq:
-                    outbound = outbound.record_fresh_check(
-                        FreshCheckState.FAILED,
-                        snapshot_seq=cursor.inbox_snapshot_seq,
-                        current_inbound_seq=current_seq,
-                    )
-                    outbound = outbound.transition_to(
-                        OutboundDeliveryState.REJECTED,
-                        at_ms=self._clock(),
-                        error_kind=ErrorKind.FRESH_CHECK_FAILED.value,
-                        error_message=(
-                            "New inbound message(s) arrived after the latest inbox "
-                            "snapshot; outbound send was refused."
-                        ),
-                        next_action=(
-                            "Run `bcc message check` to read the new messages, then "
-                            "retry `bcc message send` if still appropriate."
-                        ),
-                    )
-                    await transaction.save_outbound_message(outbound)
-                    audit_context = self._correlation(
-                        session_id=session_id,
-                        channel=channel_session.channel,
-                        channel_session_id=channel_session.id,
-                        command_id=command_id,
-                        inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
-                    )
-                    audit_state = RuntimeEventState.FAILED
-                    audit_kind = ErrorKind.FRESH_CHECK_FAILED
+                if target_session.id != session_id:
+                    result = MessageSendHandoffRequired(target=target)
                 else:
-                    audit_context = self._correlation(
-                        session_id=session_id,
-                        channel=channel_session.channel,
-                        channel_session_id=channel_session.id,
-                        command_id=command_id,
+                    cursor = await transaction.get_consumer_cursor(session_id)
+                    if cursor is None:
+                        cursor = ConsumerCursor(session_id=session_id)
+                    current_seq = await transaction.get_latest_inbound_seq(session_id)
+                    audit_context = replace(
+                        audit_context,
                         inbound_seq=current_seq,
-                        outbound_message_id=outbound_id,
                     )
-                    audit_state = RuntimeEventState.STARTED
-                    audit_kind = None
+                    active_draft = self._drafts.get(session_id)
+                    draft_replaced = not send_draft and active_draft is not None
+                    if not send_draft:
+                        self._drafts[session_id] = payload
 
-            if outbound.state is OutboundDeliveryState.REJECTED:
-                await self._audit.append(
-                    event_name=rejection_event_name,
-                    state=audit_state,
-                    correlation=audit_context,
-                    error_kind=audit_kind,
-                    error_message=outbound.error_message,
-                )
+                    if (
+                        cursor.inbox_snapshot_seq is None
+                        or current_seq > cursor.inbox_snapshot_seq
+                    ):
+                        newer_total = await transaction.count_inbound_messages(
+                            session_id,
+                            after_seq=cursor.inbox_snapshot_seq,
+                            target=target,
+                        )
+                        newer_messages = await transaction.list_inbound_messages(
+                            session_id,
+                            after_seq=cursor.inbox_snapshot_seq,
+                            target=target,
+                            latest=True,
+                            limit=20,
+                        )
+                        referenced_messages = await self._referenced_messages(
+                            transaction,
+                            session_id=session_id,
+                            messages=newer_messages,
+                        )
+                        result = MessageSendFreshnessHold(
+                            target=target,
+                            messages=newer_messages,
+                            referenced_messages=referenced_messages,
+                            newer_message_total=newer_total,
+                            snapshot_seq=cursor.inbox_snapshot_seq,
+                            current_inbound_seq=current_seq,
+                            draft_replaced=draft_replaced,
+                        )
+                    else:
+                        outbound_id = f"outbound-{session_id}-{command_id}"
+                        outbound = OutboundMessage(
+                            outbound_message_id=outbound_id,
+                            command_id=command_id,
+                            session_id=session_id,
+                            channel_session_id=channel_session.id,
+                            target=payload.target,
+                            body=payload.body,
+                            attachments=payload.attachments,
+                            state=OutboundDeliveryState.DRAFT,
+                            fresh_check_state=FreshCheckState.REQUIRED,
+                            created_at_ms=payload.created_at_ms,
+                            reply_to_message_id=payload.reply_to_message_id,
+                        )
+                        outbound = await transaction.save_outbound_message(outbound)
+                        outbound = outbound.record_fresh_check(
+                            FreshCheckState.PASSED,
+                            snapshot_seq=cursor.inbox_snapshot_seq,
+                            current_inbound_seq=current_seq,
+                        )
+                        outbound = outbound.transition_to(
+                            OutboundDeliveryState.PENDING,
+                            at_ms=self._clock(),
+                        )
+                        outbound = replace(
+                            outbound,
+                            provider_attempted_at_ms=self._clock(),
+                        )
+                        outbound = await transaction.save_outbound_message(outbound)
+                        audit_context = replace(
+                            audit_context,
+                            outbound_message_id=outbound.outbound_message_id,
+                        )
+                        result = outbound
+
+            if isinstance(result, MessageSendHandoffRequired):
                 await self._audit.append_tool(
                     operation="bcc.message.send",
-                    status="rejected",
-                    state=audit_state,
+                    status="cross_session_hold",
+                    state=RuntimeEventState.COMPLETED,
                     correlation=audit_context,
                     arguments={
                         "command_id": command_id,
                         "target": target,
-                        "reason": outbound.error_kind,
+                        "source_session_id": session_id,
+                        "target_session_id": target_session.id,
                     },
-                    error_kind=audit_kind,
-                    error_message=outbound.error_message,
                 )
-                return outbound
+                return result
 
-            if cursor.inbox_snapshot_seq is None:
-                raise AssertionError("accepted send requires an inbox snapshot")
-            outbound = outbound.record_fresh_check(
-                FreshCheckState.PASSED,
-                snapshot_seq=cursor.inbox_snapshot_seq,
-                current_inbound_seq=current_seq,
-            )
-            outbound = outbound.transition_to(
-                OutboundDeliveryState.PENDING,
-                at_ms=self._clock(),
-            )
-            outbound = replace(
-                outbound,
-                provider_attempted_at_ms=self._clock(),
-            )
-            async with self._storage.transaction() as transaction:
-                await transaction.save_outbound_message(outbound)
+            if isinstance(result, MessageSendFreshnessHold):
+                await self._audit.append(
+                    event_name="bcc.send.freshness_hold",
+                    state=RuntimeEventState.COMPLETED,
+                    correlation=audit_context,
+                    metadata={
+                        "target": target,
+                        "snapshot_seq": result.snapshot_seq,
+                        "current_inbound_seq": result.current_inbound_seq,
+                        "shown": len(result.messages),
+                        "total": result.newer_message_total,
+                        "draft_replaced": result.draft_replaced,
+                    },
+                )
+                await self._audit.append_tool(
+                    operation="bcc.message.send",
+                    status="freshness_hold",
+                    state=RuntimeEventState.COMPLETED,
+                    correlation=audit_context,
+                    arguments={
+                        "command_id": command_id,
+                        "target": target,
+                        "shown": len(result.messages),
+                        "total": result.newer_message_total,
+                        "draft_replaced": result.draft_replaced,
+                    },
+                )
+                return result
+
+            outbound = result
 
             await self._audit.append(
                 event_name="bcc.send.fresh_check.passed",
@@ -617,6 +568,11 @@ class SessionCommandService(ICommandService):
 
             async with self._storage.transaction() as transaction:
                 await transaction.save_outbound_message(outbound)
+            if outbound.state in {
+                OutboundDeliveryState.SENT,
+                OutboundDeliveryState.QUEUED,
+            }:
+                self._drafts.pop(session_id, None)
             await self._audit.append(
                 event_name=f"channel.outbound.{outbound.state.value}",
                 state=terminal_state,

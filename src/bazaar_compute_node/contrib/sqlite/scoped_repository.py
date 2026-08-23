@@ -288,6 +288,30 @@ class StorageTransaction(HandoffRepository, ReminderRepository):
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return cast(int, row["latest_seq"])
 
+    async def count_inbound_messages(
+        self,
+        session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+    ) -> int:
+        predicates = ["agent_id = bcn_agent_id()", "session_id = ?"]
+        parameters: list[object] = [session_id]
+        if after_seq is not None:
+            predicates.append("seq > ?")
+            parameters.append(after_seq)
+        if target is not None:
+            predicates.append("canonical_target = ?")
+            parameters.append(target)
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS message_count FROM inbound_messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
+        )
+        if row is None:
+            raise RuntimeError("SQLite inbound message count query returned no row")
+        return cast(int, row["message_count"])
+
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage:
@@ -379,6 +403,7 @@ class StorageTransaction(HandoffRepository, ReminderRepository):
         target: str | None = None,
         around_message_id: str | None = None,
         notifying_only: bool = False,
+        latest: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         predicates = ["agent_id = bcn_agent_id()", "session_id = ?"]
@@ -393,11 +418,14 @@ class StorageTransaction(HandoffRepository, ReminderRepository):
             predicates.append("notifies_runtime = 1")
         where_clause = " AND ".join(predicates)
         if around_message_id is None:
+            order = "DESC" if latest else "ASC"
             rows = await self.fetchall(
                 f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-                f"WHERE {where_clause} ORDER BY seq LIMIT ?",
+                f"WHERE {where_clause} ORDER BY seq {order} LIMIT ?",
                 (*parameters, limit),
             )
+            if latest:
+                rows.reverse()
             messages: list[InboundMessage] = []
             for row in rows:
                 messages.append(

@@ -248,6 +248,27 @@ class _MemoryStorageTransaction:
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1].seq if messages else 0
 
+    async def get_latest_inbound_message(
+        self,
+        session_id: str,
+    ) -> InboundMessage | None:
+        messages = self._storage.inbound_messages.get(session_id, [])
+        return messages[-1] if messages else None
+
+    async def count_inbound_messages(
+        self,
+        session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+    ) -> int:
+        messages = self._storage.inbound_messages.get(session_id, [])
+        return sum(
+            (after_seq is None or message.seq > after_seq)
+            and (target is None or message.canonical_target == target)
+            for message in messages
+        )
+
     def _in_scope(self, session: BcnSession) -> bool:
         return self._agent_id is None or session.workspace_id == self._agent_id
 
@@ -349,6 +370,7 @@ class _MemoryStorageTransaction:
         target: str | None = None,
         around_message_id: str | None = None,
         notifying_only: bool = False,
+        latest: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         messages = list(self._storage.inbound_messages.get(session_id, []))
@@ -375,7 +397,7 @@ class _MemoryStorageTransaction:
             start = max(around_index - before_count, 0)
             messages = messages[start : start + limit]
         else:
-            messages = messages[:limit]
+            messages = messages[-limit:] if latest else messages[:limit]
         return tuple(messages)
 
     async def save_channel_session(self, session: ChannelSession) -> None:

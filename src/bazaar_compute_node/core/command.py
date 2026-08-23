@@ -9,7 +9,12 @@ from .handoff import (
     HandoffSendRequest,
     HandoffSendResult,
 )
-from .models import InboundMessage, InboxTargetSummary, OutboundMessage
+from .models import (
+    InboundMessage,
+    InboxTargetSummary,
+    OutboundAttachment,
+    OutboundMessage,
+)
 from .reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
@@ -94,7 +99,42 @@ class MessageSendHandoffRequired:
     target: str
 
 
-type MessageSendResult = OutboundMessage | MessageSendHandoffRequired
+@dataclass(frozen=True, slots=True)
+class MessageDraft:
+    """One process-local outbound payload owned by a resolved BCN session."""
+
+    target: str
+    body: str
+    attachments: tuple[OutboundAttachment, ...]
+    reply_to_message_id: str | None
+    created_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSendFreshnessHold:
+    """Bounded context returned before an outbound provider attempt."""
+
+    target: str
+    messages: tuple[InboundMessage, ...]
+    referenced_messages: tuple[InboundMessage, ...]
+    newer_message_total: int
+    snapshot_seq: int | None
+    current_inbound_seq: int
+    draft_replaced: bool
+
+    def __post_init__(self) -> None:
+        if self.newer_message_total < len(self.messages):
+            raise ValueError("newer_message_total cannot be smaller than messages")
+        if (
+            self.snapshot_seq is not None
+            and self.snapshot_seq >= self.current_inbound_seq
+        ):
+            raise ValueError("freshness hold requires a stale snapshot boundary")
+
+
+type MessageSendResult = (
+    OutboundMessage | MessageSendFreshnessHold | MessageSendHandoffRequired
+)
 
 
 class SessionNotFoundError(ValueError):
@@ -139,6 +179,7 @@ class ICommandService(Protocol):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
+        send_draft: bool = False,
     ) -> MessageSendResult:
         """Run the session fresh-check before calling the Channel port."""
         ...

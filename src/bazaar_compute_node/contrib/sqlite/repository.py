@@ -197,6 +197,50 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
         return cast(int, row["latest_seq"])
 
+    async def get_latest_inbound_message(
+        self,
+        session_id: str,
+    ) -> InboundMessage | None:
+        row = await self.fetchone(
+            "SELECT seq, message_id, session_id, channel_session_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, canonical_target, target_kind, "
+            "reply_to_message_id, body, mentions_agent, notifies_runtime, "
+            "provider_payload_ref, metadata_json FROM inbound_messages "
+            "WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        )
+        if row is None:
+            return None
+        return inbound_message_from_row(
+            row,
+            await self._attachments(row["message_id"]),
+        )
+
+    async def count_inbound_messages(
+        self,
+        session_id: str,
+        *,
+        after_seq: int | None = None,
+        target: str | None = None,
+    ) -> int:
+        predicates = ["session_id = ?"]
+        parameters: list[object] = [session_id]
+        if after_seq is not None:
+            predicates.append("seq > ?")
+            parameters.append(after_seq)
+        if target is not None:
+            predicates.append("canonical_target = ?")
+            parameters.append(target)
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS message_count FROM inbound_messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
+        )
+        if row is None:
+            raise RuntimeError("SQLite inbound message count query returned no row")
+        return cast(int, row["message_count"])
+
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage:
@@ -244,6 +288,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         target: str | None = None,
         around_message_id: str | None = None,
         notifying_only: bool = False,
+        latest: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
         predicates = ["session_id = ?"]
@@ -259,6 +304,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         where_clause = " AND ".join(predicates)
 
         if around_message_id is None:
+            order = "DESC" if latest else "ASC"
             rows = await self.fetchall(
                 "SELECT seq, message_id, session_id, channel_session_id, "
                 "channel, provider_thread_id, provider_message_id, provider_time_ms, "
@@ -266,9 +312,11 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 "canonical_target, target_kind, "
                 "reply_to_message_id, body, mentions_agent, notifies_runtime, provider_payload_ref, "
                 "metadata_json FROM inbound_messages "
-                f"WHERE {where_clause} ORDER BY seq LIMIT ?",
+                f"WHERE {where_clause} ORDER BY seq {order} LIMIT ?",
                 (*parameters, limit),
             )
+            if latest:
+                rows.reverse()
             messages = []
             for row in rows:
                 messages.append(
