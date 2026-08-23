@@ -1,0 +1,25 @@
+name: Checks
+description: Run the required project checks
+
+runs:
+  using: composite
+  steps:
+    - name: Install locked dependencies
+      shell: bash
+      run: uv sync --locked
+
+    - name: Run tests
+      shell: bash
+      run: uv run --frozen pytest -m "not e2e"
+
+    - name: Check formatting
+      shell: bash
+      run: uv run --frozen ruff format --check .
+
+    - name: Run Ruff
+      shell: bash
+      run: uv run --frozen ruff check .
+
+    - name: Run Pyright
+      shell: bash
+      run: uv run --frozen scripts/pyright_lsp_check.py --outputjson .

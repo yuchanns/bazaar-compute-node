@@ -123,12 +123,8 @@ jobs:
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
-      - name: Verify project
-        run: |
-          uv sync --locked
-          uv run --frozen pytest -m "not e2e"
-          uv run --frozen ruff format --check .
-          uv run --frozen ruff check .
+      - name: Run checks
+        uses: ./.github/actions/checks
 
       - name: Set release version
         if: steps.release.outputs.mode == 'new'
