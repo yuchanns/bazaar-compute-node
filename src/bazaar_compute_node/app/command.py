@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, Validat
 from ..core.command import (
     ICommandService,
     InboxListResult,
+    MessageSendHandoffRequired,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
@@ -480,6 +481,13 @@ class CommandDispatcher:
                 attachment_paths=tuple(request.attachment_paths),
                 reply_to_message_id=request.reply_to_message_id,
             )
+            if isinstance(result, MessageSendHandoffRequired):
+                return {
+                    "ok": True,
+                    "result": {
+                        "handoff_required": {"target": result.target},
+                    },
+                }
             return {
                 "ok": True,
                 "result": {"outbound": serialize_outbound(result)},

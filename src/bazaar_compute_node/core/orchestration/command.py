@@ -16,6 +16,8 @@ from ..command import (
     InboxListResult,
     MessageCheckResult,
     MessageReadResult,
+    MessageSendHandoffRequired,
+    MessageSendResult,
     SessionNotFoundError,
 )
 from ..concurrency import ISessionConcurrency
@@ -30,7 +32,7 @@ from ..models import (
     OutboundMessage,
     RuntimeEventState,
 )
-from ..storage import IStorage, IStorageTransaction
+from ..storage import InboxTargetResolutionError, IStorage, IStorageTransaction
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -307,7 +309,42 @@ class SessionCommandService(ICommandService):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
-    ) -> OutboundMessage:
+    ) -> MessageSendResult:
+        async with self._storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            channel_session = await transaction.get_channel_session(
+                bcn_session.channel_session_id
+            )
+            if channel_session is None:
+                raise ValueError(
+                    f"unknown channel session: {bcn_session.channel_session_id}"
+                )
+            try:
+                target_session = await transaction.resolve_inbox_target(target)
+            except InboxTargetResolutionError:
+                target_session = None
+        if target_session is not None and target_session.id != session_id:
+            result = MessageSendHandoffRequired(target=target)
+            await self._audit.append_tool(
+                operation="bcc.message.send",
+                status="handoff_required",
+                state=RuntimeEventState.COMPLETED,
+                correlation=self._correlation(
+                    session_id=session_id,
+                    channel=channel_session.channel,
+                    channel_session_id=channel_session.id,
+                    command_id=command_id,
+                ),
+                arguments={
+                    "command_id": command_id,
+                    "target": target,
+                    "target_session_id": target_session.id,
+                },
+            )
+            return result
+
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths

@@ -87,6 +87,16 @@ class InboxListResult:
             raise ValueError("has_more does not match pagination bounds")
 
 
+@dataclass(frozen=True, slots=True)
+class MessageSendHandoffRequired:
+    """Route work through a handoff instead of creating an outbound message."""
+
+    target: str
+
+
+type MessageSendResult = OutboundMessage | MessageSendHandoffRequired
+
+
 class SessionNotFoundError(ValueError):
     """A command referenced a bcn session that is not persisted on this node."""
 
@@ -129,7 +139,7 @@ class ICommandService(Protocol):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
-    ) -> OutboundMessage:
+    ) -> MessageSendResult:
         """Run the session fresh-check before calling the Channel port."""
         ...
 

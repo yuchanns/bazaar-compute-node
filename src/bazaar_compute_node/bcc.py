@@ -710,7 +710,25 @@ def serialize_read(result: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+class _MessageSendHandoffRequiredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target: Annotated[StrictStr, Field(min_length=1)]
+
+
+class _MessageSendRoutingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    handoff_required: _MessageSendHandoffRequiredResponse
+
+
 def serialize_send(result: Mapping[str, object]) -> str:
+    if "handoff_required" in result:
+        _MessageSendRoutingResponse.model_validate(result)
+        return (
+            "Use `bcc handoff send` to continue this work in the target conversation."
+        )
+
     outbound = cast(Mapping[str, object], result["outbound"])
     state = cast(str, outbound["state"])
     target = cast(str, outbound["target"])

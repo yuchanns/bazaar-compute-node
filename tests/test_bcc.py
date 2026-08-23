@@ -433,6 +433,7 @@ def outbound_payload(
 def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
     sent = {"outbound": outbound_payload(state="sent")}
     queued = {"outbound": outbound_payload(state="queued")}
+    handoff_required = {"handoff_required": {"target": "dm:alice"}}
 
     assert serialize_send(sent) == (
         "Message sent to #work:parent123. Message ID: 0123456789abcdef0123456789abcdef"
@@ -440,6 +441,9 @@ def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
     assert serialize_send(queued) == (
         "Message queued to #work:parent123. "
         "Message ID: 0123456789abcdef0123456789abcdef"
+    )
+    assert serialize_send(handoff_required) == (
+        "Use `bcc handoff send` to continue this work in the target conversation."
     )
 
 

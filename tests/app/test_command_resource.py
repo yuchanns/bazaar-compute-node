@@ -22,6 +22,7 @@ from bazaar_compute_node.core.command import (
     ICommandService,
     IHandoffService,
     IReminderService,
+    MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.handoff import (
     HandoffCheckItem,
@@ -153,7 +154,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
 
 
 @pytest.mark.asyncio
-async def test_handoff_dispatch_validates_binding_and_serializes_results() -> None:
+async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
     bindings: list[str] = []
 
     async def validate_binding(
@@ -172,7 +173,7 @@ async def test_handoff_dispatch_validates_binding_and_serializes_results() -> No
         body="Continue task.",
         created_at_ms=1_000,
     )
-    service = SimpleNamespace(
+    handoff_service = SimpleNamespace(
         send=AsyncMock(
             return_value=HandoffSendResult(handoff=handoff, target="dm:target")
         ),
@@ -188,15 +189,30 @@ async def test_handoff_dispatch_validates_binding_and_serializes_results() -> No
             )
         ),
     )
+    message_service = SimpleNamespace(
+        send=AsyncMock(return_value=MessageSendHandoffRequired(target="dm:target"))
+    )
     dispatcher = CommandDispatcher(
-        cast(ICommandService, object()),
+        cast(ICommandService, message_service),
         reminder_service=cast(IReminderService, object()),
-        handoff_service=cast(IHandoffService, service),
+        handoff_service=cast(IHandoffService, handoff_service),
         timeout_budget=make_budget(),
         session_binding_validator=validate_binding,
     )
     dispatcher.start_accepting()
 
+    routed = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "message",
+            "command": "send",
+            "session_id": "session-source",
+            "target": "dm:target",
+            "body": "Hello.",
+            "command_id": "message-command-1",
+            "created_at_ms": 900,
+        }
+    )
     sent = await dispatcher(
         {
             "kind": "command",
@@ -219,6 +235,10 @@ async def test_handoff_dispatch_validates_binding_and_serializes_results() -> No
         }
     )
 
+    assert routed == {
+        "ok": True,
+        "result": {"handoff_required": {"target": "dm:target"}},
+    }
     assert sent["ok"] is True
     sent_result = cast(Mapping[str, object], sent["result"])
     assert sent_result["target"] == "dm:target"
@@ -226,4 +246,4 @@ async def test_handoff_dispatch_validates_binding_and_serializes_results() -> No
     result = cast(Mapping[str, object], checked["result"])
     items = cast(list[Mapping[str, object]], result["items"])
     assert items[0]["source_target"] == "group:source"
-    assert bindings == ["session-source", "session-target"]
+    assert bindings == ["session-source", "session-source", "session-target"]

@@ -37,7 +37,10 @@ from bazaar_compute_node.core.channel import (
     ChannelSendRequest,
     IChannel,
 )
-from bazaar_compute_node.core.command import ICommandService
+from bazaar_compute_node.core.command import (
+    ICommandService,
+    MessageSendHandoffRequired,
+)
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
@@ -46,6 +49,7 @@ from bazaar_compute_node.core.models import (
     Handoff,
     InboundMessage,
     OutboundDeliveryState,
+    OutboundMessage,
     ReminderOccurrence,
     RuntimeEvent,
     RuntimeEventState,
@@ -689,6 +693,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
             body="runtime-generated reply",
             created_at_ms=2,
         )
+        assert isinstance(outbound, OutboundMessage)
         if outbound.state is not OutboundDeliveryState.SENT:
             raise AssertionError("command did not deliver the outbound message")
 
@@ -877,6 +882,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             body="reply",
             created_at_ms=2,
         )
+        assert isinstance(rejected_without_snapshot, OutboundMessage)
         assert rejected_without_snapshot.state is OutboundDeliveryState.REJECTED
         assert not channel.send_attempts
 
@@ -890,6 +896,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             created_at_ms=3,
             reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
         )
+        assert isinstance(delivered, OutboundMessage)
         assert delivered.state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].provider_reply_to_message_id == (
             storage.inbound_messages["bcn-1"][0].provider_message_id
@@ -905,6 +912,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             body="reply",
             created_at_ms=4,
         )
+        assert isinstance(stale, OutboundMessage)
         assert stale.state is OutboundDeliveryState.REJECTED
         assert len(channel.send_attempts) == 1
     finally:
@@ -933,6 +941,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
             created_at_ms=2,
             attachment_paths=(str(first), str(second)),
         )
+        assert isinstance(delivered, OutboundMessage)
 
         assert delivered.state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].attachments == delivered.attachments
@@ -950,20 +959,23 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await orchestrator._record_inbound(make_message(session_id="bcn-other"))
 
-        invalid_target = await orchestrator.command_service.send(
+        cross_session_target = await orchestrator.command_service.send(
             session_id="bcn-1",
-            command_id="command-invalid-target",
-            target="#test:missing",
+            command_id="command-cross-session-target",
+            target="#test:bcn-other",
             body="reply",
             created_at_ms=2,
         )
-        assert invalid_target.state is OutboundDeliveryState.REJECTED
-        assert invalid_target.error_kind == "target_not_replyable"
-        assert invalid_target.draft_saved_at_ms is not None
+        assert cross_session_target == MessageSendHandoffRequired(
+            target="#test:bcn-other"
+        )
+        assert storage.outbound_messages == {}
         assert not channel.send_attempts
         assert any(
-            event.event_name == "bcc.send.target.failed" for event in audit.events
+            event.event_name == "tool.bcc.message.send.handoff_required"
+            for event in audit.events
         )
 
         await orchestrator.command_service.check("bcn-1")
@@ -974,6 +986,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body=" \t",
             created_at_ms=3,
         )
+        assert isinstance(empty_body, OutboundMessage)
         assert empty_body.state is OutboundDeliveryState.REJECTED
         assert empty_body.error_kind == "empty_body"
         assert empty_body.draft_saved_at_ms is None
@@ -999,6 +1012,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="queued reply",
             created_at_ms=4,
         )
+        assert isinstance(queued, OutboundMessage)
         assert queued.state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
         assert channel.queued_messages == [channel.send_attempts[0]]
@@ -1018,6 +1032,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="unknown reply",
             created_at_ms=5,
         )
+        assert isinstance(unknown, OutboundMessage)
         assert unknown.state is OutboundDeliveryState.UNKNOWN
         assert unknown.provider_receipt_ref == "attempted-send-1"
         assert unknown.next_action == "reconcile channel delivery before retrying"
@@ -1051,6 +1066,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="partial reply",
             created_at_ms=6,
         )
+        assert isinstance(partial, OutboundMessage)
         assert partial.state is OutboundDeliveryState.PARTIAL
         assert partial.provider_receipt_ref == "batch-1"
         assert partial.next_action == "do not retry the complete message automatically"
@@ -1084,6 +1100,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="failed reply",
             created_at_ms=7,
         )
+        assert isinstance(failed, OutboundMessage)
         assert failed.state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 4
