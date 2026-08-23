@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from time import time_ns
 from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+)
 
 from ..core.command import (
     ICommandService,
     InboxListResult,
+    MessageSendFreshnessHold,
     MessageSendHandoffRequired,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import InboundMessage, InboxTargetSummary, OutboundMessage
+from ..core.models import InboundMessage, InboxTargetSummary, OutboundDeliveryState
 
 
 def serialize_inbound(message: InboundMessage) -> dict[str, object]:
@@ -53,39 +63,6 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         ],
         "body": message.body,
         "reply_to_message_id": message.reply_to_message_id,
-    }
-
-
-def serialize_outbound(message: OutboundMessage) -> dict[str, object]:
-    return {
-        "outbound_message_id": message.outbound_message_id,
-        "command_id": message.command_id,
-        "session_id": message.session_id,
-        "channel_session_id": message.channel_session_id,
-        "target": message.target,
-        "reply_to_message_id": message.reply_to_message_id,
-        "body": message.body,
-        "attachments": [
-            {
-                "name": attachment.name,
-                "relative_path": attachment.relative_path,
-                "media_type": attachment.media_type,
-                "size_bytes": attachment.size_bytes,
-                "sha256": attachment.sha256,
-            }
-            for attachment in message.attachments
-        ],
-        "state": message.state.value,
-        "fresh_check_state": message.fresh_check_state.value,
-        "created_at_ms": message.created_at_ms,
-        "snapshot_seq": message.snapshot_seq,
-        "current_inbound_seq": message.current_inbound_seq,
-        "provider_attempted_at_ms": message.provider_attempted_at_ms,
-        "completed_at_ms": message.completed_at_ms,
-        "draft_saved_at_ms": message.draft_saved_at_ms,
-        "error_kind": message.error_kind,
-        "error_message": message.error_message,
-        "next_action": message.next_action,
     }
 
 
@@ -172,6 +149,7 @@ class _MessageSendRequest(_CommandRequest):
     command_id: NonEmptyText
     attachment_paths: list[NonEmptyText] = Field(default_factory=list)
     reply_to_message_id: NonEmptyText | None = None
+    send_draft: StrictBool = False
     created_at_ms: NonNegativeInt = Field(
         default_factory=lambda: time_ns() // 1_000_000
     )
@@ -480,17 +458,57 @@ class CommandDispatcher:
                 created_at_ms=request.created_at_ms,
                 attachment_paths=tuple(request.attachment_paths),
                 reply_to_message_id=request.reply_to_message_id,
+                send_draft=request.send_draft,
             )
+            if isinstance(result, MessageSendFreshnessHold):
+                return {
+                    "ok": True,
+                    "result": {"text": format_freshness_hold(result)},
+                }
             if isinstance(result, MessageSendHandoffRequired):
                 return {
                     "ok": True,
-                    "result": {
-                        "handoff_required": {"target": result.target},
-                    },
+                    "result": {"text": format_cross_session_hold(result.target)},
                 }
+            if result.state is OutboundDeliveryState.SENT:
+                text = (
+                    f"Message sent to {result.target}. "
+                    f"Message ID: {result.outbound_message_id}"
+                )
+            elif result.state is OutboundDeliveryState.QUEUED:
+                text = (
+                    f"Message queued to {result.target}. "
+                    f"Message ID: {result.outbound_message_id}"
+                )
+            elif result.state is OutboundDeliveryState.PARTIAL:
+                raise CommandDispatchError(
+                    "SEND_PARTIAL",
+                    result.error_message
+                    or "Message delivery was only partially confirmed.",
+                    next_action=(
+                        "Do not retry the complete message automatically; reconcile "
+                        "confirmed delivery first."
+                    ),
+                )
+            elif result.state is OutboundDeliveryState.UNKNOWN:
+                raise CommandDispatchError(
+                    "SEND_UNKNOWN",
+                    result.error_message or "Message delivery outcome is unknown.",
+                    next_action="Reconcile channel delivery before retrying.",
+                )
+            elif result.state is OutboundDeliveryState.FAILED:
+                raise CommandDispatchError(
+                    "SEND_FAILED",
+                    result.error_message or "Message delivery failed.",
+                    next_action="Fix the provider error before retrying.",
+                )
+            else:
+                raise AssertionError(
+                    f"message send returned unsupported state: {result.state.value}"
+                )
             return {
                 "ok": True,
-                "result": {"outbound": serialize_outbound(result)},
+                "result": {"text": text},
             }
 
         if resource == "thread" and command == "unfollow":
@@ -506,4 +524,175 @@ def format_message_time(timestamp_ms: int) -> str:
         datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
         .astimezone()
         .strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+
+def _message_timestamp(message: Mapping[str, object]) -> int:
+    timestamp = message["provider_time_ms"]
+    if timestamp is None:
+        timestamp = message["received_at_ms"]
+    return cast(int, timestamp)
+
+
+def _message_header_fields(
+    message: Mapping[str, object],
+) -> tuple[str, str, str, str, str | None, str]:
+    target = cast(str, message["canonical_target"])
+    message_id = cast(str, message["message_id"])
+    sender_kind = cast(str, message["sender_kind"])
+    sender_value = message["sender"]
+    sender: str | None = None
+    if sender_value is not None:
+        sender_mapping = cast(Mapping[str, object], sender_value)
+        sender_id = cast(str | None, sender_mapping.get("id"))
+        sender_name = cast(str | None, sender_mapping.get("name"))
+        sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
+    return (
+        target,
+        message_id,
+        format_message_time(_message_timestamp(message)),
+        sender_kind,
+        sender,
+        cast(str, message["body"]),
+    )
+
+
+def _attachment_suffix(message: Mapping[str, object]) -> str:
+    attachments = cast(list[Mapping[str, object]], message["attachments"])
+    if not attachments:
+        return ""
+    rendered: list[str] = []
+    for attachment in attachments:
+        name = cast(str, attachment["name"])
+        attachment_id = cast(str, attachment["attachment_id"])
+        state = cast(str, attachment["state"])
+        if state == "ready":
+            path = cast(str, attachment["relative_path"])
+            rendered.append(f"{name} (id:{attachment_id}, path:{path})")
+        else:
+            error = cast(str, attachment["error"])
+            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
+    label = "attachment" if len(rendered) == 1 else "attachments"
+    return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
+
+
+def format_check_message(message: Mapping[str, object]) -> str:
+    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
+        message
+    )
+    line = (
+        f"[target={target} msg={message_id} time={timestamp} "
+        f"type={message_type} mentioned={str(message['mentions_agent']).lower()}"
+    )
+    reply_to_message_id = message["reply_to_message_id"]
+    if reply_to_message_id is not None:
+        line += f" reply_to={cast(str, reply_to_message_id)}"
+    line += "] "
+    if sender is not None:
+        line += f"{sender} "
+    return line + body + _attachment_suffix(message)
+
+
+def format_read_message(
+    message: Mapping[str, object],
+    *,
+    index: int,
+    count: int,
+) -> str:
+    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
+        message
+    )
+    fields = [
+        f"seq={cast(int, message['seq'])}",
+        f"msg={message_id}",
+        f"time={timestamp}",
+        f"type={message_type}",
+        f"replyTarget={target}",
+        f"mentioned={str(message['mentions_agent']).lower()}",
+    ]
+    reply_to_message_id = message["reply_to_message_id"]
+    if reply_to_message_id is not None:
+        fields.append(f"replyTo={cast(str, reply_to_message_id)}")
+    line = f"[{index}/{count} {' '.join(fields)}] "
+    if sender is not None:
+        line += f"{sender} "
+    return line + body + _attachment_suffix(message)
+
+
+def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
+    messages = [serialize_inbound(message) for message in result.messages]
+    referenced_messages = [
+        serialize_inbound(message) for message in result.referenced_messages
+    ]
+    shown = len(messages)
+    total = result.newer_message_total
+    message_label = "message" if total == 1 else "messages"
+    if messages:
+        bounds = f"{messages[0]['seq']}-{messages[-1]['seq']}"
+    else:
+        bounds = "none-none"
+    older_bound = (
+        "Older unreviewed messages are omitted."
+        if total > shown
+        else "No older unreviewed messages."
+    )
+    newer_bound = "No newer unreviewed messages."
+    lines = [
+        f"Unreviewed synced context for this target: {total} {message_label}.",
+        (
+            "Your message has been saved as a draft. Review this target's "
+            "synced context before sending."
+        ),
+        "",
+        (
+            f"Read window: {shown} returned, seq {bounds}, oldest to newest. "
+            f"{older_bound} {newer_bound}"
+        ),
+        "",
+    ]
+    if referenced_messages:
+        lines.append(f"Referenced messages: {len(referenced_messages)}")
+        lines.extend(
+            format_read_message(message, index=index, count=len(referenced_messages))
+            for index, message in enumerate(referenced_messages, start=1)
+        )
+        lines.append("Window messages:")
+    lines.extend(
+        format_read_message(message, index=index, count=shown)
+        for index, message in enumerate(messages, start=1)
+    )
+    lines.extend(
+        (
+            "",
+            f"End of window: {shown}/{total} shown.",
+            "",
+            "To update the draft, send revised content normally:",
+            f"  bcc message send --target {json.dumps(result.target)} <<'BCCMSG'",
+            "  revised message",
+            "  BCCMSG",
+            "To send the current draft unchanged:",
+            f"  bcc message send --send-draft --target {json.dumps(result.target)}",
+            "You can also choose not to send anything.",
+        )
+    )
+    return "\n".join(lines)
+
+
+def format_cross_session_hold(target: str) -> str:
+    quoted_target = json.dumps(target)
+    return "\n".join(
+        (
+            "Your message was not sent because the target belongs to another conversation.",
+            "",
+            (
+                "To continue this work in the target conversation, send a "
+                "self-contained handoff:"
+            ),
+            f"  bcc handoff send --target {quoted_target} <<'BCCMSG'",
+            "  enough context to understand the background, goal, and next action",
+            "  BCCMSG",
+            "This creates a handoff notice that wakes you in that conversation.",
+            "",
+            "You can also choose not to send anything.",
+        )
     )
