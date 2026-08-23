@@ -8,6 +8,7 @@ from .agent_migration import AGENT_OWNERSHIP_MIGRATION
 from .handoff_migration import HANDOFF_MIGRATION
 from .inbox_migration import INBOX_DISCOVERY_MIGRATION
 from .migration import Migration
+from .outbound_draft_migration import OUTBOUND_DRAFT_REMOVAL_MIGRATION
 from .reminder_migration import REMINDER_MIGRATION
 
 if TYPE_CHECKING:
@@ -605,6 +606,7 @@ MIGRATIONS = _migration_ledger(
     AGENT_OWNERSHIP_MIGRATION,
     INBOX_DISCOVERY_MIGRATION,
     HANDOFF_MIGRATION,
+    OUTBOUND_DRAFT_REMOVAL_MIGRATION,
 )
 
 

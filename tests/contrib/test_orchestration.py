@@ -1145,7 +1145,6 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(unknown, OutboundMessage)
         assert unknown.state is OutboundDeliveryState.UNKNOWN
         assert unknown.provider_receipt_ref == "attempted-send-1"
-        assert unknown.next_action == "reconcile channel delivery before retrying"
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1179,7 +1178,6 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(partial, OutboundMessage)
         assert partial.state is OutboundDeliveryState.PARTIAL
         assert partial.provider_receipt_ref == "batch-1"
-        assert partial.next_action == "do not retry the complete message automatically"
         assert partial.metadata["delivery_receipt"] == {
             "total_batches": 2,
             "confirmed_batches": 1,

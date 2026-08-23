@@ -19,11 +19,66 @@ from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
     InboundMessage,
+    OutboundDeliveryState,
+    OutboundMessage,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+
+
+@pytest.mark.asyncio
+async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        pending = OutboundMessage(
+            outbound_message_id="outbound-1",
+            command_id="command-1",
+            session_id=bcn_session.id,
+            channel_session_id=channel_session.id,
+            target="dm:channel-1",
+            body="hello",
+            state=OutboundDeliveryState.PENDING,
+            created_at_ms=2,
+            snapshot_seq=3,
+            current_inbound_seq=3,
+            provider_attempted_at_ms=4,
+        )
+
+        async with scope.transaction() as transaction:
+            await transaction.save_channel_session(channel_session)
+            await transaction.save_bcn_session(bcn_session)
+            pending = await transaction.save_outbound_message(pending)
+            sent = pending.transition_to(
+                OutboundDeliveryState.SENT,
+                at_ms=5,
+                provider_message_id="provider-message-1",
+            )
+            await transaction.save_outbound_message(sent)
+            persisted = await transaction.get_outbound_message(
+                pending.outbound_message_id
+            )
+
+        assert persisted == sent
+    finally:
+        await database.stop(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -169,7 +224,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 15
+        assert schema_version["version"] == 16
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
@@ -183,6 +238,9 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert "attachments_json" in outbound_primary_keys
         assert "agent_id" in outbound_primary_keys
         assert "agent_name" in outbound_primary_keys
+        assert "fresh_check_state" not in outbound_primary_keys
+        assert "draft_saved_at_ms" not in outbound_primary_keys
+        assert "next_action" not in outbound_primary_keys
         assert {row["name"] for row in handoff_columns} == {
             "seq",
             "handoff_id",
@@ -410,7 +468,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 15
+        assert schema_version["version"] == 16
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -537,7 +595,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 15
+        assert schema_version["version"] == 16
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -550,13 +608,15 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_v10_migration_preserves_existing_outbound_drafts() -> None:
+async def test_sqlite_v16_migration_keeps_only_provider_attempts() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
 
     async with aiosqlite.connect(database_path) as connection:
-        for migration in MIGRATIONS[:9]:
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-1")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Test Agent")
+        for migration in MIGRATIONS[:15]:
             for statement in migration.statements:
                 await connection.execute(statement)
             await connection.execute(
@@ -565,28 +625,75 @@ async def test_sqlite_v10_migration_preserves_existing_outbound_drafts() -> None
                 "VALUES (?, ?, ?, ?, ?)",
                 (migration.version, migration.name, migration.checksum, 1, 0),
             )
-        await connection.execute(
-            "INSERT INTO node_state ("
-            "singleton_key, node_id, schema_version, workspace_id, "
-            "created_at_ms, updated_at_ms, metadata_json"
-            ") VALUES (1, 'node-legacy', 9, 'agent-legacy', 1, 1, '{}')"
-        )
-        await connection.execute(
+        await connection.executemany(
             "INSERT INTO outbound_messages ("
             "outbound_message_id, command_id, session_id, channel_session_id, "
-            "target, body, state, fresh_check_state, created_at_ms, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "target, body, state, fresh_check_state, snapshot_seq, "
+            "current_inbound_seq, created_at_ms, provider_attempted_at_ms, "
+            "completed_at_ms, draft_saved_at_ms, metadata_json, attachments_json, "
+            "agent_id, agent_name"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                "outbound-1",
-                "command-1",
-                "session-1",
-                "channel-1",
-                "#test:message-1",
-                "draft",
-                "draft",
-                "required",
-                1,
-                "{}",
+                (
+                    "outbound-draft",
+                    "command-draft",
+                    "session-1",
+                    "channel-1",
+                    "#test:message-1",
+                    "draft",
+                    "draft",
+                    "required",
+                    None,
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                    "{}",
+                    "[]",
+                    "agent-1",
+                    "Test Agent",
+                ),
+                (
+                    "outbound-rejected",
+                    "command-rejected",
+                    "session-1",
+                    "channel-1",
+                    "#test:message-1",
+                    "rejected",
+                    "rejected",
+                    "failed",
+                    1,
+                    2,
+                    2,
+                    None,
+                    3,
+                    3,
+                    "{}",
+                    "[]",
+                    "agent-1",
+                    "Test Agent",
+                ),
+                (
+                    "outbound-sent",
+                    "command-sent",
+                    "session-1",
+                    "channel-1",
+                    "#test:message-1",
+                    "sent",
+                    "sent",
+                    "passed",
+                    4,
+                    4,
+                    4,
+                    5,
+                    6,
+                    None,
+                    "{}",
+                    "[]",
+                    "agent-1",
+                    "Test Agent",
+                ),
             ),
         )
         await connection.commit()
@@ -595,13 +702,39 @@ async def test_sqlite_v10_migration_preserves_existing_outbound_drafts() -> None
     await database.start(timeout=2)
     try:
         async with database.transaction() as transaction:
-            row = await transaction.fetchone(
-                "SELECT attachments_json FROM outbound_messages "
-                "WHERE outbound_message_id = ?",
-                ("outbound-1",),
+            rows = await transaction.fetchall(
+                "SELECT outbound_message_id, state, snapshot_seq, "
+                "current_inbound_seq, provider_attempted_at_ms, completed_at_ms, "
+                "attachments_json, agent_id, agent_name "
+                "FROM outbound_messages ORDER BY outbound_message_id"
             )
-        assert row is not None
-        assert row["attachments_json"] == "[]"
+            columns = await transaction.fetchall("PRAGMA table_info(outbound_messages)")
+            indexes = await transaction.fetchall("PRAGMA index_list(outbound_messages)")
+            trigger = await transaction.fetchone(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                "AND name = 'set_outbound_messages_agent_identity'"
+            )
+        assert [dict(row) for row in rows] == [
+            {
+                "outbound_message_id": "outbound-sent",
+                "state": "sent",
+                "snapshot_seq": 4,
+                "current_inbound_seq": 4,
+                "provider_attempted_at_ms": 5,
+                "completed_at_ms": 6,
+                "attachments_json": "[]",
+                "agent_id": "agent-1",
+                "agent_name": "Test Agent",
+            }
+        ]
+        assert {row["name"] for row in columns}.isdisjoint(
+            {"fresh_check_state", "draft_saved_at_ms", "next_action"}
+        )
+        assert {row["name"] for row in indexes} >= {
+            "idx_outbound_session_created",
+            "idx_outbound_state_created",
+        }
+        assert trigger is not None
     finally:
         await database.stop(timeout=2)
 

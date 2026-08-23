@@ -7,7 +7,6 @@ from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
     ChannelTargetKind,
-    FreshCheckState,
     InboxTargetSummary,
     OutboundAttachment,
     OutboundDeliveryState,
@@ -63,9 +62,11 @@ def make_outbound_message() -> OutboundMessage:
         channel_session_id="channel-1",
         target="#test:message-1",
         body="hello",
-        state=OutboundDeliveryState.DRAFT,
-        fresh_check_state=FreshCheckState.REQUIRED,
+        state=OutboundDeliveryState.PENDING,
         created_at_ms=1,
+        snapshot_seq=10,
+        current_inbound_seq=10,
+        provider_attempted_at_ms=2,
     )
 
 
@@ -321,29 +322,20 @@ def test_session_runtime_compaction_has_explicit_start_progress_and_completion_s
     assert fallback is SessionRuntimeState.WORKING
 
 
-def test_outbound_delivery_requires_a_passed_fresh_check() -> None:
+def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:
     outbound = make_outbound_message()
-    with pytest.raises(ValueError, match="fresh check"):
-        outbound.transition_to(OutboundDeliveryState.PENDING, at_ms=2)
-
-    outbound = outbound.record_fresh_check(
-        FreshCheckState.PASSED,
-        snapshot_seq=10,
-        current_inbound_seq=10,
-    )
-    outbound = outbound.transition_to(OutboundDeliveryState.PENDING, at_ms=3)
     outbound = outbound.transition_to(
         OutboundDeliveryState.QUEUED,
-        at_ms=4,
+        at_ms=3,
         provider_receipt_ref="queue-receipt-1",
     )
     assert outbound.state is OutboundDeliveryState.QUEUED
     assert outbound.completed_at_ms is None
     outbound = outbound.transition_to(
         OutboundDeliveryState.SENT,
-        at_ms=5,
+        at_ms=4,
         provider_message_id="provider-message-1",
     )
 
     assert outbound.state is OutboundDeliveryState.SENT
-    assert outbound.completed_at_ms == 5
+    assert outbound.completed_at_ms == 4

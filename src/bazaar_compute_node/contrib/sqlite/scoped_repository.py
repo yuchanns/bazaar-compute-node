@@ -658,10 +658,10 @@ class StorageTransaction(HandoffRepository, ReminderRepository):
         row = await self.fetchone(
             "SELECT outbound_message_id, command_id, session_id, channel_session_id, "
             "target, reply_to_message_id, body, attachments_json, state, "
-            "fresh_check_state, snapshot_seq, current_inbound_seq, provider_message_id, "
+            "snapshot_seq, current_inbound_seq, provider_message_id, "
             "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
-            "completed_at_ms, draft_saved_at_ms, error_kind, error_message, "
-            "next_action, metadata_json FROM outbound_messages "
+            "completed_at_ms, error_kind, error_message, metadata_json "
+            "FROM outbound_messages "
             "WHERE agent_id = bcn_agent_id() AND outbound_message_id = ?",
             (outbound_message_id,),
         )

@@ -27,7 +27,6 @@ from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
     ConsumerCursor,
-    FreshCheckState,
     InboundMessage,
     OutboundAttachment,
     OutboundDeliveryState,
@@ -430,6 +429,7 @@ class SessionCommandService(ICommandService):
                         )
                     else:
                         outbound_id = f"outbound-{session_id}-{command_id}"
+                        attempted_at_ms = self._clock()
                         outbound = OutboundMessage(
                             outbound_message_id=outbound_id,
                             command_id=command_id,
@@ -438,24 +438,12 @@ class SessionCommandService(ICommandService):
                             target=payload.target,
                             body=payload.body,
                             attachments=payload.attachments,
-                            state=OutboundDeliveryState.DRAFT,
-                            fresh_check_state=FreshCheckState.REQUIRED,
+                            state=OutboundDeliveryState.PENDING,
                             created_at_ms=payload.created_at_ms,
-                            reply_to_message_id=payload.reply_to_message_id,
-                        )
-                        outbound = await transaction.save_outbound_message(outbound)
-                        outbound = outbound.record_fresh_check(
-                            FreshCheckState.PASSED,
                             snapshot_seq=cursor.inbox_snapshot_seq,
                             current_inbound_seq=current_seq,
-                        )
-                        outbound = outbound.transition_to(
-                            OutboundDeliveryState.PENDING,
-                            at_ms=self._clock(),
-                        )
-                        outbound = replace(
-                            outbound,
-                            provider_attempted_at_ms=self._clock(),
+                            provider_attempted_at_ms=attempted_at_ms,
+                            reply_to_message_id=payload.reply_to_message_id,
                         )
                         outbound = await transaction.save_outbound_message(outbound)
                         audit_context = replace(
@@ -539,7 +527,6 @@ class SessionCommandService(ICommandService):
                 provider_receipt_ref=delivery_result.provider_receipt_ref,
                 error_kind=delivery_result.error_kind,
                 error_message=delivery_result.error_message,
-                next_action=delivery_result.next_action,
             )
             if delivery_result.state is OutboundDeliveryState.SENT:
                 terminal_kind = None

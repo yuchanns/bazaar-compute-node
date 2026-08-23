@@ -177,7 +177,6 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
             for attachment in message.attachments
         ],
         "state": message.state.value,
-        "fresh_check_state": message.fresh_check_state.value,
         "created_at_ms": message.created_at_ms,
         "snapshot_seq": message.snapshot_seq,
         "current_inbound_seq": message.current_inbound_seq,
@@ -185,10 +184,8 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
         "provider_receipt_ref": message.provider_receipt_ref,
         "provider_attempted_at_ms": message.provider_attempted_at_ms,
         "completed_at_ms": message.completed_at_ms,
-        "draft_saved_at_ms": message.draft_saved_at_ms,
         "error_kind": message.error_kind,
         "error_message": message.error_message,
-        "next_action": message.next_action,
     }
 
 

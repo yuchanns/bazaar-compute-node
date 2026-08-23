@@ -7,12 +7,10 @@ from string import hexdigits
 from typing import Self
 
 from .states import (
-    FRESH_CHECK_TRANSITIONS,
     OUTBOUND_DELIVERY_TRANSITIONS,
     RUNTIME_TURN_TRANSITIONS,
     ApprovalDecision,
     ChannelTargetKind,
-    FreshCheckState,
     OutboundDeliveryState,
     RuntimeEventState,
     RuntimeTurnState,
@@ -339,20 +337,17 @@ class OutboundMessage:
     target: str
     body: str
     state: OutboundDeliveryState
-    fresh_check_state: FreshCheckState
     created_at_ms: int
+    snapshot_seq: int
+    current_inbound_seq: int
+    provider_attempted_at_ms: int
     attachments: tuple[OutboundAttachment, ...] = ()
     reply_to_message_id: str | None = None
-    snapshot_seq: int | None = None
-    current_inbound_seq: int | None = None
     provider_message_id: str | None = None
     provider_receipt_ref: str | None = None
-    provider_attempted_at_ms: int | None = None
     completed_at_ms: int | None = None
-    draft_saved_at_ms: int | None = None
     error_kind: str | None = None
     error_message: str | None = None
-    next_action: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -372,64 +367,26 @@ class OutboundMessage:
         for value, field_name in ((self.reply_to_message_id, "reply_to_message_id"),):
             if value is not None:
                 _validate_text(value, field_name)
-
-    def record_fresh_check(
-        self,
-        state: FreshCheckState,
-        *,
-        snapshot_seq: int | None,
-        current_inbound_seq: int | None,
-    ) -> Self:
-        if state is FreshCheckState.PASSED:
-            if snapshot_seq is None or current_inbound_seq is None:
-                raise ValueError(
-                    "a passed fresh check requires both sequence boundaries"
-                )
-            if current_inbound_seq > snapshot_seq:
-                raise ValueError(
-                    "a passed fresh check cannot observe a newer inbound sequence"
-                )
-        ensure_transition(
-            "fresh_check",
-            self.fresh_check_state,
-            state,
-            FRESH_CHECK_TRANSITIONS,
-        )
-        return replace(
-            self,
-            fresh_check_state=state,
-            snapshot_seq=snapshot_seq,
-            current_inbound_seq=current_inbound_seq,
-        )
+        if self.current_inbound_seq > self.snapshot_seq:
+            raise ValueError("current inbound sequence exceeds snapshot sequence")
+        if self.provider_attempted_at_ms < self.created_at_ms:
+            raise ValueError("provider attempt cannot precede creation")
 
     def transition_to(
         self,
         state: OutboundDeliveryState,
         *,
         at_ms: int,
-        save_draft: bool = True,
         provider_message_id: str | None = None,
         provider_receipt_ref: str | None = None,
         error_kind: str | None = None,
         error_message: str | None = None,
-        next_action: str | None = None,
     ) -> Self:
         ensure_transition(
             "outbound_delivery", self.state, state, OUTBOUND_DELIVERY_TRANSITIONS
         )
         if state is self.state:
             return self
-        if (
-            state
-            in {
-                OutboundDeliveryState.PENDING,
-                OutboundDeliveryState.QUEUED,
-                OutboundDeliveryState.SENT,
-                OutboundDeliveryState.PARTIAL,
-            }
-            and self.fresh_check_state is not FreshCheckState.PASSED
-        ):
-            raise ValueError("outbound delivery requires a passed fresh check")
         completed_at_ms = (
             at_ms
             if state
@@ -438,14 +395,8 @@ class OutboundMessage:
                 OutboundDeliveryState.PARTIAL,
                 OutboundDeliveryState.FAILED,
                 OutboundDeliveryState.UNKNOWN,
-                OutboundDeliveryState.REJECTED,
             }
             else self.completed_at_ms
-        )
-        draft_saved_at_ms = (
-            at_ms
-            if state is OutboundDeliveryState.REJECTED and save_draft
-            else self.draft_saved_at_ms
         )
         return replace(
             self,
@@ -453,10 +404,8 @@ class OutboundMessage:
             provider_message_id=provider_message_id or self.provider_message_id,
             provider_receipt_ref=provider_receipt_ref or self.provider_receipt_ref,
             completed_at_ms=completed_at_ms,
-            draft_saved_at_ms=draft_saved_at_ms,
             error_kind=error_kind or self.error_kind,
             error_message=error_message or self.error_message,
-            next_action=next_action or self.next_action,
         )
 
 
