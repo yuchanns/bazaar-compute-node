@@ -105,7 +105,7 @@ List available message targets
 
 serializer 对 summary 必填字段、分页边界、latest message nullable 组合和稳定排序结果执行严格校验。
 
-developer instruction 使用以下三个精确编辑点。
+developer instruction 使用以下两个精确编辑点。
 
 第一处：在 `Communication — bcc CLI ONLY` 中，用下面内容完整替换 `Use ONLY these command families for
 communication:` 之后、`Run any subcommand with --help for syntax.` 之前的现有三项列表：
@@ -117,20 +117,13 @@ communication:` 之后、`Run any subcommand with --help for syntax.` 之前的�
 4. **Reminders** — `bcc reminder schedule`, `bcc reminder check`, `bcc reminder list`, `bcc reminder snooze`, `bcc reminder update`, `bcc reminder cancel`.
 ```
 
-第二处：在现有 `### Reading history` 标题之后、现有 `Use bcc message read...` 段落之前，原样插入：
+第二处：保持 `### Historical references` 的现有段落逐字不变，在该段落之后原样追加：
 
 ```markdown
-Use `bcc inbox list` when you need to list the available conversations or obtain the target for another conversation. It returns target summaries without reading messages or changing unread state. Reuse the exact `target` value it returns with `bcc message read`; do not construct, normalize, or replace the target. If more targets are available, continue with `--offset` until you find the target or exhaust the list.
+When a user refers to prior conversations and the relevant target is unknown, use `bcc inbox list` to inspect the available conversations. Use `--offset` to find the target or exhaust the list. Select the exact `target` for the relevant conversation, then use `bcc message read` to read its history.
 ```
 
-第三处：保持 `### Historical references` 的现有段落逐字不变，在该段落之后原样追加：
-
-```markdown
-When a user refers to prior conversations and the relevant target is unknown, use `bcc inbox list` to inspect the available conversations. Select the exact `target` for the relevant conversation, then use `bcc message read` to read its history.
-```
-
-新增段落只覆盖 target 未知的情况。target 已经可用时，现有 `Historical references` 段落继续直接
-引导 `bcc message read`。
+新增段落用于 target 未知的历史查找；target 已知时沿现有 `bcc message read` 路径。
 
 ## 实施任务
 
@@ -228,13 +221,9 @@ read 和有序 concurrency/audit 边界。
 
 - 应用本 Plan 在 `Application 与 CLI` 中给出的第一处 exact replacement，将 command family 列表由三项替换
   为四项，并把 Inbox discovery 固定在 Messages 之后、Thread attention 之前。
-- 应用第二处 exact insertion，把给定段落插入 `Reading history` 标题与原 `Use bcc message read...` 段落
-  之间；保留原 read syntax 段落在其后。
-- 应用第三处 exact insertion，保持 `Historical references` 的现有段落逐字不变，并把给定新段落紧接在
+- 应用第二处 exact insertion，保持 `Historical references` 的现有段落逐字不变，并把给定新段落紧接在
   现有段落之后。
-- 扩展 rendered instruction tests，对上述四项 command list、两个相邻 heading、插入段落、保留的原 read
-  syntax、未修改的 historical paragraph 和新增的 narrow-condition paragraph 做完整字符串及相对位置
-  断言；验证生成结果不出现内部 adapter/channel 字段。
+- 更新现有 Codex 行为测试，移除 developer instruction 文案与渲染断言，保留线程选项、协议事件和启动流程覆盖。
 
 依赖：Task 1 的 vocabulary 基线与 Task 5 的最终 CLI syntax/help wording。产出：与现有 instruction 结构
 一致的 target discovery 行为指导。

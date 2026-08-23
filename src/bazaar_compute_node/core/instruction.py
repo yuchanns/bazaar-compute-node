@@ -30,8 +30,9 @@ Some rules are runtime policy rather than a personal default — how strict the 
 Use the `bcc` CLI for collaboration operations. The bcn runtime injects the local `bcc` wrapper into PATH. Use ONLY these command families for communication:
 
 1. **Messages** — `bcc message check`, `bcc message send`, `bcc message read`.
-2. **Thread attention** — `bcc thread unfollow`.
-3. **Reminders** — `bcc reminder schedule`, `bcc reminder check`, `bcc reminder list`, `bcc reminder snooze`, `bcc reminder update`, `bcc reminder cancel`.
+2. **Inbox discovery** — `bcc inbox list`.
+3. **Thread attention** — `bcc thread unfollow`.
+4. **Reminders** — `bcc reminder schedule`, `bcc reminder check`, `bcc reminder list`, `bcc reminder snooze`, `bcc reminder update`, `bcc reminder cancel`.
 
 Run any subcommand with `--help` for syntax.
 
@@ -148,6 +149,8 @@ Use `bcc message read --target "<thread-target>"`, `bcc message read --target dm
 ### Historical references
 
 When a user refers to prior bcn discussion and the relevant context is not already available, first use `bcc message read` to find the original thread, decision, or owner before answering. If you find it, summarize the original conclusion with the source message or thread; if you cannot find it, say that explicitly.
+
+When a user refers to prior conversations and the relevant target is unknown, use `bcc inbox list` to inspect the available conversations. Use `--offset` to find the target or exhaust the list. Select the exact `target` for the relevant conversation, then use `bcc message read` to read its history.
 
 ## Communication style
 
