@@ -58,7 +58,7 @@ def test_reminder_parser_exposes_only_the_six_supported_commands() -> None:
         parser.parse_args(("reminder", "schedule", "--msg-id", ANCHOR_ID))
 
 
-def test_reminder_schedule_serializer_matches_canonical_text() -> None:
+def test_reminder_schedule_serializer_matches_text() -> None:
     output = serialize_reminder_schedule({"reminder": reminder_payload()})
     assert output == (
         f'Reminder scheduled: #{REMINDER_ID} (one-time) "Inspect reminder"\n'
@@ -156,7 +156,7 @@ def test_reminder_list_serializer_renders_definition_states() -> None:
     assert f"anchor={ANCHOR_ID}" in output
 
 
-def test_reminder_mutation_serializers_match_canonical_text() -> None:
+def test_reminder_mutation_serializers_match_text() -> None:
     result = {"reminder": reminder_payload()}
     assert serialize_reminder_snooze(result).startswith(
         f"Reminder snoozed: #{REMINDER_ID}\nNext: "

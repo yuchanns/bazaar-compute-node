@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from typing import cast
 
 import aiosqlite
 
@@ -36,18 +37,14 @@ def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
         provider_thread_id=_required_text(
             row["provider_thread_id"], "provider_thread_id"
         ),
-        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
-        updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        updated_at_ms=cast(int, row["updated_at_ms"]),
         target_kind=ChannelTargetKind(
             _required_text(row["target_kind"], "channel_session.target_kind")
         ),
         following=bool(following),
-        last_inbound_at_ms=_optional_non_negative_int(
-            row["last_inbound_at_ms"], "last_inbound_at_ms"
-        ),
-        last_outbound_at_ms=_optional_non_negative_int(
-            row["last_outbound_at_ms"], "last_outbound_at_ms"
-        ),
+        last_inbound_at_ms=cast(int | None, row["last_inbound_at_ms"]),
+        last_outbound_at_ms=cast(int | None, row["last_outbound_at_ms"]),
         metadata=_decode_metadata(
             row["provider_identity_ref_json"], "provider_identity_ref_json"
         ),
@@ -61,11 +58,9 @@ def bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
             row["channel_session_id"], "channel_session_id"
         ),
         workspace_id=_required_text(row["workspace_id"], "workspace_id"),
-        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
-        updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
-        last_activity_at_ms=_optional_non_negative_int(
-            row["last_activity_at_ms"], "last_activity_at_ms"
-        ),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        updated_at_ms=cast(int, row["updated_at_ms"]),
+        last_activity_at_ms=cast(int | None, row["last_activity_at_ms"]),
         metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
 
@@ -77,7 +72,7 @@ def runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
         client_user_message_id=_required_text(
             row["client_user_message_id"], "client_user_message_id"
         ),
-        started_at_ms=_required_non_negative_int(row["started_at_ms"], "started_at_ms"),
+        started_at_ms=cast(int, row["started_at_ms"]),
     )
 
 
@@ -86,7 +81,7 @@ def inbound_message_from_row(
     attachments: tuple[InboundAttachment, ...] = (),
 ) -> InboundMessage:
     return InboundMessage(
-        seq=_required_non_negative_int(row["seq"], "seq"),
+        seq=cast(int, row["seq"]),
         message_id=_required_text(row["message_id"], "message_id"),
         session_id=_required_text(row["session_id"], "session_id"),
         channel_session_id=_required_text(
@@ -99,9 +94,7 @@ def inbound_message_from_row(
         provider_message_id=_required_text(
             row["provider_message_id"], "provider_message_id"
         ),
-        received_at_ms=_required_non_negative_int(
-            row["received_at_ms"], "received_at_ms"
-        ),
+        received_at_ms=cast(int, row["received_at_ms"]),
         sender=(
             SenderIdentity(name=sender)
             if (sender := _optional_text(row["sender"], "sender")) is not None
@@ -118,9 +111,7 @@ def inbound_message_from_row(
             _required_boolean(row["notifies_runtime"], "notifies_runtime")
         ),
         attachments=attachments,
-        provider_time_ms=_optional_non_negative_int(
-            row["provider_time_ms"], "provider_time_ms"
-        ),
+        provider_time_ms=cast(int | None, row["provider_time_ms"]),
         reply_to_message_id=_optional_string_value(
             row["reply_to_message_id"],
             "reply_to_message_id",
@@ -141,9 +132,7 @@ def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
         state=_required_text(row["state"], "attachment.state"),
         media_type=_optional_text(row["media_type"], "attachment.media_type"),
         relative_path=_optional_text(row["relative_path"], "attachment.relative_path"),
-        size_bytes=_optional_non_negative_int(
-            row["size_bytes"], "attachment.size_bytes"
-        ),
+        size_bytes=cast(int | None, row["size_bytes"]),
         error=_optional_text(row["error"], "attachment.error"),
     )
 
@@ -172,9 +161,7 @@ def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
                 media_type=_optional_text(
                     value.get("media_type"), f"attachments[{index}].media_type"
                 ),
-                size_bytes=_required_non_negative_int(
-                    value.get("size_bytes"), f"attachments[{index}].size_bytes"
-                ),
+                size_bytes=cast(int, value.get("size_bytes")),
                 sha256=_required_text(
                     value.get("sha256"), f"attachments[{index}].sha256"
                 ),
@@ -204,26 +191,18 @@ def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
                 row["fresh_check_state"], "outbound_message.fresh_check_state"
             )
         ),
-        created_at_ms=_required_non_negative_int(row["created_at_ms"], "created_at_ms"),
-        snapshot_seq=_optional_non_negative_int(row["snapshot_seq"], "snapshot_seq"),
-        current_inbound_seq=_optional_non_negative_int(
-            row["current_inbound_seq"], "current_inbound_seq"
-        ),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        snapshot_seq=cast(int | None, row["snapshot_seq"]),
+        current_inbound_seq=cast(int | None, row["current_inbound_seq"]),
         provider_message_id=_optional_text(
             row["provider_message_id"], "provider_message_id"
         ),
         provider_receipt_ref=_optional_text(
             row["provider_receipt_ref"], "provider_receipt_ref"
         ),
-        provider_attempted_at_ms=_optional_non_negative_int(
-            row["provider_attempted_at_ms"], "provider_attempted_at_ms"
-        ),
-        completed_at_ms=_optional_non_negative_int(
-            row["completed_at_ms"], "completed_at_ms"
-        ),
-        draft_saved_at_ms=_optional_non_negative_int(
-            row["draft_saved_at_ms"], "draft_saved_at_ms"
-        ),
+        provider_attempted_at_ms=cast(int | None, row["provider_attempted_at_ms"]),
+        completed_at_ms=cast(int | None, row["completed_at_ms"]),
+        draft_saved_at_ms=cast(int | None, row["draft_saved_at_ms"]),
         error_kind=_optional_text(row["error_kind"], "error_kind"),
         error_message=_optional_text(row["error_message"], "error_message"),
         next_action=_optional_text(row["next_action"], "next_action"),
@@ -234,27 +213,17 @@ def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
 def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
         session_id=_required_text(row["session_id"], "session_id"),
-        delivered_through_seq=_required_non_negative_int(
-            row["delivered_through_seq"], "delivered_through_seq"
-        ),
-        inbox_snapshot_seq=_optional_non_negative_int(
-            row["inbox_snapshot_seq"], "inbox_snapshot_seq"
-        ),
+        delivered_through_seq=cast(int, row["delivered_through_seq"]),
+        inbox_snapshot_seq=cast(int | None, row["inbox_snapshot_seq"]),
         inbox_snapshot_source=_optional_string_value(
             row["inbox_snapshot_source"],
             "inbox_snapshot_source",
             allow_empty=False,
         ),
-        inbox_snapshot_at_ms=_optional_non_negative_int(
-            row["inbox_snapshot_at_ms"], "inbox_snapshot_at_ms"
-        ),
-        last_check_at_ms=_optional_non_negative_int(
-            row["last_check_at_ms"], "last_check_at_ms"
-        ),
-        last_read_at_ms=_optional_non_negative_int(
-            row["last_read_at_ms"], "last_read_at_ms"
-        ),
-        updated_at_ms=_required_non_negative_int(row["updated_at_ms"], "updated_at_ms"),
+        inbox_snapshot_at_ms=cast(int | None, row["inbox_snapshot_at_ms"]),
+        last_check_at_ms=cast(int | None, row["last_check_at_ms"]),
+        last_read_at_ms=cast(int | None, row["last_read_at_ms"]),
+        updated_at_ms=cast(int, row["updated_at_ms"]),
     )
 
 
@@ -608,18 +577,6 @@ def _required_text(value: object, field_name: str) -> str:
     return _string_value(value, field_name, allow_empty=False)
 
 
-def validate_non_empty_text(value: object, field_name: str) -> None:
-    _required_text(value, field_name)
-
-
-def validate_non_negative_int(value: object, field_name: str) -> None:
-    _required_non_negative_int(value, field_name)
-
-
-def validate_positive_int(value: object, field_name: str) -> None:
-    _required_positive_int(value, field_name)
-
-
 def _optional_text(value: object, field_name: str) -> str | None:
     if value is None:
         return None
@@ -644,29 +601,10 @@ def _string_value(value: object, field_name: str, *, allow_empty: bool) -> str:
     return value
 
 
-def _required_non_negative_int(value: object, field_name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-    return value
-
-
-def _required_positive_int(value: object, field_name: str) -> int:
-    result = _required_non_negative_int(value, field_name)
-    if result == 0:
-        raise ValueError(f"{field_name} must be a positive integer")
-    return result
-
-
 def _required_boolean(value: object, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
         raise ValueError(f"{field_name} must be a boolean integer")
     return value
-
-
-def _optional_non_negative_int(value: object, field_name: str) -> int | None:
-    if value is None:
-        return None
-    return _required_non_negative_int(value, field_name)
 
 
 def encode_metadata(metadata: object) -> str:

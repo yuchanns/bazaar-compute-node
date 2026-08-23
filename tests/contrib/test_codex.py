@@ -64,7 +64,6 @@ from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.client import CLIENT_INFO
-from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
@@ -207,18 +206,17 @@ def test_codex_turn_stream_normalizes_transient_updates() -> None:
     assert future_progress.content == "working"
 
 
-def test_build_thread_start_params_maps_rendered_instructions() -> None:
-    developer_instructions = "Runtime: runtime-from-caller"
+def test_build_thread_start_params_maps_thread_options() -> None:
+    runtime_input = "runtime-input"
     workspace = Path.cwd()
     params = build_thread_start_params(
-        developer_instructions,
+        runtime_input,
         model=TEST_MODEL,
         approval_policy="never",
         cwd=workspace,
         ephemeral=True,
     )
 
-    assert params["developerInstructions"] == developer_instructions
     assert params["model"] == TEST_MODEL
     assert params["approvalPolicy"] == "never"
     assert params["cwd"] == str(workspace)
@@ -237,9 +235,6 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     assert build_fs_watch_params(watched_path, "agents-workspace") == {
         "watchId": "agents-workspace",
         "path": str(watched_path),
-    }
-    assert build_thread_start_params("instructions") == {
-        "developerInstructions": "instructions",
     }
     assert build_thread_resume_params("thread-1") == {
         "threadId": "thread-1",
@@ -298,7 +293,7 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
         ],
     }
     assert (
-        build_thread_start_params("instructions", model="another-model")["model"]
+        build_thread_start_params("runtime-input", model="another-model")["model"]
         == "another-model"
     )
 
@@ -866,14 +861,7 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
             await supervisor.request("method/does-not-exist", {}, timeout=20)
         assert raised.value.kind == "remote_error"
         thread_response = await client.start_thread(
-            DeveloperInstructionContext(
-                agent_name="Test Agent",
-                bot_name="provider_bot",
-                agent_id="agent-test",
-                runtime_session_id="session-test",
-                runtime="codex",
-                workspace=str(workspace),
-            ).render(),
+            "runtime-input",
             model=TEST_MODEL,
             cwd=workspace,
             timeout=20,

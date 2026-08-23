@@ -6,6 +6,7 @@ from .entities import (
     ConsumerCursor,
     InboundAttachment,
     InboundMessage,
+    InboxTargetSummary,
     OutboundAttachment,
     OutboundMessage,
     RuntimeAttempt,
@@ -15,6 +16,7 @@ from .entities import (
     SenderIdentity,
     StreamEvent,
 )
+from .handoff import Handoff
 from .reminder import Reminder, ReminderOccurrence
 from .reminder_owner import OwnedReminder, OwnedReminderOccurrence, ReminderOwner
 from .states import (
@@ -50,8 +52,10 @@ __all__ = [
     "ChannelTargetKind",
     "ConsumerCursor",
     "FreshCheckState",
+    "Handoff",
     "InboundAttachment",
     "InboundMessage",
+    "InboxTargetSummary",
     "OutboundAttachment",
     "OutboundDeliveryState",
     "OutboundMessage",

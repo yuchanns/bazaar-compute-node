@@ -62,18 +62,6 @@ class AuditEvent:
     def __post_init__(self) -> None:
         if not isinstance(self.event_name, str) or not self.event_name:
             raise ValueError("event_name must be a non-empty string")
-        if (
-            isinstance(self.created_at_ms, bool)
-            or not isinstance(self.created_at_ms, int)
-            or self.created_at_ms < 0
-        ):
-            raise ValueError("created_at_ms must be a non-negative integer")
-        if self.duration_ms is not None and (
-            isinstance(self.duration_ms, bool)
-            or not isinstance(self.duration_ms, int)
-            or self.duration_ms < 0
-        ):
-            raise ValueError("duration_ms must be a non-negative integer when present")
         if self.error_kind is None and any(
             value is not None
             for value in (

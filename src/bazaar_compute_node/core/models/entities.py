@@ -29,11 +29,6 @@ def _validate_text(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-empty string")
 
 
-def _validate_non_negative(value: int, field_name: str) -> None:
-    if not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-
-
 @dataclass(frozen=True, slots=True)
 class ChannelSession:
     id: str
@@ -51,14 +46,8 @@ class ChannelSession:
         _validate_text(self.id, "id")
         _validate_text(self.channel, "channel")
         _validate_text(self.provider_thread_id, "provider_thread_id")
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
-        _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if not isinstance(self.target_kind, ChannelTargetKind):
             raise TypeError("target_kind must be a ChannelTargetKind")
-        if self.last_inbound_at_ms is not None:
-            _validate_non_negative(self.last_inbound_at_ms, "last_inbound_at_ms")
-        if self.last_outbound_at_ms is not None:
-            _validate_non_negative(self.last_outbound_at_ms, "last_outbound_at_ms")
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +64,6 @@ class BcnSession:
         _validate_text(self.id, "id")
         _validate_text(self.channel_session_id, "channel_session_id")
         _validate_text(self.workspace_id, "workspace_id")
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
-        _validate_non_negative(self.updated_at_ms, "updated_at_ms")
-        if self.last_activity_at_ms is not None:
-            _validate_non_negative(self.last_activity_at_ms, "last_activity_at_ms")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +84,6 @@ class RuntimeSession:
         _validate_text(self.channel_session_id, "channel_session_id")
         _validate_text(self.runtime, "runtime")
         _validate_text(self.workspace_id, "workspace_id")
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
-        _validate_non_negative(self.updated_at_ms, "updated_at_ms")
         if self.provider_thread_id is not None:
             _validate_text(self.provider_thread_id, "provider_thread_id")
 
@@ -116,7 +99,6 @@ class RuntimeAttempt:
         _validate_text(self.turn_id, "turn_id")
         _validate_text(self.session_id, "session_id")
         _validate_text(self.client_user_message_id, "client_user_message_id")
-        _validate_non_negative(self.started_at_ms, "started_at_ms")
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +118,10 @@ class RuntimeTurn:
     def __post_init__(self) -> None:
         _validate_text(self.turn_id, "turn_id")
         _validate_text(self.session_id, "session_id")
-        _validate_non_negative(self.started_at_ms, "started_at_ms")
         if self.provider_turn_id is not None:
             _validate_text(self.provider_turn_id, "provider_turn_id")
         if self.client_user_message_id is not None:
             _validate_text(self.client_user_message_id, "client_user_message_id")
-        if self.completed_at_ms is not None:
-            _validate_non_negative(self.completed_at_ms, "completed_at_ms")
 
     def transition_to(
         self,
@@ -153,7 +132,6 @@ class RuntimeTurn:
         error_message: str | None = None,
         latest_event_name: str | None = None,
     ) -> Self:
-        _validate_non_negative(at_ms, "at_ms")
         ensure_transition("runtime_turn", self.state, state, RUNTIME_TURN_TRANSITIONS)
         if state is self.state:
             return self
@@ -203,8 +181,6 @@ class InboundAttachment:
             raise ValueError("ready attachment must have a relative path")
         if self.state == "failed" and self.relative_path is not None:
             raise ValueError("failed attachment cannot have a relative path")
-        if self.size_bytes is not None:
-            _validate_non_negative(self.size_bytes, "size_bytes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +194,6 @@ class OutboundAttachment:
     def __post_init__(self) -> None:
         _validate_text(self.name, "name")
         _validate_text(self.relative_path, "relative_path")
-        _validate_non_negative(self.size_bytes, "size_bytes")
         path = PurePosixPath(self.relative_path)
         if (
             path.is_absolute()
@@ -262,6 +237,45 @@ class SenderIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxTargetSummary:
+    target: str
+    session_id: str
+    target_kind: ChannelTargetKind
+    current: bool
+    pending_count: int
+    last_activity_at_ms: int
+    latest_message_id: str | None = None
+    latest_sender: SenderIdentity | None = None
+    latest_provider_time_ms: int | None = None
+    latest_received_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        _validate_text(self.target, "target")
+        _validate_text(self.session_id, "session_id")
+        if not isinstance(self.target_kind, ChannelTargetKind):
+            raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.current, bool):
+            raise TypeError("current must be a bool")
+        latest_fields = (
+            self.latest_sender,
+            self.latest_provider_time_ms,
+            self.latest_received_at_ms,
+        )
+        if self.latest_message_id is None:
+            if any(value is not None for value in latest_fields):
+                raise ValueError("latest message fields require latest_message_id")
+            return
+
+        _validate_text(self.latest_message_id, "latest_message_id")
+        if self.latest_sender is not None and not isinstance(
+            self.latest_sender, SenderIdentity
+        ):
+            raise TypeError("latest_sender must be a SenderIdentity")
+        if self.latest_received_at_ms is None:
+            raise ValueError("latest_received_at_ms is required with latest_message_id")
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     seq: int
     message_id: str
@@ -285,7 +299,6 @@ class InboundMessage:
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_non_negative(self.seq, "seq")
         for value, field_name in (
             (self.message_id, "message_id"),
             (self.session_id, "session_id"),
@@ -297,15 +310,12 @@ class InboundMessage:
             (self.canonical_target, "canonical_target"),
         ):
             _validate_text(value, field_name)
-        _validate_non_negative(self.received_at_ms, "received_at_ms")
         if self.sender is not None and not isinstance(self.sender, SenderIdentity):
             raise TypeError("sender must be a SenderIdentity")
         if self.reply_to_message_id is not None:
             _validate_text(self.reply_to_message_id, "reply_to_message_id")
         if not isinstance(self.target_kind, ChannelTargetKind):
             raise TypeError("target_kind must be a ChannelTargetKind")
-        if self.provider_time_ms is not None:
-            _validate_non_negative(self.provider_time_ms, "provider_time_ms")
 
     @property
     def sender_kind(self) -> SenderKind:
@@ -354,7 +364,6 @@ class OutboundMessage:
             (self.target, "target"),
         ):
             _validate_text(value, field_name)
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
         if not isinstance(self.attachments, tuple) or not all(
             isinstance(attachment, OutboundAttachment)
             for attachment in self.attachments
@@ -363,15 +372,6 @@ class OutboundMessage:
         for value, field_name in ((self.reply_to_message_id, "reply_to_message_id"),):
             if value is not None:
                 _validate_text(value, field_name)
-        for value, field_name in (
-            (self.snapshot_seq, "snapshot_seq"),
-            (self.current_inbound_seq, "current_inbound_seq"),
-            (self.provider_attempted_at_ms, "provider_attempted_at_ms"),
-            (self.completed_at_ms, "completed_at_ms"),
-            (self.draft_saved_at_ms, "draft_saved_at_ms"),
-        ):
-            if value is not None:
-                _validate_non_negative(value, field_name)
 
     def record_fresh_check(
         self,
@@ -380,10 +380,6 @@ class OutboundMessage:
         snapshot_seq: int | None,
         current_inbound_seq: int | None,
     ) -> Self:
-        if snapshot_seq is not None:
-            _validate_non_negative(snapshot_seq, "snapshot_seq")
-        if current_inbound_seq is not None:
-            _validate_non_negative(current_inbound_seq, "current_inbound_seq")
         if state is FreshCheckState.PASSED:
             if snapshot_seq is None or current_inbound_seq is None:
                 raise ValueError(
@@ -418,7 +414,6 @@ class OutboundMessage:
         error_message: str | None = None,
         next_action: str | None = None,
     ) -> Self:
-        _validate_non_negative(at_ms, "at_ms")
         ensure_transition(
             "outbound_delivery", self.state, state, OUTBOUND_DELIVERY_TRANSITIONS
         )
@@ -478,16 +473,6 @@ class ConsumerCursor:
 
     def __post_init__(self) -> None:
         _validate_text(self.session_id, "session_id")
-        _validate_non_negative(self.delivered_through_seq, "delivered_through_seq")
-        _validate_non_negative(self.updated_at_ms, "updated_at_ms")
-        for value, field_name in (
-            (self.inbox_snapshot_seq, "inbox_snapshot_seq"),
-            (self.inbox_snapshot_at_ms, "inbox_snapshot_at_ms"),
-            (self.last_check_at_ms, "last_check_at_ms"),
-            (self.last_read_at_ms, "last_read_at_ms"),
-        ):
-            if value is not None:
-                _validate_non_negative(value, field_name)
         if (
             self.inbox_snapshot_seq is not None
             and self.inbox_snapshot_seq < self.delivered_through_seq
@@ -514,7 +499,6 @@ class ApprovalRequest:
             (self.action, "action"),
         ):
             _validate_text(value, field_name)
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
         if self.turn_id is not None:
             _validate_text(self.turn_id, "turn_id")
         if self.description is not None:
@@ -530,7 +514,6 @@ class ApprovalResult:
 
     def __post_init__(self) -> None:
         _validate_text(self.request_id, "request_id")
-        _validate_non_negative(self.decided_at_ms, "decided_at_ms")
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,7 +527,6 @@ class StreamEvent:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, StreamEventKind):
             raise TypeError("kind must be a StreamEventKind")
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_text(self.session_id, "session_id")
         if self.stream_id is not None:
             _validate_text(self.stream_id, "stream_id")
@@ -563,7 +545,6 @@ class RuntimeEvent:
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_non_negative(self.created_at_ms, "created_at_ms")
         _validate_text(self.event_name, "event_name")
         if not isinstance(self.state, RuntimeEventState):
             raise TypeError("state must be a RuntimeEventState")

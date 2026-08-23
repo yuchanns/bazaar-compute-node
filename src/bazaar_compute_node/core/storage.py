@@ -3,11 +3,13 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
+from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
     BcnSession,
     ChannelSession,
     ConsumerCursor,
+    Handoff,
     InboundMessage,
     OutboundMessage,
     OwnedReminder,
@@ -18,6 +20,14 @@ from .models import (
     ReminderState,
     RuntimeAttempt,
 )
+
+
+class InboxTargetResolutionError(ValueError):
+    """A target does not resolve to exactly one Agent-owned BCN session."""
+
+
+class HandoffConflictError(ValueError):
+    """A handoff command ID is already associated with another payload."""
 
 
 class IStorageTransaction(Protocol):
@@ -33,6 +43,12 @@ class IStorageTransaction(Protocol):
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...
     async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None: ...
     async def get_latest_inbound_seq(self, session_id: str) -> int: ...
+
+    async def list_inbox_targets(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> InboxTargetPage: ...
+
+    async def resolve_inbox_target(self, target: str) -> BcnSession: ...
 
     async def find_inbound_message(
         self,
@@ -170,3 +186,35 @@ class IStorageScope(IStorage, Protocol):
 
     @property
     def agent_name(self) -> str: ...
+
+
+class IHandoffStorageTransaction(IStorageTransaction, Protocol):
+    """Agent-scoped transaction with handoff operations."""
+
+    async def get_latest_inbound_message(
+        self, session_id: str
+    ) -> InboundMessage | None: ...
+
+    async def save_handoff(self, handoff: Handoff) -> Handoff: ...
+
+    async def list_pending_handoffs(
+        self, target_session_id: str, *, limit: int
+    ) -> tuple[Handoff, ...]: ...
+
+    async def count_pending_handoffs(self, target_session_id: str) -> int: ...
+
+    async def mark_handoffs_read(
+        self,
+        target_session_id: str,
+        handoff_ids: tuple[str, ...],
+        *,
+        read_at_ms: int,
+    ) -> tuple[Handoff, ...]: ...
+
+
+class IHandoffStorageScope(IStorageScope, Protocol):
+    """Agent storage scope whose transactions support handoffs."""
+
+    def transaction(
+        self,
+    ) -> AbstractAsyncContextManager[IHandoffStorageTransaction]: ...

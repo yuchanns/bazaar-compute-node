@@ -1,7 +1,7 @@
 """SQLite storage foundation for persistent BCN state."""
 
 from .migrations import MigrationChecksumError, MigrationError
-from .reminder_database import SqliteDatabase
+from .storage import SqliteDatabase
 
 __all__ = [
     "MigrationChecksumError",

@@ -42,7 +42,6 @@ class ReminderDuration:
     canonical: str
 
     def __post_init__(self) -> None:
-        _require_positive_int(self.milliseconds, "milliseconds")
         if not isinstance(self.canonical, str) or not self.canonical:
             raise ValueError("canonical must be a non-empty string")
 
@@ -63,7 +62,6 @@ class ReminderRecurrence:
         if self.kind is RecurrenceKind.EVERY:
             if self.interval_ms is None:
                 raise ValueError("an every recurrence requires interval_ms")
-            _require_positive_int(self.interval_ms, "interval_ms")
             if self.local_time is not None or self.weekdays:
                 raise ValueError("an every recurrence cannot contain calendar fields")
         elif self.kind is RecurrenceKind.DAILY:
@@ -82,7 +80,6 @@ class ReminderRecurrence:
                 raise ValueError("weekly recurrence weekdays must be unique and sorted")
 
     def first_after(self, timestamp_ms: int, timezone_name: str) -> int:
-        _require_non_negative_int(timestamp_ms, "timestamp_ms")
         timezone = _load_timezone(timezone_name)
         if self.kind is RecurrenceKind.EVERY:
             if self.interval_ms is None:
@@ -101,7 +98,6 @@ class ReminderSchedule:
     timezone: str
 
     def __post_init__(self) -> None:
-        _require_non_negative_int(self.next_fire_at_ms, "next_fire_at_ms")
         if self.repeat_rule is not None and not self.repeat_rule:
             raise ValueError("repeat_rule must be non-empty when provided")
         if self.repeat_rule is not None:
@@ -198,12 +194,10 @@ def parse_fire_at(value: object) -> int:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("fire_at must include an explicit UTC offset")
     timestamp_ms = _datetime_to_ms(parsed.astimezone(UTC))
-    _require_non_negative_int(timestamp_ms, "fire_at")
     return timestamp_ms
 
 
 def format_utc_timestamp(timestamp_ms: int) -> str:
-    _require_non_negative_int(timestamp_ms, "timestamp_ms")
     value = _EPOCH + timedelta(milliseconds=timestamp_ms)
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -216,7 +210,6 @@ def resolve_schedule(
     repeat_rule: str | None = None,
     timezone: str | None = None,
 ) -> ReminderSchedule:
-    _require_non_negative_int(evaluated_at_ms, "evaluated_at_ms")
     if delay_seconds is not None and fire_at is not None:
         raise ValueError("delay_seconds and fire_at are mutually exclusive")
     if delay_seconds is None and fire_at is None and repeat_rule is None:
@@ -224,7 +217,6 @@ def resolve_schedule(
     timezone_name = canonical_timezone(timezone)
     recurrence = parse_repeat_rule(repeat_rule) if repeat_rule is not None else None
     if delay_seconds is not None:
-        _require_positive_int(delay_seconds, "delay_seconds")
         next_fire_at_ms = evaluated_at_ms + delay_seconds * _MILLISECONDS_PER_SECOND
     elif fire_at is not None:
         next_fire_at_ms = parse_fire_at(fire_at)
@@ -318,13 +310,3 @@ def _datetime_to_ms(value: datetime) -> int:
         + delta.seconds * _MILLISECONDS_PER_SECOND
         + delta.microseconds // 1_000
     )
-
-
-def _require_non_negative_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-
-
-def _require_positive_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer")

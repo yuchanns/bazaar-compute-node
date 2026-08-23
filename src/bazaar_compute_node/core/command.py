@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .models import InboundMessage, OutboundMessage
+from .handoff import (
+    HandoffCheckRequest,
+    HandoffCheckResult,
+    HandoffSendRequest,
+    HandoffSendResult,
+)
+from .models import InboundMessage, InboxTargetSummary, OutboundMessage
 from .reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
@@ -30,8 +36,6 @@ class MessageCheckResult:
     referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.snapshot_seq < 0 or self.delivered_through_seq < 0:
-            raise ValueError("message sequence values must be non-negative")
         if self.delivered_through_seq > self.snapshot_seq:
             raise ValueError("delivered_through_seq cannot exceed snapshot_seq")
 
@@ -47,16 +51,50 @@ class MessageReadResult:
     referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.snapshot_seq < 0:
-            raise ValueError("snapshot_seq must be non-negative")
         if (self.first_seq is None) != (self.last_seq is None):
             raise ValueError("first_seq and last_seq must be provided together")
         if (
             self.first_seq is not None
             and self.last_seq is not None
-            and (self.first_seq < 0 or self.last_seq < self.first_seq)
+            and self.last_seq < self.first_seq
         ):
             raise ValueError("history sequence bounds are invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class InboxListResult:
+    """A non-draining, paginated catalog of targets owned by one agent."""
+
+    targets: tuple[InboxTargetSummary, ...]
+    total: int
+    shown: int
+    offset: int
+    has_more: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.targets, tuple):
+            raise TypeError("targets must be a tuple")
+        if any(not isinstance(target, InboxTargetSummary) for target in self.targets):
+            raise TypeError("targets must contain InboxTargetSummary values")
+        if self.shown != len(self.targets):
+            raise ValueError("shown must equal the number of targets")
+        if self.shown > self.total:
+            raise ValueError("shown cannot exceed total")
+        if not isinstance(self.has_more, bool):
+            raise TypeError("has_more must be a bool")
+        expected_has_more = self.offset + self.shown < self.total
+        if self.has_more != expected_has_more:
+            raise ValueError("has_more does not match pagination bounds")
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSendHandoffRequired:
+    """Route work through a handoff instead of creating an outbound message."""
+
+    target: str
+
+
+type MessageSendResult = OutboundMessage | MessageSendHandoffRequired
 
 
 class SessionNotFoundError(ValueError):
@@ -81,6 +119,16 @@ class ICommandService(Protocol):
         """Read history without advancing the delivery cursor."""
         ...
 
+    async def list_inbox(
+        self,
+        caller_session_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> InboxListResult:
+        """List owned message targets without draining or changing inbox state."""
+        ...
+
     async def send(
         self,
         *,
@@ -91,7 +139,7 @@ class ICommandService(Protocol):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
-    ) -> OutboundMessage:
+    ) -> MessageSendResult:
         """Run the session fresh-check before calling the Channel port."""
         ...
 
@@ -138,3 +186,19 @@ class IReminderService(Protocol):
         session_id: str,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult: ...
+
+
+class IHandoffService(Protocol):
+    """Session-bound handoff command surface used by the local wrapper."""
+
+    async def send(
+        self,
+        session_id: str,
+        request: HandoffSendRequest,
+    ) -> HandoffSendResult: ...
+
+    async def check(
+        self,
+        session_id: str,
+        request: HandoffCheckRequest,
+    ) -> HandoffCheckResult: ...

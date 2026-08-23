@@ -13,8 +13,11 @@ from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
+    InboxListResult,
     MessageCheckResult,
     MessageReadResult,
+    MessageSendHandoffRequired,
+    MessageSendResult,
     SessionNotFoundError,
 )
 from ..concurrency import ISessionConcurrency
@@ -29,7 +32,7 @@ from ..models import (
     OutboundMessage,
     RuntimeEventState,
 )
-from ..storage import IStorage, IStorageTransaction
+from ..storage import InboxTargetResolutionError, IStorage, IStorageTransaction
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -47,8 +50,6 @@ class OutboundAttachmentResolver:
         seen_paths: set[Path] = set()
         workspace = self._workspace().resolve(strict=True)
         for raw_path in attachment_paths:
-            if not isinstance(raw_path, str) or not raw_path:
-                raise ValueError("attachment paths must be non-empty strings")
             source = Path(raw_path)
             if not source.is_absolute():
                 raise ValueError("attachment paths must be absolute")
@@ -184,40 +185,23 @@ class SessionCommandService(ICommandService):
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
-        if not target:
-            raise ValueError("target must be a non-empty string")
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        async with self._concurrency.for_session(session_id):
-            async with self._storage.transaction() as transaction:
-                bcn_session = await transaction.get_bcn_session(session_id)
-                if bcn_session is None:
-                    raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-                messages = await transaction.list_inbound_messages(
-                    session_id,
-                    target=target,
-                    around_message_id=around_message_id,
-                    limit=limit,
-                )
-                referenced_messages = await self._referenced_messages(
-                    transaction,
-                    session_id=session_id,
-                    messages=messages,
-                )
-                latest_seq = await transaction.get_latest_inbound_seq(session_id)
-                cursor = await transaction.get_consumer_cursor(session_id)
-                if cursor is None:
-                    cursor = ConsumerCursor(session_id=session_id)
-                now_ms = self._clock()
-                cursor = replace(
-                    cursor,
-                    inbox_snapshot_seq=latest_seq,
-                    inbox_snapshot_source="read",
-                    inbox_snapshot_at_ms=now_ms,
-                    last_read_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_consumer_cursor(cursor)
+        async with self._storage.transaction() as transaction:
+            caller_session = await transaction.get_bcn_session(session_id)
+            if caller_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            source_session = await transaction.resolve_inbox_target(target)
+            messages = await transaction.list_inbound_messages(
+                source_session.id,
+                target=target,
+                around_message_id=around_message_id,
+                limit=limit,
+            )
+            referenced_messages = await self._referenced_messages(
+                transaction,
+                session_id=source_session.id,
+                messages=messages,
+            )
+            latest_seq = await transaction.get_latest_inbound_seq(source_session.id)
             result = MessageReadResult(
                 messages=messages,
                 snapshot_seq=latest_seq,
@@ -231,10 +215,53 @@ class SessionCommandService(ICommandService):
             state=RuntimeEventState.COMPLETED,
             correlation=self._correlation(session_id=session_id),
             arguments={
-                "session_id": session_id,
+                "caller_session_id": session_id,
+                "source_session_id": source_session.id,
                 "target": target,
                 "around_message_id": around_message_id,
                 "limit": limit,
+            },
+        )
+        return result
+
+    async def list_inbox(
+        self,
+        caller_session_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> InboxListResult:
+        async with self._storage.transaction() as transaction:
+            caller_session = await transaction.get_bcn_session(caller_session_id)
+            if caller_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
+            page = await transaction.list_inbox_targets(
+                limit=limit,
+                offset=offset,
+            )
+            targets = tuple(
+                replace(
+                    target,
+                    current=target.session_id == caller_session_id,
+                )
+                for target in page.targets
+            )
+            result = InboxListResult(
+                targets=targets,
+                total=page.total,
+                shown=len(targets),
+                offset=page.offset,
+                has_more=page.has_more,
+            )
+        await self._audit.append_tool(
+            operation="bcc.inbox.list",
+            status="completed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(session_id=caller_session_id),
+            arguments={
+                "caller_session_id": caller_session_id,
+                "limit": limit,
+                "offset": offset,
             },
         )
         return result
@@ -282,11 +309,42 @@ class SessionCommandService(ICommandService):
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
-    ) -> OutboundMessage:
-        if not command_id:
-            raise ValueError("command_id must be a non-empty string")
-        if not target:
-            raise ValueError("target must be a non-empty string")
+    ) -> MessageSendResult:
+        async with self._storage.transaction() as transaction:
+            bcn_session = await transaction.get_bcn_session(session_id)
+            if bcn_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+            channel_session = await transaction.get_channel_session(
+                bcn_session.channel_session_id
+            )
+            if channel_session is None:
+                raise ValueError(
+                    f"unknown channel session: {bcn_session.channel_session_id}"
+                )
+            try:
+                target_session = await transaction.resolve_inbox_target(target)
+            except InboxTargetResolutionError:
+                target_session = None
+        if target_session is not None and target_session.id != session_id:
+            result = MessageSendHandoffRequired(target=target)
+            await self._audit.append_tool(
+                operation="bcc.message.send",
+                status="handoff_required",
+                state=RuntimeEventState.COMPLETED,
+                correlation=self._correlation(
+                    session_id=session_id,
+                    channel=channel_session.channel,
+                    channel_session_id=channel_session.id,
+                    command_id=command_id,
+                ),
+                arguments={
+                    "command_id": command_id,
+                    "target": target,
+                    "target_session_id": target_session.id,
+                },
+            )
+            return result
+
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths
@@ -583,8 +641,6 @@ class SessionCommandService(ICommandService):
             return outbound
 
     async def unfollow(self, session_id: str, *, target: str) -> bool:
-        if not target:
-            raise ValueError("target must be a non-empty string")
         async with (
             self._concurrency.for_session(session_id),
             self._storage.transaction() as transaction,

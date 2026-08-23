@@ -7,12 +7,23 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import Annotated, NoReturn, cast
 from uuid import uuid7
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
 from .app.command import format_message_time
 from .app.transport import LocalCommandClient
-from .core.reminder import format_utc_timestamp
+from .core.reminder import canonical_id_reference, format_utc_timestamp
 
 
 class BccCommandError(RuntimeError):
@@ -37,7 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Session-scoped collaboration commands for a Bazaar Compute Node. "
             "Use these commands from the current agent session to inspect messages, "
-            "send replies, manage thread attention, and schedule persistent reminders."
+            "send replies, hand off work, manage thread attention, and schedule "
+            "persistent reminders."
         ),
         epilog=(
             "Run `bcc <resource> --help` or "
@@ -47,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="resource",
         required=True,
-        metavar="{message,thread,reminder}",
+        metavar="{message,inbox,handoff,thread,reminder}",
         title="resources",
     )
 
@@ -77,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical DM/thread target to read, as shown by `bcc message check`.",
+        help="DM/thread target to read, as shown by `bcc message check`.",
     )
     read_parser.add_argument(
         "--around",
@@ -90,6 +102,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         metavar="<n>",
         help="Maximum number of history messages to return (default: 100).",
+    )
+
+    inbox_parser = subparsers.add_parser(
+        "inbox",
+        help="Inbox discovery operations",
+        description="Inbox discovery operations",
+    )
+    inbox_subparsers = inbox_parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{list}",
+        title="inbox commands",
+    )
+    inbox_list_parser = inbox_subparsers.add_parser(
+        "list",
+        help="List available message targets",
+        description="List available message targets",
+    )
+    inbox_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        metavar="<n>",
+        help="Maximum number of targets to return (default: 100).",
+    )
+    inbox_list_parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        metavar="<n>",
+        help="Number of targets to skip (default: 0).",
     )
 
     send_parser = message_subparsers.add_parser(
@@ -105,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical DM/thread target to reply to.",
+        help="DM/thread target to reply to.",
     )
     send_parser.add_argument(
         "--reply-to",
@@ -143,7 +186,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         required=True,
         metavar="<target>",
-        help="Canonical group/thread target to unfollow.",
+        help="Group/thread target to unfollow.",
+    )
+
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        help="Cross-session handoff operations",
+        description="Cross-session handoff operations",
+    )
+    handoff_subparsers = handoff_parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{send,check}",
+        title="handoff commands",
+    )
+    handoff_send_parser = handoff_subparsers.add_parser(
+        "send",
+        help="Send a handoff to another conversation owned by this agent.",
+        description=(
+            "Persist a handoff for another conversation owned by this agent and "
+            "wake its runtime. The handoff body is read from stdin."
+        ),
+    )
+    handoff_send_parser.add_argument(
+        "--target",
+        required=True,
+        metavar="<target>",
+        help="Target conversation, as shown by `bcc inbox list`.",
+    )
+    handoff_send_parser.add_argument(
+        "--message-id",
+        metavar="<message-id>",
+        help="Optional inbound message in the current session used as source context.",
+    )
+    handoff_subparsers.add_parser(
+        "check",
+        help="Drain pending handoffs.",
+        description=(
+            "Read up to 100 pending handoffs for the current session and mark "
+            "exactly the returned handoffs as read."
+        ),
     )
 
     reminder_parser = subparsers.add_parser(
@@ -347,8 +429,22 @@ async def _request(
             request["attachment_paths"] = await asyncio.to_thread(
                 lambda: [str(Path(path).absolute()) for path in args.attachment]
             )
+    elif args.resource == "inbox":
+        if args.command == "list":
+            request["limit"] = args.limit
+            request["offset"] = args.offset
     elif args.resource == "thread":
         request["target"] = args.target
+    elif args.resource == "handoff":
+        if args.command == "send":
+            request.update(
+                {
+                    "target": args.target,
+                    "body": body if body is not None else "",
+                    "command_id": f"bcc-{uuid7().hex}",
+                    "source_message_id": args.message_id,
+                }
+            )
     elif args.resource == "reminder":
         if args.command == "schedule":
             request.update(
@@ -395,80 +491,81 @@ async def _request(
     return response
 
 
-def _require_result(response: Mapping[str, object]) -> Mapping[str, object]:
-    result = response.get("result")
-    if not isinstance(result, Mapping):
-        raise BccCommandError(
-            "command response has no result object",
-            code="INVALID_RESPONSE",
+def _result(response: Mapping[str, object]) -> Mapping[str, object]:
+    return cast(Mapping[str, object], response["result"])
+
+
+def _format_inbox_sender(value: object) -> str:
+    if value is None:
+        return "none"
+    sender = cast(Mapping[str, object], value)
+    sender_id = cast(str | None, sender.get("id"))
+    sender_name = cast(str | None, sender.get("name"))
+    return f"@{sender_name or sender_id}"
+
+
+def _format_inbox_target(summary: Mapping[str, object]) -> str:
+    target = cast(str, summary["target"])
+    session_id = cast(str, summary["session_id"])
+    target_kind = cast(str, summary["target_kind"])
+    current = cast(bool, summary["current"])
+    pending_count = cast(int, summary["pending_count"])
+    latest_message_id = cast(str | None, summary["latest_message_id"])
+    latest_sender = summary.get("latest_sender")
+    latest_time_ms = cast(int | None, summary["latest_time_ms"])
+    if latest_message_id is None:
+        latest_message_text = "none"
+        latest_sender_text = "none"
+        latest_time_text = "none"
+    else:
+        latest_message_text = latest_message_id
+        latest_sender_text = _format_inbox_sender(latest_sender)
+        latest_time_text = format_message_time(cast(int, latest_time_ms))
+
+    return (
+        f"[target={target} session={session_id} kind={target_kind} "
+        f"current={str(current).lower()} pending={pending_count} "
+        f"latest-msg={latest_message_text} latest-sender={latest_sender_text} "
+        f"latest-time={latest_time_text}]"
+    )
+
+
+def serialize_inbox_list(result: Mapping[str, object]) -> str:
+    targets = cast(list[Mapping[str, object]], result["targets"])
+    total = cast(int, result["total"])
+    shown = cast(int, result["shown"])
+    offset = cast(int, result["offset"])
+    has_more = cast(bool, result["has_more"])
+
+    rendered_targets: list[str] = []
+    for target in targets:
+        rendered_targets.append(_format_inbox_target(target))
+
+    lines = [
+        (
+            f"Inbox targets: {shown} returned, offset {offset}, total {total}, "
+            "ordered by recent activity."
         )
-    return result
-
-
-def _invalid_response(message: str) -> NoReturn:
-    raise BccCommandError(message, code="INVALID_RESPONSE")
-
-
-def _require_text(
-    value: Mapping[str, object],
-    field_name: str,
-    *,
-    allow_empty: bool = False,
-) -> str:
-    item = value.get(field_name)
-    if not isinstance(item, str) or (not allow_empty and not item):
-        _invalid_response(f"command response contains an invalid {field_name}")
-    return item
-
-
-def _require_non_negative_int(
-    value: Mapping[str, object],
-    field_name: str,
-) -> int:
-    item = value.get(field_name)
-    if isinstance(item, bool) or not isinstance(item, int) or item < 0:
-        _invalid_response(f"command response contains an invalid {field_name}")
-    return item
-
-
-def _optional_non_negative_int(
-    value: Mapping[str, object],
-    field_name: str,
-) -> int | None:
-    item = value.get(field_name)
-    if item is None:
-        return None
-    if isinstance(item, bool) or not isinstance(item, int) or item < 0:
-        _invalid_response(f"command response contains an invalid {field_name}")
-    return item
-
-
-def _require_result_sequence(result: Mapping[str, object], field_name: str) -> int:
-    return _require_non_negative_int(result, field_name)
-
-
-def _require_message_list(
-    result: Mapping[str, object], field_name: str
-) -> list[Mapping[str, object]]:
-    messages = result.get(field_name)
-    if not isinstance(messages, list):
-        _invalid_response(f"command response has no {field_name} list")
-    if not all(isinstance(message, Mapping) for message in messages):
-        _invalid_response("command response contains an invalid message")
-    return messages
-
-
-def _require_messages(result: Mapping[str, object]) -> list[Mapping[str, object]]:
-    return _require_message_list(result, "messages")
+    ]
+    lines.extend(rendered_targets)
+    if total == 0:
+        lines.append("No message targets.")
+    elif not targets:
+        lines.append("No more message targets.")
+    elif has_more:
+        lines.append(
+            f"More message targets remain. Run `bcc inbox list --offset {offset + shown}`."
+        )
+    else:
+        lines.append("No more message targets.")
+    return "\n".join(lines)
 
 
 def _message_timestamp(message: Mapping[str, object]) -> int:
-    timestamp = message.get("provider_time_ms")
+    timestamp = message["provider_time_ms"]
     if timestamp is None:
-        timestamp = message.get("received_at_ms")
-    if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
-        _invalid_response("command response contains an invalid message timestamp")
-    return timestamp
+        timestamp = message["received_at_ms"]
+    return cast(int, timestamp)
 
 
 def _format_message_timestamp(message: Mapping[str, object]) -> str:
@@ -478,51 +575,41 @@ def _format_message_timestamp(message: Mapping[str, object]) -> str:
 def _message_header_fields(
     message: Mapping[str, object],
 ) -> tuple[str, str, str, str, str | None, str]:
-    target = _require_text(message, "canonical_target")
-    message_id = _require_text(message, "message_id")
-    sender_kind = _require_text(message, "sender_kind")
-    if sender_kind not in {"human", "agent", "unknown"}:
-        _invalid_response("command response contains an invalid sender_kind")
-    sender_value = message.get("sender")
+    target = cast(str, message["canonical_target"])
+    message_id = cast(str, message["message_id"])
+    sender_kind = cast(str, message["sender_kind"])
+    sender_value = message["sender"]
     sender: str | None = None
     if sender_value is not None:
-        if not isinstance(sender_value, Mapping):
-            _invalid_response("command response contains an invalid message sender")
-        else:
-            sender_id = sender_value.get("id")
-            sender_name = sender_value.get("name")
-            sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
+        sender_mapping = cast(Mapping[str, object], sender_value)
+        sender_id = cast(str | None, sender_mapping.get("id"))
+        sender_name = cast(str | None, sender_mapping.get("name"))
+        sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
     return (
         target,
         message_id,
         _format_message_timestamp(message),
         sender_kind,
         sender,
-        _require_text(message, "body", allow_empty=True),
+        cast(str, message["body"]),
     )
 
 
 def _attachment_suffix(message: Mapping[str, object]) -> str:
-    attachments = message.get("attachments")
-    if not isinstance(attachments, list):
-        _invalid_response("command response contains invalid attachments")
+    attachments = cast(list[Mapping[str, object]], message["attachments"])
     if not attachments:
         return ""
     rendered: list[str] = []
     for attachment in attachments:
-        if not isinstance(attachment, Mapping):
-            _invalid_response("command response contains an invalid attachment")
-        name = _require_text(attachment, "name")
-        attachment_id = _require_text(attachment, "attachment_id")
-        state = _require_text(attachment, "state")
+        name = cast(str, attachment["name"])
+        attachment_id = cast(str, attachment["attachment_id"])
+        state = cast(str, attachment["state"])
         if state == "ready":
-            path = _require_text(attachment, "relative_path")
+            path = cast(str, attachment["relative_path"])
             rendered.append(f"{name} (id:{attachment_id}, path:{path})")
-        elif state == "failed":
-            error = _require_text(attachment, "error")
-            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
         else:
-            _invalid_response("command response contains an invalid attachment state")
+            error = cast(str, attachment["error"])
+            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
     label = "attachment" if len(rendered) == 1 else "attachments"
     return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
 
@@ -533,15 +620,11 @@ def _format_check_message(message: Mapping[str, object]) -> str:
     )
     line = (
         f"[target={target} msg={message_id} time={timestamp} "
-        f"type={message_type} mentioned={str(message.get('mentions_agent') is True).lower()}"
+        f"type={message_type} mentioned={str(message['mentions_agent']).lower()}"
     )
-    reply_to_message_id = message.get("reply_to_message_id")
+    reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
-        if not isinstance(reply_to_message_id, str) or not reply_to_message_id:
-            _invalid_response(
-                "command response contains an invalid message reply_to_message_id"
-            )
-        line += f" reply_to={reply_to_message_id}"
+        line += f" reply_to={cast(str, reply_to_message_id)}"
     line += "] "
     if sender is not None:
         line += f"{sender} "
@@ -558,20 +641,16 @@ def _format_read_message(
         message
     )
     fields = [
-        f"seq={_require_non_negative_int(message, 'seq')}",
+        f"seq={cast(int, message['seq'])}",
         f"msg={message_id}",
         f"time={timestamp}",
         f"type={message_type}",
         f"replyTarget={target}",
-        f"mentioned={str(message.get('mentions_agent') is True).lower()}",
+        f"mentioned={str(message['mentions_agent']).lower()}",
     ]
-    reply_to_message_id = message.get("reply_to_message_id")
+    reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
-        if not isinstance(reply_to_message_id, str) or not reply_to_message_id:
-            _invalid_response(
-                "command response contains an invalid message reply_to_message_id"
-            )
-        fields.append(f"replyTo={reply_to_message_id}")
+        fields.append(f"replyTo={cast(str, reply_to_message_id)}")
     line = f"[{index}/{count} {' '.join(fields)}] "
     if sender is not None:
         line += f"{sender} "
@@ -579,14 +658,10 @@ def _format_read_message(
 
 
 def serialize_check(result: Mapping[str, object]) -> str:
-    snapshot_seq = _require_result_sequence(result, "snapshot_seq")
-    delivered_through_seq = _require_result_sequence(result, "delivered_through_seq")
-    if delivered_through_seq > snapshot_seq:
-        _invalid_response(
-            "command response contains an invalid check sequence boundary"
-        )
-    messages = _require_messages(result)
-    referenced_messages = _require_message_list(result, "referenced_messages")
+    messages = cast(list[Mapping[str, object]], result["messages"])
+    referenced_messages = cast(
+        list[Mapping[str, object]], result["referenced_messages"]
+    )
     lines: list[str] = []
     if referenced_messages:
         lines.append(f"Referenced messages: {len(referenced_messages)}")
@@ -606,30 +681,16 @@ def serialize_check(result: Mapping[str, object]) -> str:
 
 
 def serialize_read(result: Mapping[str, object]) -> str:
-    _require_result_sequence(result, "snapshot_seq")
-    messages = _require_messages(result)
-    referenced_messages = _require_message_list(result, "referenced_messages")
-    first_seq = result.get("first_seq")
-    last_seq = result.get("last_seq")
+    messages = cast(list[Mapping[str, object]], result["messages"])
+    referenced_messages = cast(
+        list[Mapping[str, object]], result["referenced_messages"]
+    )
+    first_seq = result["first_seq"]
+    last_seq = result["last_seq"]
     if not messages:
-        if first_seq is not None or last_seq is not None:
-            _invalid_response("empty read response has sequence bounds")
         bounds = "none-none"
     else:
-        if (
-            isinstance(first_seq, bool)
-            or not isinstance(first_seq, int)
-            or first_seq < 0
-            or isinstance(last_seq, bool)
-            or not isinstance(last_seq, int)
-            or last_seq < first_seq
-        ):
-            _invalid_response("command response contains invalid read bounds")
-        if first_seq != _require_non_negative_int(
-            messages[0], "seq"
-        ) or last_seq != _require_non_negative_int(messages[-1], "seq"):
-            _invalid_response("command response read bounds do not match messages")
-        bounds = f"{first_seq}-{last_seq}"
+        bounds = f"{cast(int, first_seq)}-{cast(int, last_seq)}"
     lines = [f"Read window: {len(messages)} returned, seq {bounds}, oldest to newest."]
     if referenced_messages:
         lines.append(f"Referenced messages: {len(referenced_messages)}")
@@ -649,42 +710,38 @@ def serialize_read(result: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+class _MessageSendHandoffRequiredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target: Annotated[StrictStr, Field(min_length=1)]
+
+
+class _MessageSendRoutingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    handoff_required: _MessageSendHandoffRequiredResponse
+
+
 def serialize_send(result: Mapping[str, object]) -> str:
-    outbound = result.get("outbound")
-    if not isinstance(outbound, Mapping):
-        _invalid_response("command response has no outbound object")
-    state = outbound.get("state")
-    if not isinstance(state, str) or state not in {
-        "sent",
-        "queued",
-        "partial",
-        "failed",
-        "unknown",
-        "rejected",
-    }:
-        _invalid_response("command response contains an invalid outbound state")
-    target = _require_text(outbound, "target")
-    outbound_message_id = _require_text(outbound, "outbound_message_id")
+    if "handoff_required" in result:
+        _MessageSendRoutingResponse.model_validate(result)
+        return (
+            "Use `bcc handoff send` to continue this work in the target conversation."
+        )
+
+    outbound = cast(Mapping[str, object], result["outbound"])
+    state = cast(str, outbound["state"])
+    target = cast(str, outbound["target"])
+    outbound_message_id = cast(str, outbound["outbound_message_id"])
     if state == "sent":
         return f"Message sent to {target}. Message ID: {outbound_message_id}"
     if state == "queued":
         return f"Message queued to {target}. Message ID: {outbound_message_id}"
 
-    error_kind = outbound.get("error_kind")
-    error_message = outbound.get("error_message")
-    if not isinstance(error_kind, str) or not error_kind:
-        _invalid_response("command response contains no outbound error kind")
-    if not isinstance(error_message, str) or not error_message:
-        _invalid_response("command response contains no outbound error message")
-    draft_saved_at_ms = _optional_non_negative_int(outbound, "draft_saved_at_ms")
-    if state == "rejected" and draft_saved_at_ms is None and error_kind != "empty_body":
-        _invalid_response("rejected outbound response has no saved draft")
-    next_action_value = outbound.get("next_action")
-    if next_action_value is not None and (
-        not isinstance(next_action_value, str) or not next_action_value
-    ):
-        _invalid_response("command response contains an invalid outbound next_action")
-    next_action = next_action_value if isinstance(next_action_value, str) else None
+    error_kind = cast(str, outbound["error_kind"])
+    error_message = cast(str, outbound["error_message"])
+    draft_saved_at_ms = cast(int | None, outbound["draft_saved_at_ms"])
+    next_action = cast(str | None, outbound["next_action"])
     if state == "partial":
         code = "SEND_PARTIAL"
     elif state == "unknown" or error_kind == "provider_unknown":
@@ -707,32 +764,25 @@ def serialize_send(result: Mapping[str, object]) -> str:
     )
 
 
-def _require_reminder(result: Mapping[str, object]) -> Mapping[str, object]:
-    reminder = result.get("reminder")
-    if not isinstance(reminder, Mapping):
-        _invalid_response("command response has no reminder object")
-    return reminder
+def _reminder(result: Mapping[str, object]) -> Mapping[str, object]:
+    return cast(Mapping[str, object], result["reminder"])
 
 
 def _reminder_label(reminder: Mapping[str, object]) -> str:
-    repeat_rule = reminder.get("repeat_rule")
+    repeat_rule = reminder["repeat_rule"]
     if repeat_rule is None:
         return "one-time"
-    if not isinstance(repeat_rule, str) or not repeat_rule:
-        _invalid_response("command response contains an invalid repeat_rule")
-    return repeat_rule
+    return cast(str, repeat_rule)
 
 
 def _quoted_title(reminder: Mapping[str, object]) -> str:
-    return json.dumps(_require_text(reminder, "title"), ensure_ascii=False)
+    return json.dumps(cast(str, reminder["title"]), ensure_ascii=False)
 
 
 def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
-    reminder = _require_reminder(result)
-    reminder_id = _require_text(reminder, "reminder_id")
-    next_fire = _optional_non_negative_int(reminder, "next_fire_at_ms")
-    if next_fire is None:
-        _invalid_response("scheduled Reminder response has no next fire time")
+    reminder = _reminder(result)
+    reminder_id = cast(str, reminder["reminder_id"])
+    next_fire = cast(int, reminder["next_fire_at_ms"])
     return (
         f"Reminder scheduled: #{reminder_id} ({_reminder_label(reminder)}) "
         f"{_quoted_title(reminder)}\nNext: {format_utc_timestamp(next_fire)}"
@@ -740,44 +790,28 @@ def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
 
 
 def serialize_reminder_check(result: Mapping[str, object]) -> str:
-    items = result.get("items")
-    has_more = result.get("has_more")
-    if not isinstance(items, list) or not all(
-        isinstance(item, Mapping) for item in items
-    ):
-        _invalid_response("command response contains invalid Reminder check items")
-    if not isinstance(has_more, bool):
-        _invalid_response("command response contains invalid Reminder check has_more")
+    items = cast(list[Mapping[str, object]], result["items"])
+    has_more = cast(bool, result["has_more"])
     if not items:
         return "No pending reminders."
 
     lines: list[str] = []
     for item in items:
-        occurrence = item.get("occurrence")
-        if not isinstance(occurrence, Mapping):
-            _invalid_response("Reminder check item has no occurrence")
-        reminder_id = _require_text(occurrence, "reminder_id")
-        occurrence_no = _require_non_negative_int(occurrence, "occurrence_no")
-        if occurrence_no <= 0:
-            _invalid_response("Reminder occurrence number must be positive")
-        scheduled = format_utc_timestamp(
-            _require_non_negative_int(occurrence, "scheduled_for_ms")
-        )
-        fired = format_utc_timestamp(
-            _require_non_negative_int(occurrence, "fired_at_ms")
-        )
-        overdue = occurrence.get("overdue")
-        if not isinstance(overdue, bool):
-            _invalid_response("Reminder occurrence overdue must be boolean")
-        next_fire_at_ms = _optional_non_negative_int(occurrence, "next_fire_at_ms")
+        occurrence = cast(Mapping[str, object], item["occurrence"])
+        reminder_id = cast(str, occurrence["reminder_id"])
+        occurrence_no = cast(int, occurrence["occurrence_no"])
+        scheduled = format_utc_timestamp(cast(int, occurrence["scheduled_for_ms"]))
+        fired = format_utc_timestamp(cast(int, occurrence["fired_at_ms"]))
+        overdue = cast(bool, occurrence["overdue"])
+        next_fire_at_ms = cast(int | None, occurrence["next_fire_at_ms"])
         next_text = (
             format_utc_timestamp(next_fire_at_ms)
             if next_fire_at_ms is not None
             else "none"
         )
-        target = _require_text(item, "canonical_target")
-        anchor = _require_text(occurrence, "anchor_message_id")
-        title = _require_text(item, "title")
+        target = cast(str, item["canonical_target"])
+        anchor = cast(str, occurrence["anchor_message_id"])
+        title = cast(str, item["title"])
         lines.append(
             f"[class=due id={reminder_id} occurrence={occurrence_no} "
             f"scheduled={scheduled} fired={fired} "
@@ -793,46 +827,34 @@ def serialize_reminder_check(result: Mapping[str, object]) -> str:
 
 
 def serialize_reminder_list(result: Mapping[str, object]) -> str:
-    reminders = result.get("reminders")
-    if not isinstance(reminders, list) or not all(
-        isinstance(reminder, Mapping) for reminder in reminders
-    ):
-        _invalid_response("command response contains invalid Reminder list")
+    reminders = cast(list[Mapping[str, object]], result["reminders"])
     if not reminders:
         return "No reminders."
     lines: list[str] = []
     for reminder in reminders:
-        reminder_id = _require_text(reminder, "reminder_id")
-        anchor = _require_text(reminder, "anchor_message_id")
-        state = _require_text(reminder, "state")
+        reminder_id = cast(str, reminder["reminder_id"])
+        anchor = cast(str, reminder["anchor_message_id"])
+        state = cast(str, reminder["state"])
         title = _quoted_title(reminder)
         label = _reminder_label(reminder)
         if state == "scheduled":
-            timestamp = _optional_non_negative_int(reminder, "next_fire_at_ms")
-            if timestamp is None:
-                _invalid_response("scheduled Reminder has no next fire time")
+            timestamp = cast(int, reminder["next_fire_at_ms"])
             lines.append(
                 f"#{reminder_id} [scheduled] ({label}) "
                 f"next={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
             )
         elif state == "fired":
-            timestamp = _optional_non_negative_int(reminder, "last_fired_at_ms")
-            if timestamp is None:
-                _invalid_response("fired Reminder has no fired time")
+            timestamp = cast(int, reminder["last_fired_at_ms"])
             lines.append(
                 f"#{reminder_id} [fired] (one-time) "
                 f"fired_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
             )
         elif state == "canceled":
-            timestamp = _optional_non_negative_int(reminder, "canceled_at_ms")
-            if timestamp is None:
-                _invalid_response("canceled Reminder has no canceled time")
+            timestamp = cast(int, reminder["canceled_at_ms"])
             lines.append(
                 f"#{reminder_id} [canceled] ({label}) "
                 f"canceled_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
             )
-        else:
-            _invalid_response("command response contains an invalid Reminder state")
     return "\n".join(lines)
 
 
@@ -842,14 +864,12 @@ def _serialize_reminder_mutation(
     verb: str,
     include_next: bool,
 ) -> str:
-    reminder = _require_reminder(result)
-    reminder_id = _require_text(reminder, "reminder_id")
+    reminder = _reminder(result)
+    reminder_id = cast(str, reminder["reminder_id"])
     line = f"Reminder {verb}: #{reminder_id}"
     if not include_next:
         return line
-    next_fire = _optional_non_negative_int(reminder, "next_fire_at_ms")
-    if next_fire is None:
-        _invalid_response(f"Reminder {verb} response has no next fire time")
+    next_fire = cast(int, reminder["next_fire_at_ms"])
     return f"{line}\nNext: {format_utc_timestamp(next_fire)}"
 
 
@@ -865,14 +885,117 @@ def serialize_reminder_cancel(result: Mapping[str, object]) -> str:
     return _serialize_reminder_mutation(result, verb="canceled", include_next=False)
 
 
+HandoffText = Annotated[StrictStr, Field(min_length=1)]
+HandoffTime = Annotated[StrictInt, Field(ge=0)]
+
+
+class _HandoffResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    handoff_id: HandoffText
+    command_id: HandoffText
+    source_session_id: HandoffText
+    target_session_id: HandoffText
+    source_message_id: HandoffText | None
+    body: StrictStr
+    created_at_ms: HandoffTime
+    read_at_ms: HandoffTime | None
+
+    @field_validator("body")
+    @classmethod
+    def _require_body(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("handoff body must contain non-whitespace text")
+        return value
+
+    @field_validator("source_message_id")
+    @classmethod
+    def _require_source_message_id(cls, value: str | None) -> str | None:
+        return None if value is None else canonical_id_reference(value)
+
+
+class _HandoffSendResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    handoff: _HandoffResponse
+    target: HandoffText
+
+    @field_validator("handoff")
+    @classmethod
+    def _require_pending_handoff(cls, value: _HandoffResponse) -> _HandoffResponse:
+        if value.read_at_ms is not None:
+            raise ValueError("sent handoff must not contain read_at_ms")
+        return value
+
+
+class _HandoffCheckItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    handoff: _HandoffResponse
+    source_target: HandoffText
+
+    @field_validator("handoff")
+    @classmethod
+    def _require_read_handoff(cls, value: _HandoffResponse) -> _HandoffResponse:
+        if value.read_at_ms is None:
+            raise ValueError("checked handoff must contain read_at_ms")
+        return value
+
+
+class _HandoffCheckResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[_HandoffCheckItemResponse]
+    has_more: StrictBool
+
+
+def _validate_handoff_response[ResponseT: BaseModel](
+    result: Mapping[str, object], model: type[ResponseT]
+) -> ResponseT:
+    try:
+        return model.model_validate(result)
+    except ValidationError as error:
+        raise BccCommandError(
+            "Handoff command returned an invalid response.",
+            code="HANDOFF_RESPONSE_INVALID",
+        ) from error
+
+
+def serialize_handoff_send(result: Mapping[str, object]) -> str:
+    response = _validate_handoff_response(result, _HandoffSendResponse)
+    return f"Handoff sent: #{response.handoff.handoff_id} target={response.target}"
+
+
+def serialize_handoff_check(result: Mapping[str, object]) -> str:
+    response = _validate_handoff_response(result, _HandoffCheckResponse)
+    if not response.items:
+        return "No pending handoffs."
+
+    lines = []
+    for item in response.items:
+        handoff = item.handoff
+        source_message = handoff.source_message_id or "none"
+        lines.append(
+            f"[handoff={handoff.handoff_id} source={item.source_target} "
+            f"message={source_message} "
+            f"time={format_message_time(handoff.created_at_ms)}] {handoff.body}"
+        )
+    lines.append(
+        "More pending handoffs remain. Run `bcc handoff check` again."
+        if response.has_more
+        else "No more pending handoffs."
+    )
+    return "\n".join(lines)
+
+
 async def async_main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     body = None
-    if args.resource == "message" and args.command == "send":
+    if args.resource in {"message", "handoff"} and args.command == "send":
         body = await asyncio.to_thread(sys.stdin.read)
     response = await _request(args, body=body)
-    result = _require_result(response)
+    result = _result(response)
 
     if args.resource == "message":
         if args.command == "check":
@@ -881,6 +1004,15 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
             print(serialize_read(result))
         elif args.command == "send":
             print(serialize_send(result))
+    elif args.resource == "inbox":
+        if args.command == "list":
+            print(serialize_inbox_list(result))
+    elif args.resource == "handoff":
+        serializer = {
+            "send": serialize_handoff_send,
+            "check": serialize_handoff_check,
+        }[args.command]
+        print(serializer(result))
     elif args.resource == "reminder":
         serializer = {
             "schedule": serialize_reminder_schedule,

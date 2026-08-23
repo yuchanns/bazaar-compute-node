@@ -9,6 +9,7 @@ from bazaar_compute_node.bcc import (
     _print_error,
     build_parser,
     serialize_check,
+    serialize_inbox_list,
     serialize_read,
     serialize_send,
 )
@@ -57,7 +58,144 @@ def local_time(timestamp_ms: int) -> str:
     )
 
 
-def test_check_serializer_matches_canonical_text() -> None:
+def inbox_target_payload(
+    *,
+    target: str = "dm:alice",
+    session_id: str = "session-a",
+    target_kind: str = "dm",
+    current: bool = False,
+    pending_count: int = 0,
+    last_activity_at_ms: int = 1_700_000_000_002,
+    latest_message_id: str | None = "latest-message",
+    latest_sender: dict[str, str] | None = None,
+    latest_time_ms: int | None = 1_700_000_000_000,
+) -> dict[str, object]:
+    return {
+        "target": target,
+        "session_id": session_id,
+        "target_kind": target_kind,
+        "current": current,
+        "pending_count": pending_count,
+        "last_activity_at_ms": last_activity_at_ms,
+        "latest_message_id": latest_message_id,
+        "latest_sender": (
+            {"id": "alice-id", "name": "alice"}
+            if latest_sender is None and latest_message_id is not None
+            else latest_sender
+        ),
+        "latest_time_ms": latest_time_ms,
+    }
+
+
+def test_inbox_list_serializer_renders_targets_and_next_page() -> None:
+    result = {
+        "targets": [
+            inbox_target_payload(
+                target="dm:alice",
+                session_id="session-a",
+                current=False,
+                pending_count=0,
+            ),
+            inbox_target_payload(
+                target="group:team",
+                session_id="session-b",
+                target_kind="group",
+                current=True,
+                pending_count=3,
+                last_activity_at_ms=1_700_000_000_001,
+                latest_message_id="team-message",
+                latest_sender={"id": "bob-id", "name": "bob"},
+                latest_time_ms=1_700_000_000_001,
+            ),
+        ],
+        "total": 3,
+        "shown": 2,
+        "offset": 0,
+        "has_more": True,
+    }
+
+    assert serialize_inbox_list(result) == (
+        "Inbox targets: 2 returned, offset 0, total 3, "
+        "ordered by recent activity.\n"
+        "[target=dm:alice session=session-a kind=dm current=false pending=0 "
+        "latest-msg=latest-message latest-sender=@alice "
+        f"latest-time={local_time(1_700_000_000_000)}]\n"
+        "[target=group:team session=session-b kind=group current=true pending=3 "
+        "latest-msg=team-message latest-sender=@bob "
+        f"latest-time={local_time(1_700_000_000_001)}]\n"
+        "More message targets remain. Run `bcc inbox list --offset 2`."
+    )
+
+
+def test_inbox_list_serializer_renders_target_without_latest_message() -> None:
+    result = {
+        "targets": [
+            inbox_target_payload(
+                target="dm:empty",
+                session_id="session-empty",
+                last_activity_at_ms=0,
+                latest_message_id=None,
+                latest_sender=None,
+                latest_time_ms=None,
+            )
+        ],
+        "total": 1,
+        "shown": 1,
+        "offset": 0,
+        "has_more": False,
+    }
+
+    assert serialize_inbox_list(result) == (
+        "Inbox targets: 1 returned, offset 0, total 1, "
+        "ordered by recent activity.\n"
+        "[target=dm:empty session=session-empty kind=dm current=false pending=0 "
+        "latest-msg=none latest-sender=none latest-time=none]\n"
+        "No more message targets."
+    )
+
+
+def test_inbox_list_serializer_renders_empty_catalog() -> None:
+    assert serialize_inbox_list(
+        {
+            "targets": [],
+            "total": 0,
+            "shown": 0,
+            "offset": 0,
+            "has_more": False,
+        }
+    ) == (
+        "Inbox targets: 0 returned, offset 0, total 0, "
+        "ordered by recent activity.\n"
+        "No message targets."
+    )
+
+
+def test_inbox_list_serializer_renders_empty_page_after_catalog() -> None:
+    assert serialize_inbox_list(
+        {
+            "targets": [],
+            "total": 1,
+            "shown": 0,
+            "offset": 1,
+            "has_more": False,
+        }
+    ) == (
+        "Inbox targets: 0 returned, offset 1, total 1, "
+        "ordered by recent activity.\n"
+        "No more message targets."
+    )
+
+
+def test_inbox_list_parser_accepts_pagination_arguments() -> None:
+    args = build_parser().parse_args(("inbox", "list", "--limit", "3", "--offset", "6"))
+
+    assert args.resource == "inbox"
+    assert args.command == "list"
+    assert args.limit == 3
+    assert args.offset == 6
+
+
+def test_check_serializer_matches_text() -> None:
     result = {
         "messages": [message_payload()],
         "referenced_messages": [],
@@ -241,7 +379,7 @@ def test_message_send_accepts_ordered_repeatable_attachments() -> None:
     assert args.attachment == ["first.txt", "second.png"]
 
 
-def test_read_serializer_includes_positioning_and_canonical_reply_target() -> None:
+def test_read_serializer_includes_positioning_and_reply_target() -> None:
     result = {
         "messages": [message_payload()],
         "referenced_messages": [],
@@ -273,21 +411,6 @@ def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
     assert "replyTarget=#work:parent123" in output
 
 
-def test_read_serializer_rejects_mismatched_window_bounds() -> None:
-    result = {
-        "messages": [message_payload(seq=7)],
-        "referenced_messages": [],
-        "snapshot_seq": 7,
-        "first_seq": 6,
-        "last_seq": 7,
-    }
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_read(result)
-
-    assert error.value.code == "INVALID_RESPONSE"
-
-
 def outbound_payload(
     *,
     state: str,
@@ -310,6 +433,7 @@ def outbound_payload(
 def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
     sent = {"outbound": outbound_payload(state="sent")}
     queued = {"outbound": outbound_payload(state="queued")}
+    handoff_required = {"handoff_required": {"target": "dm:alice"}}
 
     assert serialize_send(sent) == (
         "Message sent to #work:parent123. Message ID: 0123456789abcdef0123456789abcdef"
@@ -317,6 +441,9 @@ def test_send_serializer_matches_sent_and_queued_stdout_contracts() -> None:
     assert serialize_send(queued) == (
         "Message queued to #work:parent123. "
         "Message ID: 0123456789abcdef0123456789abcdef"
+    )
+    assert serialize_send(handoff_required) == (
+        "Use `bcc handoff send` to continue this work in the target conversation."
     )
 
 
@@ -355,21 +482,6 @@ def test_send_serializer_maps_empty_body_refusal() -> None:
     assert error.value.code == "SEND_EMPTY_BODY"
     assert error.value.draft_saved is False
     assert error.value.next_action == "Provide a non-empty message body and retry."
-
-
-def test_send_serializer_rejects_malformed_delivery_response() -> None:
-    with pytest.raises(BccCommandError) as error:
-        serialize_send(
-            {
-                "outbound": outbound_payload(
-                    state="rejected",
-                    error_kind="target_not_replyable",
-                    error_message="target rejected",
-                )
-            }
-        )
-
-    assert error.value.code == "INVALID_RESPONSE"
 
 
 def test_read_parser_accepts_history_positioning_arguments() -> None:

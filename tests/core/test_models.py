@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from bazaar_compute_node.core.command import InboxListResult
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
     FreshCheckState,
+    InboxTargetSummary,
     OutboundAttachment,
     OutboundDeliveryState,
     OutboundMessage,
@@ -66,12 +69,92 @@ def make_outbound_message() -> OutboundMessage:
     )
 
 
+def make_inbox_target() -> InboxTargetSummary:
+    return InboxTargetSummary(
+        target="dm:user-1",
+        session_id="bcn-1",
+        target_kind=ChannelTargetKind.DM,
+        current=True,
+        pending_count=2,
+        last_activity_at_ms=100,
+        latest_message_id="message-1",
+        latest_sender=SenderIdentity(id="user-1", name="Test User"),
+        latest_provider_time_ms=99,
+        latest_received_at_ms=100,
+    )
+
+
 def test_sender_identity_separates_stable_id_from_display_name() -> None:
     named = SenderIdentity(id="test-user-id", name="test-user")
     unnamed = SenderIdentity(id="test-user-id")
 
     assert named.display_name == "test-user"
     assert unnamed.display_name == "test-user-id"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("latest_sender", SenderIdentity(id="user-1")),
+        ("latest_provider_time_ms", 99),
+        ("latest_received_at_ms", 100),
+    ),
+)
+def test_inbox_target_summary_requires_latest_message_id_for_latest_fields(
+    field_name: str,
+    value: object,
+) -> None:
+    kwargs = {
+        "target": "dm:user-1",
+        "session_id": "bcn-1",
+        "target_kind": ChannelTargetKind.DM,
+        "current": True,
+        "pending_count": 0,
+        "last_activity_at_ms": 100,
+        "latest_message_id": None,
+        "latest_sender": None,
+        "latest_provider_time_ms": None,
+        "latest_received_at_ms": None,
+    }
+    kwargs[field_name] = value
+
+    with pytest.raises(ValueError, match="latest message fields"):
+        InboxTargetSummary(**kwargs)
+
+
+def test_inbox_target_summary_requires_received_time_with_latest_message_id() -> None:
+    with pytest.raises(ValueError, match="latest_received_at_ms"):
+        InboxTargetSummary(
+            target="dm:user-1",
+            session_id="bcn-1",
+            target_kind=ChannelTargetKind.DM,
+            current=False,
+            pending_count=0,
+            last_activity_at_ms=100,
+            latest_message_id="message-1",
+        )
+
+
+def test_inbox_list_result_enforces_pagination_invariant() -> None:
+    result = InboxListResult(
+        targets=(make_inbox_target(),),
+        total=3,
+        shown=1,
+        offset=1,
+        has_more=True,
+    )
+
+    assert result.shown == len(result.targets)
+    assert result.offset + result.shown < result.total
+
+    with pytest.raises(ValueError, match="has_more"):
+        InboxListResult(
+            targets=result.targets,
+            total=result.total,
+            shown=result.shown,
+            offset=result.offset,
+            has_more=False,
+        )
 
 
 def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:

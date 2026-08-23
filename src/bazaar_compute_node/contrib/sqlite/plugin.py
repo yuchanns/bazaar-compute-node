@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from ...core.storage import IStorage
-from .reminder_database import SqliteDatabase
+from .storage import SqliteDatabase
 
 
 def create_storage(options: Mapping[str, object] | None = None) -> IStorage:

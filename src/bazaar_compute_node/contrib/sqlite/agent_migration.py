@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from . import migrations as _migrations
-from .migrations import Migration
+from .migration import Migration
 
 AGENT_OWNERSHIP_MIGRATION = Migration(
     version=13,
@@ -208,23 +207,4 @@ AGENT_OWNERSHIP_MIGRATION = Migration(
         "DROP TABLE _agent_ownership_guard",
     ),
 )
-
-
-def install_agent_ownership_migration() -> None:
-    versions = {migration.version: migration for migration in _migrations.MIGRATIONS}
-    existing = versions.get(AGENT_OWNERSHIP_MIGRATION.version)
-    if existing is not None:
-        if (
-            existing.name != AGENT_OWNERSHIP_MIGRATION.name
-            or existing.checksum != AGENT_OWNERSHIP_MIGRATION.checksum
-        ):
-            raise RuntimeError(
-                "migration version 13 is already bound to different content"
-            )
-        return
-    if _migrations.MIGRATIONS[-1].version >= AGENT_OWNERSHIP_MIGRATION.version:
-        raise RuntimeError("agent ownership migration must extend the migration ledger")
-    _migrations.MIGRATIONS = (*_migrations.MIGRATIONS, AGENT_OWNERSHIP_MIGRATION)
-
-
-__all__ = ["AGENT_OWNERSHIP_MIGRATION", "install_agent_ownership_migration"]
+__all__ = ["AGENT_OWNERSHIP_MIGRATION"]

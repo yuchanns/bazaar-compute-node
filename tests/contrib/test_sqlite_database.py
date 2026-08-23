@@ -112,6 +112,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             outbound_columns = await transaction.fetchall(
                 "PRAGMA table_info(outbound_messages)"
             )
+            handoff_columns = await transaction.fetchall("PRAGMA table_info(handoffs)")
             journal_mode = await transaction.fetchone("PRAGMA journal_mode")
             busy_timeout = await transaction.fetchone("PRAGMA busy_timeout")
             provider_identity_columns = await transaction.fetchall(
@@ -135,6 +136,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "bcn_sessions",
             "channel_sessions",
             "consumer_cursors",
+            "handoffs",
             "inbound_attachments",
             "inbound_messages",
             "outbound_messages",
@@ -148,8 +150,11 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "idx_inbound_provider_identity",
             "idx_inbound_reply_to_message",
             "idx_inbound_seq",
+            "idx_inbound_agent_session_seq",
+            "idx_inbound_agent_target_session",
             "idx_inbound_session_seq",
             "idx_inbound_session_target_seq",
+            "idx_handoffs_agent_target_read_seq",
             "idx_outbound_session_created",
             "idx_outbound_state_created",
             "idx_bcn_sessions_channel",
@@ -164,7 +169,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 13
+        assert schema_version["version"] == 15
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
@@ -178,6 +183,18 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert "attachments_json" in outbound_primary_keys
         assert "agent_id" in outbound_primary_keys
         assert "agent_name" in outbound_primary_keys
+        assert {row["name"] for row in handoff_columns} == {
+            "seq",
+            "handoff_id",
+            "command_id",
+            "agent_id",
+            "source_session_id",
+            "target_session_id",
+            "source_message_id",
+            "body",
+            "created_at_ms",
+            "read_at_ms",
+        }
         assert [row["name"] for row in provider_identity_columns] == [
             "agent_id",
             "channel",
@@ -294,13 +311,15 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             )
             session_indexes = await transaction.fetchall(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?) ORDER BY name",
+                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?, ?, ?) ORDER BY name",
                 (
                     "idx_bcn_sessions_channel",
                     "idx_channel_sessions_provider_identity",
                     "idx_inbound_provider_identity",
                     "idx_inbound_session_target_seq",
                     "idx_inbound_reply_to_message",
+                    "idx_inbound_agent_session_seq",
+                    "idx_inbound_agent_target_session",
                 ),
             )
         assert [row["version"] for row in migration_rows] == [
@@ -315,6 +334,8 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             "idx_inbound_provider_identity",
             "idx_inbound_session_target_seq",
             "idx_inbound_reply_to_message",
+            "idx_inbound_agent_session_seq",
+            "idx_inbound_agent_target_session",
         }
     finally:
         await database.stop(timeout=2)
@@ -389,7 +410,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 13
+        assert schema_version["version"] == 15
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -516,7 +537,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 13
+        assert schema_version["version"] == 15
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

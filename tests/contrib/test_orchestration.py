@@ -37,14 +37,19 @@ from bazaar_compute_node.core.channel import (
     ChannelSendRequest,
     IChannel,
 )
-from bazaar_compute_node.core.command import ICommandService
+from bazaar_compute_node.core.command import (
+    ICommandService,
+    MessageSendHandoffRequired,
+)
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
+    Handoff,
     InboundMessage,
     OutboundDeliveryState,
+    OutboundMessage,
     ReminderOccurrence,
     RuntimeEvent,
     RuntimeEventState,
@@ -67,7 +72,7 @@ from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
     RuntimeSessionReconciliation,
 )
-from bazaar_compute_node.core.storage import IStorage
+from bazaar_compute_node.core.storage import IHandoffStorageScope, IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import (
     ENGLISH,
@@ -189,6 +194,37 @@ async def make_node(
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
+    return orchestrator, channel, runtime, storage, audit
+
+
+async def make_sqlite_node() -> tuple[
+    SessionOrchestrator,
+    TestChannel,
+    TestRuntime,
+    SqliteDatabase,
+    RecordingAudit,
+]:
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = SqliteDatabase(database_name=f"task4-{uuid7()}.sqlite3")
+    audit = RecordingAudit()
+    await storage.start(timeout=2)
+    storage_scope = storage.scope("workspace-1", "Test Agent")
+    orchestrator = SessionOrchestrator(
+        agent_id="workspace-1",
+        channel=channel,
+        runtime=runtime,
+        storage=storage_scope,
+        handoff_storage=cast(IHandoffStorageScope, storage_scope),
+        audit=audit,
+        timeout_budget=make_budget(),
+        timer_wheel=TimerWheel(),
+        workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
+    )
+    runtime.command_service = orchestrator.command_service
+    await orchestrator.start(timeout=2)
     return orchestrator, channel, runtime, storage, audit
 
 
@@ -657,6 +693,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
             body="runtime-generated reply",
             created_at_ms=2,
         )
+        assert isinstance(outbound, OutboundMessage)
         if outbound.state is not OutboundDeliveryState.SENT:
             raise AssertionError("command did not deliver the outbound message")
 
@@ -697,43 +734,42 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_drains_read_preserves_cursor_and_snapshot() -> None:
-    orchestrator, channel, _, storage, _ = await make_node()
+async def test_agent_scoped_read_returns_target_messages() -> None:
+    orchestrator, _, _, storage, _ = await make_sqlite_node()
+    caller_id = "bcn-caller"
+    target_session_id = "bcn-target"
+    caller_message = make_message(session_id=caller_id)
+    target_parent = make_message(session_id=target_session_id)
+    target_reply = replace(
+        target_parent,
+        seq=2,
+        message_id="message-bcn-target-2",
+        provider_message_id="provider-bcn-target-2",
+        received_at_ms=2,
+        body="target reply",
+        reply_to_message_id=target_parent.message_id,
+    )
+    await orchestrator.handle_inbound(caller_message)
+    await orchestrator.handle_inbound(target_parent)
+    await orchestrator.handle_inbound(target_reply)
+
     try:
-        await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
-
         history = await orchestrator.command_service.read(
-            "bcn-1",
-            target="#test:bcn-1",
+            caller_id,
+            target=target_reply.canonical_target,
+            around_message_id=target_reply.message_id,
             limit=1,
         )
-        assert [message.seq for message in history.messages] == [1]
-        assert history.snapshot_seq == 1
-        assert history.first_seq == 1
-        assert history.last_seq == 1
-        assert storage.cursors["bcn-1"].delivered_through_seq == 0
-        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 1
-
-        checked = await orchestrator.command_service.check("bcn-1")
-        assert [message.seq for message in checked.messages] == [1]
-        assert checked.snapshot_seq == 1
-        assert checked.delivered_through_seq == 1
-        assert storage.cursors["bcn-1"].delivered_through_seq == 1
-
-        await channel.inject(make_message(seq=2))
-        await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
-        around = await orchestrator.command_service.read(
-            "bcn-1",
-            target="#test:bcn-1",
-            around_message_id=storage.inbound_messages["bcn-1"][1].message_id,
-            limit=1,
-        )
-        assert [message.seq for message in around.messages] == [2]
-        assert storage.cursors["bcn-1"].delivered_through_seq == 1
-        assert storage.cursors["bcn-1"].inbox_snapshot_seq == 2
+        assert [message.message_id for message in history.messages] == [
+            target_reply.message_id
+        ]
+        assert [message.message_id for message in history.referenced_messages] == [
+            target_parent.message_id
+        ]
+        assert history.messages[0].canonical_target == target_reply.canonical_target
     finally:
         await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -846,6 +882,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             body="reply",
             created_at_ms=2,
         )
+        assert isinstance(rejected_without_snapshot, OutboundMessage)
         assert rejected_without_snapshot.state is OutboundDeliveryState.REJECTED
         assert not channel.send_attempts
 
@@ -859,6 +896,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             created_at_ms=3,
             reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
         )
+        assert isinstance(delivered, OutboundMessage)
         assert delivered.state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].provider_reply_to_message_id == (
             storage.inbound_messages["bcn-1"][0].provider_message_id
@@ -874,6 +912,7 @@ async def test_fresh_check_rejects_stale_send_before_channel_call() -> None:
             body="reply",
             created_at_ms=4,
         )
+        assert isinstance(stale, OutboundMessage)
         assert stale.state is OutboundDeliveryState.REJECTED
         assert len(channel.send_attempts) == 1
     finally:
@@ -902,6 +941,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
             created_at_ms=2,
             attachment_paths=(str(first), str(second)),
         )
+        assert isinstance(delivered, OutboundMessage)
 
         assert delivered.state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].attachments == delivered.attachments
@@ -919,20 +959,23 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
     try:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await orchestrator._record_inbound(make_message(session_id="bcn-other"))
 
-        invalid_target = await orchestrator.command_service.send(
+        cross_session_target = await orchestrator.command_service.send(
             session_id="bcn-1",
-            command_id="command-invalid-target",
-            target="#test:missing",
+            command_id="command-cross-session-target",
+            target="#test:bcn-other",
             body="reply",
             created_at_ms=2,
         )
-        assert invalid_target.state is OutboundDeliveryState.REJECTED
-        assert invalid_target.error_kind == "target_not_replyable"
-        assert invalid_target.draft_saved_at_ms is not None
+        assert cross_session_target == MessageSendHandoffRequired(
+            target="#test:bcn-other"
+        )
+        assert storage.outbound_messages == {}
         assert not channel.send_attempts
         assert any(
-            event.event_name == "bcc.send.target.failed" for event in audit.events
+            event.event_name == "tool.bcc.message.send.handoff_required"
+            for event in audit.events
         )
 
         await orchestrator.command_service.check("bcn-1")
@@ -943,6 +986,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body=" \t",
             created_at_ms=3,
         )
+        assert isinstance(empty_body, OutboundMessage)
         assert empty_body.state is OutboundDeliveryState.REJECTED
         assert empty_body.error_kind == "empty_body"
         assert empty_body.draft_saved_at_ms is None
@@ -968,6 +1012,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="queued reply",
             created_at_ms=4,
         )
+        assert isinstance(queued, OutboundMessage)
         assert queued.state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
         assert channel.queued_messages == [channel.send_attempts[0]]
@@ -987,6 +1032,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="unknown reply",
             created_at_ms=5,
         )
+        assert isinstance(unknown, OutboundMessage)
         assert unknown.state is OutboundDeliveryState.UNKNOWN
         assert unknown.provider_receipt_ref == "attempted-send-1"
         assert unknown.next_action == "reconcile channel delivery before retrying"
@@ -1020,6 +1066,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="partial reply",
             created_at_ms=6,
         )
+        assert isinstance(partial, OutboundMessage)
         assert partial.state is OutboundDeliveryState.PARTIAL
         assert partial.provider_receipt_ref == "batch-1"
         assert partial.next_action == "do not retry the complete message automatically"
@@ -1053,6 +1100,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="failed reply",
             created_at_ms=7,
         )
+        assert isinstance(failed, OutboundMessage)
         assert failed.state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 4
@@ -1556,6 +1604,73 @@ async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
         )
     finally:
         await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_handoff_wakes_start_idle_target_and_steer_active_target() -> None:
+    orchestrator, _, runtime, storage, _ = await make_sqlite_node()
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    active_task = orchestrator.dispatch_inbound(make_message(session_id="bcn-active"))
+    try:
+        await runtime.turn_started.wait()
+        source_context, _, _ = await orchestrator._record_inbound(
+            make_message(session_id="bcn-source")
+        )
+        idle_context, _, _ = await orchestrator._record_inbound(
+            make_message(session_id="bcn-idle")
+        )
+        assert source_context is not None
+        assert idle_context is not None
+        async with storage.scope("workspace-1", "Test Agent").transaction() as tx:
+            for number, target_session_id in enumerate(
+                ("bcn-idle", "bcn-idle", "bcn-active")
+            ):
+                await tx.save_handoff(
+                    Handoff(
+                        handoff_id=f"handoff-{number}",
+                        command_id=f"command-{number}",
+                        source_session_id=source_context.bcn_session.id,
+                        target_session_id=target_session_id,
+                        source_message_id=None,
+                        body=f"Hidden task {number}.",
+                        created_at_ms=number + 1,
+                    )
+                )
+
+        await orchestrator.publish_handoff_wake("bcn-idle")
+        await orchestrator.publish_handoff_wake("bcn-active")
+        async with asyncio.timeout(1):
+            while len(runtime.started_turns) != 2 or len(runtime.steered_turns) != 1:
+                await asyncio.sleep(0.01)
+
+        idle_notice = runtime.started_turns[1][2]
+        active_session, _, active_notice = runtime.steered_turns[0]
+        assert runtime.started_turns[1][0].bcn_session_id == "bcn-idle"
+        assert idle_notice == (
+            "[handoff notice session=bcn-idle]\n"
+            "Handoffs pending: 2. Use `bcc handoff check` to read them."
+        )
+        assert active_session.bcn_session_id == "bcn-active"
+        assert active_notice == (
+            "[handoff notice session=bcn-active]\n"
+            "Handoffs pending: 1. Use `bcc handoff check` to read them."
+        )
+        async with storage.scope("workspace-1", "Test Agent").transaction() as tx:
+            pending = await tx.list_pending_handoffs("bcn-active", limit=100)
+            await tx.mark_handoffs_read(
+                "bcn-active",
+                tuple(item.handoff_id for item in pending),
+                read_at_ms=4,
+            )
+    finally:
+        for stream in tuple(runtime.active_streams):
+            stream.release()
+        await asyncio.gather(active_task, return_exceptions=True)
+        queue = orchestrator._runtime_queues.get("bcn-active")
+        if queue is not None:
+            await asyncio.wait_for(queue.join(), timeout=1)
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio

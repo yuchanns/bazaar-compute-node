@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from typing import cast
 
 from . import scoped_repository
-from .agent_migration import install_agent_ownership_migration
 from .database import SqliteDatabase as _BaseSqliteDatabase
-from .reminder_migration import install_reminder_migration
-from .reminder_repository import ReminderTransaction
+from .handoff_repository import HandoffRepository
+from .reminder_repository import ReminderRepository
 
-install_reminder_migration()
-install_agent_ownership_migration()
+
+class StorageTransaction(HandoffRepository, ReminderRepository):
+    """Complete unscoped SQLite repository transaction."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +47,10 @@ class SqliteStorageScope:
 
     def transaction(
         self,
-    ) -> AbstractAsyncContextManager[scoped_repository.ReminderTransaction]:
+    ) -> AbstractAsyncContextManager[scoped_repository.StorageTransaction]:
         return cast(
-            AbstractAsyncContextManager[scoped_repository.ReminderTransaction],
-            scoped_repository.ReminderTransaction(
+            AbstractAsyncContextManager[scoped_repository.StorageTransaction],
+            scoped_repository.StorageTransaction(
                 self.database,
                 agent_id=self.agent_id,
                 agent_name=self.agent_name,
@@ -64,11 +64,11 @@ class SqliteDatabase(_BaseSqliteDatabase):
 
     def transaction(
         self,
-    ) -> AbstractAsyncContextManager[ReminderTransaction]:
+    ) -> AbstractAsyncContextManager[StorageTransaction]:
         return cast(
-            AbstractAsyncContextManager[ReminderTransaction],
-            ReminderTransaction(self),
+            AbstractAsyncContextManager[StorageTransaction],
+            StorageTransaction(self),
         )
 
 
-__all__ = ["SqliteDatabase", "SqliteStorageScope"]
+__all__ = ["SqliteDatabase", "SqliteStorageScope", "StorageTransaction"]

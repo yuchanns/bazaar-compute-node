@@ -15,12 +15,8 @@ from ...core.models import (
 )
 from ...core.reminder import canonical_id_reference
 from .codec import (
-    _required_non_negative_int,
     _required_text,
     inbound_message_from_row,
-    validate_non_empty_text,
-    validate_non_negative_int,
-    validate_positive_int,
 )
 from .reminder_codec import reminder_from_row, reminder_occurrence_from_row
 from .repository import SqliteTransaction
@@ -45,13 +41,12 @@ _INBOUND_COLUMNS = (
 _OWNED_REMINDER_COLUMNS = f"agent_id, {_REMINDER_COLUMNS}"
 
 
-class ReminderTransaction(SqliteTransaction):
+class ReminderRepository(SqliteTransaction):
     async def resolve_inbound_message(
         self,
         session_id: str,
         message_id: str,
     ) -> InboundMessage | None:
-        validate_non_empty_text(session_id, "session_id")
         reference = canonical_id_reference(message_id)
         row = await self.fetchone(
             f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
@@ -67,7 +62,6 @@ class ReminderTransaction(SqliteTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> Reminder | None:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         reference = canonical_id_reference(reminder_id)
         row = await self.fetchone(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
@@ -81,7 +75,6 @@ class ReminderTransaction(SqliteTransaction):
         owner_session_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         if not isinstance(statuses, frozenset) or not statuses:
             raise ValueError("statuses must be a non-empty frozenset")
         if not all(isinstance(status, ReminderState) for status in statuses):
@@ -144,7 +137,6 @@ class ReminderTransaction(SqliteTransaction):
         expected_revision: int,
         reminder: object,
     ) -> Reminder:
-        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         existing = await self.get_reminder(
@@ -192,8 +184,6 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[Reminder, ...]:
-        validate_non_negative_int(now_ms, "now_ms")
-        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
             "WHERE state = ? AND next_fire_at_ms <= ? "
@@ -208,9 +198,6 @@ class ReminderTransaction(SqliteTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None:
-        validate_non_empty_text(agent_id, "agent_id")
-        validate_non_empty_text(owner_session_id, "owner_session_id")
-        validate_non_empty_text(reminder_id, "reminder_id")
         bound_agent_id = self._bound_agent_id()
         if bound_agent_id is not None and bound_agent_id != agent_id:
             return None
@@ -243,8 +230,6 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[OwnedReminder, ...]:
-        validate_non_negative_int(now_ms, "now_ms")
-        validate_positive_int(limit, "limit")
         predicates = ["state = ?", "next_fire_at_ms <= ?"]
         parameters: list[object] = [ReminderState.SCHEDULED.value, now_ms]
         bound_agent_id = self._bound_agent_id()
@@ -265,7 +250,6 @@ class ReminderTransaction(SqliteTransaction):
         reminder: object,
         occurrence: object,
     ) -> OwnedReminderOccurrence:
-        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, OwnedReminder):
             raise TypeError("reminder must be an OwnedReminder")
         if not isinstance(occurrence, OwnedReminderOccurrence):
@@ -413,7 +397,6 @@ class ReminderTransaction(SqliteTransaction):
         reminder: object,
         occurrence: object,
     ) -> ReminderOccurrence:
-        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if not isinstance(occurrence, ReminderOccurrence):
@@ -492,8 +475,6 @@ class ReminderTransaction(SqliteTransaction):
         *,
         limit: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
-        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_OCCURRENCE_COLUMNS} FROM reminder_occurrences "
             "WHERE owner_session_id = ? AND read_at_ms IS NULL "
@@ -503,7 +484,6 @@ class ReminderTransaction(SqliteTransaction):
         return tuple(reminder_occurrence_from_row(row) for row in rows)
 
     async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         row = await self.fetchone(
             "SELECT COUNT(*) AS pending_count FROM reminder_occurrences "
             "WHERE owner_session_id = ? AND read_at_ms IS NULL",
@@ -511,7 +491,7 @@ class ReminderTransaction(SqliteTransaction):
         )
         if row is None:
             raise RuntimeError("SQLite reminder pending count returned no row")
-        return _required_non_negative_int(row["pending_count"], "pending_count")
+        return cast(int, row["pending_count"])
 
     async def mark_reminder_occurrences_read(
         self,
@@ -520,8 +500,6 @@ class ReminderTransaction(SqliteTransaction):
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
-        validate_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
         occurrence_ids = cast(tuple[str, ...], occurrence_ids)
@@ -607,4 +585,4 @@ class ReminderTransaction(SqliteTransaction):
             raise ValueError("reminder identity cannot change")
 
 
-__all__ = ["ReminderTransaction"]
+__all__ = ["ReminderRepository"]

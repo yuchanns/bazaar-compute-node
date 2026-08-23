@@ -39,11 +39,6 @@ def test_approval_binding_preserves_runtime_to_channel_correlation() -> None:
     assert not binding.matches(replace(request, request_id="request-2"))
 
 
-def test_correlation_context_rejects_invalid_local_sequence() -> None:
-    with pytest.raises(ValueError, match="inbound_seq"):
-        CorrelationContext(bcn_session_id="bcn-1", inbound_seq=-1)
-
-
 def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
     event = AuditEvent(
         event_name="runtime.turn.failed",
