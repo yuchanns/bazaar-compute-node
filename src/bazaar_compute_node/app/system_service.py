@@ -271,6 +271,29 @@ exit $exitCode
 """
 
 
+def _vbs_literal(value: Path | str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _render_windows_launcher(wrapper_path: Path) -> str:
+    command = _vbs_literal(
+        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden "
+        f'-ExecutionPolicy Bypass -File "{wrapper_path}"'
+    )
+    return f"""' {MANAGED_MARKER}
+Option Explicit
+
+Dim shell
+Dim command
+Dim exitCode
+
+Set shell = CreateObject("WScript.Shell")
+command = {command}
+exitCode = shell.Run(command, 0, True)
+WScript.Quit exitCode
+"""
+
+
 def _add_task_element(
     parent: ElementTree.Element,
     name: str,
@@ -284,7 +307,7 @@ def _add_task_element(
 
 def _render_windows_task(
     context: SystemServiceContext,
-    wrapper_path: Path,
+    launcher_path: Path,
 ) -> bytes:
     ElementTree.register_namespace("", TASK_NAMESPACE)
     task = ElementTree.Element(
@@ -323,11 +346,11 @@ def _render_windows_task(
         {"Context": "Author"},
     )
     action = _add_task_element(actions, "Exec")
-    _add_task_element(action, "Command", "powershell.exe")
+    _add_task_element(action, "Command", "wscript.exe")
     _add_task_element(
         action,
         "Arguments",
-        f'-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{wrapper_path}"',
+        f'//B //Nologo "{launcher_path}"',
     )
     _add_task_element(action, "WorkingDirectory", str(context.data_dir))
     return ElementTree.tostring(task, encoding="utf-16", xml_declaration=True)
@@ -423,10 +446,11 @@ def _launchd_paths() -> tuple[Path, Path]:
     )
 
 
-def _windows_paths(context: SystemServiceContext) -> tuple[Path, Path]:
+def _windows_paths(context: SystemServiceContext) -> tuple[Path, Path, Path]:
     return (
         context.data_dir / "bcn-system-service.xml",
         context.data_dir / "bcn-system-service.ps1",
+        context.data_dir / "bcn-system-service.vbs",
     )
 
 
@@ -462,7 +486,7 @@ def _install_macos(context: SystemServiceContext) -> None:
 
 
 def _install_windows(context: SystemServiceContext) -> None:
-    xml_path, wrapper_path = _windows_paths(context)
+    xml_path, wrapper_path, launcher_path = _windows_paths(context)
     context.data_dir.mkdir(parents=True, exist_ok=True)
     _write_managed_file(
         wrapper_path,
@@ -470,8 +494,13 @@ def _install_windows(context: SystemServiceContext) -> None:
         mode=0o600,
     )
     _write_managed_file(
+        launcher_path,
+        _render_windows_launcher(wrapper_path),
+        mode=0o600,
+    )
+    _write_managed_file(
         xml_path,
-        _render_windows_task(context, wrapper_path),
+        _render_windows_task(context, launcher_path),
         mode=0o600,
     )
     _run_native_command(
@@ -686,15 +715,20 @@ def _uninstall_macos() -> None:
 
 
 def _uninstall_windows(context: SystemServiceContext) -> None:
-    xml_path, wrapper_path = _windows_paths(context)
+    xml_path, wrapper_path, launcher_path = _windows_paths(context)
     _stop_windows(context)
     _run_native_command(
         ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
         check=False,
     )
     _remove_managed_file(xml_path)
+    _remove_managed_file(launcher_path)
     _remove_managed_file(wrapper_path)
-    if not xml_path.exists() and not wrapper_path.exists():
+    if (
+        not xml_path.exists()
+        and not launcher_path.exists()
+        and not wrapper_path.exists()
+    ):
         print("system service uninstalled platform=windows", flush=True)
 
 
