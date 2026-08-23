@@ -189,7 +189,7 @@ class IStorageScope(IStorage, Protocol):
 
 
 class IHandoffStorageTransaction(IStorageTransaction, Protocol):
-    """Storage transaction extended with handoff operations."""
+    """Agent-scoped transaction with handoff operations."""
 
     async def get_latest_inbound_message(
         self, session_id: str
@@ -212,8 +212,8 @@ class IHandoffStorageTransaction(IStorageTransaction, Protocol):
     ) -> tuple[Handoff, ...]: ...
 
 
-class IHandoffStorage(IStorage, Protocol):
-    """Storage lifecycle whose transactions support handoff operations."""
+class IHandoffStorageScope(IStorageScope, Protocol):
+    """Agent storage scope whose transactions support handoffs."""
 
     def transaction(
         self,

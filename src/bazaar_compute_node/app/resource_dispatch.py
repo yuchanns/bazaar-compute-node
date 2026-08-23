@@ -286,7 +286,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         service: ICommandService,
         *,
         reminder_service: IReminderService,
-        handoff_service: IHandoffService | None = None,
+        handoff_service: IHandoffService,
         timeout_budget: TimeoutBudget,
         control_handler: ControlHandler | None = None,
         session_binding_validator: SessionBindingValidator | None = None,
@@ -386,16 +386,10 @@ class CommandDispatcher(_MessageCommandDispatcher):
         session_id = request.session_id
         if self._session_binding_validator is not None:
             await self._session_binding_validator(session_id, raw_request)
-        service = self._handoff_service
-        if service is None:
-            raise CommandDispatchError(
-                "HANDOFF_UNAVAILABLE",
-                "Handoff service is not available.",
-            )
         try:
             if command == "send":
                 values = cast(_HandoffSendRequest, request)
-                result = await service.send(
+                result = await self._handoff_service.send(
                     session_id,
                     HandoffSendRequest(
                         target=values.target,
@@ -413,7 +407,10 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     },
                 }
 
-            result = await service.check(session_id, HandoffCheckRequest())
+            result = await self._handoff_service.check(
+                session_id,
+                HandoffCheckRequest(),
+            )
             return {
                 "ok": True,
                 "result": {

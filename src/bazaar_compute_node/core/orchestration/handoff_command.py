@@ -17,7 +17,7 @@ from ..handoff import (
 from ..models import BcnSession, Handoff, InboundMessage, RuntimeEventState
 from ..storage import (
     HandoffConflictError,
-    IHandoffStorage,
+    IHandoffStorageScope,
     IHandoffStorageTransaction,
     InboxTargetResolutionError,
 )
@@ -48,7 +48,7 @@ class HandoffCommandService(IHandoffService):
     def __init__(
         self,
         *,
-        storage: IHandoffStorage,
+        storage: IHandoffStorageScope,
         audit: SessionAuditRecorder,
         publish_wake: Callable[[str], Awaitable[None]],
         node_id: Callable[[], str],
