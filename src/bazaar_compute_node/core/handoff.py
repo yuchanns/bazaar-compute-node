@@ -15,6 +15,7 @@ class HandoffSendRequest:
     created_at_ms: int
     source_message_id: str | None = None
 
+
 @dataclass(frozen=True, slots=True)
 class HandoffCheckRequest:
     limit: int = field(init=False, default=HANDOFF_CHECK_LIMIT)

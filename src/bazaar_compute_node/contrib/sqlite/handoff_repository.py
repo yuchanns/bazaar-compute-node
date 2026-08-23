@@ -127,12 +127,13 @@ class HandoffRepository(SqliteTransaction):
         bound_agent_id = self._bound_agent_id()
         if bound_agent_id is None:
             rows = await self.fetchall(
-                "SELECT id, agent_id FROM bcn_sessions "
-                f"WHERE id IN ({placeholders})",
+                f"SELECT id, agent_id FROM bcn_sessions WHERE id IN ({placeholders})",
                 tuple(session_ids),
             )
             agents = {cast(str, row["agent_id"]) for row in rows}
-            if {cast(str, row["id"]) for row in rows} != session_ids or len(agents) != 1:
+            if {cast(str, row["id"]) for row in rows} != session_ids or len(
+                agents
+            ) != 1:
                 raise ValueError("handoff sessions must belong to one Agent")
             return agents.pop()
 
