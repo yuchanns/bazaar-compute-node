@@ -71,7 +71,10 @@ async def test_handoff_send_maps_parser_stdin_and_request(
     assert requests[0]["body"] == "Body from stdin.\n"
     assert requests[0]["source_message_id"] == SOURCE_MESSAGE_ID
     assert str(requests[0]["command_id"]).startswith("bcc-")
-    assert capsys.readouterr().out == "Handoff sent: #handoff-1 target=dm:target\n"
+    output = capsys.readouterr().out
+    assert "sent" in output.lower()
+    assert "dm:target" in output
+    assert "handoff-1" not in output
 
 
 def test_handoff_check_parser_and_serializer() -> None:
@@ -92,7 +95,8 @@ def test_handoff_check_parser_and_serializer() -> None:
             "has_more": True,
         }
     )
-    assert "[handoff=handoff-1 source=group:source" in output
+    assert "source=group:source" in output
+    assert "handoff-1" not in output
     assert f"message={SOURCE_MESSAGE_ID}" in output
     assert output.endswith(
         "More pending handoffs remain. Run `bcc handoff check` again."
