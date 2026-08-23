@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.24 - 2026-08-23
+
+## What's Changed
+* ci: run quality checks on pull requests by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/39
+* fix: preserve Lark attachment bytes on Windows by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/40
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.23...v0.1.24
+
 ## 0.1.23 - 2026-08-23
 
 ## What's Changed
