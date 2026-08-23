@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.23 - 2026-08-23
+
+## What's Changed
+* fix: hide Windows service manager consoles by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/36
+* feat: add agent-wide inbox discovery and handoffs by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/37
+* style: format handoff modules by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/38
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.22...v0.1.23
+
 ## 0.1.22 - 2026-08-22
 
 ## What's Changed
