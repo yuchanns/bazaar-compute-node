@@ -550,7 +550,11 @@ def _open_regular_file(
         raise ValueError(
             f"Lark attachment path leaves the workspace: {attachment.name}"
         ) from error
-    descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    binary_flag = getattr(os, "O_BINARY", None)
+    if binary_flag is not None:
+        open_flags |= binary_flag
+    descriptor = os.open(resolved, open_flags)
     try:
         file_stat = os.fstat(descriptor)
         opened_stat = os.stat(resolved, follow_symlinks=False)
