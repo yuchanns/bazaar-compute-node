@@ -581,6 +581,7 @@ RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION = Migration(
     ),
 )
 
+
 def _migration_ledger(*migrations: Migration) -> tuple[Migration, ...]:
     versions = tuple(migration.version for migration in migrations)
     if versions != tuple(range(1, len(migrations) + 1)):
