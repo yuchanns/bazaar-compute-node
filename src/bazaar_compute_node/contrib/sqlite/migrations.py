@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from hashlib import sha256
 from time import monotonic_ns, time_ns
 from typing import TYPE_CHECKING
+
+from .agent_migration import AGENT_OWNERSHIP_MIGRATION
+from .handoff_migration import HANDOFF_MIGRATION
+from .inbox_migration import INBOX_DISCOVERY_MIGRATION
+from .migration import Migration
+from .reminder_migration import REMINDER_MIGRATION
 
 if TYPE_CHECKING:
     from .repository import SqliteTransaction
@@ -12,18 +16,6 @@ if TYPE_CHECKING:
 
 def _current_time_ms() -> int:
     return time_ns() // 1_000_000
-
-
-@dataclass(frozen=True, slots=True)
-class Migration:
-    version: int
-    name: str
-    statements: tuple[str, ...]
-
-    @property
-    def checksum(self) -> str:
-        content = "\n".join(self.statements).encode("utf-8")
-        return sha256(content).hexdigest()
 
 
 class MigrationError(RuntimeError):
@@ -589,7 +581,14 @@ RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (
+def _migration_ledger(*migrations: Migration) -> tuple[Migration, ...]:
+    versions = tuple(migration.version for migration in migrations)
+    if versions != tuple(range(1, len(migrations) + 1)):
+        raise RuntimeError("SQLite migrations must use consecutive ordered versions")
+    return migrations
+
+
+MIGRATIONS = _migration_ledger(
     SCHEMA_MIGRATION,
     SESSION_MAPPING_INDEX_MIGRATION,
     MESSAGE_LOG_INDEX_MIGRATION,
@@ -601,6 +600,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     RUNTIME_EVENTS_REMOVAL_MIGRATION,
     OUTBOUND_ATTACHMENTS_MIGRATION,
     RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION,
+    REMINDER_MIGRATION,
+    AGENT_OWNERSHIP_MIGRATION,
+    INBOX_DISCOVERY_MIGRATION,
+    HANDOFF_MIGRATION,
 )
 
 

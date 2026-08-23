@@ -26,6 +26,10 @@ class InboxTargetResolutionError(ValueError):
     """A target does not resolve to exactly one Agent-owned BCN session."""
 
 
+class HandoffConflictError(ValueError):
+    """A handoff command ID is already associated with another payload."""
+
+
 class IStorageTransaction(Protocol):
     """Explicit transaction boundary for repository operations."""
 

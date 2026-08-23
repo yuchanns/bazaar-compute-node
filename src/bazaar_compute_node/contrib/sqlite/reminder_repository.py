@@ -41,7 +41,7 @@ _INBOUND_COLUMNS = (
 _OWNED_REMINDER_COLUMNS = f"agent_id, {_REMINDER_COLUMNS}"
 
 
-class ReminderTransaction(SqliteTransaction):
+class ReminderRepository(SqliteTransaction):
     async def resolve_inbound_message(
         self,
         session_id: str,
@@ -585,4 +585,4 @@ class ReminderTransaction(SqliteTransaction):
             raise ValueError("reminder identity cannot change")
 
 
-__all__ = ["ReminderTransaction"]
+__all__ = ["ReminderRepository"]

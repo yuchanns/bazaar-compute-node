@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from . import migrations as _migrations
-from .migrations import Migration
+from .migration import Migration
 
 REMINDER_MIGRATION = Migration(
     version=12,
@@ -63,23 +62,4 @@ REMINDER_MIGRATION = Migration(
         """,
     ),
 )
-
-
-def install_reminder_migration() -> None:
-    versions = {migration.version: migration for migration in _migrations.MIGRATIONS}
-    existing = versions.get(REMINDER_MIGRATION.version)
-    if existing is not None:
-        if (
-            existing.name != REMINDER_MIGRATION.name
-            or existing.checksum != REMINDER_MIGRATION.checksum
-        ):
-            raise RuntimeError(
-                "migration version 12 is already bound to different content"
-            )
-        return
-    if _migrations.MIGRATIONS[-1].version >= REMINDER_MIGRATION.version:
-        raise RuntimeError("reminder migration must extend the migration ledger")
-    _migrations.MIGRATIONS = (*_migrations.MIGRATIONS, REMINDER_MIGRATION)
-
-
-__all__ = ["REMINDER_MIGRATION", "install_reminder_migration"]
+__all__ = ["REMINDER_MIGRATION"]

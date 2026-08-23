@@ -36,13 +36,14 @@ from .codec import (
     runtime_attempt_from_row,
     validate_inbound_message_input,
 )
+from .handoff_repository import HandoffRepository
 from .reminder_codec import reminder_from_row, reminder_occurrence_from_row
 from .reminder_repository import (
     _INBOUND_COLUMNS,
     _OCCURRENCE_COLUMNS,
     _REMINDER_COLUMNS,
+    ReminderRepository,
 )
-from .reminder_repository import ReminderTransaction as _ReminderTransaction
 
 _INBOX_TARGET_CATALOG_CTE = """
 WITH latest_inbound_ranked AS (
@@ -160,7 +161,7 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
     )
 
 
-class ReminderTransaction(_ReminderTransaction):
+class StorageTransaction(HandoffRepository, ReminderRepository):
     """One serialized SQLite transaction bound to one configured Agent."""
 
     def __init__(self, database, *, agent_id: str, agent_name: str) -> None:
@@ -899,4 +900,4 @@ class ReminderTransaction(_ReminderTransaction):
         )
 
 
-__all__ = ["ReminderTransaction"]
+__all__ = ["StorageTransaction"]

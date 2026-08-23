@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from . import migrations as _migrations
-from .migrations import Migration
+from .migration import Migration
 
 INBOX_DISCOVERY_MIGRATION = Migration(
     version=14,
@@ -17,29 +16,4 @@ INBOX_DISCOVERY_MIGRATION = Migration(
         """,
     ),
 )
-
-
-def install_inbox_discovery_migration() -> None:
-    versions = {migration.version: migration for migration in _migrations.MIGRATIONS}
-    existing = versions.get(INBOX_DISCOVERY_MIGRATION.version)
-    if existing is not None:
-        if (
-            existing.name != INBOX_DISCOVERY_MIGRATION.name
-            or existing.checksum != INBOX_DISCOVERY_MIGRATION.checksum
-        ):
-            raise RuntimeError(
-                "migration version 14 is already bound to different content"
-            )
-        return
-    if _migrations.MIGRATIONS[-1].version >= INBOX_DISCOVERY_MIGRATION.version:
-        raise RuntimeError("inbox discovery migration must extend the migration ledger")
-    _migrations.MIGRATIONS = (
-        *_migrations.MIGRATIONS,
-        INBOX_DISCOVERY_MIGRATION,
-    )
-
-
-__all__ = [
-    "INBOX_DISCOVERY_MIGRATION",
-    "install_inbox_discovery_migration",
-]
+__all__ = ["INBOX_DISCOVERY_MIGRATION"]
