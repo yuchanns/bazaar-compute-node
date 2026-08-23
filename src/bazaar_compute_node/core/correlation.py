@@ -40,9 +40,3 @@ class CorrelationContext:
                 raise ValueError(
                     f"{field_name} must be a non-empty string when present"
                 )
-        if self.inbound_seq is not None and (
-            isinstance(self.inbound_seq, bool)
-            or not isinstance(self.inbound_seq, int)
-            or self.inbound_seq < 0
-        ):
-            raise ValueError("inbound_seq must be a non-negative integer when present")

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
 from bazaar_compute_node.core.command import InboxListResult
@@ -94,11 +92,6 @@ def test_sender_identity_separates_stable_id_from_display_name() -> None:
     assert unnamed.display_name == "test-user-id"
 
 
-def test_inbox_target_summary_rejects_negative_pending_count() -> None:
-    with pytest.raises(ValueError, match="pending_count"):
-        replace(make_inbox_target(), pending_count=-1)
-
-
 @pytest.mark.parametrize(
     ("field_name", "value"),
     (
@@ -139,32 +132,6 @@ def test_inbox_target_summary_requires_received_time_with_latest_message_id() ->
             pending_count=0,
             last_activity_at_ms=100,
             latest_message_id="message-1",
-        )
-
-
-@pytest.mark.parametrize(
-    ("total", "shown", "offset", "targets"),
-    (
-        (-1, 0, 0, ()),
-        (1, -1, 0, ()),
-        (1, 0, -1, ()),
-        (1, 0, 0, (make_inbox_target(),)),
-        (0, 1, 0, (make_inbox_target(),)),
-    ),
-)
-def test_inbox_list_result_rejects_invalid_pagination(
-    total: int,
-    shown: int,
-    offset: int,
-    targets: tuple[InboxTargetSummary, ...],
-) -> None:
-    with pytest.raises(ValueError):
-        InboxListResult(
-            targets=targets,
-            total=total,
-            shown=shown,
-            offset=offset,
-            has_more=False,
         )
 
 

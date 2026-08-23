@@ -27,8 +27,6 @@ from ...core.models import (
 from ...core.reminder import canonical_id_reference
 from ...core.storage import InboxTargetResolutionError
 from .codec import (
-    _required_non_negative_int,
-    _required_positive_int,
     bcn_session_from_row,
     channel_session_from_row,
     consumer_cursor_from_row,
@@ -37,9 +35,6 @@ from .codec import (
     outbound_message_from_row,
     runtime_attempt_from_row,
     validate_inbound_message_input,
-    validate_non_empty_text,
-    validate_non_negative_int,
-    validate_positive_int,
 )
 from .reminder_codec import reminder_from_row, reminder_occurrence_from_row
 from .reminder_repository import (
@@ -126,45 +121,30 @@ target_catalog AS (
 def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
     target = cast(str, row["target"])
     session_id = cast(str, row["session_id"])
-    validate_non_empty_text(target, "target")
-    validate_non_empty_text(session_id, "session_id")
-
     target_kind = ChannelTargetKind(cast(str, row["target_kind"]))
-    pending_count = _required_non_negative_int(row["pending_count"], "pending_count")
-    last_activity_at_ms = _required_non_negative_int(
-        row["last_activity_at_ms"], "last_activity_at_ms"
-    )
+    pending_count = cast(int, row["pending_count"])
+    last_activity_at_ms = cast(int, row["last_activity_at_ms"])
 
     latest_message_id_value = row["latest_message_id"]
     latest_message_id: str | None = None
     if latest_message_id_value is not None:
         latest_message_id = cast(str, latest_message_id_value)
-        validate_non_empty_text(latest_message_id, "latest_message_id")
 
     latest_sender_value = row["latest_sender"]
     latest_sender: SenderIdentity | None = None
     if latest_sender_value is not None:
         latest_sender_name = cast(str, latest_sender_value)
-        validate_non_empty_text(latest_sender_name, "latest_sender")
         latest_sender = SenderIdentity(name=latest_sender_name)
 
     latest_provider_time_value = row["latest_provider_time_ms"]
     latest_provider_time_ms = (
         None
         if latest_provider_time_value is None
-        else _required_non_negative_int(
-            latest_provider_time_value,
-            "latest_provider_time_ms",
-        )
+        else cast(int, latest_provider_time_value)
     )
     latest_received_value = row["latest_received_at_ms"]
     latest_received_at_ms = (
-        None
-        if latest_received_value is None
-        else _required_non_negative_int(
-            latest_received_value,
-            "latest_received_at_ms",
-        )
+        None if latest_received_value is None else cast(int, latest_received_value)
     )
     return InboxTargetSummary(
         target=target,
@@ -305,20 +285,17 @@ class ReminderTransaction(_ReminderTransaction):
         )
         if row is None:
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
-        return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
+        return cast(int, row["latest_seq"])
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage:
-        validate_positive_int(limit, "limit")
-        validate_non_negative_int(offset, "offset")
-
         total_row = await self.fetchone(
             _INBOX_TARGET_CATALOG_CTE + "SELECT COUNT(*) AS total FROM target_catalog"
         )
         if total_row is None:
             raise RuntimeError("SQLite inbox target count query returned no row")
-        total = _required_non_negative_int(total_row["total"], "total")
+        total = cast(int, total_row["total"])
 
         rows = await self.fetchall(
             _INBOX_TARGET_CATALOG_CTE
@@ -338,7 +315,6 @@ class ReminderTransaction(_ReminderTransaction):
         )
 
     async def resolve_inbox_target(self, target: str) -> BcnSession:
-        validate_non_empty_text(target, "target")
         rows = await self.fetchall(
             "SELECT bcn.id, bcn.channel_session_id, bcn.workspace_id, "
             "bcn.created_at_ms, bcn.updated_at_ms, bcn.last_activity_at_ms, "
@@ -404,14 +380,6 @@ class ReminderTransaction(_ReminderTransaction):
         notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
-        validate_non_empty_text(session_id, "session_id")
-        if after_seq is not None:
-            validate_non_negative_int(after_seq, "after_seq")
-        if target is not None:
-            validate_non_empty_text(target, "target")
-        if around_message_id is not None:
-            validate_non_empty_text(around_message_id, "around_message_id")
-        validate_positive_int(limit, "limit")
         predicates = ["agent_id = bcn_agent_id()", "session_id = ?"]
         parameters: list[object] = [session_id]
         if after_seq is not None:
@@ -446,16 +414,14 @@ class ReminderTransaction(_ReminderTransaction):
             raise ValueError(
                 f"message not found in requested history: {around_message_id}"
             )
-        anchor_seq = _required_non_negative_int(anchor["seq"], "anchor_seq")
+        anchor_seq = cast(int, anchor["seq"])
         count_row = await self.fetchone(
             f"SELECT COUNT(*) AS message_count FROM inbound_messages WHERE {where_clause}",
             parameters,
         )
         if count_row is None:
             raise RuntimeError("SQLite inbound history count query returned no row")
-        message_count = _required_non_negative_int(
-            count_row["message_count"], "message_count"
-        )
+        message_count = cast(int, count_row["message_count"])
         position_row = await self.fetchone(
             f"SELECT COUNT(*) AS anchor_position FROM inbound_messages "
             f"WHERE {where_clause} AND seq <= ?",
@@ -463,9 +429,7 @@ class ReminderTransaction(_ReminderTransaction):
         )
         if position_row is None:
             raise RuntimeError("SQLite inbound anchor position query returned no row")
-        anchor_position = _required_positive_int(
-            position_row["anchor_position"], "anchor_position"
-        )
+        anchor_position = cast(int, position_row["anchor_position"])
         start_position = max(anchor_position - limit // 2, 1)
         start_position = min(start_position, max(message_count - limit + 1, 1))
         end_position = start_position + limit - 1
@@ -548,7 +512,7 @@ class ReminderTransaction(_ReminderTransaction):
         canonical = replace(
             message,
             message_id=message_id,
-            seq=_required_positive_int(sequence_row["next_seq"], "next_seq"),
+            seq=cast(int, sequence_row["next_seq"]),
         )
         if canonical.reply_to_message_id is not None:
             referenced_id = canonical.reply_to_message_id
@@ -568,9 +532,7 @@ class ReminderTransaction(_ReminderTransaction):
                 raise ValueError("reply_to_message_id does not reference a message")
             if referenced["session_id"] != canonical.session_id:
                 raise ValueError("reply_to_message_id must belong to the same session")
-            referenced_seq = _required_positive_int(
-                referenced["seq"], "reply_to_message_seq"
-            )
+            referenced_seq = cast(int, referenced["seq"])
             if referenced_seq >= canonical.seq:
                 raise ValueError(
                     "reply_to_message_id must reference an earlier message"
@@ -681,7 +643,6 @@ class ReminderTransaction(_ReminderTransaction):
         session_id: str,
         message_id: str,
     ) -> InboundMessage | None:
-        validate_non_empty_text(session_id, "session_id")
         reference = canonical_id_reference(message_id)
         row = await self.fetchone(
             f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
@@ -700,7 +661,6 @@ class ReminderTransaction(_ReminderTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> Reminder | None:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         reference = canonical_id_reference(reminder_id)
         row = await self.fetchone(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
@@ -715,7 +675,6 @@ class ReminderTransaction(_ReminderTransaction):
         owner_session_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         if not isinstance(statuses, frozenset) or not statuses:
             raise ValueError("statuses must be a non-empty frozenset")
         if not all(isinstance(status, ReminderState) for status in statuses):
@@ -745,8 +704,6 @@ class ReminderTransaction(_ReminderTransaction):
         *,
         limit: int,
     ) -> tuple[Reminder, ...]:
-        validate_non_negative_int(now_ms, "now_ms")
-        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
             "WHERE agent_id = bcn_agent_id() AND state = ? AND next_fire_at_ms <= ? "
@@ -761,7 +718,6 @@ class ReminderTransaction(_ReminderTransaction):
         reminder: object,
         occurrence: object,
     ) -> ReminderOccurrence:
-        validate_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if not isinstance(occurrence, ReminderOccurrence):
@@ -841,8 +797,6 @@ class ReminderTransaction(_ReminderTransaction):
         *,
         limit: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
-        validate_positive_int(limit, "limit")
         rows = await self.fetchall(
             f"SELECT {_OCCURRENCE_COLUMNS} FROM reminder_occurrences "
             "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
@@ -852,7 +806,6 @@ class ReminderTransaction(_ReminderTransaction):
         return tuple(reminder_occurrence_from_row(row) for row in rows)
 
     async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
         row = await self.fetchone(
             "SELECT COUNT(*) AS pending_count FROM reminder_occurrences "
             "WHERE agent_id = bcn_agent_id() AND owner_session_id = ? "
@@ -861,7 +814,7 @@ class ReminderTransaction(_ReminderTransaction):
         )
         if row is None:
             raise RuntimeError("SQLite reminder pending count returned no row")
-        return _required_non_negative_int(row["pending_count"], "pending_count")
+        return cast(int, row["pending_count"])
 
     async def mark_reminder_occurrences_read(
         self,
@@ -870,8 +823,6 @@ class ReminderTransaction(_ReminderTransaction):
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        validate_non_empty_text(owner_session_id, "owner_session_id")
-        validate_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
         occurrence_ids = cast(tuple[str, ...], occurrence_ids)

@@ -186,24 +186,6 @@ def test_inbox_list_serializer_renders_empty_page_after_catalog() -> None:
     )
 
 
-def test_inbox_list_serializer_rejects_latest_fields_without_message() -> None:
-    target = inbox_target_payload(latest_message_id=None)
-    target["latest_sender"] = {"id": "alice-id", "name": "alice"}
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_inbox_list(
-            {
-                "targets": [target],
-                "total": 1,
-                "shown": 1,
-                "offset": 0,
-                "has_more": False,
-            }
-        )
-
-    assert error.value.code == "INVALID_RESPONSE"
-
-
 def test_inbox_list_parser_accepts_pagination_arguments() -> None:
     args = build_parser().parse_args(("inbox", "list", "--limit", "3", "--offset", "6"))
 
@@ -429,21 +411,6 @@ def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
     assert "replyTarget=#work:parent123" in output
 
 
-def test_read_serializer_rejects_mismatched_window_bounds() -> None:
-    result = {
-        "messages": [message_payload(seq=7)],
-        "referenced_messages": [],
-        "snapshot_seq": 7,
-        "first_seq": 6,
-        "last_seq": 7,
-    }
-
-    with pytest.raises(BccCommandError) as error:
-        serialize_read(result)
-
-    assert error.value.code == "INVALID_RESPONSE"
-
-
 def outbound_payload(
     *,
     state: str,
@@ -511,21 +478,6 @@ def test_send_serializer_maps_empty_body_refusal() -> None:
     assert error.value.code == "SEND_EMPTY_BODY"
     assert error.value.draft_saved is False
     assert error.value.next_action == "Provide a non-empty message body and retry."
-
-
-def test_send_serializer_rejects_malformed_delivery_response() -> None:
-    with pytest.raises(BccCommandError) as error:
-        serialize_send(
-            {
-                "outbound": outbound_payload(
-                    state="rejected",
-                    error_kind="target_not_replyable",
-                    error_message="target rejected",
-                )
-            }
-        )
-
-    assert error.value.code == "INVALID_RESPONSE"
 
 
 def test_read_parser_accepts_history_positioning_arguments() -> None:

@@ -7,7 +7,6 @@ import pytest
 from bazaar_compute_node.core.models import Reminder, ReminderOccurrence, ReminderState
 from bazaar_compute_node.core.reminder import (
     ReminderCancelRequest,
-    ReminderCheckRequest,
     ReminderListRequest,
     ReminderScheduleRequest,
     ReminderSnoozeRequest,
@@ -310,8 +309,6 @@ def test_occurrence_pending_marker_is_one_way() -> None:
 def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:
     with pytest.raises(ValueError, match="UUID"):
         canonical_id_reference("not-an-id")
-    with pytest.raises(ValueError, match="limit"):
-        ReminderCheckRequest(limit=101)
 
     assert ReminderListRequest().statuses == frozenset(
         {ReminderState.SCHEDULED, ReminderState.FIRED}

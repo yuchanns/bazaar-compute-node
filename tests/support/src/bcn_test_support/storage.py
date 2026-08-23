@@ -188,11 +188,6 @@ class _MemoryStorageTransaction:
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage:
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
-            raise ValueError("limit must be a positive integer")
-        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-            raise ValueError("offset must be a non-negative integer")
-
         summaries = tuple(
             sorted(
                 (
@@ -210,8 +205,6 @@ class _MemoryStorageTransaction:
         )
 
     async def resolve_inbox_target(self, target: str) -> BcnSession:
-        if not isinstance(target, str) or not target:
-            raise ValueError("target must be a non-empty string")
         matches = []
         for session in self._scoped_bcn_sessions():
             channel_session = self._storage.channel_sessions.get(

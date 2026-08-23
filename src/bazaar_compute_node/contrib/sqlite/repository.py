@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 from uuid import uuid7
 
 import aiosqlite
@@ -21,8 +21,6 @@ from ...core.models import (
     RuntimeAttempt,
 )
 from .codec import (
-    _required_non_negative_int,
-    _required_positive_int,
     bcn_session_from_row,
     channel_session_from_row,
     consumer_cursor_from_row,
@@ -38,12 +36,9 @@ from .codec import (
     validate_consumer_cursor_update,
     validate_cursor_bounds,
     validate_inbound_message_input,
-    validate_non_empty_text,
-    validate_non_negative_int,
     validate_outbound_insert,
     validate_outbound_message_input,
     validate_outbound_update,
-    validate_positive_int,
 )
 
 if TYPE_CHECKING:
@@ -200,7 +195,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         if row is None:
             raise RuntimeError("SQLite latest inbound sequence query returned no row")
-        return _required_non_negative_int(row["latest_seq"], "latest_inbound_seq")
+        return cast(int, row["latest_seq"])
 
     async def list_inbox_targets(
         self, *, limit: int = 100, offset: int = 0
@@ -251,15 +246,6 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         notifying_only: bool = False,
         limit: int = 100,
     ) -> tuple[InboundMessage, ...]:
-        validate_non_empty_text(session_id, "session_id")
-        if after_seq is not None:
-            validate_non_negative_int(after_seq, "after_seq")
-        if target is not None:
-            validate_non_empty_text(target, "target")
-        if around_message_id is not None:
-            validate_non_empty_text(around_message_id, "around_message_id")
-        validate_positive_int(limit, "limit")
-
         predicates = ["session_id = ?"]
         parameters: list[object] = [session_id]
         if after_seq is not None:
@@ -300,7 +286,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
             raise ValueError(
                 f"message not found in requested history: {around_message_id}"
             )
-        anchor_seq = _required_non_negative_int(anchor["seq"], "anchor_seq")
+        anchor_seq = cast(int, anchor["seq"])
         count_row = await self.fetchone(
             "SELECT COUNT(*) AS message_count FROM inbound_messages "
             f"WHERE {where_clause}",
@@ -308,9 +294,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         if count_row is None:
             raise RuntimeError("SQLite inbound history count query returned no row")
-        message_count = _required_non_negative_int(
-            count_row["message_count"], "message_count"
-        )
+        message_count = cast(int, count_row["message_count"])
         position_row = await self.fetchone(
             "SELECT COUNT(*) AS anchor_position FROM inbound_messages "
             f"WHERE {where_clause} AND seq <= ?",
@@ -318,9 +302,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         if position_row is None:
             raise RuntimeError("SQLite inbound anchor position query returned no row")
-        anchor_position = _required_positive_int(
-            position_row["anchor_position"], "anchor_position"
-        )
+        anchor_position = cast(int, position_row["anchor_position"])
         before_count = limit // 2
         start_position = max(anchor_position - before_count, 1)
         start_position = min(
@@ -411,7 +393,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
         )
         if sequence_row is None:
             raise RuntimeError("SQLite inbound sequence query returned no row")
-        next_seq = _required_positive_int(sequence_row["next_seq"], "next_seq")
+        next_seq = cast(int, sequence_row["next_seq"])
         canonical = replace(message, seq=next_seq)
         if canonical.reply_to_message_id is not None:
             referenced = await self.fetchone(
@@ -422,9 +404,7 @@ class SqliteTransaction(AbstractAsyncContextManager["SqliteTransaction"]):
                 raise ValueError("reply_to_message_id does not reference a message")
             if referenced["session_id"] != canonical.session_id:
                 raise ValueError("reply_to_message_id must belong to the same session")
-            referenced_seq = _required_positive_int(
-                referenced["seq"], "reply_to_message_seq"
-            )
+            referenced_seq = cast(int, referenced["seq"])
             if referenced_seq >= canonical.seq:
                 raise ValueError(
                     "reply_to_message_id must reference an earlier message"

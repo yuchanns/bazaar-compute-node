@@ -98,11 +98,6 @@ class ReminderScheduleRequest:
 class ReminderCheckRequest:
     limit: int = 100
 
-    def __post_init__(self) -> None:
-        _require_positive_int(self.limit, "limit")
-        if self.limit > 100:
-            raise ValueError("limit cannot exceed 100")
-
 
 @dataclass(frozen=True, slots=True)
 class ReminderListRequest:
@@ -127,8 +122,6 @@ class ReminderSnoozeRequest:
         object.__setattr__(
             self, "reminder_id", canonical_id_reference(self.reminder_id)
         )
-        _require_positive_int(self.duration_ms, "duration_ms")
-        _require_non_negative_int(self.evaluated_at_ms, "evaluated_at_ms")
 
     @classmethod
     def from_options(
@@ -157,7 +150,6 @@ class ReminderUpdateRequest:
         object.__setattr__(
             self, "reminder_id", canonical_id_reference(self.reminder_id)
         )
-        _require_non_negative_int(self.evaluated_at_ms, "evaluated_at_ms")
         provided = sum(
             value is not None
             for value in (self.title, self.next_fire_at_ms, self.repeat_rule)
@@ -166,10 +158,11 @@ class ReminderUpdateRequest:
             raise ValueError("exactly one reminder update field must be provided")
         if self.title is not None:
             _validate_title(self.title)
-        if self.next_fire_at_ms is not None:
-            _require_non_negative_int(self.next_fire_at_ms, "next_fire_at_ms")
-            if self.next_fire_at_ms <= self.evaluated_at_ms:
-                raise ValueError("next_fire_at_ms must be in the future")
+        if (
+            self.next_fire_at_ms is not None
+            and self.next_fire_at_ms <= self.evaluated_at_ms
+        ):
+            raise ValueError("next_fire_at_ms must be in the future")
         if self.repeat_rule is not None:
             recurrence = parse_repeat_rule(self.repeat_rule)
             if recurrence.canonical != self.repeat_rule:
@@ -186,7 +179,6 @@ class ReminderUpdateRequest:
         cadence: str | None = None,
         title: str | None = None,
     ) -> Self:
-        _require_non_negative_int(evaluated_at_ms, "evaluated_at_ms")
         provided = sum(
             value is not None for value in (fire_at, in_duration, cadence, title)
         )
@@ -218,7 +210,6 @@ class ReminderCancelRequest:
         object.__setattr__(
             self, "reminder_id", canonical_id_reference(self.reminder_id)
         )
-        _require_non_negative_int(self.evaluated_at_ms, "evaluated_at_ms")
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,16 +293,6 @@ def canonical_id_reference(value: str) -> str:
     if str(parsed) != value.lower():
         raise ValueError("full UUID references must use canonical hyphenated form")
     return str(parsed)
-
-
-def _require_non_negative_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-
-
-def _require_positive_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer")
 
 
 def _require_reminder(value: object) -> None:

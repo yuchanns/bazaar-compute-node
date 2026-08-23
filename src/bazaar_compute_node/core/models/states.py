@@ -70,8 +70,6 @@ class SessionRuntimeObservation:
             raise TypeError("session runtime observation source is invalid")
         if not isinstance(self.signal, SessionRuntimeSignal):
             raise TypeError("session runtime observation signal is invalid")
-        if not isinstance(self.observed_at_ms, int) or self.observed_at_ms < 0:
-            raise ValueError("observed_at_ms must be a non-negative integer")
         if self.error_kind is not None and (
             not isinstance(self.error_kind, str) or not self.error_kind
         ):

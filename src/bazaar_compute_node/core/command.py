@@ -30,8 +30,6 @@ class MessageCheckResult:
     referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.snapshot_seq < 0 or self.delivered_through_seq < 0:
-            raise ValueError("message sequence values must be non-negative")
         if self.delivered_through_seq > self.snapshot_seq:
             raise ValueError("delivered_through_seq cannot exceed snapshot_seq")
 
@@ -47,21 +45,14 @@ class MessageReadResult:
     referenced_messages: tuple[InboundMessage, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.snapshot_seq < 0:
-            raise ValueError("snapshot_seq must be non-negative")
         if (self.first_seq is None) != (self.last_seq is None):
             raise ValueError("first_seq and last_seq must be provided together")
         if (
             self.first_seq is not None
             and self.last_seq is not None
-            and (self.first_seq < 0 or self.last_seq < self.first_seq)
+            and self.last_seq < self.first_seq
         ):
             raise ValueError("history sequence bounds are invalid")
-
-
-def _validate_pagination_integer(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +70,6 @@ class InboxListResult:
             raise TypeError("targets must be a tuple")
         if any(not isinstance(target, InboxTargetSummary) for target in self.targets):
             raise TypeError("targets must contain InboxTargetSummary values")
-        _validate_pagination_integer(self.total, "total")
-        _validate_pagination_integer(self.shown, "shown")
-        _validate_pagination_integer(self.offset, "offset")
         if self.shown != len(self.targets):
             raise ValueError("shown must equal the number of targets")
         if self.shown > self.total:

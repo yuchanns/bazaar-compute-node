@@ -4,6 +4,9 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from time import time_ns
+from typing import Annotated, Literal, cast
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from ..core.command import (
     ICommandService,
@@ -133,6 +136,125 @@ class CommandDispatchError(ValueError):
         self.next_action = next_action
 
 
+NonEmptyText = Annotated[StrictStr, Field(min_length=1)]
+PositiveInt = Annotated[StrictInt, Field(gt=0)]
+NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
+
+
+class _CommandRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    kind: Literal["command"]
+    resource: StrictStr
+    command: StrictStr
+    session_id: NonEmptyText
+
+
+class _MessageCheckRequest(_CommandRequest):
+    resource: Literal["message"]
+    command: Literal["check"]
+
+
+class _MessageReadRequest(_CommandRequest):
+    resource: Literal["message"]
+    command: Literal["read"]
+    target: NonEmptyText
+    around_message_id: StrictStr | None = None
+    limit: PositiveInt = 100
+
+
+class _MessageSendRequest(_CommandRequest):
+    resource: Literal["message"]
+    command: Literal["send"]
+    target: NonEmptyText
+    body: StrictStr
+    command_id: NonEmptyText
+    attachment_paths: list[NonEmptyText] = Field(default_factory=list)
+    reply_to_message_id: NonEmptyText | None = None
+    created_at_ms: NonNegativeInt = Field(
+        default_factory=lambda: time_ns() // 1_000_000
+    )
+
+
+class _InboxListRequest(_CommandRequest):
+    resource: Literal["inbox"]
+    command: Literal["list"]
+    limit: PositiveInt = 100
+    offset: NonNegativeInt = 0
+
+
+class _ThreadUnfollowRequest(_CommandRequest):
+    resource: Literal["thread"]
+    command: Literal["unfollow"]
+    target: NonEmptyText
+
+
+_RequestModel = type[_CommandRequest]
+
+_REQUEST_MODELS: dict[tuple[str, str], _RequestModel] = {
+    ("message", "check"): _MessageCheckRequest,
+    ("message", "read"): _MessageReadRequest,
+    ("message", "send"): _MessageSendRequest,
+    ("inbox", "list"): _InboxListRequest,
+    ("thread", "unfollow"): _ThreadUnfollowRequest,
+}
+
+_REQUEST_ERRORS: dict[str, tuple[str, str]] = {
+    "session_id": ("SESSION_REQUIRED", "session_id must be a non-empty string"),
+    "limit": ("INVALID_LIMIT", "limit must be a positive integer"),
+    "offset": ("INVALID_OFFSET", "offset must be a non-negative integer"),
+    "target": ("TARGET_REQUIRED", "target must be a non-empty string"),
+    "around_message_id": (
+        "INVALID_AROUND_MESSAGE",
+        "around_message_id must be a string",
+    ),
+    "body": ("BODY_REQUIRED", "body must be text"),
+    "command_id": (
+        "COMMAND_ID_REQUIRED",
+        "command_id must be a non-empty string",
+    ),
+    "attachment_paths": (
+        "INVALID_ATTACHMENTS",
+        "attachment_paths must be a list of non-empty strings",
+    ),
+    "reply_to_message_id": (
+        "INVALID_REPLY_TO",
+        "reply_to_message_id must be a non-empty string",
+    ),
+    "created_at_ms": (
+        "INVALID_CREATED_AT",
+        "created_at_ms must be non-negative",
+    ),
+}
+
+
+def _parse_command_request[RequestT: _CommandRequest](
+    request: Mapping[str, object],
+    model: type[RequestT],
+    *,
+    errors: Mapping[str, tuple[str, str]] | None = None,
+) -> RequestT:
+    try:
+        return model.model_validate(request)
+    except ValidationError as error:
+        field_name = next(
+            (
+                part
+                for part in error.errors()[0].get("loc", ())
+                if isinstance(part, str)
+            ),
+            "request",
+        )
+        error_map = dict(_REQUEST_ERRORS)
+        if errors is not None:
+            error_map.update(errors)
+        code, message = error_map.get(
+            field_name,
+            ("INVALID_COMMAND", "command request is invalid"),
+        )
+        raise CommandDispatchError(code, message) from error
+
+
 ControlHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 SessionBindingValidator = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
@@ -258,14 +380,14 @@ class CommandDispatcher:
                     self._drained.set()
 
     async def _dispatch_command(
-        self, request: Mapping[str, object]
+        self, raw_request: Mapping[str, object]
     ) -> Mapping[str, object]:
-        resource = request.get("resource")
+        resource = raw_request.get("resource")
         if not isinstance(resource, str) or not resource:
             raise CommandDispatchError(
                 "RESOURCE_REQUIRED", "resource must be a non-empty string"
             )
-        command = request.get("command")
+        command = raw_request.get("command")
         if not isinstance(command, str) or not command:
             raise CommandDispatchError(
                 "COMMAND_REQUIRED", "command must be a non-empty string"
@@ -290,13 +412,12 @@ class CommandDispatcher:
                 "UNKNOWN_RESOURCE", f"unsupported command resource: {resource}"
             )
 
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise CommandDispatchError(
-                "SESSION_REQUIRED", "session_id must be a non-empty string"
-            )
+        request = _parse_command_request(
+            raw_request, _REQUEST_MODELS[(resource, command)]
+        )
+        session_id = request.session_id
         if self._session_binding_validator is not None:
-            await self._session_binding_validator(session_id, request)
+            await self._session_binding_validator(session_id, raw_request)
 
         if resource == "message" and command == "check":
             result = await self._service.check(session_id)
@@ -316,44 +437,21 @@ class CommandDispatcher:
             }
 
         if resource == "inbox" and command == "list":
-            limit = request.get("limit", 100)
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
-                raise CommandDispatchError(
-                    "INVALID_LIMIT", "limit must be a positive integer"
-                )
-            offset = request.get("offset", 0)
-            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-                raise CommandDispatchError(
-                    "INVALID_OFFSET", "offset must be a non-negative integer"
-                )
+            request = cast(_InboxListRequest, request)
             result = await self._service.list_inbox(
                 session_id,
-                limit=limit,
-                offset=offset,
+                limit=request.limit,
+                offset=request.offset,
             )
             return {"ok": True, "result": serialize_inbox_list(result)}
 
         if resource == "message" and command == "read":
-            target = request.get("target")
-            if not isinstance(target, str) or not target:
-                raise CommandDispatchError(
-                    "TARGET_REQUIRED", "target must be a non-empty string"
-                )
-            around_message_id = request.get("around_message_id")
-            if around_message_id is not None and not isinstance(around_message_id, str):
-                raise CommandDispatchError(
-                    "INVALID_AROUND_MESSAGE", "around_message_id must be a string"
-                )
-            limit = request.get("limit", 100)
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
-                raise CommandDispatchError(
-                    "INVALID_LIMIT", "limit must be a positive integer"
-                )
+            request = cast(_MessageReadRequest, request)
             result = await self._service.read(
                 session_id,
-                target=target,
-                around_message_id=around_message_id,
-                limit=limit,
+                target=request.target,
+                around_message_id=request.around_message_id,
+                limit=request.limit,
             )
             return {
                 "ok": True,
@@ -372,52 +470,15 @@ class CommandDispatcher:
             }
 
         if resource == "message" and command == "send":
-            target = request.get("target")
-            body = request.get("body")
-            command_id = request.get("command_id")
-            attachment_paths = request.get("attachment_paths", [])
-            reply_to_message_id = request.get("reply_to_message_id")
-            created_at_ms = request.get("created_at_ms", time_ns() // 1_000_000)
-            if not isinstance(target, str) or not target:
-                raise CommandDispatchError(
-                    "TARGET_REQUIRED", "target must be a non-empty string"
-                )
-            if not isinstance(body, str):
-                raise CommandDispatchError("BODY_REQUIRED", "body must be text")
-            if not isinstance(command_id, str) or not command_id:
-                raise CommandDispatchError(
-                    "COMMAND_ID_REQUIRED", "command_id must be a non-empty string"
-                )
-            if not isinstance(attachment_paths, list) or not all(
-                isinstance(path, str) and path for path in attachment_paths
-            ):
-                raise CommandDispatchError(
-                    "INVALID_ATTACHMENTS",
-                    "attachment_paths must be a list of non-empty strings",
-                )
-            if reply_to_message_id is not None and (
-                not isinstance(reply_to_message_id, str) or not reply_to_message_id
-            ):
-                raise CommandDispatchError(
-                    "INVALID_REPLY_TO",
-                    "reply_to_message_id must be a non-empty string",
-                )
-            if (
-                isinstance(created_at_ms, bool)
-                or not isinstance(created_at_ms, int)
-                or created_at_ms < 0
-            ):
-                raise CommandDispatchError(
-                    "INVALID_CREATED_AT", "created_at_ms must be non-negative"
-                )
+            request = cast(_MessageSendRequest, request)
             result = await self._service.send(
                 session_id=session_id,
-                command_id=command_id,
-                target=target,
-                body=body,
-                created_at_ms=created_at_ms,
-                attachment_paths=tuple(attachment_paths),
-                reply_to_message_id=reply_to_message_id,
+                command_id=request.command_id,
+                target=request.target,
+                body=request.body,
+                created_at_ms=request.created_at_ms,
+                attachment_paths=tuple(request.attachment_paths),
+                reply_to_message_id=request.reply_to_message_id,
             )
             return {
                 "ok": True,
@@ -425,12 +486,8 @@ class CommandDispatcher:
             }
 
         if resource == "thread" and command == "unfollow":
-            target = request.get("target")
-            if not isinstance(target, str) or not target:
-                raise CommandDispatchError(
-                    "TARGET_REQUIRED", "target must be a non-empty string"
-                )
-            changed = await self._service.unfollow(session_id, target=target)
+            request = cast(_ThreadUnfollowRequest, request)
+            changed = await self._service.unfollow(session_id, target=request.target)
             return {"ok": True, "result": {"changed": changed}}
 
         raise AssertionError("validated command route has no handler")

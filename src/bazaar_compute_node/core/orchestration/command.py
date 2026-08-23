@@ -48,8 +48,6 @@ class OutboundAttachmentResolver:
         seen_paths: set[Path] = set()
         workspace = self._workspace().resolve(strict=True)
         for raw_path in attachment_paths:
-            if not isinstance(raw_path, str) or not raw_path:
-                raise ValueError("attachment paths must be non-empty strings")
             source = Path(raw_path)
             if not source.is_absolute():
                 raise ValueError("attachment paths must be absolute")
@@ -185,10 +183,6 @@ class SessionCommandService(ICommandService):
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
-        if not target:
-            raise ValueError("target must be a non-empty string")
-        if limit <= 0:
-            raise ValueError("limit must be positive")
         async with self._storage.transaction() as transaction:
             caller_session = await transaction.get_bcn_session(session_id)
             if caller_session is None:
@@ -314,10 +308,6 @@ class SessionCommandService(ICommandService):
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
     ) -> OutboundMessage:
-        if not command_id:
-            raise ValueError("command_id must be a non-empty string")
-        if not target:
-            raise ValueError("target must be a non-empty string")
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths
@@ -614,8 +604,6 @@ class SessionCommandService(ICommandService):
             return outbound
 
     async def unfollow(self, session_id: str, *, target: str) -> bool:
-        if not target:
-            raise ValueError("target must be a non-empty string")
         async with (
             self._concurrency.for_session(session_id),
             self._storage.transaction() as transaction,

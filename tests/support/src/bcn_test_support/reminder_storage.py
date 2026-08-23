@@ -80,7 +80,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         session_id: str,
         message_id: str,
     ) -> InboundMessage | None:
-        _require_non_empty_text(session_id, "session_id")
         reference = canonical_id_reference(message_id)
         return next(
             (
@@ -98,7 +97,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> Reminder | None:
-        _require_non_empty_text(owner_session_id, "owner_session_id")
         reference = canonical_id_reference(reminder_id)
         return next(
             (
@@ -115,7 +113,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         owner_session_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
-        _require_non_empty_text(owner_session_id, "owner_session_id")
         if not isinstance(statuses, frozenset) or not statuses:
             raise ValueError("statuses must be a non-empty frozenset")
         if not all(isinstance(status, ReminderState) for status in statuses):
@@ -157,7 +154,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         expected_revision: int,
         reminder: object,
     ) -> Reminder:
-        _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         existing = await self.get_reminder(
@@ -215,8 +211,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         *,
         limit: int,
     ) -> tuple[Reminder, ...]:
-        _require_non_negative_int(now_ms, "now_ms")
-        _require_positive_int(limit, "limit")
         reminders = [
             reminder
             for reminder in self._reminder_storage.reminders.values()
@@ -240,9 +234,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         owner_session_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None:
-        _require_non_empty_text(agent_id, "agent_id")
-        _require_non_empty_text(owner_session_id, "owner_session_id")
-        _require_non_empty_text(reminder_id, "reminder_id")
         reminder = await self.get_reminder(owner_session_id, reminder_id)
         if reminder is None or self._agent_id_for_session(owner_session_id) != agent_id:
             return None
@@ -274,8 +265,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         *,
         limit: int,
     ) -> tuple[OwnedReminder, ...]:
-        _require_non_negative_int(now_ms, "now_ms")
-        _require_positive_int(limit, "limit")
         reminders = [
             owned
             for reminder in self._reminder_storage.reminders.values()
@@ -300,7 +289,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         reminder: object,
         occurrence: object,
     ) -> ReminderOccurrence:
-        _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         if not isinstance(occurrence, ReminderOccurrence):
@@ -359,7 +347,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         reminder: object,
         occurrence: object,
     ) -> OwnedReminderOccurrence:
-        _require_positive_int(expected_revision, "expected_revision")
         if not isinstance(reminder, OwnedReminder):
             raise TypeError("reminder must be an OwnedReminder")
         if not isinstance(occurrence, OwnedReminderOccurrence):
@@ -388,8 +375,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         *,
         limit: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _require_non_empty_text(owner_session_id, "owner_session_id")
-        _require_positive_int(limit, "limit")
         occurrences = [
             occurrence
             for occurrence in self._reminder_storage.reminder_occurrences.values()
@@ -401,7 +386,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         return tuple(occurrences[:limit])
 
     async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        _require_non_empty_text(owner_session_id, "owner_session_id")
         return sum(
             occurrence.owner_session_id == owner_session_id and occurrence.pending
             for occurrence in self._reminder_storage.reminder_occurrences.values()
@@ -414,8 +398,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         *,
         read_at_ms: int,
     ) -> tuple[ReminderOccurrence, ...]:
-        _require_non_empty_text(owner_session_id, "owner_session_id")
-        _require_non_negative_int(read_at_ms, "read_at_ms")
         if not isinstance(occurrence_ids, tuple):
             raise TypeError("occurrence_ids must be a tuple")
         occurrence_ids = cast(tuple[str, ...], occurrence_ids)
@@ -471,21 +453,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     def _agent_id_for_session(self, session_id: str) -> str | None:
         session = self._reminder_storage.bcn_sessions.get(session_id)
         return session.workspace_id if session is not None else None
-
-
-def _require_non_empty_text(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be a non-empty string")
-
-
-def _require_non_negative_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-
-
-def _require_positive_int(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer")
 
 
 def _validate_expected_revision(
