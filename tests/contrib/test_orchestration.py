@@ -300,6 +300,32 @@ async def wait_until(predicate: object) -> None:
     raise AssertionError("condition was not reached")
 
 
+def _stored_messages(
+    storage: MemoryStorage,
+    session_id: str,
+    *,
+    direction: MessageDirection | None = None,
+) -> list[Message]:
+    return [
+        message
+        for message in storage.messages.get(session_id, [])
+        if direction is None or message.direction is direction
+    ]
+
+
+def _stored_message_index(
+    storage: MemoryStorage,
+    *,
+    direction: MessageDirection | None = None,
+) -> dict[str, Message]:
+    return {
+        message.message_id: message
+        for messages in storage.messages.values()
+        for message in messages
+        if direction is None or message.direction is direction
+    }
+
+
 class _AcceptanceChannel(Protocol):
     sent_messages: list[ChannelSendRequest]
 
@@ -586,7 +612,11 @@ async def test_channel_storage_runtime_turn_path() -> None:
             )
         )
 
-        assert storage.inbound_messages["bcn-1"] == [message]
+        assert _stored_messages(
+            storage,
+            "bcn-1",
+            direction=MessageDirection.INBOUND,
+        ) == [message]
         assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
         assert runtime.started_turns
         assert any(
@@ -716,7 +746,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
         )
         assert len(channel.sent_messages) == 1
         assert storage.cursors["bcn-1"].delivered_through_seq == 1
-        assert storage.outbound_messages
+        assert _stored_message_index(storage, direction=MessageDirection.OUTBOUND)
         tool_events = [
             event for event in audit.events if event.metadata.get("kind") == "tool_call"
         ]
@@ -878,7 +908,18 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
     orchestrator, channel, _, storage, _ = await make_node()
     try:
         await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage,
+                        "bcn-1",
+                        direction=MessageDirection.INBOUND,
+                    )
+                )
+                == 1
+            )
+        )
 
         held_without_snapshot = await orchestrator.command_service.send(
             session_id="bcn-1",
@@ -886,15 +927,26 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             target="#test:bcn-1",
             body="reply",
             created_at_ms=2,
-            reply_to_message_id=storage.inbound_messages["bcn-1"][0].message_id,
+            reply_to_message_id=_stored_messages(
+                storage,
+                "bcn-1",
+                direction=MessageDirection.INBOUND,
+            )[0].message_id,
         )
         assert isinstance(held_without_snapshot, MessageSendFreshnessHold)
         assert held_without_snapshot.newer_message_total == 1
         assert held_without_snapshot.messages == tuple(
-            storage.inbound_messages["bcn-1"]
+            _stored_messages(
+                storage,
+                "bcn-1",
+                direction=MessageDirection.INBOUND,
+            )
         )
         assert held_without_snapshot.draft_replaced is False
-        assert storage.outbound_messages == {}
+        assert not _stored_message_index(
+            storage,
+            direction=MessageDirection.OUTBOUND,
+        )
         assert not channel.send_attempts
 
         checked = await orchestrator.command_service.check("bcn-1")
@@ -911,7 +963,11 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert delivered.delivery_state is OutboundDeliveryState.SENT
         assert delivered.body == "reply"
         assert channel.send_requests[0].provider_reply_to_message_id == (
-            storage.inbound_messages["bcn-1"][0].provider_message_id
+            _stored_messages(
+                storage,
+                "bcn-1",
+                direction=MessageDirection.INBOUND,
+            )[0].provider_message_id
         )
         assert len(channel.send_attempts) == 1
         with pytest.raises(ValueError, match="no active draft"):
@@ -925,7 +981,18 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             )
 
         await channel.inject(make_message(seq=2))
-        await wait_until(lambda: len(storage.inbound_messages["bcn-1"]) == 2)
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage,
+                        "bcn-1",
+                        direction=MessageDirection.INBOUND,
+                    )
+                )
+                == 2
+            )
+        )
         stale = await orchestrator.command_service.send(
             session_id="bcn-1",
             command_id="command-stale",
@@ -1050,7 +1117,18 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
     orchestrator, channel, _, storage, _ = await make_node(workspace=lambda: tmp_path)
     try:
         await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage,
+                        "bcn-1",
+                        direction=MessageDirection.INBOUND,
+                    )
+                )
+                == 1
+            )
+        )
         await orchestrator.command_service.check("bcn-1")
 
         delivered = await orchestrator.command_service.send(
@@ -1078,7 +1156,18 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
     orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
-        await wait_until(lambda: len(storage.inbound_messages.get("bcn-1", [])) == 1)
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage,
+                        "bcn-1",
+                        direction=MessageDirection.INBOUND,
+                    )
+                )
+                == 1
+            )
+        )
         await orchestrator._record_inbound(make_message(session_id="bcn-other"))
 
         cross_session_target = await orchestrator.command_service.send(
@@ -1091,7 +1180,10 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert cross_session_target == MessageSendHandoffRequired(
             target="#test:bcn-other"
         )
-        assert storage.outbound_messages == {}
+        assert not _stored_message_index(
+            storage,
+            direction=MessageDirection.OUTBOUND,
+        )
         assert not channel.send_attempts
         assert any(
             event.event_name == "tool.bcc.message.send.cross_session_hold"
@@ -1109,7 +1201,10 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             )
         assert all(
             message.command_id != "command-empty-body"
-            for message in storage.outbound_messages.values()
+            for message in _stored_message_index(
+                storage,
+                direction=MessageDirection.OUTBOUND,
+            ).values()
         )
         assert not channel.send_attempts
 
@@ -1264,7 +1359,14 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
 
         await channel.inject(second)
         await wait_until(
-            lambda: storage.inbound_messages.get("bcn-1") == [first, second]
+            lambda: (
+                _stored_messages(
+                    storage,
+                    "bcn-1",
+                    direction=MessageDirection.INBOUND,
+                )
+                == [first, second]
+            )
         )
         await wait_until(lambda: len(runtime.steered_turns) == 1)
         assert len(runtime.started_turns) == 1
@@ -1386,7 +1488,15 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
         assert second.state is RuntimeTurnState.COMPLETED
         assert storage.bcn_sessions["bcn-a"].workspace_id == "workspace-1"
         assert storage.bcn_sessions["bcn-b"].workspace_id == "workspace-1"
-        assert set(storage.inbound_messages) == {"bcn-a", "bcn-b"}
+        assert {
+            session_id
+            for session_id in storage.messages
+            if _stored_messages(
+                storage,
+                session_id,
+                direction=MessageDirection.INBOUND,
+            )
+        } == {"bcn-a", "bcn-b"}
         assert {
             event.correlation.bcn_session_id
             for event in audit.events
@@ -1425,9 +1535,11 @@ async def test_inbound_deduplication_uses_external_conversation_identity() -> No
             received_at_ms=999,
         )
         assert await orchestrator.handle_inbound(replay) is None
-        assert storage.inbound_messages["bcn-a"] == [
-            replace(first, notifies_runtime=True)
-        ]
+        assert _stored_messages(
+            storage,
+            "bcn-a",
+            direction=MessageDirection.INBOUND,
+        ) == [replace(first, notifies_runtime=True)]
 
         other_conversation = replace(
             make_message(session_id="bcn-b"),
@@ -1435,7 +1547,16 @@ async def test_inbound_deduplication_uses_external_conversation_identity() -> No
         )
         other_turn = await orchestrator.handle_inbound(other_conversation)
         assert other_turn is not None
-        assert len(storage.inbound_messages["bcn-b"]) == 1
+        assert (
+            len(
+                _stored_messages(
+                    storage,
+                    "bcn-b",
+                    direction=MessageDirection.INBOUND,
+                )
+            )
+            == 1
+        )
         assert len(runtime.started_turns) == 2
     finally:
         await orchestrator.stop(timeout=1)
@@ -1489,11 +1610,23 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
             mentions_agent=False,
         )
         assert await orchestrator.handle_inbound(after_unfollow) is None
-        assert storage.inbound_messages["bcn-1"][-1].notifies_runtime is False
+        assert (
+            _stored_messages(
+                storage,
+                "bcn-1",
+                direction=MessageDirection.INBOUND,
+            )[-1].notifies_runtime
+            is False
+        )
 
         assert await orchestrator.handle_inbound(quiet) is None
-        assert len(storage.inbound_messages["bcn-1"]) == 4
-        assert storage.inbound_messages["bcn-1"][0].notifies_runtime is False
+        inbound = _stored_messages(
+            storage,
+            "bcn-1",
+            direction=MessageDirection.INBOUND,
+        )
+        assert len(inbound) == 4
+        assert inbound[0].notifies_runtime is False
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1544,7 +1677,10 @@ async def test_terminal_runtime_error_replies_on_original_route(
         assert request.target_kind is ChannelTargetKind.GROUP
         assert request.provider_thread_id == "provider-thread-7"
         assert request.provider_reply_to_message_id == "provider-message-7"
-        assert storage.outbound_messages == {}
+        assert not _stored_message_index(
+            storage,
+            direction=MessageDirection.OUTBOUND,
+        )
         assert [
             event.event_name
             for event in audit.events
@@ -1685,7 +1821,11 @@ async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
     try:
         initial_turn = await orchestrator.handle_inbound(anchor)
         assert initial_turn is not None
-        canonical_anchor = storage.inbound_messages["bcn-1"][0]
+        canonical_anchor = _stored_messages(
+            storage,
+            "bcn-1",
+            direction=MessageDirection.INBOUND,
+        )[0]
         occurrence_id = str(uuid7())
         storage.reminder_occurrences[occurrence_id] = ReminderOccurrence(
             occurrence_id=occurrence_id,
@@ -1800,7 +1940,7 @@ async def test_inbound_failure_rolls_back_new_session_state() -> None:
         assert "channel-invalid" not in storage.channel_sessions
         assert "invalid" not in storage.bcn_sessions
         assert "invalid" not in storage.cursors
-        assert "invalid" not in storage.inbound_messages
+        assert "invalid" not in storage.messages
         assert orchestrator.runtime_session("invalid") is None
     finally:
         await orchestrator.stop(timeout=1)

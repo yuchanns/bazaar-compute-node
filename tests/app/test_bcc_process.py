@@ -429,6 +429,51 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         sent_output = capsys.readouterr()
         assert sent_output.err == ""
         assert sent_output.out.startswith(f"Message sent to {target}. Message ID: ")
+        outbound_message_id = sent_output.out.split("Message ID: ", 1)[1].strip()
+
+        assert (
+            await bcc_module.async_main(
+                [
+                    "message",
+                    "read",
+                    "--target",
+                    target,
+                    "--around",
+                    outbound_message_id,
+                    "--limit",
+                    "2",
+                ]
+            )
+            == 0
+        )
+        history_output = capsys.readouterr()
+        assert history_output.err == ""
+        assert "Read window: 2 returned" in history_output.out
+        assert f"msg={outbound_message_id}" in history_output.out
+        assert "type=agent" in history_output.out
+        assert "@Agent A reply" in history_output.out
+
+        latest_response = await LocalCommandClient.request(
+            node.endpoint,
+            {
+                **request,
+                "resource": "inbox",
+                "command": "list",
+                "limit": 10,
+                "offset": 0,
+            },
+        )
+        latest_result = cast(Mapping[str, object], latest_response["result"])
+        latest_targets = cast(list[Mapping[str, object]], latest_result["targets"])
+        assert latest_targets[0]["latest_message_id"] == outbound_message_id
+        assert latest_targets[0]["latest_sender"] == {
+            "id": None,
+            "name": AGENT_NAMES[AGENT_A_ID],
+        }
+
+        post_send_check = await LocalCommandClient.request(node.endpoint, request)
+        post_send_result = cast(Mapping[str, object], post_send_check["result"])
+        assert post_send_result["messages"] == []
 
         repository = storage
         identity = await repository.fetchone(

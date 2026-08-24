@@ -66,9 +66,9 @@ class TestControl:
     ) -> dict[str, object]:
         return {
             "started": self._is_started(),
-            "inbound_messages": {
-                session_id: len(messages)
-                for session_id, messages in storage.inbound_messages.items()
+            "messages": {
+                session_id: [_serialize_message(message) for message in messages]
+                for session_id, messages in storage.messages.items()
             },
             "cursors": {
                 session_id: {
@@ -77,10 +77,6 @@ class TestControl:
                 }
                 for session_id, cursor in storage.cursors.items()
             },
-            "outbound_messages": [
-                _serialize_outbound(message)
-                for message in storage.outbound_messages.values()
-            ],
             "sent_messages": [
                 _serialize_channel_send(message) for message in channel.sent_messages
             ],
@@ -159,12 +155,11 @@ class TestControl:
         )
 
 
-def _serialize_outbound(message: Message) -> dict[str, object]:
-    delivery_state = message.delivery_state
-    if delivery_state is None:
-        raise RuntimeError("outbound message has no delivery state")
+def _serialize_message(message: Message) -> dict[str, object]:
     return {
-        "outbound_message_id": message.message_id,
+        "message_id": message.message_id,
+        "seq": message.seq,
+        "direction": message.direction.value,
         "command_id": message.command_id,
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
@@ -176,11 +171,13 @@ def _serialize_outbound(message: Message) -> dict[str, object]:
                 "relative_path": attachment.relative_path,
                 "media_type": attachment.media_type,
                 "size_bytes": attachment.size_bytes,
-                "sha256": attachment.sha256,
             }
             for attachment in message.attachments
         ],
-        "state": delivery_state.value,
+        "delivery_state": (
+            message.delivery_state.value if message.delivery_state is not None else None
+        ),
+        "received_at_ms": message.received_at_ms,
         "created_at_ms": message.created_at_ms,
         "snapshot_seq": message.snapshot_seq,
         "current_inbound_seq": message.current_inbound_seq,

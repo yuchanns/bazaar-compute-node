@@ -486,11 +486,12 @@ verification 后停下 review，再开始 Task 2。
 - read 与 inbox list 改用通用 history/catalog；
 - read 的 around anchor 同时支持 inbound 与已接受 outbound message id；
 - 保持 reply、Reminder、handoff、approval 和 error feedback 的业务判断。
+- 在本实现阶段删除旧 model/codec/table 兼容名称与失效索引引用，并更新两份既有架构计划；
+  历史 migration 及其 fixture 中的旧 schema 名称原样保留。
 
-### Task 6：清理与验证
+### Task 6：最终验证
 
-- 删除旧 model/codec/table 名称和失效索引；
-- 更新两份现有架构计划中关于双 message table 的描述；
+- 本 Task 不修改代码、schema 或文档，只对已完成实现执行最终验收；
 - 运行 storage operation tests、migration focused tests、command-process tests、完整 test suite、
   Ruff、Pyright、compileall、lock verification 与 `git diff --check`。
 

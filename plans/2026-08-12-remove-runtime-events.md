@@ -15,13 +15,16 @@ turn 所需的内存生命周期。
 
 ## 持久化边界
 
+> 后续 schema 演进：本文描述的是 migration 9 完成时的持久化边界。当前 schema 已由
+> `2026-08-24-unified-message-storage.md` 的 migration 18 将双 message table 合并为
+> `messages`；inbound/outbound 通过 `direction` 区分并共享全局 `seq`。
+
 以下 SQLite 数据会继续保留，因为应用会读取它们来完成业务行为或恢复：
 
 - `channel_sessions`、`bcn_sessions` 和 `runtime_sessions`：稳定身份与 provider thread
   绑定；
 - `runtime_attempts`：同一 inbound 只触发一次 turn；
-- `inbound_messages` 和 `consumer_cursors`：inbox 顺序与投递；
-- `outbound_messages`：fresh-check、provider attempt、draft 和投递结果；
+- `messages` 和 `consumer_cursors`：统一会话顺序、inbox 投递、provider attempt 与投递结果；
 - `node_state` 和 `schema_migrations`：Node 身份与 schema 完整性。
 
 `RuntimeEvent` 继续作为 provider-neutral 的内存生命周期对象，但删除数据库序号、数据库身份、

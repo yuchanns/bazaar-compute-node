@@ -14,6 +14,7 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     RuntimeSession,
     SenderIdentity,
+    SenderKind,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
@@ -327,6 +328,7 @@ def test_session_runtime_compaction_has_explicit_start_progress_and_completion_s
 
 def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:
     outbound = make_outbound_message()
+    assert outbound.sender_kind is SenderKind.AGENT
     outbound = outbound.transition_to(
         OutboundDeliveryState.QUEUED,
         at_ms=3,

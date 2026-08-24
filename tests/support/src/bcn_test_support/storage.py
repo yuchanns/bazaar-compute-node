@@ -46,29 +46,6 @@ class MemoryStorage:
         self.stopped = False
         self._lock = asyncio.Lock()
 
-    @property
-    def inbound_messages(self) -> dict[str, list[Message]]:
-        return {
-            session_id: [
-                message
-                for message in messages
-                if message.direction is MessageDirection.INBOUND
-            ]
-            for session_id, messages in self.messages.items()
-            if any(
-                message.direction is MessageDirection.INBOUND for message in messages
-            )
-        }
-
-    @property
-    def outbound_messages(self) -> dict[str, Message]:
-        return {
-            message.message_id: message
-            for messages in self.messages.values()
-            for message in messages
-            if message.direction is MessageDirection.OUTBOUND
-        }
-
     async def start(self, *, timeout: float) -> None:
         del timeout
         self.started = True

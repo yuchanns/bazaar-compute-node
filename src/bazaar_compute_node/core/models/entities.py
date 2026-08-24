@@ -397,6 +397,8 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
 
     @property
     def sender_kind(self) -> SenderKind:
+        if self.direction is MessageDirection.OUTBOUND:
+            return SenderKind.AGENT
         value = self.metadata.get("sender_kind", SenderKind.UNKNOWN.value)
         if not isinstance(value, str):
             raise TypeError("metadata sender_kind must be a string")

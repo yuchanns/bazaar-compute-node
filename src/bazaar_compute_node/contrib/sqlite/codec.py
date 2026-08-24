@@ -75,55 +75,6 @@ def runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
     )
 
 
-def inbound_message_from_row(
-    row: aiosqlite.Row,
-    attachments: tuple[InboundAttachment, ...] = (),
-) -> Message[InboundAttachment]:
-    return Message(
-        direction=MessageDirection.INBOUND,
-        seq=cast(int, row["seq"]),
-        message_id=_required_text(row["message_id"], "message_id"),
-        session_id=_required_text(row["session_id"], "session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        channel=_required_text(row["channel"], "channel"),
-        provider_thread_id=_required_text(
-            row["provider_thread_id"], "provider_thread_id"
-        ),
-        provider_message_id=_required_text(
-            row["provider_message_id"], "provider_message_id"
-        ),
-        received_at_ms=cast(int, row["received_at_ms"]),
-        sender=(
-            SenderIdentity(name=sender)
-            if (sender := _optional_text(row["sender"], "sender")) is not None
-            else None
-        ),
-        message_type=_required_text(row["message_type"], "message_type"),
-        target=_required_text(row["canonical_target"], "canonical_target"),
-        body=_string_value(row["body"], "body", allow_empty=True),
-        target_kind=ChannelTargetKind(
-            _required_text(row["target_kind"], "inbound_message.target_kind")
-        ),
-        mentions_agent=bool(_required_boolean(row["mentions_agent"], "mentions_agent")),
-        notifies_runtime=bool(
-            _required_boolean(row["notifies_runtime"], "notifies_runtime")
-        ),
-        attachments=attachments,
-        provider_time_ms=cast(int | None, row["provider_time_ms"]),
-        reply_to_message_id=_optional_string_value(
-            row["reply_to_message_id"],
-            "reply_to_message_id",
-            allow_empty=False,
-        ),
-        provider_payload_ref=_optional_string_value(
-            row["provider_payload_ref"], "provider_payload_ref", allow_empty=False
-        ),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
-
-
 def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
     return InboundAttachment(
         attachment_id=_required_text(row["attachment_id"], "attachment_id"),
@@ -134,44 +85,6 @@ def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
         relative_path=_optional_text(row["relative_path"], "attachment.relative_path"),
         size_bytes=cast(int | None, row["size_bytes"]),
         error=_optional_text(row["error"], "attachment.error"),
-    )
-
-
-def outbound_message_from_row(row: aiosqlite.Row) -> Message[OutboundAttachment]:
-    attachments = _decode_outbound_attachments(row["attachments_json"])
-    return Message(
-        direction=MessageDirection.OUTBOUND,
-        seq=0,
-        message_id=_required_text(row["outbound_message_id"], "outbound_message_id"),
-        command_id=_required_text(row["command_id"], "command_id"),
-        session_id=_required_text(row["session_id"], "session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        target=_required_text(row["target"], "target"),
-        body=_string_value(row["body"], "body", allow_empty=True),
-        attachments=attachments,
-        reply_to_message_id=_optional_text(
-            row["reply_to_message_id"],
-            "reply_to_message_id",
-        ),
-        delivery_state=OutboundDeliveryState(
-            _required_text(row["state"], "outbound_message.state")
-        ),
-        created_at_ms=cast(int, row["created_at_ms"]),
-        snapshot_seq=cast(int, row["snapshot_seq"]),
-        current_inbound_seq=cast(int, row["current_inbound_seq"]),
-        provider_message_id=_optional_text(
-            row["provider_message_id"], "provider_message_id"
-        ),
-        provider_receipt_ref=_optional_text(
-            row["provider_receipt_ref"], "provider_receipt_ref"
-        ),
-        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
-        completed_at_ms=cast(int | None, row["completed_at_ms"]),
-        error_kind=_optional_text(row["error_kind"], "error_kind"),
-        error_message=_optional_text(row["error_message"], "error_message"),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
     )
 
 
