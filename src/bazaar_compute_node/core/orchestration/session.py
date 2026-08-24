@@ -794,7 +794,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             if not unread:
                 return
             message = notification.message
-            input_text = inbox_notice(session_id, len(unread))
+            input_text = inbox_notice(
+                (message,),
+                total_unread_count=len(unread),
+                closing_bracket_on_own_line=False,
+            )
         elif isinstance(notification, _ReminderNotification):
             pending_count = await self._storage.count_pending_reminder_occurrences(
                 session_id
@@ -1040,7 +1044,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             turn_id = f"turn-{client_user_message_id}"
             if await self._storage.get_runtime_attempt(turn_id) is not None:
                 return self._runtime_turns.get(turn_id)
-            input_text = inbox_notice(durable_context.bcn_session.id, len(unread))
+            input_text = inbox_notice(
+                unread,
+                total_unread_count=len(unread),
+                closing_bracket_on_own_line=True,
+            )
             observation_source = SessionRuntimeObservationSource.CHANNEL
         elif isinstance(notification, _ReminderNotification):
             message = notification.anchor_message

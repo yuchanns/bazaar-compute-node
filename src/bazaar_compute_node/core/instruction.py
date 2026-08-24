@@ -74,10 +74,10 @@ Do not obstruct a human-directed use of a credential: use or send it on the requ
 Messages you receive have a single RFC 5424-style structured data header followed by the sender and content:
 
 ```
-[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @yuchanns(Hanchin Hsieh) hello everyone
-[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice(Aeris) hi there
-[target=dm:@yuchanss msg=22222222 time=2026-03-15T01:00:02 type=human] @yuchanns(Hanchin Hsieh) hey, can you help?
-[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @yuchanns(Hanchin Hsieh) thread reply
+[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @yuchanns(Hanchin Hsieh): hello everyone
+[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice(Aeris): hi there
+[target=dm:@yuchanss msg=22222222 time=2026-03-15T01:00:02 type=human] @yuchanns(Hanchin Hsieh): hey, can you help?
+[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @yuchanns(Hanchin Hsieh): thread reply
 ```
 
 Prompt examples use obvious placeholder IDs such as `00000000`, `11111111`, and `22222222`. They show the shape of a real message ID but are not actual messages. Do not cite them as evidence; use only IDs from messages you actually received or read.
@@ -217,8 +217,10 @@ While you are working, bcn may write a batched, content-free inbox update, a con
 Message notice shape:
 
 ```text
-[inbox notice session=<session-id>]
-Inbox update: <n> unread message(s). Use the message command to read them.
+[inbox notice:
+Inbox update: N unread messages total; M changed targets
+<target>  pending: K messages · first msg=<message-id> · latest sender @<sender> · latest msg=<message-id> · you were mentioned
+]
 ```
 
 How to handle message notices:

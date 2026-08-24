@@ -622,16 +622,13 @@ def format_check_message(message: Mapping[str, object]) -> str:
     target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
-    line = (
-        f"[target={target} msg={message_id} time={timestamp} "
-        f"type={sender_kind} mentioned={str(message['mentions_agent']).lower()}"
-    )
+    line = f"[target={target} msg={message_id} time={timestamp} type={sender_kind}"
     reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
         line += f" reply_to={cast(str, reply_to_message_id)}"
     line += "] "
     if sender is not None:
-        line += f"{sender} "
+        line += f"{sender}: "
     return line + body + _attachment_suffix(message)
 
 
@@ -650,14 +647,13 @@ def format_read_message(
         f"time={timestamp}",
         f"type={sender_kind}",
         f"replyTarget={target}",
-        f"mentioned={str(message['mentions_agent']).lower()}",
     ]
     reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
         fields.append(f"replyTo={cast(str, reply_to_message_id)}")
     line = f"[{index}/{count} {' '.join(fields)}] "
     if sender is not None:
-        line += f"{sender} "
+        line += f"{sender}: "
     return line + body + _attachment_suffix(message)
 
 

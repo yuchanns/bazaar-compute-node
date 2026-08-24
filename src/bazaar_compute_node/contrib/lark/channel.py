@@ -382,6 +382,7 @@ class LarkChannel(IChannel):
             "lark_chat_type": chat_type,
             "lark_sender_type": sender_type,
             "lark_threaded": thread_id != "0",
+            "threaded": thread_id != "0",
         }
         event_id = _provider_text(header.get("event_id"))
         if event_id is not None:
@@ -409,6 +410,7 @@ class LarkChannel(IChannel):
                         provider_payload_metadata={
                             "quoted_backfill": True,
                             "lark_chat_type": chat_type,
+                            "threaded": thread_identity.thread_id != "0",
                         },
                     )
                 except asyncio.CancelledError:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 
 from ..approval import ApprovalBinding, IApprovalHandler
@@ -17,6 +17,7 @@ from ..models import (
     ApprovalResult,
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
     Message,
     RuntimeEvent,
     RuntimeEventState,
@@ -83,12 +84,66 @@ def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
     }
 
 
-def inbox_notice(session_id: str, unread_count: int) -> str:
-    return (
-        f"[inbox notice session={session_id}]\n"
-        f"Inbox update: {unread_count} unread message(s). "
-        "Use the message command to read them."
-    )
+def inbox_notice(
+    messages: Sequence[Message],
+    *,
+    total_unread_count: int,
+    closing_bracket_on_own_line: bool,
+) -> str:
+    if not messages:
+        raise ValueError("inbox notice requires at least one changed message")
+    if total_unread_count < len(messages):
+        raise ValueError("total unread count cannot be smaller than changed messages")
+
+    buckets: dict[str, list[Message]] = {}
+    for message in messages:
+        buckets.setdefault(message.target, []).append(message)
+
+    rows: list[tuple[int, str, str]] = []
+    for target, changed in buckets.items():
+        ordered = sorted(changed, key=lambda message: (message.seq, message.message_id))
+        first = ordered[0]
+        latest = ordered[-1]
+        details = [
+            (
+                f"pending: {len(ordered)} "
+                f"{'message' if len(ordered) == 1 else 'messages'}"
+            ),
+            f"first msg={first.message_id[:8]}",
+        ]
+        if latest.sender is not None:
+            details.append(f"latest sender @{latest.sender.display_name}")
+        details.append(f"latest msg={latest.message_id[:8]}")
+        flags: set[str] = set()
+        if any(message.target_kind is ChannelTargetKind.DM for message in ordered):
+            flags.add("dm")
+        if any(message.mentions_agent for message in ordered):
+            flags.add("mention")
+        if any(message.metadata.get("threaded") is True for message in ordered):
+            flags.add("thread")
+        details.extend(
+            "you were mentioned" if flag == "mention" else flag
+            for flag in sorted(flags)
+        )
+        rows.append((latest.seq, target, f"{target}  {' · '.join(details)}"))
+
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    changed_target_count = len(rows)
+    lines = [
+        "[inbox notice:",
+        (
+            f"Inbox update: {total_unread_count} unread "
+            f"{'message' if total_unread_count == 1 else 'messages'} total; "
+            f"{changed_target_count} changed "
+            f"{'target' if changed_target_count == 1 else 'targets'}"
+        ),
+        *(row[2] for row in rows),
+    ]
+    if closing_bracket_on_own_line:
+        lines.append("]")
+    else:
+        lines[-1] += "]"
+    return "\n".join(lines)
 
 
 def reminder_notice(session_id: str, pending_count: int) -> str:

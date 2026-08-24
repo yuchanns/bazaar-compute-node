@@ -67,6 +67,7 @@ from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.session import (
     _RuntimeNotification,
 )
+from bazaar_compute_node.core.orchestration.turn import inbox_notice
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
     IRuntime,
@@ -161,6 +162,50 @@ def make_budget() -> TimeoutBudget:
         provider_call_seconds=1,
         command_seconds=1,
         shutdown_seconds=1,
+    )
+
+
+def test_inbox_notice_matches_target_delta_contract() -> None:
+    group_first = replace(
+        make_message(
+            seq=1,
+            message_id="11111111-1111-4111-8111-111111111111",
+        ),
+        target="group:thread",
+        target_kind=ChannelTargetKind.GROUP,
+        metadata={"sender_kind": "human", "threaded": True},
+    )
+    group_latest = replace(
+        make_message(
+            seq=2,
+            message_id="22222222-2222-4222-8222-222222222222",
+        ),
+        target="group:thread",
+        target_kind=ChannelTargetKind.GROUP,
+        mentions_agent=True,
+        metadata={"sender_kind": "human", "threaded": True},
+    )
+    direct = replace(
+        make_message(
+            seq=3,
+            message_id="33333333-3333-4333-8333-333333333333",
+        ),
+        target="dm:alice",
+    )
+
+    assert inbox_notice(
+        (group_first, group_latest, direct),
+        total_unread_count=5,
+        closing_bracket_on_own_line=True,
+    ) == (
+        "[inbox notice:\n"
+        "Inbox update: 5 unread messages total; 2 changed targets\n"
+        "dm:alice  pending: 1 message · first msg=33333333 · "
+        "latest sender @Sender · latest msg=33333333 · dm\n"
+        "group:thread  pending: 2 messages · first msg=11111111 · "
+        "latest sender @Sender · latest msg=22222222 · "
+        "you were mentioned · thread\n"
+        "]"
     )
 
 
@@ -1375,16 +1420,17 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert steered_session == orchestrator.runtime_session("bcn-1")
         assert steered_turn.turn_id == "turn-message-bcn-1-1"
         assert steer_input == (
-            "[inbox notice session=bcn-1]\n"
-            "Inbox update: 2 unread message(s). "
-            "Use the message command to read them."
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 1 changed target\n"
+            "#test:bcn-1  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm]"
         )
         second_body = second.body
         assert second_body is not None
         assert second_body not in steer_input
         second_sender = second.sender
         assert second_sender is not None
-        assert second_sender.display_name not in steer_input
+        assert f"latest sender @{second_sender.display_name}" in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()
@@ -1402,7 +1448,13 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
             for event in audit.events
         )
         assert len(runtime.started_turns) == 2
-        assert "session=bcn-1" in runtime.started_turns[1][2]
+        assert runtime.started_turns[1][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 1 changed target\n"
+            "#test:bcn-1  pending: 2 messages · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
     finally:
         await orchestrator.stop(timeout=1)
 
