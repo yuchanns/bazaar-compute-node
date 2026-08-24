@@ -463,6 +463,9 @@ verification 后停下 review，再开始 Task 2。
 ### Task 3：Migration 与 codec
 
 - 实现 v18 单表 migration、row codec 和 input validation；
+- 本 Task 独立对 v18 migration 执行 fixture verification，但不立即加入 runtime
+  `MIGRATIONS` ledger；Task 4 在 repository 切换到 `messages` 的同一个提交中注册 v18，
+  避免产生“旧 repository 已失去物理表”的不可运行中间状态；
 - 增加从真实 v16 fixture 升级的测试，覆盖两种 direction、全部 outbound state、cursor、
   reply、attachments 与多 agent 数据；
 - 明确断言 cursor/snapshot 迁移后仍指向原消息边界。

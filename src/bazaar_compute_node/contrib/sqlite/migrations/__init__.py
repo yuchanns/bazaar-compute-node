@@ -28,6 +28,7 @@ from .v14_add_inbox_discovery_indexes import INBOX_DISCOVERY_MIGRATION
 from .v15_add_handoffs import HANDOFF_MIGRATION
 from .v16_remove_outbound_drafts import OUTBOUND_DRAFT_REMOVAL_MIGRATION
 from .v17_remove_agent_identity_triggers import STORAGE_ACCESS_MIGRATION
+from .v18_unify_messages import MESSAGE_UNIFICATION_MIGRATION
 
 __all__ = [
     "AGENT_OWNERSHIP_MIGRATION",
@@ -37,6 +38,7 @@ __all__ = [
     "INBOUND_PROVIDER_IDENTITY_MIGRATION",
     "INBOX_DISCOVERY_MIGRATION",
     "MESSAGE_LOG_INDEX_MIGRATION",
+    "MESSAGE_UNIFICATION_MIGRATION",
     "MIGRATIONS",
     "OUTBOUND_ATTACHMENTS_MIGRATION",
     "OUTBOUND_DRAFT_REMOVAL_MIGRATION",

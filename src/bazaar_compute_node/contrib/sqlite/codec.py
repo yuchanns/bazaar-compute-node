@@ -138,7 +138,114 @@ def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
 
 
 def outbound_message_from_row(row: aiosqlite.Row) -> Message[OutboundAttachment]:
-    raw_attachments = row["attachments_json"]
+    attachments = _decode_outbound_attachments(row["attachments_json"])
+    return Message(
+        direction=MessageDirection.OUTBOUND,
+        seq=0,
+        message_id=_required_text(row["outbound_message_id"], "outbound_message_id"),
+        command_id=_required_text(row["command_id"], "command_id"),
+        session_id=_required_text(row["session_id"], "session_id"),
+        channel_session_id=_required_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        target=_required_text(row["target"], "target"),
+        body=_string_value(row["body"], "body", allow_empty=True),
+        attachments=attachments,
+        reply_to_message_id=_optional_text(
+            row["reply_to_message_id"],
+            "reply_to_message_id",
+        ),
+        delivery_state=OutboundDeliveryState(
+            _required_text(row["state"], "outbound_message.state")
+        ),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        snapshot_seq=cast(int, row["snapshot_seq"]),
+        current_inbound_seq=cast(int, row["current_inbound_seq"]),
+        provider_message_id=_optional_text(
+            row["provider_message_id"], "provider_message_id"
+        ),
+        provider_receipt_ref=_optional_text(
+            row["provider_receipt_ref"], "provider_receipt_ref"
+        ),
+        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
+        completed_at_ms=cast(int | None, row["completed_at_ms"]),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
+    )
+
+
+def message_from_row(
+    row: aiosqlite.Row,
+    inbound_attachments: tuple[InboundAttachment, ...] = (),
+) -> Message[InboundAttachment | OutboundAttachment]:
+    direction = MessageDirection(_required_text(row["direction"], "direction"))
+    sender = _optional_text(row["sender"], "sender")
+    common = {
+        "direction": direction,
+        "seq": cast(int, row["seq"]),
+        "message_id": _required_text(row["message_id"], "message_id"),
+        "session_id": _required_text(row["session_id"], "session_id"),
+        "channel_session_id": _required_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        "channel": _required_text(row["channel"], "channel"),
+        "provider_thread_id": _required_text(
+            row["provider_thread_id"], "provider_thread_id"
+        ),
+        "provider_message_id": _optional_text(
+            row["provider_message_id"], "provider_message_id"
+        ),
+        "sender": SenderIdentity(name=sender) if sender is not None else None,
+        "message_type": _required_text(row["message_type"], "message_type"),
+        "target": _required_text(row["target"], "target"),
+        "target_kind": ChannelTargetKind(
+            _required_text(row["target_kind"], "message.target_kind")
+        ),
+        "reply_to_message_id": _optional_text(
+            row["reply_to_message_id"], "reply_to_message_id"
+        ),
+        "body": _string_value(row["body"], "body", allow_empty=True),
+        "metadata": _decode_metadata(row["metadata_json"], "metadata_json"),
+    }
+    if direction is MessageDirection.INBOUND:
+        return Message(
+            **common,
+            attachments=inbound_attachments,
+            provider_time_ms=cast(int | None, row["provider_time_ms"]),
+            received_at_ms=cast(int, row["received_at_ms"]),
+            mentions_agent=bool(
+                _required_boolean(row["mentions_agent"], "mentions_agent")
+            ),
+            notifies_runtime=bool(
+                _required_boolean(row["notifies_runtime"], "notifies_runtime")
+            ),
+            provider_payload_ref=_optional_text(
+                row["provider_payload_ref"], "provider_payload_ref"
+            ),
+        )
+    return Message(
+        **common,
+        attachments=_decode_outbound_attachments(row["attachments_json"]),
+        command_id=_required_text(row["command_id"], "command_id"),
+        delivery_state=OutboundDeliveryState(
+            _required_text(row["delivery_state"], "message.delivery_state")
+        ),
+        snapshot_seq=cast(int, row["snapshot_seq"]),
+        current_inbound_seq=cast(int, row["current_inbound_seq"]),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
+        provider_receipt_ref=_optional_text(
+            row["provider_receipt_ref"], "provider_receipt_ref"
+        ),
+        completed_at_ms=cast(int | None, row["completed_at_ms"]),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+    )
+
+
+def _decode_outbound_attachments(raw_value: object) -> tuple[OutboundAttachment, ...]:
+    raw_attachments = raw_value
     if not isinstance(raw_attachments, str):
         raise TypeError("attachments_json must be text")
     try:
@@ -167,40 +274,7 @@ def outbound_message_from_row(row: aiosqlite.Row) -> Message[OutboundAttachment]
                 ),
             )
         )
-    return Message(
-        direction=MessageDirection.OUTBOUND,
-        seq=0,
-        message_id=_required_text(row["outbound_message_id"], "outbound_message_id"),
-        command_id=_required_text(row["command_id"], "command_id"),
-        session_id=_required_text(row["session_id"], "session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        target=_required_text(row["target"], "target"),
-        body=_string_value(row["body"], "body", allow_empty=True),
-        attachments=tuple(attachments),
-        reply_to_message_id=_optional_text(
-            row["reply_to_message_id"],
-            "reply_to_message_id",
-        ),
-        delivery_state=OutboundDeliveryState(
-            _required_text(row["state"], "outbound_message.state")
-        ),
-        created_at_ms=cast(int, row["created_at_ms"]),
-        snapshot_seq=cast(int, row["snapshot_seq"]),
-        current_inbound_seq=cast(int, row["current_inbound_seq"]),
-        provider_message_id=_optional_text(
-            row["provider_message_id"], "provider_message_id"
-        ),
-        provider_receipt_ref=_optional_text(
-            row["provider_receipt_ref"], "provider_receipt_ref"
-        ),
-        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
-        completed_at_ms=cast(int | None, row["completed_at_ms"]),
-        error_kind=_optional_text(row["error_kind"], "error_kind"),
-        error_message=_optional_text(row["error_message"], "error_message"),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
+    return tuple(attachments)
 
 
 def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
@@ -225,6 +299,15 @@ def validate_inbound_message_input(message: object) -> None:
         raise TypeError("message must be a Message")
     if message.direction is not MessageDirection.INBOUND:
         raise ValueError("inbound persistence requires an inbound message")
+
+
+def validate_message_input(message: object) -> None:
+    if not isinstance(message, Message):
+        raise TypeError("message must be a Message")
+    if message.direction is MessageDirection.INBOUND:
+        validate_inbound_message_input(message)
+    else:
+        validate_outbound_message_input(message)
 
 
 def validate_outbound_message_input(message: object) -> None:

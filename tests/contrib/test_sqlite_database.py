@@ -11,13 +11,21 @@ from bazaar_compute_node.contrib.sqlite import (
     MigrationChecksumError,
     SqliteDatabase,
 )
+from bazaar_compute_node.contrib.sqlite.codec import (
+    inbound_attachment_from_row,
+    message_from_row,
+    validate_message_input,
+)
 from bazaar_compute_node.contrib.sqlite.migrations import (
+    MESSAGE_UNIFICATION_MIGRATION,
     MIGRATIONS,
     SCHEMA_MIGRATION,
+    STORAGE_ACCESS_MIGRATION,
 )
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    InboundAttachment,
     Message,
     MessageDirection,
     OutboundDeliveryState,
@@ -692,6 +700,473 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
         assert triggers == []
     finally:
         await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v16_fixture_unifies_message_history() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-a")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Agent A")
+        for migration in MIGRATIONS[:16]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+
+        await connection.executemany(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "created_at_ms, updated_at_ms, agent_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ("channel-a", "telegram", "thread-a", "dm", 1, 1, 1, "agent-a"),
+                (
+                    "channel-b",
+                    "telegram",
+                    "thread-b",
+                    "group",
+                    1,
+                    1,
+                    1,
+                    "agent-b",
+                ),
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO bcn_sessions ("
+            "id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "agent_id"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                ("session-a", "channel-a", "agent-a", 1, 1, "agent-a"),
+                ("session-b", "channel-b", "agent-b", 1, 1, "agent-b"),
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO inbound_messages ("
+            "message_id, seq, session_id, channel_session_id, channel, "
+            "provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, canonical_target, target_kind, "
+            "reply_to_message_id, body, mentions_agent, notifies_runtime, "
+            "provider_payload_ref, metadata_json, agent_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    "inbound-a-1",
+                    1,
+                    "session-a",
+                    "channel-a",
+                    "telegram",
+                    "thread-a",
+                    "provider-a-1",
+                    100,
+                    110,
+                    "Alice",
+                    "text",
+                    "dm:channel-a",
+                    "dm",
+                    None,
+                    "first inbound",
+                    1,
+                    1,
+                    "payload-a-1",
+                    '{"sender_kind":"human"}',
+                    "agent-a",
+                ),
+                (
+                    "inbound-a-2",
+                    2,
+                    "session-a",
+                    "channel-a",
+                    "telegram",
+                    "thread-a",
+                    "provider-a-2",
+                    200,
+                    210,
+                    "Alice",
+                    "text",
+                    "dm:channel-a",
+                    "dm",
+                    "inbound-a-1",
+                    "second inbound",
+                    1,
+                    1,
+                    None,
+                    "{}",
+                    "agent-a",
+                ),
+                (
+                    "inbound-b-1",
+                    3,
+                    "session-b",
+                    "channel-b",
+                    "telegram",
+                    "thread-b",
+                    "provider-b-1",
+                    None,
+                    350,
+                    "Bob",
+                    "text",
+                    "group:channel-b",
+                    "group",
+                    None,
+                    "group inbound",
+                    0,
+                    1,
+                    None,
+                    "{}",
+                    "agent-b",
+                ),
+            ),
+        )
+        await connection.execute(
+            "INSERT INTO inbound_attachments ("
+            "attachment_id, message_id, ordinal, name, kind, state, media_type, "
+            "relative_path, size_bytes, error"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "attachment-a-2",
+                "inbound-a-2",
+                0,
+                "note.txt",
+                "file",
+                "ready",
+                "text/plain",
+                "attachments/note.txt",
+                12,
+                None,
+            ),
+        )
+
+        outbound_rows = (
+            (
+                "outbound-pending",
+                "command-pending",
+                "session-a",
+                "channel-a",
+                "dm:channel-a",
+                None,
+                "pending",
+                "pending",
+                1,
+                1,
+                None,
+                None,
+                150,
+                150,
+                None,
+                None,
+                None,
+                "{}",
+                "[]",
+                "agent-a",
+                "Agent A",
+            ),
+            (
+                "outbound-queued",
+                "command-queued",
+                "session-a",
+                "channel-a",
+                "dm:channel-a",
+                "inbound-a-2",
+                "queued",
+                "queued",
+                2,
+                2,
+                None,
+                None,
+                250,
+                250,
+                None,
+                None,
+                None,
+                "{}",
+                "[]",
+                "agent-a",
+                "Agent A",
+            ),
+            (
+                "outbound-sent",
+                "command-sent",
+                "session-a",
+                "channel-a",
+                "dm:channel-a",
+                "inbound-a-2",
+                "sent",
+                "sent",
+                2,
+                2,
+                "provider-outbound-sent",
+                "receipt-sent",
+                300,
+                300,
+                301,
+                None,
+                None,
+                "{}",
+                '[{"name":"report.txt","relative_path":"files/report.txt",'
+                '"media_type":"text/plain","size_bytes":42,"sha256":"'
+                + "a" * 64
+                + '"}]',
+                "agent-a",
+                "Agent A",
+            ),
+            (
+                "outbound-partial",
+                "command-partial",
+                "session-b",
+                "channel-b",
+                "group:channel-b",
+                "inbound-b-1",
+                "partial",
+                "partial",
+                3,
+                3,
+                None,
+                "receipt-partial",
+                400,
+                400,
+                401,
+                "partial_delivery",
+                "one part failed",
+                "{}",
+                "[]",
+                "agent-b",
+                "Agent B",
+            ),
+            (
+                "outbound-failed",
+                "command-failed",
+                "session-b",
+                "channel-b",
+                "group:channel-b",
+                None,
+                "failed",
+                "failed",
+                3,
+                3,
+                None,
+                None,
+                500,
+                500,
+                501,
+                "provider_error",
+                "delivery failed",
+                "{}",
+                "[]",
+                "agent-b",
+                "Agent B",
+            ),
+            (
+                "outbound-unknown",
+                "command-unknown",
+                "session-b",
+                "channel-b",
+                "group:channel-b",
+                None,
+                "unknown",
+                "unknown",
+                3,
+                3,
+                None,
+                None,
+                600,
+                600,
+                601,
+                "unknown_result",
+                "result unknown",
+                "{}",
+                "[]",
+                "agent-b",
+                "Agent B",
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO outbound_messages ("
+            "outbound_message_id, command_id, session_id, channel_session_id, "
+            "target, reply_to_message_id, body, state, snapshot_seq, "
+            "current_inbound_seq, provider_message_id, provider_receipt_ref, "
+            "created_at_ms, provider_attempted_at_ms, completed_at_ms, error_kind, "
+            "error_message, metadata_json, attachments_json, agent_id, agent_name"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            outbound_rows,
+        )
+        await connection.executemany(
+            "INSERT INTO consumer_cursors ("
+            "session_id, delivered_through_seq, inbox_snapshot_seq, "
+            "inbox_snapshot_source, inbox_snapshot_at_ms, updated_at_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                ("session-a", 2, 2, "check", 220, 220),
+                ("session-b", 3, 3, "read", 360, 360),
+            ),
+        )
+        await connection.commit()
+
+        old_boundary_ids = {
+            row["seq"]: row["message_id"]
+            for row in await connection.execute_fetchall(
+                "SELECT seq, message_id FROM inbound_messages"
+            )
+        }
+        await connection.execute("BEGIN")
+        for migration in (
+            STORAGE_ACCESS_MIGRATION,
+            MESSAGE_UNIFICATION_MIGRATION,
+        ):
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.commit()
+
+        tables = {
+            row["name"]
+            for row in await connection.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        indexes = {
+            row["name"]
+            for row in await connection.execute_fetchall(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND name LIKE 'idx_messages_%'"
+            )
+        }
+        rows = await connection.execute_fetchall("SELECT * FROM messages ORDER BY seq")
+        cursors = await connection.execute_fetchall(
+            "SELECT session_id, delivered_through_seq, inbox_snapshot_seq "
+            "FROM consumer_cursors ORDER BY session_id"
+        )
+        attachment_row = await (
+            await connection.execute(
+                "SELECT attachment_id, name, kind, state, media_type, relative_path, "
+                "size_bytes, error FROM inbound_attachments "
+                "WHERE message_id = 'inbound-a-2'"
+            )
+        ).fetchone()
+        schema_version = await (
+            await connection.execute(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            )
+        ).fetchone()
+        quick_check = await (await connection.execute("PRAGMA quick_check")).fetchone()
+
+    assert "messages" in tables
+    assert "inbound_messages" not in tables
+    assert "outbound_messages" not in tables
+    assert indexes == {
+        "idx_messages_agent_direction_seq",
+        "idx_messages_agent_session_target_seq",
+        "idx_messages_inbound_provider_identity",
+        "idx_messages_outbound_command",
+        "idx_messages_outbound_state_created",
+        "idx_messages_reply_to_message",
+    }
+    assert [(row["message_id"], row["seq"]) for row in rows] == [
+        ("inbound-a-1", 1),
+        ("outbound-pending", 2),
+        ("inbound-a-2", 3),
+        ("outbound-queued", 4),
+        ("outbound-sent", 5),
+        ("inbound-b-1", 6),
+        ("outbound-partial", 7),
+        ("outbound-failed", 8),
+        ("outbound-unknown", 9),
+    ]
+    assert {row["direction"] for row in rows} == {"inbound", "outbound"}
+    assert {
+        row["delivery_state"] for row in rows if row["direction"] == "outbound"
+    } == {"pending", "queued", "sent", "partial", "failed", "unknown"}
+    assert {(row["agent_id"], row["sender"]) for row in rows} >= {
+        ("agent-a", "Agent A"),
+        ("agent-b", "Agent B"),
+    }
+    assert [dict(row) for row in cursors] == [
+        {
+            "session_id": "session-a",
+            "delivered_through_seq": 3,
+            "inbox_snapshot_seq": 3,
+        },
+        {
+            "session_id": "session-b",
+            "delivered_through_seq": 6,
+            "inbox_snapshot_seq": 6,
+        },
+    ]
+
+    migrated_by_id = {row["message_id"]: row for row in rows}
+    for outbound_row in outbound_rows:
+        old_snapshot_seq = outbound_row[8]
+        old_current_seq = outbound_row[9]
+        migrated = migrated_by_id[outbound_row[0]]
+        assert old_boundary_ids[old_snapshot_seq] == next(
+            row["message_id"] for row in rows if row["seq"] == migrated["snapshot_seq"]
+        )
+        assert old_boundary_ids[old_current_seq] == next(
+            row["message_id"]
+            for row in rows
+            if row["seq"] == migrated["current_inbound_seq"]
+        )
+    for cursor, old_seq in zip(cursors, (2, 3), strict=True):
+        assert old_boundary_ids[old_seq] == next(
+            row["message_id"]
+            for row in rows
+            if row["seq"] == cursor["delivered_through_seq"]
+        )
+        assert old_boundary_ids[old_seq] == next(
+            row["message_id"]
+            for row in rows
+            if row["seq"] == cursor["inbox_snapshot_seq"]
+        )
+
+    assert attachment_row is not None
+    inbound_attachment = inbound_attachment_from_row(attachment_row)
+    assert inbound_attachment == InboundAttachment(
+        attachment_id="attachment-a-2",
+        name="note.txt",
+        kind="file",
+        state="ready",
+        media_type="text/plain",
+        relative_path="attachments/note.txt",
+        size_bytes=12,
+    )
+    decoded = [
+        message_from_row(
+            row,
+            (inbound_attachment,) if row["message_id"] == "inbound-a-2" else (),
+        )
+        for row in rows
+    ]
+    for message in decoded:
+        validate_message_input(message)
+    second_inbound = next(
+        message for message in decoded if message.message_id == "inbound-a-2"
+    )
+    sent = next(message for message in decoded if message.message_id == "outbound-sent")
+    assert second_inbound.reply_to_message_id == "inbound-a-1"
+    assert second_inbound.attachments == (inbound_attachment,)
+    assert sent.seq == 5
+    assert sent.sender == SenderIdentity(name="Agent A")
+    assert sent.reply_to_message_id == "inbound-a-2"
+    assert sent.attachments[0].relative_path == "files/report.txt"
+    assert schema_version is not None
+    assert schema_version["version"] == 18
+    assert quick_check is not None
+    assert quick_check[0] == "ok"
 
 
 @pytest.mark.asyncio
