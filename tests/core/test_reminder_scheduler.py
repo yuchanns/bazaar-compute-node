@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from bcn_test_support import MemoryStorage
@@ -23,6 +24,7 @@ from bazaar_compute_node.core.models import (
     ReminderState,
 )
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
+from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
 _AGENT_A = "agent-a"
@@ -118,7 +120,7 @@ async def start_scheduler(
     timer_wheel = TimerWheel()
     await timer_wheel.start()
     scheduler = ReminderScheduler(
-        storage=storage,
+        storage=cast(IStorage, storage),
         timer_wheel=timer_wheel,
         concurrency=SessionLockRegistry(),
         publish_wake=publish,
@@ -186,8 +188,7 @@ async def test_failed_wake_keeps_due_occurrence_unread() -> None:
     scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
     try:
         assert wakes == [(_AGENT_A, _SESSION_A)]
-        async with storage.transaction() as transaction:
-            owners = await transaction.list_pending_reminder_owners()
+        owners = await cast(IStorage, storage).list_pending_reminder_owners()
         assert [(owner.agent_id, owner.owner_session_id) for owner in owners] == [
             (_AGENT_A, _SESSION_A)
         ]

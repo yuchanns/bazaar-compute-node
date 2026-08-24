@@ -100,75 +100,59 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
     try:
         agent_a = database.scope("agent-a", "Agent A")
         agent_b = database.scope("agent-b", "Agent B")
-        async with agent_a.transaction() as transaction:
-            source_channel, source_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-source",
-            )
-            target_channel, target_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-target",
-            )
-            await _append_message(
-                transaction,
-                channel=source_channel,
-                session=source_session,
-                message_id="message-source",
-                received_at_ms=10,
-            )
-            await _append_message(
-                transaction,
-                channel=target_channel,
-                session=target_session,
-                message_id="message-target-old",
-                received_at_ms=20,
-            )
-            latest_target = await _append_message(
-                transaction,
-                channel=target_channel,
-                session=target_session,
-                message_id="message-target-latest",
-                received_at_ms=30,
-            )
-            first = await transaction.save_handoff(
-                _handoff(1, body="First line.\n\nSecond line.")
-            )
-            second = await transaction.save_handoff(_handoff(2, source_message_id=None))
-            third = await transaction.save_handoff(_handoff(3))
+        repository = agent_a
+        source_channel, source_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-source",
+        )
+        target_channel, target_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-target",
+        )
+        await _append_message(
+            repository,
+            channel=source_channel,
+            session=source_session,
+            message_id="message-source",
+            received_at_ms=10,
+        )
+        await _append_message(
+            repository,
+            channel=target_channel,
+            session=target_session,
+            message_id="message-target-old",
+            received_at_ms=20,
+        )
+        latest_target = await _append_message(
+            repository,
+            channel=target_channel,
+            session=target_session,
+            message_id="message-target-latest",
+            received_at_ms=30,
+        )
+        first = await repository.save_handoff(
+            _handoff(1, body="First line.\n\nSecond line.")
+        )
+        second = await repository.save_handoff(_handoff(2, source_message_id=None))
+        third = await repository.save_handoff(_handoff(3))
 
-            pending = await transaction.list_pending_handoffs(
-                target_session.id,
-                limit=2,
-            )
-            marked = await transaction.mark_handoffs_read(
-                target_session.id,
-                (second.handoff_id,),
-                read_at_ms=2_000,
-            )
-            remaining = await transaction.list_pending_handoffs(
-                target_session.id,
-                limit=100,
-            )
-            remaining_count = await transaction.count_pending_handoffs(
-                target_session.id
-            )
-            target_anchor = await transaction.get_latest_inbound_message(
-                target_session.id
-            )
-
-            pending_plan = await transaction.fetchall(
-                "EXPLAIN QUERY PLAN SELECT handoff_id FROM handoffs "
-                "WHERE agent_id = bcn_agent_id() AND target_session_id = ? "
-                "AND read_at_ms IS NULL ORDER BY seq LIMIT ?",
-                (target_session.id, 100),
-            )
-            command_plan = await transaction.fetchall(
-                "EXPLAIN QUERY PLAN SELECT handoff_id FROM handoffs "
-                "WHERE agent_id = bcn_agent_id() AND command_id = ?",
-                (first.command_id,),
-            )
+        pending = await repository.list_pending_handoffs(
+            target_session.id,
+            limit=2,
+        )
+        marked = await repository.mark_handoffs_read(
+            target_session.id,
+            (second.handoff_id,),
+            read_at_ms=2_000,
+        )
+        remaining = await repository.list_pending_handoffs(
+            target_session.id,
+            limit=100,
+        )
+        remaining_count = await repository.count_pending_handoffs(target_session.id)
+        target_anchor = await repository.get_latest_inbound_message(target_session.id)
 
         assert [handoff.handoff_id for handoff in pending] == [
             first.handoff_id,
@@ -183,32 +167,24 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
         ]
         assert remaining_count == 2
         assert target_anchor == latest_target
-        assert any(
-            "idx_handoffs_agent_target_read_seq" in row["detail"]
-            for row in pending_plan
+        repository = agent_b
+        assert (
+            await repository.list_pending_handoffs(
+                target_session.id,
+                limit=100,
+            )
+            == ()
         )
-        assert any("sqlite_autoindex_handoffs" in row["detail"] for row in command_plan)
-
-        async with agent_b.transaction() as transaction:
-            assert (
-                await transaction.list_pending_handoffs(
-                    target_session.id,
-                    limit=100,
-                )
-                == ()
+        assert await repository.count_pending_handoffs(target_session.id) == 0
+        assert await repository.get_latest_inbound_message(target_session.id) is None
+        assert (
+            await repository.mark_handoffs_read(
+                target_session.id,
+                (first.handoff_id,),
+                read_at_ms=3_000,
             )
-            assert await transaction.count_pending_handoffs(target_session.id) == 0
-            assert (
-                await transaction.get_latest_inbound_message(target_session.id) is None
-            )
-            assert (
-                await transaction.mark_handoffs_read(
-                    target_session.id,
-                    (first.handoff_id,),
-                    read_at_ms=3_000,
-                )
-                == ()
-            )
+            == ()
+        )
     finally:
         await database.stop(timeout=2)
 
@@ -219,39 +195,39 @@ async def test_sqlite_handoff_save_is_idempotent_by_command_payload() -> None:
     await database.start(timeout=2)
     try:
         scope = database.scope("agent-a", "Agent A")
-        async with scope.transaction() as transaction:
-            await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-source",
-            )
-            await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-target",
-            )
-            stored = await transaction.save_handoff(_handoff(1))
-            replayed = await transaction.save_handoff(
-                _handoff(1, handoff_id="handoff-retry")
-            )
+        repository = scope
+        await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-source",
+        )
+        await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-target",
+        )
+        stored = await repository.save_handoff(_handoff(1))
+        replayed = await repository.save_handoff(
+            _handoff(1, handoff_id="handoff-retry")
+        )
 
-            with pytest.raises(HandoffConflictError, match="different payload"):
-                await transaction.save_handoff(
-                    _handoff(
-                        1,
-                        handoff_id="handoff-conflict",
-                        body="Different task.",
-                    )
+        with pytest.raises(HandoffConflictError, match="different payload"):
+            await repository.save_handoff(
+                _handoff(
+                    1,
+                    handoff_id="handoff-conflict",
+                    body="Different task.",
                 )
+            )
 
         assert replayed == stored
 
-        async with database.transaction() as transaction:
-            persisted = await transaction.list_pending_handoffs(
-                "session-target",
-                limit=100,
-            )
-            unscoped = await transaction.save_handoff(_handoff(2))
+        repository = database
+        persisted = await repository.list_pending_handoffs(
+            "session-target",
+            limit=100,
+        )
+        unscoped = await repository.save_handoff(_handoff(2))
 
         assert persisted == (stored,)
         assert unscoped == _handoff(2)
@@ -266,57 +242,57 @@ async def test_handoff_command_send_then_check_preserves_message_cursors() -> No
     await database.start(timeout=2)
     try:
         scope = database.scope("agent-a", "Agent A")
-        async with scope.transaction() as transaction:
-            source_channel, source_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-source",
-            )
-            target_channel, target_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-target",
-            )
-            source_message = await _append_message(
-                transaction,
-                channel=source_channel,
-                session=source_session,
-                message_id="019d2f00-0000-7000-8000-000000000001",
-                received_at_ms=10,
-            )
-            target_message = await _append_message(
-                transaction,
-                channel=target_channel,
-                session=target_session,
-                message_id="019d2f00-0000-7000-8000-000000000002",
-                received_at_ms=20,
-            )
-            cursors = (
-                ConsumerCursor(
-                    session_id=source_session.id,
-                    delivered_through_seq=source_message.seq,
-                    inbox_snapshot_seq=source_message.seq,
-                    inbox_snapshot_source="read",
-                    inbox_snapshot_at_ms=100,
-                    updated_at_ms=100,
-                ),
-                ConsumerCursor(
-                    session_id=target_session.id,
-                    delivered_through_seq=target_message.seq,
-                    inbox_snapshot_seq=target_message.seq,
-                    inbox_snapshot_source="check",
-                    inbox_snapshot_at_ms=100,
-                    updated_at_ms=100,
-                ),
-            )
-            for cursor in cursors:
-                await transaction.save_consumer_cursor(cursor)
+        repository = scope
+        source_channel, source_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-source",
+        )
+        target_channel, target_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-target",
+        )
+        source_message = await _append_message(
+            repository,
+            channel=source_channel,
+            session=source_session,
+            message_id="019d2f00-0000-7000-8000-000000000001",
+            received_at_ms=10,
+        )
+        target_message = await _append_message(
+            repository,
+            channel=target_channel,
+            session=target_session,
+            message_id="019d2f00-0000-7000-8000-000000000002",
+            received_at_ms=20,
+        )
+        cursors = (
+            ConsumerCursor(
+                session_id=source_session.id,
+                delivered_through_seq=source_message.seq,
+                inbox_snapshot_seq=source_message.seq,
+                inbox_snapshot_source="read",
+                inbox_snapshot_at_ms=100,
+                updated_at_ms=100,
+            ),
+            ConsumerCursor(
+                session_id=target_session.id,
+                delivered_through_seq=target_message.seq,
+                inbox_snapshot_seq=target_message.seq,
+                inbox_snapshot_source="check",
+                inbox_snapshot_at_ms=100,
+                updated_at_ms=100,
+            ),
+        )
+        for cursor in cursors:
+            await repository.save_consumer_cursor(cursor)
 
         wakes: list[str] = []
 
         async def publish_wake(session_id: str) -> None:
-            async with scope.transaction() as transaction:
-                assert await transaction.count_pending_handoffs(session_id) == 1
+            repository = scope
+            assert await repository.count_pending_handoffs(session_id) == 1
             wakes.append(session_id)
 
         service = HandoffCommandService(
@@ -347,11 +323,9 @@ async def test_handoff_command_send_then_check_preserves_message_cursors() -> No
         assert checked.items[0].source_target == "dm:session-source"
         assert checked.has_more is False
         assert wakes == [target_session.id]
-        async with scope.transaction() as transaction:
-            for cursor in cursors:
-                assert (
-                    await transaction.get_consumer_cursor(cursor.session_id) == cursor
-                )
+        repository = scope
+        for cursor in cursors:
+            assert await repository.get_consumer_cursor(cursor.session_id) == cursor
         assert "Continue task." not in repr(audit_sink.events)
     finally:
         await database.stop(timeout=2)

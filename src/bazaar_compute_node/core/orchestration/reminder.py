@@ -112,8 +112,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 await self._materialize_due_batches()
                 if self._stopping:
                     return
-                async with self._storage.transaction() as transaction:
-                    frontier = await transaction.get_next_scheduled_owned_reminder()
+                frontier = await self._storage.get_next_scheduled_owned_reminder()
                 if frontier is None:
                     await self._poke.wait()
                     self._poke.clear()
@@ -172,19 +171,17 @@ class ReminderScheduler(IAsyncLifecycle):
                 self._active_timer = None
 
     async def _publish_pending_recovery(self) -> None:
-        async with self._storage.transaction() as transaction:
-            owners = await transaction.list_pending_reminder_owners()
+        owners = await self._storage.list_pending_reminder_owners()
         for owner in owners:
             await self._publish_owner(owner)
 
     async def _materialize_due_batches(self) -> None:
         while not self._stopping:
             now_ms = self._clock()
-            async with self._storage.transaction() as transaction:
-                due = await transaction.list_due_owned_reminders(
-                    now_ms,
-                    limit=_DUE_BATCH_SIZE,
-                )
+            due = await self._storage.list_due_owned_reminders(
+                now_ms,
+                limit=_DUE_BATCH_SIZE,
+            )
             if not due:
                 return
             owners: set[ReminderOwner] = set()
@@ -204,11 +201,8 @@ class ReminderScheduler(IAsyncLifecycle):
         snapshot: OwnedReminder,
     ) -> ReminderOwner | None:
         owner = snapshot.owner
-        async with (
-            self._concurrency.for_session(owner.owner_session_id),
-            self._storage.transaction() as transaction,
-        ):
-            current_owned = await transaction.get_owned_reminder(
+        async with self._concurrency.for_session(owner.owner_session_id):
+            current_owned = await self._storage.get_owned_reminder(
                 owner.agent_id,
                 owner.owner_session_id,
                 snapshot.reminder.reminder_id,
@@ -255,7 +249,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 read_at_ms=None,
                 created_at_ms=fired_at_ms,
             )
-            await transaction.save_owned_fired_occurrence(
+            await self._storage.save_owned_fired_occurrence(
                 current.revision,
                 OwnedReminder(owner.agent_id, fired),
                 OwnedReminderOccurrence(owner.agent_id, occurrence),

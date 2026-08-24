@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .migration import Migration
+from .model import Migration
 
 OUTBOUND_DRAFT_REMOVAL_MIGRATION = Migration(
     version=16,

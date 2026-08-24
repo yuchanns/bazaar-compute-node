@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from typing import Protocol
 
+from .command import (
+    InboxListResult,
+    MessageCheckResult,
+    MessageDraft,
+    MessageReadResult,
+    MessageSendResult,
+)
+from .handoff import HandoffCheckResult
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
@@ -20,6 +28,7 @@ from .models import (
     ReminderState,
     RuntimeAttempt,
 )
+from .reminder import ReminderCheckResult
 
 
 class InboxTargetResolutionError(ValueError):
@@ -30,8 +39,106 @@ class HandoffConflictError(ValueError):
     """A handoff command ID is already associated with another payload."""
 
 
-class IStorageTransaction(Protocol):
-    """Explicit transaction boundary for repository operations."""
+@dataclass(frozen=True, slots=True)
+class RecordInboundResult:
+    channel_session: ChannelSession
+    bcn_session: BcnSession
+    message: InboundMessage
+    channel_session_created: bool
+    bcn_session_created: bool
+    message_created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReadMessageHistoryResult:
+    source_session: BcnSession
+    history: MessageReadResult
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareOutboundResult:
+    channel_session: ChannelSession
+    target_session: BcnSession
+    reply_to_provider_message_id: str | None
+    outcome: MessageSendResult
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderWakeResult:
+    occurrence: ReminderOccurrence
+    channel_session: ChannelSession
+    bcn_session: BcnSession
+    anchor_message: InboundMessage
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffWakeResult:
+    channel_session: ChannelSession
+    bcn_session: BcnSession
+    anchor_message: InboundMessage
+
+
+class _StorageOperations(Protocol):
+    """Storage operations exposed without implementation-specific transactions."""
+
+    async def record_inbound(
+        self,
+        message: InboundMessage,
+        *,
+        now_ms: int,
+    ) -> RecordInboundResult: ...
+
+    async def check_messages(
+        self,
+        session_id: str,
+        *,
+        checked_at_ms: int,
+    ) -> MessageCheckResult: ...
+
+    async def read_message_history(
+        self,
+        caller_session_id: str,
+        *,
+        target: str,
+        around_message_id: str | None,
+        limit: int,
+    ) -> ReadMessageHistoryResult: ...
+
+    async def read_inbox_catalog(
+        self,
+        caller_session_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> InboxListResult: ...
+
+    async def prepare_outbound(
+        self,
+        caller_session_id: str,
+        *,
+        command_id: str,
+        payload: MessageDraft,
+        attempted_at_ms: int,
+        draft_replaced: bool,
+    ) -> PrepareOutboundResult: ...
+
+    async def check_reminders(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        read_at_ms: int,
+    ) -> ReminderCheckResult: ...
+
+    async def load_reminder_wake(
+        self,
+        session_id: str,
+    ) -> ReminderWakeResult | None: ...
+
+    async def load_handoff_wake(
+        self,
+        session_id: str,
+    ) -> HandoffWakeResult | None: ...
 
     async def find_channel_session(
         self, *, channel: str, provider_thread_id: str
@@ -175,15 +282,13 @@ class IStorageTransaction(Protocol):
     async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]: ...
 
 
-class IStorage(IAsyncLifecycle, Protocol):
+class IStorage(IAsyncLifecycle, _StorageOperations, Protocol):
     """Node-owned durable storage lifecycle and Agent scope factory."""
 
     @property
     def name(self) -> str: ...
 
     def scope(self, agent_id: str, agent_name: str) -> IStorageScope: ...
-
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]: ...
 
 
 class IStorageScope(IStorage, Protocol):
@@ -200,8 +305,16 @@ class IStorageScope(IStorage, Protocol):
     def agent_name(self) -> str: ...
 
 
-class IHandoffStorageTransaction(IStorageTransaction, Protocol):
-    """Agent-scoped transaction with handoff operations."""
+class IHandoffStorageScope(IStorageScope, Protocol):
+    """Agent storage scope with handoff operations."""
+
+    async def check_handoffs(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        read_at_ms: int,
+    ) -> HandoffCheckResult: ...
 
     async def save_handoff(self, handoff: Handoff) -> Handoff: ...
 
@@ -218,11 +331,3 @@ class IHandoffStorageTransaction(IStorageTransaction, Protocol):
         *,
         read_at_ms: int,
     ) -> tuple[Handoff, ...]: ...
-
-
-class IHandoffStorageScope(IStorageScope, Protocol):
-    """Agent storage scope whose transactions support handoffs."""
-
-    def transaction(
-        self,
-    ) -> AbstractAsyncContextManager[IHandoffStorageTransaction]: ...

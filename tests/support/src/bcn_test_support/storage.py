@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
@@ -12,6 +11,7 @@ from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
     ConsumerCursor,
     InboundMessage,
     InboxTargetSummary,
@@ -21,13 +21,13 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.storage import (
     InboxTargetResolutionError,
-    IStorage,
     IStorageScope,
-    IStorageTransaction,
+    RecordInboundResult,
 )
+from bazaar_compute_node.core.storage_operations import StorageOperationMixin
 
 
-class MemoryStorage(IStorage):
+class MemoryStorage:
     """Transactional in-memory storage for behavior-level integration tests."""
 
     @property
@@ -55,21 +55,36 @@ class MemoryStorage(IStorage):
         self.stopped = True
 
     def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
-        return _MemoryStorageScope(self, agent_id, agent_name)
+        return cast(IStorageScope, _MemoryStorageScope(self, agent_id, agent_name))
 
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return self._transaction_for_agent(None)
+    def _operation_for_agent(self, agent_id: str | None) -> _MemoryStorageTransaction:
+        return _MemoryStorageTransaction(self, agent_id=agent_id)
 
-    def _transaction_for_agent(
-        self, agent_id: str | None
-    ) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return cast(
-            AbstractAsyncContextManager[IStorageTransaction],
-            _MemoryStorageTransaction(self, agent_id=agent_id),
-        )
+    async def _invoke(
+        self,
+        agent_id: str | None,
+        method_name: str,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        async with self._operation_for_agent(agent_id) as operation:
+            method = getattr(operation, method_name)
+            return await method(*args, **kwargs)
+
+    def _has_operation(self, method_name: str) -> bool:
+        return hasattr(type(self._operation_for_agent(None)), method_name)
+
+    def __getattr__(self, method_name: str):
+        if method_name.startswith("_") or not self._has_operation(method_name):
+            raise AttributeError(method_name)
+
+        async def invoke(*args: object, **kwargs: object) -> object:
+            return await self._invoke(None, method_name, *args, **kwargs)
+
+        return invoke
 
 
-class _MemoryStorageScope(IStorageScope):
+class _MemoryStorageScope:
     def __init__(self, storage: MemoryStorage, agent_id: str, agent_name: str) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
@@ -104,10 +119,21 @@ class _MemoryStorageScope(IStorageScope):
     def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
         if agent_id != self.agent_id or agent_name != self.agent_name:
             raise ValueError("a test storage scope cannot be rebound")
-        return self
+        return cast(IStorageScope, self)
 
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return self._storage._transaction_for_agent(self.agent_id)
+    def __getattr__(self, method_name: str):
+        if method_name.startswith("_") or not self._storage._has_operation(method_name):
+            raise AttributeError(method_name)
+
+        async def invoke(*args: object, **kwargs: object) -> object:
+            return await self._storage._invoke(
+                self.agent_id,
+                method_name,
+                *args,
+                **kwargs,
+            )
+
+        return invoke
 
 
 _Snapshot = tuple[
@@ -120,7 +146,7 @@ _Snapshot = tuple[
 ]
 
 
-class _MemoryStorageTransaction:
+class _MemoryStorageTransaction(StorageOperationMixin):
     def __init__(self, storage: MemoryStorage, *, agent_id: str | None = None) -> None:
         self._storage = storage
         self._agent_id = agent_id
@@ -156,6 +182,111 @@ class _MemoryStorageTransaction:
             ) = self._snapshot
         self._storage._lock.release()
         return False
+
+    async def record_inbound(
+        self,
+        message: InboundMessage,
+        *,
+        now_ms: int,
+    ) -> RecordInboundResult:
+        existing_message = await self.find_inbound_message(
+            message.channel,
+            message.provider_thread_id,
+            message.provider_message_id,
+        )
+        if existing_message is not None:
+            message = existing_message
+        channel_session = await self.find_channel_session(
+            channel=message.channel,
+            provider_thread_id=message.provider_thread_id,
+        )
+        channel_session_created = channel_session is None
+        if channel_session is None:
+            channel_session = ChannelSession(
+                id=message.channel_session_id,
+                channel=message.channel,
+                provider_thread_id=message.provider_thread_id,
+                created_at_ms=now_ms,
+                updated_at_ms=now_ms,
+                target_kind=message.target_kind,
+                following=(
+                    message.target_kind is ChannelTargetKind.DM
+                    or message.mentions_agent
+                ),
+            )
+            await self.save_channel_session(channel_session)
+        elif (
+            existing_message is None
+            and message.mentions_agent
+            and not channel_session.following
+        ):
+            channel_session = replace(
+                channel_session,
+                following=True,
+                updated_at_ms=now_ms,
+            )
+            await self.save_channel_session(channel_session)
+
+        bcn_session = await self.find_bcn_session(channel_session.id)
+        bcn_session_created = bcn_session is None
+        if bcn_session is None:
+            bcn_session = BcnSession(
+                id=message.session_id,
+                channel_session_id=channel_session.id,
+                workspace_id=self._agent_id or message.session_id,
+                created_at_ms=now_ms,
+                updated_at_ms=now_ms,
+            )
+            await self.save_bcn_session(bcn_session)
+
+        if existing_message is None:
+            notifies_runtime = message.notifies_runtime and (
+                message.target_kind is ChannelTargetKind.DM
+                or channel_session.following
+                or message.mentions_agent
+            )
+            canonical_target = message.canonical_target
+            if channel_session.id != message.channel_session_id:
+                canonical_target = (
+                    f"{channel_session.target_kind.value}:{channel_session.id}"
+                )
+            message = replace(
+                message,
+                session_id=bcn_session.id,
+                channel_session_id=channel_session.id,
+                canonical_target=canonical_target,
+                notifies_runtime=notifies_runtime,
+            )
+
+        if (
+            message.notifies_runtime
+            and await self.get_consumer_cursor(bcn_session.id) is None
+        ):
+            await self.save_consumer_cursor(ConsumerCursor(session_id=bcn_session.id))
+
+        if existing_message is None:
+            message = await self.append_inbound_message(message)
+            channel_session = replace(
+                channel_session,
+                last_inbound_at_ms=message.received_at_ms,
+                updated_at_ms=now_ms,
+            )
+            bcn_session = replace(
+                bcn_session,
+                last_activity_at_ms=message.received_at_ms,
+                updated_at_ms=now_ms,
+            )
+            await self.save_channel_session(channel_session)
+            await self.save_bcn_session(bcn_session)
+
+        return RecordInboundResult(
+            channel_session=channel_session,
+            bcn_session=bcn_session,
+            message=message,
+            channel_session_created=channel_session_created,
+            bcn_session_created=bcn_session_created,
+            message_created=existing_message is None,
+        )
 
     async def find_channel_session(
         self,

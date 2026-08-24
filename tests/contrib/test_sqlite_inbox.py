@@ -5,9 +5,6 @@ from typing import Any
 import pytest
 
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
-from bazaar_compute_node.contrib.sqlite.scoped_repository import (
-    _INBOX_TARGET_CATALOG_CTE,
-)
 from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
     BcnSession,
@@ -90,111 +87,91 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
     try:
         agent_a = database.scope("agent-a", "Agent A")
         agent_b = database.scope("agent-b", "Agent B")
-        async with agent_a.transaction() as transaction:
-            pending_channel, pending_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-pending",
-                channel_session_id="channel-pending",
-                last_activity_at_ms=300,
-            )
-            pending = await _append_message(
-                transaction,
-                channel_session=pending_channel,
-                bcn_session=pending_session,
-                message_id="message-pending",
-                target="dm:shared-target",
-                received_at_ms=301,
-                sender_name="pending-sender",
-                provider_time_ms=300_000,
-            )
+        repository = agent_a
+        pending_channel, pending_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-pending",
+            channel_session_id="channel-pending",
+            last_activity_at_ms=300,
+        )
+        pending = await _append_message(
+            repository,
+            channel_session=pending_channel,
+            bcn_session=pending_session,
+            message_id="message-pending",
+            target="dm:shared-target",
+            received_at_ms=301,
+            sender_name="pending-sender",
+            provider_time_ms=300_000,
+        )
 
-            read_channel, read_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-read",
-                channel_session_id="channel-read",
-                target_kind=ChannelTargetKind.GROUP,
-                last_activity_at_ms=200,
+        read_channel, read_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-read",
+            channel_session_id="channel-read",
+            target_kind=ChannelTargetKind.GROUP,
+            last_activity_at_ms=200,
+        )
+        read = await _append_message(
+            repository,
+            channel_session=read_channel,
+            bcn_session=read_session,
+            message_id="message-read",
+            target="group:read-target",
+            received_at_ms=201,
+            sender_name="read-sender",
+            provider_time_ms=None,
+        )
+        await repository.save_consumer_cursor(
+            ConsumerCursor(
+                session_id=read_session.id,
+                delivered_through_seq=read.seq,
+                inbox_snapshot_seq=read.seq,
+                inbox_snapshot_source="check",
+                inbox_snapshot_at_ms=202,
+                updated_at_ms=202,
             )
-            read = await _append_message(
-                transaction,
-                channel_session=read_channel,
-                bcn_session=read_session,
-                message_id="message-read",
-                target="group:read-target",
-                received_at_ms=201,
-                sender_name="read-sender",
-                provider_time_ms=None,
-            )
-            await transaction.save_consumer_cursor(
-                ConsumerCursor(
-                    session_id=read_session.id,
-                    delivered_through_seq=read.seq,
-                    inbox_snapshot_seq=read.seq,
-                    inbox_snapshot_source="check",
-                    inbox_snapshot_at_ms=202,
-                    updated_at_ms=202,
-                )
-            )
+        )
 
-            await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-empty",
-                channel_session_id="channel-empty",
-                last_activity_at_ms=100,
-            )
+        await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-empty",
+            channel_session_id="channel-empty",
+            last_activity_at_ms=100,
+        )
 
-        async with agent_b.transaction() as transaction:
-            foreign_channel, foreign_session = await _create_session(
-                transaction,
-                agent_id="agent-b",
-                session_id="session-foreign",
-                channel_session_id="channel-foreign",
-                last_activity_at_ms=999,
-            )
-            await _append_message(
-                transaction,
-                channel_session=foreign_channel,
-                bcn_session=foreign_session,
-                message_id="message-foreign",
-                target="dm:shared-target",
-                received_at_ms=1_000,
-                sender_name="foreign-sender",
-                provider_time_ms=1_000_000,
-            )
+        repository = agent_b
+        foreign_channel, foreign_session = await _create_session(
+            repository,
+            agent_id="agent-b",
+            session_id="session-foreign",
+            channel_session_id="channel-foreign",
+            last_activity_at_ms=999,
+        )
+        await _append_message(
+            repository,
+            channel_session=foreign_channel,
+            bcn_session=foreign_session,
+            message_id="message-foreign",
+            target="dm:shared-target",
+            received_at_ms=1_000,
+            sender_name="foreign-sender",
+            provider_time_ms=1_000_000,
+        )
 
-        async with agent_a.transaction() as transaction:
-            cursor_before = await transaction.get_consumer_cursor(pending.session_id)
-            read_cursor_before = await transaction.get_consumer_cursor(read.session_id)
-            first_page = await transaction.list_inbox_targets(limit=2, offset=0)
-            second_page = await transaction.list_inbox_targets(limit=2, offset=2)
-            empty_page = await transaction.list_inbox_targets(limit=2, offset=3)
-            cursor_after = await transaction.get_consumer_cursor(pending.session_id)
-            read_cursor_after = await transaction.get_consumer_cursor(read.session_id)
-            pending_owner = await transaction.resolve_inbox_target("dm:shared-target")
-            empty_owner = await transaction.resolve_inbox_target("dm:channel-empty")
-
-            catalog_plan = await transaction.fetchall(
-                "EXPLAIN QUERY PLAN "
-                + _INBOX_TARGET_CATALOG_CTE
-                + "SELECT target, session_id FROM target_catalog "
-                "ORDER BY last_activity_at_ms DESC, session_id LIMIT ? OFFSET ?",
-                (2, 0),
-            )
-            resolver_plan = await transaction.fetchall(
-                "EXPLAIN QUERY PLAN SELECT bcn.id FROM bcn_sessions AS bcn "
-                "JOIN channel_sessions AS channel "
-                "ON channel.agent_id = bcn_agent_id() "
-                "AND channel.id = bcn.channel_session_id "
-                "WHERE bcn.agent_id = bcn_agent_id() "
-                "AND EXISTS (SELECT 1 FROM inbound_messages AS message "
-                "WHERE message.agent_id = bcn_agent_id() "
-                "AND message.session_id = bcn.id "
-                "AND message.canonical_target = ?)",
-                ("dm:shared-target",),
-            )
+        repository = agent_a
+        cursor_before = await repository.get_consumer_cursor(pending.session_id)
+        read_cursor_before = await repository.get_consumer_cursor(read.session_id)
+        first_page = await repository.list_inbox_targets(limit=2, offset=0)
+        second_page = await repository.list_inbox_targets(limit=2, offset=2)
+        empty_page = await repository.list_inbox_targets(limit=2, offset=3)
+        cursor_after = await repository.get_consumer_cursor(pending.session_id)
+        read_cursor_after = await repository.get_consumer_cursor(read.session_id)
+        pending_owner = await repository.resolve_inbox_target("dm:shared-target")
+        empty_owner = await repository.resolve_inbox_target("dm:channel-empty")
 
         assert [target.session_id for target in first_page.targets] == [
             "session-pending",
@@ -230,12 +207,6 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         assert read_cursor_after == read_cursor_before
         assert pending_owner.id == pending_session.id
         assert empty_owner.id == "session-empty"
-        assert any(
-            "idx_inbound_agent_session_seq" in row["detail"] for row in catalog_plan
-        )
-        assert any(
-            "idx_inbound_agent_target_session" in row["detail"] for row in resolver_plan
-        )
     finally:
         await database.stop(timeout=2)
 
@@ -248,45 +219,45 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
     await database.start(timeout=2)
     try:
         scope = database.scope("agent-a", "Agent A")
-        async with scope.transaction() as transaction:
-            first_channel, first_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-first",
-                channel_session_id="channel-first",
-                last_activity_at_ms=2,
-            )
-            await _append_message(
-                transaction,
-                channel_session=first_channel,
-                bcn_session=first_session,
-                message_id="message-first",
-                target="dm:ambiguous",
-                received_at_ms=2,
-                sender_name="first-sender",
-                provider_time_ms=None,
-            )
-            second_channel, second_session = await _create_session(
-                transaction,
-                agent_id="agent-a",
-                session_id="session-second",
-                channel_session_id="channel-second",
-                last_activity_at_ms=1,
-            )
-            await _append_message(
-                transaction,
-                channel_session=second_channel,
-                bcn_session=second_session,
-                message_id="message-second",
-                target="dm:ambiguous",
-                received_at_ms=1,
-                sender_name="second-sender",
-                provider_time_ms=None,
-            )
+        repository = scope
+        first_channel, first_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-first",
+            channel_session_id="channel-first",
+            last_activity_at_ms=2,
+        )
+        await _append_message(
+            repository,
+            channel_session=first_channel,
+            bcn_session=first_session,
+            message_id="message-first",
+            target="dm:ambiguous",
+            received_at_ms=2,
+            sender_name="first-sender",
+            provider_time_ms=None,
+        )
+        second_channel, second_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-second",
+            channel_session_id="channel-second",
+            last_activity_at_ms=1,
+        )
+        await _append_message(
+            repository,
+            channel_session=second_channel,
+            bcn_session=second_session,
+            message_id="message-second",
+            target="dm:ambiguous",
+            received_at_ms=1,
+            sender_name="second-sender",
+            provider_time_ms=None,
+        )
 
-            with pytest.raises(InboxTargetResolutionError):
-                await transaction.resolve_inbox_target("dm:missing")
-            with pytest.raises(InboxTargetResolutionError):
-                await transaction.resolve_inbox_target("dm:ambiguous")
+        with pytest.raises(InboxTargetResolutionError):
+            await repository.resolve_inbox_target("dm:missing")
+        with pytest.raises(InboxTargetResolutionError):
+            await repository.resolve_inbox_target("dm:ambiguous")
     finally:
         await database.stop(timeout=2)

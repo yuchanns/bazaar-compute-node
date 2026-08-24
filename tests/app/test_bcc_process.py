@@ -331,12 +331,10 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             monkeypatch.setenv(name, environment[name])
 
         storage = cast(SqliteDatabase, node.storage)
-        async with storage.scope(
-            AGENT_A_ID, AGENT_NAMES[AGENT_A_ID]
-        ).transaction() as transaction:
-            messages = await transaction.list_inbound_messages(
-                runtime_session.bcn_session_id
-            )
+        repository = storage.scope(AGENT_A_ID, AGENT_NAMES[AGENT_A_ID])
+        messages = await repository.list_inbound_messages(
+            runtime_session.bcn_session_id
+        )
         assert len(messages) == 1
         target = messages[0].canonical_target
 
@@ -429,11 +427,11 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert sent_output.err == ""
         assert sent_output.out.startswith(f"Message sent to {target}. Message ID: ")
 
-        async with storage.transaction() as transaction:
-            identity = await transaction.fetchone(
-                "SELECT agent_id, agent_name FROM outbound_messages "
-                "ORDER BY created_at_ms DESC LIMIT 1"
-            )
+        repository = storage
+        identity = await repository.fetchone(
+            "SELECT agent_id, agent_name FROM outbound_messages "
+            "ORDER BY created_at_ms DESC LIMIT 1"
+        )
         assert identity is not None
         assert identity["agent_id"] == AGENT_A_ID
         assert identity["agent_name"] == AGENT_NAMES[AGENT_A_ID]

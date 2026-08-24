@@ -332,8 +332,8 @@ async def _wait_for_inbound_messages(
 ) -> tuple[InboundMessage, ...]:
     async with asyncio.timeout(180):
         while True:
-            async with storage.transaction() as transaction:
-                messages = await transaction.list_inbound_messages(session_id)
+            repository = storage
+            messages = await repository.list_inbound_messages(session_id)
             if len(messages) >= count:
                 return messages
             await asyncio.sleep(0.05)
@@ -438,7 +438,7 @@ async def run_natural_conversation_contract(
                 ),
             ),
             shared_factories=SharedAdapterFactories(
-                storage=lambda storage=storage: storage,
+                storage=lambda storage=storage: cast(IStorage, storage),
                 audit=lambda audit=audit: audit,
             ),
             registry=_AcceptanceRegistry(
@@ -489,8 +489,8 @@ async def run_natural_conversation_contract(
                 event_suffix="turn.completed",
                 turn_id=f"turn-{first_row.message_id}",
             )
-            async with storage_scope.transaction() as transaction:
-                cursor = await transaction.get_consumer_cursor(scoped_session_id)
+            repository = storage_scope
+            cursor = await repository.get_consumer_cursor(scoped_session_id)
             if cursor is None or cursor.delivered_through_seq < second_row.seq:
                 await _wait_for_audit_event(
                     audit,
@@ -1729,21 +1729,21 @@ async def test_handoff_wakes_start_idle_target_and_steer_active_target() -> None
         )
         assert source_context is not None
         assert idle_context is not None
-        async with storage.scope("workspace-1", "Test Agent").transaction() as tx:
-            for number, target_session_id in enumerate(
-                ("bcn-idle", "bcn-idle", "bcn-active")
-            ):
-                await tx.save_handoff(
-                    Handoff(
-                        handoff_id=f"handoff-{number}",
-                        command_id=f"command-{number}",
-                        source_session_id=source_context.bcn_session.id,
-                        target_session_id=target_session_id,
-                        source_message_id=None,
-                        body=f"Hidden task {number}.",
-                        created_at_ms=number + 1,
-                    )
+        scope = storage.scope("workspace-1", "Test Agent")
+        for number, target_session_id in enumerate(
+            ("bcn-idle", "bcn-idle", "bcn-active")
+        ):
+            await scope.save_handoff(
+                Handoff(
+                    handoff_id=f"handoff-{number}",
+                    command_id=f"command-{number}",
+                    source_session_id=source_context.bcn_session.id,
+                    target_session_id=target_session_id,
+                    source_message_id=None,
+                    body=f"Hidden task {number}.",
+                    created_at_ms=number + 1,
                 )
+            )
 
         await orchestrator.publish_handoff_wake("bcn-idle")
         await orchestrator.publish_handoff_wake("bcn-active")
@@ -1763,13 +1763,12 @@ async def test_handoff_wakes_start_idle_target_and_steer_active_target() -> None
             "[handoff notice session=bcn-active]\n"
             "Handoffs pending: 1. Use `bcc handoff check` to read them."
         )
-        async with storage.scope("workspace-1", "Test Agent").transaction() as tx:
-            pending = await tx.list_pending_handoffs("bcn-active", limit=100)
-            await tx.mark_handoffs_read(
-                "bcn-active",
-                tuple(item.handoff_id for item in pending),
-                read_at_ms=4,
-            )
+        pending = await scope.list_pending_handoffs("bcn-active", limit=100)
+        await scope.mark_handoffs_read(
+            "bcn-active",
+            tuple(item.handoff_id for item in pending),
+            read_at_ms=4,
+        )
     finally:
         for stream in tuple(runtime.active_streams):
             stream.release()
@@ -2192,8 +2191,7 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
         assert result is None
         assert orchestrator.runtime_session("bcn-1") is None
         assert orchestrator.session_runtime_state("bcn-1") is None
-        async with storage.transaction() as transaction:
-            assert await transaction.get_consumer_cursor("bcn-1") is None
+        assert await storage.get_consumer_cursor("bcn-1") is None
     finally:
         await orchestrator.stop(timeout=1)
 

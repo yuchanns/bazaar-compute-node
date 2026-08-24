@@ -62,19 +62,16 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
             provider_attempted_at_ms=4,
         )
 
-        async with scope.transaction() as transaction:
-            await transaction.save_channel_session(channel_session)
-            await transaction.save_bcn_session(bcn_session)
-            pending = await transaction.save_outbound_message(pending)
-            sent = pending.transition_to(
-                OutboundDeliveryState.SENT,
-                at_ms=5,
-                provider_message_id="provider-message-1",
-            )
-            await transaction.save_outbound_message(sent)
-            persisted = await transaction.get_outbound_message(
-                pending.outbound_message_id
-            )
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+        pending = await scope.save_outbound_message(pending)
+        sent = pending.transition_to(
+            OutboundDeliveryState.SENT,
+            at_ms=5,
+            provider_message_id="provider-message-1",
+        )
+        await scope.save_outbound_message(sent)
+        persisted = await scope.get_outbound_message(pending.outbound_message_id)
 
         assert persisted == sent
     finally:
@@ -122,15 +119,14 @@ async def test_sqlite_persists_sender_display_name_and_kind(
             metadata={"sender_kind": sender_kind.value},
         )
 
-        async with scope.transaction() as transaction:
-            await transaction.save_channel_session(channel_session)
-            await transaction.save_bcn_session(bcn_session)
-            live = await transaction.append_inbound_message(message)
-            persisted = await transaction.find_inbound_message(
-                message.channel,
-                message.provider_thread_id,
-                message.provider_message_id,
-            )
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+        live = await scope.append_inbound_message(message)
+        persisted = await scope.find_inbound_message(
+            message.channel,
+            message.provider_thread_id,
+            message.provider_message_id,
+        )
 
         assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert live.sender_kind is sender_kind
@@ -153,36 +149,36 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert scope.agent_name == "Test Agent"
         assert not (data_dir / "workspaces" / scope.agent_id).exists()
 
-        async with database.transaction() as transaction:
-            tables = await transaction.fetchall(
+        async with database.reader() as session, session.transaction():
+            tables = await session.fetchall(
                 "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
             )
-            indexes = await transaction.fetchall(
+            indexes = await session.fetchall(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
             )
-            inbound_columns = await transaction.fetchall(
+            inbound_columns = await session.fetchall(
                 "PRAGMA table_info(inbound_messages)"
             )
-            outbound_columns = await transaction.fetchall(
+            outbound_columns = await session.fetchall(
                 "PRAGMA table_info(outbound_messages)"
             )
-            handoff_columns = await transaction.fetchall("PRAGMA table_info(handoffs)")
-            journal_mode = await transaction.fetchone("PRAGMA journal_mode")
-            busy_timeout = await transaction.fetchone("PRAGMA busy_timeout")
-            provider_identity_columns = await transaction.fetchall(
+            handoff_columns = await session.fetchall("PRAGMA table_info(handoffs)")
+            journal_mode = await session.fetchone("PRAGMA journal_mode")
+            busy_timeout = await session.fetchone("PRAGMA busy_timeout")
+            provider_identity_columns = await session.fetchall(
                 "PRAGMA index_info(idx_inbound_provider_identity)"
             )
-            inbound_indexes = await transaction.fetchall(
+            inbound_indexes = await session.fetchall(
                 "PRAGMA index_list(inbound_messages)"
             )
-            migration_columns = await transaction.fetchall(
+            migration_columns = await session.fetchall(
                 "PRAGMA table_info(schema_migrations)"
             )
-            schema_version = await transaction.fetchone(
+            schema_version = await session.fetchone(
                 "SELECT MAX(version) AS version FROM schema_migrations"
             )
-            compaction_row = await transaction.fetchone(
+            compaction_row = await session.fetchone(
                 "SELECT compaction_completed_at_ms FROM schema_migrations "
                 "WHERE version = 9"
             )
@@ -224,7 +220,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 16
+        assert schema_version["version"] == 17
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
@@ -286,37 +282,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_transaction_rolls_back_and_commits_ddl() -> None:
-    database = SqliteDatabase()
-    await database.start(timeout=2)
-    try:
-        with pytest.raises(RuntimeError, match="rollback"):
-            async with database.transaction() as transaction:
-                await transaction.execute("CREATE TABLE rollback_probe (value TEXT)")
-                raise RuntimeError("rollback")
-
-        async with database.transaction() as transaction:
-            rollback_probe = await transaction.fetchone(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'rollback_probe'"
-            )
-        assert rollback_probe is None
-
-        async with database.transaction() as transaction:
-            await transaction.execute("CREATE TABLE commit_probe (value TEXT)")
-
-        async with database.transaction() as transaction:
-            commit_probe = await transaction.fetchone(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'commit_probe'"
-            )
-        assert commit_probe is not None
-        assert commit_probe["name"] == "commit_probe"
-    finally:
-        await database.stop(timeout=2)
-
-
-@pytest.mark.asyncio
 async def test_sqlite_migration_checksum_mismatch_fails_closed() -> None:
     data_dir = resolve_data_dir()
     database = SqliteDatabase()
@@ -362,12 +327,12 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
-        async with database.transaction() as transaction:
-            migration_rows = await transaction.fetchall(
+        async with database.reader() as session, session.transaction():
+            migration_rows = await session.fetchall(
                 "SELECT version, migration_name, checksum "
                 "FROM schema_migrations ORDER BY version"
             )
-            session_indexes = await transaction.fetchall(
+            session_indexes = await session.fetchall(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?, ?, ?) ORDER BY name",
                 (
@@ -452,15 +417,15 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
     await database.start(timeout=2)
     try:
         scope = database.scope("workspace-1", "default")
-        async with scope.transaction() as transaction:
-            schema_version = await transaction.fetchone(
+        async with database.reader() as session, session.transaction():
+            schema_version = await session.fetchone(
                 "SELECT MAX(version) AS version FROM schema_migrations"
             )
-            node_state = await transaction.fetchone(
+            node_state = await session.fetchone(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'node_state'"
             )
-            ownership_rows = await transaction.fetchall(
+            ownership_rows = await session.fetchall(
                 "SELECT agent_id FROM channel_sessions WHERE id = 'channel-1' "
                 "UNION ALL "
                 "SELECT agent_id FROM bcn_sessions WHERE id = 'bcn-1' "
@@ -468,7 +433,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 16
+        assert schema_version["version"] == 17
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -487,41 +452,23 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
             client_user_message_id="message-2",
             started_at_ms=3,
         )
-        async with scope.transaction() as transaction:
-            assert await transaction.get_channel_session("channel-1") == ChannelSession(
-                id="channel-1",
-                channel="test",
-                provider_thread_id="thread-1",
-                created_at_ms=1,
-                updated_at_ms=1,
-            )
-            assert await transaction.get_bcn_session("bcn-1") == BcnSession(
-                id="bcn-1",
-                channel_session_id="channel-1",
-                workspace_id="workspace-1",
-                created_at_ms=1,
-                updated_at_ms=1,
-            )
-            assert await transaction.get_runtime_attempt("turn-1") == retained_attempt
-            await transaction.save_runtime_attempt(new_attempt)
-
-        async with scope.transaction() as transaction:
-            assert await transaction.get_runtime_attempt("turn-2") == new_attempt
-
-        with pytest.raises(RuntimeError, match="rollback"):
-            async with scope.transaction() as transaction:
-                await transaction.save_runtime_attempt(
-                    RuntimeAttempt(
-                        turn_id="turn-3",
-                        session_id="runtime-3",
-                        client_user_message_id="message-3",
-                        started_at_ms=4,
-                    )
-                )
-                raise RuntimeError("rollback")
-
-        async with scope.transaction() as transaction:
-            assert await transaction.get_runtime_attempt("turn-3") is None
+        assert await scope.get_channel_session("channel-1") == ChannelSession(
+            id="channel-1",
+            channel="test",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        assert await scope.get_bcn_session("bcn-1") == BcnSession(
+            id="bcn-1",
+            channel_session_id="channel-1",
+            workspace_id="workspace-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        assert await scope.get_runtime_attempt("turn-1") == retained_attempt
+        await scope.save_runtime_attempt(new_attempt)
+        assert await scope.get_runtime_attempt("turn-2") == new_attempt
     finally:
         await database.stop(timeout=2)
 
@@ -573,29 +520,29 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
     try:
         wal_path = Path(f"{database_path}-wal")
         assert not wal_path.exists() or wal_path.stat().st_size == 0
-        async with database.transaction() as transaction:
-            runtime_objects = await transaction.fetchall(
+        async with database.reader() as session, session.transaction():
+            runtime_objects = await session.fetchall(
                 "SELECT name FROM sqlite_master WHERE name = 'runtime_events' "
                 "OR name LIKE 'idx_runtime_events_%'"
             )
-            node_state = await transaction.fetchone(
+            node_state = await session.fetchone(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'node_state'"
             )
-            schema_version = await transaction.fetchone(
+            schema_version = await session.fetchone(
                 "SELECT MAX(version) AS version FROM schema_migrations"
             )
-            marker = await transaction.fetchone(
+            marker = await session.fetchone(
                 "SELECT compaction_completed_at_ms FROM schema_migrations "
                 "WHERE version = 9"
             )
-            freelist = await transaction.fetchone("PRAGMA freelist_count")
-            quick_check = await transaction.fetchone("PRAGMA quick_check")
+            freelist = await session.fetchone("PRAGMA freelist_count")
+            quick_check = await session.fetchone("PRAGMA quick_check")
 
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 16
+        assert schema_version["version"] == 17
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -608,7 +555,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_v16_migration_keeps_only_provider_attempts() -> None:
+async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
@@ -701,18 +648,27 @@ async def test_sqlite_v16_migration_keeps_only_provider_attempts() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
-        async with database.transaction() as transaction:
-            rows = await transaction.fetchall(
+        async with database.reader() as session, session.transaction():
+            rows = await session.fetchall(
                 "SELECT outbound_message_id, state, snapshot_seq, "
                 "current_inbound_seq, provider_attempted_at_ms, completed_at_ms, "
                 "attachments_json, agent_id, agent_name "
                 "FROM outbound_messages ORDER BY outbound_message_id"
             )
-            columns = await transaction.fetchall("PRAGMA table_info(outbound_messages)")
-            indexes = await transaction.fetchall("PRAGMA index_list(outbound_messages)")
-            trigger = await transaction.fetchone(
+            columns = await session.fetchall("PRAGMA table_info(outbound_messages)")
+            indexes = await session.fetchall("PRAGMA index_list(outbound_messages)")
+            triggers = await session.fetchall(
                 "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                "AND name = 'set_outbound_messages_agent_identity'"
+                "AND name IN (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "set_channel_sessions_agent_id",
+                    "set_bcn_sessions_agent_id",
+                    "set_inbound_messages_agent_id",
+                    "set_outbound_messages_agent_identity",
+                    "set_runtime_attempts_agent_id",
+                    "set_reminders_agent_id",
+                    "set_reminder_occurrences_agent_id",
+                ),
             )
         assert [dict(row) for row in rows] == [
             {
@@ -734,7 +690,7 @@ async def test_sqlite_v16_migration_keeps_only_provider_attempts() -> None:
             "idx_outbound_session_created",
             "idx_outbound_state_created",
         }
-        assert trigger is not None
+        assert triggers == []
     finally:
         await database.stop(timeout=2)
 
@@ -787,12 +743,12 @@ async def test_sqlite_retries_unmarked_post_migration_compaction() -> None:
     database = SqliteDatabase()
     await database.start(timeout=10)
     try:
-        async with database.transaction() as transaction:
-            marker = await transaction.fetchone(
+        async with database.reader() as session, session.transaction():
+            marker = await session.fetchone(
                 "SELECT compaction_completed_at_ms FROM schema_migrations "
                 "WHERE version = 9"
             )
-            quick_check = await transaction.fetchone("PRAGMA quick_check")
+            quick_check = await session.fetchone("PRAGMA quick_check")
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert quick_check is not None
@@ -896,12 +852,12 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
-        async with database.transaction() as transaction:
-            rows = await transaction.fetchall(
+        async with database.reader() as session, session.transaction():
+            rows = await session.fetchall(
                 "SELECT message_id, reply_to_message_id "
                 "FROM inbound_messages ORDER BY seq"
             )
-            quick_check = await transaction.fetchone("PRAGMA quick_check")
+            quick_check = await session.fetchone("PRAGMA quick_check")
         assert [(row["message_id"], row["reply_to_message_id"]) for row in rows] == [
             ("message-cross-session", None),
             ("message-reference", None),

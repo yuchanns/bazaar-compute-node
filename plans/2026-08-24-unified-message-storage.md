@@ -71,11 +71,14 @@ query-only。不再使用 `_transaction_lock`、database-global Agent binding �
 startup migration 在 writer actor 接管 connection 前完成；shutdown 停止接收 operation，收敛
 writer queue 与正在使用的 read sessions 后关闭全部 connections。
 
-SQLite 只保留一个具体 repository 实现。`repository.py`、`scoped_repository.py`、
-`reminder_repository.py`、`handoff_repository.py` 中的 transaction 实现合并，删除
-scoped/unscoped 重复方法、repository mixin 和多重继承拼装。文件边界不再表达访问权限；Agent
-隔离由 operation 输入、core port 和 SQLite repository 校验共同保证。除 database executor
-内部外，`contrib/sqlite` 代码不直接取得 connection 或管理 pool/actor。
+SQLite 只保留一个具体 repository 实现。旧 `repository.py`、`scoped_repository.py`、
+`reminder_repository.py`、`handoff_repository.py` 中的 transaction 实现合并到
+`repository/` package，删除 scoped/unscoped 重复方法和多个有状态 repository 实现。
+package 内部可以用无状态、方法集互斥的 domain operation mixin 表达 Rust trait 式能力；
+它们不定义 `__init__`、不持有独立状态、不覆盖同名方法，也不依赖 `super()` 调用链。
+文件边界不再表达访问权限；Agent 隔离由 operation 输入、core port 和 SQLite
+repository 校验共同保证。除 database executor 内部外，`contrib/sqlite` 代码不直接
+取得 connection 或管理 pool/actor。
 
 ### 2. 单一 Message
 
@@ -298,7 +301,9 @@ start 顺序固定为：
 2. 打开 writer connection，配置 WAL、`synchronous=NORMAL`、foreign keys 与 busy timeout；
 3. 使用 writer connection 执行历史 checksum verification、schema migration 与 startup
    checkpoint；
-4. 打开 read pool；`SqliteDatabase` constructor 增加 `read_pool_size: int = 2`，只接受正整数；
+4. 打开弹性 read pool；`SqliteDatabase` 默认保留 2 个 idle read connections，繁忙时按实际
+   waiter 数按需扩展且默认不限制最大值，归还后的超额连接空闲 60 秒后关闭；idle 数、可选上限和
+   idle timeout 均可配置；
    每条 read connection 配置相同的 WAL、foreign keys、busy timeout，最后启用 `query_only`；
 5. 启动 writer actor；
 6. executor ready 后才把 storage 标记为 started。
@@ -320,9 +325,9 @@ request future 以 shutdown error 结束、关闭 connections，并向 caller �
 
 新增/修改：
 
-- `src/bazaar_compute_node/contrib/sqlite/storage_access_migration.py`
-- `src/bazaar_compute_node/contrib/sqlite/migrations.py`
-- `src/bazaar_compute_node/contrib/sqlite/repository.py`
+- `src/bazaar_compute_node/contrib/sqlite/migrations/registry.py`
+- `src/bazaar_compute_node/contrib/sqlite/migrations/v17_remove_agent_identity_triggers.py`
+- `src/bazaar_compute_node/contrib/sqlite/repository/`
 - `tests/contrib/test_sqlite_database.py`
 
 Task 1 注册 migration 17，只清理旧 Agent identity 自动注入机制，不修改 table column、index 或业务
@@ -357,10 +362,13 @@ version 18。
 - `src/bazaar_compute_node/contrib/sqlite/handoff_repository.py`
 - `src/bazaar_compute_node/contrib/sqlite/storage.py`
 
-最终只保留一个 `SqliteRepository`。它依赖 `SqliteDatabase` execution façade，不导入
-`SqliteExecutor`，不继承 executor/database class，不持有 connection，也不实现 async context
-manager。`SqliteStorageScope` 是薄 Agent-bound façade，只负责把 immutable agent id/name 传给
-repository operation；node storage 只暴露 global Reminder operation 与 lifecycle。
+最终只保留一个 `SqliteRepository`。它由 `SessionOperations`、`MessageOperations`、
+`ReminderOperations`、`HandoffOperations` 四组无状态能力与 core `StorageOperationMixin`
+装配而成；共享的 `RepositoryBase` 是唯一状态边界，只持有当前 `SqliteSession`
+和 immutable agent id/name。具体 repository 不导入 `SqliteExecutor`，不继承 executor/database
+class，不持有 raw connection，也不实现 async context manager。`SqliteStorageScope`
+是薄 Agent-bound façade，只负责把 immutable agent id/name 传给 repository operation；
+node storage 只暴露 global Reminder operation 与 lifecycle。
 
 所有 Agent-owned SQL 显式使用 `agent_id = ?` 参数；insert 显式写入 agent id/name。删除
 `_active_agent_id`、`_active_agent_name`、`_bind_agent_scope()`、`_clear_agent_scope()`、
@@ -424,22 +432,10 @@ writer queue 或 transaction lock。
 - `tests/support/src/bcn_test_support/storage.py`
 - `tests/support/src/bcn_test_support/reminder_storage.py`
 
-必须覆盖：
-
-1. 两个 slow read 同时占用不同 read connections，证明 pure reads 并发；
-2. slow read 未结束时 writer 可以 commit，证明 WAL read/write 并行；
-3. 两个 writer request 严格按 enqueue 顺序完成；
-4. transaction write 中间步骤失败时所有写入回滚，下一条 writer request 仍可执行；
-5. `database.reader()` 自动借还同一 read session；进入 `session.transaction()` 后多条查询看到
-   同一 snapshot；
-6. read connection 执行写语句稳定失败并正常归还 pool；
-7. queued writer request 取消后不会执行；active transaction write 取消后 interrupt 当前 SQL、
-   rollback 全部写入，再允许下一条 request 执行；
-8. shutdown drain 已接受 writer request、等待 borrowed reader，并拒绝新 request；
-9. v16 fixture 升级到 v17 后 ownership trigger 被删除，ownership 数据和后续显式写入正确；
-10. 同 provider/thread/message ids 可跨 Agent 共存，同 Agent 内仍 dedupe；
-11. Agent scope 无法读取或修改其他 Agent 数据；global Reminder frontier 仍覆盖全部 Agent；
-12. 现有 message、Reminder、Handoff、runtime wake 与 attachment 行为不变。
+新增测试只保留四个 executor 集成场景：read pool/WAL/snapshot、writer FIFO/rollback、queued 与
+active cancellation、query-only reader/shutdown drain。migration、Agent scope 和既有 message、
+Reminder、Handoff、runtime wake、attachment 行为复用现有公共行为测试覆盖；删除 transaction、
+query plan 等实现细节测试，不为内部纯函数、机械分支或反向路径新增测试。
 
 Focused verification：
 
@@ -511,8 +507,8 @@ verification 后停下 review，再开始 Task 2。
   并发执行，调用方只执行异步 storage operation；
 - `contrib/sqlite` 的 repository 和后续新增 SQL 统一通过 internal executor 执行，不直接管理
   connection、pool 或 writer request；
-- SQLite 不存在 scoped/unscoped repository 方法副本、多重继承拼装、database-global Agent
-  binding 或 transaction lock；
+- SQLite 不存在 scoped/unscoped repository 方法副本、多个有状态具体 repository、
+  domain mixin 方法覆盖、database-global Agent binding 或 transaction lock；
 - mutation/read-modify-write operation 按 writer queue 顺序执行；pure read operation 可以彼此
   并发，并可在 WAL 下与 writer 并发；
 - Agent operation 无法访问其他 Agent 数据，global Reminder operation 仍覆盖全部 Agent；

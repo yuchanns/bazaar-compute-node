@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import cast
 
-from ...core.models import Handoff, InboundMessage
-from ...core.storage import HandoffConflictError
-from .codec import inbound_message_from_row
-from .handoff_codec import handoff_from_row
-from .reminder_repository import _INBOUND_COLUMNS
-from .repository import SqliteTransaction
+from ....core.models import (
+    Handoff,
+)
+from ....core.storage import HandoffConflictError
+from ..handoff_codec import handoff_from_row
+from .base import RepositoryBase
 
 _HANDOFF_COLUMNS = (
     "handoff_id, command_id, source_session_id, target_session_id, "
@@ -15,24 +15,7 @@ _HANDOFF_COLUMNS = (
 )
 
 
-class HandoffRepository(SqliteTransaction):
-    async def get_latest_inbound_message(
-        self,
-        session_id: str,
-    ) -> InboundMessage | None:
-        agent_predicate = self._agent_predicate()
-        row = await self.fetchone(
-            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-            f"WHERE {agent_predicate}session_id = ? ORDER BY seq DESC LIMIT 1",
-            (session_id,),
-        )
-        if row is None:
-            return None
-        return inbound_message_from_row(
-            row,
-            await self._attachments(row["message_id"]),
-        )
-
+class HandoffOperations(RepositoryBase):
     async def save_handoff(self, handoff: Handoff) -> Handoff:
         agent_id = await self._handoff_agent_id(handoff)
         existing = await self._get_handoff_by_command_id(handoff.command_id)
@@ -138,19 +121,13 @@ class HandoffRepository(SqliteTransaction):
             return agents.pop()
 
         rows = await self.fetchall(
-            "SELECT id FROM bcn_sessions WHERE agent_id = bcn_agent_id() "
+            "SELECT id FROM bcn_sessions WHERE agent_id = /*agent_id*/? "
             f"AND id IN ({placeholders})",
             tuple(session_ids),
         )
         if {cast(str, row["id"]) for row in rows} != session_ids:
             raise ValueError("handoff sessions must belong to the current Agent")
         return bound_agent_id
-
-    def _bound_agent_id(self) -> str | None:
-        return getattr(self, "agent_id", None)
-
-    def _agent_predicate(self) -> str:
-        return "agent_id = bcn_agent_id() AND " if self._bound_agent_id() else ""
 
     @staticmethod
     def _same_handoff_payload(existing: Handoff, incoming: Handoff) -> bool:
@@ -161,6 +138,3 @@ class HandoffRepository(SqliteTransaction):
             and existing.body == incoming.body
             and existing.created_at_ms == incoming.created_at_ms
         )
-
-
-__all__ = ["_HANDOFF_COLUMNS", "HandoffRepository"]

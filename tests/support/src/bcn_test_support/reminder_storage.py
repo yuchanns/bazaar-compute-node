@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
@@ -17,7 +16,6 @@ from bazaar_compute_node.core.models import (
     ReminderState,
 )
 from bazaar_compute_node.core.reminder import canonical_id_reference
-from bazaar_compute_node.core.storage import IStorageTransaction
 
 from .storage import (
     MemoryStorage as _BaseMemoryStorage,
@@ -33,12 +31,9 @@ class MemoryStorage(_BaseMemoryStorage):
         self.reminders: dict[str, Reminder] = {}
         self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
 
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return self._transaction_for_agent(None)
-
-    def _transaction_for_agent(
+    def _operation_for_agent(
         self, agent_id: str | None
-    ) -> AbstractAsyncContextManager[IStorageTransaction]:
+    ) -> _ReminderMemoryStorageTransaction:
         return _ReminderMemoryStorageTransaction(self, agent_id=agent_id)
 
 

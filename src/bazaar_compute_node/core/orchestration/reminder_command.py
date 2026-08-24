@@ -5,11 +5,10 @@ from time import time_ns
 
 from ..command import IReminderService, SessionNotFoundError
 from ..concurrency import ISessionConcurrency
-from ..models import InboundMessage, Reminder, ReminderOccurrence, ReminderState
+from ..models import InboundMessage, Reminder, ReminderState
 from ..reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
-    ReminderCheckItem,
     ReminderCheckRequest,
     ReminderCheckResult,
     ReminderListRequest,
@@ -21,7 +20,7 @@ from ..reminder import (
     ReminderUpdateRequest,
     ReminderUpdateResult,
 )
-from ..storage import IStorage, IStorageTransaction
+from ..storage import IStorage
 
 
 def _current_time_ms() -> int:
@@ -63,13 +62,10 @@ class ReminderCommandService(IReminderService):
         session_id: str,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            await self._require_session(transaction, session_id)
+        async with self._concurrency.for_session(session_id):
+            await self._require_session(self._storage, session_id)
             anchor = await self._resolve_anchor(
-                transaction,
+                self._storage,
                 session_id,
                 request.message_id,
             )
@@ -88,7 +84,7 @@ class ReminderCommandService(IReminderService):
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
             )
-            reminder = await transaction.save_new_reminder(reminder)
+            reminder = await self._storage.save_new_reminder(reminder)
         self._poke()
         return ReminderScheduleResult(reminder)
 
@@ -98,62 +94,12 @@ class ReminderCommandService(IReminderService):
         request: ReminderCheckRequest,
     ) -> ReminderCheckResult:
         try:
-            async with (
-                self._concurrency.for_session(session_id),
-                self._storage.transaction() as transaction,
-            ):
-                await self._require_session(transaction, session_id)
-                occurrences = await transaction.list_pending_reminder_occurrences(
+            async with self._concurrency.for_session(session_id):
+                return await self._storage.check_reminders(
                     session_id,
                     limit=request.limit,
-                )
-                if not occurrences:
-                    return ReminderCheckResult(items=(), has_more=False)
-
-                snapshots: list[tuple[ReminderOccurrence, str, str]] = []
-                for occurrence in occurrences:
-                    reminder = await transaction.get_reminder(
-                        session_id,
-                        occurrence.reminder_id,
-                    )
-                    if reminder is None:
-                        raise ReminderCommandFailure(
-                            "REMINDER_CHECK_FAILED",
-                            f"Reminder definition is missing: {occurrence.reminder_id}",
-                        )
-                    anchor = await transaction.resolve_inbound_message(
-                        session_id,
-                        occurrence.anchor_message_id,
-                    )
-                    if anchor is None:
-                        raise ReminderCommandFailure(
-                            "REMINDER_CHECK_FAILED",
-                            f"Reminder anchor is missing: {occurrence.anchor_message_id}",
-                        )
-                    snapshots.append(
-                        (occurrence, reminder.title, anchor.canonical_target)
-                    )
-
-                marked = await transaction.mark_reminder_occurrences_read(
-                    session_id,
-                    tuple(occurrence.occurrence_id for occurrence in occurrences),
                     read_at_ms=self._clock(),
                 )
-                marked_by_id = {
-                    occurrence.occurrence_id: occurrence for occurrence in marked
-                }
-                items = tuple(
-                    ReminderCheckItem(
-                        occurrence=marked_by_id[occurrence.occurrence_id],
-                        title=title,
-                        canonical_target=canonical_target,
-                    )
-                    for occurrence, title, canonical_target in snapshots
-                )
-                has_more = (
-                    await transaction.count_pending_reminder_occurrences(session_id) > 0
-                )
-            return ReminderCheckResult(items=items, has_more=has_more)
         except SessionNotFoundError:
             raise
         except ReminderCommandFailure:
@@ -169,12 +115,11 @@ class ReminderCommandService(IReminderService):
         session_id: str,
         request: ReminderListRequest,
     ) -> ReminderListResult:
-        async with self._storage.transaction() as transaction:
-            await self._require_session(transaction, session_id)
-            reminders = await transaction.list_reminders(
-                session_id,
-                request.statuses,
-            )
+        await self._require_session(self._storage, session_id)
+        reminders = await self._storage.list_reminders(
+            session_id,
+            request.statuses,
+        )
         return ReminderListResult(reminders)
 
     async def snooze(
@@ -182,13 +127,10 @@ class ReminderCommandService(IReminderService):
         session_id: str,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            await self._require_session(transaction, session_id)
+        async with self._concurrency.for_session(session_id):
+            await self._require_session(self._storage, session_id)
             reminder = await self._resolve_reminder(
-                transaction,
+                self._storage,
                 session_id,
                 request.reminder_id,
             )
@@ -203,7 +145,7 @@ class ReminderCommandService(IReminderService):
                     str(error),
                     next_action="Create a new Reminder if this Reminder is no longer reusable.",
                 ) from error
-            updated = await transaction.save_reminder_transition(
+            updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
@@ -215,13 +157,10 @@ class ReminderCommandService(IReminderService):
         session_id: str,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            await self._require_session(transaction, session_id)
+        async with self._concurrency.for_session(session_id):
+            await self._require_session(self._storage, session_id)
             reminder = await self._resolve_reminder(
-                transaction,
+                self._storage,
                 session_id,
                 request.reminder_id,
             )
@@ -259,7 +198,7 @@ class ReminderCommandService(IReminderService):
                     "REMINDER_UPDATE_FAILED",
                     str(error),
                 ) from error
-            updated = await transaction.save_reminder_transition(
+            updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
@@ -271,13 +210,10 @@ class ReminderCommandService(IReminderService):
         session_id: str,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            await self._require_session(transaction, session_id)
+        async with self._concurrency.for_session(session_id):
+            await self._require_session(self._storage, session_id)
             reminder = await self._resolve_reminder(
-                transaction,
+                self._storage,
                 session_id,
                 request.reminder_id,
             )
@@ -293,7 +229,7 @@ class ReminderCommandService(IReminderService):
                     "REMINDER_NOT_SCHEDULED",
                     str(error),
                 ) from error
-            updated = await transaction.save_reminder_transition(
+            updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
@@ -302,20 +238,20 @@ class ReminderCommandService(IReminderService):
 
     @staticmethod
     async def _require_session(
-        transaction: IStorageTransaction,
+        storage: IStorage,
         session_id: str,
     ) -> None:
-        if await transaction.get_bcn_session(session_id) is None:
+        if await storage.get_bcn_session(session_id) is None:
             raise SessionNotFoundError(f"unknown bcn session: {session_id}")
 
     @staticmethod
     async def _resolve_anchor(
-        transaction: IStorageTransaction,
+        storage: IStorage,
         session_id: str,
         message_id: str,
     ) -> InboundMessage:
         try:
-            anchor = await transaction.resolve_inbound_message(session_id, message_id)
+            anchor = await storage.resolve_inbound_message(session_id, message_id)
         except ValueError as error:
             raise ReminderCommandFailure(
                 "REMINDER_ANCHOR_NOT_FOUND",
@@ -330,12 +266,12 @@ class ReminderCommandService(IReminderService):
 
     @staticmethod
     async def _resolve_reminder(
-        transaction: IStorageTransaction,
+        storage: IStorage,
         session_id: str,
         reminder_id: str,
     ) -> Reminder:
         try:
-            reminder = await transaction.get_reminder(session_id, reminder_id)
+            reminder = await storage.get_reminder(session_id, reminder_id)
         except ValueError as error:
             raise ReminderCommandFailure(
                 "REMINDER_NOT_FOUND",

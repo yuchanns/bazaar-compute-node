@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from bazaar_compute_node.app.command import ControlHandler
 from bazaar_compute_node.core.observability import IAudit
@@ -33,7 +34,7 @@ def create_runtime(context: RuntimeCommandContext) -> IRuntime:
 
 
 def create_storage() -> IStorage:
-    return MemoryStorage()
+    return cast(IStorage, MemoryStorage())
 
 
 def create_audit() -> IAudit:
