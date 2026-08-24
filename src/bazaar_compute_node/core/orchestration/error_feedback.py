@@ -10,7 +10,7 @@ from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..correlation import CorrelationContext
 from ..models import (
-    InboundMessage,
+    Message,
     OutboundDeliveryState,
     RuntimeEventState,
     RuntimeTurn,
@@ -56,7 +56,7 @@ class RuntimeErrorReporter:
             "bazaar_compute_node.orchestration.error_feedback"
         )
 
-    async def report(self, message: InboundMessage, turn: RuntimeTurn | None) -> None:
+    async def report(self, message: Message, turn: RuntimeTurn | None) -> None:
         if turn is None:
             return
         message_key = _MESSAGE_KEYS.get(turn.state)
@@ -82,13 +82,14 @@ class RuntimeErrorReporter:
             correlation=correlation,
             metadata={"terminal_state": turn.state.value},
         )
+        _, provider_thread_id, _ = message.inbound_identity()
         result = await self._delivery.deliver(
             ChannelSendRequest(
                 session_id=message.session_id,
                 body=self._translator.text(message_key, {"error": feedback_detail}),
                 attachments=(),
                 target_kind=message.target_kind,
-                provider_thread_id=message.provider_thread_id,
+                provider_thread_id=provider_thread_id,
                 provider_reply_to_message_id=message.provider_message_id,
             )
         )

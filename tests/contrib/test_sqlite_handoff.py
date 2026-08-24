@@ -13,7 +13,8 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     ConsumerCursor,
     Handoff,
-    InboundMessage,
+    Message,
+    MessageDirection,
     SenderIdentity,
 )
 from bazaar_compute_node.core.orchestration.handoff_command import (
@@ -55,9 +56,10 @@ async def _append_message(
     session: BcnSession,
     message_id: str,
     received_at_ms: int,
-) -> InboundMessage:
+) -> Message:
     return await transaction.append_inbound_message(
-        InboundMessage(
+        Message(
+            direction=MessageDirection.INBOUND,
             seq=0,
             message_id=message_id,
             session_id=session.id,
@@ -68,7 +70,7 @@ async def _append_message(
             received_at_ms=received_at_ms,
             sender=SenderIdentity(name="sender"),
             message_type="text",
-            canonical_target=f"dm:{session.id}",
+            target=f"dm:{session.id}",
             body=f"body-{message_id}",
         )
     )

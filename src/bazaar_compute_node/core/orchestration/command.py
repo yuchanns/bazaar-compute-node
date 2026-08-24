@@ -26,9 +26,9 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
+    Message,
     OutboundAttachment,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeEventState,
 )
 from ..storage import IStorage
@@ -269,11 +269,11 @@ class SessionCommandService(ICommandService):
                     audit_context,
                     inbound_seq=result.current_inbound_seq,
                 )
-            elif isinstance(result, OutboundMessage):
+            elif isinstance(result, Message):
                 audit_context = replace(
                     audit_context,
                     inbound_seq=result.current_inbound_seq,
-                    outbound_message_id=result.outbound_message_id,
+                    outbound_message_id=result.message_id,
                 )
 
             if isinstance(result, MessageSendHandoffRequired):
@@ -378,13 +378,16 @@ class SessionCommandService(ICommandService):
                 )
 
             await self._storage.save_outbound_message(outbound)
-            if outbound.state in {
+            delivery_state = outbound.delivery_state
+            if delivery_state is None:
+                raise RuntimeError("outbound message has no delivery state")
+            if delivery_state in {
                 OutboundDeliveryState.SENT,
                 OutboundDeliveryState.QUEUED,
             }:
                 self._drafts.pop(session_id, None)
             await self._audit.append(
-                event_name=f"channel.outbound.{outbound.state.value}",
+                event_name=f"channel.outbound.{delivery_state.value}",
                 state=terminal_state,
                 correlation=audit_context,
                 error_kind=terminal_kind,
@@ -393,13 +396,13 @@ class SessionCommandService(ICommandService):
             )
             await self._audit.append_tool(
                 operation="bcc.message.send",
-                status=outbound.state.value,
+                status=delivery_state.value,
                 state=terminal_state,
                 correlation=audit_context,
                 arguments={
                     "command_id": command_id,
                     "target": target,
-                    "delivery_state": outbound.state.value,
+                    "delivery_state": delivery_state.value,
                 },
                 error_kind=terminal_kind,
                 error_message=outbound.error_message,

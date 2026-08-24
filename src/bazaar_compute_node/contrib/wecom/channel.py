@@ -9,7 +9,7 @@ import math
 import random
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from email.message import Message
+from email.message import Message as EmailMessage
 from time import time_ns
 from urllib.parse import unquote
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -30,7 +30,8 @@ from ...core.models import (
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
-    InboundMessage,
+    Message,
+    MessageDirection,
     SenderIdentity,
     SenderKind,
 )
@@ -82,7 +83,7 @@ class WeComChannel(IChannel):
         self._secret = secret
         self._websocket_url = websocket_url
         self._timer_wheel: TimerWheel | None = context.timer_wheel
-        self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
+        self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._ready = asyncio.Event()
         self._stopping = asyncio.Event()
         self._startup_finished = asyncio.Event()
@@ -184,12 +185,12 @@ class WeComChannel(IChannel):
         self._state = "stopped"
         await self._inbound.put(_STOP)
 
-    async def receive(self) -> AsyncIterator[InboundMessage]:
+    async def receive(self) -> AsyncIterator[Message]:
         while True:
             item = await self._inbound.get()
             if item is _STOP:
                 return
-            if not isinstance(item, InboundMessage):
+            if not isinstance(item, Message):
                 raise TypeError("WeCom inbound queue contained an invalid message")
             yield item
 
@@ -1025,7 +1026,8 @@ class WeComChannel(IChannel):
                     )
                 )
                 await self._inbound.put(
-                    InboundMessage(
+                    Message(
+                        direction=MessageDirection.INBOUND,
                         seq=0,
                         message_id=reply_to_message_id,
                         session_id=session_id,
@@ -1036,7 +1038,7 @@ class WeComChannel(IChannel):
                         received_at_ms=received_at_ms,
                         sender=None,
                         message_type=quote_type,
-                        canonical_target=canonical_target,
+                        target=canonical_target,
                         body=quote_content.body,
                         target_kind=target_kind,
                         mentions_agent=False,
@@ -1052,7 +1054,8 @@ class WeComChannel(IChannel):
                     reason="missing_message_type",
                 )
         await self._inbound.put(
-            InboundMessage(
+            Message(
+                direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=str(
                     uuid5(
@@ -1068,7 +1071,7 @@ class WeComChannel(IChannel):
                 received_at_ms=received_at_ms,
                 sender=SenderIdentity(id=sender_id),
                 message_type=message_type,
-                canonical_target=canonical_target,
+                target=canonical_target,
                 body=content.body,
                 target_kind=target_kind,
                 mentions_agent=mentions_agent,
@@ -1278,7 +1281,7 @@ class WeComChannel(IChannel):
     @staticmethod
     def _filename(value: str | None, kind: str) -> str:
         if value:
-            message = Message()
+            message = EmailMessage()
             message["Content-Disposition"] = value
             filename = message.get_filename()
             if filename:

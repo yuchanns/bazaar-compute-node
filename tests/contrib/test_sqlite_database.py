@@ -18,9 +18,9 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
-    InboundMessage,
+    Message,
+    MessageDirection,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
@@ -48,14 +48,16 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
             created_at_ms=1,
             updated_at_ms=1,
         )
-        pending = OutboundMessage(
-            outbound_message_id="outbound-1",
+        pending = Message(
+            direction=MessageDirection.OUTBOUND,
+            seq=0,
+            message_id="outbound-1",
             command_id="command-1",
             session_id=bcn_session.id,
             channel_session_id=channel_session.id,
             target="dm:channel-1",
             body="hello",
-            state=OutboundDeliveryState.PENDING,
+            delivery_state=OutboundDeliveryState.PENDING,
             created_at_ms=2,
             snapshot_seq=3,
             current_inbound_seq=3,
@@ -71,7 +73,7 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
             provider_message_id="provider-message-1",
         )
         await scope.save_outbound_message(sent)
-        persisted = await scope.get_outbound_message(pending.outbound_message_id)
+        persisted = await scope.get_outbound_message(pending.message_id)
 
         assert persisted == sent
     finally:
@@ -103,7 +105,8 @@ async def test_sqlite_persists_sender_display_name_and_kind(
             created_at_ms=1,
             updated_at_ms=1,
         )
-        message = InboundMessage(
+        message = Message(
+            direction=MessageDirection.INBOUND,
             seq=0,
             message_id="message-1",
             session_id=bcn_session.id,
@@ -114,7 +117,7 @@ async def test_sqlite_persists_sender_display_name_and_kind(
             received_at_ms=1,
             sender=SenderIdentity(id="test-user-id", name="test-user"),
             message_type="text",
-            canonical_target="dm:channel-1",
+            target="dm:channel-1",
             body="hello",
             metadata={"sender_kind": sender_kind.value},
         )
@@ -122,11 +125,7 @@ async def test_sqlite_persists_sender_display_name_and_kind(
         await scope.save_channel_session(channel_session)
         await scope.save_bcn_session(bcn_session)
         live = await scope.append_inbound_message(message)
-        persisted = await scope.find_inbound_message(
-            message.channel,
-            message.provider_thread_id,
-            message.provider_message_id,
-        )
+        persisted = await scope.find_inbound_message(*message.inbound_identity())
 
         assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert live.sender_kind is sender_kind

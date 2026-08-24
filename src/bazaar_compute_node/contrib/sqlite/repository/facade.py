@@ -7,7 +7,9 @@ from ....core.models import (
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
-    InboundMessage,
+    InboundAttachment,
+    Message,
+    MessageDirection,
 )
 from ....core.storage import RecordInboundResult
 from ....core.storage_operations import StorageOperationMixin
@@ -26,27 +28,34 @@ class SqliteRepository(
 ):
     async def record_inbound(
         self,
-        message: InboundMessage,
+        message: Message[InboundAttachment],
         *,
         now_ms: int,
     ) -> RecordInboundResult:
+        if message.direction is not MessageDirection.INBOUND:
+            raise ValueError("record_inbound requires an inbound message")
+        channel = message.channel
+        provider_thread_id = message.provider_thread_id
+        provider_message_id = message.provider_message_id
+        if channel is None or provider_thread_id is None or provider_message_id is None:
+            raise RuntimeError("inbound message identity is incomplete")
         existing_message = await self.find_inbound_message(
-            message.channel,
-            message.provider_thread_id,
-            message.provider_message_id,
+            channel,
+            provider_thread_id,
+            provider_message_id,
         )
         if existing_message is not None:
             message = existing_message
         channel_session = await self.find_channel_session(
-            channel=message.channel,
-            provider_thread_id=message.provider_thread_id,
+            channel=channel,
+            provider_thread_id=provider_thread_id,
         )
         channel_session_created = channel_session is None
         if channel_session is None:
             channel_session = ChannelSession(
                 id=message.channel_session_id,
-                channel=message.channel,
-                provider_thread_id=message.provider_thread_id,
+                channel=channel,
+                provider_thread_id=provider_thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
                 target_kind=message.target_kind,
@@ -86,7 +95,7 @@ class SqliteRepository(
                 or channel_session.following
                 or message.mentions_agent
             )
-            canonical_target = message.canonical_target
+            canonical_target = message.target
             if channel_session.id != message.channel_session_id:
                 canonical_target = (
                     f"{channel_session.target_kind.value}:{channel_session.id}"
@@ -95,7 +104,7 @@ class SqliteRepository(
                 message,
                 session_id=bcn_session.id,
                 channel_session_id=channel_session.id,
-                canonical_target=canonical_target,
+                target=canonical_target,
                 notifies_runtime=notifies_runtime,
             )
 

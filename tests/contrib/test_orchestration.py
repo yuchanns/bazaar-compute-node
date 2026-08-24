@@ -48,9 +48,9 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     Handoff,
-    InboundMessage,
+    Message,
+    MessageDirection,
     OutboundDeliveryState,
-    OutboundMessage,
     ReminderOccurrence,
     RuntimeEvent,
     RuntimeEventState,
@@ -134,10 +134,11 @@ def make_message(
     message_id: str | None = None,
     body: str | None = None,
     sender_kind: str = "human",
-) -> InboundMessage:
+) -> Message:
     channel_session_id = f"channel-{session_id}"
     metadata = {"sender_kind": sender_kind}
-    return InboundMessage(
+    return Message(
+        direction=MessageDirection.INBOUND,
         seq=seq,
         message_id=message_id or f"message-{session_id}-{seq}",
         session_id=session_id,
@@ -148,7 +149,7 @@ def make_message(
         received_at_ms=seq,
         sender=SenderIdentity(id="sender-id", name="Sender"),
         message_type="text",
-        canonical_target=f"#test:{session_id}",
+        target=f"#test:{session_id}",
         body=body if body is not None else f"inbound-{seq}",
         metadata=metadata,
     )
@@ -302,7 +303,7 @@ async def wait_until(predicate: object) -> None:
 class _AcceptanceChannel(Protocol):
     sent_messages: list[ChannelSendRequest]
 
-    async def inject(self, message: InboundMessage) -> None: ...
+    async def inject(self, message: Message) -> None: ...
 
 
 class _AcceptanceAudit(RecordingAudit):
@@ -329,7 +330,7 @@ async def _wait_for_inbound_messages(
     storage: IStorage,
     session_id: str,
     count: int,
-) -> tuple[InboundMessage, ...]:
+) -> tuple[Message, ...]:
     async with asyncio.timeout(180):
         while True:
             repository = storage
@@ -683,19 +684,19 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
             raise AssertionError("command did not observe the inbound message")
         history = await commands.read(
             session_id,
-            target=checked.messages[0].canonical_target,
+            target=checked.messages[0].target,
         )
         if not history.messages:
             raise AssertionError("history command did not observe the inbound message")
         outbound = await commands.send(
             session_id=session_id,
             command_id="command-1",
-            target=checked.messages[0].canonical_target,
+            target=checked.messages[0].target,
             body="runtime-generated reply",
             created_at_ms=2,
         )
-        assert isinstance(outbound, OutboundMessage)
-        if outbound.state is not OutboundDeliveryState.SENT:
+        assert isinstance(outbound, Message)
+        if outbound.delivery_state is not OutboundDeliveryState.SENT:
             raise AssertionError("command did not deliver the outbound message")
 
     try:
@@ -757,7 +758,7 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
     try:
         history = await orchestrator.command_service.read(
             caller_id,
-            target=target_reply.canonical_target,
+            target=target_reply.target,
             around_message_id=target_reply.message_id,
             limit=1,
         )
@@ -767,7 +768,7 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
         assert [message.message_id for message in history.referenced_messages] == [
             target_parent.message_id
         ]
-        assert history.messages[0].canonical_target == target_reply.canonical_target
+        assert history.messages[0].target == target_reply.target
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=2)
@@ -903,8 +904,8 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             created_at_ms=3,
             send_draft=True,
         )
-        assert isinstance(delivered, OutboundMessage)
-        assert delivered.state is OutboundDeliveryState.SENT
+        assert isinstance(delivered, Message)
+        assert delivered.delivery_state is OutboundDeliveryState.SENT
         assert delivered.body == "reply"
         assert channel.send_requests[0].provider_reply_to_message_id == (
             storage.inbound_messages["bcn-1"][0].provider_message_id
@@ -951,7 +952,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             created_at_ms=7,
             send_draft=True,
         )
-        assert isinstance(delivered_revised, OutboundMessage)
+        assert isinstance(delivered_revised, Message)
         assert delivered_revised.body == "revised draft"
         assert len(channel.send_attempts) == 2
     finally:
@@ -1025,8 +1026,8 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
             send_draft=True,
         )
 
-        assert isinstance(first_sent, OutboundMessage)
-        assert isinstance(second_sent, OutboundMessage)
+        assert isinstance(first_sent, Message)
+        assert isinstance(second_sent, Message)
         assert [request.body for request in channel.send_requests] == [
             "draft a",
             "draft b",
@@ -1057,9 +1058,9 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
             created_at_ms=2,
             attachment_paths=(str(first), str(second)),
         )
-        assert isinstance(delivered, OutboundMessage)
+        assert isinstance(delivered, Message)
 
-        assert delivered.state is OutboundDeliveryState.SENT
+        assert delivered.delivery_state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].attachments == delivered.attachments
         assert [attachment.relative_path for attachment in delivered.attachments] == [
             "first.txt",
@@ -1122,8 +1123,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="queued reply",
             created_at_ms=4,
         )
-        assert isinstance(queued, OutboundMessage)
-        assert queued.state is OutboundDeliveryState.QUEUED
+        assert isinstance(queued, Message)
+        assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
         assert channel.queued_messages == [channel.send_attempts[0]]
 
@@ -1142,8 +1143,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="unknown reply",
             created_at_ms=5,
         )
-        assert isinstance(unknown, OutboundMessage)
-        assert unknown.state is OutboundDeliveryState.UNKNOWN
+        assert isinstance(unknown, Message)
+        assert unknown.delivery_state is OutboundDeliveryState.UNKNOWN
         assert unknown.provider_receipt_ref == "attempted-send-1"
 
         channel.queue_send_result(
@@ -1175,8 +1176,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="partial reply",
             created_at_ms=6,
         )
-        assert isinstance(partial, OutboundMessage)
-        assert partial.state is OutboundDeliveryState.PARTIAL
+        assert isinstance(partial, Message)
+        assert partial.delivery_state is OutboundDeliveryState.PARTIAL
         assert partial.provider_receipt_ref == "batch-1"
         assert partial.metadata["delivery_receipt"] == {
             "total_batches": 2,
@@ -1208,8 +1209,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             body="failed reply",
             created_at_ms=7,
         )
-        assert isinstance(failed, OutboundMessage)
-        assert failed.state is OutboundDeliveryState.FAILED
+        assert isinstance(failed, Message)
+        assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 4
         assert not channel.sent_messages
@@ -2287,7 +2288,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
         await commands.send(
             session_id=session_id,
             command_id="terminal-wait",
-            target=checked.messages[0].canonical_target,
+            target=checked.messages[0].target,
             body="terminal reply",
             created_at_ms=2,
         )

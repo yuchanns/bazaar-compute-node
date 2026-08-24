@@ -10,10 +10,10 @@ from .handoff import (
     HandoffSendResult,
 )
 from .models import (
-    InboundMessage,
+    InboundAttachment,
     InboxTargetSummary,
+    Message,
     OutboundAttachment,
-    OutboundMessage,
 )
 from .reminder import (
     ReminderCancelRequest,
@@ -35,10 +35,10 @@ from .reminder import (
 class MessageCheckResult:
     """Drain result with a snapshot independent from the delivery cursor."""
 
-    messages: tuple[InboundMessage, ...]
+    messages: tuple[Message[InboundAttachment], ...]
     snapshot_seq: int
     delivered_through_seq: int
-    referenced_messages: tuple[InboundMessage, ...] = ()
+    referenced_messages: tuple[Message[InboundAttachment], ...] = ()
 
     def __post_init__(self) -> None:
         if self.delivered_through_seq > self.snapshot_seq:
@@ -49,11 +49,11 @@ class MessageCheckResult:
 class MessageReadResult:
     """Non-draining history result with the observed inbox snapshot."""
 
-    messages: tuple[InboundMessage, ...]
+    messages: tuple[Message[InboundAttachment], ...]
     snapshot_seq: int
     first_seq: int | None = None
     last_seq: int | None = None
-    referenced_messages: tuple[InboundMessage, ...] = ()
+    referenced_messages: tuple[Message[InboundAttachment], ...] = ()
 
     def __post_init__(self) -> None:
         if (self.first_seq is None) != (self.last_seq is None):
@@ -115,8 +115,8 @@ class MessageSendFreshnessHold:
     """Bounded context returned before an outbound provider attempt."""
 
     target: str
-    messages: tuple[InboundMessage, ...]
-    referenced_messages: tuple[InboundMessage, ...]
+    messages: tuple[Message[InboundAttachment], ...]
+    referenced_messages: tuple[Message[InboundAttachment], ...]
     newer_message_total: int
     snapshot_seq: int | None
     current_inbound_seq: int
@@ -133,7 +133,7 @@ class MessageSendFreshnessHold:
 
 
 type MessageSendResult = (
-    OutboundMessage | MessageSendFreshnessHold | MessageSendHandoffRequired
+    Message[OutboundAttachment] | MessageSendFreshnessHold | MessageSendHandoffRequired
 )
 
 

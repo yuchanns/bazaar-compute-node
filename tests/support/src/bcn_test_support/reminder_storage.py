@@ -7,7 +7,7 @@ from typing import Self, cast
 from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
-    InboundMessage,
+    Message,
     OwnedReminder,
     OwnedReminderOccurrence,
     Reminder,
@@ -74,7 +74,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         self,
         session_id: str,
         message_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         reference = canonical_id_reference(message_id)
         return next(
             (

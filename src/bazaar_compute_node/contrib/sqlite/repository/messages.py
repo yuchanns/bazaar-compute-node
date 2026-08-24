@@ -12,9 +12,9 @@ from ....core.models import (
     BcnSession,
     ChannelTargetKind,
     InboundAttachment,
-    InboundMessage,
     InboxTargetSummary,
-    OutboundMessage,
+    Message,
+    OutboundAttachment,
     SenderIdentity,
 )
 from ....core.reminder import canonical_id_reference
@@ -251,7 +251,7 @@ class MessageOperations(RepositoryBase):
         channel: str,
         provider_thread_id: str,
         provider_message_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         row = await self._fetch_one_or_conflict(
             f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
@@ -285,7 +285,7 @@ class MessageOperations(RepositoryBase):
         notifying_only: bool = False,
         latest: bool = False,
         limit: int = 100,
-    ) -> tuple[InboundMessage, ...]:
+    ) -> tuple[Message, ...]:
         predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
         parameters: list[object] = [session_id]
         if after_seq is not None:
@@ -306,7 +306,7 @@ class MessageOperations(RepositoryBase):
             )
             if latest:
                 rows.reverse()
-            messages: list[InboundMessage] = []
+            messages: list[Message] = []
             for row in rows:
                 messages.append(
                     inbound_message_from_row(
@@ -360,7 +360,10 @@ class MessageOperations(RepositoryBase):
             )
         return tuple(messages)
 
-    async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
+    async def append_inbound_message(
+        self,
+        message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment]:
         validate_inbound_message_input(message)
         bcn_session = await self.get_bcn_session(message.session_id)
         if bcn_session is None:
@@ -502,7 +505,7 @@ class MessageOperations(RepositoryBase):
                     else None
                 ),
                 canonical.message_type,
-                canonical.canonical_target,
+                canonical.target,
                 canonical.target_kind.value,
                 canonical.reply_to_message_id,
                 canonical.body,
@@ -535,7 +538,7 @@ class MessageOperations(RepositoryBase):
     async def get_outbound_message(
         self,
         outbound_message_id: str,
-    ) -> OutboundMessage | None:
+    ) -> Message[OutboundAttachment] | None:
         row = await self.fetchone(
             "SELECT outbound_message_id, command_id, session_id, channel_session_id, "
             "target, reply_to_message_id, body, attachments_json, state, "
@@ -552,7 +555,7 @@ class MessageOperations(RepositoryBase):
         self,
         session_id: str,
         message_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         reference = canonical_id_reference(message_id)
         row = await self.fetchone(
             f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
@@ -569,7 +572,7 @@ class MessageOperations(RepositoryBase):
     async def get_latest_inbound_message(
         self,
         session_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         agent_predicate = self._agent_predicate()
         row = await self.fetchone(
             f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
@@ -592,7 +595,10 @@ class MessageOperations(RepositoryBase):
         )
         return tuple(inbound_attachment_from_row(row) for row in rows)
 
-    async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
+    async def save_outbound_message(
+        self,
+        message: Message[OutboundAttachment],
+    ) -> Message[OutboundAttachment]:
         validate_outbound_message_input(message)
         bcn_session = await self.get_bcn_session(message.session_id)
         if bcn_session is None:
@@ -603,10 +609,13 @@ class MessageOperations(RepositoryBase):
         if bcn_session.channel_session_id != message.channel_session_id:
             raise ValueError("outbound message binding does not match bcn session")
 
-        existing = await self.get_outbound_message(message.outbound_message_id)
+        existing = await self.get_outbound_message(message.message_id)
         if existing is None:
-            canonical = replace(message, outbound_message_id=str(uuid7()))
+            canonical = replace(message, message_id=str(uuid7()))
             validate_outbound_insert(canonical)
+            delivery_state = canonical.delivery_state
+            if delivery_state is None:
+                raise RuntimeError("outbound message has no delivery state")
             await self.execute(
                 "INSERT INTO outbound_messages ("
                 "agent_id, agent_name, outbound_message_id, command_id, session_id, "
@@ -619,7 +628,7 @@ class MessageOperations(RepositoryBase):
                 (
                     self._require_agent_id(),
                     self._require_agent_name(),
-                    canonical.outbound_message_id,
+                    canonical.message_id,
                     canonical.command_id,
                     canonical.session_id,
                     canonical.channel_session_id,
@@ -639,7 +648,7 @@ class MessageOperations(RepositoryBase):
                         ],
                         separators=(",", ":"),
                     ),
-                    canonical.state.value,
+                    delivery_state.value,
                     canonical.snapshot_seq,
                     canonical.current_inbound_seq,
                     canonical.provider_message_id,
@@ -666,6 +675,9 @@ class MessageOperations(RepositoryBase):
         ):
             raise ValueError("outbound message identity cannot change")
         canonical = validate_outbound_update(existing, message)
+        delivery_state = canonical.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
         await self.execute(
             "UPDATE outbound_messages SET state = ?, snapshot_seq = ?, "
             "current_inbound_seq = ?, provider_message_id = ?, "
@@ -674,7 +686,7 @@ class MessageOperations(RepositoryBase):
             "metadata_json = ? "
             "WHERE outbound_message_id = ?",
             (
-                canonical.state.value,
+                delivery_state.value,
                 canonical.snapshot_seq,
                 canonical.current_inbound_seq,
                 canonical.provider_message_id,
@@ -684,7 +696,7 @@ class MessageOperations(RepositoryBase):
                 canonical.error_kind,
                 canonical.error_message,
                 encode_metadata(canonical.metadata),
-                canonical.outbound_message_id,
+                canonical.message_id,
             ),
         )
         return canonical

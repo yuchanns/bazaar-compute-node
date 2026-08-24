@@ -34,8 +34,9 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     Handoff,
-    InboundMessage,
     InboxTargetSummary,
+    Message,
+    MessageDirection,
     OutboundDeliveryState,
 )
 
@@ -235,7 +236,8 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
 
 @pytest.mark.asyncio
 async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
-    message = InboundMessage(
+    message = Message(
+        direction=MessageDirection.INBOUND,
         seq=7,
         message_id="message-7",
         session_id="session-source",
@@ -245,7 +247,7 @@ async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
         provider_message_id="provider-message",
         received_at_ms=1_000,
         sender=None,
-        canonical_target="dm:source",
+        target="dm:source",
         message_type="text",
         body="new context",
     )
@@ -363,9 +365,9 @@ async def test_message_send_renders_provider_outcomes() -> None:
 
     for state, ok, code, expected_text in outcomes:
         service.send.return_value = SimpleNamespace(
-            state=state,
+            delivery_state=state,
             target="dm:source",
-            outbound_message_id="outbound-1",
+            message_id="outbound-1",
             error_message="provider outcome",
         )
         response = await dispatcher(request)

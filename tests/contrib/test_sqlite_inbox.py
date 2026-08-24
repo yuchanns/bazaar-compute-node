@@ -11,7 +11,8 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
-    InboundMessage,
+    Message,
+    MessageDirection,
     SenderIdentity,
 )
 from bazaar_compute_node.core.storage import InboxTargetResolutionError
@@ -58,9 +59,10 @@ async def _append_message(
     sender_name: str,
     provider_time_ms: int | None,
     notifies_runtime: bool = True,
-) -> InboundMessage:
+) -> Message:
     return await transaction.append_inbound_message(
-        InboundMessage(
+        Message(
+            direction=MessageDirection.INBOUND,
             seq=0,
             message_id=message_id,
             session_id=bcn_session.id,
@@ -71,7 +73,7 @@ async def _append_message(
             received_at_ms=received_at_ms,
             sender=SenderIdentity(name=sender_name),
             message_type="text",
-            canonical_target=target,
+            target=target,
             body=f"body-{message_id}",
             target_kind=channel_session.target_kind,
             notifies_runtime=notifies_runtime,

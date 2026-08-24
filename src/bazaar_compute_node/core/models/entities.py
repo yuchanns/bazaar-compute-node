@@ -11,6 +11,7 @@ from .states import (
     RUNTIME_TURN_TRANSITIONS,
     ApprovalDecision,
     ChannelTargetKind,
+    MessageDirection,
     OutboundDeliveryState,
     RuntimeEventState,
     RuntimeTurnState,
@@ -274,26 +275,37 @@ class InboxTargetSummary:
 
 
 @dataclass(frozen=True, slots=True)
-class InboundMessage:
+class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
+    direction: MessageDirection
     seq: int
     message_id: str
     session_id: str
     channel_session_id: str
-    channel: str
-    provider_thread_id: str
-    provider_message_id: str
-    received_at_ms: int
-    sender: SenderIdentity | None
-    message_type: str
-    canonical_target: str
+    target: str
     body: str
+    sender: SenderIdentity | None = None
+    message_type: str = "text"
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
+    attachments: tuple[AttachmentT, ...] = ()
+    reply_to_message_id: str | None = None
+    channel: str | None = None
+    provider_thread_id: str | None = None
+    provider_message_id: str | None = None
+    provider_time_ms: int | None = None
+    received_at_ms: int | None = None
     mentions_agent: bool = False
     notifies_runtime: bool = True
-    attachments: tuple[InboundAttachment, ...] = ()
-    provider_time_ms: int | None = None
-    reply_to_message_id: str | None = None
     provider_payload_ref: str | None = None
+    command_id: str | None = None
+    delivery_state: OutboundDeliveryState | None = None
+    snapshot_seq: int | None = None
+    current_inbound_seq: int | None = None
+    created_at_ms: int | None = None
+    provider_attempted_at_ms: int | None = None
+    provider_receipt_ref: str | None = None
+    completed_at_ms: int | None = None
+    error_kind: str | None = None
+    error_message: str | None = None
     metadata: Metadata = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -301,19 +313,87 @@ class InboundMessage:
             (self.message_id, "message_id"),
             (self.session_id, "session_id"),
             (self.channel_session_id, "channel_session_id"),
-            (self.channel, "channel"),
-            (self.provider_thread_id, "provider_thread_id"),
-            (self.provider_message_id, "provider_message_id"),
+            (self.target, "target"),
             (self.message_type, "message_type"),
-            (self.canonical_target, "canonical_target"),
         ):
             _validate_text(value, field_name)
+        if not isinstance(self.direction, MessageDirection):
+            raise TypeError("direction must be a MessageDirection")
         if self.sender is not None and not isinstance(self.sender, SenderIdentity):
             raise TypeError("sender must be a SenderIdentity")
         if self.reply_to_message_id is not None:
             _validate_text(self.reply_to_message_id, "reply_to_message_id")
         if not isinstance(self.target_kind, ChannelTargetKind):
             raise TypeError("target_kind must be a ChannelTargetKind")
+        if not isinstance(self.attachments, tuple):
+            raise TypeError("attachments must be a tuple")
+        if self.direction is MessageDirection.INBOUND:
+            self._validate_inbound()
+        else:
+            self._validate_outbound()
+
+    def _validate_inbound(self) -> None:
+        for value, field_name in (
+            (self.channel, "channel"),
+            (self.provider_thread_id, "provider_thread_id"),
+            (self.provider_message_id, "provider_message_id"),
+        ):
+            if value is None:
+                raise ValueError(f"{field_name} is required for inbound messages")
+            _validate_text(value, field_name)
+        if self.received_at_ms is None:
+            raise ValueError("received_at_ms is required for inbound messages")
+        if not all(
+            isinstance(attachment, InboundAttachment) for attachment in self.attachments
+        ):
+            raise TypeError("inbound attachments must contain InboundAttachment values")
+        outbound_fields = (
+            self.command_id,
+            self.delivery_state,
+            self.snapshot_seq,
+            self.current_inbound_seq,
+            self.created_at_ms,
+            self.provider_attempted_at_ms,
+            self.provider_receipt_ref,
+            self.completed_at_ms,
+            self.error_kind,
+            self.error_message,
+        )
+        if any(value is not None for value in outbound_fields):
+            raise ValueError("inbound messages cannot contain outbound delivery fields")
+
+    def _validate_outbound(self) -> None:
+        for value, field_name in (
+            (self.command_id, "command_id"),
+            (self.delivery_state, "delivery_state"),
+            (self.snapshot_seq, "snapshot_seq"),
+            (self.current_inbound_seq, "current_inbound_seq"),
+            (self.created_at_ms, "created_at_ms"),
+            (self.provider_attempted_at_ms, "provider_attempted_at_ms"),
+        ):
+            if value is None:
+                raise ValueError(f"{field_name} is required for outbound messages")
+        if not isinstance(self.delivery_state, OutboundDeliveryState):
+            raise TypeError("delivery_state must be an OutboundDeliveryState")
+        if not all(
+            isinstance(attachment, OutboundAttachment)
+            for attachment in self.attachments
+        ):
+            raise TypeError(
+                "outbound attachments must contain OutboundAttachment values"
+            )
+        snapshot_seq = self.snapshot_seq
+        current_inbound_seq = self.current_inbound_seq
+        created_at_ms = self.created_at_ms
+        provider_attempted_at_ms = self.provider_attempted_at_ms
+        assert snapshot_seq is not None
+        assert current_inbound_seq is not None
+        assert created_at_ms is not None
+        assert provider_attempted_at_ms is not None
+        if current_inbound_seq > snapshot_seq:
+            raise ValueError("current inbound sequence exceeds snapshot sequence")
+        if provider_attempted_at_ms < created_at_ms:
+            raise ValueError("provider attempt cannot precede creation")
 
     @property
     def sender_kind(self) -> SenderKind:
@@ -327,50 +407,15 @@ class InboundMessage:
                 "metadata sender_kind must be human, agent, or unknown"
             ) from error
 
-
-@dataclass(frozen=True, slots=True)
-class OutboundMessage:
-    outbound_message_id: str
-    command_id: str
-    session_id: str
-    channel_session_id: str
-    target: str
-    body: str
-    state: OutboundDeliveryState
-    created_at_ms: int
-    snapshot_seq: int
-    current_inbound_seq: int
-    provider_attempted_at_ms: int
-    attachments: tuple[OutboundAttachment, ...] = ()
-    reply_to_message_id: str | None = None
-    provider_message_id: str | None = None
-    provider_receipt_ref: str | None = None
-    completed_at_ms: int | None = None
-    error_kind: str | None = None
-    error_message: str | None = None
-    metadata: Metadata = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.outbound_message_id, "outbound_message_id"),
-            (self.command_id, "command_id"),
-            (self.session_id, "session_id"),
-            (self.channel_session_id, "channel_session_id"),
-            (self.target, "target"),
-        ):
-            _validate_text(value, field_name)
-        if not isinstance(self.attachments, tuple) or not all(
-            isinstance(attachment, OutboundAttachment)
-            for attachment in self.attachments
-        ):
-            raise TypeError("attachments must be a tuple of OutboundAttachment values")
-        for value, field_name in ((self.reply_to_message_id, "reply_to_message_id"),):
-            if value is not None:
-                _validate_text(value, field_name)
-        if self.current_inbound_seq > self.snapshot_seq:
-            raise ValueError("current inbound sequence exceeds snapshot sequence")
-        if self.provider_attempted_at_ms < self.created_at_ms:
-            raise ValueError("provider attempt cannot precede creation")
+    def inbound_identity(self) -> tuple[str, str, str]:
+        if self.direction is not MessageDirection.INBOUND:
+            raise ValueError("only inbound messages have provider identity")
+        channel = self.channel
+        provider_thread_id = self.provider_thread_id
+        provider_message_id = self.provider_message_id
+        if channel is None or provider_thread_id is None or provider_message_id is None:
+            raise RuntimeError("inbound message identity is incomplete")
+        return channel, provider_thread_id, provider_message_id
 
     def transition_to(
         self,
@@ -382,10 +427,17 @@ class OutboundMessage:
         error_kind: str | None = None,
         error_message: str | None = None,
     ) -> Self:
+        if self.direction is not MessageDirection.OUTBOUND:
+            raise ValueError("only outbound messages have delivery transitions")
+        if self.delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
         ensure_transition(
-            "outbound_delivery", self.state, state, OUTBOUND_DELIVERY_TRANSITIONS
+            "outbound_delivery",
+            self.delivery_state,
+            state,
+            OUTBOUND_DELIVERY_TRANSITIONS,
         )
-        if state is self.state:
+        if state is self.delivery_state:
             return self
         completed_at_ms = (
             at_ms
@@ -400,7 +452,7 @@ class OutboundMessage:
         )
         return replace(
             self,
-            state=state,
+            delivery_state=state,
             provider_message_id=provider_message_id or self.provider_message_id,
             provider_receipt_ref=provider_receipt_ref or self.provider_receipt_ref,
             completed_at_ms=completed_at_ms,

@@ -25,10 +25,15 @@ from ..core.command import (
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import InboundMessage, InboxTargetSummary, OutboundDeliveryState
+from ..core.models import (
+    InboundAttachment,
+    InboxTargetSummary,
+    Message,
+    OutboundDeliveryState,
+)
 
 
-def serialize_inbound(message: InboundMessage) -> dict[str, object]:
+def serialize_message(message: Message[InboundAttachment]) -> dict[str, object]:
     return {
         "seq": message.seq,
         "message_id": message.message_id,
@@ -44,7 +49,7 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         ),
         "sender_kind": message.sender_kind.value,
         "message_type": message.message_type,
-        "canonical_target": message.canonical_target,
+        "canonical_target": message.target,
         "target_kind": message.target_kind.value,
         "mentions_agent": message.mentions_agent,
         "notifies_runtime": message.notifies_runtime,
@@ -404,10 +409,10 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_inbound(message) for message in result.messages
+                        serialize_message(message) for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_inbound(message)
+                        serialize_message(message)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -436,10 +441,10 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_inbound(message) for message in result.messages
+                        serialize_message(message) for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_inbound(message)
+                        serialize_message(message)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -470,17 +475,19 @@ class CommandDispatcher:
                     "ok": True,
                     "result": {"text": format_cross_session_hold(result.target)},
                 }
-            if result.state is OutboundDeliveryState.SENT:
+            delivery_state = result.delivery_state
+            if delivery_state is None:
+                raise RuntimeError("outbound message has no delivery state")
+            if delivery_state is OutboundDeliveryState.SENT:
                 text = (
-                    f"Message sent to {result.target}. "
-                    f"Message ID: {result.outbound_message_id}"
+                    f"Message sent to {result.target}. Message ID: {result.message_id}"
                 )
-            elif result.state is OutboundDeliveryState.QUEUED:
+            elif delivery_state is OutboundDeliveryState.QUEUED:
                 text = (
                     f"Message queued to {result.target}. "
-                    f"Message ID: {result.outbound_message_id}"
+                    f"Message ID: {result.message_id}"
                 )
-            elif result.state is OutboundDeliveryState.PARTIAL:
+            elif delivery_state is OutboundDeliveryState.PARTIAL:
                 raise CommandDispatchError(
                     "SEND_PARTIAL",
                     result.error_message
@@ -490,13 +497,13 @@ class CommandDispatcher:
                         "confirmed delivery first."
                     ),
                 )
-            elif result.state is OutboundDeliveryState.UNKNOWN:
+            elif delivery_state is OutboundDeliveryState.UNKNOWN:
                 raise CommandDispatchError(
                     "SEND_UNKNOWN",
                     result.error_message or "Message delivery outcome is unknown.",
                     next_action="Reconcile channel delivery before retrying.",
                 )
-            elif result.state is OutboundDeliveryState.FAILED:
+            elif delivery_state is OutboundDeliveryState.FAILED:
                 raise CommandDispatchError(
                     "SEND_FAILED",
                     result.error_message or "Message delivery failed.",
@@ -504,7 +511,7 @@ class CommandDispatcher:
                 )
             else:
                 raise AssertionError(
-                    f"message send returned unsupported state: {result.state.value}"
+                    f"message send returned unsupported state: {delivery_state.value}"
                 )
             return {
                 "ok": True,
@@ -620,9 +627,9 @@ def format_read_message(
 
 
 def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
-    messages = [serialize_inbound(message) for message in result.messages]
+    messages = [serialize_message(message) for message in result.messages]
     referenced_messages = [
-        serialize_inbound(message) for message in result.referenced_messages
+        serialize_message(message) for message in result.referenced_messages
     ]
     shown = len(messages)
     total = result.newer_message_total

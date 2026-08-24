@@ -9,7 +9,7 @@ from ....core.models import (
     BcnSession,
     ChannelSession,
     InboundAttachment,
-    InboundMessage,
+    Message,
 )
 from ..executor import SqliteExecuteResult, SqliteSession
 
@@ -137,7 +137,7 @@ class RepositoryBase:
         self,
         session_id: str,
         message_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message[InboundAttachment] | None:
         del session_id, message_id
         raise NotImplementedError
 

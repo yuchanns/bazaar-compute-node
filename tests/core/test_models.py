@@ -8,9 +8,10 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     ChannelTargetKind,
     InboxTargetSummary,
+    Message,
+    MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeSession,
     SenderIdentity,
     SessionRuntimeObservation,
@@ -54,15 +55,17 @@ def make_runtime_session() -> RuntimeSession:
     )
 
 
-def make_outbound_message() -> OutboundMessage:
-    return OutboundMessage(
-        outbound_message_id="outbound-1",
+def make_outbound_message() -> Message:
+    return Message(
+        direction=MessageDirection.OUTBOUND,
+        seq=0,
+        message_id="outbound-1",
         command_id="command-1",
         session_id="bcn-1",
         channel_session_id="channel-1",
         target="#test:message-1",
         body="hello",
-        state=OutboundDeliveryState.PENDING,
+        delivery_state=OutboundDeliveryState.PENDING,
         created_at_ms=1,
         snapshot_seq=10,
         current_inbound_seq=10,
@@ -329,7 +332,7 @@ def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:
         at_ms=3,
         provider_receipt_ref="queue-receipt-1",
     )
-    assert outbound.state is OutboundDeliveryState.QUEUED
+    assert outbound.delivery_state is OutboundDeliveryState.QUEUED
     assert outbound.completed_at_ms is None
     outbound = outbound.transition_to(
         OutboundDeliveryState.SENT,
@@ -337,5 +340,5 @@ def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:
         provider_message_id="provider-message-1",
     )
 
-    assert outbound.state is OutboundDeliveryState.SENT
+    assert outbound.delivery_state is OutboundDeliveryState.SENT
     assert outbound.completed_at_ms == 4

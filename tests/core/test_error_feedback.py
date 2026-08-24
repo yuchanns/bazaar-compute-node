@@ -9,7 +9,8 @@ from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
@@ -21,8 +22,9 @@ from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallSt
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
 
-def make_message() -> InboundMessage:
-    return InboundMessage(
+def make_message() -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
         seq=7,
         message_id="message-7",
         session_id="bcn-1",
@@ -33,7 +35,7 @@ def make_message() -> InboundMessage:
         received_at_ms=1,
         sender=SenderIdentity(id="sender-1", name="Sender"),
         message_type="text",
-        canonical_target="group:channel-1",
+        target="group:channel-1",
         body="Run the task",
         target_kind=ChannelTargetKind.GROUP,
     )

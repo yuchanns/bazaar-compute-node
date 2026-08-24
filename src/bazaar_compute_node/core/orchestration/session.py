@@ -19,7 +19,7 @@ from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     BcnSession,
     ChannelSession,
-    InboundMessage,
+    Message,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -65,7 +65,7 @@ def _current_time_ms() -> int:
 
 @dataclass(slots=True)
 class _IngressItem:
-    message: InboundMessage
+    message: Message
     completion: asyncio.Future[RuntimeTurn | None]
 
 
@@ -77,7 +77,7 @@ class _DurableSessionContext:
 
 @dataclass(slots=True)
 class _RuntimeNotification:
-    message: InboundMessage
+    message: Message
     context: _DurableSessionContext
     completion: asyncio.Future[RuntimeTurn | None]
 
@@ -86,14 +86,14 @@ class _RuntimeNotification:
 class _ReminderNotification:
     reminder_id: str
     occurrence_id: str
-    anchor_message: InboundMessage
+    anchor_message: Message
     context: _DurableSessionContext
     wake_id: str
 
 
 @dataclass(frozen=True, slots=True)
 class _HandoffNotification:
-    anchor_message: InboundMessage
+    anchor_message: Message
     context: _DurableSessionContext
     wake_id: str
 
@@ -531,7 +531,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     def dispatch_inbound(
         self,
-        message: InboundMessage,
+        message: Message,
     ) -> asyncio.Task[RuntimeTurn | None]:
         if self._stopping:
             raise RuntimeError("session orchestrator is stopping")
@@ -552,10 +552,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("session_id must be a non-empty string")
         return await self._state_machine.apply(session_id, observation)
 
-    async def handle_inbound(self, message: InboundMessage) -> RuntimeTurn | None:
+    async def handle_inbound(self, message: Message) -> RuntimeTurn | None:
         loop = asyncio.get_running_loop()
         completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
-        conversation_key = (message.channel, message.provider_thread_id)
+        channel, provider_thread_id, _ = message.inbound_identity()
+        conversation_key = (channel, provider_thread_id)
         ingress_queue = self._ingress_queues.get(conversation_key)
         if ingress_queue is None:
             ingress_queue = asyncio.Queue()
@@ -977,8 +978,8 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _record_inbound(
         self,
-        message: InboundMessage,
-    ) -> tuple[_DurableSessionContext | None, InboundMessage, bool]:
+        message: Message,
+    ) -> tuple[_DurableSessionContext | None, Message, bool]:
         recorded = await self._storage.record_inbound(
             message,
             now_ms=self._clock(),

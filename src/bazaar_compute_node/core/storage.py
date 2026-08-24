@@ -18,8 +18,9 @@ from .models import (
     ChannelSession,
     ConsumerCursor,
     Handoff,
-    InboundMessage,
-    OutboundMessage,
+    InboundAttachment,
+    Message,
+    OutboundAttachment,
     OwnedReminder,
     OwnedReminderOccurrence,
     Reminder,
@@ -43,7 +44,7 @@ class HandoffConflictError(ValueError):
 class RecordInboundResult:
     channel_session: ChannelSession
     bcn_session: BcnSession
-    message: InboundMessage
+    message: Message[InboundAttachment]
     channel_session_created: bool
     bcn_session_created: bool
     message_created: bool
@@ -68,14 +69,14 @@ class ReminderWakeResult:
     occurrence: ReminderOccurrence
     channel_session: ChannelSession
     bcn_session: BcnSession
-    anchor_message: InboundMessage
+    anchor_message: Message[InboundAttachment]
 
 
 @dataclass(frozen=True, slots=True)
 class HandoffWakeResult:
     channel_session: ChannelSession
     bcn_session: BcnSession
-    anchor_message: InboundMessage
+    anchor_message: Message[InboundAttachment]
 
 
 class _StorageOperations(Protocol):
@@ -83,7 +84,7 @@ class _StorageOperations(Protocol):
 
     async def record_inbound(
         self,
-        message: InboundMessage,
+        message: Message[InboundAttachment],
         *,
         now_ms: int,
     ) -> RecordInboundResult: ...
@@ -152,7 +153,7 @@ class _StorageOperations(Protocol):
     async def get_latest_inbound_seq(self, session_id: str) -> int: ...
     async def get_latest_inbound_message(
         self, session_id: str
-    ) -> InboundMessage | None: ...
+    ) -> Message[InboundAttachment] | None: ...
 
     async def count_inbound_messages(
         self,
@@ -173,11 +174,11 @@ class _StorageOperations(Protocol):
         channel: str,
         provider_thread_id: str,
         provider_message_id: str,
-    ) -> InboundMessage | None: ...
+    ) -> Message[InboundAttachment] | None: ...
 
     async def resolve_inbound_message(
         self, session_id: str, message_id: str
-    ) -> InboundMessage | None: ...
+    ) -> Message[InboundAttachment] | None: ...
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]: ...
 
@@ -191,23 +192,23 @@ class _StorageOperations(Protocol):
         notifying_only: bool = False,
         latest: bool = False,
         limit: int = 100,
-    ) -> tuple[InboundMessage, ...]: ...
+    ) -> tuple[Message[InboundAttachment], ...]: ...
 
     async def save_channel_session(self, session: ChannelSession) -> None: ...
     async def save_bcn_session(self, session: BcnSession) -> None: ...
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None: ...
     async def append_inbound_message(
-        self, message: InboundMessage
-    ) -> InboundMessage: ...
+        self, message: Message[InboundAttachment]
+    ) -> Message[InboundAttachment]: ...
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None: ...
 
     async def get_outbound_message(
         self, outbound_message_id: str
-    ) -> OutboundMessage | None: ...
+    ) -> Message[OutboundAttachment] | None: ...
 
     async def save_outbound_message(
-        self, message: OutboundMessage
-    ) -> OutboundMessage: ...
+        self, message: Message[OutboundAttachment]
+    ) -> Message[OutboundAttachment]: ...
 
     async def get_reminder(
         self, owner_session_id: str, reminder_id: str

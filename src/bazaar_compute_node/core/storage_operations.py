@@ -15,9 +15,10 @@ from .command import (
 from .handoff import HandoffCheckItem, HandoffCheckResult
 from .models import (
     ConsumerCursor,
-    InboundMessage,
+    InboundAttachment,
+    Message,
+    MessageDirection,
     OutboundDeliveryState,
-    OutboundMessage,
 )
 from .reminder import ReminderCheckItem, ReminderCheckResult
 from .storage import (
@@ -198,17 +199,18 @@ class StorageOperationMixin:
                 )
             else:
                 outcome = await self.save_outbound_message(
-                    OutboundMessage(
-                        outbound_message_id=(
-                            f"outbound-{caller_session_id}-{command_id}"
-                        ),
+                    Message(
+                        direction=MessageDirection.OUTBOUND,
+                        seq=0,
+                        message_id=f"outbound-{caller_session_id}-{command_id}",
                         command_id=command_id,
                         session_id=caller_session_id,
                         channel_session_id=channel_session.id,
                         target=payload.target,
                         body=payload.body,
                         attachments=payload.attachments,
-                        state=OutboundDeliveryState.PENDING,
+                        target_kind=channel_session.target_kind,
+                        delivery_state=OutboundDeliveryState.PENDING,
                         created_at_ms=payload.created_at_ms,
                         snapshot_seq=cursor.inbox_snapshot_seq,
                         current_inbound_seq=current_seq,
@@ -248,7 +250,7 @@ class StorageOperationMixin:
             )
             if reminder is None or anchor is None:
                 raise ValueError("Reminder check context is incomplete")
-            snapshots.append((occurrence, reminder.title, anchor.canonical_target))
+            snapshots.append((occurrence, reminder.title, anchor.target))
         marked = await self.mark_reminder_occurrences_read(
             session_id,
             tuple(occurrence.occurrence_id for occurrence in occurrences),
@@ -294,7 +296,7 @@ class StorageOperationMixin:
                 raise ValueError(
                     f"Handoff source context is missing: {handoff.handoff_id}"
                 )
-            source_targets.append(source.canonical_target)
+            source_targets.append(source.target)
         marked = await self.mark_handoffs_read(
             session_id,
             tuple(handoff.handoff_id for handoff in handoffs),
@@ -363,8 +365,8 @@ class StorageOperationMixin:
 async def _referenced_messages(
     storage: Any,
     session_id: str,
-    messages: tuple[InboundMessage, ...],
-) -> tuple[InboundMessage, ...]:
+    messages: tuple[Message[InboundAttachment], ...],
+) -> tuple[Message[InboundAttachment], ...]:
     message_ids = {message.message_id for message in messages}
     referenced = []
     referenced_ids = set()
@@ -378,7 +380,7 @@ async def _referenced_messages(
             continue
         history = await storage.list_inbound_messages(
             session_id,
-            target=message.canonical_target,
+            target=message.target,
             around_message_id=reference_id,
             limit=1,
         )

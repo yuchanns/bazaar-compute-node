@@ -6,8 +6,8 @@ from typing import cast
 
 from bazaar_compute_node.core.channel import ChannelSendRequest
 from bazaar_compute_node.core.models import (
-    InboundMessage,
-    OutboundMessage,
+    Message,
+    MessageDirection,
     SenderIdentity,
 )
 
@@ -91,7 +91,7 @@ class TestControl:
         }
 
     @staticmethod
-    def _message_from_control(payload: Mapping[str, object]) -> InboundMessage:
+    def _message_from_control(payload: Mapping[str, object]) -> Message:
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_id must be a non-empty string")
@@ -136,7 +136,8 @@ class TestControl:
         reply_to_message_id = payload.get("reply_to_message_id")
         if reply_to_message_id is not None and not isinstance(reply_to_message_id, str):
             raise TypeError("reply_to_message_id must be a string")
-        return InboundMessage(
+        return Message(
+            direction=MessageDirection.INBOUND,
             seq=seq,
             message_id=cast(str, message_id),
             session_id=session_id,
@@ -150,7 +151,7 @@ class TestControl:
                 else None
             ),
             message_type=cast(str, message_type),
-            canonical_target=cast(str, canonical_target),
+            target=cast(str, canonical_target),
             body=body,
             provider_time_ms=cast(int, provider_time_ms),
             provider_thread_id=cast(str, provider_thread_id),
@@ -158,9 +159,12 @@ class TestControl:
         )
 
 
-def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
+def _serialize_outbound(message: Message) -> dict[str, object]:
+    delivery_state = message.delivery_state
+    if delivery_state is None:
+        raise RuntimeError("outbound message has no delivery state")
     return {
-        "outbound_message_id": message.outbound_message_id,
+        "outbound_message_id": message.message_id,
         "command_id": message.command_id,
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
@@ -176,7 +180,7 @@ def _serialize_outbound(message: OutboundMessage) -> dict[str, object]:
             }
             for attachment in message.attachments
         ],
-        "state": message.state.value,
+        "state": delivery_state.value,
         "created_at_ms": message.created_at_ms,
         "snapshot_seq": message.snapshot_seq,
         "current_inbound_seq": message.current_inbound_seq,

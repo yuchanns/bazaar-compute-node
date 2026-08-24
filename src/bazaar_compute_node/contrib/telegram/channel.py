@@ -20,7 +20,8 @@ from ...core.models import (
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeEvent,
     RuntimeEventState,
     SenderIdentity,
@@ -62,7 +63,7 @@ class TelegramChannel(IChannel):
         self._token = token
         self._timer_wheel: TimerWheel | None = context.timer_wheel
         self._started_at_s = time_ns() // 1_000_000_000
-        self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
+        self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._ready = asyncio.Event()
         self._stopping = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
@@ -252,12 +253,12 @@ class TelegramChannel(IChannel):
         self._state = "stopped"
         await self._inbound.put(_STOP)
 
-    async def receive(self) -> AsyncIterator[InboundMessage]:
+    async def receive(self) -> AsyncIterator[Message]:
         while True:
             item = await self._inbound.get()
             if item is _STOP:
                 return
-            if not isinstance(item, InboundMessage):
+            if not isinstance(item, Message):
                 raise TypeError("Telegram inbound queue contained an invalid message")
             yield item
 
@@ -586,7 +587,8 @@ class TelegramChannel(IChannel):
 
         channel_session_id = identity.channel_session_id
         await self._inbound.put(
-            InboundMessage(
+            Message(
+                direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=identity.message_id(provider_message_id),
                 session_id=identity.session_id,
@@ -597,7 +599,7 @@ class TelegramChannel(IChannel):
                 received_at_ms=received_at_ms,
                 sender=sender,
                 message_type=content.message_type,
-                canonical_target=(
+                target=(
                     f"dm:{channel_session_id}"
                     if target_kind is ChannelTargetKind.DM
                     else f"group:{channel_session_id}"
@@ -677,7 +679,8 @@ class TelegramChannel(IChannel):
         channel_session_id = identity.channel_session_id
         message_id = identity.message_id(provider_message_id)
         await self._inbound.put(
-            InboundMessage(
+            Message(
+                direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=message_id,
                 session_id=identity.session_id,
@@ -688,7 +691,7 @@ class TelegramChannel(IChannel):
                 received_at_ms=received_at_ms,
                 sender=sender,
                 message_type=content.message_type,
-                canonical_target=(
+                target=(
                     f"dm:{channel_session_id}"
                     if target_kind is ChannelTargetKind.DM
                     else f"group:{channel_session_id}"

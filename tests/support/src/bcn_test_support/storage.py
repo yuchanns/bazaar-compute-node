@@ -13,10 +13,10 @@ from bazaar_compute_node.core.models import (
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
-    InboundMessage,
     InboxTargetSummary,
+    Message,
+    MessageDirection,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeAttempt,
 )
 from bazaar_compute_node.core.storage import (
@@ -39,8 +39,8 @@ class MemoryStorage:
         self.bcn_sessions: dict[str, BcnSession] = {}
         self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
-        self.inbound_messages: dict[str, list[InboundMessage]] = {}
-        self.outbound_messages: dict[str, OutboundMessage] = {}
+        self.inbound_messages: dict[str, list[Message]] = {}
+        self.outbound_messages: dict[str, Message] = {}
         self.started = False
         self.stopped = False
         self._lock = asyncio.Lock()
@@ -141,8 +141,8 @@ _Snapshot = tuple[
     dict[str, BcnSession],
     dict[str, RuntimeAttempt],
     dict[str, ConsumerCursor],
-    dict[str, list[InboundMessage]],
-    dict[str, OutboundMessage],
+    dict[str, list[Message]],
+    dict[str, Message],
 ]
 
 
@@ -185,27 +185,28 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     async def record_inbound(
         self,
-        message: InboundMessage,
+        message: Message,
         *,
         now_ms: int,
     ) -> RecordInboundResult:
+        channel, provider_thread_id, provider_message_id = message.inbound_identity()
         existing_message = await self.find_inbound_message(
-            message.channel,
-            message.provider_thread_id,
-            message.provider_message_id,
+            channel,
+            provider_thread_id,
+            provider_message_id,
         )
         if existing_message is not None:
             message = existing_message
         channel_session = await self.find_channel_session(
-            channel=message.channel,
-            provider_thread_id=message.provider_thread_id,
+            channel=channel,
+            provider_thread_id=provider_thread_id,
         )
         channel_session_created = channel_session is None
         if channel_session is None:
             channel_session = ChannelSession(
                 id=message.channel_session_id,
-                channel=message.channel,
-                provider_thread_id=message.provider_thread_id,
+                channel=channel,
+                provider_thread_id=provider_thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
                 target_kind=message.target_kind,
@@ -245,7 +246,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 or channel_session.following
                 or message.mentions_agent
             )
-            canonical_target = message.canonical_target
+            canonical_target = message.target
             if channel_session.id != message.channel_session_id:
                 canonical_target = (
                     f"{channel_session.target_kind.value}:{channel_session.id}"
@@ -254,7 +255,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 message,
                 session_id=bcn_session.id,
                 channel_session_id=channel_session.id,
-                canonical_target=canonical_target,
+                target=canonical_target,
                 notifies_runtime=notifies_runtime,
             )
 
@@ -345,7 +346,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             derived_target = f"{channel_session.target_kind.value}:{channel_session.id}"
             messages = self._storage.inbound_messages.get(session.id, [])
             if derived_target == target or any(
-                message.canonical_target == target for message in messages
+                message.target == target for message in messages
             ):
                 matches.append(session)
         if len(matches) != 1:
@@ -381,7 +382,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def get_latest_inbound_message(
         self,
         session_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         messages = self._storage.inbound_messages.get(session_id, [])
         return messages[-1] if messages else None
 
@@ -395,7 +396,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         messages = self._storage.inbound_messages.get(session_id, [])
         return sum(
             (after_seq is None or message.seq > after_seq)
-            and (target is None or message.canonical_target == target)
+            and (target is None or message.target == target)
             for message in messages
         )
 
@@ -420,7 +421,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             default=None,
         )
         target = (
-            latest.canonical_target
+            latest.target
             if latest is not None
             else f"{channel_session.target_kind.value}:{channel_session.id}"
         )
@@ -470,7 +471,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         channel: str,
         provider_thread_id: str,
         provider_message_id: str,
-    ) -> InboundMessage | None:
+    ) -> Message | None:
         matches = [
             message
             for messages in self._storage.inbound_messages.values()
@@ -502,14 +503,12 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         notifying_only: bool = False,
         latest: bool = False,
         limit: int = 100,
-    ) -> tuple[InboundMessage, ...]:
+    ) -> tuple[Message, ...]:
         messages = list(self._storage.inbound_messages.get(session_id, []))
         if after_seq is not None:
             messages = [message for message in messages if message.seq > after_seq]
         if target is not None:
-            messages = [
-                message for message in messages if message.canonical_target == target
-            ]
+            messages = [message for message in messages if message.target == target]
         if notifying_only:
             messages = [message for message in messages if message.notifies_runtime]
         if around_message_id is not None:
@@ -586,7 +585,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             raise ValueError("runtime attempt is immutable")
         self._storage.runtime_attempts[attempt.turn_id] = attempt
 
-    async def append_inbound_message(self, message: InboundMessage) -> InboundMessage:
+    async def append_inbound_message(self, message: Message) -> Message:
         messages = self._storage.inbound_messages.setdefault(message.session_id, [])
         provider_matches = [
             existing
@@ -638,12 +637,10 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
         self._storage.cursors[cursor.session_id] = cursor
 
-    async def get_outbound_message(
-        self, outbound_message_id: str
-    ) -> OutboundMessage | None:
+    async def get_outbound_message(self, outbound_message_id: str) -> Message | None:
         return self._storage.outbound_messages.get(outbound_message_id)
 
-    async def save_outbound_message(self, message: OutboundMessage) -> OutboundMessage:
+    async def save_outbound_message(self, message: Message) -> Message:
         _validate_outbound_message_input(message)
         bcn_session = self._storage.bcn_sessions.get(message.session_id)
         if bcn_session is None:
@@ -653,11 +650,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if bcn_session.channel_session_id != message.channel_session_id:
             raise ValueError("outbound message binding does not match bcn session")
 
-        existing = self._storage.outbound_messages.get(message.outbound_message_id)
+        existing = self._storage.outbound_messages.get(message.message_id)
         if existing is None:
-            canonical = replace(message, outbound_message_id=str(uuid7()))
+            canonical = replace(message, message_id=str(uuid7()))
             _validate_outbound_insert(canonical)
-            self._storage.outbound_messages[canonical.outbound_message_id] = canonical
+            self._storage.outbound_messages[canonical.message_id] = canonical
             return canonical
         if (
             existing.command_id != message.command_id
@@ -670,7 +667,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         ):
             raise ValueError("outbound message identity cannot change")
         canonical = _validate_outbound_update(existing, message)
-        self._storage.outbound_messages[message.outbound_message_id] = canonical
+        self._storage.outbound_messages[message.message_id] = canonical
         return canonical
 
 
@@ -680,10 +677,13 @@ def _validate_updated_at(existing: int, incoming: int) -> None:
 
 
 def _validate_outbound_message_input(message: object) -> None:
-    if not isinstance(message, OutboundMessage):
-        raise TypeError("message must be an OutboundMessage")
-    if not isinstance(message.state, OutboundDeliveryState):
+    if not isinstance(message, Message):
+        raise TypeError("message must be a Message")
+    if message.direction is not MessageDirection.OUTBOUND:
+        raise ValueError("outbound persistence requires an outbound message")
+    if not isinstance(message.delivery_state, OutboundDeliveryState):
         raise TypeError("outbound message state is invalid")
+    delivery_state = message.delivery_state
     if not isinstance(message.body, str):
         raise TypeError("outbound body must be a string")
     for value, field_name in (
@@ -694,17 +694,25 @@ def _validate_outbound_message_input(message: object) -> None:
         (message.error_message, "error_message"),
     ):
         _validate_optional_input_text(value, field_name)
-    if message.current_inbound_seq > message.snapshot_seq:
+    snapshot_seq = message.snapshot_seq
+    current_inbound_seq = message.current_inbound_seq
+    created_at_ms = message.created_at_ms
+    provider_attempted_at_ms = message.provider_attempted_at_ms
+    assert snapshot_seq is not None
+    assert current_inbound_seq is not None
+    assert created_at_ms is not None
+    assert provider_attempted_at_ms is not None
+    if current_inbound_seq > snapshot_seq:
         raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
-    if message.provider_attempted_at_ms < message.created_at_ms:
+    if provider_attempted_at_ms < created_at_ms:
         raise ValueError("outbound provider attempt cannot precede creation")
     if (
         message.completed_at_ms is not None
-        and message.completed_at_ms < message.provider_attempted_at_ms
+        and message.completed_at_ms < provider_attempted_at_ms
     ):
         raise ValueError("outbound completion cannot precede provider attempt")
     if (
-        message.state
+        delivery_state
         in {
             OutboundDeliveryState.PENDING,
             OutboundDeliveryState.QUEUED,
@@ -713,7 +721,7 @@ def _validate_outbound_message_input(message: object) -> None:
     ):
         raise ValueError("non-terminal outbound message cannot be terminal")
     if (
-        message.state
+        delivery_state
         in {
             OutboundDeliveryState.SENT,
             OutboundDeliveryState.PARTIAL,
@@ -724,15 +732,15 @@ def _validate_outbound_message_input(message: object) -> None:
     ):
         raise ValueError("terminal outbound message requires completed_at_ms")
     if (
-        message.state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
+        delivery_state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
         and message.provider_message_id is None
         and message.provider_receipt_ref is None
     ):
         raise ValueError("delivered outbound message requires a provider receipt")
 
 
-def _validate_outbound_insert(message: OutboundMessage) -> None:
-    if message.state is not OutboundDeliveryState.PENDING:
+def _validate_outbound_insert(message: Message) -> None:
+    if message.delivery_state is not OutboundDeliveryState.PENDING:
         raise ValueError("a new outbound message must start in pending state")
     if any(
         value is not None
@@ -750,20 +758,24 @@ def _validate_outbound_insert(message: OutboundMessage) -> None:
 
 
 def _validate_outbound_update(
-    existing: OutboundMessage,
-    incoming: OutboundMessage,
-) -> OutboundMessage:
+    existing: Message,
+    incoming: Message,
+) -> Message:
     if (
         incoming.snapshot_seq != existing.snapshot_seq
         or incoming.current_inbound_seq != existing.current_inbound_seq
     ):
         raise ValueError("outbound snapshot evidence cannot change")
 
-    if existing.state is incoming.state:
+    incoming_state = incoming.delivery_state
+    existing_state = existing.delivery_state
+    if incoming_state is None or existing_state is None:
+        raise RuntimeError("outbound message has no delivery state")
+    if existing_state is incoming_state:
         transitioned = existing
     else:
         transitioned = existing.transition_to(
-            incoming.state,
+            incoming_state,
             at_ms=_outbound_transition_time(incoming),
             provider_message_id=incoming.provider_message_id,
             provider_receipt_ref=incoming.provider_receipt_ref,
@@ -802,8 +814,11 @@ def _validate_outbound_update(
     )
 
 
-def _outbound_transition_time(message: OutboundMessage) -> int:
-    return message.completed_at_ms or message.provider_attempted_at_ms
+def _outbound_transition_time(message: Message) -> int:
+    transition_time = message.completed_at_ms or message.provider_attempted_at_ms
+    if transition_time is None:
+        raise RuntimeError("outbound message has no transition time")
+    return transition_time
 
 
 def _merge_optional_text(

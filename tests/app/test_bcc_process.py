@@ -29,7 +29,8 @@ from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity, IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeSession,
     SenderIdentity,
 )
@@ -118,8 +119,9 @@ def _make_node(
     return node, channels, runtimes
 
 
-def _make_message() -> InboundMessage:
-    return InboundMessage(
+def _make_message() -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
         seq=1,
         message_id="message-agent-a",
         session_id="provider-session-a",
@@ -130,7 +132,7 @@ def _make_message() -> InboundMessage:
         received_at_ms=1,
         sender=SenderIdentity(id="sender-id", name="sender"),
         message_type="text",
-        canonical_target="dm:provider-channel-a",
+        target="dm:provider-channel-a",
         body="hello",
     )
 
@@ -336,7 +338,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             runtime_session.bcn_session_id
         )
         assert len(messages) == 1
-        target = messages[0].canonical_target
+        target = messages[0].target
 
         monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("reply"))
         assert await bcc_module.async_main(["message", "send", "--target", target]) == 0

@@ -26,6 +26,11 @@ class ChannelTargetKind(StrEnum):
     GROUP = "group"
 
 
+class MessageDirection(StrEnum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
 class SessionRuntimeObservationSource(StrEnum):
     """Origin of one session-runtime observation."""
 
