@@ -26,14 +26,13 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
-    ConsumerCursor,
-    InboundMessage,
+    Message,
+    MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeEventState,
 )
-from ..storage import IStorage, IStorageTransaction
+from ..storage import IStorage
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -132,43 +131,10 @@ class SessionCommandService(ICommandService):
         self._drafts: dict[str, MessageDraft] = {}
 
     async def check(self, session_id: str) -> MessageCheckResult:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            cursor = await transaction.get_consumer_cursor(session_id)
-            if cursor is None:
-                cursor = ConsumerCursor(session_id=session_id)
-            latest_seq = await transaction.get_latest_inbound_seq(session_id)
-            messages = await transaction.list_inbound_messages(
+        async with self._concurrency.for_session(session_id):
+            result = await self._storage.check_messages(
                 session_id,
-                after_seq=cursor.delivered_through_seq,
-                notifying_only=True,
-            )
-            referenced_messages = await self._referenced_messages(
-                transaction,
-                session_id=session_id,
-                messages=messages,
-            )
-            now_ms = self._clock()
-            cursor = replace(
-                cursor,
-                delivered_through_seq=latest_seq,
-                inbox_snapshot_seq=latest_seq,
-                inbox_snapshot_source="check",
-                inbox_snapshot_at_ms=now_ms,
-                last_check_at_ms=now_ms,
-                updated_at_ms=now_ms,
-            )
-            await transaction.save_consumer_cursor(cursor)
-            result = MessageCheckResult(
-                messages=messages,
-                snapshot_seq=latest_seq,
-                delivered_through_seq=latest_seq,
-                referenced_messages=referenced_messages,
+                checked_at_ms=self._clock(),
             )
         await self._audit.append_tool(
             operation="bcc.message.check",
@@ -187,30 +153,13 @@ class SessionCommandService(ICommandService):
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
-        async with self._storage.transaction() as transaction:
-            caller_session = await transaction.get_bcn_session(session_id)
-            if caller_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            source_session = await transaction.resolve_inbox_target(target)
-            messages = await transaction.list_inbound_messages(
-                source_session.id,
-                target=target,
-                around_message_id=around_message_id,
-                limit=limit,
-            )
-            referenced_messages = await self._referenced_messages(
-                transaction,
-                session_id=source_session.id,
-                messages=messages,
-            )
-            latest_seq = await transaction.get_latest_inbound_seq(source_session.id)
-            result = MessageReadResult(
-                messages=messages,
-                snapshot_seq=latest_seq,
-                first_seq=messages[0].seq if messages else None,
-                last_seq=messages[-1].seq if messages else None,
-                referenced_messages=referenced_messages,
-            )
+        snapshot = await self._storage.read_message_history(
+            session_id,
+            target=target,
+            around_message_id=around_message_id,
+            limit=limit,
+        )
+        result = snapshot.history
         await self._audit.append_tool(
             operation="bcc.message.read",
             status="completed",
@@ -218,7 +167,7 @@ class SessionCommandService(ICommandService):
             correlation=self._correlation(session_id=session_id),
             arguments={
                 "caller_session_id": session_id,
-                "source_session_id": source_session.id,
+                "source_session_id": snapshot.source_session.id,
                 "target": target,
                 "around_message_id": around_message_id,
                 "limit": limit,
@@ -233,28 +182,11 @@ class SessionCommandService(ICommandService):
         limit: int = 100,
         offset: int = 0,
     ) -> InboxListResult:
-        async with self._storage.transaction() as transaction:
-            caller_session = await transaction.get_bcn_session(caller_session_id)
-            if caller_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
-            page = await transaction.list_inbox_targets(
-                limit=limit,
-                offset=offset,
-            )
-            targets = tuple(
-                replace(
-                    target,
-                    current=target.session_id == caller_session_id,
-                )
-                for target in page.targets
-            )
-            result = InboxListResult(
-                targets=targets,
-                total=page.total,
-                shown=len(targets),
-                offset=page.offset,
-                has_more=page.has_more,
-            )
+        result = await self._storage.read_inbox_catalog(
+            caller_session_id,
+            limit=limit,
+            offset=offset,
+        )
         await self._audit.append_tool(
             operation="bcc.inbox.list",
             status="completed",
@@ -268,39 +200,6 @@ class SessionCommandService(ICommandService):
         )
         return result
 
-    @staticmethod
-    async def _referenced_messages(
-        transaction: IStorageTransaction,
-        *,
-        session_id: str,
-        messages: tuple[InboundMessage, ...],
-    ) -> tuple[InboundMessage, ...]:
-        message_ids = {message.message_id for message in messages}
-        referenced: list[InboundMessage] = []
-        referenced_ids: set[str] = set()
-        for message in messages:
-            reference_id = message.reply_to_message_id
-            if (
-                reference_id is None
-                or reference_id in message_ids
-                or reference_id in referenced_ids
-            ):
-                continue
-            history = await transaction.list_inbound_messages(
-                session_id,
-                target=message.canonical_target,
-                around_message_id=reference_id,
-                limit=1,
-            )
-            referenced_message = history[0]
-            if referenced_message.message_id != reference_id:
-                raise RuntimeError(
-                    "referenced inbound lookup returned a different message"
-                )
-            referenced.append(referenced_message)
-            referenced_ids.add(reference_id)
-        return tuple(referenced)
-
     async def send(
         self,
         *,
@@ -313,18 +212,7 @@ class SessionCommandService(ICommandService):
         reply_to_message_id: str | None = None,
         send_draft: bool = False,
     ) -> MessageSendResult:
-        async with self._storage.transaction() as transaction:
-            caller_session = await transaction.get_bcn_session(session_id)
-            if caller_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            channel_session = await transaction.get_channel_session(
-                caller_session.channel_session_id
-            )
-            if channel_session is None:
-                raise ValueError(
-                    f"unknown channel session: {caller_session.channel_session_id}"
-                )
-            target_session = await transaction.resolve_inbox_target(target)
+        target_session = await self._storage.resolve_inbox_target(target)
 
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
@@ -356,101 +244,38 @@ class SessionCommandService(ICommandService):
                     reply_to_message_id=reply_to_message_id,
                     created_at_ms=created_at_ms,
                 )
-
-            async with self._storage.transaction() as transaction:
-                target_messages = await transaction.list_inbound_messages(
-                    target_session.id,
-                    target=target,
-                    limit=1,
+            active_draft = self._drafts.get(target_session.id)
+            draft_replaced = not send_draft and active_draft is not None
+            if not send_draft and target_session.id == session_id:
+                self._drafts[session_id] = payload
+            prepared = await self._storage.prepare_outbound(
+                session_id,
+                command_id=command_id,
+                payload=payload,
+                attempted_at_ms=self._clock(),
+                draft_replaced=draft_replaced,
+            )
+            channel_session = prepared.channel_session
+            target_session = prepared.target_session
+            reply_to_provider_message_id = prepared.reply_to_provider_message_id
+            result = prepared.outcome
+            audit_context = self._correlation(
+                session_id=session_id,
+                channel=channel_session.channel,
+                channel_session_id=channel_session.id,
+                command_id=command_id,
+            )
+            if isinstance(result, MessageSendFreshnessHold):
+                audit_context = replace(
+                    audit_context,
+                    inbound_seq=result.current_inbound_seq,
                 )
-                if not target_messages:
-                    raise ValueError(f"thread target is not replyable: {target}")
-                reply_to_provider_message_id = None
-                if payload.reply_to_message_id is not None:
-                    reply_messages = await transaction.list_inbound_messages(
-                        target_session.id,
-                        target=target,
-                        around_message_id=payload.reply_to_message_id,
-                        limit=1,
-                    )
-                    reply_to_provider_message_id = reply_messages[0].provider_message_id
-
-                audit_context = self._correlation(
-                    session_id=session_id,
-                    channel=channel_session.channel,
-                    channel_session_id=channel_session.id,
-                    command_id=command_id,
+            elif isinstance(result, Message):
+                audit_context = replace(
+                    audit_context,
+                    inbound_seq=result.current_inbound_seq,
+                    outbound_message_id=result.message_id,
                 )
-                if target_session.id != session_id:
-                    result = MessageSendHandoffRequired(target=target)
-                else:
-                    cursor = await transaction.get_consumer_cursor(session_id)
-                    if cursor is None:
-                        cursor = ConsumerCursor(session_id=session_id)
-                    current_seq = await transaction.get_latest_inbound_seq(session_id)
-                    audit_context = replace(
-                        audit_context,
-                        inbound_seq=current_seq,
-                    )
-                    active_draft = self._drafts.get(session_id)
-                    draft_replaced = not send_draft and active_draft is not None
-                    if not send_draft:
-                        self._drafts[session_id] = payload
-
-                    if (
-                        cursor.inbox_snapshot_seq is None
-                        or current_seq > cursor.inbox_snapshot_seq
-                    ):
-                        newer_total = await transaction.count_inbound_messages(
-                            session_id,
-                            after_seq=cursor.inbox_snapshot_seq,
-                            target=target,
-                        )
-                        newer_messages = await transaction.list_inbound_messages(
-                            session_id,
-                            after_seq=cursor.inbox_snapshot_seq,
-                            target=target,
-                            latest=True,
-                            limit=20,
-                        )
-                        referenced_messages = await self._referenced_messages(
-                            transaction,
-                            session_id=session_id,
-                            messages=newer_messages,
-                        )
-                        result = MessageSendFreshnessHold(
-                            target=target,
-                            messages=newer_messages,
-                            referenced_messages=referenced_messages,
-                            newer_message_total=newer_total,
-                            snapshot_seq=cursor.inbox_snapshot_seq,
-                            current_inbound_seq=current_seq,
-                            draft_replaced=draft_replaced,
-                        )
-                    else:
-                        outbound_id = f"outbound-{session_id}-{command_id}"
-                        attempted_at_ms = self._clock()
-                        outbound = OutboundMessage(
-                            outbound_message_id=outbound_id,
-                            command_id=command_id,
-                            session_id=session_id,
-                            channel_session_id=channel_session.id,
-                            target=payload.target,
-                            body=payload.body,
-                            attachments=payload.attachments,
-                            state=OutboundDeliveryState.PENDING,
-                            created_at_ms=payload.created_at_ms,
-                            snapshot_seq=cursor.inbox_snapshot_seq,
-                            current_inbound_seq=current_seq,
-                            provider_attempted_at_ms=attempted_at_ms,
-                            reply_to_message_id=payload.reply_to_message_id,
-                        )
-                        outbound = await transaction.save_outbound_message(outbound)
-                        audit_context = replace(
-                            audit_context,
-                            outbound_message_id=outbound.outbound_message_id,
-                        )
-                        result = outbound
 
             if isinstance(result, MessageSendHandoffRequired):
                 await self._audit.append_tool(
@@ -553,15 +378,17 @@ class SessionCommandService(ICommandService):
                     },
                 )
 
-            async with self._storage.transaction() as transaction:
-                await transaction.save_outbound_message(outbound)
-            if outbound.state in {
+            await self._storage.save_message(outbound)
+            delivery_state = outbound.delivery_state
+            if delivery_state is None:
+                raise RuntimeError("outbound message has no delivery state")
+            if delivery_state in {
                 OutboundDeliveryState.SENT,
                 OutboundDeliveryState.QUEUED,
             }:
                 self._drafts.pop(session_id, None)
             await self._audit.append(
-                event_name=f"channel.outbound.{outbound.state.value}",
+                event_name=f"channel.outbound.{delivery_state.value}",
                 state=terminal_state,
                 correlation=audit_context,
                 error_kind=terminal_kind,
@@ -570,13 +397,13 @@ class SessionCommandService(ICommandService):
             )
             await self._audit.append_tool(
                 operation="bcc.message.send",
-                status=outbound.state.value,
+                status=delivery_state.value,
                 state=terminal_state,
                 correlation=audit_context,
                 arguments={
                     "command_id": command_id,
                     "target": target,
-                    "delivery_state": outbound.state.value,
+                    "delivery_state": delivery_state.value,
                 },
                 error_kind=terminal_kind,
                 error_message=outbound.error_message,
@@ -584,23 +411,21 @@ class SessionCommandService(ICommandService):
             return outbound
 
     async def unfollow(self, session_id: str, *, target: str) -> bool:
-        async with (
-            self._concurrency.for_session(session_id),
-            self._storage.transaction() as transaction,
-        ):
-            bcn_session = await transaction.get_bcn_session(session_id)
+        async with self._concurrency.for_session(session_id):
+            bcn_session = await self._storage.get_bcn_session(session_id)
             if bcn_session is None:
                 raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            channel_session = await transaction.get_channel_session(
+            channel_session = await self._storage.get_channel_session(
                 bcn_session.channel_session_id
             )
             if channel_session is None:
                 raise ValueError(
                     f"unknown channel session: {bcn_session.channel_session_id}"
                 )
-            target_messages = await transaction.list_inbound_messages(
+            target_messages = await self._storage.list_messages(
                 session_id,
                 target=target,
+                direction=MessageDirection.INBOUND,
                 limit=1,
             )
             if not target_messages:
@@ -615,7 +440,7 @@ class SessionCommandService(ICommandService):
                     following=False,
                     updated_at_ms=self._clock(),
                 )
-                await transaction.save_channel_session(channel_session)
+                await self._storage.save_channel_session(channel_session)
         await self._audit.append_tool(
             operation="bcc.thread.unfollow",
             status="completed",

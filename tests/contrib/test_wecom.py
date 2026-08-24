@@ -26,7 +26,7 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
-    InboundMessage,
+    Message,
     OutboundAttachment,
     SenderKind,
 )
@@ -510,7 +510,7 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
     )
 
     inbound = channel._inbound.get_nowait()
-    assert isinstance(inbound, InboundMessage)
+    assert isinstance(inbound, Message)
     assert inbound.provider_payload_ref is None
     assert inbound.sender_kind is SenderKind.HUMAN
 
@@ -559,8 +559,8 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
 
     referenced = channel._inbound.get_nowait()
     current = channel._inbound.get_nowait()
-    assert isinstance(referenced, InboundMessage)
-    assert isinstance(current, InboundMessage)
+    assert isinstance(referenced, Message)
+    assert isinstance(current, Message)
     assert referenced.body == "The original quoted text."
     assert referenced.sender is None
     assert referenced.sender_kind is SenderKind.HUMAN
@@ -571,8 +571,9 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert current.message_id != current.provider_message_id
     assert current.reply_to_message_id == referenced.message_id
     assert current.session_id == referenced.session_id
-    assert current.canonical_target == referenced.canonical_target
+    assert current.target == referenced.target
     assert "has_quote" not in current.metadata
+    assert referenced.provider_message_id is not None
     assert len(referenced.provider_message_id) == 64
 
     await channel._receive_message(
@@ -580,8 +581,8 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     )
     repeated_reference = channel._inbound.get_nowait()
     another_current = channel._inbound.get_nowait()
-    assert isinstance(repeated_reference, InboundMessage)
-    assert isinstance(another_current, InboundMessage)
+    assert isinstance(repeated_reference, Message)
+    assert isinstance(another_current, Message)
     assert repeated_reference.provider_message_id == referenced.provider_message_id
     assert repeated_reference.message_id == referenced.message_id
     assert another_current.message_id != current.message_id

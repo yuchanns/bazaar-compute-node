@@ -19,9 +19,8 @@ from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     BcnSession,
     ChannelSession,
-    ChannelTargetKind,
-    ConsumerCursor,
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -67,7 +66,7 @@ def _current_time_ms() -> int:
 
 @dataclass(slots=True)
 class _IngressItem:
-    message: InboundMessage
+    message: Message
     completion: asyncio.Future[RuntimeTurn | None]
 
 
@@ -79,7 +78,7 @@ class _DurableSessionContext:
 
 @dataclass(slots=True)
 class _RuntimeNotification:
-    message: InboundMessage
+    message: Message
     context: _DurableSessionContext
     completion: asyncio.Future[RuntimeTurn | None]
 
@@ -88,14 +87,14 @@ class _RuntimeNotification:
 class _ReminderNotification:
     reminder_id: str
     occurrence_id: str
-    anchor_message: InboundMessage
+    anchor_message: Message
     context: _DurableSessionContext
     wake_id: str
 
 
 @dataclass(frozen=True, slots=True)
 class _HandoffNotification:
-    anchor_message: InboundMessage
+    anchor_message: Message
     context: _DurableSessionContext
     wake_id: str
 
@@ -262,36 +261,15 @@ class SessionOrchestrator(IAsyncLifecycle):
             return
         if not self._started:
             raise RuntimeError("session orchestrator is not started")
-        async with self._storage.transaction() as transaction:
-            pending = await transaction.list_pending_reminder_occurrences(
-                session_id,
-                limit=1,
-            )
-            if not pending:
-                return
-            occurrence = pending[0]
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise ValueError(f"unknown bcn session: {session_id}")
-            channel_session = await transaction.get_channel_session(
-                bcn_session.channel_session_id
-            )
-            if channel_session is None:
-                raise ValueError(
-                    f"unknown channel session: {bcn_session.channel_session_id}"
-                )
-            anchor_message = await transaction.resolve_inbound_message(
-                session_id,
-                occurrence.anchor_message_id,
-            )
-            if anchor_message is None:
-                raise ValueError("reminder anchor message is missing")
-        context = _DurableSessionContext(channel_session, bcn_session)
+        wake = await self._storage.load_reminder_wake(session_id)
+        if wake is None:
+            return
+        context = _DurableSessionContext(wake.channel_session, wake.bcn_session)
         self._runtime_queue_for_session(session_id).put_nowait(
             _ReminderNotification(
-                reminder_id=occurrence.reminder_id,
-                occurrence_id=occurrence.occurrence_id,
-                anchor_message=anchor_message,
+                reminder_id=wake.occurrence.reminder_id,
+                occurrence_id=wake.occurrence.occurrence_id,
+                anchor_message=wake.anchor_message,
                 context=context,
                 wake_id=str(uuid7()),
             )
@@ -302,26 +280,16 @@ class SessionOrchestrator(IAsyncLifecycle):
             return
         if not self._started:
             raise RuntimeError("session orchestrator is not started")
-        async with self._require_handoff_storage().transaction() as transaction:
-            if await transaction.count_pending_handoffs(session_id) == 0:
-                return
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise ValueError(f"unknown bcn session: {session_id}")
-            channel_session = await transaction.get_channel_session(
-                bcn_session.channel_session_id
-            )
-            if channel_session is None:
-                raise ValueError(
-                    f"unknown channel session: {bcn_session.channel_session_id}"
-                )
-            anchor_message = await transaction.get_latest_inbound_message(session_id)
-            if anchor_message is None:
-                raise ValueError("handoff target anchor message is missing")
+        wake = await self._require_handoff_storage().load_handoff_wake(session_id)
+        if wake is None:
+            return
         self._runtime_queue_for_session(session_id).put_nowait(
             _HandoffNotification(
-                anchor_message=anchor_message,
-                context=_DurableSessionContext(channel_session, bcn_session),
+                anchor_message=wake.anchor_message,
+                context=_DurableSessionContext(
+                    wake.channel_session,
+                    wake.bcn_session,
+                ),
                 wake_id=str(uuid7()),
             )
         )
@@ -564,7 +532,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     def dispatch_inbound(
         self,
-        message: InboundMessage,
+        message: Message,
     ) -> asyncio.Task[RuntimeTurn | None]:
         if self._stopping:
             raise RuntimeError("session orchestrator is stopping")
@@ -585,10 +553,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("session_id must be a non-empty string")
         return await self._state_machine.apply(session_id, observation)
 
-    async def handle_inbound(self, message: InboundMessage) -> RuntimeTurn | None:
+    async def handle_inbound(self, message: Message) -> RuntimeTurn | None:
         loop = asyncio.get_running_loop()
         completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
-        conversation_key = (message.channel, message.provider_thread_id)
+        channel, provider_thread_id, _ = message.inbound_identity()
+        conversation_key = (channel, provider_thread_id)
         ingress_queue = self._ingress_queues.get(conversation_key)
         if ingress_queue is None:
             ingress_queue = asyncio.Queue()
@@ -812,32 +781,32 @@ class SessionOrchestrator(IAsyncLifecycle):
         if runtime_session is None:
             return
         if isinstance(notification, _RuntimeNotification):
-            async with self._storage.transaction() as transaction:
-                cursor = await transaction.get_consumer_cursor(session_id)
-                delivered_through_seq = (
-                    cursor.delivered_through_seq if cursor is not None else 0
-                )
-                unread = await transaction.list_inbound_messages(
-                    session_id,
-                    after_seq=delivered_through_seq,
-                    notifying_only=True,
-                )
+            cursor = await self._storage.get_consumer_cursor(session_id)
+            delivered_through_seq = (
+                cursor.delivered_through_seq if cursor is not None else 0
+            )
+            unread = await self._storage.list_messages(
+                session_id,
+                after_seq=delivered_through_seq,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+            )
             if not unread:
                 return
             message = notification.message
             input_text = inbox_notice(session_id, len(unread))
         elif isinstance(notification, _ReminderNotification):
-            async with self._storage.transaction() as transaction:
-                pending_count = await transaction.count_pending_reminder_occurrences(
-                    session_id
-                )
+            pending_count = await self._storage.count_pending_reminder_occurrences(
+                session_id
+            )
             if pending_count == 0:
                 return
             message = notification.anchor_message
             input_text = reminder_notice(session_id, pending_count)
         else:
-            async with self._require_handoff_storage().transaction() as transaction:
-                pending_count = await transaction.count_pending_handoffs(session_id)
+            pending_count = (
+                await self._require_handoff_storage().count_pending_handoffs(session_id)
+            )
             if pending_count == 0:
                 return
             message = notification.anchor_message
@@ -1011,106 +980,18 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _record_inbound(
         self,
-        message: InboundMessage,
-    ) -> tuple[_DurableSessionContext | None, InboundMessage, bool]:
-        context: _DurableSessionContext | None = None
-        channel_session_created = False
-        bcn_session_created = False
-        async with self._storage.transaction() as transaction:
-            existing_message = await transaction.find_inbound_message(
-                message.channel,
-                message.provider_thread_id,
-                message.provider_message_id,
-            )
-            if existing_message is not None:
-                message = existing_message
-            channel_session = await transaction.find_channel_session(
-                channel=message.channel,
-                provider_thread_id=message.provider_thread_id,
-            )
-            now_ms = self._clock()
-            if channel_session is None:
-                channel_session_created = True
-                channel_session = ChannelSession(
-                    id=message.channel_session_id,
-                    channel=message.channel,
-                    provider_thread_id=message.provider_thread_id,
-                    created_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                    target_kind=message.target_kind,
-                    following=(
-                        message.target_kind is ChannelTargetKind.DM
-                        or message.mentions_agent
-                    ),
-                )
-                await transaction.save_channel_session(channel_session)
-            elif (
-                existing_message is None
-                and message.mentions_agent
-                and not channel_session.following
-            ):
-                channel_session = replace(
-                    channel_session,
-                    following=True,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_channel_session(channel_session)
-
-            bcn_session = await transaction.find_bcn_session(channel_session.id)
-            if bcn_session is None:
-                bcn_session_created = True
-                bcn_session = BcnSession(
-                    id=message.session_id,
-                    channel_session_id=channel_session.id,
-                    workspace_id=self.agent_id,
-                    created_at_ms=now_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_bcn_session(bcn_session)
-
-            if existing_message is None:
-                notifies_runtime = message.notifies_runtime and (
-                    message.target_kind is ChannelTargetKind.DM
-                    or channel_session.following
-                    or message.mentions_agent
-                )
-                canonical_target = message.canonical_target
-                if channel_session.id != message.channel_session_id:
-                    canonical_target = (
-                        f"{channel_session.target_kind.value}:{channel_session.id}"
-                    )
-                message = replace(
-                    message,
-                    session_id=bcn_session.id,
-                    channel_session_id=channel_session.id,
-                    canonical_target=canonical_target,
-                    notifies_runtime=notifies_runtime,
-                )
-
-            if message.notifies_runtime:
-                cursor = await transaction.get_consumer_cursor(bcn_session.id)
-                if cursor is None:
-                    await transaction.save_consumer_cursor(
-                        ConsumerCursor(session_id=bcn_session.id)
-                    )
-
-            if existing_message is None:
-                message = await transaction.append_inbound_message(message)
-                channel_session = replace(
-                    channel_session,
-                    last_inbound_at_ms=message.received_at_ms,
-                    updated_at_ms=now_ms,
-                )
-                bcn_session = replace(
-                    bcn_session,
-                    last_activity_at_ms=message.received_at_ms,
-                    updated_at_ms=now_ms,
-                )
-                await transaction.save_channel_session(channel_session)
-                await transaction.save_bcn_session(bcn_session)
-            context = _DurableSessionContext(channel_session, bcn_session)
-
-        if existing_message is None:
+        message: Message,
+    ) -> tuple[_DurableSessionContext | None, Message, bool]:
+        recorded = await self._storage.record_inbound(
+            message,
+            now_ms=self._clock(),
+        )
+        message = recorded.message
+        context = _DurableSessionContext(
+            recorded.channel_session,
+            recorded.bcn_session,
+        )
+        if recorded.message_created:
             await self._audit.append(
                 event_name="channel.inbound.persisted",
                 state=RuntimeEventState.COMPLETED,
@@ -1125,14 +1006,14 @@ class SessionOrchestrator(IAsyncLifecycle):
                 metadata={
                     "notifies_runtime": message.notifies_runtime,
                     "channel_session_mapping": (
-                        "created" if channel_session_created else "reused"
+                        "created" if recorded.channel_session_created else "reused"
                     ),
                     "bcn_session_mapping": (
-                        "created" if bcn_session_created else "reused"
+                        "created" if recorded.bcn_session_created else "reused"
                     ),
                 },
             )
-        return context, message, existing_message is None
+        return context, message, recorded.message_created
 
     async def _run_notification(
         self,
@@ -1141,38 +1022,37 @@ class SessionOrchestrator(IAsyncLifecycle):
         durable_context = notification.context
         if isinstance(notification, _RuntimeNotification):
             message = notification.message
-            async with self._storage.transaction() as transaction:
-                cursor = await transaction.get_consumer_cursor(
-                    durable_context.bcn_session.id
-                )
-                delivered_through_seq = (
-                    cursor.delivered_through_seq if cursor is not None else 0
-                )
-                unread = await transaction.list_inbound_messages(
-                    durable_context.bcn_session.id,
-                    after_seq=delivered_through_seq,
-                    notifying_only=True,
-                )
-                if not unread:
-                    return None
-                client_user_message_id = message.message_id
-                turn_id = f"turn-{client_user_message_id}"
-                if await transaction.get_runtime_attempt(turn_id) is not None:
-                    return self._runtime_turns.get(turn_id)
+            cursor = await self._storage.get_consumer_cursor(
+                durable_context.bcn_session.id
+            )
+            delivered_through_seq = (
+                cursor.delivered_through_seq if cursor is not None else 0
+            )
+            unread = await self._storage.list_messages(
+                durable_context.bcn_session.id,
+                after_seq=delivered_through_seq,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+            )
+            if not unread:
+                return None
+            client_user_message_id = message.message_id
+            turn_id = f"turn-{client_user_message_id}"
+            if await self._storage.get_runtime_attempt(turn_id) is not None:
+                return self._runtime_turns.get(turn_id)
             input_text = inbox_notice(durable_context.bcn_session.id, len(unread))
             observation_source = SessionRuntimeObservationSource.CHANNEL
         elif isinstance(notification, _ReminderNotification):
             message = notification.anchor_message
-            async with self._storage.transaction() as transaction:
-                pending_count = await transaction.count_pending_reminder_occurrences(
-                    durable_context.bcn_session.id
-                )
-                if pending_count == 0:
-                    return None
-                client_user_message_id = notification.wake_id
-                turn_id = f"turn-{client_user_message_id}"
-                if await transaction.get_runtime_attempt(turn_id) is not None:
-                    return self._runtime_turns.get(turn_id)
+            pending_count = await self._storage.count_pending_reminder_occurrences(
+                durable_context.bcn_session.id
+            )
+            if pending_count == 0:
+                return None
+            client_user_message_id = notification.wake_id
+            turn_id = f"turn-{client_user_message_id}"
+            if await self._storage.get_runtime_attempt(turn_id) is not None:
+                return self._runtime_turns.get(turn_id)
             input_text = reminder_notice(
                 durable_context.bcn_session.id,
                 pending_count,
@@ -1180,16 +1060,16 @@ class SessionOrchestrator(IAsyncLifecycle):
             observation_source = SessionRuntimeObservationSource.SESSION
         else:
             message = notification.anchor_message
-            async with self._require_handoff_storage().transaction() as transaction:
-                pending_count = await transaction.count_pending_handoffs(
-                    durable_context.bcn_session.id
-                )
-                if pending_count == 0:
-                    return None
-                client_user_message_id = notification.wake_id
-                turn_id = f"turn-{client_user_message_id}"
-                if await transaction.get_runtime_attempt(turn_id) is not None:
-                    return self._runtime_turns.get(turn_id)
+            storage = self._require_handoff_storage()
+            pending_count = await storage.count_pending_handoffs(
+                durable_context.bcn_session.id
+            )
+            if pending_count == 0:
+                return None
+            client_user_message_id = notification.wake_id
+            turn_id = f"turn-{client_user_message_id}"
+            if await storage.get_runtime_attempt(turn_id) is not None:
+                return self._runtime_turns.get(turn_id)
             input_text = handoff_notice(
                 durable_context.bcn_session.id,
                 pending_count,
@@ -1231,15 +1111,14 @@ class SessionOrchestrator(IAsyncLifecycle):
             client_user_message_id=client_user_message_id,
         )
         try:
-            async with self._storage.transaction() as transaction:
-                await transaction.save_runtime_attempt(
-                    RuntimeAttempt(
-                        turn_id=turn.turn_id,
-                        session_id=turn.session_id,
-                        client_user_message_id=client_user_message_id,
-                        started_at_ms=turn.started_at_ms,
-                    )
+            await self._storage.save_runtime_attempt(
+                RuntimeAttempt(
+                    turn_id=turn.turn_id,
+                    session_id=turn.session_id,
+                    client_user_message_id=client_user_message_id,
+                    started_at_ms=turn.started_at_ms,
                 )
+            )
         except BaseException:
             await self._stop_runtime_session(
                 context.runtime_session,

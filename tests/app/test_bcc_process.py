@@ -29,7 +29,8 @@ from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity, IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeSession,
     SenderIdentity,
 )
@@ -118,8 +119,9 @@ def _make_node(
     return node, channels, runtimes
 
 
-def _make_message() -> InboundMessage:
-    return InboundMessage(
+def _make_message() -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
         seq=1,
         message_id="message-agent-a",
         session_id="provider-session-a",
@@ -130,7 +132,7 @@ def _make_message() -> InboundMessage:
         received_at_ms=1,
         sender=SenderIdentity(id="sender-id", name="sender"),
         message_type="text",
-        canonical_target="dm:provider-channel-a",
+        target="dm:provider-channel-a",
         body="hello",
     )
 
@@ -331,14 +333,13 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             monkeypatch.setenv(name, environment[name])
 
         storage = cast(SqliteDatabase, node.storage)
-        async with storage.scope(
-            AGENT_A_ID, AGENT_NAMES[AGENT_A_ID]
-        ).transaction() as transaction:
-            messages = await transaction.list_inbound_messages(
-                runtime_session.bcn_session_id
-            )
+        repository = storage.scope(AGENT_A_ID, AGENT_NAMES[AGENT_A_ID])
+        messages = await repository.list_messages(
+            runtime_session.bcn_session_id,
+            direction=MessageDirection.INBOUND,
+        )
         assert len(messages) == 1
-        target = messages[0].canonical_target
+        target = messages[0].target
 
         monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("reply"))
         assert await bcc_module.async_main(["message", "send", "--target", target]) == 0
@@ -428,15 +429,61 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         sent_output = capsys.readouterr()
         assert sent_output.err == ""
         assert sent_output.out.startswith(f"Message sent to {target}. Message ID: ")
+        outbound_message_id = sent_output.out.split("Message ID: ", 1)[1].strip()
 
-        async with storage.transaction() as transaction:
-            identity = await transaction.fetchone(
-                "SELECT agent_id, agent_name FROM outbound_messages "
-                "ORDER BY created_at_ms DESC LIMIT 1"
+        assert (
+            await bcc_module.async_main(
+                [
+                    "message",
+                    "read",
+                    "--target",
+                    target,
+                    "--around",
+                    outbound_message_id,
+                    "--limit",
+                    "2",
+                ]
             )
+            == 0
+        )
+        history_output = capsys.readouterr()
+        assert history_output.err == ""
+        assert "Read window: 2 returned" in history_output.out
+        assert f"msg={outbound_message_id}" in history_output.out
+        assert "type=agent" in history_output.out
+        assert "@Agent A reply" in history_output.out
+
+        latest_response = await LocalCommandClient.request(
+            node.endpoint,
+            {
+                **request,
+                "resource": "inbox",
+                "command": "list",
+                "limit": 10,
+                "offset": 0,
+            },
+        )
+        latest_result = cast(Mapping[str, object], latest_response["result"])
+        latest_targets = cast(list[Mapping[str, object]], latest_result["targets"])
+        assert latest_targets[0]["latest_message_id"] == outbound_message_id
+        assert latest_targets[0]["latest_sender"] == {
+            "id": None,
+            "name": AGENT_NAMES[AGENT_A_ID],
+        }
+
+        post_send_check = await LocalCommandClient.request(node.endpoint, request)
+        post_send_result = cast(Mapping[str, object], post_send_check["result"])
+        assert post_send_result["messages"] == []
+
+        repository = storage
+        identity = await repository.fetchone(
+            "SELECT agent_id, sender FROM messages "
+            "WHERE direction = 'outbound' "
+            "ORDER BY created_at_ms DESC LIMIT 1"
+        )
         assert identity is not None
         assert identity["agent_id"] == AGENT_A_ID
-        assert identity["agent_name"] == AGENT_NAMES[AGENT_A_ID]
+        assert identity["sender"] == AGENT_NAMES[AGENT_A_ID]
 
         monkeypatch.setenv("BCN_AGENT_ID", AGENT_B_ID)
         forged_response = await LocalCommandClient.request(node.endpoint, request)

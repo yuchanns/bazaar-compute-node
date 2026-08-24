@@ -13,7 +13,7 @@ from .models import (
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
-    InboundMessage,
+    Message,
     OutboundAttachment,
     StreamEvent,
 )
@@ -174,7 +174,7 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
 
     def get_identity(self) -> ChannelIdentity | None: ...
 
-    def receive(self) -> AsyncIterator[InboundMessage]: ...
+    def receive(self) -> AsyncIterator[Message[InboundAttachment]]: ...
 
     def accept_turn_event(
         self,
@@ -221,7 +221,7 @@ class AgentScopedChannel(IChannel):
         finally:
             self._provider_session_ids.clear()
 
-    async def receive(self) -> AsyncIterator[InboundMessage]:
+    async def receive(self) -> AsyncIterator[Message[InboundAttachment]]:
         async for message in self._channel.receive():
             provider_session_id = message.session_id
             channel_session_id = self._local_id(
@@ -234,7 +234,7 @@ class AgentScopedChannel(IChannel):
                 message,
                 session_id=session_id,
                 channel_session_id=channel_session_id,
-                canonical_target=f"{message.target_kind.value}:{channel_session_id}",
+                target=f"{message.target_kind.value}:{channel_session_id}",
             )
 
     def accept_turn_event(

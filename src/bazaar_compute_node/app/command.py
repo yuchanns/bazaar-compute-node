@@ -25,17 +25,54 @@ from ..core.command import (
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import InboundMessage, InboxTargetSummary, OutboundDeliveryState
+from ..core.models import (
+    InboundAttachment,
+    InboxTargetSummary,
+    Message,
+    MessageDirection,
+    OutboundAttachment,
+    OutboundDeliveryState,
+)
 
 
-def serialize_inbound(message: InboundMessage) -> dict[str, object]:
+def _serialize_attachment(
+    attachment: InboundAttachment | OutboundAttachment,
+) -> dict[str, object]:
+    if isinstance(attachment, InboundAttachment):
+        return {
+            "attachment_id": attachment.attachment_id,
+            "name": attachment.name,
+            "kind": attachment.kind,
+            "state": attachment.state,
+            "media_type": attachment.media_type,
+            "relative_path": attachment.relative_path,
+            "size_bytes": attachment.size_bytes,
+            "error": attachment.error,
+            "sha256": None,
+        }
+    return {
+        "attachment_id": None,
+        "name": attachment.name,
+        "kind": "file",
+        "state": "ready",
+        "media_type": attachment.media_type,
+        "relative_path": attachment.relative_path,
+        "size_bytes": attachment.size_bytes,
+        "error": None,
+        "sha256": attachment.sha256,
+    }
+
+
+def serialize_message(message: Message) -> dict[str, object]:
     return {
         "seq": message.seq,
         "message_id": message.message_id,
+        "direction": message.direction.value,
         "session_id": message.session_id,
         "channel_session_id": message.channel_session_id,
         "channel": message.channel,
         "received_at_ms": message.received_at_ms,
+        "created_at_ms": message.created_at_ms,
         "provider_time_ms": message.provider_time_ms,
         "sender": (
             None
@@ -44,25 +81,21 @@ def serialize_inbound(message: InboundMessage) -> dict[str, object]:
         ),
         "sender_kind": message.sender_kind.value,
         "message_type": message.message_type,
-        "canonical_target": message.canonical_target,
+        "canonical_target": message.target,
         "target_kind": message.target_kind.value,
         "mentions_agent": message.mentions_agent,
         "notifies_runtime": message.notifies_runtime,
         "attachments": [
-            {
-                "attachment_id": attachment.attachment_id,
-                "name": attachment.name,
-                "kind": attachment.kind,
-                "state": attachment.state,
-                "media_type": attachment.media_type,
-                "relative_path": attachment.relative_path,
-                "size_bytes": attachment.size_bytes,
-                "error": attachment.error,
-            }
-            for attachment in message.attachments
+            _serialize_attachment(attachment) for attachment in message.attachments
         ],
         "body": message.body,
         "reply_to_message_id": message.reply_to_message_id,
+        "delivery_state": (
+            message.delivery_state.value
+            if message.direction is MessageDirection.OUTBOUND
+            and message.delivery_state is not None
+            else None
+        ),
     }
 
 
@@ -404,10 +437,10 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_inbound(message) for message in result.messages
+                        serialize_message(message) for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_inbound(message)
+                        serialize_message(message)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -436,10 +469,10 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_inbound(message) for message in result.messages
+                        serialize_message(message) for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_inbound(message)
+                        serialize_message(message)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -470,17 +503,19 @@ class CommandDispatcher:
                     "ok": True,
                     "result": {"text": format_cross_session_hold(result.target)},
                 }
-            if result.state is OutboundDeliveryState.SENT:
+            delivery_state = result.delivery_state
+            if delivery_state is None:
+                raise RuntimeError("outbound message has no delivery state")
+            if delivery_state is OutboundDeliveryState.SENT:
                 text = (
-                    f"Message sent to {result.target}. "
-                    f"Message ID: {result.outbound_message_id}"
+                    f"Message sent to {result.target}. Message ID: {result.message_id}"
                 )
-            elif result.state is OutboundDeliveryState.QUEUED:
+            elif delivery_state is OutboundDeliveryState.QUEUED:
                 text = (
                     f"Message queued to {result.target}. "
-                    f"Message ID: {result.outbound_message_id}"
+                    f"Message ID: {result.message_id}"
                 )
-            elif result.state is OutboundDeliveryState.PARTIAL:
+            elif delivery_state is OutboundDeliveryState.PARTIAL:
                 raise CommandDispatchError(
                     "SEND_PARTIAL",
                     result.error_message
@@ -490,13 +525,13 @@ class CommandDispatcher:
                         "confirmed delivery first."
                     ),
                 )
-            elif result.state is OutboundDeliveryState.UNKNOWN:
+            elif delivery_state is OutboundDeliveryState.UNKNOWN:
                 raise CommandDispatchError(
                     "SEND_UNKNOWN",
                     result.error_message or "Message delivery outcome is unknown.",
                     next_action="Reconcile channel delivery before retrying.",
                 )
-            elif result.state is OutboundDeliveryState.FAILED:
+            elif delivery_state is OutboundDeliveryState.FAILED:
                 raise CommandDispatchError(
                     "SEND_FAILED",
                     result.error_message or "Message delivery failed.",
@@ -504,7 +539,7 @@ class CommandDispatcher:
                 )
             else:
                 raise AssertionError(
-                    f"message send returned unsupported state: {result.state.value}"
+                    f"message send returned unsupported state: {delivery_state.value}"
                 )
             return {
                 "ok": True,
@@ -528,10 +563,11 @@ def format_message_time(timestamp_ms: int) -> str:
 
 
 def _message_timestamp(message: Mapping[str, object]) -> int:
-    timestamp = message["provider_time_ms"]
-    if timestamp is None:
-        timestamp = message["received_at_ms"]
-    return cast(int, timestamp)
+    for field_name in ("provider_time_ms", "received_at_ms", "created_at_ms"):
+        timestamp = message.get(field_name)
+        if timestamp is not None:
+            return cast(int, timestamp)
+    raise ValueError("message has no display timestamp")
 
 
 def _message_header_fields(
@@ -546,7 +582,12 @@ def _message_header_fields(
         sender_mapping = cast(Mapping[str, object], sender_value)
         sender_id = cast(str | None, sender_mapping.get("id"))
         sender_name = cast(str | None, sender_mapping.get("name"))
-        sender = f"@{sender_id}({sender_name})" if sender_name else f"@{sender_id}"
+        if sender_id is not None and sender_name is not None:
+            sender = f"@{sender_id}({sender_name})"
+        elif sender_name is not None:
+            sender = f"@{sender_name}"
+        elif sender_id is not None:
+            sender = f"@{sender_id}"
     return (
         target,
         message_id,
@@ -564,25 +605,26 @@ def _attachment_suffix(message: Mapping[str, object]) -> str:
     rendered: list[str] = []
     for attachment in attachments:
         name = cast(str, attachment["name"])
-        attachment_id = cast(str, attachment["attachment_id"])
+        attachment_id = cast(str | None, attachment.get("attachment_id"))
         state = cast(str, attachment["state"])
+        identity = f"id:{attachment_id}, " if attachment_id is not None else ""
         if state == "ready":
             path = cast(str, attachment["relative_path"])
-            rendered.append(f"{name} (id:{attachment_id}, path:{path})")
+            rendered.append(f"{name} ({identity}path:{path})")
         else:
             error = cast(str, attachment["error"])
-            rendered.append(f"{name} (id:{attachment_id}, state:failed, error:{error})")
+            rendered.append(f"{name} ({identity}state:failed, error:{error})")
     label = "attachment" if len(rendered) == 1 else "attachments"
     return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
 
 
 def format_check_message(message: Mapping[str, object]) -> str:
-    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
+    target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
     line = (
         f"[target={target} msg={message_id} time={timestamp} "
-        f"type={message_type} mentioned={str(message['mentions_agent']).lower()}"
+        f"type={sender_kind} mentioned={str(message['mentions_agent']).lower()}"
     )
     reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
@@ -599,14 +641,14 @@ def format_read_message(
     index: int,
     count: int,
 ) -> str:
-    target, message_id, timestamp, message_type, sender, body = _message_header_fields(
+    target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
     fields = [
         f"seq={cast(int, message['seq'])}",
         f"msg={message_id}",
         f"time={timestamp}",
-        f"type={message_type}",
+        f"type={sender_kind}",
         f"replyTarget={target}",
         f"mentioned={str(message['mentions_agent']).lower()}",
     ]
@@ -620,9 +662,9 @@ def format_read_message(
 
 
 def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
-    messages = [serialize_inbound(message) for message in result.messages]
+    messages = [serialize_message(message) for message in result.messages]
     referenced_messages = [
-        serialize_inbound(message) for message in result.referenced_messages
+        serialize_message(message) for message in result.referenced_messages
     ]
     shown = len(messages)
     total = result.newer_message_total

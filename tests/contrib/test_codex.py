@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time_ns
+from typing import cast
 from uuid import NAMESPACE_URL, uuid5, uuid7
 
 import pytest
@@ -85,6 +86,7 @@ from bazaar_compute_node.core.runtime import (
     RuntimeSandboxMode,
     RuntimeSessionUnavailable,
 )
+from bazaar_compute_node.core.storage import IStorage
 
 TEST_MODEL = "gpt-5.6-luna"
 TEST_EFFORT = "max"
@@ -988,7 +990,7 @@ async def test_local_codex_core_teardown_reaps_background_terminal(
             ),
         ),
         shared_factories=SharedAdapterFactories(
-            storage=lambda: storage,
+            storage=lambda: cast(IStorage, storage),
             audit=lambda: audit,
         ),
         registry=_StaticRegistry(
@@ -1144,7 +1146,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
             ),
         ),
         shared_factories=SharedAdapterFactories(
-            storage=lambda: storage,
+            storage=lambda: cast(IStorage, storage),
             audit=lambda: audit,
         ),
         registry=_StaticRegistry(

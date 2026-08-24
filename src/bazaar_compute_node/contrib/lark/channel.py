@@ -23,7 +23,8 @@ from ...core.models import (
     ApprovalResult,
     ChannelTargetKind,
     InboundAttachment,
-    InboundMessage,
+    Message,
+    MessageDirection,
     RuntimeEvent,
     RuntimeEventState,
     SenderIdentity,
@@ -90,7 +91,7 @@ class LarkChannel(IChannel):
         self._region = region
         self._base_url = base_url
         self._timer_wheel = timer_wheel
-        self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
+        self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._lifecycle_lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
         self._api: LarkApi | None = None
@@ -279,13 +280,13 @@ class LarkChannel(IChannel):
                 self._inbound.put_nowait(_STOP)
                 self._stop_sent = True
 
-    async def receive(self) -> AsyncIterator[InboundMessage]:
+    async def receive(self) -> AsyncIterator[Message]:
         inbound = self._inbound
         while True:
             item = await inbound.get()
             if item is _STOP:
                 return
-            if not isinstance(item, InboundMessage):
+            if not isinstance(item, Message):
                 raise TypeError("Lark inbound queue contained an invalid message")
             yield item
 
@@ -388,7 +389,7 @@ class LarkChannel(IChannel):
         if root_id is not None:
             metadata["lark_root_id"] = root_id
 
-        quoted: InboundMessage | None = None
+        quoted: Message | None = None
         if parent_id is not None:
             parent, failure = await self._fetch_parent(
                 parent_id,
@@ -458,7 +459,7 @@ class LarkChannel(IChannel):
         received_at_ms: int,
         reply_to_message_id: str | None = None,
         provider_payload_metadata: Mapping[str, object] | None = None,
-    ) -> InboundMessage:
+    ) -> Message:
         provider_message_id = _provider_text(message.get("message_id"))
         raw_message_type = _provider_text(message.get("message_type"))
         if provider_message_id is None or raw_message_type is None:
@@ -496,7 +497,8 @@ class LarkChannel(IChannel):
         metadata.setdefault("sender_kind", sender_kind.value)
         if projection.content_error:
             metadata["content_parse_failed"] = True
-        return InboundMessage(
+        return Message(
+            direction=MessageDirection.INBOUND,
             seq=0,
             message_id=thread_identity.message_id(provider_message_id),
             session_id=thread_identity.session_id,
@@ -507,7 +509,7 @@ class LarkChannel(IChannel):
             received_at_ms=received_at_ms,
             sender=sender,
             message_type=projection.message_type,
-            canonical_target=f"{target_kind.value}:{thread_identity.channel_session_id}",
+            target=f"{target_kind.value}:{thread_identity.channel_session_id}",
             body=projection.body,
             target_kind=target_kind,
             mentions_agent=mentions_agent,

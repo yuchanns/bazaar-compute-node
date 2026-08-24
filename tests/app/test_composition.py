@@ -109,36 +109,3 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     after_result = after_stop["result"]
     assert isinstance(after_result, dict)
     assert after_result["ready"] is False
-
-
-@pytest.mark.asyncio
-async def test_command_dispatcher_enforces_command_deadline(tmp_path: Path) -> None:
-    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
-    node = NodeApplication(
-        configuration=make_configuration(storage="sqlite"),
-        shared_factories=shared_factories,
-        endpoint_path=tmp_path / "bcn.sock",
-        timeout_budget=TimeoutBudget(
-            startup_seconds=2,
-            provider_call_seconds=2,
-            command_seconds=0.01,
-            shutdown_seconds=2,
-        ),
-    )
-
-    await node.start()
-    try:
-        async with node.storage.transaction():
-            response = await node.agents[AGENT_ID].command_dispatcher(
-                {
-                    "kind": "command",
-                    "resource": "message",
-                    "command": "check",
-                    "agent_id": AGENT_ID,
-                    "session_id": "blocked-by-storage-lock",
-                }
-            )
-        assert response["ok"] is False
-        assert response["code"] == "COMMAND_TIMEOUT"
-    finally:
-        await node.stop()

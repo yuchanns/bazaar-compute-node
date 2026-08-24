@@ -1,17 +1,66 @@
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import cast
 
-from . import scoped_repository
+from ...core.storage import IHandoffStorageScope
 from .database import SqliteDatabase as _BaseSqliteDatabase
-from .handoff_repository import HandoffRepository
-from .reminder_repository import ReminderRepository
+from .executor import SqliteSession
+from .repository import SqliteRepository
 
+_READ_OPERATIONS = frozenset(
+    {
+        "count_messages",
+        "count_pending_handoffs",
+        "count_pending_reminder_occurrences",
+        "find_bcn_session",
+        "find_channel_session",
+        "find_message",
+        "get_bcn_session",
+        "get_channel_session",
+        "get_consumer_cursor",
+        "get_latest_message",
+        "get_latest_message_seq",
+        "get_next_scheduled_owned_reminder",
+        "get_next_scheduled_reminder",
+        "get_message",
+        "get_owned_reminder",
+        "get_reminder",
+        "get_runtime_attempt",
+        "list_due_owned_reminders",
+        "list_due_reminders",
+        "list_messages",
+        "list_inbox_targets",
+        "list_pending_handoffs",
+        "list_pending_reminder_occurrences",
+        "list_pending_reminder_owners",
+        "list_ready_attachment_paths",
+        "list_reminders",
+        "list_sessions_with_pending_reminders",
+        "load_handoff_wake",
+        "load_reminder_wake",
+        "read_inbox_catalog",
+        "read_message_history",
+        "resolve_message",
+        "resolve_inbox_target",
+    }
+)
 
-class StorageTransaction(HandoffRepository, ReminderRepository):
-    """Complete unscoped SQLite repository transaction."""
+_SNAPSHOT_READ_OPERATIONS = frozenset(
+    {
+        "load_handoff_wake",
+        "load_reminder_wake",
+        "read_message_history",
+    }
+)
+
+_TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
+    {
+        "record_inbound",
+        "save_fired_occurrence",
+        "save_owned_fired_occurrence",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,35 +89,66 @@ class SqliteStorageScope:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
 
-    def scope(self, agent_id: str, agent_name: str) -> SqliteStorageScope:
+    def scope(self, agent_id: str, agent_name: str) -> IHandoffStorageScope:
         if agent_id != self.agent_id or agent_name != self.agent_name:
             raise ValueError("an Agent storage scope cannot be rebound")
-        return self
+        return cast(IHandoffStorageScope, self)
 
-    def transaction(
-        self,
-    ) -> AbstractAsyncContextManager[scoped_repository.StorageTransaction]:
-        return cast(
-            AbstractAsyncContextManager[scoped_repository.StorageTransaction],
-            scoped_repository.StorageTransaction(
-                self.database,
-                agent_id=self.agent_id,
-                agent_name=self.agent_name,
-            ),
-        )
+    def __getattr__(self, method_name: str):
+        if method_name.startswith("_") or not hasattr(SqliteRepository, method_name):
+            raise AttributeError(method_name)
+
+        async def invoke(*args: object, **kwargs: object) -> object:
+            async def run(session: SqliteSession) -> object:
+                repository = SqliteRepository(
+                    session,
+                    agent_id=self.agent_id,
+                    agent_name=self.agent_name,
+                )
+                method = getattr(repository, method_name)
+                return await method(*args, **kwargs)
+
+            if method_name in _READ_OPERATIONS:
+                async with self.database.reader() as session:
+                    if method_name in _SNAPSHOT_READ_OPERATIONS:
+                        async with session.transaction():
+                            return await run(session)
+                    return await run(session)
+            if method_name in _TRANSACTIONAL_WRITE_OPERATIONS:
+                return await self.database.transaction_write(run)
+            return await self.database._write(run)
+
+        return invoke
 
 
 class SqliteDatabase(_BaseSqliteDatabase):
-    def scope(self, agent_id: str, agent_name: str) -> SqliteStorageScope:
-        return SqliteStorageScope(self, agent_id, agent_name)
-
-    def transaction(
-        self,
-    ) -> AbstractAsyncContextManager[StorageTransaction]:
+    def scope(self, agent_id: str, agent_name: str) -> IHandoffStorageScope:
         return cast(
-            AbstractAsyncContextManager[StorageTransaction],
-            StorageTransaction(self),
+            IHandoffStorageScope,
+            SqliteStorageScope(self, agent_id, agent_name),
         )
 
+    def __getattr__(self, method_name: str):
+        if method_name.startswith("_") or not hasattr(SqliteRepository, method_name):
+            raise AttributeError(method_name)
 
-__all__ = ["SqliteDatabase", "SqliteStorageScope", "StorageTransaction"]
+        async def invoke(*args: object, **kwargs: object) -> object:
+            async def run(session: SqliteSession) -> object:
+                repository = SqliteRepository(session)
+                method = getattr(repository, method_name)
+                return await method(*args, **kwargs)
+
+            if method_name in _READ_OPERATIONS:
+                async with self.reader() as session:
+                    if method_name in _SNAPSHOT_READ_OPERATIONS:
+                        async with session.transaction():
+                            return await run(session)
+                    return await run(session)
+            if method_name in _TRANSACTIONAL_WRITE_OPERATIONS:
+                return await self.transaction_write(run)
+            return await self._write(run)
+
+        return invoke
+
+
+__all__ = ["SqliteDatabase", "SqliteStorageScope"]

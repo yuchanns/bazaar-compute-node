@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .migration import Migration
+from .model import Migration
 
 INBOX_DISCOVERY_MIGRATION = Migration(
     version=14,

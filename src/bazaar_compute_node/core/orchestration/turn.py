@@ -17,7 +17,7 @@ from ..models import (
     ApprovalResult,
     BcnSession,
     ChannelSession,
-    InboundMessage,
+    Message,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
@@ -160,7 +160,7 @@ class SessionTurnCoordinator:
 
     def approval_handler(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
     ) -> IApprovalHandler:
@@ -260,7 +260,7 @@ class SessionTurnCoordinator:
 
     async def run_turn(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
         *,
@@ -330,7 +330,7 @@ class SessionTurnCoordinator:
 
     async def resume_turn(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
@@ -345,7 +345,7 @@ class SessionTurnCoordinator:
 
     async def _consume_turn_stream(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
@@ -420,7 +420,7 @@ class SessionTurnCoordinator:
 
     async def steer_turn(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
         *,
@@ -525,7 +525,7 @@ class SessionTurnCoordinator:
 
     async def _apply_runtime_event(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
         event: RuntimeEvent,
@@ -611,7 +611,7 @@ class SessionTurnCoordinator:
 
     def turn_correlation(
         self,
-        message: InboundMessage,
+        message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
     ) -> CorrelationContext:

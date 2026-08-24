@@ -131,10 +131,9 @@ class SessionRuntimeStateMachine:
         session_id: str,
         observation: SessionRuntimeObservation,
     ) -> SessionRuntimeState:
-        async with self._storage.transaction() as transaction:
-            bcn_session = await transaction.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
+        bcn_session = await self._storage.get_bcn_session(session_id)
+        if bcn_session is None:
+            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
         return self.apply_observation(bcn_session.id, observation)
 
     def apply_observation(

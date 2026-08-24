@@ -3,6 +3,10 @@
 ## 状态
 
 - 模式：Plan
+- 后续 schema 演进：本文记录 MVP 当时的双 message table 设计；当前 schema 已由
+  `2026-08-24-unified-message-storage.md` 的 migration 18 收敛为单一 `messages` 表。
+  inbound/outbound 通过 `direction` 区分，使用统一全局 `seq`；下文旧表 DDL 仅作为历史实现
+  记录，不代表当前 repository contract。
 - 状态：Phase 4 与命名收口已完成并处于 review；review 后进入 Phase 5 Task 5A。
 - 基线：`main`，当前提交为 `4560831898dd6ddc5dbcc8e3bc077ca6fccee776`。
 - 当前更新只纠正 Phase 5 的 WeCom 接入假设及其交叉边界，不提前修改生产代码。新版

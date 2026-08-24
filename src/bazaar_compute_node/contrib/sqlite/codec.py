@@ -13,10 +13,10 @@ from ...core.models import (
     ChannelTargetKind,
     ConsumerCursor,
     InboundAttachment,
-    InboundMessage,
+    Message,
+    MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
-    OutboundMessage,
     RuntimeAttempt,
     SenderIdentity,
 )
@@ -75,54 +75,6 @@ def runtime_attempt_from_row(row: aiosqlite.Row) -> RuntimeAttempt:
     )
 
 
-def inbound_message_from_row(
-    row: aiosqlite.Row,
-    attachments: tuple[InboundAttachment, ...] = (),
-) -> InboundMessage:
-    return InboundMessage(
-        seq=cast(int, row["seq"]),
-        message_id=_required_text(row["message_id"], "message_id"),
-        session_id=_required_text(row["session_id"], "session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        channel=_required_text(row["channel"], "channel"),
-        provider_thread_id=_required_text(
-            row["provider_thread_id"], "provider_thread_id"
-        ),
-        provider_message_id=_required_text(
-            row["provider_message_id"], "provider_message_id"
-        ),
-        received_at_ms=cast(int, row["received_at_ms"]),
-        sender=(
-            SenderIdentity(name=sender)
-            if (sender := _optional_text(row["sender"], "sender")) is not None
-            else None
-        ),
-        message_type=_required_text(row["message_type"], "message_type"),
-        canonical_target=_required_text(row["canonical_target"], "canonical_target"),
-        body=_string_value(row["body"], "body", allow_empty=True),
-        target_kind=ChannelTargetKind(
-            _required_text(row["target_kind"], "inbound_message.target_kind")
-        ),
-        mentions_agent=bool(_required_boolean(row["mentions_agent"], "mentions_agent")),
-        notifies_runtime=bool(
-            _required_boolean(row["notifies_runtime"], "notifies_runtime")
-        ),
-        attachments=attachments,
-        provider_time_ms=cast(int | None, row["provider_time_ms"]),
-        reply_to_message_id=_optional_string_value(
-            row["reply_to_message_id"],
-            "reply_to_message_id",
-            allow_empty=False,
-        ),
-        provider_payload_ref=_optional_string_value(
-            row["provider_payload_ref"], "provider_payload_ref", allow_empty=False
-        ),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
-
-
 def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
     return InboundAttachment(
         attachment_id=_required_text(row["attachment_id"], "attachment_id"),
@@ -136,8 +88,77 @@ def inbound_attachment_from_row(row: aiosqlite.Row) -> InboundAttachment:
     )
 
 
-def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
-    raw_attachments = row["attachments_json"]
+def message_from_row(
+    row: aiosqlite.Row,
+    inbound_attachments: tuple[InboundAttachment, ...] = (),
+) -> Message[InboundAttachment | OutboundAttachment]:
+    direction = MessageDirection(_required_text(row["direction"], "direction"))
+    sender = _optional_text(row["sender"], "sender")
+    common = {
+        "direction": direction,
+        "seq": cast(int, row["seq"]),
+        "message_id": _required_text(row["message_id"], "message_id"),
+        "session_id": _required_text(row["session_id"], "session_id"),
+        "channel_session_id": _required_text(
+            row["channel_session_id"], "channel_session_id"
+        ),
+        "channel": _required_text(row["channel"], "channel"),
+        "provider_thread_id": _required_text(
+            row["provider_thread_id"], "provider_thread_id"
+        ),
+        "provider_message_id": _optional_text(
+            row["provider_message_id"], "provider_message_id"
+        ),
+        "sender": SenderIdentity(name=sender) if sender is not None else None,
+        "message_type": _required_text(row["message_type"], "message_type"),
+        "target": _required_text(row["target"], "target"),
+        "target_kind": ChannelTargetKind(
+            _required_text(row["target_kind"], "message.target_kind")
+        ),
+        "reply_to_message_id": _optional_text(
+            row["reply_to_message_id"], "reply_to_message_id"
+        ),
+        "body": _string_value(row["body"], "body", allow_empty=True),
+        "metadata": _decode_metadata(row["metadata_json"], "metadata_json"),
+    }
+    if direction is MessageDirection.INBOUND:
+        return Message(
+            **common,
+            attachments=inbound_attachments,
+            provider_time_ms=cast(int | None, row["provider_time_ms"]),
+            received_at_ms=cast(int, row["received_at_ms"]),
+            mentions_agent=bool(
+                _required_boolean(row["mentions_agent"], "mentions_agent")
+            ),
+            notifies_runtime=bool(
+                _required_boolean(row["notifies_runtime"], "notifies_runtime")
+            ),
+            provider_payload_ref=_optional_text(
+                row["provider_payload_ref"], "provider_payload_ref"
+            ),
+        )
+    return Message(
+        **common,
+        attachments=_decode_outbound_attachments(row["attachments_json"]),
+        command_id=_required_text(row["command_id"], "command_id"),
+        delivery_state=OutboundDeliveryState(
+            _required_text(row["delivery_state"], "message.delivery_state")
+        ),
+        snapshot_seq=cast(int, row["snapshot_seq"]),
+        current_inbound_seq=cast(int, row["current_inbound_seq"]),
+        created_at_ms=cast(int, row["created_at_ms"]),
+        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
+        provider_receipt_ref=_optional_text(
+            row["provider_receipt_ref"], "provider_receipt_ref"
+        ),
+        completed_at_ms=cast(int | None, row["completed_at_ms"]),
+        error_kind=_optional_text(row["error_kind"], "error_kind"),
+        error_message=_optional_text(row["error_message"], "error_message"),
+    )
+
+
+def _decode_outbound_attachments(raw_value: object) -> tuple[OutboundAttachment, ...]:
+    raw_attachments = raw_value
     if not isinstance(raw_attachments, str):
         raise TypeError("attachments_json must be text")
     try:
@@ -166,40 +187,7 @@ def outbound_message_from_row(row: aiosqlite.Row) -> OutboundMessage:
                 ),
             )
         )
-    return OutboundMessage(
-        outbound_message_id=_required_text(
-            row["outbound_message_id"], "outbound_message_id"
-        ),
-        command_id=_required_text(row["command_id"], "command_id"),
-        session_id=_required_text(row["session_id"], "session_id"),
-        channel_session_id=_required_text(
-            row["channel_session_id"], "channel_session_id"
-        ),
-        target=_required_text(row["target"], "target"),
-        body=_string_value(row["body"], "body", allow_empty=True),
-        attachments=tuple(attachments),
-        reply_to_message_id=_optional_text(
-            row["reply_to_message_id"],
-            "reply_to_message_id",
-        ),
-        state=OutboundDeliveryState(
-            _required_text(row["state"], "outbound_message.state")
-        ),
-        created_at_ms=cast(int, row["created_at_ms"]),
-        snapshot_seq=cast(int, row["snapshot_seq"]),
-        current_inbound_seq=cast(int, row["current_inbound_seq"]),
-        provider_message_id=_optional_text(
-            row["provider_message_id"], "provider_message_id"
-        ),
-        provider_receipt_ref=_optional_text(
-            row["provider_receipt_ref"], "provider_receipt_ref"
-        ),
-        provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
-        completed_at_ms=cast(int | None, row["completed_at_ms"]),
-        error_kind=_optional_text(row["error_kind"], "error_kind"),
-        error_message=_optional_text(row["error_message"], "error_message"),
-        metadata=_decode_metadata(row["metadata_json"], "metadata_json"),
-    )
+    return tuple(attachments)
 
 
 def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
@@ -220,15 +208,29 @@ def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
 
 
 def validate_inbound_message_input(message: object) -> None:
-    if not isinstance(message, InboundMessage):
-        raise TypeError("message must be an InboundMessage")
+    if not isinstance(message, Message):
+        raise TypeError("message must be a Message")
+    if message.direction is not MessageDirection.INBOUND:
+        raise ValueError("inbound persistence requires an inbound message")
+
+
+def validate_message_input(message: object) -> None:
+    if not isinstance(message, Message):
+        raise TypeError("message must be a Message")
+    if message.direction is MessageDirection.INBOUND:
+        validate_inbound_message_input(message)
+    else:
+        validate_outbound_message_input(message)
 
 
 def validate_outbound_message_input(message: object) -> None:
-    if not isinstance(message, OutboundMessage):
-        raise TypeError("message must be an OutboundMessage")
-    if not isinstance(message.state, OutboundDeliveryState):
+    if not isinstance(message, Message):
+        raise TypeError("message must be a Message")
+    if message.direction is not MessageDirection.OUTBOUND:
+        raise ValueError("outbound persistence requires an outbound message")
+    if not isinstance(message.delivery_state, OutboundDeliveryState):
         raise TypeError("outbound message state is invalid")
+    delivery_state = message.delivery_state
     if not isinstance(message.body, str):
         raise TypeError("outbound body must be a string")
     for value, field_name in (
@@ -239,17 +241,25 @@ def validate_outbound_message_input(message: object) -> None:
         (message.error_message, "error_message"),
     ):
         _validate_optional_input_text(value, field_name)
-    if message.current_inbound_seq > message.snapshot_seq:
+    snapshot_seq = message.snapshot_seq
+    current_inbound_seq = message.current_inbound_seq
+    created_at_ms = message.created_at_ms
+    provider_attempted_at_ms = message.provider_attempted_at_ms
+    assert snapshot_seq is not None
+    assert current_inbound_seq is not None
+    assert created_at_ms is not None
+    assert provider_attempted_at_ms is not None
+    if current_inbound_seq > snapshot_seq:
         raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
-    if message.provider_attempted_at_ms < message.created_at_ms:
+    if provider_attempted_at_ms < created_at_ms:
         raise ValueError("outbound provider attempt cannot precede creation")
     if (
         message.completed_at_ms is not None
-        and message.completed_at_ms < message.provider_attempted_at_ms
+        and message.completed_at_ms < provider_attempted_at_ms
     ):
         raise ValueError("outbound completion cannot precede provider attempt")
     if (
-        message.state
+        delivery_state
         in {
             OutboundDeliveryState.PENDING,
             OutboundDeliveryState.QUEUED,
@@ -258,7 +268,7 @@ def validate_outbound_message_input(message: object) -> None:
     ):
         raise ValueError("non-terminal outbound message cannot be terminal")
     if (
-        message.state
+        delivery_state
         in {
             OutboundDeliveryState.SENT,
             OutboundDeliveryState.PARTIAL,
@@ -269,15 +279,15 @@ def validate_outbound_message_input(message: object) -> None:
     ):
         raise ValueError("terminal outbound message requires completed_at_ms")
     if (
-        message.state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
+        delivery_state in {OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL}
         and message.provider_message_id is None
         and message.provider_receipt_ref is None
     ):
         raise ValueError("delivered outbound message requires a provider receipt")
 
 
-def validate_outbound_insert(message: OutboundMessage) -> None:
-    if message.state is not OutboundDeliveryState.PENDING:
+def validate_outbound_insert(message: Message[OutboundAttachment]) -> None:
+    if message.delivery_state is not OutboundDeliveryState.PENDING:
         raise ValueError("a new outbound message must start in pending state")
     if any(
         value is not None
@@ -295,20 +305,24 @@ def validate_outbound_insert(message: OutboundMessage) -> None:
 
 
 def validate_outbound_update(
-    existing: OutboundMessage,
-    incoming: OutboundMessage,
-) -> OutboundMessage:
+    existing: Message[OutboundAttachment],
+    incoming: Message[OutboundAttachment],
+) -> Message[OutboundAttachment]:
     if (
         incoming.snapshot_seq != existing.snapshot_seq
         or incoming.current_inbound_seq != existing.current_inbound_seq
     ):
         raise ValueError("outbound snapshot evidence cannot change")
 
-    if existing.state is incoming.state:
+    incoming_state = incoming.delivery_state
+    existing_state = existing.delivery_state
+    if incoming_state is None or existing_state is None:
+        raise RuntimeError("outbound message has no delivery state")
+    if existing_state is incoming_state:
         transitioned = existing
     else:
         transitioned = existing.transition_to(
-            incoming.state,
+            incoming_state,
             at_ms=_outbound_transition_time(incoming),
             provider_message_id=incoming.provider_message_id,
             provider_receipt_ref=incoming.provider_receipt_ref,
@@ -348,8 +362,11 @@ def validate_outbound_update(
     )
 
 
-def _outbound_transition_time(message: OutboundMessage) -> int:
-    return message.completed_at_ms or message.provider_attempted_at_ms
+def _outbound_transition_time(message: Message[OutboundAttachment]) -> int:
+    transition_time = message.completed_at_ms or message.provider_attempted_at_ms
+    if transition_time is None:
+        raise RuntimeError("outbound message has no transition time")
+    return transition_time
 
 
 def _merge_optional_text(
@@ -392,11 +409,19 @@ def validate_consumer_cursor_input(cursor: object) -> None:
         raise ValueError("inbox snapshot sequence requires a snapshot time")
 
 
-def validate_cursor_bounds(cursor: ConsumerCursor, latest_seq: int) -> None:
-    if cursor.delivered_through_seq > latest_seq:
+def validate_cursor_bounds(
+    cursor: ConsumerCursor,
+    *,
+    latest_inbound_seq: int,
+    latest_message_seq: int,
+) -> None:
+    if cursor.delivered_through_seq > latest_inbound_seq:
         raise ValueError("delivered cursor cannot exceed the latest inbound sequence")
-    if cursor.inbox_snapshot_seq is not None and cursor.inbox_snapshot_seq > latest_seq:
-        raise ValueError("inbox snapshot cannot exceed the latest inbound sequence")
+    if (
+        cursor.inbox_snapshot_seq is not None
+        and cursor.inbox_snapshot_seq > latest_message_seq
+    ):
+        raise ValueError("inbox snapshot cannot exceed the latest message sequence")
 
 
 def validate_consumer_cursor_update(

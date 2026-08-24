@@ -8,17 +8,15 @@ from ..audit import ErrorKind
 from ..command import IHandoffService, SessionNotFoundError
 from ..correlation import CorrelationContext
 from ..handoff import (
-    HandoffCheckItem,
     HandoffCheckRequest,
     HandoffCheckResult,
     HandoffSendRequest,
     HandoffSendResult,
 )
-from ..models import BcnSession, Handoff, InboundMessage, RuntimeEventState
+from ..models import BcnSession, Handoff, MessageDirection, RuntimeEventState
 from ..storage import (
     HandoffConflictError,
     IHandoffStorageScope,
-    IHandoffStorageTransaction,
     InboxTargetResolutionError,
 )
 from .services import SessionAuditRecorder
@@ -68,41 +66,41 @@ class HandoffCommandService(IHandoffService):
         request: HandoffSendRequest,
     ) -> HandoffSendResult:
         try:
-            async with self._storage.transaction() as transaction:
-                await self._require_session(transaction, session_id)
-                target_session = await self._resolve_target(
-                    transaction,
-                    request.target,
+            await self._require_session(self._storage, session_id)
+            target_session = await self._resolve_target(
+                self._storage,
+                request.target,
+            )
+            if target_session.id == session_id:
+                raise HandoffCommandFailure(
+                    "HANDOFF_TARGET_CURRENT",
+                    "Handoff target must belong to another conversation.",
                 )
-                if target_session.id == session_id:
-                    raise HandoffCommandFailure(
-                        "HANDOFF_TARGET_CURRENT",
-                        "Handoff target must belong to another conversation.",
-                    )
-                source_message_id = await self._resolve_source_message_id(
-                    transaction,
-                    session_id,
-                    request.source_message_id,
+            source_message_id = await self._resolve_source_message_id(
+                self._storage,
+                session_id,
+                request.source_message_id,
+            )
+            target_anchor = await self._storage.get_latest_message(
+                target_session.id,
+                direction=MessageDirection.INBOUND,
+            )
+            if target_anchor is None:
+                raise HandoffCommandFailure(
+                    "HANDOFF_TARGET_NOT_READY",
+                    "Handoff target has no inbound conversation anchor.",
                 )
-                target_anchor = await transaction.get_latest_inbound_message(
-                    target_session.id
+            handoff = await self._storage.save_handoff(
+                Handoff(
+                    handoff_id=self._handoff_id(),
+                    command_id=request.command_id,
+                    source_session_id=session_id,
+                    target_session_id=target_session.id,
+                    source_message_id=source_message_id,
+                    body=request.body,
+                    created_at_ms=request.created_at_ms,
                 )
-                if target_anchor is None:
-                    raise HandoffCommandFailure(
-                        "HANDOFF_TARGET_NOT_READY",
-                        "Handoff target has no inbound conversation anchor.",
-                    )
-                handoff = await transaction.save_handoff(
-                    Handoff(
-                        handoff_id=self._handoff_id(),
-                        command_id=request.command_id,
-                        source_session_id=session_id,
-                        target_session_id=target_session.id,
-                        source_message_id=source_message_id,
-                        body=request.body,
-                        created_at_ms=request.created_at_ms,
-                    )
-                )
+            )
         except SessionNotFoundError, HandoffCommandFailure:
             raise
         except InboxTargetResolutionError as error:
@@ -152,47 +150,11 @@ class HandoffCommandService(IHandoffService):
         request: HandoffCheckRequest,
     ) -> HandoffCheckResult:
         try:
-            async with self._storage.transaction() as transaction:
-                await self._require_session(transaction, session_id)
-                handoffs = await transaction.list_pending_handoffs(
-                    session_id,
-                    limit=request.limit,
-                )
-                if not handoffs:
-                    result = HandoffCheckResult(items=(), has_more=False)
-                else:
-                    source_targets = []
-                    for handoff in handoffs:
-                        source_targets.append(
-                            await self._resolve_source_target(transaction, handoff)
-                        )
-                    marked = await transaction.mark_handoffs_read(
-                        session_id,
-                        tuple(handoff.handoff_id for handoff in handoffs),
-                        read_at_ms=self._clock(),
-                    )
-                    marked_by_id = {handoff.handoff_id: handoff for handoff in marked}
-                    if len(marked_by_id) != len(handoffs):
-                        raise HandoffCommandFailure(
-                            "HANDOFF_CHECK_FAILED",
-                            "Pending handoff batch changed before it was marked read.",
-                        )
-                    result = HandoffCheckResult(
-                        items=tuple(
-                            HandoffCheckItem(
-                                handoff=marked_by_id[handoff.handoff_id],
-                                source_target=source_target,
-                            )
-                            for handoff, source_target in zip(
-                                handoffs,
-                                source_targets,
-                                strict=True,
-                            )
-                        ),
-                        has_more=(
-                            await transaction.count_pending_handoffs(session_id) > 0
-                        ),
-                    )
+            result = await self._storage.check_handoffs(
+                session_id,
+                limit=request.limit,
+                read_at_ms=self._clock(),
+            )
         except SessionNotFoundError, HandoffCommandFailure:
             raise
         except (TypeError, ValueError) as error:
@@ -214,36 +176,40 @@ class HandoffCommandService(IHandoffService):
 
     @staticmethod
     async def _require_session(
-        transaction: IHandoffStorageTransaction,
+        storage: IHandoffStorageScope,
         session_id: str,
     ) -> None:
-        if await transaction.get_bcn_session(session_id) is None:
+        if await storage.get_bcn_session(session_id) is None:
             raise SessionNotFoundError(f"unknown bcn session: {session_id}")
 
     @staticmethod
     async def _resolve_target(
-        transaction: IHandoffStorageTransaction,
+        storage: IHandoffStorageScope,
         target: str,
     ) -> BcnSession:
-        return await transaction.resolve_inbox_target(target)
+        return await storage.resolve_inbox_target(target)
 
     @staticmethod
     async def _resolve_source_message_id(
-        transaction: IHandoffStorageTransaction,
+        storage: IHandoffStorageScope,
         session_id: str,
         source_message_id: str | None,
     ) -> str | None:
         if source_message_id is None:
-            source = await transaction.get_latest_inbound_message(session_id)
+            source = await storage.get_latest_message(
+                session_id,
+                direction=MessageDirection.INBOUND,
+            )
             if source is None:
                 raise HandoffCommandFailure(
                     "HANDOFF_SOURCE_NOT_READY",
                     "Current conversation has no inbound source anchor.",
                 )
             return None
-        source = await transaction.resolve_inbound_message(
+        source = await storage.resolve_message(
             session_id,
             source_message_id,
+            direction=MessageDirection.INBOUND,
         )
         if source is None:
             raise HandoffCommandFailure(
@@ -251,28 +217,6 @@ class HandoffCommandService(IHandoffService):
                 f"Handoff source message was not found in the current session: {source_message_id}",
             )
         return source.message_id
-
-    @staticmethod
-    async def _resolve_source_target(
-        transaction: IHandoffStorageTransaction,
-        handoff: Handoff,
-    ) -> str:
-        source: InboundMessage | None
-        if handoff.source_message_id is None:
-            source = await transaction.get_latest_inbound_message(
-                handoff.source_session_id
-            )
-        else:
-            source = await transaction.resolve_inbound_message(
-                handoff.source_session_id,
-                handoff.source_message_id,
-            )
-        if source is None:
-            raise HandoffCommandFailure(
-                "HANDOFF_CHECK_FAILED",
-                f"Handoff source context is missing: {handoff.handoff_id}",
-            )
-        return source.canonical_target
 
     def _correlation(
         self,

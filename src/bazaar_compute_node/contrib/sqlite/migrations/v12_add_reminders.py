@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .migration import Migration
+from .model import Migration
 
 REMINDER_MIGRATION = Migration(
     version=12,

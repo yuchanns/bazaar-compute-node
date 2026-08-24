@@ -279,8 +279,7 @@ class AgentApplication:
     async def has_session(self, session_id: str) -> bool:
         if not isinstance(session_id, str) or not session_id:
             return False
-        async with self.storage.transaction() as transaction:
-            return await transaction.get_bcn_session(session_id) is not None
+        return await self.storage.get_bcn_session(session_id) is not None
 
     async def publish_reminder_wake(self, session_id: str) -> None:
         if not self._started:
@@ -323,8 +322,7 @@ class AgentApplication:
         self._wrapper_path = None
 
     async def _referenced_attachment_paths(self) -> set[str]:
-        async with self.storage.transaction() as transaction:
-            return set(await transaction.list_ready_attachment_paths())
+        return set(await self.storage.list_ready_attachment_paths())
 
     def _adapter_context(self) -> Mapping[str, object]:
         return {
@@ -370,12 +368,11 @@ class AgentApplication:
             )
         runtime_session_id = request.get("runtime_session_id")
         session_capability = request.get("session_capability")
-        async with self.storage.transaction() as transaction:
-            if await transaction.get_bcn_session(session_id) is None:
-                raise CommandDispatchError(
-                    "SESSION_NOT_FOUND",
-                    f"unknown bcn session: {session_id}",
-                )
+        if await self.storage.get_bcn_session(session_id) is None:
+            raise CommandDispatchError(
+                "SESSION_NOT_FOUND",
+                f"unknown bcn session: {session_id}",
+            )
         runtime_session = self.orchestrator.runtime_session(session_id)
         if runtime_session is None or runtime_session_id != runtime_session.id:
             raise CommandDispatchError(

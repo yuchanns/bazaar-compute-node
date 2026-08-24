@@ -17,7 +17,7 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
-    InboundMessage,
+    Message,
     StreamEvent,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -45,7 +45,7 @@ class TestChannel(IChannel):
         self.accepting = False
         self.stopped = False
         self.receive_closed = False
-        self.injected_messages: list[InboundMessage] = []
+        self.injected_messages: list[Message] = []
         self.send_requests: list[ChannelSendRequest] = []
         self.send_attempts: list[ChannelSendRequest] = []
         self.queued_messages: list[ChannelSendRequest] = []
@@ -57,7 +57,7 @@ class TestChannel(IChannel):
         self.identity: ChannelIdentity | None = None
         self.stream_events: list[StreamEvent] = []
         self.stream_event_error: Exception | None = None
-        self._inbound: asyncio.Queue[InboundMessage | object] = asyncio.Queue()
+        self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._send_results: deque[ProviderCallResult[ChannelDeliveryReceipt]] = deque()
         self._approval_results: deque[ApprovalResult] = deque()
         self._stop_marker = object()
@@ -83,19 +83,19 @@ class TestChannel(IChannel):
         self.stopped = True
         await self._inbound.put(self._stop_marker)
 
-    async def inject(self, message: InboundMessage) -> None:
+    async def inject(self, message: Message) -> None:
         if not self.accepting:
             raise RuntimeError("test channel is not accepting inbound messages")
         self.injected_messages.append(message)
         await self._inbound.put(message)
 
-    async def receive(self) -> AsyncIterator[InboundMessage]:
+    async def receive(self) -> AsyncIterator[Message]:
         while True:
             item = await self._inbound.get()
             if item is self._stop_marker:
                 self.receive_closed = True
                 return
-            if not isinstance(item, InboundMessage):
+            if not isinstance(item, Message):
                 raise TypeError("test channel queue contained an invalid message")
             yield item
 

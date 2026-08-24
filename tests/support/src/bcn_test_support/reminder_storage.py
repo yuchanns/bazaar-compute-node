@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
@@ -8,7 +7,7 @@ from typing import Self, cast
 from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
-    InboundMessage,
+    MessageDirection,
     OwnedReminder,
     OwnedReminderOccurrence,
     Reminder,
@@ -17,7 +16,6 @@ from bazaar_compute_node.core.models import (
     ReminderState,
 )
 from bazaar_compute_node.core.reminder import canonical_id_reference
-from bazaar_compute_node.core.storage import IStorageTransaction
 
 from .storage import (
     MemoryStorage as _BaseMemoryStorage,
@@ -33,18 +31,27 @@ class MemoryStorage(_BaseMemoryStorage):
         self.reminders: dict[str, Reminder] = {}
         self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
 
-    def transaction(self) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return self._transaction_for_agent(None)
-
-    def _transaction_for_agent(
-        self, agent_id: str | None
-    ) -> AbstractAsyncContextManager[IStorageTransaction]:
-        return _ReminderMemoryStorageTransaction(self, agent_id=agent_id)
+    def _operation_for_agent(
+        self,
+        agent_id: str | None,
+        agent_name: str | None = None,
+    ) -> _ReminderMemoryStorageTransaction:
+        return _ReminderMemoryStorageTransaction(
+            self,
+            agent_id=agent_id,
+            agent_name=agent_name,
+        )
 
 
 class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
-    def __init__(self, storage: MemoryStorage, *, agent_id: str | None = None) -> None:
-        super().__init__(storage, agent_id=agent_id)
+    def __init__(
+        self,
+        storage: MemoryStorage,
+        *,
+        agent_id: str | None = None,
+        agent_name: str | None = None,
+    ) -> None:
+        super().__init__(storage, agent_id=agent_id, agent_name=agent_name)
         self._reminder_storage = storage
         self._reminder_snapshot: (
             tuple[
@@ -74,23 +81,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
                 self._reminder_storage.reminder_occurrences,
             ) = self._reminder_snapshot
         return await super().__aexit__(exc_type, exc_value, traceback)
-
-    async def resolve_inbound_message(
-        self,
-        session_id: str,
-        message_id: str,
-    ) -> InboundMessage | None:
-        reference = canonical_id_reference(message_id)
-        return next(
-            (
-                message
-                for message in self._reminder_storage.inbound_messages.get(
-                    session_id, []
-                )
-                if message.message_id == reference
-            ),
-            None,
-        )
 
     async def get_reminder(
         self,
@@ -140,8 +130,10 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if reminder.owner_session_id not in self._reminder_storage.bcn_sessions:
             raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
-        anchor = await self.resolve_inbound_message(
-            reminder.owner_session_id, anchor_reference
+        anchor = await self.resolve_message(
+            reminder.owner_session_id,
+            anchor_reference,
+            direction=MessageDirection.INBOUND,
         )
         if anchor is None:
             raise ValueError("anchor message does not belong to the reminder owner")
