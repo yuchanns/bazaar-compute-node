@@ -6,6 +6,7 @@ from ....core.models import (
     BcnSession,
     ChannelSession,
     ConsumerCursor,
+    MessageDirection,
     RuntimeAttempt,
 )
 from ..codec import (
@@ -94,8 +95,16 @@ class SessionOperations(RepositoryBase):
         validate_consumer_cursor_input(cursor)
         if await self.get_bcn_session(cursor.session_id) is None:
             raise ValueError(f"unknown bcn session: {cursor.session_id}")
-        latest_seq = await self.get_latest_inbound_seq(cursor.session_id)
-        validate_cursor_bounds(cursor, latest_seq)
+        latest_inbound_seq = await self.get_latest_message_seq(
+            cursor.session_id,
+            direction=MessageDirection.INBOUND,
+        )
+        latest_message_seq = await self.get_latest_message_seq(cursor.session_id)
+        validate_cursor_bounds(
+            cursor,
+            latest_inbound_seq=latest_inbound_seq,
+            latest_message_seq=latest_message_seq,
+        )
         existing = await self.get_consumer_cursor(cursor.session_id)
         if existing is not None:
             validate_consumer_cursor_update(existing, cursor)

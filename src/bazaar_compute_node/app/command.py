@@ -26,14 +26,13 @@ from ..core.command import (
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
-    InboundAttachment,
     InboxTargetSummary,
     Message,
     OutboundDeliveryState,
 )
 
 
-def serialize_message(message: Message[InboundAttachment]) -> dict[str, object]:
+def serialize_message(message: Message) -> dict[str, object]:
     return {
         "seq": message.seq,
         "message_id": message.message_id,

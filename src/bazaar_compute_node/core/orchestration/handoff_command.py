@@ -13,7 +13,7 @@ from ..handoff import (
     HandoffSendRequest,
     HandoffSendResult,
 )
-from ..models import BcnSession, Handoff, RuntimeEventState
+from ..models import BcnSession, Handoff, MessageDirection, RuntimeEventState
 from ..storage import (
     HandoffConflictError,
     IHandoffStorageScope,
@@ -81,8 +81,9 @@ class HandoffCommandService(IHandoffService):
                 session_id,
                 request.source_message_id,
             )
-            target_anchor = await self._storage.get_latest_inbound_message(
-                target_session.id
+            target_anchor = await self._storage.get_latest_message(
+                target_session.id,
+                direction=MessageDirection.INBOUND,
             )
             if target_anchor is None:
                 raise HandoffCommandFailure(
@@ -195,16 +196,20 @@ class HandoffCommandService(IHandoffService):
         source_message_id: str | None,
     ) -> str | None:
         if source_message_id is None:
-            source = await storage.get_latest_inbound_message(session_id)
+            source = await storage.get_latest_message(
+                session_id,
+                direction=MessageDirection.INBOUND,
+            )
             if source is None:
                 raise HandoffCommandFailure(
                     "HANDOFF_SOURCE_NOT_READY",
                     "Current conversation has no inbound source anchor.",
                 )
             return None
-        source = await storage.resolve_inbound_message(
+        source = await storage.resolve_message(
             session_id,
             source_message_id,
+            direction=MessageDirection.INBOUND,
         )
         if source is None:
             raise HandoffCommandFailure(

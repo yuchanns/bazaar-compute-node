@@ -5,6 +5,7 @@ from typing import cast
 from uuid import uuid7
 
 from ....core.models import (
+    MessageDirection,
     OwnedReminder,
     OwnedReminderOccurrence,
     Reminder,
@@ -278,8 +279,10 @@ class ReminderOperations(RepositoryBase):
         if await self.get_bcn_session(reminder.owner_session_id) is None:
             raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
-        anchor = await self.resolve_inbound_message(
-            reminder.owner_session_id, anchor_reference
+        anchor = await self.resolve_message(
+            reminder.owner_session_id,
+            anchor_reference,
+            direction=MessageDirection.INBOUND,
         )
         if anchor is None:
             raise ValueError("anchor message does not belong to the reminder owner")

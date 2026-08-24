@@ -74,16 +74,40 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
 
         await scope.save_channel_session(channel_session)
         await scope.save_bcn_session(bcn_session)
-        pending = await scope.save_outbound_message(pending)
+        pending = await scope.save_message(pending)
+        visible_states = frozenset(
+            {OutboundDeliveryState.QUEUED, OutboundDeliveryState.SENT}
+        )
+        assert (
+            await scope.list_messages(
+                bcn_session.id,
+                delivery_states=visible_states,
+            )
+            == ()
+        )
         sent = pending.transition_to(
             OutboundDeliveryState.SENT,
             at_ms=5,
             provider_message_id="provider-message-1",
         )
-        await scope.save_outbound_message(sent)
-        persisted = await scope.get_outbound_message(pending.message_id)
+        await scope.save_message(sent)
+        persisted = await scope.get_message(
+            pending.message_id,
+            direction=MessageDirection.OUTBOUND,
+        )
+        history = await scope.read_message_history(
+            bcn_session.id,
+            target=pending.target,
+            around_message_id=pending.message_id,
+            limit=10,
+        )
+        catalog = await scope.list_inbox_targets()
 
         assert persisted == sent
+        assert history.history.messages == (sent,)
+        assert history.history.snapshot_seq == sent.seq
+        assert catalog.targets[0].latest_message_id == sent.message_id
+        assert catalog.targets[0].latest_sender == SenderIdentity(name="Test Agent")
     finally:
         await database.stop(timeout=2)
 
@@ -132,8 +156,11 @@ async def test_sqlite_persists_sender_display_name_and_kind(
 
         await scope.save_channel_session(channel_session)
         await scope.save_bcn_session(bcn_session)
-        live = await scope.append_inbound_message(message)
-        persisted = await scope.find_inbound_message(*message.inbound_identity())
+        live = await scope.save_message(message)
+        persisted = await scope.find_message(
+            *message.inbound_identity(),
+            direction=MessageDirection.INBOUND,
+        )
 
         assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert live.sender_kind is sender_kind
@@ -164,21 +191,14 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
             )
-            inbound_columns = await session.fetchall(
-                "PRAGMA table_info(inbound_messages)"
-            )
-            outbound_columns = await session.fetchall(
-                "PRAGMA table_info(outbound_messages)"
-            )
+            message_columns = await session.fetchall("PRAGMA table_info(messages)")
             handoff_columns = await session.fetchall("PRAGMA table_info(handoffs)")
             journal_mode = await session.fetchone("PRAGMA journal_mode")
             busy_timeout = await session.fetchone("PRAGMA busy_timeout")
             provider_identity_columns = await session.fetchall(
-                "PRAGMA index_info(idx_inbound_provider_identity)"
+                "PRAGMA index_info(idx_messages_inbound_provider_identity)"
             )
-            inbound_indexes = await session.fetchall(
-                "PRAGMA index_list(inbound_messages)"
-            )
+            message_indexes = await session.fetchall("PRAGMA index_list(messages)")
             migration_columns = await session.fetchall(
                 "PRAGMA table_info(schema_migrations)"
             )
@@ -196,25 +216,20 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "consumer_cursors",
             "handoffs",
             "inbound_attachments",
-            "inbound_messages",
-            "outbound_messages",
+            "messages",
             "reminder_occurrences",
             "reminders",
             "runtime_attempts",
             "schema_migrations",
         } <= {row["name"] for row in tables}
         assert {
-            "idx_inbound_channel_received",
-            "idx_inbound_provider_identity",
-            "idx_inbound_reply_to_message",
-            "idx_inbound_seq",
-            "idx_inbound_agent_session_seq",
-            "idx_inbound_agent_target_session",
-            "idx_inbound_session_seq",
-            "idx_inbound_session_target_seq",
+            "idx_messages_agent_direction_seq",
+            "idx_messages_agent_session_target_seq",
+            "idx_messages_inbound_provider_identity",
+            "idx_messages_outbound_command",
+            "idx_messages_outbound_state_created",
+            "idx_messages_reply_to_message",
             "idx_handoffs_agent_target_read_seq",
-            "idx_outbound_session_created",
-            "idx_outbound_state_created",
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_attempts_session_started",
@@ -227,23 +242,17 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 17
+        assert schema_version["version"] == 18
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
-        inbound_primary_keys = {row["name"]: row["pk"] for row in inbound_columns}
-        outbound_primary_keys = {row["name"]: row["pk"] for row in outbound_columns}
-        assert inbound_primary_keys["message_id"] == 1
-        assert inbound_primary_keys["seq"] == 0
-        assert "reply_to_message_id" in inbound_primary_keys
-        assert "reply_to_provider_message_id" not in inbound_primary_keys
-        assert "agent_id" in inbound_primary_keys
-        assert outbound_primary_keys["outbound_message_id"] == 1
-        assert "attachments_json" in outbound_primary_keys
-        assert "agent_id" in outbound_primary_keys
-        assert "agent_name" in outbound_primary_keys
-        assert "fresh_check_state" not in outbound_primary_keys
-        assert "draft_saved_at_ms" not in outbound_primary_keys
-        assert "next_action" not in outbound_primary_keys
+        primary_keys = {row["name"]: row["pk"] for row in message_columns}
+        assert primary_keys["message_id"] == 1
+        assert primary_keys["seq"] == 0
+        assert "direction" in primary_keys
+        assert "reply_to_message_id" in primary_keys
+        assert "delivery_state" in primary_keys
+        assert "attachments_json" in primary_keys
+        assert "agent_id" in primary_keys
         assert {row["name"] for row in handoff_columns} == {
             "seq",
             "handoff_id",
@@ -264,8 +273,8 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         ]
         provider_identity_index = next(
             row
-            for row in inbound_indexes
-            if row["name"] == "idx_inbound_provider_identity"
+            for row in message_indexes
+            if row["name"] == "idx_messages_inbound_provider_identity"
         )
         assert provider_identity_index["unique"] == 1
         assert journal_mode is not None
@@ -341,15 +350,17 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             )
             session_indexes = await session.fetchall(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'index' AND name IN (?, ?, ?, ?, ?, ?, ?) ORDER BY name",
+                "WHERE type = 'index' "
+                "AND name IN (?, ?, ?, ?, ?, ?, ?, ?) ORDER BY name",
                 (
                     "idx_bcn_sessions_channel",
                     "idx_channel_sessions_provider_identity",
-                    "idx_inbound_provider_identity",
-                    "idx_inbound_session_target_seq",
-                    "idx_inbound_reply_to_message",
-                    "idx_inbound_agent_session_seq",
-                    "idx_inbound_agent_target_session",
+                    "idx_messages_agent_direction_seq",
+                    "idx_messages_agent_session_target_seq",
+                    "idx_messages_inbound_provider_identity",
+                    "idx_messages_outbound_command",
+                    "idx_messages_outbound_state_created",
+                    "idx_messages_reply_to_message",
                 ),
             )
         assert [row["version"] for row in migration_rows] == [
@@ -361,11 +372,12 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
         assert {row["name"] for row in session_indexes} == {
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
-            "idx_inbound_provider_identity",
-            "idx_inbound_session_target_seq",
-            "idx_inbound_reply_to_message",
-            "idx_inbound_agent_session_seq",
-            "idx_inbound_agent_target_session",
+            "idx_messages_agent_direction_seq",
+            "idx_messages_agent_session_target_seq",
+            "idx_messages_inbound_provider_identity",
+            "idx_messages_outbound_command",
+            "idx_messages_outbound_state_created",
+            "idx_messages_reply_to_message",
         }
     finally:
         await database.stop(timeout=2)
@@ -440,7 +452,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 17
+        assert schema_version["version"] == 18
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -549,7 +561,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 17
+        assert schema_version["version"] == 18
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -579,6 +591,22 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
                 "VALUES (?, ?, ?, ?, ?)",
                 (migration.version, migration.name, migration.checksum, 1, 0),
             )
+        await connection.execute(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "created_at_ms, updated_at_ms, agent_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "channel-1",
+                "test",
+                "message-1",
+                "dm",
+                1,
+                1,
+                1,
+                "agent-1",
+            ),
+        )
         await connection.executemany(
             "INSERT INTO outbound_messages ("
             "outbound_message_id, command_id, session_id, channel_session_id, "
@@ -637,8 +665,8 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
                     "sent",
                     "sent",
                     "passed",
-                    4,
-                    4,
+                    0,
+                    0,
                     4,
                     5,
                     6,
@@ -657,13 +685,13 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
     try:
         async with database.reader() as session, session.transaction():
             rows = await session.fetchall(
-                "SELECT outbound_message_id, state, snapshot_seq, "
+                "SELECT message_id, delivery_state, snapshot_seq, "
                 "current_inbound_seq, provider_attempted_at_ms, completed_at_ms, "
-                "attachments_json, agent_id, agent_name "
-                "FROM outbound_messages ORDER BY outbound_message_id"
+                "attachments_json, agent_id, sender "
+                "FROM messages WHERE direction = 'outbound' ORDER BY message_id"
             )
-            columns = await session.fetchall("PRAGMA table_info(outbound_messages)")
-            indexes = await session.fetchall("PRAGMA index_list(outbound_messages)")
+            columns = await session.fetchall("PRAGMA table_info(messages)")
+            indexes = await session.fetchall("PRAGMA index_list(messages)")
             triggers = await session.fetchall(
                 "SELECT name FROM sqlite_master WHERE type = 'trigger' "
                 "AND name IN (?, ?, ?, ?, ?, ?, ?)",
@@ -679,23 +707,23 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             )
         assert [dict(row) for row in rows] == [
             {
-                "outbound_message_id": "outbound-sent",
-                "state": "sent",
-                "snapshot_seq": 4,
-                "current_inbound_seq": 4,
+                "message_id": "outbound-sent",
+                "delivery_state": "sent",
+                "snapshot_seq": 0,
+                "current_inbound_seq": 0,
                 "provider_attempted_at_ms": 5,
                 "completed_at_ms": 6,
                 "attachments_json": "[]",
                 "agent_id": "agent-1",
-                "agent_name": "Test Agent",
+                "sender": "Test Agent",
             }
         ]
         assert {row["name"] for row in columns}.isdisjoint(
             {"fresh_check_state", "draft_saved_at_ms", "next_action"}
         )
         assert {row["name"] for row in indexes} >= {
-            "idx_outbound_session_created",
-            "idx_outbound_state_created",
+            "idx_messages_outbound_command",
+            "idx_messages_outbound_state_created",
         }
         assert triggers == []
     finally:
@@ -1329,7 +1357,7 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
         async with database.reader() as session, session.transaction():
             rows = await session.fetchall(
                 "SELECT message_id, reply_to_message_id "
-                "FROM inbound_messages ORDER BY seq"
+                "FROM messages WHERE direction = 'inbound' ORDER BY seq"
             )
             quick_check = await session.fetchone("PRAGMA quick_check")
         assert [(row["message_id"], row["reply_to_message_id"]) for row in rows] == [

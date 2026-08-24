@@ -20,6 +20,7 @@ from ..models import (
     BcnSession,
     ChannelSession,
     Message,
+    MessageDirection,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -784,9 +785,10 @@ class SessionOrchestrator(IAsyncLifecycle):
             delivered_through_seq = (
                 cursor.delivered_through_seq if cursor is not None else 0
             )
-            unread = await self._storage.list_inbound_messages(
+            unread = await self._storage.list_messages(
                 session_id,
                 after_seq=delivered_through_seq,
+                direction=MessageDirection.INBOUND,
                 notifying_only=True,
             )
             if not unread:
@@ -1026,9 +1028,10 @@ class SessionOrchestrator(IAsyncLifecycle):
             delivered_through_seq = (
                 cursor.delivered_through_seq if cursor is not None else 0
             )
-            unread = await self._storage.list_inbound_messages(
+            unread = await self._storage.list_messages(
                 durable_context.bcn_session.id,
                 after_seq=delivered_through_seq,
+                direction=MessageDirection.INBOUND,
                 notifying_only=True,
             )
             if not unread:

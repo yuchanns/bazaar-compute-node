@@ -7,7 +7,7 @@ from typing import Self, cast
 from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
-    Message,
+    MessageDirection,
     OwnedReminder,
     OwnedReminderOccurrence,
     Reminder,
@@ -32,14 +32,26 @@ class MemoryStorage(_BaseMemoryStorage):
         self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
 
     def _operation_for_agent(
-        self, agent_id: str | None
+        self,
+        agent_id: str | None,
+        agent_name: str | None = None,
     ) -> _ReminderMemoryStorageTransaction:
-        return _ReminderMemoryStorageTransaction(self, agent_id=agent_id)
+        return _ReminderMemoryStorageTransaction(
+            self,
+            agent_id=agent_id,
+            agent_name=agent_name,
+        )
 
 
 class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
-    def __init__(self, storage: MemoryStorage, *, agent_id: str | None = None) -> None:
-        super().__init__(storage, agent_id=agent_id)
+    def __init__(
+        self,
+        storage: MemoryStorage,
+        *,
+        agent_id: str | None = None,
+        agent_name: str | None = None,
+    ) -> None:
+        super().__init__(storage, agent_id=agent_id, agent_name=agent_name)
         self._reminder_storage = storage
         self._reminder_snapshot: (
             tuple[
@@ -69,23 +81,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
                 self._reminder_storage.reminder_occurrences,
             ) = self._reminder_snapshot
         return await super().__aexit__(exc_type, exc_value, traceback)
-
-    async def resolve_inbound_message(
-        self,
-        session_id: str,
-        message_id: str,
-    ) -> Message | None:
-        reference = canonical_id_reference(message_id)
-        return next(
-            (
-                message
-                for message in self._reminder_storage.inbound_messages.get(
-                    session_id, []
-                )
-                if message.message_id == reference
-            ),
-            None,
-        )
 
     async def get_reminder(
         self,
@@ -135,8 +130,10 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if reminder.owner_session_id not in self._reminder_storage.bcn_sessions:
             raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
-        anchor = await self.resolve_inbound_message(
-            reminder.owner_session_id, anchor_reference
+        anchor = await self.resolve_message(
+            reminder.owner_session_id,
+            anchor_reference,
+            direction=MessageDirection.INBOUND,
         )
         if anchor is None:
             raise ValueError("anchor message does not belong to the reminder owner")

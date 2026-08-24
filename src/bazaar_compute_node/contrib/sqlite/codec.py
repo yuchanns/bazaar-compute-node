@@ -496,11 +496,19 @@ def validate_consumer_cursor_input(cursor: object) -> None:
         raise ValueError("inbox snapshot sequence requires a snapshot time")
 
 
-def validate_cursor_bounds(cursor: ConsumerCursor, latest_seq: int) -> None:
-    if cursor.delivered_through_seq > latest_seq:
+def validate_cursor_bounds(
+    cursor: ConsumerCursor,
+    *,
+    latest_inbound_seq: int,
+    latest_message_seq: int,
+) -> None:
+    if cursor.delivered_through_seq > latest_inbound_seq:
         raise ValueError("delivered cursor cannot exceed the latest inbound sequence")
-    if cursor.inbox_snapshot_seq is not None and cursor.inbox_snapshot_seq > latest_seq:
-        raise ValueError("inbox snapshot cannot exceed the latest inbound sequence")
+    if (
+        cursor.inbox_snapshot_seq is not None
+        and cursor.inbox_snapshot_seq > latest_message_seq
+    ):
+        raise ValueError("inbox snapshot cannot exceed the latest message sequence")
 
 
 def validate_consumer_cursor_update(

@@ -14,66 +14,77 @@ from ....core.models import (
     InboundAttachment,
     InboxTargetSummary,
     Message,
+    MessageDirection,
     OutboundAttachment,
+    OutboundDeliveryState,
     SenderIdentity,
 )
-from ....core.reminder import canonical_id_reference
 from ....core.storage import InboxTargetResolutionError
 from ..codec import (
     bcn_session_from_row,
     encode_metadata,
     inbound_attachment_from_row,
-    inbound_message_from_row,
-    outbound_message_from_row,
+    message_from_row,
     validate_inbound_message_input,
+    validate_message_input,
     validate_outbound_insert,
     validate_outbound_message_input,
     validate_outbound_update,
 )
 from .base import RepositoryBase
 
-_INBOUND_COLUMNS = (
-    "seq, message_id, session_id, channel_session_id, channel, "
-    "provider_thread_id, provider_message_id, provider_time_ms, "
-    "received_at_ms, sender, message_type, canonical_target, target_kind, "
+_MESSAGE_COLUMNS = (
+    "message_id, seq, direction, agent_id, session_id, channel_session_id, "
+    "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+    "received_at_ms, sender, message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
-    "provider_payload_ref, metadata_json"
+    "provider_payload_ref, command_id, delivery_state, snapshot_seq, "
+    "current_inbound_seq, provider_receipt_ref, created_at_ms, "
+    "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
+    "metadata_json, attachments_json"
 )
 
-
 _INBOX_TARGET_CATALOG_CTE = """
-WITH latest_inbound_ranked AS (
+WITH latest_message_ranked AS (
     SELECT
         session_id,
         message_id,
-        canonical_target,
+        target,
         sender,
         provider_time_ms,
-        received_at_ms,
+        COALESCE(received_at_ms, created_at_ms) AS activity_at_ms,
         ROW_NUMBER() OVER (
             PARTITION BY session_id
             ORDER BY seq DESC, message_id DESC
-        ) AS inbound_rank
-    FROM inbound_messages
+        ) AS message_rank
+    FROM messages
     WHERE agent_id = /*agent_id*/?
+      AND (
+          direction = 'inbound'
+          OR (
+              direction = 'outbound'
+              AND delivery_state IN ('queued', 'sent')
+          )
+      )
 ),
-latest_inbound AS (
+latest_message AS (
     SELECT
         session_id,
         message_id,
-        canonical_target,
+        target,
         sender,
         provider_time_ms,
-        received_at_ms
-    FROM latest_inbound_ranked
-    WHERE inbound_rank = 1
+        activity_at_ms
+    FROM latest_message_ranked
+    WHERE message_rank = 1
 ),
-pending_inbound AS (
+pending_message AS (
     SELECT message.session_id, COUNT(*) AS pending_count
-    FROM inbound_messages AS message
+    FROM messages AS message
     LEFT JOIN consumer_cursors AS cursor
         ON cursor.session_id = message.session_id
     WHERE message.agent_id = /*agent_id*/?
+      AND message.direction = 'inbound'
       AND message.notifies_runtime = 1
       AND message.seq > COALESCE(cursor.delivered_through_seq, 0)
     GROUP BY message.session_id
@@ -82,98 +93,132 @@ target_catalog AS (
     SELECT
         bcn.id AS session_id,
         COALESCE(
-            latest.canonical_target,
+            latest.target,
             channel.target_kind || ':' || channel.id
         ) AS target,
         channel.target_kind AS target_kind,
         COALESCE(pending.pending_count, 0) AS pending_count,
-        COALESCE(
-            bcn.last_activity_at_ms,
-            latest.received_at_ms,
-            channel.last_inbound_at_ms,
-            channel.last_outbound_at_ms,
-            bcn.updated_at_ms,
-            channel.updated_at_ms,
-            bcn.created_at_ms,
-            channel.created_at_ms,
-            0
+        MAX(
+            COALESCE(bcn.last_activity_at_ms, 0),
+            COALESCE(latest.activity_at_ms, 0),
+            COALESCE(channel.last_inbound_at_ms, 0),
+            COALESCE(channel.last_outbound_at_ms, 0),
+            COALESCE(bcn.updated_at_ms, 0),
+            COALESCE(channel.updated_at_ms, 0),
+            COALESCE(bcn.created_at_ms, 0),
+            COALESCE(channel.created_at_ms, 0)
         ) AS last_activity_at_ms,
         latest.message_id AS latest_message_id,
         latest.sender AS latest_sender,
         latest.provider_time_ms AS latest_provider_time_ms,
-        latest.received_at_ms AS latest_received_at_ms
+        latest.activity_at_ms AS latest_received_at_ms
     FROM bcn_sessions AS bcn
     JOIN channel_sessions AS channel
         ON channel.agent_id = /*agent_id*/?
        AND channel.id = bcn.channel_session_id
-    LEFT JOIN latest_inbound AS latest
+    LEFT JOIN latest_message AS latest
         ON latest.session_id = bcn.id
-    LEFT JOIN pending_inbound AS pending
+    LEFT JOIN pending_message AS pending
         ON pending.session_id = bcn.id
     WHERE bcn.agent_id = /*agent_id*/?
 )
 """
 
 
+def _append_message_filters(
+    predicates: list[str],
+    parameters: list[object],
+    *,
+    direction: MessageDirection | None,
+    delivery_states: frozenset[OutboundDeliveryState] | None,
+) -> None:
+    if direction is not None:
+        predicates.append("direction = ?")
+        parameters.append(direction.value)
+    if delivery_states is None or direction is MessageDirection.INBOUND:
+        return
+    ordered_states = sorted(state.value for state in delivery_states)
+    if direction is MessageDirection.OUTBOUND:
+        if not ordered_states:
+            predicates.append("0")
+            return
+        predicates.append(
+            "delivery_state IN (" + ", ".join("?" for _ in ordered_states) + ")"
+        )
+    elif ordered_states:
+        predicates.append(
+            "(direction = 'inbound' OR (direction = 'outbound' "
+            "AND delivery_state IN (" + ", ".join("?" for _ in ordered_states) + ")))"
+        )
+    else:
+        predicates.append("direction = 'inbound'")
+    parameters.extend(ordered_states)
+
+
 def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
-    target = cast(str, row["target"])
-    session_id = cast(str, row["session_id"])
-    target_kind = ChannelTargetKind(cast(str, row["target_kind"]))
-    pending_count = cast(int, row["pending_count"])
-    last_activity_at_ms = cast(int, row["last_activity_at_ms"])
-
-    latest_message_id_value = row["latest_message_id"]
-    latest_message_id: str | None = None
-    if latest_message_id_value is not None:
-        latest_message_id = cast(str, latest_message_id_value)
-
-    latest_sender_value = row["latest_sender"]
-    latest_sender: SenderIdentity | None = None
-    if latest_sender_value is not None:
-        latest_sender_name = cast(str, latest_sender_value)
-        latest_sender = SenderIdentity(name=latest_sender_name)
-
-    latest_provider_time_value = row["latest_provider_time_ms"]
-    latest_provider_time_ms = (
-        None
-        if latest_provider_time_value is None
-        else cast(int, latest_provider_time_value)
-    )
-    latest_received_value = row["latest_received_at_ms"]
-    latest_received_at_ms = (
-        None if latest_received_value is None else cast(int, latest_received_value)
-    )
+    latest_message_id = cast(str | None, row["latest_message_id"])
+    latest_sender_name = cast(str | None, row["latest_sender"])
     return InboxTargetSummary(
-        target=target,
-        session_id=session_id,
-        target_kind=target_kind,
+        target=cast(str, row["target"]),
+        session_id=cast(str, row["session_id"]),
+        target_kind=ChannelTargetKind(cast(str, row["target_kind"])),
         current=False,
-        pending_count=pending_count,
-        last_activity_at_ms=last_activity_at_ms,
+        pending_count=cast(int, row["pending_count"]),
+        last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
         latest_message_id=latest_message_id,
-        latest_sender=latest_sender,
-        latest_provider_time_ms=latest_provider_time_ms,
-        latest_received_at_ms=latest_received_at_ms,
+        latest_sender=(
+            SenderIdentity(name=latest_sender_name)
+            if latest_sender_name is not None
+            else None
+        ),
+        latest_provider_time_ms=cast(int | None, row["latest_provider_time_ms"]),
+        latest_received_at_ms=cast(int | None, row["latest_received_at_ms"]),
     )
 
 
 class MessageOperations(RepositoryBase):
-    async def get_latest_inbound_seq(self, session_id: str) -> int:
+    async def save_message(self, message: Message) -> Message:
+        validate_message_input(message)
+        if message.direction is MessageDirection.INBOUND:
+            return await self._save_inbound_message(
+                cast(Message[InboundAttachment], message)
+            )
+        return await self._save_outbound_message(
+            cast(Message[OutboundAttachment], message)
+        )
+
+    async def get_latest_message_seq(
+        self,
+        session_id: str,
+        *,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
+    ) -> int:
+        predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
+        parameters: list[object] = [session_id]
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=delivery_states,
+        )
         row = await self.fetchone(
-            "SELECT COALESCE(MAX(seq), 0) AS latest_seq FROM inbound_messages "
-            "WHERE agent_id = /*agent_id*/? AND session_id = ?",
-            (session_id,),
+            "SELECT COALESCE(MAX(seq), 0) AS latest_seq FROM messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
         )
         if row is None:
-            raise RuntimeError("SQLite latest inbound sequence query returned no row")
+            raise RuntimeError("SQLite latest message sequence query returned no row")
         return cast(int, row["latest_seq"])
 
-    async def count_inbound_messages(
+    async def count_messages(
         self,
         session_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> int:
         predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
         parameters: list[object] = [session_id]
@@ -181,15 +226,21 @@ class MessageOperations(RepositoryBase):
             predicates.append("seq > ?")
             parameters.append(after_seq)
         if target is not None:
-            predicates.append("canonical_target = ?")
+            predicates.append("target = ?")
             parameters.append(target)
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=delivery_states,
+        )
         row = await self.fetchone(
-            "SELECT COUNT(*) AS message_count FROM inbound_messages WHERE "
+            "SELECT COUNT(*) AS message_count FROM messages WHERE "
             + " AND ".join(predicates),
             parameters,
         )
         if row is None:
-            raise RuntimeError("SQLite inbound message count query returned no row")
+            raise RuntimeError("SQLite message count query returned no row")
         return cast(int, row["message_count"])
 
     async def list_inbox_targets(
@@ -200,8 +251,6 @@ class MessageOperations(RepositoryBase):
         )
         if total_row is None:
             raise RuntimeError("SQLite inbox target count query returned no row")
-        total = cast(int, total_row["total"])
-
         rows = await self.fetchall(
             _INBOX_TARGET_CATALOG_CTE
             + "SELECT target, session_id, target_kind, pending_count, "
@@ -212,10 +261,9 @@ class MessageOperations(RepositoryBase):
             "LIMIT ? OFFSET ?",
             (limit, offset),
         )
-        targets = tuple(_inbox_target_summary_from_row(row) for row in rows)
         return InboxTargetPage(
-            targets=targets,
-            total=total,
+            targets=tuple(_inbox_target_summary_from_row(row) for row in rows),
+            total=cast(int, total_row["total"]),
             offset=offset,
         )
 
@@ -232,10 +280,10 @@ class MessageOperations(RepositoryBase):
             "AND ("
             "channel.target_kind || ':' || channel.id = ? "
             "OR EXISTS ("
-            "SELECT 1 FROM inbound_messages AS message "
+            "SELECT 1 FROM messages AS message "
             "WHERE message.agent_id = /*agent_id*/? "
             "AND message.session_id = bcn.id "
-            "AND message.canonical_target = ?"
+            "AND message.target = ?"
             ")"
             ") ORDER BY bcn.id",
             (target, target),
@@ -246,121 +294,127 @@ class MessageOperations(RepositoryBase):
             )
         return bcn_session_from_row(rows[0])
 
-    async def find_inbound_message(
+    async def find_message(
         self,
         channel: str,
         provider_thread_id: str,
         provider_message_id: str,
-    ) -> Message | None:
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        predicates = [
+            "agent_id = /*agent_id*/?",
+            "channel = ?",
+            "provider_thread_id = ?",
+            "provider_message_id = ?",
+        ]
+        parameters: list[object] = [
+            channel,
+            provider_thread_id,
+            provider_message_id,
+        ]
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=None,
+        )
         row = await self._fetch_one_or_conflict(
-            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-            "WHERE agent_id = /*agent_id*/? AND channel = ? "
-            "AND provider_thread_id = ? AND provider_message_id = ? ORDER BY seq",
-            (channel, provider_thread_id, provider_message_id),
-            "provider inbound identity",
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
+            + " AND ".join(predicates)
+            + " ORDER BY seq",
+            parameters,
+            "provider message identity",
         )
-        if row is None:
-            return None
-        return inbound_message_from_row(
-            row,
-            await self._attachments(row["message_id"]),
-        )
+        return await self._message_from_row(row) if row is not None else None
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]:
         rows = await self.fetchall(
             "SELECT attachment.relative_path FROM inbound_attachments AS attachment "
-            "JOIN inbound_messages AS message ON message.message_id = attachment.message_id "
-            "WHERE message.agent_id = /*agent_id*/? AND attachment.state = 'ready' "
+            "JOIN messages AS message ON message.message_id = attachment.message_id "
+            "WHERE message.agent_id = /*agent_id*/? "
+            "AND message.direction = 'inbound' AND attachment.state = 'ready' "
             "ORDER BY attachment.attachment_id"
         )
         return tuple(str(row["relative_path"]) for row in rows)
 
-    async def list_inbound_messages(
+    async def list_messages(
         self,
         session_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
         around_message_id: str | None = None,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
         notifying_only: bool = False,
         latest: bool = False,
         limit: int = 100,
-    ) -> tuple[Message, ...]:
+    ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]:
         predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
         parameters: list[object] = [session_id]
         if after_seq is not None:
             predicates.append("seq > ?")
             parameters.append(after_seq)
         if target is not None:
-            predicates.append("canonical_target = ?")
+            predicates.append("target = ?")
             parameters.append(target)
         if notifying_only:
             predicates.append("notifies_runtime = 1")
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=delivery_states,
+        )
         where_clause = " AND ".join(predicates)
         if around_message_id is None:
             order = "DESC" if latest else "ASC"
             rows = await self.fetchall(
-                f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
+                f"SELECT {_MESSAGE_COLUMNS} FROM messages "
                 f"WHERE {where_clause} ORDER BY seq {order} LIMIT ?",
                 (*parameters, limit),
             )
             if latest:
                 rows.reverse()
-            messages: list[Message] = []
-            for row in rows:
-                messages.append(
-                    inbound_message_from_row(
-                        row,
-                        await self._attachments(row["message_id"]),
-                    )
-                )
-            return tuple(messages)
+            return tuple([await self._message_from_row(row) for row in rows])
+
         anchor = await self.fetchone(
-            f"SELECT seq FROM inbound_messages WHERE {where_clause} AND message_id = ?",
+            f"SELECT seq FROM messages WHERE {where_clause} AND message_id = ?",
             (*parameters, around_message_id),
         )
         if anchor is None:
             raise ValueError(
                 f"message not found in requested history: {around_message_id}"
             )
-        anchor_seq = cast(int, anchor["seq"])
         count_row = await self.fetchone(
-            f"SELECT COUNT(*) AS message_count FROM inbound_messages WHERE {where_clause}",
+            f"SELECT COUNT(*) AS message_count FROM messages WHERE {where_clause}",
             parameters,
         )
         if count_row is None:
-            raise RuntimeError("SQLite inbound history count query returned no row")
-        message_count = cast(int, count_row["message_count"])
+            raise RuntimeError("SQLite message history count query returned no row")
         position_row = await self.fetchone(
-            f"SELECT COUNT(*) AS anchor_position FROM inbound_messages "
+            f"SELECT COUNT(*) AS anchor_position FROM messages "
             f"WHERE {where_clause} AND seq <= ?",
-            (*parameters, anchor_seq),
+            (*parameters, cast(int, anchor["seq"])),
         )
         if position_row is None:
-            raise RuntimeError("SQLite inbound anchor position query returned no row")
+            raise RuntimeError("SQLite message anchor position query returned no row")
+        message_count = cast(int, count_row["message_count"])
         anchor_position = cast(int, position_row["anchor_position"])
         start_position = max(anchor_position - limit // 2, 1)
         start_position = min(start_position, max(message_count - limit + 1, 1))
-        end_position = start_position + limit - 1
         rows = await self.fetchall(
             "WITH filtered AS (SELECT "
-            + _INBOUND_COLUMNS
-            + ", ROW_NUMBER() OVER (ORDER BY seq) AS row_number FROM inbound_messages "
-            + f"WHERE {where_clause}) SELECT {_INBOUND_COLUMNS} FROM filtered "
+            + _MESSAGE_COLUMNS
+            + ", ROW_NUMBER() OVER (ORDER BY seq) AS row_number FROM messages "
+            + f"WHERE {where_clause}) SELECT {_MESSAGE_COLUMNS} FROM filtered "
             "WHERE row_number BETWEEN ? AND ? ORDER BY row_number",
-            (*parameters, start_position, end_position),
+            (*parameters, start_position, start_position + limit - 1),
         )
-        messages = []
-        for row in rows:
-            messages.append(
-                inbound_message_from_row(
-                    row,
-                    await self._attachments(row["message_id"]),
-                )
-            )
-        return tuple(messages)
+        return tuple([await self._message_from_row(row) for row in rows])
 
-    async def append_inbound_message(
+    async def _save_inbound_message(
         self,
         message: Message[InboundAttachment],
     ) -> Message[InboundAttachment]:
@@ -379,64 +433,55 @@ class MessageOperations(RepositoryBase):
             or message.provider_thread_id != channel_session.provider_thread_id
         ):
             raise ValueError("inbound message binding does not match channel session")
-        existing_row = await self._fetch_one_or_conflict(
-            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-            "WHERE agent_id = /*agent_id*/? AND channel = ? "
-            "AND provider_thread_id = ? AND provider_message_id = ? ORDER BY seq",
-            (
-                message.channel,
-                message.provider_thread_id,
-                message.provider_message_id,
-            ),
-            "provider inbound identity",
+        channel = message.channel
+        provider_thread_id = message.provider_thread_id
+        provider_message_id = message.provider_message_id
+        if channel is None or provider_thread_id is None or provider_message_id is None:
+            raise RuntimeError("inbound message identity is incomplete")
+
+        existing = await self.find_message(
+            channel,
+            provider_thread_id,
+            provider_message_id,
+            direction=MessageDirection.INBOUND,
         )
-        if existing_row is not None:
-            return inbound_message_from_row(
-                existing_row,
-                await self._attachments(existing_row["message_id"]),
-            )
+        if existing is not None:
+            return cast(Message[InboundAttachment], existing)
 
         message_id = message.message_id
         message_id_row = await self.fetchone(
-            "SELECT agent_id FROM inbound_messages WHERE message_id = ?",
+            "SELECT agent_id FROM messages WHERE message_id = ?",
             (message_id,),
         )
         if message_id_row is not None:
             if message_id_row["agent_id"] == self.agent_id:
-                raise ValueError(
-                    "message id is already bound to another inbound message"
-                )
+                raise ValueError("message id is already bound to another message")
             message_id = self._agent_local_id("message", message_id)
             if (
                 await self.fetchone(
-                    "SELECT 1 FROM inbound_messages WHERE message_id = ?",
+                    "SELECT 1 FROM messages WHERE message_id = ?",
                     (message_id,),
                 )
                 is not None
             ):
                 raise ValueError("Agent-scoped message id is already in use")
 
-        sequence_row = await self.fetchone(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM inbound_messages"
-        )
-        if sequence_row is None:
-            raise RuntimeError("SQLite inbound sequence query returned no row")
         canonical = replace(
             message,
             message_id=message_id,
-            seq=cast(int, sequence_row["next_seq"]),
+            seq=await self._next_message_seq(),
         )
         if canonical.reply_to_message_id is not None:
             referenced_id = canonical.reply_to_message_id
             referenced = await self.fetchone(
-                "SELECT message_id, session_id, seq FROM inbound_messages "
+                "SELECT message_id, session_id, seq FROM messages "
                 "WHERE agent_id = /*agent_id*/? AND message_id = ?",
                 (referenced_id,),
             )
             if referenced is None:
                 referenced_id = self._agent_local_id("message", referenced_id)
                 referenced = await self.fetchone(
-                    "SELECT message_id, session_id, seq FROM inbound_messages "
+                    "SELECT message_id, session_id, seq FROM messages "
                     "WHERE agent_id = /*agent_id*/? AND message_id = ?",
                     (referenced_id,),
                 )
@@ -444,8 +489,7 @@ class MessageOperations(RepositoryBase):
                 raise ValueError("reply_to_message_id does not reference a message")
             if referenced["session_id"] != canonical.session_id:
                 raise ValueError("reply_to_message_id must belong to the same session")
-            referenced_seq = cast(int, referenced["seq"])
-            if referenced_seq >= canonical.seq:
+            if cast(int, referenced["seq"]) >= canonical.seq:
                 raise ValueError(
                     "reply_to_message_id must reference an earlier message"
                 )
@@ -459,7 +503,7 @@ class MessageOperations(RepositoryBase):
             attachment_id = attachment.attachment_id
             attachment_row = await self.fetchone(
                 "SELECT message.agent_id FROM inbound_attachments AS attachment "
-                "JOIN inbound_messages AS message ON message.message_id = attachment.message_id "
+                "JOIN messages AS message ON message.message_id = attachment.message_id "
                 "WHERE attachment.attachment_id = ?",
                 (attachment_id,),
             )
@@ -481,17 +525,18 @@ class MessageOperations(RepositoryBase):
         canonical = replace(canonical, attachments=tuple(canonical_attachments))
 
         await self.execute(
-            "INSERT INTO inbound_messages ("
-            "agent_id, message_id, seq, session_id, channel_session_id, channel, "
-            "provider_thread_id, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender, message_type, canonical_target, target_kind, "
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, session_id, channel_session_id, "
+            "channel, provider_thread_id, provider_message_id, provider_time_ms, "
+            "received_at_ms, sender, message_type, target, target_kind, "
             "reply_to_message_id, body, mentions_agent, notifies_runtime, "
-            "provider_payload_ref, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "provider_payload_ref, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                self.agent_id,
                 canonical.message_id,
                 canonical.seq,
+                canonical.direction.value,
+                self._require_agent_id(),
                 canonical.session_id,
                 canonical.channel_session_id,
                 canonical.channel,
@@ -535,58 +580,92 @@ class MessageOperations(RepositoryBase):
             )
         return canonical
 
-    async def get_outbound_message(
+    async def get_message(
         self,
-        outbound_message_id: str,
-    ) -> Message[OutboundAttachment] | None:
-        row = await self.fetchone(
-            "SELECT outbound_message_id, command_id, session_id, channel_session_id, "
-            "target, reply_to_message_id, body, attachments_json, state, "
-            "snapshot_seq, current_inbound_seq, provider_message_id, "
-            "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
-            "completed_at_ms, error_kind, error_message, metadata_json "
-            "FROM outbound_messages "
-            "WHERE agent_id = /*agent_id*/? AND outbound_message_id = ?",
-            (outbound_message_id,),
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        predicates = ["agent_id = /*agent_id*/?", "message_id = ?"]
+        parameters: list[object] = [message_id]
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=None,
         )
-        return outbound_message_from_row(row) if row is not None else None
+        row = await self.fetchone(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
+        )
+        return await self._message_from_row(row) if row is not None else None
 
-    async def resolve_inbound_message(
+    async def resolve_message(
         self,
         session_id: str,
         message_id: str,
-    ) -> Message | None:
-        reference = canonical_id_reference(message_id)
+        *,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        predicates = ["agent_id = /*agent_id*/?", "message_id = ?"]
+        parameters: list[object] = [message_id]
+        if session_id:
+            predicates.append("session_id = ?")
+            parameters.append(session_id)
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=delivery_states,
+        )
         row = await self.fetchone(
-            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-            "WHERE agent_id = /*agent_id*/? AND session_id = ? AND message_id = ?",
-            (session_id, reference),
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
         )
-        if row is None:
-            return None
-        return inbound_message_from_row(
-            row,
-            await self._attachments(row["message_id"]),
-        )
+        return await self._message_from_row(row) if row is not None else None
 
-    async def get_latest_inbound_message(
+    async def get_latest_message(
         self,
         session_id: str,
-    ) -> Message | None:
+        *,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        predicates = ["session_id = ?"]
+        parameters: list[object] = [session_id]
         agent_predicate = self._agent_predicate()
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=delivery_states,
+        )
         row = await self.fetchone(
-            f"SELECT {_INBOUND_COLUMNS} FROM inbound_messages "
-            f"WHERE {agent_predicate}session_id = ? ORDER BY seq DESC LIMIT 1",
-            (session_id,),
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {agent_predicate}"
+            + " AND ".join(predicates)
+            + " ORDER BY seq DESC LIMIT 1",
+            parameters,
         )
-        if row is None:
-            return None
-        return inbound_message_from_row(
-            row,
-            await self._attachments(row["message_id"]),
-        )
+        return await self._message_from_row(row) if row is not None else None
 
-    async def _attachments(self, message_id: str):
+    async def _message_from_row(
+        self,
+        row: aiosqlite.Row,
+    ) -> Message[InboundAttachment | OutboundAttachment]:
+        attachments = (
+            await self._attachments(cast(str, row["message_id"]))
+            if row["direction"] == MessageDirection.INBOUND.value
+            else ()
+        )
+        return message_from_row(row, attachments)
+
+    async def _attachments(
+        self,
+        message_id: str,
+    ) -> tuple[InboundAttachment, ...]:
         rows = await self.fetchall(
             "SELECT attachment_id, name, kind, state, media_type, relative_path, "
             "size_bytes, error FROM inbound_attachments WHERE message_id = ? "
@@ -595,7 +674,15 @@ class MessageOperations(RepositoryBase):
         )
         return tuple(inbound_attachment_from_row(row) for row in rows)
 
-    async def save_outbound_message(
+    async def _next_message_seq(self) -> int:
+        row = await self.fetchone(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages"
+        )
+        if row is None:
+            raise RuntimeError("SQLite message sequence query returned no row")
+        return cast(int, row["next_seq"])
+
+    async def _save_outbound_message(
         self,
         message: Message[OutboundAttachment],
     ) -> Message[OutboundAttachment]:
@@ -609,32 +696,67 @@ class MessageOperations(RepositoryBase):
         if bcn_session.channel_session_id != message.channel_session_id:
             raise ValueError("outbound message binding does not match bcn session")
 
-        existing = await self.get_outbound_message(message.message_id)
+        existing = cast(
+            Message[OutboundAttachment] | None,
+            await self.get_message(
+                message.message_id,
+                direction=MessageDirection.OUTBOUND,
+            ),
+        )
         if existing is None:
-            canonical = replace(message, message_id=str(uuid7()))
+            canonical = replace(
+                message,
+                message_id=str(uuid7()),
+                seq=await self._next_message_seq(),
+                channel=channel_session.channel,
+                provider_thread_id=channel_session.provider_thread_id,
+                sender=SenderIdentity(name=self._require_agent_name()),
+                target_kind=channel_session.target_kind,
+            )
             validate_outbound_insert(canonical)
             delivery_state = canonical.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
+            sender = canonical.sender
+            if sender is None:
+                raise RuntimeError("outbound message has no sender")
             await self.execute(
-                "INSERT INTO outbound_messages ("
-                "agent_id, agent_name, outbound_message_id, command_id, session_id, "
-                "channel_session_id, target, reply_to_message_id, body, "
-                "attachments_json, "
-                "state, snapshot_seq, current_inbound_seq, provider_message_id, "
-                "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, "
-                "completed_at_ms, error_kind, error_message, metadata_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages ("
+                "message_id, seq, direction, agent_id, session_id, "
+                "channel_session_id, channel, provider_thread_id, "
+                "provider_message_id, sender, message_type, target, target_kind, "
+                "reply_to_message_id, body, command_id, delivery_state, "
+                "snapshot_seq, current_inbound_seq, provider_receipt_ref, "
+                "created_at_ms, provider_attempted_at_ms, completed_at_ms, "
+                "error_kind, error_message, metadata_json, attachments_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    self._require_agent_id(),
-                    self._require_agent_name(),
                     canonical.message_id,
-                    canonical.command_id,
+                    canonical.seq,
+                    canonical.direction.value,
+                    self._require_agent_id(),
                     canonical.session_id,
                     canonical.channel_session_id,
+                    canonical.channel,
+                    canonical.provider_thread_id,
+                    canonical.provider_message_id,
+                    sender.display_name,
+                    canonical.message_type,
                     canonical.target,
+                    canonical.target_kind.value,
                     canonical.reply_to_message_id,
                     canonical.body,
+                    canonical.command_id,
+                    delivery_state.value,
+                    canonical.snapshot_seq,
+                    canonical.current_inbound_seq,
+                    canonical.provider_receipt_ref,
+                    canonical.created_at_ms,
+                    canonical.provider_attempted_at_ms,
+                    canonical.completed_at_ms,
+                    canonical.error_kind,
+                    canonical.error_message,
+                    encode_metadata(canonical.metadata),
                     json.dumps(
                         [
                             {
@@ -648,17 +770,6 @@ class MessageOperations(RepositoryBase):
                         ],
                         separators=(",", ":"),
                     ),
-                    delivery_state.value,
-                    canonical.snapshot_seq,
-                    canonical.current_inbound_seq,
-                    canonical.provider_message_id,
-                    canonical.provider_receipt_ref,
-                    canonical.created_at_ms,
-                    canonical.provider_attempted_at_ms,
-                    canonical.completed_at_ms,
-                    canonical.error_kind,
-                    canonical.error_message,
-                    encode_metadata(canonical.metadata),
                 ),
             )
             return canonical
@@ -679,12 +790,12 @@ class MessageOperations(RepositoryBase):
         if delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
         await self.execute(
-            "UPDATE outbound_messages SET state = ?, snapshot_seq = ?, "
+            "UPDATE messages SET delivery_state = ?, snapshot_seq = ?, "
             "current_inbound_seq = ?, provider_message_id = ?, "
             "provider_receipt_ref = ?, provider_attempted_at_ms = ?, "
             "completed_at_ms = ?, error_kind = ?, error_message = ?, "
-            "metadata_json = ? "
-            "WHERE outbound_message_id = ?",
+            "metadata_json = ? WHERE agent_id = /*agent_id*/? "
+            "AND direction = 'outbound' AND message_id = ?",
             (
                 delivery_state.value,
                 canonical.snapshot_seq,

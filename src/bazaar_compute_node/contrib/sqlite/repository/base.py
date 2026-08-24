@@ -10,6 +10,9 @@ from ....core.models import (
     ChannelSession,
     InboundAttachment,
     Message,
+    MessageDirection,
+    OutboundAttachment,
+    OutboundDeliveryState,
 )
 from ..executor import SqliteExecuteResult, SqliteSession
 
@@ -129,16 +132,25 @@ class RepositoryBase:
         del session_id
         raise NotImplementedError
 
-    async def get_latest_inbound_seq(self, session_id: str) -> int:
-        del session_id
+    async def get_latest_message_seq(
+        self,
+        session_id: str,
+        *,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
+    ) -> int:
+        del session_id, direction, delivery_states
         raise NotImplementedError
 
-    async def resolve_inbound_message(
+    async def resolve_message(
         self,
         session_id: str,
         message_id: str,
-    ) -> Message[InboundAttachment] | None:
-        del session_id, message_id
+        *,
+        direction: MessageDirection | None = None,
+        delivery_states: frozenset[OutboundDeliveryState] | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        del session_id, message_id, direction, delivery_states
         raise NotImplementedError
 
     async def _attachments(self, message_id: str) -> tuple[InboundAttachment, ...]:

@@ -38,7 +38,9 @@ class MessageCheckResult:
     messages: tuple[Message[InboundAttachment], ...]
     snapshot_seq: int
     delivered_through_seq: int
-    referenced_messages: tuple[Message[InboundAttachment], ...] = ()
+    referenced_messages: tuple[
+        Message[InboundAttachment | OutboundAttachment], ...
+    ] = ()
 
     def __post_init__(self) -> None:
         if self.delivered_through_seq > self.snapshot_seq:
@@ -49,11 +51,13 @@ class MessageCheckResult:
 class MessageReadResult:
     """Non-draining history result with the observed inbox snapshot."""
 
-    messages: tuple[Message[InboundAttachment], ...]
+    messages: tuple[Message[InboundAttachment | OutboundAttachment], ...]
     snapshot_seq: int
     first_seq: int | None = None
     last_seq: int | None = None
-    referenced_messages: tuple[Message[InboundAttachment], ...] = ()
+    referenced_messages: tuple[
+        Message[InboundAttachment | OutboundAttachment], ...
+    ] = ()
 
     def __post_init__(self) -> None:
         if (self.first_seq is None) != (self.last_seq is None):
@@ -116,7 +120,7 @@ class MessageSendFreshnessHold:
 
     target: str
     messages: tuple[Message[InboundAttachment], ...]
-    referenced_messages: tuple[Message[InboundAttachment], ...]
+    referenced_messages: tuple[Message[InboundAttachment | OutboundAttachment], ...]
     newer_message_total: int
     snapshot_seq: int | None
     current_inbound_seq: int

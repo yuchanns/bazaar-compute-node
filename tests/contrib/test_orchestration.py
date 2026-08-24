@@ -334,7 +334,10 @@ async def _wait_for_inbound_messages(
     async with asyncio.timeout(180):
         while True:
             repository = storage
-            messages = await repository.list_inbound_messages(session_id)
+            messages = await repository.list_messages(
+                session_id,
+                direction=MessageDirection.INBOUND,
+            )
             if len(messages) >= count:
                 return messages
             await asyncio.sleep(0.05)
@@ -1789,8 +1792,9 @@ async def test_inbound_failure_rolls_back_new_session_state() -> None:
             make_message(session_id="invalid", seq=2),
             target_kind=ChannelTargetKind.GROUP,
             mentions_agent=False,
+            reply_to_message_id="missing-message",
         )
-        with pytest.raises(ValueError, match="inbound sequence must be contiguous"):
+        with pytest.raises(ValueError, match="does not reference a message"):
             await orchestrator.handle_inbound(invalid)
 
         assert "channel-invalid" not in storage.channel_sessions

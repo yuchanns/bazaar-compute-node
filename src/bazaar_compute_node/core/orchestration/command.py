@@ -27,6 +27,7 @@ from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
     Message,
+    MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
     RuntimeEventState,
@@ -377,7 +378,7 @@ class SessionCommandService(ICommandService):
                     },
                 )
 
-            await self._storage.save_outbound_message(outbound)
+            await self._storage.save_message(outbound)
             delivery_state = outbound.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
@@ -421,9 +422,10 @@ class SessionCommandService(ICommandService):
                 raise ValueError(
                     f"unknown channel session: {bcn_session.channel_session_id}"
                 )
-            target_messages = await self._storage.list_inbound_messages(
+            target_messages = await self._storage.list_messages(
                 session_id,
                 target=target,
+                direction=MessageDirection.INBOUND,
                 limit=1,
             )
             if not target_messages:

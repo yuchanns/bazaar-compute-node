@@ -5,7 +5,7 @@ from time import time_ns
 
 from ..command import IReminderService, SessionNotFoundError
 from ..concurrency import ISessionConcurrency
-from ..models import Message, Reminder, ReminderState
+from ..models import Message, MessageDirection, Reminder, ReminderState
 from ..reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
@@ -251,7 +251,11 @@ class ReminderCommandService(IReminderService):
         message_id: str,
     ) -> Message:
         try:
-            anchor = await storage.resolve_inbound_message(session_id, message_id)
+            anchor = await storage.resolve_message(
+                session_id,
+                message_id,
+                direction=MessageDirection.INBOUND,
+            )
         except ValueError as error:
             raise ReminderCommandFailure(
                 "REMINDER_ANCHOR_NOT_FOUND",

@@ -57,7 +57,7 @@ async def _append_message(
     message_id: str,
     received_at_ms: int,
 ) -> Message:
-    return await transaction.append_inbound_message(
+    return await transaction.save_message(
         Message(
             direction=MessageDirection.INBOUND,
             seq=0,
@@ -154,7 +154,10 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
             limit=100,
         )
         remaining_count = await repository.count_pending_handoffs(target_session.id)
-        target_anchor = await repository.get_latest_inbound_message(target_session.id)
+        target_anchor = await repository.get_latest_message(
+            target_session.id,
+            direction=MessageDirection.INBOUND,
+        )
 
         assert [handoff.handoff_id for handoff in pending] == [
             first.handoff_id,
@@ -178,7 +181,13 @@ async def test_sqlite_handoff_repository_is_scoped_and_marks_exact_ids() -> None
             == ()
         )
         assert await repository.count_pending_handoffs(target_session.id) == 0
-        assert await repository.get_latest_inbound_message(target_session.id) is None
+        assert (
+            await repository.get_latest_message(
+                target_session.id,
+                direction=MessageDirection.INBOUND,
+            )
+            is None
+        )
         assert (
             await repository.mark_handoffs_read(
                 target_session.id,

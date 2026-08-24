@@ -60,7 +60,7 @@ async def _append_message(
     provider_time_ms: int | None,
     notifies_runtime: bool = True,
 ) -> Message:
-    return await transaction.append_inbound_message(
+    return await transaction.save_message(
         Message(
             direction=MessageDirection.INBOUND,
             seq=0,

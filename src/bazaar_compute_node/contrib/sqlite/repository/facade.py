@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 
 from ....core.models import (
     BcnSession,
@@ -11,8 +12,7 @@ from ....core.models import (
     Message,
     MessageDirection,
 )
-from ....core.storage import RecordInboundResult
-from ....core.storage_operations import StorageOperationMixin
+from ....core.storage import RecordInboundResult, StorageOperationMixin
 from .handoffs import HandoffOperations
 from .messages import MessageOperations
 from .reminders import ReminderOperations
@@ -39,13 +39,14 @@ class SqliteRepository(
         provider_message_id = message.provider_message_id
         if channel is None or provider_thread_id is None or provider_message_id is None:
             raise RuntimeError("inbound message identity is incomplete")
-        existing_message = await self.find_inbound_message(
+        existing_message = await self.find_message(
             channel,
             provider_thread_id,
             provider_message_id,
+            direction=MessageDirection.INBOUND,
         )
         if existing_message is not None:
-            message = existing_message
+            message = cast(Message[InboundAttachment], existing_message)
         channel_session = await self.find_channel_session(
             channel=channel,
             provider_thread_id=provider_thread_id,
@@ -115,7 +116,10 @@ class SqliteRepository(
             await self.save_consumer_cursor(ConsumerCursor(session_id=bcn_session.id))
 
         if existing_message is None:
-            message = await self.append_inbound_message(message)
+            message = cast(
+                Message[InboundAttachment],
+                await self.save_message(message),
+            )
             channel_session = replace(
                 channel_session,
                 last_inbound_at_ms=message.received_at_ms,
