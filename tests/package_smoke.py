@@ -6,6 +6,7 @@ from importlib.metadata import entry_points, version
 
 from bazaar_compute_node import __version__
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
+from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
 
 def main() -> None:
@@ -42,6 +43,22 @@ def main() -> None:
         "You're Package Smoke Bot, A.K.A Package Smoke Agent, an AI agent in bcn "
     ):
         raise SystemExit("developer instruction resource did not render")
+    if (
+        create_translator(ENGLISH).text(
+            "runtime.error.failed",
+            {"error": "package smoke"},
+        )
+        != "Execution failed: package smoke"
+    ):
+        raise SystemExit("English locale resource did not render")
+    if (
+        create_translator(SIMPLIFIED_CHINESE).text(
+            "runtime.error.failed",
+            {"error": "package smoke"},
+        )
+        != "执行失败：package smoke"
+    ):
+        raise SystemExit("Simplified Chinese locale resource did not render")
 
     lark_entry_point = next(
         (

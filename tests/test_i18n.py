@@ -1,19 +1,41 @@
 from __future__ import annotations
 
 import locale
+import tomllib
+from importlib.resources import files
 
 import pytest
 
 import bazaar_compute_node.i18n.catalog as catalog_module
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
-from bazaar_compute_node.i18n.english import MESSAGES as ENGLISH_MESSAGES
-from bazaar_compute_node.i18n.schinese import MESSAGES as SCHINESE_MESSAGES
+from bazaar_compute_node.rendering import TextTemplate
 
 
-def test_catalogs_share_keys_and_preserve_interpolation_values() -> None:
-    assert ENGLISH_MESSAGES.keys() == SCHINESE_MESSAGES.keys()
-    detail = "request failed: $HOME\n错误详情"
+def _catalog(language: str) -> dict[str, object]:
+    resource = files("bazaar_compute_node").joinpath(
+        "resources", "locales", f"{language}.toml"
+    )
+    return tomllib.loads(resource.read_text(encoding="utf-8"))
 
+
+def test_catalogs_share_keys_and_template_variables() -> None:
+    english = _catalog(ENGLISH)
+    schinese = _catalog(SIMPLIFIED_CHINESE)
+
+    assert english.keys() == schinese.keys()
+    assert english
+    for key in english:
+        english_source = english[key]
+        schinese_source = schinese[key]
+        assert isinstance(english_source, str)
+        assert isinstance(schinese_source, str)
+        assert TextTemplate.from_source(key, english_source).variables == (
+            TextTemplate.from_source(key, schinese_source).variables
+        )
+
+
+def test_translator_preserves_interpolation_values_and_requires_exact_keys() -> None:
+    detail = "request failed: $HOME\n错误详情 {{ untouched }} {% raw %}"
     english = create_translator(ENGLISH)
     schinese = create_translator(SIMPLIFIED_CHINESE)
 
@@ -29,7 +51,13 @@ def test_catalogs_share_keys_and_preserve_interpolation_values() -> None:
     assert schinese.text("runtime.error.unknown", {"error": detail}) == (
         f"执行状态未知：{detail}"
     )
-    assert english.text("missing.message.key") == "missing.message.key"
+    with pytest.raises(ValueError, match="missing: error"):
+        english.text("runtime.error.failed")
+    with pytest.raises(ValueError, match="unexpected: extra"):
+        english.text("cli.agent.add", {"extra": "value"})
+    assert english.text("missing.message.key", {"extra": "value"}) == (
+        "missing.message.key"
+    )
 
 
 @pytest.mark.parametrize(
