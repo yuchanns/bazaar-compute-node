@@ -208,7 +208,7 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert set(service.send.await_args.kwargs) == {
         "session_id",
         "command_id",
-        "target",
+        "raw_target",
         "body",
         "created_at_ms",
         "attachment_paths",

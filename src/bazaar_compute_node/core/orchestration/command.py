@@ -20,7 +20,6 @@ from ..command import (
     MessageReadResult,
     MessageSendFreshnessHold,
     MessageSendResult,
-    SessionNotFoundError,
 )
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
@@ -155,13 +154,13 @@ class SessionCommandService(ICommandService):
         self,
         session_id: str,
         *,
-        target: str,
+        raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
         snapshot = await self._storage.read_message_history(
             session_id,
-            target=target,
+            raw_target=raw_target,
             around_message_id=around_message_id,
             limit=limit,
         )
@@ -176,7 +175,7 @@ class SessionCommandService(ICommandService):
             arguments={
                 "caller_session_id": session_id,
                 "source_session_id": snapshot.source_session.id,
-                "target": target,
+                "target": raw_target,
                 "around_message_id": around_message_id,
                 "limit": limit,
             },
@@ -213,14 +212,16 @@ class SessionCommandService(ICommandService):
         *,
         session_id: str,
         command_id: str,
-        target: str,
+        raw_target: str,
         body: str,
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
         reply_to_message_id: str | None = None,
         send_draft: bool = False,
     ) -> MessageSendResult:
-        target_session = await self._storage.resolve_inbox_target(target)
+        target = await self._storage.resolve_inbox_target(raw_target)
+        target_session = target.bcn_session
+        canonical_target = target.canonical_target
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths and not send_draft
@@ -237,8 +238,8 @@ class SessionCommandService(ICommandService):
             if send_draft:
                 draft = self._drafts.get(session_id)
                 if draft is None:
-                    raise ValueError(f"no active draft for target: {target}")
-                if draft.target != target or draft.target_id != target_session.id:
+                    raise ValueError(f"no active draft for target: {raw_target}")
+                if draft.target_id != target_session.id:
                     raise ValueError(
                         f"active draft belongs to another target: {draft.target}"
                     )
@@ -254,7 +255,7 @@ class SessionCommandService(ICommandService):
                     )
                 payload = MessageDraft(
                     source_target_id=session_id,
-                    target=target,
+                    target=canonical_target,
                     target_id=target_session.id,
                     body=body,
                     attachments=attachments,
@@ -277,7 +278,7 @@ class SessionCommandService(ICommandService):
                 await self._audit_freshness_hold(
                     session_id=session_id,
                     command_id=command_id,
-                    target=target,
+                    target=canonical_target,
                     result=freshness,
                 )
                 return freshness
@@ -299,7 +300,7 @@ class SessionCommandService(ICommandService):
                 await self._audit_freshness_hold(
                     session_id=session_id,
                     command_id=command_id,
-                    target=target,
+                    target=canonical_target,
                     result=result,
                 )
                 return result
@@ -460,26 +461,20 @@ class SessionCommandService(ICommandService):
             },
         )
 
-    async def unfollow(self, session_id: str, *, target: str) -> bool:
+    async def unfollow(self, session_id: str, *, raw_target: str) -> bool:
         async with self._concurrency.for_session(session_id):
-            bcn_session = await self._storage.get_bcn_session(session_id)
-            if bcn_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-            channel_session = await self._storage.get_channel_session(
-                bcn_session.channel_session_id
-            )
-            if channel_session is None:
-                raise ValueError(
-                    f"unknown channel session: {bcn_session.channel_session_id}"
-                )
+            target = await self._storage.resolve_inbox_target(raw_target)
+            if target.bcn_session.id != session_id:
+                raise ValueError(f"Thread target is not found: {raw_target}")
+            channel_session = target.channel_session
             target_messages = await self._storage.list_messages(
                 session_id,
-                target=target,
+                target=target.canonical_target,
                 direction=MessageDirection.INBOUND,
                 limit=1,
             )
             if not target_messages:
-                raise ValueError(f"Thread target is not found: {target}")
+                raise ValueError(f"Thread target is not found: {raw_target}")
             changed = (
                 channel_session.target_kind is ChannelTargetKind.GROUP
                 and channel_session.following
@@ -500,7 +495,11 @@ class SessionCommandService(ICommandService):
                 channel=channel_session.channel,
                 channel_session_id=channel_session.id,
             ),
-            arguments={"session_id": session_id, "target": target, "changed": changed},
+            arguments={
+                "session_id": session_id,
+                "target": target.canonical_target,
+                "changed": changed,
+            },
         )
         return changed
 

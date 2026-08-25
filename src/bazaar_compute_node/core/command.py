@@ -156,7 +156,7 @@ class ICommandService(Protocol):
         self,
         session_id: str,
         *,
-        target: str,
+        raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
@@ -178,7 +178,7 @@ class ICommandService(Protocol):
         *,
         session_id: str,
         command_id: str,
-        target: str,
+        raw_target: str,
         body: str,
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
@@ -188,7 +188,7 @@ class ICommandService(Protocol):
         """Run the session fresh-check before calling the Channel port."""
         ...
 
-    async def unfollow(self, session_id: str, *, target: str) -> bool:
+    async def unfollow(self, session_id: str, *, raw_target: str) -> bool:
         """Disable future group notifications and report whether state changed."""
         ...
 

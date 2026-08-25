@@ -471,7 +471,7 @@ class CommandDispatcher:
             request = cast(_MessageReadRequest, request)
             result = await self._service.read(
                 session_id,
-                target=request.target,
+                raw_target=request.target,
                 around_message_id=request.around_message_id,
                 limit=request.limit,
             )
@@ -496,7 +496,7 @@ class CommandDispatcher:
             result = await self._service.send(
                 session_id=session_id,
                 command_id=request.command_id,
-                target=request.target,
+                raw_target=request.target,
                 body=request.body,
                 created_at_ms=request.created_at_ms,
                 attachment_paths=tuple(request.attachment_paths),
@@ -553,7 +553,10 @@ class CommandDispatcher:
 
         if resource == "thread" and command == "unfollow":
             request = cast(_ThreadUnfollowRequest, request)
-            changed = await self._service.unfollow(session_id, target=request.target)
+            changed = await self._service.unfollow(
+                session_id,
+                raw_target=request.target,
+            )
             return {"ok": True, "result": {"changed": changed}}
 
         raise AssertionError("validated command route has no handler")

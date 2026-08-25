@@ -63,18 +63,24 @@ class SqliteRepository(
                     or message.mentions_agent
                 ),
             )
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
             await self.save_channel_session(channel_session)
-        elif (
-            existing_message is None
-            and message.mentions_agent
-            and not channel_session.following
-        ):
-            channel_session = replace(
-                channel_session,
-                following=True,
-                updated_at_ms=now_ms,
-            )
-            await self.save_channel_session(channel_session)
+        elif existing_message is None:
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
+            if message.mentions_agent and not channel_session.following:
+                channel_session = replace(
+                    channel_session,
+                    following=True,
+                    updated_at_ms=now_ms,
+                )
 
         bcn_session = await self.find_bcn_session(channel_session.id)
         bcn_session_created = bcn_session is None
@@ -94,16 +100,12 @@ class SqliteRepository(
                 or channel_session.following
                 or message.mentions_agent
             )
-            canonical_target = message.target
-            if channel_session.id != message.channel_session_id:
-                canonical_target = (
-                    f"{channel_session.target_kind.value}:{channel_session.id}"
-                )
             message = replace(
                 message,
                 session_id=bcn_session.id,
                 channel_session_id=channel_session.id,
-                target=canonical_target,
+                target=channel_session.canonical_target,
+                target_presentation=None,
                 notifies_runtime=notifies_runtime,
             )
 

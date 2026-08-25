@@ -25,6 +25,7 @@ from bazaar_compute_node.core.storage import (
     InboxTargetResolutionError,
     IStorageScope,
     RecordInboundResult,
+    ResolvedInboxTarget,
     StorageOperationMixin,
     UnreadMessageOwner,
 )
@@ -232,18 +233,24 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                     or message.mentions_agent
                 ),
             )
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
             await self.save_channel_session(channel_session)
-        elif (
-            existing_message is None
-            and message.mentions_agent
-            and not channel_session.following
-        ):
-            channel_session = replace(
-                channel_session,
-                following=True,
-                updated_at_ms=now_ms,
-            )
-            await self.save_channel_session(channel_session)
+        elif existing_message is None:
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
+            if message.mentions_agent and not channel_session.following:
+                channel_session = replace(
+                    channel_session,
+                    following=True,
+                    updated_at_ms=now_ms,
+                )
 
         bcn_session = await self.find_bcn_session(channel_session.id)
         bcn_session_created = bcn_session is None
@@ -263,16 +270,12 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 or channel_session.following
                 or message.mentions_agent
             )
-            canonical_target = message.target
-            if channel_session.id != message.channel_session_id:
-                canonical_target = (
-                    f"{channel_session.target_kind.value}:{channel_session.id}"
-                )
             message = replace(
                 message,
                 session_id=bcn_session.id,
                 channel_session_id=channel_session.id,
-                target=canonical_target,
+                target=channel_session.canonical_target,
+                target_presentation=None,
                 notifies_runtime=notifies_runtime,
             )
 
@@ -352,25 +355,56 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             offset=offset,
         )
 
-    async def resolve_inbox_target(self, target: str) -> BcnSession:
-        matches = []
+    async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        matches: list[tuple[BcnSession, ChannelSession]] = []
         for session in self._scoped_bcn_sessions():
             channel_session = self._storage.channel_sessions.get(
                 session.channel_session_id
             )
             if channel_session is None:
                 continue
-            derived_target = f"{channel_session.target_kind.value}:{channel_session.id}"
-            messages = self._storage.messages.get(session.id, [])
-            if derived_target == target or any(
-                message.target == target for message in messages
-            ):
-                matches.append(session)
+            matched = channel_session.canonical_target == raw_target
+            if raw_target.startswith("#"):
+                label, separator, channel_session_id = raw_target.rpartition(":")
+                matched = (
+                    bool(separator)
+                    and len(label) > 1
+                    and channel_session.target_kind is ChannelTargetKind.GROUP
+                    and channel_session.id == channel_session_id
+                )
+            elif raw_target.startswith("dm:@") and len(raw_target) > 4:
+                matched = (
+                    channel_session.target_kind is ChannelTargetKind.DM
+                    and channel_session.target_handle_key == raw_target[4:].casefold()
+                )
+            if matched:
+                matches.append((session, channel_session))
         if len(matches) != 1:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to exactly one owned session"
             )
-        return matches[0]
+        target, channel_session = matches[0]
+        handle_is_unique = True
+        if channel_session.target_handle_key is not None:
+            handle_is_unique = (
+                sum(
+                    candidate.target_kind is ChannelTargetKind.DM
+                    and candidate.target_handle_key == channel_session.target_handle_key
+                    for candidate_session in self._scoped_bcn_sessions()
+                    if (
+                        candidate := self._storage.channel_sessions.get(
+                            candidate_session.channel_session_id
+                        )
+                    )
+                    is not None
+                )
+                == 1
+            )
+        return ResolvedInboxTarget(
+            bcn_session=target,
+            channel_session=channel_session,
+            handle_is_unique=handle_is_unique,
+        )
 
     async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
         matches = [
@@ -1060,6 +1094,9 @@ def _validate_channel_session_update(
         following=incoming.following,
         last_inbound_at_ms=incoming.last_inbound_at_ms,
         last_outbound_at_ms=incoming.last_outbound_at_ms,
+        target_display_name=incoming.target_display_name,
+        target_handle=incoming.target_handle,
+        target_handle_key=incoming.target_handle_key,
         metadata=incoming.metadata,
     )
 

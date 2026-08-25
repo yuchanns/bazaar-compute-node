@@ -45,6 +45,11 @@ def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
         following=bool(following),
         last_inbound_at_ms=cast(int | None, row["last_inbound_at_ms"]),
         last_outbound_at_ms=cast(int | None, row["last_outbound_at_ms"]),
+        target_display_name=_optional_text(
+            row["target_display_name"], "target_display_name"
+        ),
+        target_handle=_optional_text(row["target_handle"], "target_handle"),
+        target_handle_key=_optional_text(row["target_handle_key"], "target_handle_key"),
         metadata=_decode_metadata(
             row["provider_identity_ref_json"], "provider_identity_ref_json"
         ),
@@ -439,6 +444,9 @@ def validate_channel_session_update(
         following=incoming.following,
         last_inbound_at_ms=incoming.last_inbound_at_ms,
         last_outbound_at_ms=incoming.last_outbound_at_ms,
+        target_display_name=incoming.target_display_name,
+        target_handle=incoming.target_handle,
+        target_handle_key=incoming.target_handle_key,
         metadata=incoming.metadata,
     )
 

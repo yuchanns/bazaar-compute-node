@@ -25,6 +25,12 @@ Metadata = Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
+class ChannelTargetPresentation:
+    display_name: str | None = None
+    handle: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChannelSession:
     id: str
     channel: str
@@ -35,7 +41,51 @@ class ChannelSession:
     following: bool = True
     last_inbound_at_ms: int | None = None
     last_outbound_at_ms: int | None = None
+    target_display_name: str | None = None
+    target_handle: str | None = None
+    target_handle_key: str | None = None
     metadata: Metadata = field(default_factory=dict)
+
+    @property
+    def canonical_target(self) -> str:
+        return f"{self.target_kind.value}:{self.id}"
+
+    def with_target_presentation(
+        self,
+        presentation: ChannelTargetPresentation,
+        *,
+        updated_at_ms: int,
+    ) -> Self:
+        if self.target_kind is ChannelTargetKind.GROUP:
+            return replace(
+                self,
+                target_display_name=presentation.display_name,
+                target_handle=None,
+                target_handle_key=None,
+                updated_at_ms=updated_at_ms,
+            )
+        handle = presentation.handle
+        return replace(
+            self,
+            target_display_name=None,
+            target_handle=handle,
+            target_handle_key=handle.casefold() if handle is not None else None,
+            updated_at_ms=updated_at_ms,
+        )
+
+    def display_target(self, *, handle_is_unique: bool) -> str:
+        if (
+            self.target_kind is ChannelTargetKind.GROUP
+            and self.target_display_name is not None
+        ):
+            return f"#{self.target_display_name}:{self.id}"
+        if (
+            self.target_kind is ChannelTargetKind.DM
+            and self.target_handle is not None
+            and handle_is_unique
+        ):
+            return f"dm:@{self.target_handle}"
+        return self.canonical_target
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +272,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     sender: SenderIdentity | None = None
     message_type: str = "text"
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
+    target_presentation: ChannelTargetPresentation | None = None
     attachments: tuple[AttachmentT, ...] = ()
     reply_to_message_id: str | None = None
     channel: str | None = None

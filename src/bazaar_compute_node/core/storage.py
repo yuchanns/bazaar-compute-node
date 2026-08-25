@@ -51,6 +51,23 @@ class RecordInboundResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedInboxTarget:
+    bcn_session: BcnSession
+    channel_session: ChannelSession
+    handle_is_unique: bool
+
+    @property
+    def canonical_target(self) -> str:
+        return self.channel_session.canonical_target
+
+    @property
+    def display_target(self) -> str:
+        return self.channel_session.display_target(
+            handle_is_unique=self.handle_is_unique
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReadMessageHistoryResult:
     source_session: BcnSession
     history: MessageReadResult
@@ -136,17 +153,18 @@ class StorageOperationMixin:
         self,
         caller_session_id: str,
         *,
-        target: str,
+        raw_target: str,
         around_message_id: str | None,
         limit: int,
     ) -> ReadMessageHistoryResult:
         self = _operations(self)  # noqa: PLW0642
         if await self.get_bcn_session(caller_session_id) is None:
             raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
-        source_session = await self.resolve_inbox_target(target)
+        target = await self.resolve_inbox_target(raw_target)
+        source_session = target.bcn_session
         messages = await self.list_messages(
             source_session.id,
-            target=target,
+            target=target.canonical_target,
             around_message_id=around_message_id,
             delivery_states=_HISTORY_DELIVERY_STATES,
             limit=limit,
@@ -281,8 +299,8 @@ class StorageOperationMixin:
                 reply_to_provider_message_id=None,
                 outcome=outcome,
             )
-        resolved_target = await self.resolve_inbox_target(payload.target)
-        if resolved_target.id != target_id:
+        target = await self.resolve_inbox_target(payload.target)
+        if target.bcn_session.id != target_id:
             raise ValueError("outbound target alias binding cannot change")
         target_session = await self.get_bcn_session(target_id)
         if target_session is None:
@@ -480,7 +498,7 @@ class _StorageOperations(Protocol):
         self,
         caller_session_id: str,
         *,
-        target: str,
+        raw_target: str,
         around_message_id: str | None,
         limit: int,
     ) -> ReadMessageHistoryResult: ...
@@ -558,7 +576,7 @@ class _StorageOperations(Protocol):
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage: ...
 
-    async def resolve_inbox_target(self, target: str) -> BcnSession: ...
+    async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 
     async def find_message(
         self,

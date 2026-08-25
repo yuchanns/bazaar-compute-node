@@ -32,6 +32,7 @@ from .v20_remove_freshness_persistence import (
     FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
 )
 from .v21_remove_handoffs import HANDOFF_REMOVAL_MIGRATION
+from .v22_readable_targets import READABLE_TARGET_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -78,6 +79,7 @@ MIGRATIONS = _migration_ledger(
     REMINDER_SYSTEM_MESSAGE_MIGRATION,
     FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
     HANDOFF_REMOVAL_MIGRATION,
+    READABLE_TARGET_MIGRATION,
 )
 
 
