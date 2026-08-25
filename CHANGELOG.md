@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.28 - 2026-08-25
+
+## What's Changed
+* Render packaged text resources with Jinja by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/45
+* feat: add readable message targets by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/46
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.27...v0.1.28
+
 ## 0.1.27 - 2026-08-25
 
 ## What's Changed
