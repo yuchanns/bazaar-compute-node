@@ -9,6 +9,8 @@
   （PR #45 merge commit）。
 - 核心约束：数据库、Message、draft 与实际 Channel 路由只使用稳定的 channel-session UUID；
   群名和 username 只用于展示与 `bcc` selector 解析。
+- 测试约束：整个 feature 只新增一个 pytest test function；所有 provider、storage、selector 与输出
+  场景都作为该函数内有明确 case label 的子场景，已有合同变化直接更新现有测试。
 - 所有 Task 按本文顺序串行实施。每完成一个 Task，运行该 Task 的 focused checks，发送业务
   diff 并停在 review；未经 review 不进入下一 Task。
 
@@ -204,9 +206,9 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 - 增加 migration 22、codec/repository/memory adapter 与非唯一 handle lookup index；
 - 让 inbound observation 更新 ChannelSession，同时保持 `messages.target` 为 canonical；
 - 将 history/send/draft/reply/unfollow 的 target resolution 与 persistence 改为 canonical result；
-- 增加 core/SQLite tests，覆盖升级无回填、observation update/clear、group stale label、DM 唯一/重复、
-  provider-neutral presentation contract、
-  alias send 后持久化 canonical target；
+- 新增本 feature 唯一的 pytest test function，以带 case label 的子场景覆盖升级、observation
+  update/clear、group stale label、DM 唯一/重复、provider-neutral presentation contract 与 alias send
+  后持久化 canonical target；
 - 运行 focused core/SQLite/command tests、Ruff、Pyright、migration ledger check 与
   `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
@@ -215,7 +217,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 
 - 从当前 message `chat` 映射 private username 与 group/supergroup title；
 - 保持 quoted backfill、topic identity、sender identity 与 notification semantics 不变；
-- 扩展 Telegram tests，覆盖 username/title、缺失/清除、unsafe title fallback 与 topic UUID suffix；
+- 扩展同一个 readable-target test function，覆盖 Telegram username/title、缺失/清除、unsafe title
+  fallback 与 topic UUID suffix；
 - 运行 Telegram/core focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
@@ -225,8 +228,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 - 为 `LarkChannel` 增加 5 分钟有界 single-flight cache、health counters 与 best-effort fallback；
 - 只为 group inbound 提供成功 observation；p2p 和 WeCom 维持 UUID；
 - 更新 Lark 部署权限说明；
-- 扩展 Lark API/Channel 与 WeCom tests，覆盖 cache hit/expiry、concurrent collapse、permission/error/
-  malformed fallback、rename refresh 与 DM fallback；
+- 扩展同一个 readable-target test function，覆盖 Lark cache hit/expiry、concurrent collapse、provider
+  fallback、rename refresh，以及 Lark DM / WeCom fallback；
 - 运行 Lark/WeCom focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
@@ -236,7 +239,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
   display projection；
 - 验证任何由 bcc 输出的 target 都能被对应命令重新解析，canonical fallback 始终可用；
 - 更新 developer instructions，删除 short-ID 表述并使用完整 UUID placeholder；
-- 扩展 app/bcc/instruction exact-output tests，覆盖 readable 与 fallback 两条路径；
+- 扩展同一个 readable-target test function，并更新已有 app/bcc/instruction exact-output tests，覆盖
+  readable 与 fallback 两条路径；
 - 运行 app/bcc/instruction focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
