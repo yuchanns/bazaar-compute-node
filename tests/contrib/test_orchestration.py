@@ -19,6 +19,7 @@ from bcn_test_support import (
 )
 
 from bazaar_compute_node.app.application import NodeApplication
+from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
     ChannelConfiguration,
@@ -31,8 +32,10 @@ from bazaar_compute_node.app.registry import (
     SharedAdapterFactories,
 )
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import (
+    ChannelContext,
     ChannelDeliveryReceipt,
     ChannelSendRequest,
     IChannel,
@@ -1088,9 +1091,24 @@ async def test_sqlite_freshness_hold_returns_latest_bounded_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_readable_target_contract() -> None:
+async def test_readable_target_contract(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
     orchestrator, channel, _, storage, _ = await make_sqlite_node()
     repository = storage.scope("workspace-1", "Test Agent")
+    telegram = TelegramChannel(
+        ChannelContext(
+            agent_id="workspace-1",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        token="token",
+    )
+    telegram._bot_id = 1
+    telegram._bot_username = "test_bot"
+    telegram._started_at_s = 1
     try:
         case = "DM observation resolves a readable selector"
         dm_message = replace(
@@ -1182,6 +1200,115 @@ async def test_readable_target_contract() -> None:
         )
         assert first_dm.display_target == "dm:channel-readable-dm", case
         assert second_dm.display_target == "dm:channel-readable-dm-duplicate", case
+
+        case = "Telegram private chat username is the target handle"
+        await telegram._handle_message(
+            {
+                "message_id": 2,
+                "date": 1,
+                "chat": {
+                    "id": 42,
+                    "type": "private",
+                    "username": "TelegramAlice",
+                },
+                "from": {"id": 42, "username": "SenderAlice"},
+                "text": "Current private message",
+                "reply_to_message": {
+                    "message_id": 1,
+                    "date": 1,
+                    "chat": {
+                        "id": 42,
+                        "type": "private",
+                        "username": "OldTelegramAlice",
+                    },
+                    "from": {"id": 43, "username": "QuotedSender"},
+                    "text": "Quoted private message",
+                },
+            },
+            update_id=1,
+        )
+        quoted = telegram._inbound.get_nowait()
+        private = telegram._inbound.get_nowait()
+        assert isinstance(quoted, Message), case
+        assert isinstance(private, Message), case
+        assert quoted.target_presentation == ChannelTargetPresentation(
+            handle="TelegramAlice"
+        ), case
+        assert private.target_presentation == quoted.target_presentation, case
+        await orchestrator._record_inbound(quoted)
+        await orchestrator._record_inbound(private)
+        target = await repository.resolve_inbox_target("dm:@telegramalice")
+        assert target.display_target == "dm:@TelegramAlice", case
+
+        case = "Telegram missing username clears the readable DM handle"
+        await telegram._handle_message(
+            {
+                "message_id": 3,
+                "date": 1,
+                "chat": {"id": 42, "type": "private"},
+                "from": {"id": 42, "username": "SenderAlice"},
+                "text": "Private message without a chat username",
+            },
+            update_id=2,
+        )
+        private = telegram._inbound.get_nowait()
+        assert isinstance(private, Message), case
+        assert private.target_presentation == ChannelTargetPresentation(), case
+        await orchestrator._record_inbound(private)
+        target = await repository.resolve_inbox_target(private.target)
+        assert target.display_target == private.target, case
+
+        case = "Telegram group title keeps the topic-specific UUID suffix"
+        await telegram._handle_message(
+            {
+                "message_id": 4,
+                "message_thread_id": 9,
+                "date": 1,
+                "chat": {
+                    "id": -100,
+                    "type": "supergroup",
+                    "title": "Core: Platform",
+                },
+                "from": {"id": 44, "username": "PlatformMember"},
+                "text": "Topic message",
+            },
+            update_id=3,
+        )
+        group = telegram._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert group.target_presentation == ChannelTargetPresentation(
+            display_name="Core: Platform"
+        ), case
+        await orchestrator._record_inbound(group)
+        target = await repository.resolve_inbox_target(
+            f"#Previous Title:{group.channel_session_id}"
+        )
+        assert target.display_target == (
+            f"#Core: Platform:{group.channel_session_id}"
+        ), case
+
+        case = "Telegram unsafe group title clears presentation to UUID fallback"
+        await telegram._handle_message(
+            {
+                "message_id": 5,
+                "message_thread_id": 9,
+                "date": 1,
+                "chat": {
+                    "id": -100,
+                    "type": "supergroup",
+                    "title": "Unsafe]\nTitle",
+                },
+                "from": {"id": 44, "username": "PlatformMember"},
+                "text": "Topic message after an unsafe rename",
+            },
+            update_id=4,
+        )
+        group = telegram._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert group.target_presentation == ChannelTargetPresentation(), case
+        await orchestrator._record_inbound(group)
+        target = await repository.resolve_inbox_target(group.target)
+        assert target.display_target == group.target, case
 
         case = "schema v22 persists presentation separately from messages"
         async with storage.reader() as reader:
