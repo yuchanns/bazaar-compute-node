@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Protocol, cast
+from unittest.mock import AsyncMock
 from uuid import NAMESPACE_URL, UUID, uuid5, uuid7
 
 import pytest
@@ -31,8 +34,12 @@ from bazaar_compute_node.app.registry import (
     AgentAdapterFactories,
     SharedAdapterFactories,
 )
+from bazaar_compute_node.contrib.lark.api import LarkApi
+from bazaar_compute_node.contrib.lark.channel import LarkChannel
+from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
+from bazaar_compute_node.contrib.wecom.channel import WeComChannel
 from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import (
     ChannelContext,
@@ -1097,15 +1104,13 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
 
     orchestrator, channel, _, storage, _ = await make_sqlite_node()
     repository = storage.scope("workspace-1", "Test Agent")
-    telegram = TelegramChannel(
-        ChannelContext(
-            agent_id="workspace-1",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
-            options={},
-            workspace=lambda: tmp_path,
-        ),
-        token="token",
+    context = ChannelContext(
+        agent_id="workspace-1",
+        attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+        options={},
+        workspace=lambda: tmp_path,
     )
+    telegram = TelegramChannel(context, token="token")
     telegram._bot_id = 1
     telegram._bot_username = "test_bot"
     telegram._started_at_s = 1
@@ -1309,6 +1314,200 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         await orchestrator._record_inbound(group)
         target = await repository.resolve_inbox_target(group.target)
         assert target.display_target == group.target, case
+
+        api = SimpleNamespace(
+            get_chat=AsyncMock(return_value={"data": {"name": "Lark Platform"}}),
+            get_user=AsyncMock(return_value={"data": {"user": {"name": "Lark User"}}}),
+            token_refresh_failures=0,
+        )
+        lark = LarkChannel(
+            context,
+            app_id="app-id",
+            app_secret="app-secret",
+            region="feishu",
+            base_url="https://open.feishu.cn",
+            timer_wheel=TimerWheel(),
+        )
+        lark._api = cast(LarkApi, api)
+        lark._identity = LarkBotIdentity(open_id="ou_bot")
+
+        case = "Lark contact cache keeps success longer than lookup failure"
+        names = await asyncio.gather(
+            lark._contact_name(tenant_key="tenant-key", open_id="ou_contact"),
+            lark._contact_name(tenant_key="tenant-key", open_id="ou_contact"),
+        )
+        assert names == ["Lark User", "Lark User"], case
+        assert api.get_user.await_count == 1, case
+        api.get_user.side_effect = PermissionError("missing contact permission")
+        assert (
+            await lark._contact_name(
+                tenant_key="tenant-key",
+                open_id="ou_contact_denied",
+            )
+            is None
+        ), case
+        success_expires = lark._contact_cache[("app-id", "tenant-key", "ou_contact")][0]
+        failure_expires = lark._contact_cache[
+            ("app-id", "tenant-key", "ou_contact_denied")
+        ][0]
+        assert success_expires - failure_expires > 23 * 60 * 60, case
+        api.get_user.side_effect = None
+
+        case = "Lark group lookup projects a cached readable title"
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": "event-lark-group-1",
+                "event_type": "im.message.receive_v1",
+                "tenant_key": "tenant-key",
+            },
+            "event": {
+                "message": {
+                    "message_id": "om_lark_group_1",
+                    "chat_id": "oc_lark_group",
+                    "chat_type": "group",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "Lark group message"}),
+                    "create_time": "1",
+                },
+                "sender": {
+                    "sender_id": {"open_id": "ou_sender"},
+                    "sender_type": "app",
+                    "tenant_key": "tenant-key",
+                },
+            },
+        }
+        assert await lark._handle_event("event", payload, object()) is True, case
+        group = lark._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert group.target_presentation == ChannelTargetPresentation(
+            display_name="Lark Platform"
+        ), case
+        await orchestrator._record_inbound(group)
+        target = await repository.resolve_inbox_target(group.target)
+        assert target.display_target == (
+            f"#Lark Platform:{group.channel_session_id}"
+        ), case
+
+        message = cast(
+            dict[str, object], cast(dict[str, object], payload["event"])["message"]
+        )
+        message["message_id"] = "om_lark_group_2"
+        header = cast(dict[str, object], payload["header"])
+        header["event_id"] = "event-lark-group-2"
+        assert await lark._handle_event("event", payload, object()) is True, case
+        group = lark._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert api.get_chat.await_count == 1, case
+        assert lark.health["chat_cache_hits"] == 1, case
+
+        case = "Lark expired cache refreshes a renamed group"
+        lark._chat_cache[("app-id", "tenant-key", "oc_lark_group")] = (
+            0.0,
+            "Lark Platform",
+        )
+        api.get_chat.return_value = {"data": {"name": "Lark Core"}}
+        message["message_id"] = "om_lark_group_3"
+        header["event_id"] = "event-lark-group-3"
+        assert await lark._handle_event("event", payload, object()) is True, case
+        group = lark._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        await orchestrator._record_inbound(group)
+        target = await repository.resolve_inbox_target(group.target)
+        assert target.display_target == f"#Lark Core:{group.channel_session_id}", case
+        assert api.get_chat.await_count == 2, case
+
+        case = "Lark concurrent lookups collapse to one provider request"
+        api.get_chat.return_value = {"data": {"name": "Lark Concurrent"}}
+        requests = api.get_chat.await_count
+        names = await asyncio.gather(
+            lark._chat_name(tenant_key="tenant-key", chat_id="oc_lark_concurrent"),
+            lark._chat_name(tenant_key="tenant-key", chat_id="oc_lark_concurrent"),
+        )
+        assert names == ["Lark Concurrent", "Lark Concurrent"], case
+        assert api.get_chat.await_count == requests + 1, case
+
+        case = "Lark lookup failure preserves UUID fallback without blocking inbound"
+        api.get_chat.side_effect = PermissionError("missing chat permission")
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": "event-lark-denied",
+                "event_type": "im.message.receive_v1",
+                "tenant_key": "tenant-key",
+            },
+            "event": {
+                "message": {
+                    "message_id": "om_lark_denied",
+                    "chat_id": "oc_lark_denied",
+                    "chat_type": "group",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "Permission fallback"}),
+                    "create_time": "1",
+                },
+                "sender": {
+                    "sender_id": {"open_id": "ou_sender"},
+                    "sender_type": "app",
+                    "tenant_key": "tenant-key",
+                },
+            },
+        }
+        assert await lark._handle_event("event", payload, object()) is True, case
+        group = lark._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert group.target_presentation is None, case
+        await orchestrator._record_inbound(group)
+        target = await repository.resolve_inbox_target(group.target)
+        assert target.display_target == group.target, case
+        assert lark.health["chat_lookup_failures"] == 1, case
+        success_expires = lark._chat_cache[("app-id", "tenant-key", "oc_lark_group")][0]
+        failure_expires = lark._chat_cache[("app-id", "tenant-key", "oc_lark_denied")][
+            0
+        ]
+        assert success_expires - failure_expires > 23 * 60 * 60, case
+
+        case = "Lark direct messages do not perform group lookup"
+        api.get_chat.side_effect = None
+        requests = api.get_chat.await_count
+        message = cast(
+            dict[str, object],
+            cast(dict[str, object], payload["event"])["message"],
+        )
+        message["message_id"] = "om_lark_p2p"
+        message["chat_id"] = "oc_lark_p2p"
+        message["chat_type"] = "p2p"
+        header = cast(dict[str, object], payload["header"])
+        header["event_id"] = "event-lark-p2p"
+        assert await lark._handle_event("event", payload, object()) is True, case
+        private = lark._inbound.get_nowait()
+        assert isinstance(private, Message), case
+        assert private.target_presentation is None, case
+        assert api.get_chat.await_count == requests, case
+
+        case = "WeCom remains on canonical UUID fallback"
+        wecom = WeComChannel(
+            context,
+            bot_id="bot-id",
+            secret="secret",
+            websocket_url="wss://example.invalid",
+        )
+        await wecom._receive_message(
+            {
+                "cmd": "aibot_msg_callback",
+                "body": {
+                    "msgid": "wecom-readable-fallback",
+                    "chattype": "group",
+                    "chatid": "wecom-group",
+                    "from": {"userid": "wecom-user"},
+                    "msgtype": "text",
+                    "text": {"content": "WeCom group message"},
+                },
+            }
+        )
+        group = wecom._inbound.get_nowait()
+        assert isinstance(group, Message), case
+        assert group.target_presentation is None, case
+        assert group.target == f"group:{group.channel_session_id}", case
 
         case = "schema v22 persists presentation separately from messages"
         async with storage.reader() as reader:

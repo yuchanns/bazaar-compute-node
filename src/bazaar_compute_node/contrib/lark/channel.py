@@ -7,6 +7,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from time import monotonic, time_ns
+from unicodedata import category
 
 import aiohttp
 
@@ -22,6 +23,7 @@ from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
     ChannelTargetKind,
+    ChannelTargetPresentation,
     InboundAttachment,
     Message,
     MessageDirection,
@@ -47,9 +49,14 @@ from .transport import LarkTransport
 
 _STOP = object()
 _EVENT_TYPE = "im.message.receive_v1"
-_CONTACT_CACHE_TTL_SECONDS = 5 * 60
+_CONTACT_CACHE_TTL_SECONDS = 24 * 60 * 60
+_CONTACT_FAILURE_CACHE_TTL_SECONDS = 5 * 60
 _CONTACT_CACHE_MAX_ENTRIES = 256
 _CONTACT_TIMEOUT_SECONDS = 5.0
+_CHAT_CACHE_TTL_SECONDS = 24 * 60 * 60
+_CHAT_FAILURE_CACHE_TTL_SECONDS = 5 * 60
+_CHAT_CACHE_MAX_ENTRIES = 256
+_CHAT_TIMEOUT_SECONDS = 5.0
 _PARENT_TIMEOUT_SECONDS = 10.0
 _RESOURCE_TIMEOUT_SECONDS = 60.0
 _TYPING_TIMEOUT_SECONDS = 3.0
@@ -113,6 +120,14 @@ class LarkChannel(IChannel):
         self._contact_lookup_requests = 0
         self._contact_lookup_failures = 0
         self._contact_cache_hits = 0
+        self._chat_cache: OrderedDict[
+            tuple[str, str, str], tuple[float, str | None]
+        ] = OrderedDict()
+        self._chat_inflight: dict[tuple[str, str, str], asyncio.Task[str | None]] = {}
+        self._chat_lock = asyncio.Lock()
+        self._chat_lookup_requests = 0
+        self._chat_lookup_failures = 0
+        self._chat_cache_hits = 0
         self._resource_cache = LarkResourceCache(context.attachments)
         self._resources_materialized = 0
         self._resource_failures = 0
@@ -162,6 +177,9 @@ class LarkChannel(IChannel):
             "contact_lookup_requests": self._contact_lookup_requests,
             "contact_lookup_failures": self._contact_lookup_failures,
             "contact_cache_hits": self._contact_cache_hits,
+            "chat_lookup_requests": self._chat_lookup_requests,
+            "chat_lookup_failures": self._chat_lookup_failures,
+            "chat_cache_hits": self._chat_cache_hits,
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
@@ -265,6 +283,7 @@ class LarkChannel(IChannel):
             await self._stop_typing(timeout=timeout)
             await self._resource_cache.close()
             await self._close_contact_cache()
+            await self._close_chat_cache()
             if api is not None:
                 self._token_refresh_failures = api.token_refresh_failures
                 await api.stop()
@@ -376,6 +395,14 @@ class LarkChannel(IChannel):
             chat_id=chat_id,
             thread_id=thread_id,
         )
+        presentation = None
+        if target_kind is ChannelTargetKind.GROUP:
+            name = await self._chat_name(
+                tenant_key=tenant_key,
+                chat_id=chat_id,
+            )
+            if name is not None:
+                presentation = ChannelTargetPresentation(display_name=name)
         received_at_ms = time_ns() // 1_000_000
         metadata = {
             "lark_event_type": _EVENT_TYPE,
@@ -402,6 +429,7 @@ class LarkChannel(IChannel):
                         parent,
                         thread_identity=thread_identity,
                         target_kind=target_kind,
+                        presentation=presentation,
                         sender_payload=_message_sender(parent),
                         tenant_key=tenant_key,
                         mentions_agent=False,
@@ -426,6 +454,7 @@ class LarkChannel(IChannel):
             message,
             thread_identity=thread_identity,
             target_kind=target_kind,
+            presentation=presentation,
             sender_payload=sender,
             tenant_key=tenant_key,
             mentions_agent=target_kind is ChannelTargetKind.GROUP,
@@ -454,6 +483,7 @@ class LarkChannel(IChannel):
         *,
         thread_identity: LarkThreadIdentity,
         target_kind: ChannelTargetKind,
+        presentation: ChannelTargetPresentation | None,
         sender_payload: Mapping[str, object] | None,
         tenant_key: str,
         mentions_agent: bool,
@@ -514,6 +544,7 @@ class LarkChannel(IChannel):
             target=f"{target_kind.value}:{thread_identity.channel_session_id}",
             body=projection.body,
             target_kind=target_kind,
+            target_presentation=presentation,
             mentions_agent=mentions_agent,
             notifies_runtime=notifies_runtime,
             attachments=attachments,
@@ -637,7 +668,12 @@ class LarkChannel(IChannel):
                 self._contact_inflight.pop(key, None)
                 if completed:
                     self._contact_cache[key] = (
-                        monotonic() + _CONTACT_CACHE_TTL_SECONDS,
+                        monotonic()
+                        + (
+                            _CONTACT_CACHE_TTL_SECONDS
+                            if name is not None
+                            else _CONTACT_FAILURE_CACHE_TTL_SECONDS
+                        ),
                         name,
                     )
                     self._contact_cache.move_to_end(key)
@@ -649,6 +685,95 @@ class LarkChannel(IChannel):
             tasks = tuple(self._contact_inflight.values())
             self._contact_inflight.clear()
             self._contact_cache.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _chat_name(self, *, tenant_key: str, chat_id: str) -> str | None:
+        key = (self._app_id, tenant_key, chat_id)
+        now = monotonic()
+        async with self._chat_lock:
+            cached = self._chat_cache.get(key)
+            if cached is not None:
+                expires_at, name = cached
+                if expires_at > now:
+                    self._chat_cache_hits += 1
+                    self._chat_cache.move_to_end(key)
+                    return name
+                self._chat_cache.pop(key, None)
+            task = self._chat_inflight.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._load_chat_name(key, chat_id),
+                    name="bcn-lark-chat",
+                )
+                self._chat_inflight[key] = task
+        return await asyncio.shield(task)
+
+    async def _load_chat_name(
+        self,
+        key: tuple[str, str, str],
+        chat_id: str,
+    ) -> str | None:
+        name: str | None = None
+        completed = False
+        try:
+            api = self._api
+            if api is None:
+                completed = True
+                return None
+            self._chat_lookup_requests += 1
+            response = await api.get_chat(chat_id, timeout=_CHAT_TIMEOUT_SECONDS)
+            data = response.get("data")
+            raw_name = data.get("name") if isinstance(data, Mapping) else None
+            if (
+                isinstance(raw_name, str)
+                and raw_name.strip()
+                and "]" not in raw_name
+                and not any(category(character) == "Cc" for character in raw_name)
+            ):
+                name = raw_name
+            else:
+                self._chat_lookup_failures += 1
+                self._observe(
+                    "lark.chat.lookup_failed",
+                    error_kind="invalid_name",
+                )
+            completed = True
+            return name
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._chat_lookup_failures += 1
+            self._observe(
+                "lark.chat.lookup_failed",
+                error_kind=type(error).__name__,
+            )
+            completed = True
+            return None
+        finally:
+            async with self._chat_lock:
+                self._chat_inflight.pop(key, None)
+                if completed:
+                    self._chat_cache[key] = (
+                        monotonic()
+                        + (
+                            _CHAT_CACHE_TTL_SECONDS
+                            if name is not None
+                            else _CHAT_FAILURE_CACHE_TTL_SECONDS
+                        ),
+                        name,
+                    )
+                    self._chat_cache.move_to_end(key)
+                    while len(self._chat_cache) > _CHAT_CACHE_MAX_ENTRIES:
+                        self._chat_cache.popitem(last=False)
+
+    async def _close_chat_cache(self) -> None:
+        async with self._chat_lock:
+            tasks = tuple(self._chat_inflight.values())
+            self._chat_inflight.clear()
+            self._chat_cache.clear()
         for task in tasks:
             task.cancel()
         if tasks:

@@ -378,6 +378,18 @@ class LarkApi:
             params={"user_id_type": "open_id"},
         )
 
+    async def get_chat(
+        self,
+        chat_id: str,
+        *,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        return await self._get_json(
+            "chat_get",
+            f"/open-apis/im/v1/chats/{quote(chat_id, safe='')}",
+            timeout=timeout,
+        )
+
     async def get_message(
         self,
         message_id: str,

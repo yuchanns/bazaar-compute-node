@@ -170,14 +170,13 @@ Lark `im.message.receive_v1` 只有 `chat_id/chat_type`，群聊在组装当前 
 `LarkApi.get_chat(chat_id)`，解析响应 `data.name`：
 
 - 使用现有 tenant access token 与 `_get_json()` error mapping；
-- 新 cache 与 contact cache 一样采用 5 分钟 TTL、256 entry 上限和 per-key single-flight，避免每条
-  消息调用 OpenAPI，同时让群改名在有限时间内刷新；
+- chat cache 与现有 contact cache 都对成功名称采用 1 天 TTL，对失败/空名称采用 5 分钟负缓存；
+  两者都设 256 entry 上限和 per-key single-flight，避免正常消息频繁调用 OpenAPI，同时让权限恢复与
+  临时错误在有限时间内重试；
 - lookup timeout、缺权限、限流、malformed response 或空 name 都不阻塞入站消息；记录结构化
   observation/health counter，并使用 UUID fallback；
 - 只有成功取得的群名 observation 才更新持久化值；临时查询失败不清除上一次成功名称；
 - p2p 不调用 chat lookup，也不把 contact display name 当作 username。
-
-部署文档补充 Lark 群名需要应用具有读取群组信息的权限；没有权限时功能自动降级，不影响收发消息。
 
 ### 5.3 WeCom
 
@@ -225,9 +224,9 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 ### Task 3：接入 Lark 群名 lookup 与 WeCom fallback
 
 - 为 `LarkApi` 增加 chat-info GET 与 response parsing；
-- 为 `LarkChannel` 增加 5 分钟有界 single-flight cache、health counters 与 best-effort fallback；
+- 将 Lark contact/chat 名称 cache 统一为成功 1 天/失败 5 分钟，并为 chat lookup 增加有界
+  single-flight、health counters 与 best-effort fallback；
 - 只为 group inbound 提供成功 observation；p2p 和 WeCom 维持 UUID；
-- 更新 Lark 部署权限说明；
 - 扩展同一个 readable-target test function，覆盖 Lark cache hit/expiry、concurrent collapse、provider
   fallback、rename refresh，以及 Lark DM / WeCom fallback；
 - 运行 Lark/WeCom focused tests、Ruff、Pyright 与 `git diff --check`；
