@@ -52,7 +52,11 @@ class _FakeApprovalApi:
         self.answers.append((callback_query_id, text))
 
 
-def _request(sender_id: str | None) -> ChannelApprovalRequest:
+def _request(
+    sender_id: str | None,
+    *,
+    description: str | None = None,
+) -> ChannelApprovalRequest:
     identity = TelegramThreadIdentity(
         bot_id=TEST_BOT_ID,
         chat_id=TEST_CHAT_ID,
@@ -65,6 +69,7 @@ def _request(sender_id: str | None) -> ChannelApprovalRequest:
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
+            description=description,
         ),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id=identity.provider_thread_id,
@@ -82,6 +87,36 @@ def _callback(*, query_id: str, token: str, sender_id: int) -> dict[str, object]
             "chat": {"id": TEST_CHAT_ID},
         },
     }
+
+
+def test_telegram_approval_markdown_renders_optional_description(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = TelegramApprovalChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        token="token",
+    )
+
+    assert channel._approval_markdown(_request(str(TEST_ORIGINAL_SENDER_ID))) == (
+        "## Approval required\n\n**Action:** command execution"
+    )
+    assert channel._approval_markdown(
+        _request(
+            str(TEST_ORIGINAL_SENDER_ID),
+            description="Run ``` and {{ untouched }}.",
+        )
+    ) == (
+        "## Approval required\n\n**Action:** command execution\n\n````\n"
+        "Run ``` and {{ untouched }}.\n````"
+    )
 
 
 @pytest.mark.asyncio
