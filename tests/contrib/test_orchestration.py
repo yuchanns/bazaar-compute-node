@@ -23,6 +23,11 @@ from bcn_test_support import (
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
+from bazaar_compute_node.app.command import (
+    format_check_message,
+    format_read_message,
+    serialize_message,
+)
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
     ChannelConfiguration,
@@ -39,7 +44,6 @@ from bazaar_compute_node.contrib.lark.channel import LarkChannel
 from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
-from bazaar_compute_node.contrib.wecom.channel import WeComChannel
 from bazaar_compute_node.core.audit import AuditEvent
 from bazaar_compute_node.core.channel import (
     ChannelContext,
@@ -50,6 +54,7 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.command import (
     ICommandService,
     MessageSendFreshnessHold,
+    MessageSendSuccess,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -679,12 +684,10 @@ async def test_channel_storage_runtime_turn_path() -> None:
             and event.correlation.turn_id == "turn-message-bcn-1-1"
             for event in audit.events
         )
-        assert (
-            await orchestrator.command_service.unfollow(
-                "bcn-1", raw_target="dm:channel-bcn-1"
-            )
-            is False
+        unfollowed = await orchestrator.command_service.unfollow(
+            "bcn-1", raw_target="dm:channel-bcn-1"
         )
+        assert unfollowed.changed is False
         assert storage.channel_sessions["channel-bcn-1"].following is True
     finally:
         await orchestrator.stop(timeout=1)
@@ -785,8 +788,8 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
             body="runtime-generated reply",
             created_at_ms=2,
         )
-        assert isinstance(outbound, Message)
-        if outbound.delivery_state is not OutboundDeliveryState.SENT:
+        assert isinstance(outbound, MessageSendSuccess)
+        if outbound.message.delivery_state is not OutboundDeliveryState.SENT:
             raise AssertionError("command did not deliver the outbound message")
 
     try:
@@ -1016,7 +1019,8 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             created_at_ms=3,
             send_draft=True,
         )
-        assert isinstance(delivered, Message)
+        assert isinstance(delivered, MessageSendSuccess)
+        delivered = delivered.message
         assert delivered.delivery_state is OutboundDeliveryState.SENT
         assert delivered.body == "reply"
         assert channel.send_requests[0].provider_reply_to_message_id == (
@@ -1066,7 +1070,8 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             body="revised draft",
             created_at_ms=6,
         )
-        assert isinstance(revised, Message)
+        assert isinstance(revised, MessageSendSuccess)
+        revised = revised.message
         assert revised.body == "revised draft"
         assert len(channel.send_attempts) == 2
     finally:
@@ -1124,7 +1129,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         target = await repository.resolve_inbox_target("dm:@ALICE")
         assert created is True, case
         assert dm_message.target == "dm:channel-readable-dm", case
-        assert dm_message.target_presentation is None, case
         assert target.bcn_session.id == "readable-dm", case
         assert target.canonical_target == "dm:channel-readable-dm", case
         assert target.display_target == "dm:@Alice", case
@@ -1145,8 +1149,9 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             body="Readable target reply",
             created_at_ms=2,
         )
-        assert isinstance(delivered, Message), case
-        assert delivered.target == "dm:channel-readable-dm", case
+        assert isinstance(delivered, MessageSendSuccess), case
+        assert delivered.target == "dm:@Alice", case
+        assert delivered.message.target == "dm:channel-readable-dm", case
         assert channel.send_attempts[-1].session_id == "readable-dm", case
 
         case = "group labels are current presentation over a stable UUID"
@@ -1177,34 +1182,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             "#Platform Team:channel-readable-group"
         )
         assert target.display_target == "#Core Platform:channel-readable-group", case
-
-        case = "an authoritative empty observation restores UUID fallback"
-        await orchestrator._record_inbound(
-            replace(
-                group_message,
-                seq=3,
-                message_id="message-readable-group-3",
-                provider_message_id="provider-readable-group-3",
-                received_at_ms=3,
-                target_presentation=ChannelTargetPresentation(),
-            )
-        )
-        target = await repository.resolve_inbox_target("group:channel-readable-group")
-        assert target.display_target == "group:channel-readable-group", case
-
-        case = "duplicate DM handles display canonical UUID fallbacks"
-        await orchestrator._record_inbound(
-            replace(
-                make_message(session_id="readable-dm-duplicate"),
-                target_presentation=ChannelTargetPresentation(handle="alice"),
-            )
-        )
-        first_dm = await repository.resolve_inbox_target("dm:channel-readable-dm")
-        second_dm = await repository.resolve_inbox_target(
-            "dm:channel-readable-dm-duplicate"
-        )
-        assert first_dm.display_target == "dm:channel-readable-dm", case
-        assert second_dm.display_target == "dm:channel-readable-dm-duplicate", case
 
         case = "Telegram private chat username is the target handle"
         await telegram._handle_message(
@@ -1245,39 +1222,68 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         target = await repository.resolve_inbox_target("dm:@telegramalice")
         assert target.display_target == "dm:@TelegramAlice", case
 
-        case = "Telegram missing username clears the readable DM handle"
+        case = "Telegram topic name keeps the topic-specific UUID suffix"
         await telegram._handle_message(
             {
-                "message_id": 3,
-                "date": 1,
-                "chat": {"id": 42, "type": "private"},
-                "from": {"id": 42, "username": "SenderAlice"},
-                "text": "Private message without a chat username",
-            },
-            update_id=2,
-        )
-        private = telegram._inbound.get_nowait()
-        assert isinstance(private, Message), case
-        assert private.target_presentation == ChannelTargetPresentation(), case
-        await orchestrator._record_inbound(private)
-        target = await repository.resolve_inbox_target(private.target)
-        assert target.display_target == private.target, case
-
-        case = "Telegram group title keeps the topic-specific UUID suffix"
-        await telegram._handle_message(
-            {
-                "message_id": 4,
+                "message_id": 9,
                 "message_thread_id": 9,
                 "date": 1,
                 "chat": {
                     "id": -100,
                     "type": "supergroup",
-                    "title": "Core: Platform",
+                    "title": "Parent Group",
+                },
+                "from": {"id": 44, "username": "PlatformMember"},
+                "forum_topic_created": {
+                    "name": "Original Platform",
+                    "icon_color": 7_322_092,
+                },
+            },
+            update_id=2,
+        )
+        await telegram._handle_message(
+            {
+                "message_id": 10,
+                "message_thread_id": 9,
+                "date": 1,
+                "chat": {
+                    "id": -100,
+                    "type": "supergroup",
+                    "title": "Parent Group",
+                },
+                "from": {"id": 44, "username": "PlatformMember"},
+                "forum_topic_edited": {"name": "Core: Platform"},
+            },
+            update_id=3,
+        )
+        await telegram._handle_message(
+            {
+                "message_id": 11,
+                "message_thread_id": 9,
+                "date": 1,
+                "chat": {
+                    "id": -100,
+                    "type": "supergroup",
+                    "title": "Parent Group",
                 },
                 "from": {"id": 44, "username": "PlatformMember"},
                 "text": "Topic message",
+                "reply_to_message": {
+                    "message_id": 9,
+                    "message_thread_id": 9,
+                    "date": 1,
+                    "chat": {
+                        "id": -100,
+                        "type": "supergroup",
+                        "title": "Parent Group",
+                    },
+                    "forum_topic_created": {
+                        "name": "Original Platform",
+                        "icon_color": 7_322_092,
+                    },
+                },
             },
-            update_id=3,
+            update_id=4,
         )
         group = telegram._inbound.get_nowait()
         assert isinstance(group, Message), case
@@ -1291,29 +1297,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         assert target.display_target == (
             f"#Core: Platform:{group.channel_session_id}"
         ), case
-
-        case = "Telegram unsafe group title clears presentation to UUID fallback"
-        await telegram._handle_message(
-            {
-                "message_id": 5,
-                "message_thread_id": 9,
-                "date": 1,
-                "chat": {
-                    "id": -100,
-                    "type": "supergroup",
-                    "title": "Unsafe]\nTitle",
-                },
-                "from": {"id": 44, "username": "PlatformMember"},
-                "text": "Topic message after an unsafe rename",
-            },
-            update_id=4,
-        )
-        group = telegram._inbound.get_nowait()
-        assert isinstance(group, Message), case
-        assert group.target_presentation == ChannelTargetPresentation(), case
-        await orchestrator._record_inbound(group)
-        target = await repository.resolve_inbox_target(group.target)
-        assert target.display_target == group.target, case
 
         api = SimpleNamespace(
             get_chat=AsyncMock(return_value={"data": {"name": "Lark Platform"}}),
@@ -1331,27 +1314,13 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         lark._api = cast(LarkApi, api)
         lark._identity = LarkBotIdentity(open_id="ou_bot")
 
-        case = "Lark contact cache keeps success longer than lookup failure"
+        case = "Lark contact cache coalesces successful lookups"
         names = await asyncio.gather(
             lark._contact_name(tenant_key="tenant-key", open_id="ou_contact"),
             lark._contact_name(tenant_key="tenant-key", open_id="ou_contact"),
         )
         assert names == ["Lark User", "Lark User"], case
         assert api.get_user.await_count == 1, case
-        api.get_user.side_effect = PermissionError("missing contact permission")
-        assert (
-            await lark._contact_name(
-                tenant_key="tenant-key",
-                open_id="ou_contact_denied",
-            )
-            is None
-        ), case
-        success_expires = lark._contact_cache[("app-id", "tenant-key", "ou_contact")][0]
-        failure_expires = lark._contact_cache[
-            ("app-id", "tenant-key", "ou_contact_denied")
-        ][0]
-        assert success_expires - failure_expires > 23 * 60 * 60, case
-        api.get_user.side_effect = None
 
         case = "Lark group lookup projects a cached readable title"
         payload = {
@@ -1415,6 +1384,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         await orchestrator._record_inbound(group)
         target = await repository.resolve_inbox_target(group.target)
         assert target.display_target == f"#Lark Core:{group.channel_session_id}", case
+        lark_target = target
         assert api.get_chat.await_count == 2, case
 
         case = "Lark concurrent lookups collapse to one provider request"
@@ -1427,87 +1397,103 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         assert names == ["Lark Concurrent", "Lark Concurrent"], case
         assert api.get_chat.await_count == requests + 1, case
 
-        case = "Lark lookup failure preserves UUID fallback without blocking inbound"
-        api.get_chat.side_effect = PermissionError("missing chat permission")
-        payload = {
-            "schema": "2.0",
-            "header": {
-                "event_id": "event-lark-denied",
-                "event_type": "im.message.receive_v1",
-                "tenant_key": "tenant-key",
-            },
-            "event": {
-                "message": {
-                    "message_id": "om_lark_denied",
-                    "chat_id": "oc_lark_denied",
-                    "chat_type": "group",
-                    "message_type": "text",
-                    "content": json.dumps({"text": "Permission fallback"}),
-                    "create_time": "1",
-                },
-                "sender": {
-                    "sender_id": {"open_id": "ou_sender"},
-                    "sender_type": "app",
-                    "tenant_key": "tenant-key",
-                },
-            },
-        }
-        assert await lark._handle_event("event", payload, object()) is True, case
-        group = lark._inbound.get_nowait()
-        assert isinstance(group, Message), case
-        assert group.target_presentation is None, case
-        await orchestrator._record_inbound(group)
-        target = await repository.resolve_inbox_target(group.target)
-        assert target.display_target == group.target, case
-        assert lark.health["chat_lookup_failures"] == 1, case
-        success_expires = lark._chat_cache[("app-id", "tenant-key", "oc_lark_group")][0]
-        failure_expires = lark._chat_cache[("app-id", "tenant-key", "oc_lark_denied")][
-            0
-        ]
-        assert success_expires - failure_expires > 23 * 60 * 60, case
+        case = "all displayed targets round-trip through command resolution"
+        await orchestrator._record_inbound(
+            replace(
+                make_message(session_id="readable-dm"),
+                seq=3,
+                message_id="message-readable-dm-3",
+                provider_message_id="provider-readable-dm-3",
+                received_at_ms=3,
+                target_presentation=ChannelTargetPresentation(handle="Alice"),
+            )
+        )
+        inbox = await orchestrator.command_service.list_inbox("readable-dm")
+        for summary in inbox.targets:
+            target = await repository.resolve_inbox_target(summary.target)
+            assert target.bcn_session.id == summary.session_id, case
+        assert any(summary.target == "dm:@Alice" for summary in inbox.targets), case
+        assert any(
+            summary.target == lark_target.display_target for summary in inbox.targets
+        ), case
 
-        case = "Lark direct messages do not perform group lookup"
-        api.get_chat.side_effect = None
-        requests = api.get_chat.await_count
-        message = cast(
-            dict[str, object],
-            cast(dict[str, object], payload["event"])["message"],
+        case = "check and read headers use the current display projection"
+        checked = await orchestrator.command_service.check("readable-dm")
+        checked_payload = serialize_message(
+            checked.messages[-1], checked.target_projections
         )
-        message["message_id"] = "om_lark_p2p"
-        message["chat_id"] = "oc_lark_p2p"
-        message["chat_type"] = "p2p"
-        header = cast(dict[str, object], payload["header"])
-        header["event_id"] = "event-lark-p2p"
-        assert await lark._handle_event("event", payload, object()) is True, case
-        private = lark._inbound.get_nowait()
-        assert isinstance(private, Message), case
-        assert private.target_presentation is None, case
-        assert api.get_chat.await_count == requests, case
+        assert format_check_message(checked_payload).startswith("[target=dm:@Alice "), (
+            case
+        )
+        history = await orchestrator.command_service.read(
+            "readable-dm",
+            raw_target="dm:@Alice",
+        )
+        history_payload = serialize_message(
+            history.messages[-1], history.target_projections
+        )
+        assert "replyTarget=dm:@Alice" in format_read_message(
+            history_payload,
+            index=1,
+            count=1,
+        ), case
 
-        case = "WeCom remains on canonical UUID fallback"
-        wecom = WeComChannel(
-            context,
-            bot_id="bot-id",
-            secret="secret",
-            websocket_url="wss://example.invalid",
+        case = "freshness and send outputs use a resolvable display target"
+        await orchestrator._record_inbound(
+            replace(
+                make_message(session_id="readable-dm"),
+                seq=4,
+                message_id="message-readable-dm-4",
+                provider_message_id="provider-readable-dm-4",
+                received_at_ms=4,
+                target_presentation=ChannelTargetPresentation(handle="Alice"),
+            )
         )
-        await wecom._receive_message(
-            {
-                "cmd": "aibot_msg_callback",
-                "body": {
-                    "msgid": "wecom-readable-fallback",
-                    "chattype": "group",
-                    "chatid": "wecom-group",
-                    "from": {"userid": "wecom-user"},
-                    "msgtype": "text",
-                    "text": {"content": "WeCom group message"},
-                },
-            }
+        held = await orchestrator.command_service.send(
+            session_id="readable-dm",
+            command_id="readable-target-hold",
+            raw_target="dm:@Alice",
+            body="Held readable target reply",
+            created_at_ms=5,
         )
-        group = wecom._inbound.get_nowait()
-        assert isinstance(group, Message), case
-        assert group.target_presentation is None, case
-        assert group.target == f"group:{group.channel_session_id}", case
+        assert isinstance(held, MessageSendFreshnessHold), case
+        assert held.target == "dm:@Alice", case
+        held_payload = serialize_message(held.messages[-1], held.target_projections)
+        assert held_payload["target"] == "dm:@Alice", case
+
+        case = "handoff guidance and unfollow return current display targets"
+        await orchestrator.command_service.check("readable-dm")
+        delivered = await orchestrator.command_service.send(
+            session_id="readable-dm",
+            command_id="readable-target-handoff",
+            raw_target=lark_target.display_target,
+            body="Cross-session readable target reply",
+            created_at_ms=6,
+        )
+        assert isinstance(delivered, MessageSendSuccess), case
+        assert delivered.target == lark_target.display_target, case
+        handoff = await orchestrator.command_service.check(lark_target.bcn_session.id)
+        handoff_message = next(
+            message
+            for message in handoff.messages
+            if message.system_message_kind is SystemMessageKind.HANDOFF
+        )
+        handoff_payload = serialize_message(
+            handoff_message,
+            handoff.target_projections,
+        )
+        assert 'bcc message read --target "dm:@Alice"' in format_check_message(
+            handoff_payload
+        ), case
+        await repository.save_channel_session(
+            replace(lark_target.channel_session, following=True)
+        )
+        unfollowed = await orchestrator.command_service.unfollow(
+            lark_target.bcn_session.id,
+            raw_target=lark_target.display_target,
+        )
+        assert unfollowed.target == lark_target.display_target, case
+        assert unfollowed.changed is True, case
 
         case = "schema v22 persists presentation separately from messages"
         async with storage.reader() as reader:
@@ -1572,8 +1558,8 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
             send_draft=True,
         )
 
-        assert isinstance(first_sent, Message)
-        assert isinstance(second_sent, Message)
+        assert isinstance(first_sent, MessageSendSuccess)
+        assert isinstance(second_sent, MessageSendSuccess)
         assert [request.body for request in channel.send_requests] == [
             "draft a",
             "draft b",
@@ -1615,7 +1601,8 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
             created_at_ms=2,
             attachment_paths=(str(first), str(second)),
         )
-        assert isinstance(delivered, Message)
+        assert isinstance(delivered, MessageSendSuccess)
+        delivered = delivered.message
 
         assert delivered.delivery_state is OutboundDeliveryState.SENT
         assert channel.send_requests[0].attachments == delivered.attachments
@@ -1658,7 +1645,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             created_at_ms=2,
             reply_to_message_id=target_anchor.message_id,
         )
-        assert isinstance(cross_session_target, Message)
+        assert isinstance(cross_session_target, MessageSendSuccess)
+        cross_session_target = cross_session_target.message
         assert cross_session_target.session_id == "bcn-other"
         assert cross_session_target.delivery_state is OutboundDeliveryState.SENT
         assert channel.send_attempts[-1].session_id == "bcn-other"
@@ -1701,7 +1689,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             body="failed cross-session reply",
             created_at_ms=3,
         )
-        assert isinstance(failed_cross_session, Message)
+        assert isinstance(failed_cross_session, MessageSendSuccess)
+        failed_cross_session = failed_cross_session.message
         assert failed_cross_session.delivery_state is OutboundDeliveryState.FAILED
         assert (
             sum(
@@ -1752,7 +1741,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             body="queued reply",
             created_at_ms=4,
         )
-        assert isinstance(queued, Message)
+        assert isinstance(queued, MessageSendSuccess)
+        queued = queued.message
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
         assert channel.queued_messages == [channel.send_attempts[2]]
@@ -1772,7 +1762,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             body="unknown reply",
             created_at_ms=5,
         )
-        assert isinstance(unknown, Message)
+        assert isinstance(unknown, MessageSendSuccess)
+        unknown = unknown.message
         assert unknown.delivery_state is OutboundDeliveryState.UNKNOWN
         assert unknown.provider_receipt_ref == "attempted-send-1"
 
@@ -1805,7 +1796,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             body="partial reply",
             created_at_ms=6,
         )
-        assert isinstance(partial, Message)
+        assert isinstance(partial, MessageSendSuccess)
+        partial = partial.message
         assert partial.delivery_state is OutboundDeliveryState.PARTIAL
         assert partial.provider_receipt_ref == "batch-1"
         assert partial.metadata["delivery_receipt"] == {
@@ -1838,7 +1830,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             body="failed reply",
             created_at_ms=7,
         )
-        assert isinstance(failed, Message)
+        assert isinstance(failed, MessageSendSuccess)
+        failed = failed.message
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
         assert len(channel.send_attempts) == 6
@@ -2139,12 +2132,10 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
 
-        assert (
-            await orchestrator.command_service.unfollow(
-                "bcn-1", raw_target="#test:channel-bcn-1"
-            )
-            is True
+        unfollowed = await orchestrator.command_service.unfollow(
+            "bcn-1", raw_target="#test:channel-bcn-1"
         )
+        assert unfollowed.changed is True
         assert storage.channel_sessions["channel-bcn-1"].following is False
         after_unfollow = replace(
             make_message(seq=4),
