@@ -90,10 +90,6 @@ class UnreadMessageOwner:
     trigger_message: Message[InboundAttachment]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.agent_id, str) or not self.agent_id:
-            raise ValueError("agent_id must be a non-empty string")
-        if not isinstance(self.trigger_message, Message):
-            raise TypeError("trigger_message must be a Message")
         if self.trigger_message.direction is not MessageDirection.INBOUND:
             raise ValueError("trigger_message must be inbound")
         if not self.trigger_message.notifies_runtime:

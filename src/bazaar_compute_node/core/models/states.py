@@ -70,18 +70,6 @@ class SessionRuntimeObservation:
     error_kind: str | None = None
     error_message: str | None = None
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.source, SessionRuntimeObservationSource):
-            raise TypeError("session runtime observation source is invalid")
-        if not isinstance(self.signal, SessionRuntimeSignal):
-            raise TypeError("session runtime observation signal is invalid")
-        if self.error_kind is not None and (
-            not isinstance(self.error_kind, str) or not self.error_kind
-        ):
-            raise ValueError("error_kind must be a non-empty string when provided")
-        if self.error_message is not None and not isinstance(self.error_message, str):
-            raise TypeError("error_message must be a string when provided")
-
 
 SESSION_RUNTIME_OBSERVATION_TRANSITIONS: Mapping[
     SessionRuntimeState, Mapping[SessionRuntimeSignal, SessionRuntimeState]
@@ -204,15 +192,11 @@ SESSION_RUNTIME_STATE_TRANSITIONS: Mapping[
 
 
 def reduce_session_runtime_state(
-    current: object,
-    observation: object,
+    current: SessionRuntimeState,
+    observation: SessionRuntimeObservation,
 ) -> SessionRuntimeState:
     """Reduce one session-runtime observation without mutating state or doing I/O."""
 
-    if not isinstance(current, SessionRuntimeState):
-        raise TypeError("session runtime state is invalid")
-    if not isinstance(observation, SessionRuntimeObservation):
-        raise TypeError("session runtime observation is invalid")
     target = SESSION_RUNTIME_OBSERVATION_TRANSITIONS.get(current, {}).get(
         observation.signal
     )
