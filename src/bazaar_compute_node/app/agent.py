@@ -16,7 +16,7 @@ from typing import cast
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
 from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import RuntimeSession
+from ..core.models import InboundAttachment, Message, RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
 from ..core.orchestration.handoff_command import HandoffCommandService
@@ -281,10 +281,10 @@ class AgentApplication:
             return False
         return await self.storage.get_bcn_session(session_id) is not None
 
-    async def publish_reminder_wake(self, session_id: str) -> None:
+    async def publish_inbox_wake(self, message: Message[InboundAttachment]) -> None:
         if not self._started:
             raise RuntimeError("Agent application is not started")
-        await self.orchestrator.publish_reminder_wake(session_id)
+        await self.orchestrator.publish_inbox_wake(message)
 
     async def publish_handoff_wake(self, session_id: str) -> None:
         if not self._started:

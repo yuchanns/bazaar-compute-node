@@ -27,14 +27,10 @@ from .models import (
     OutboundAttachment,
     OutboundDeliveryState,
     OwnedReminder,
-    OwnedReminderOccurrence,
     Reminder,
-    ReminderOccurrence,
-    ReminderOwner,
     ReminderState,
     RuntimeAttempt,
 )
-from .reminder import ReminderCheckItem, ReminderCheckResult
 
 
 class InboxTargetResolutionError(ValueError):
@@ -67,14 +63,6 @@ class PrepareOutboundResult:
     target_session: BcnSession
     reply_to_provider_message_id: str | None
     outcome: MessageSendResult
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderWakeResult:
-    occurrence: ReminderOccurrence
-    channel_session: ChannelSession
-    bcn_session: BcnSession
-    anchor_message: Message[InboundAttachment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,51 +304,6 @@ class StorageOperationMixin:
             outcome=outcome,
         )
 
-    async def check_reminders(
-        self,
-        session_id: str,
-        *,
-        limit: int,
-        read_at_ms: int,
-    ) -> ReminderCheckResult:
-        self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-        occurrences = await self.list_pending_reminder_occurrences(
-            session_id,
-            limit=limit,
-        )
-        if not occurrences:
-            return ReminderCheckResult(items=(), has_more=False)
-        snapshots = []
-        for occurrence in occurrences:
-            reminder = await self.get_reminder(session_id, occurrence.reminder_id)
-            anchor = await self.resolve_message(
-                session_id,
-                occurrence.anchor_message_id,
-                direction=MessageDirection.INBOUND,
-            )
-            if reminder is None or anchor is None:
-                raise ValueError("Reminder check context is incomplete")
-            snapshots.append((occurrence, reminder.title, anchor.target))
-        marked = await self.mark_reminder_occurrences_read(
-            session_id,
-            tuple(occurrence.occurrence_id for occurrence in occurrences),
-            read_at_ms=read_at_ms,
-        )
-        marked_by_id = {occurrence.occurrence_id: occurrence for occurrence in marked}
-        return ReminderCheckResult(
-            items=tuple(
-                ReminderCheckItem(
-                    occurrence=marked_by_id[occurrence.occurrence_id],
-                    title=title,
-                    canonical_target=target,
-                )
-                for occurrence, title, target in snapshots
-            ),
-            has_more=await self.count_pending_reminder_occurrences(session_id) > 0,
-        )
-
     async def check_handoffs(
         self,
         session_id: str,
@@ -412,33 +355,6 @@ class StorageOperationMixin:
                 )
             ),
             has_more=await self.count_pending_handoffs(session_id) > 0,
-        )
-
-    async def load_reminder_wake(
-        self,
-        session_id: str,
-    ) -> ReminderWakeResult | None:
-        self = _operations(self)  # noqa: PLW0642
-        pending = await self.list_pending_reminder_occurrences(session_id, limit=1)
-        if not pending:
-            return None
-        occurrence = pending[0]
-        bcn_session = await self.get_bcn_session(session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {session_id}")
-        channel_session = await self.get_channel_session(bcn_session.channel_session_id)
-        anchor = await self.resolve_message(
-            session_id,
-            occurrence.anchor_message_id,
-            direction=MessageDirection.INBOUND,
-        )
-        if channel_session is None or anchor is None:
-            raise ValueError("Reminder wake context is incomplete")
-        return ReminderWakeResult(
-            occurrence=occurrence,
-            channel_session=channel_session,
-            bcn_session=bcn_session,
-            anchor_message=anchor,
         )
 
     async def load_handoff_wake(self, session_id: str) -> HandoffWakeResult | None:
@@ -538,19 +454,6 @@ class _StorageOperations(Protocol):
         draft_replaced: bool,
     ) -> PrepareOutboundResult: ...
 
-    async def check_reminders(
-        self,
-        session_id: str,
-        *,
-        limit: int,
-        read_at_ms: int,
-    ) -> ReminderCheckResult: ...
-
-    async def load_reminder_wake(
-        self,
-        session_id: str,
-    ) -> ReminderWakeResult | None: ...
-
     async def load_handoff_wake(
         self,
         session_id: str,
@@ -615,6 +518,15 @@ class _StorageOperations(Protocol):
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
 
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
+
     async def list_ready_attachment_paths(self) -> tuple[str, ...]: ...
 
     async def list_messages(
@@ -667,31 +579,6 @@ class _StorageOperations(Protocol):
         self, now_ms: int, *, limit: int
     ) -> tuple[Reminder, ...]: ...
 
-    async def save_fired_occurrence(
-        self,
-        expected_revision: int,
-        reminder: Reminder,
-        occurrence: ReminderOccurrence,
-    ) -> ReminderOccurrence: ...
-
-    async def list_pending_reminder_occurrences(
-        self, owner_session_id: str, *, limit: int
-    ) -> tuple[ReminderOccurrence, ...]: ...
-
-    async def count_pending_reminder_occurrences(
-        self, owner_session_id: str
-    ) -> int: ...
-
-    async def mark_reminder_occurrences_read(
-        self,
-        owner_session_id: str,
-        occurrence_ids: tuple[str, ...],
-        *,
-        read_at_ms: int,
-    ) -> tuple[ReminderOccurrence, ...]: ...
-
-    async def list_sessions_with_pending_reminders(self) -> tuple[str, ...]: ...
-
     async def get_owned_reminder(
         self,
         agent_id: str,
@@ -708,21 +595,12 @@ class _StorageOperations(Protocol):
         limit: int,
     ) -> tuple[OwnedReminder, ...]: ...
 
-    async def save_owned_fired_occurrence(
-        self,
-        expected_revision: int,
-        reminder: OwnedReminder,
-        occurrence: OwnedReminderOccurrence,
-    ) -> OwnedReminderOccurrence: ...
-
     async def materialize_owned_reminder_message(
         self,
         expected_revision: int,
         reminder: OwnedReminder,
         system_message: Message[InboundAttachment],
     ) -> Message[InboundAttachment]: ...
-
-    async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]: ...
 
     async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]: ...
 

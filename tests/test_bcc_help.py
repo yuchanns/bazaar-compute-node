@@ -51,7 +51,6 @@ from bazaar_compute_node.bcc import build_parser
                 "Reminder operations",
                 "reminder commands:",
                 "schedule",
-                "check",
                 "list",
                 "snooze",
                 "update",
@@ -68,13 +67,6 @@ from bazaar_compute_node.bcc import build_parser
                 "--tz <iana>",
                 "--message-id <id>",
                 "weekly:mon,fri@09:00",
-            ),
-        ),
-        (
-            ("reminder", "check", "--help"),
-            (
-                "up to 100 pending Reminder occurrences",
-                "mark exactly the returned occurrences as read",
             ),
         ),
         (

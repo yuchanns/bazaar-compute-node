@@ -713,6 +713,32 @@ class MessageOperations(RepositoryBase):
         )
         return await self._message_from_row(row) if row is not None else None
 
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None and bound_agent_id != agent_id:
+            return None
+        predicates = ["agent_id = ?", "session_id = ?", "message_id = ?"]
+        parameters: list[object] = [agent_id, session_id, message_id]
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=None,
+        )
+        row = await self.fetchone(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
+        )
+        return await self._message_from_row(row) if row is not None else None
+
     async def get_latest_message(
         self,
         session_id: str,

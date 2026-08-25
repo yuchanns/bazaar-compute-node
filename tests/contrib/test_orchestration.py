@@ -51,17 +51,19 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
-    ReminderOccurrence,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
+    SenderKind,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
     SessionRuntimeState,
+    SystemMessageKind,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.session import (
@@ -1867,7 +1869,9 @@ async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
+async def test_reminder_system_message_error_feedback_uses_target_without_reply() -> (
+    None
+):
     orchestrator, channel, runtime, storage, _ = await make_node()
     anchor = make_message(seq=1, message_id=str(uuid7()))
     try:
@@ -1878,35 +1882,136 @@ async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
             "bcn-1",
             direction=MessageDirection.INBOUND,
         )[0]
-        occurrence_id = str(uuid7())
-        storage.reminder_occurrences[occurrence_id] = ReminderOccurrence(
-            occurrence_id=occurrence_id,
-            reminder_id=str(uuid7()),
-            owner_session_id="bcn-1",
-            occurrence_no=1,
-            anchor_message_id=canonical_anchor.message_id,
-            scheduled_for_ms=2,
-            fired_at_ms=2,
-            next_fire_at_ms=None,
-            overdue=False,
-            read_at_ms=None,
-            created_at_ms=2,
+        reminder_message = await cast(IStorage, storage).save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=str(uuid7()),
+                session_id=canonical_anchor.session_id,
+                channel_session_id=canonical_anchor.channel_session_id,
+                channel=canonical_anchor.channel,
+                provider_thread_id=canonical_anchor.provider_thread_id,
+                provider_message_id=None,
+                received_at_ms=2,
+                sender=SenderIdentity(name="system"),
+                target=canonical_anchor.target,
+                target_kind=canonical_anchor.target_kind,
+                body='🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
         )
         runtime.queue_turn_plan(
             TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
         )
 
-        await orchestrator.publish_reminder_wake("bcn-1")
+        await orchestrator.publish_inbox_wake(reminder_message)
         await wait_until(lambda: len(channel.send_attempts) == 1)
 
         request = channel.send_attempts[0]
         assert request.session_id == canonical_anchor.session_id
         assert request.target_kind is canonical_anchor.target_kind
         assert request.provider_thread_id == canonical_anchor.provider_thread_id
-        assert request.provider_reply_to_message_id == (
-            canonical_anchor.provider_message_id
-        )
+        assert request.provider_reply_to_message_id is None
     finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates() -> (
+    None
+):
+    orchestrator, _, runtime, storage, _ = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    active_task = orchestrator.dispatch_inbound(
+        make_message(session_id="bcn-active", seq=1)
+    )
+    try:
+        await runtime.turn_started.wait()
+        idle_context, idle_anchor, created = await orchestrator._record_inbound(
+            make_message(session_id="bcn-idle", seq=2)
+        )
+        assert idle_context is not None
+        assert created
+        active_anchor = _stored_messages(
+            storage,
+            "bcn-active",
+            direction=MessageDirection.INBOUND,
+        )[0]
+
+        async def save_reminder_message(
+            anchor: Message, received_at_ms: int
+        ) -> Message:
+            return await cast(IStorage, storage).save_message(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=0,
+                    message_id=str(uuid7()),
+                    session_id=anchor.session_id,
+                    channel_session_id=anchor.channel_session_id,
+                    channel=anchor.channel,
+                    provider_thread_id=anchor.provider_thread_id,
+                    provider_message_id=None,
+                    received_at_ms=received_at_ms,
+                    sender=SenderIdentity(name="system"),
+                    target=anchor.target,
+                    target_kind=anchor.target_kind,
+                    body=(
+                        f'🔔 Reminder #019c1234 (one-time) — {anchor.target} — "Review"'
+                    ),
+                    metadata={
+                        "sender_kind": SenderKind.SYSTEM.value,
+                        "system_message_kind": SystemMessageKind.REMINDER.value,
+                    },
+                )
+            )
+
+        idle_reminder = await save_reminder_message(idle_anchor, 3)
+        active_reminder = await save_reminder_message(active_anchor, 4)
+        storage.runtime_attempts[f"turn-{idle_reminder.message_id}"] = RuntimeAttempt(
+            turn_id=f"turn-{idle_reminder.message_id}",
+            session_id="previous-runtime",
+            client_user_message_id=idle_reminder.message_id,
+            started_at_ms=2,
+        )
+        await orchestrator.publish_inbox_wake(idle_reminder)
+        await orchestrator.publish_inbox_wake(active_reminder)
+        async with asyncio.timeout(1):
+            while len(runtime.started_turns) != 2 or len(runtime.steered_turns) != 1:
+                await asyncio.sleep(0.01)
+
+        idle_notice = runtime.started_turns[1][2]
+        _, _, active_notice = runtime.steered_turns[0]
+        assert "Inbox update: 2 unread messages total; 1 changed target" in idle_notice
+        assert "pending: 2 messages" in idle_notice
+        assert "latest sender @system" in idle_notice
+        assert (
+            "Inbox update: 2 unread messages total; 1 changed target" in active_notice
+        )
+        assert "pending: 1 message" in active_notice
+        assert "latest sender @system" in active_notice
+        assert "reminder notice" not in idle_notice + active_notice
+
+        await cast(IStorage, storage).check_messages(
+            "bcn-idle",
+            checked_at_ms=5,
+        )
+        await cast(IStorage, storage).check_messages(
+            "bcn-active",
+            checked_at_ms=5,
+        )
+        await orchestrator.publish_inbox_wake(idle_reminder)
+        await orchestrator.publish_inbox_wake(active_reminder)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(runtime.started_turns) == 2
+        assert len(runtime.steered_turns) == 1
+    finally:
+        for stream in tuple(runtime.active_streams):
+            stream.release()
+        await asyncio.gather(active_task, return_exceptions=True)
         await orchestrator.stop(timeout=1)
 
 

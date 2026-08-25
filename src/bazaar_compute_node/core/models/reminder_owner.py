@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .reminder import Reminder, ReminderOccurrence
+from .reminder import Reminder
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,16 +25,4 @@ class OwnedReminder:
         return ReminderOwner(self.agent_id, self.reminder.owner_session_id)
 
 
-@dataclass(frozen=True, slots=True)
-class OwnedReminderOccurrence:
-    """Materialized Reminder occurrence paired with its owning Agent."""
-
-    agent_id: str
-    occurrence: ReminderOccurrence
-
-    @property
-    def owner(self) -> ReminderOwner:
-        return ReminderOwner(self.agent_id, self.occurrence.owner_session_id)
-
-
-__all__ = ["OwnedReminder", "OwnedReminderOccurrence", "ReminderOwner"]
+__all__ = ["OwnedReminder", "ReminderOwner"]

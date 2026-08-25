@@ -9,12 +9,11 @@ from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator
 from ..core.command import ICommandService, IHandoffService, IReminderService
 from ..core.handoff import HandoffCheckRequest, HandoffSendRequest
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import Handoff, Reminder, ReminderOccurrence, ReminderState
+from ..core.models import Handoff, Reminder, ReminderState
 from ..core.orchestration.handoff_command import HandoffCommandFailure
 from ..core.orchestration.reminder_command import ReminderCommandFailure
 from ..core.reminder import (
     ReminderCancelRequest,
-    ReminderCheckRequest,
     ReminderListRequest,
     ReminderScheduleRequest,
     ReminderSnoozeRequest,
@@ -50,24 +49,6 @@ def serialize_reminder(reminder: Reminder) -> dict[str, object]:
     }
 
 
-def serialize_reminder_occurrence(
-    occurrence: ReminderOccurrence,
-) -> dict[str, object]:
-    return {
-        "occurrence_id": occurrence.occurrence_id,
-        "reminder_id": occurrence.reminder_id,
-        "owner_session_id": occurrence.owner_session_id,
-        "occurrence_no": occurrence.occurrence_no,
-        "anchor_message_id": occurrence.anchor_message_id,
-        "scheduled_for_ms": occurrence.scheduled_for_ms,
-        "fired_at_ms": occurrence.fired_at_ms,
-        "next_fire_at_ms": occurrence.next_fire_at_ms,
-        "overdue": occurrence.overdue,
-        "read_at_ms": occurrence.read_at_ms,
-        "created_at_ms": occurrence.created_at_ms,
-    }
-
-
 def serialize_handoff(handoff: Handoff) -> dict[str, object]:
     return {
         "handoff_id": handoff.handoff_id,
@@ -84,11 +65,6 @@ def serialize_handoff(handoff: Handoff) -> dict[str, object]:
 NonEmptyText = Annotated[StrictStr, Field(min_length=1)]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
-
-
-class _ReminderCheckRequest(_CommandRequest):
-    resource: Literal["reminder"]
-    command: Literal["check"]
 
 
 class _ReminderScheduleRequest(_CommandRequest):
@@ -164,7 +140,6 @@ class _HandoffCheckRequest(_CommandRequest):
 _REMINDER_REQUESTS: dict[
     str, tuple[type[_CommandRequest], Mapping[str, tuple[str, str]]]
 ] = {
-    "check": (_ReminderCheckRequest, {}),
     "schedule": (
         _ReminderScheduleRequest,
         {
@@ -486,28 +461,6 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 "result": {"reminder": serialize_reminder(result.reminder)},
             }
 
-        if command == "check":
-            result = await self._reminder_service.check(
-                session_id,
-                ReminderCheckRequest(),
-            )
-            return {
-                "ok": True,
-                "result": {
-                    "items": [
-                        {
-                            "occurrence": serialize_reminder_occurrence(
-                                item.occurrence
-                            ),
-                            "title": item.title,
-                            "canonical_target": item.canonical_target,
-                        }
-                        for item in result.items
-                    ],
-                    "has_more": result.has_more,
-                },
-            }
-
         if command == "list":
             request_values = cast(_ReminderListRequest, parsed_request)
             all_statuses = request_values.all
@@ -626,5 +579,4 @@ class CommandDispatcher(_MessageCommandDispatcher):
 __all__ = [
     "CommandDispatcher",
     "serialize_reminder",
-    "serialize_reminder_occurrence",
 ]

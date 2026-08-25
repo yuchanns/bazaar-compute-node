@@ -56,7 +56,6 @@ from .turn import (
     SessionTurnCoordinator,
     handoff_notice,
     inbox_notice,
-    reminder_notice,
 )
 
 
@@ -80,16 +79,8 @@ class _DurableSessionContext:
 class _RuntimeNotification:
     message: Message
     context: _DurableSessionContext
-    completion: asyncio.Future[RuntimeTurn | None]
-
-
-@dataclass(frozen=True, slots=True)
-class _ReminderNotification:
-    reminder_id: str
-    occurrence_id: str
-    anchor_message: Message
-    context: _DurableSessionContext
-    wake_id: str
+    completion: asyncio.Future[RuntimeTurn | None] | None = None
+    wake_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,15 +98,9 @@ class _RuntimeExpiry:
     generation: int
 
 
-type _WakeNotification = (
-    _RuntimeNotification | _ReminderNotification | _HandoffNotification
-)
+type _WakeNotification = _RuntimeNotification | _HandoffNotification
 type _RuntimeQueueItem = (
-    _RuntimeNotification
-    | _ReminderNotification
-    | _HandoffNotification
-    | _RuntimeExpiry
-    | RuntimeExpire
+    _RuntimeNotification | _HandoffNotification | _RuntimeExpiry | RuntimeExpire
 )
 
 
@@ -254,23 +239,25 @@ class SessionOrchestrator(IAsyncLifecycle):
 
         return self._runtime_sessions.get(session_id)
 
-    async def publish_reminder_wake(self, session_id: str) -> None:
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError("session_id must be a non-empty string")
+    async def publish_inbox_wake(self, message: Message) -> None:
         if self._stopping:
             return
         if not self._started:
             raise RuntimeError("session orchestrator is not started")
-        wake = await self._storage.load_reminder_wake(session_id)
-        if wake is None:
-            return
-        context = _DurableSessionContext(wake.channel_session, wake.bcn_session)
-        self._runtime_queue_for_session(session_id).put_nowait(
-            _ReminderNotification(
-                reminder_id=wake.occurrence.reminder_id,
-                occurrence_id=wake.occurrence.occurrence_id,
-                anchor_message=wake.anchor_message,
-                context=context,
+        bcn_session = await self._storage.get_bcn_session(message.session_id)
+        if bcn_session is None:
+            raise ValueError(f"unknown bcn session: {message.session_id}")
+        channel_session = await self._storage.get_channel_session(
+            bcn_session.channel_session_id
+        )
+        if channel_session is None:
+            raise ValueError(
+                f"unknown channel session: {bcn_session.channel_session_id}"
+            )
+        self._runtime_queue_for_session(message.session_id).put_nowait(
+            _RuntimeNotification(
+                message=message,
+                context=_DurableSessionContext(channel_session, bcn_session),
                 wake_id=str(uuid7()),
             )
         )
@@ -671,9 +658,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                         queue_item_consumed = True
                         if isinstance(
                             queued_item,
-                            _RuntimeNotification
-                            | _ReminderNotification
-                            | _HandoffNotification,
+                            _RuntimeNotification | _HandoffNotification,
                         ):
                             runtime_session = self.runtime_session(
                                 queued_item.context.bcn_session.id
@@ -719,6 +704,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)
+                        and notification.completion is not None
                         and not notification.completion.done()
                     ):
                         notification.completion.set_result(result)
@@ -741,6 +727,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for queued_item in (*batch, *pending):
                     if (
                         isinstance(queued_item, _RuntimeNotification)
+                        and queued_item.completion is not None
                         and not queued_item.completion.done()
                     ):
                         queued_item.completion.cancel()
@@ -757,10 +744,14 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)
+                        and notification.completion is not None
                         and not notification.completion.done()
                     ):
                         notification.completion.set_exception(error)
-                if isinstance(batch[0], _ReminderNotification | _HandoffNotification):
+                if (
+                    isinstance(batch[0], _HandoffNotification)
+                    or batch[0].completion is None
+                ):
                     self._logger.exception("wake runtime notification failed")
             finally:
                 if not queue_task.done():
@@ -799,14 +790,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 total_unread_count=len(unread),
                 closing_bracket_on_own_line=False,
             )
-        elif isinstance(notification, _ReminderNotification):
-            pending_count = await self._storage.count_pending_reminder_occurrences(
-                session_id
-            )
-            if pending_count == 0:
-                return
-            message = notification.anchor_message
-            input_text = reminder_notice(session_id, pending_count)
         else:
             pending_count = (
                 await self._require_handoff_storage().count_pending_handoffs(session_id)
@@ -1040,7 +1023,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
             if not unread:
                 return None
-            client_user_message_id = message.message_id
+            client_user_message_id = notification.wake_id or message.message_id
             turn_id = f"turn-{client_user_message_id}"
             if await self._storage.get_runtime_attempt(turn_id) is not None:
                 return self._runtime_turns.get(turn_id)
@@ -1049,23 +1032,11 @@ class SessionOrchestrator(IAsyncLifecycle):
                 total_unread_count=len(unread),
                 closing_bracket_on_own_line=True,
             )
-            observation_source = SessionRuntimeObservationSource.CHANNEL
-        elif isinstance(notification, _ReminderNotification):
-            message = notification.anchor_message
-            pending_count = await self._storage.count_pending_reminder_occurrences(
-                durable_context.bcn_session.id
+            observation_source = (
+                SessionRuntimeObservationSource.SESSION
+                if notification.wake_id is not None
+                else SessionRuntimeObservationSource.CHANNEL
             )
-            if pending_count == 0:
-                return None
-            client_user_message_id = notification.wake_id
-            turn_id = f"turn-{client_user_message_id}"
-            if await self._storage.get_runtime_attempt(turn_id) is not None:
-                return self._runtime_turns.get(turn_id)
-            input_text = reminder_notice(
-                durable_context.bcn_session.id,
-                pending_count,
-            )
-            observation_source = SessionRuntimeObservationSource.SESSION
         else:
             message = notification.anchor_message
             storage = self._require_handoff_storage()

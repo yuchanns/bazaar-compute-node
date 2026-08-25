@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bazaar_compute_node.app.application import NodeApplication
-from bazaar_compute_node.app.command import serialize_inbox_target, serialize_message
+from bazaar_compute_node.app.command import serialize_inbox_target
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
     ChannelConfiguration,
@@ -38,9 +38,6 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
-    SenderIdentity,
-    SenderKind,
-    SystemMessageKind,
 )
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -87,50 +84,6 @@ def test_inbox_target_serializer_selects_one_latest_time() -> None:
     result = serialize_inbox_target(summary)
 
     assert result["latest_time_ms"] == 99
-
-
-@pytest.mark.parametrize(
-    ("kind", "source_target", "source_message_id"),
-    (
-        (SystemMessageKind.REMINDER, None, None),
-        (SystemMessageKind.HANDOFF, "dm:source", "source-message-1"),
-    ),
-)
-def test_message_serializer_projects_typed_system_formatter_fields(
-    kind: SystemMessageKind,
-    source_target: str | None,
-    source_message_id: str | None,
-) -> None:
-    metadata: dict[str, object] = {
-        "sender_kind": SenderKind.SYSTEM.value,
-        "system_message_kind": kind.value,
-    }
-    if source_target is not None and source_message_id is not None:
-        metadata.update(
-            system_message_source_target=source_target,
-            system_message_source_message_id=source_message_id,
-        )
-    message = Message(
-        direction=MessageDirection.INBOUND,
-        seq=1,
-        message_id="system-message-1",
-        session_id="session-1",
-        channel_session_id="channel-1",
-        channel="test",
-        provider_thread_id="thread-1",
-        provider_message_id=None,
-        received_at_ms=1,
-        sender=SenderIdentity(id="system", name="system"),
-        target="dm:user-1",
-        body="system event",
-        metadata=metadata,
-    )
-
-    payload = serialize_message(message)
-
-    assert payload["system_message_kind"] == kind.value
-    assert payload["system_message_source_target"] == source_target
-    assert payload["system_message_source_message_id"] == source_message_id
 
 
 @pytest.mark.asyncio

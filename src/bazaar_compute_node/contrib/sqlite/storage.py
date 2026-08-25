@@ -12,7 +12,6 @@ _READ_OPERATIONS = frozenset(
     {
         "count_messages",
         "count_pending_handoffs",
-        "count_pending_reminder_occurrences",
         "find_bcn_session",
         "find_channel_session",
         "find_message",
@@ -24,6 +23,7 @@ _READ_OPERATIONS = frozenset(
         "get_next_scheduled_owned_reminder",
         "get_next_scheduled_reminder",
         "get_message",
+        "get_owned_message",
         "get_owned_reminder",
         "get_reminder",
         "get_runtime_attempt",
@@ -32,14 +32,10 @@ _READ_OPERATIONS = frozenset(
         "list_messages",
         "list_inbox_targets",
         "list_pending_handoffs",
-        "list_pending_reminder_occurrences",
-        "list_pending_reminder_owners",
         "list_unread_message_owners",
         "list_ready_attachment_paths",
         "list_reminders",
-        "list_sessions_with_pending_reminders",
         "load_handoff_wake",
-        "load_reminder_wake",
         "read_inbox_catalog",
         "read_message_history",
         "resolve_message",
@@ -50,7 +46,6 @@ _READ_OPERATIONS = frozenset(
 _SNAPSHOT_READ_OPERATIONS = frozenset(
     {
         "load_handoff_wake",
-        "load_reminder_wake",
         "read_message_history",
     }
 )
@@ -59,8 +54,6 @@ _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
         "record_inbound",
         "materialize_owned_reminder_message",
-        "save_fired_occurrence",
-        "save_owned_fired_occurrence",
     }
 )
 

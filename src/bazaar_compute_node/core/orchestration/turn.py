@@ -146,14 +146,6 @@ def inbox_notice(
     return "\n".join(lines)
 
 
-def reminder_notice(session_id: str, pending_count: int) -> str:
-    return (
-        f"[reminder notice session={session_id}]\n"
-        f"Reminders pending: {pending_count}. "
-        "Use `bcc reminder check` to read them."
-    )
-
-
 def handoff_notice(session_id: str, pending_count: int) -> str:
     return (
         f"[handoff notice session={session_id}]\n"

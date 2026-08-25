@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from bazaar_compute_node.core.models import Reminder, ReminderOccurrence, ReminderState
+from bazaar_compute_node.core.models import Reminder, ReminderState
 from bazaar_compute_node.core.reminder import (
     ReminderCancelRequest,
     ReminderListRequest,
@@ -18,13 +18,11 @@ from bazaar_compute_node.core.reminder import (
     parse_duration,
     parse_fire_at,
     parse_repeat_rule,
-    render_reminder_fire_body,
     resolve_schedule,
 )
 
 _REMINDER_ID = "018f0000-0000-7000-8000-000000000001"
 _MESSAGE_ID = "018f0000-0000-7000-8000-000000000002"
-_OCCURRENCE_ID = "018f0000-0000-7000-8000-000000000003"
 
 
 def utc_ms(value: str) -> int:
@@ -225,25 +223,6 @@ def test_one_time_and_recurring_fire_follow_the_state_contract() -> None:
     assert advanced.last_occurrence_no == 1
 
 
-def test_reminder_fire_body_matches_durable_formatter_vectors() -> None:
-    target = "group:release"
-    one_time = make_reminder(title='Review "release" ✨')
-    recurring = make_reminder(
-        title='Review "release" ✨',
-        repeat_rule="every:15m",
-    )
-    next_fire_at_ms = utc_ms("2026-08-25T04:15:00Z")
-
-    assert render_reminder_fire_body(one_time, target, None) == (
-        '🔔 Reminder #018f0000 (one-time) — group:release — "Review \\"release\\" ✨"'
-    )
-    assert render_reminder_fire_body(recurring, target, next_fire_at_ms) == (
-        "🔔 Reminder #018f0000 (recurring · every:15m) — group:release — "
-        '"Review \\"release\\" ✨"\n'
-        "Next iteration: 2026-08-25T04:15:00.000Z"
-    )
-
-
 def test_fired_reminder_can_be_snoozed_but_not_updated_or_canceled() -> None:
     fired = make_reminder(
         state=ReminderState.FIRED,
@@ -303,28 +282,6 @@ def test_title_and_model_field_combinations_fail_closed() -> None:
             updated_at_ms=2_000,
             last_fired_at_ms=2_000,
         )
-
-
-def test_occurrence_pending_marker_is_one_way() -> None:
-    occurrence = ReminderOccurrence(
-        occurrence_id=_OCCURRENCE_ID,
-        reminder_id=_REMINDER_ID,
-        owner_session_id="session-1",
-        occurrence_no=1,
-        anchor_message_id=_MESSAGE_ID,
-        scheduled_for_ms=2_000,
-        fired_at_ms=2_010,
-        next_fire_at_ms=None,
-        overdue=False,
-        read_at_ms=None,
-        created_at_ms=2_010,
-    )
-
-    assert occurrence.pending is True
-    read = occurrence.mark_read(at_ms=2_020)
-    assert read.pending is False
-    with pytest.raises(ValueError, match="already read"):
-        read.mark_read(at_ms=2_030)
 
 
 def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:

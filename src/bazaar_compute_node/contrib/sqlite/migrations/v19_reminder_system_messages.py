@@ -141,6 +141,85 @@ REMINDER_SYSTEM_MESSAGE_MIGRATION = Migration(
         CREATE INDEX idx_messages_reply_to_message
             ON messages (reply_to_message_id)
         """,
+        """
+        WITH migration_base AS (
+            SELECT COALESCE(MAX(seq), 0) AS max_seq FROM messages
+        ),
+        pending_occurrences AS (
+            SELECT
+                occurrence.*,
+                reminder.title,
+                reminder.repeat_rule,
+                anchor.channel_session_id,
+                anchor.channel,
+                anchor.provider_thread_id,
+                anchor.target,
+                anchor.target_kind,
+                ROW_NUMBER() OVER (
+                    ORDER BY occurrence.fired_at_ms, occurrence.occurrence_id
+                ) AS migration_offset
+            FROM reminder_occurrences AS occurrence
+            JOIN reminders AS reminder
+                ON reminder.agent_id = occurrence.agent_id
+                AND reminder.reminder_id = occurrence.reminder_id
+                AND reminder.owner_session_id = occurrence.owner_session_id
+            JOIN messages AS anchor
+                ON anchor.agent_id = occurrence.agent_id
+                AND anchor.session_id = occurrence.owner_session_id
+                AND anchor.message_id = occurrence.anchor_message_id
+                AND anchor.direction = 'inbound'
+            WHERE occurrence.read_at_ms IS NULL
+        )
+        INSERT INTO messages (
+            message_id, seq, direction, agent_id, session_id, channel_session_id,
+            channel, provider_thread_id, provider_message_id, provider_time_ms,
+            received_at_ms, sender, message_type, target, target_kind,
+            reply_to_message_id, body, mentions_agent, notifies_runtime,
+            provider_payload_ref, metadata_json
+        )
+        SELECT
+            occurrence_id,
+            migration_base.max_seq + migration_offset,
+            'inbound',
+            agent_id,
+            owner_session_id,
+            channel_session_id,
+            channel,
+            provider_thread_id,
+            NULL,
+            NULL,
+            fired_at_ms,
+            'system',
+            'text',
+            target,
+            target_kind,
+            NULL,
+            CASE
+                WHEN next_fire_at_ms IS NULL THEN
+                    '🔔 Reminder #' || substr(reminder_id, 1, 8)
+                    || ' (one-time) — ' || target || ' — ' || json_quote(title)
+                ELSE
+                    '🔔 Reminder #' || substr(reminder_id, 1, 8)
+                    || ' (recurring · ' || repeat_rule || ') — '
+                    || target || ' — ' || json_quote(title)
+                    || char(10) || 'Next iteration: '
+                    || strftime(
+                        '%Y-%m-%dT%H:%M:%fZ',
+                        next_fire_at_ms / 1000.0,
+                        'unixepoch'
+                    )
+            END,
+            0,
+            1,
+            NULL,
+            '{"sender_kind":"system","system_message_kind":"reminder"}'
+        FROM pending_occurrences
+        CROSS JOIN migration_base
+        ORDER BY fired_at_ms, occurrence_id
+        """,
+        "DROP INDEX idx_reminder_occurrences_owner_read_fired",
+        "DROP INDEX idx_reminder_occurrences_reminder_number",
+        "DROP TABLE reminder_occurrences",
     ),
 )
 

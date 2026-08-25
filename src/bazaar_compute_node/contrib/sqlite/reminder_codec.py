@@ -4,10 +4,9 @@ from typing import cast
 
 import aiosqlite
 
-from ...core.models import Reminder, ReminderOccurrence, ReminderState
+from ...core.models import Reminder, ReminderState
 from .codec import (
     _optional_text,
-    _required_boolean,
     _required_text,
 )
 
@@ -31,20 +30,4 @@ def reminder_from_row(row: aiosqlite.Row) -> Reminder:
     )
 
 
-def reminder_occurrence_from_row(row: aiosqlite.Row) -> ReminderOccurrence:
-    return ReminderOccurrence(
-        occurrence_id=_required_text(row["occurrence_id"], "occurrence_id"),
-        reminder_id=_required_text(row["reminder_id"], "reminder_id"),
-        owner_session_id=_required_text(row["owner_session_id"], "owner_session_id"),
-        occurrence_no=cast(int, row["occurrence_no"]),
-        anchor_message_id=_required_text(row["anchor_message_id"], "anchor_message_id"),
-        scheduled_for_ms=cast(int, row["scheduled_for_ms"]),
-        fired_at_ms=cast(int, row["fired_at_ms"]),
-        next_fire_at_ms=cast(int | None, row["next_fire_at_ms"]),
-        overdue=bool(_required_boolean(row["overdue"], "overdue")),
-        read_at_ms=cast(int | None, row["read_at_ms"]),
-        created_at_ms=cast(int, row["created_at_ms"]),
-    )
-
-
-__all__ = ["reminder_from_row", "reminder_occurrence_from_row"]
+__all__ = ["reminder_from_row"]

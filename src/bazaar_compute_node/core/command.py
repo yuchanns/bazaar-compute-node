@@ -18,8 +18,6 @@ from .models import (
 from .reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
-    ReminderCheckRequest,
-    ReminderCheckResult,
     ReminderListRequest,
     ReminderListResult,
     ReminderScheduleRequest,
@@ -201,12 +199,6 @@ class IReminderService(Protocol):
         session_id: str,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult: ...
-
-    async def check(
-        self,
-        session_id: str,
-        request: ReminderCheckRequest,
-    ) -> ReminderCheckResult: ...
 
     async def list(
         self,

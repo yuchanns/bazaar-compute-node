@@ -16,8 +16,8 @@ from .entities import (
     StreamEvent,
 )
 from .handoff import Handoff
-from .reminder import Reminder, ReminderOccurrence
-from .reminder_owner import OwnedReminder, OwnedReminderOccurrence, ReminderOwner
+from .reminder import Reminder
+from .reminder_owner import OwnedReminder, ReminderOwner
 from .states import (
     REMINDER_TRANSITIONS,
     SESSION_RUNTIME_OBSERVATION_TRANSITIONS,
@@ -59,9 +59,7 @@ __all__ = [
     "OutboundAttachment",
     "OutboundDeliveryState",
     "OwnedReminder",
-    "OwnedReminderOccurrence",
     "Reminder",
-    "ReminderOccurrence",
     "ReminderOwner",
     "ReminderState",
     "RuntimeAttempt",

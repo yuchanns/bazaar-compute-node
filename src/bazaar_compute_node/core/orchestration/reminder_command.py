@@ -9,8 +9,6 @@ from ..models import Message, MessageDirection, Reminder, ReminderState
 from ..reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
-    ReminderCheckRequest,
-    ReminderCheckResult,
     ReminderListRequest,
     ReminderListResult,
     ReminderScheduleRequest,
@@ -87,28 +85,6 @@ class ReminderCommandService(IReminderService):
             reminder = await self._storage.save_new_reminder(reminder)
         self._poke()
         return ReminderScheduleResult(reminder)
-
-    async def check(
-        self,
-        session_id: str,
-        request: ReminderCheckRequest,
-    ) -> ReminderCheckResult:
-        try:
-            async with self._concurrency.for_session(session_id):
-                return await self._storage.check_reminders(
-                    session_id,
-                    limit=request.limit,
-                    read_at_ms=self._clock(),
-                )
-        except SessionNotFoundError:
-            raise
-        except ReminderCommandFailure:
-            raise
-        except (TypeError, ValueError) as error:
-            raise ReminderCommandFailure(
-                "REMINDER_CHECK_FAILED",
-                str(error),
-            ) from error
 
     async def list(
         self,

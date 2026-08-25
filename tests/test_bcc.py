@@ -236,6 +236,62 @@ def test_check_serializer_renders_unknown_sender_kind() -> None:
     assert "type=unknown" in serialize_check(result)
 
 
+@pytest.mark.parametrize(
+    ("body", "operation"),
+    (
+        (
+            '🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+            "(to snooze/cancel: bcc reminder --help)",
+        ),
+        (
+            (
+                "🔔 Reminder #019c1234 (recurring · every:15m) — dm:alice — "
+                '"Review"\nNext iteration: 2026-08-25T04:15:00.000Z'
+            ),
+            "(to snooze/update/cancel: bcc reminder --help)",
+        ),
+    ),
+)
+def test_only_message_check_appends_reminder_delivery_suffix(
+    body: str,
+    operation: str,
+) -> None:
+    message = message_payload(
+        sender_id=None,
+        sender_name="system",
+        sender_kind="system",
+    )
+    message["body"] = body
+    message["system_message_kind"] = "reminder"
+    result = {
+        "messages": [message],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    checked = serialize_check(result)
+    read = serialize_read(
+        {
+            "messages": [message],
+            "referenced_messages": [],
+            "snapshot_seq": 7,
+            "first_seq": 7,
+            "last_seq": 7,
+        }
+    )
+
+    assert checked.endswith(
+        f"{body}\n{operation}\n"
+        "Respond as appropriate. Complete all your work before stopping.\n"
+        "Reply in the channel or create/reply in a thread as appropriate; "
+        "use each message's `target` and `msg` fields to choose the exact target."
+    )
+    assert operation not in read
+    assert "Respond as appropriate" not in read
+    assert body in read
+
+
 def test_check_serializer_renders_provider_username_as_sender() -> None:
     result = {
         "messages": [message_payload(sender_name="test-user")],

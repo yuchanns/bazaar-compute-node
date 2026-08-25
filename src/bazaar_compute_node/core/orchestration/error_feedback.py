@@ -82,7 +82,9 @@ class RuntimeErrorReporter:
             correlation=correlation,
             metadata={"terminal_state": turn.state.value},
         )
-        _, provider_thread_id, _ = message.inbound_identity()
+        provider_thread_id = message.provider_thread_id
+        if provider_thread_id is None:
+            raise RuntimeError("runtime error feedback has no provider thread")
         result = await self._delivery.deliver(
             ChannelSendRequest(
                 session_id=message.session_id,

@@ -6,7 +6,7 @@ from typing import Self
 from unicodedata import category
 from uuid import UUID
 
-from .models import Reminder, ReminderOccurrence, ReminderState
+from .models import Reminder, ReminderState
 from .reminder_schedule import (
     RecurrenceKind,
     ReminderDuration,
@@ -25,9 +25,6 @@ __all__ = [
     "RecurrenceKind",
     "ReminderCancelRequest",
     "ReminderCancelResult",
-    "ReminderCheckItem",
-    "ReminderCheckRequest",
-    "ReminderCheckResult",
     "ReminderDuration",
     "ReminderListRequest",
     "ReminderListResult",
@@ -94,11 +91,6 @@ class ReminderScheduleRequest:
             repeat_rule=schedule.repeat_rule,
             timezone=schedule.timezone,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderCheckRequest:
-    limit: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,34 +212,6 @@ class ReminderScheduleResult:
 
     def __post_init__(self) -> None:
         _require_reminder(self.reminder)
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderCheckItem:
-    occurrence: ReminderOccurrence
-    title: str
-    canonical_target: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.occurrence, ReminderOccurrence):
-            raise TypeError("occurrence must be a ReminderOccurrence")
-        _validate_title(self.title)
-        if not isinstance(self.canonical_target, str) or not self.canonical_target:
-            raise ValueError("canonical_target must be a non-empty string")
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderCheckResult:
-    items: tuple[ReminderCheckItem, ...]
-    has_more: bool
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.items, tuple) or not all(
-            isinstance(item, ReminderCheckItem) for item in self.items
-        ):
-            raise TypeError("items must be a tuple of ReminderCheckItem values")
-        if not isinstance(self.has_more, bool):
-            raise TypeError("has_more must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,7 @@ from bazaar_compute_node.core.storage import (
     IStorageScope,
     RecordInboundResult,
     StorageOperationMixin,
+    UnreadMessageOwner,
 )
 
 
@@ -548,6 +549,33 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             and attachment.relative_path is not None
         )
 
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]:
+        owners = []
+        for session in self._scoped_bcn_sessions():
+            cursor = self._storage.cursors.get(session.id)
+            delivered_through_seq = cursor.delivered_through_seq if cursor else 0
+            unread = [
+                message
+                for message in self._filtered_messages(
+                    session.id,
+                    direction=MessageDirection.INBOUND,
+                )
+                if message.notifies_runtime and message.seq > delivered_through_seq
+            ]
+            if unread:
+                owners.append(
+                    UnreadMessageOwner(
+                        agent_id=session.workspace_id,
+                        trigger_message=unread[-1],
+                    )
+                )
+        return tuple(
+            sorted(
+                owners,
+                key=lambda owner: (owner.agent_id, owner.owner_session_id),
+            )
+        )
+
     async def list_messages(
         self,
         session_id: str,
@@ -679,17 +707,19 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if message.direction is not MessageDirection.INBOUND:
             raise ValueError("inbound persistence requires an inbound message")
         messages = self._storage.messages.setdefault(message.session_id, [])
-        provider_matches = [
-            existing
-            for session_messages in self._storage.messages.values()
-            for existing in session_messages
-            if existing.direction is MessageDirection.INBOUND
-            and (
-                existing.channel == message.channel
+        provider_matches = (
+            [
+                existing
+                for session_messages in self._storage.messages.values()
+                for existing in session_messages
+                if existing.direction is MessageDirection.INBOUND
+                and existing.channel == message.channel
                 and existing.provider_thread_id == message.provider_thread_id
                 and existing.provider_message_id == message.provider_message_id
-            )
-        ]
+            ]
+            if message.provider_message_id is not None
+            else []
+        )
         if provider_matches:
             return provider_matches[0]
         for existing in (
@@ -762,6 +792,25 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 if message.message_id == message_id
             ),
             None,
+        )
+
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message | None:
+        if self._agent_id is not None and self._agent_id != agent_id:
+            return None
+        session = self._storage.bcn_sessions.get(session_id)
+        if session is None or session.workspace_id != agent_id:
+            return None
+        return await self.resolve_message(
+            session_id,
+            message_id,
+            direction=direction,
         )
 
     async def _save_outbound_message(self, message: Message) -> Message:

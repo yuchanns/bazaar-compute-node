@@ -9,13 +9,16 @@ from uuid import uuid7
 from ..concurrency import ISessionConcurrency
 from ..lifecycle import IAsyncLifecycle
 from ..models import (
+    InboundAttachment,
+    Message,
+    MessageDirection,
     OwnedReminder,
-    OwnedReminderOccurrence,
-    ReminderOccurrence,
-    ReminderOwner,
     ReminderState,
+    SenderIdentity,
+    SenderKind,
+    SystemMessageKind,
 )
-from ..reminder import next_recurrence_ms
+from ..reminder import next_recurrence_ms, render_reminder_fire_body
 from ..storage import IStorage
 from ..timerwheel import (
     Timer,
@@ -41,7 +44,7 @@ class ReminderScheduler(IAsyncLifecycle):
         storage: IStorage,
         timer_wheel: TimerWheel,
         concurrency: ISessionConcurrency,
-        publish_wake: Callable[[str, str], Awaitable[bool]],
+        publish_wake: Callable[[str, Message[InboundAttachment]], Awaitable[bool]],
         clock: Callable[[], int] | None = None,
     ) -> None:
         self._storage = storage
@@ -171,9 +174,9 @@ class ReminderScheduler(IAsyncLifecycle):
                 self._active_timer = None
 
     async def _publish_pending_recovery(self) -> None:
-        owners = await self._storage.list_pending_reminder_owners()
+        owners = await self._storage.list_unread_message_owners()
         for owner in owners:
-            await self._publish_owner(owner)
+            await self._publish_message(owner.agent_id, owner.trigger_message)
 
     async def _materialize_due_batches(self) -> None:
         while not self._stopping:
@@ -184,22 +187,22 @@ class ReminderScheduler(IAsyncLifecycle):
             )
             if not due:
                 return
-            owners: set[ReminderOwner] = set()
+            materialized: list[tuple[str, Message[InboundAttachment]]] = []
             for reminder in due:
-                owner = await self._materialize_due_reminder(reminder)
-                if owner is not None:
-                    owners.add(owner)
-            for owner in sorted(
-                owners,
-                key=lambda item: (item.agent_id, item.owner_session_id),
+                result = await self._materialize_due_reminder(reminder)
+                if result is not None:
+                    materialized.append(result)
+            for agent_id, message in sorted(
+                materialized,
+                key=lambda item: (item[0], item[1].session_id, item[1].seq),
             ):
-                await self._publish_owner(owner)
+                await self._publish_message(agent_id, message)
             await asyncio.sleep(0)
 
     async def _materialize_due_reminder(
         self,
         snapshot: OwnedReminder,
-    ) -> ReminderOwner | None:
+    ) -> tuple[str, Message[InboundAttachment]] | None:
         owner = snapshot.owner
         async with self._concurrency.for_session(owner.owner_session_id):
             current_owned = await self._storage.get_owned_reminder(
@@ -236,37 +239,63 @@ class ReminderScheduler(IAsyncLifecycle):
                 fired_at_ms=fired_at_ms,
                 next_fire_at_ms=next_fire_at_ms,
             )
-            occurrence = ReminderOccurrence(
-                occurrence_id=str(uuid7()),
-                reminder_id=current.reminder_id,
-                owner_session_id=current.owner_session_id,
-                occurrence_no=current.last_occurrence_no + 1,
-                anchor_message_id=current.anchor_message_id,
-                scheduled_for_ms=scheduled_for_ms,
-                fired_at_ms=fired_at_ms,
-                next_fire_at_ms=next_fire_at_ms,
-                overdue=fired_at_ms > scheduled_for_ms,
-                read_at_ms=None,
-                created_at_ms=fired_at_ms,
+            anchor = await self._storage.get_owned_message(
+                owner.agent_id,
+                current.owner_session_id,
+                current.anchor_message_id,
+                direction=MessageDirection.INBOUND,
             )
-            await self._storage.save_owned_fired_occurrence(
+            if anchor is None:
+                raise ValueError("Reminder anchor message is missing")
+            system_message = Message[InboundAttachment](
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=str(uuid7()),
+                session_id=current.owner_session_id,
+                channel_session_id=anchor.channel_session_id,
+                channel=anchor.channel,
+                provider_thread_id=anchor.provider_thread_id,
+                provider_message_id=None,
+                provider_time_ms=None,
+                received_at_ms=fired_at_ms,
+                sender=SenderIdentity(name="system"),
+                message_type="text",
+                target=anchor.target,
+                target_kind=anchor.target_kind,
+                body=render_reminder_fire_body(
+                    fired,
+                    anchor.target,
+                    next_fire_at_ms,
+                ),
+                mentions_agent=False,
+                notifies_runtime=True,
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
+            materialized = await self._storage.materialize_owned_reminder_message(
                 current.revision,
                 OwnedReminder(owner.agent_id, fired),
-                OwnedReminderOccurrence(owner.agent_id, occurrence),
+                system_message,
             )
-            return owner
+            return owner.agent_id, materialized
 
-    async def _publish_owner(self, owner: ReminderOwner) -> None:
+    async def _publish_message(
+        self,
+        agent_id: str,
+        message: Message[InboundAttachment],
+    ) -> None:
         try:
-            await self._publish_wake(owner.agent_id, owner.owner_session_id)
+            await self._publish_wake(agent_id, message)
         except asyncio.CancelledError:
             raise
         except Exception:
             self._logger.exception(
                 "reminder wake publish failed",
                 extra={
-                    "agent_id": owner.agent_id,
-                    "owner_session_id": owner.owner_session_id,
+                    "agent_id": agent_id,
+                    "owner_session_id": message.session_id,
                 },
             )
 

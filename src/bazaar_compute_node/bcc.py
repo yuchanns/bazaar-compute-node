@@ -241,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     reminder_subparsers = reminder_parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{schedule,check,list,snooze,update,cancel}",
+        metavar="{schedule,list,snooze,update,cancel}",
         title="reminder commands",
     )
 
@@ -290,17 +290,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--message-id",
         metavar="<id>",
         help="Required full uuid for the local inbound message used as anchor.",
-    )
-
-    reminder_subparsers.add_parser(
-        "check",
-        help="Drain pending Reminder occurrences.",
-        description=(
-            "Read up to 100 pending Reminder occurrences for the current session and "
-            "mark exactly the returned occurrences as read. Use this after a Reminder "
-            "notice. A read marker means the occurrence was inspected, not that its "
-            "business task was completed."
-        ),
     )
 
     list_parser = reminder_subparsers.add_parser(
@@ -666,43 +655,6 @@ def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
     )
 
 
-def serialize_reminder_check(result: Mapping[str, object]) -> str:
-    items = cast(list[Mapping[str, object]], result["items"])
-    has_more = cast(bool, result["has_more"])
-    if not items:
-        return "No pending reminders."
-
-    lines: list[str] = []
-    for item in items:
-        occurrence = cast(Mapping[str, object], item["occurrence"])
-        reminder_id = cast(str, occurrence["reminder_id"])
-        occurrence_no = cast(int, occurrence["occurrence_no"])
-        scheduled = format_utc_timestamp(cast(int, occurrence["scheduled_for_ms"]))
-        fired = format_utc_timestamp(cast(int, occurrence["fired_at_ms"]))
-        overdue = cast(bool, occurrence["overdue"])
-        next_fire_at_ms = cast(int | None, occurrence["next_fire_at_ms"])
-        next_text = (
-            format_utc_timestamp(next_fire_at_ms)
-            if next_fire_at_ms is not None
-            else "none"
-        )
-        target = cast(str, item["canonical_target"])
-        anchor = cast(str, occurrence["anchor_message_id"])
-        title = cast(str, item["title"])
-        lines.append(
-            f"[class=due id={reminder_id} occurrence={occurrence_no} "
-            f"scheduled={scheduled} fired={fired} "
-            f"overdue={str(overdue).lower()} next={next_text} "
-            f"target={target} anchor={anchor}] {title}"
-        )
-    lines.append(
-        "More pending reminders remain. Run `bcc reminder check` again."
-        if has_more
-        else "No more pending reminders."
-    )
-    return "\n".join(lines)
-
-
 def serialize_reminder_list(result: Mapping[str, object]) -> str:
     reminders = cast(list[Mapping[str, object]], result["reminders"])
     if not reminders:
@@ -898,7 +850,6 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     elif args.resource == "reminder":
         serializer = {
             "schedule": serialize_reminder_schedule,
-            "check": serialize_reminder_check,
             "list": serialize_reminder_list,
             "snooze": serialize_reminder_snooze,
             "update": serialize_reminder_update,

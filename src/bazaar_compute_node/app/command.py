@@ -640,7 +640,20 @@ def format_check_message(message: Mapping[str, object]) -> str:
     line += "] "
     if sender is not None:
         line += f"{sender}: "
-    return line + body + _attachment_suffix(message)
+    rendered = line + body + _attachment_suffix(message)
+    if message.get("system_message_kind") == "reminder":
+        operation = (
+            "(to snooze/update/cancel: bcc reminder --help)"
+            if "\nNext iteration: " in body
+            else "(to snooze/cancel: bcc reminder --help)"
+        )
+        rendered += (
+            f"\n{operation}"
+            "\nRespond as appropriate. Complete all your work before stopping."
+            "\nReply in the channel or create/reply in a thread as appropriate; "
+            "use each message's `target` and `msg` fields to choose the exact target."
+        )
+    return rendered
 
 
 def format_read_message(
