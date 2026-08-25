@@ -578,6 +578,13 @@ def serialize_send(result: Mapping[str, object]) -> str:
         ) from error
 
 
+def serialize_unfollow(result: Mapping[str, object]) -> str:
+    target = cast(str, result["target"])
+    if cast(bool, result["changed"]):
+        return f"Thread unfollowed: {target}"
+    return f"Thread was already unfollowed: {target}"
+
+
 def _reminder(result: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], result["reminder"])
 
@@ -694,6 +701,8 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
             "cancel": serialize_reminder_cancel,
         }[args.command]
         print(serializer(result))
+    elif args.resource == "thread" and args.command == "unfollow":
+        print(serialize_unfollow(result))
     return 0
 
 

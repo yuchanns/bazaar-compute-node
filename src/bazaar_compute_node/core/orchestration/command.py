@@ -20,6 +20,8 @@ from ..command import (
     MessageReadResult,
     MessageSendFreshnessHold,
     MessageSendResult,
+    MessageSendSuccess,
+    ThreadUnfollowResult,
 )
 from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
@@ -281,7 +283,7 @@ class SessionCommandService(ICommandService):
                     target=canonical_target,
                     result=freshness,
                 )
-                return freshness
+                return replace(freshness, target=target.display_target)
             expected_source_seq = freshness.current_inbound_seq
 
         handoff_message: Message[InboundAttachment] | None = None
@@ -303,7 +305,7 @@ class SessionCommandService(ICommandService):
                     target=canonical_target,
                     result=result,
                 )
-                return result
+                return replace(result, target=target.display_target)
             outbound = result
             channel_session = prepared.channel_session
             audit_context = self._correlation(
@@ -401,7 +403,7 @@ class SessionCommandService(ICommandService):
                 correlation=audit_context,
                 arguments={
                     "command_id": command_id,
-                    "target": target,
+                    "target": canonical_target,
                     "delivery_state": delivery_state.value,
                 },
                 error_kind=terminal_kind,
@@ -414,7 +416,7 @@ class SessionCommandService(ICommandService):
                 raise
             except Exception:
                 self._logger.exception("Handoff inbox wake could not be published")
-        return outbound
+        return MessageSendSuccess(message=outbound, target=target.display_target)
 
     def _observe_freshness(self, session_id: str, seq: int) -> None:
         previous = self._freshness_snapshots.get(session_id)
@@ -461,7 +463,9 @@ class SessionCommandService(ICommandService):
             },
         )
 
-    async def unfollow(self, session_id: str, *, raw_target: str) -> bool:
+    async def unfollow(
+        self, session_id: str, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         async with self._concurrency.for_session(session_id):
             target = await self._storage.resolve_inbox_target(raw_target)
             if target.bcn_session.id != session_id:
@@ -501,7 +505,7 @@ class SessionCommandService(ICommandService):
                 "changed": changed,
             },
         )
-        return changed
+        return ThreadUnfollowResult(target=target.display_target, changed=changed)
 
     def _correlation(
         self,

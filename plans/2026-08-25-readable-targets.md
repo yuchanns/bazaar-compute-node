@@ -46,8 +46,8 @@
 - Lark 群聊通过现有 tenant token 调用 `GET /open-apis/im/v1/chats/{chat_id}` 读取 `name`，并使用
   有界 TTL cache / single-flight；
 - WeCom 明确保留 UUID fallback；
-- developer instructions 删除 short-ID 遗留，示例改用完整 UUID message ID，并描述 readable
-  target 与 canonical fallback 的实际合同。
+- developer instructions 删除 short-ID 遗留，示例改用完整 UUID message ID；不向 agent
+  解释 target 的内部展示、解析或存储机制。
 
 ## 3. Canonical 与 display target 合同
 
@@ -187,15 +187,11 @@ UUID。测试明确锁定 fallback，后续 provider 能力增强只需开始提
 
 ## 6. Developer instructions
 
-`resources/developer_instructions.md` 做两类同步修改：
-
-1. 删除“message short ID / first 8 characters of a UUID”表述；header 示例使用完整、明显的 UUID
-   placeholder，`msg=` 定义为必须原样使用的 canonical message ID；
-2. target 说明不再暗示固定的 `dm:@peer-name` 必然存在，而是要求始终复用 bcn 输出的 exact target，
-   并说明 readable selector 在不可用时会 fallback 到 `dm:<uuid>` / `group:<uuid>`。
-
-instruction 不描述 schema、cache、provider permission 或 resolver 实现。rendered instruction tests 同时
-断言不存在 short-ID 遗留、示例 ID 为完整 UUID、可读/fallback target 与真实 CLI 合同一致。
+`resources/developer_instructions.md` 删除“message short ID / first 8 characters of a UUID”表述；header
+示例使用完整、明显的 UUID placeholder，`target` 与 `msg` 只要求原样复用。instruction 不描述
+target 的内部展示/解析/存储模型，也不描述 schema、cache、provider permission 或 resolver 实现。
+rendered instruction tests 只验证完整 UUID 示例与原样复用 `target` / `msg` 的正向输出，不增加
+禁止词或旧格式的反向断言。
 
 ## 7. 任务拆分
 
@@ -205,8 +201,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 - 增加 migration 22、codec/repository/memory adapter 与非唯一 handle lookup index；
 - 让 inbound observation 更新 ChannelSession，同时保持 `messages.target` 为 canonical；
 - 将 history/send/draft/reply/unfollow 的 target resolution 与 persistence 改为 canonical result；
-- 新增本 feature 唯一的 pytest test function，以带 case label 的子场景覆盖升级、observation
-  update/clear、group stale label、DM 唯一/重复、provider-neutral presentation contract 与 alias send
+- 新增本 feature 唯一的 pytest test function，以带 case label 的子场景覆盖升级、presentation
+  observation、group stale label、唯一 DM handle、provider-neutral presentation contract 与 alias send
   后持久化 canonical target；
 - 运行 focused core/SQLite/command tests、Ruff、Pyright、migration ledger check 与
   `git diff --check`；
@@ -216,8 +212,7 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 
 - 从当前 message `chat` 映射 private username 与 group/supergroup title；
 - 保持 quoted backfill、topic identity、sender identity 与 notification semantics 不变；
-- 扩展同一个 readable-target test function，覆盖 Telegram username/title、缺失/清除、unsafe title
-  fallback 与 topic UUID suffix；
+- 扩展同一个 readable-target test function，覆盖 Telegram username/title 与 topic UUID suffix；
 - 运行 Telegram/core focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
@@ -227,8 +222,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 - 将 Lark contact/chat 名称 cache 统一为成功 1 天/失败 5 分钟，并为 chat lookup 增加有界
   single-flight、health counters 与 best-effort fallback；
 - 只为 group inbound 提供成功 observation；p2p 和 WeCom 维持 UUID；
-- 扩展同一个 readable-target test function，覆盖 Lark cache hit/expiry、concurrent collapse、provider
-  fallback、rename refresh，以及 Lark DM / WeCom fallback；
+- 扩展同一个 readable-target test function，覆盖 Lark cache hit/expiry、concurrent collapse 与 rename
+  refresh；
 - 运行 Lark/WeCom focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
@@ -236,10 +231,10 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 
 - check/read headers、inbox list、send/freshness output、Handoff source guidance 与 unfollow 输出统一使用
   display projection；
-- 验证任何由 bcc 输出的 target 都能被对应命令重新解析，canonical fallback 始终可用；
+- 验证任何由 bcc 输出的 target 都能被对应命令重新解析；
 - 更新 developer instructions，删除 short-ID 表述并使用完整 UUID placeholder；
 - 扩展同一个 readable-target test function，并更新已有 app/bcc/instruction exact-output tests，覆盖
-  readable 与 fallback 两条路径；
+  readable target 正向链路；
 - 运行 app/bcc/instruction focused tests、Ruff、Pyright 与 `git diff --check`；
 - 发送排除 tests 的业务 diff，停在 review。
 
@@ -249,9 +244,8 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
 - 运行 `ruff format --check .`、`ruff check .`、
   `uv run scripts/pyright_lsp_check.py --outputjson .`、compileall、`uv lock --check` 与
   `git diff --check`；
-- 以 SQLite 集成场景验证 Telegram/Lark presentation 更新、canonical Message rows、重名 fallback、
-  改名后的旧 group selector 与所有 bcc round-trip；
-- 复核 WeCom 与无 Lark 群权限时收发链路不回归；
+- 以 SQLite 集成场景验证 Telegram/Lark presentation 更新、canonical Message rows、改名后的旧 group
+  selector 与所有 bcc round-trip；
 - 汇总最终业务 diff、migration 与测试结果，停在最终 review；不自动创建 PR、merge 或 release。
 
 ## 8. 验收标准
@@ -266,7 +260,7 @@ instruction 不描述 schema、cache、provider permission 或 resolver 实现�
    输出 UUID。
 6. `message send/read`、`thread unfollow`、draft/freshness retry、inbox/check header 与 Handoff guidance
    对同一 selector 行为一致。
-7. developer instructions 不再出现 `short ID`、`first 8 characters` 或 8 位 message-ID 示例。
+7. developer instructions 使用完整 UUID message-ID 示例，并只要求原样复用 `target` 与 `msg`。
 8. schema v21 升级到 v22 不回填、不改变现有 session/message identity；现有数据立即可用 canonical
    fallback。
 9. core/storage/app/bcc 中不存在按 `telegram` / `lark` / `wecom` 分支的 target presentation 或

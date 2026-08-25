@@ -21,7 +21,9 @@ from ..core.command import (
     ICommandService,
     InboxListResult,
     MessageSendFreshnessHold,
+    MessageSendSuccess,
     SessionNotFoundError,
+    TargetProjection,
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -62,7 +64,14 @@ def _serialize_attachment(
     }
 
 
-def serialize_message(message: Message) -> dict[str, object]:
+def serialize_message(
+    message: Message,
+    target_projections: tuple[TargetProjection, ...] = (),
+) -> dict[str, object]:
+    targets = {
+        projection.canonical_target: projection.display_target
+        for projection in target_projections
+    }
     return {
         "seq": message.seq,
         "message_id": message.message_id,
@@ -84,13 +93,19 @@ def serialize_message(message: Message) -> dict[str, object]:
             if message.system_message_kind is None
             else message.system_message_kind.value
         ),
-        "system_message_source_target": message.metadata.get(
-            "system_message_source_target"
+        "system_message_source_target": (
+            targets.get(source_target, source_target)
+            if isinstance(
+                source_target := message.metadata.get("system_message_source_target"),
+                str,
+            )
+            else None
         ),
         "system_message_source_message_id": message.metadata.get(
             "system_message_source_message_id"
         ),
         "message_type": message.message_type,
+        "target": targets.get(message.target, message.target),
         "canonical_target": message.target,
         "target_kind": message.target_kind.value,
         "mentions_agent": message.mentions_agent,
@@ -447,10 +462,11 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_message(message) for message in result.messages
+                        serialize_message(message, result.target_projections)
+                        for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_message(message)
+                        serialize_message(message, result.target_projections)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -479,10 +495,11 @@ class CommandDispatcher:
                 "ok": True,
                 "result": {
                     "messages": [
-                        serialize_message(message) for message in result.messages
+                        serialize_message(message, result.target_projections)
+                        for message in result.messages
                     ],
                     "referenced_messages": [
-                        serialize_message(message)
+                        serialize_message(message, result.target_projections)
                         for message in result.referenced_messages
                     ],
                     "snapshot_seq": result.snapshot_seq,
@@ -508,22 +525,25 @@ class CommandDispatcher:
                     "ok": True,
                     "result": {"text": format_freshness_hold(result)},
                 }
-            delivery_state = result.delivery_state
+            if not isinstance(result, MessageSendSuccess):
+                raise AssertionError("message send returned an unsupported result")
+            message = result.message
+            delivery_state = message.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
             if delivery_state is OutboundDeliveryState.SENT:
                 text = (
-                    f"Message sent to {result.target}. Message ID: {result.message_id}"
+                    f"Message sent to {result.target}. Message ID: {message.message_id}"
                 )
             elif delivery_state is OutboundDeliveryState.QUEUED:
                 text = (
                     f"Message queued to {result.target}. "
-                    f"Message ID: {result.message_id}"
+                    f"Message ID: {message.message_id}"
                 )
             elif delivery_state is OutboundDeliveryState.PARTIAL:
                 raise CommandDispatchError(
                     "SEND_PARTIAL",
-                    result.error_message
+                    message.error_message
                     or "Message delivery was only partially confirmed.",
                     next_action=(
                         "Do not retry the complete message automatically; reconcile "
@@ -533,13 +553,13 @@ class CommandDispatcher:
             elif delivery_state is OutboundDeliveryState.UNKNOWN:
                 raise CommandDispatchError(
                     "SEND_UNKNOWN",
-                    result.error_message or "Message delivery outcome is unknown.",
+                    message.error_message or "Message delivery outcome is unknown.",
                     next_action="Reconcile channel delivery before retrying.",
                 )
             elif delivery_state is OutboundDeliveryState.FAILED:
                 raise CommandDispatchError(
                     "SEND_FAILED",
-                    result.error_message or "Message delivery failed.",
+                    message.error_message or "Message delivery failed.",
                     next_action="Fix the provider error before retrying.",
                 )
             else:
@@ -553,11 +573,14 @@ class CommandDispatcher:
 
         if resource == "thread" and command == "unfollow":
             request = cast(_ThreadUnfollowRequest, request)
-            changed = await self._service.unfollow(
+            result = await self._service.unfollow(
                 session_id,
                 raw_target=request.target,
             )
-            return {"ok": True, "result": {"changed": changed}}
+            return {
+                "ok": True,
+                "result": {"target": result.target, "changed": result.changed},
+            }
 
         raise AssertionError("validated command route has no handler")
 
@@ -581,7 +604,7 @@ def _message_timestamp(message: Mapping[str, object]) -> int:
 def _message_header_fields(
     message: Mapping[str, object],
 ) -> tuple[str, str, str, str, str | None, str]:
-    target = cast(str, message["canonical_target"])
+    target = cast(str, message["target"])
     message_id = cast(str, message["message_id"])
     sender_kind = cast(str, message["sender_kind"])
     sender_value = message["sender"]
@@ -697,9 +720,13 @@ def format_read_message(
 
 
 def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
-    messages = [serialize_message(message) for message in result.messages]
+    messages = [
+        serialize_message(message, result.target_projections)
+        for message in result.messages
+    ]
     referenced_messages = [
-        serialize_message(message) for message in result.referenced_messages
+        serialize_message(message, result.target_projections)
+        for message in result.referenced_messages
     ]
     shown = len(messages)
     total = result.newer_message_total

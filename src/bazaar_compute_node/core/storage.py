@@ -10,9 +10,9 @@ from .command import (
     MessageDraft,
     MessageReadResult,
     MessageSendFreshnessHold,
-    MessageSendResult,
     OutboundFreshnessPass,
     SessionNotFoundError,
+    TargetProjection,
     render_handoff_message_body,
 )
 from .inbox import InboxTargetPage
@@ -78,7 +78,7 @@ class MaterializeOutboundResult:
     channel_session: ChannelSession
     target_session: BcnSession
     reply_to_provider_message_id: str | None
-    outcome: MessageSendResult
+    outcome: Message[OutboundAttachment] | MessageSendFreshnessHold
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +134,21 @@ class StorageOperationMixin:
             notifying_only=True,
         )
         references = await _referenced_messages(self, session_id, messages)
+        canonical_targets = {message.target for message in (*messages, *references)}
+        canonical_targets.update(
+            source_target
+            for message in (*messages, *references)
+            if isinstance(
+                source_target := message.metadata.get("system_message_source_target"),
+                str,
+            )
+        )
+        target_projections: list[TargetProjection] = []
+        for canonical_target in sorted(canonical_targets):
+            target = await self.resolve_inbox_target(canonical_target)
+            target_projections.append(
+                TargetProjection(canonical_target, target.display_target)
+            )
         await self.save_consumer_cursor(
             replace(
                 cursor,
@@ -147,6 +162,7 @@ class StorageOperationMixin:
             snapshot_seq=latest_seq,
             delivered_through_seq=latest_seq,
             referenced_messages=references,
+            target_projections=tuple(target_projections),
         )
 
     async def read_message_history(
@@ -170,6 +186,21 @@ class StorageOperationMixin:
             limit=limit,
         )
         references = await _referenced_messages(self, source_session.id, messages)
+        canonical_targets = {message.target for message in (*messages, *references)}
+        canonical_targets.update(
+            source_target
+            for message in (*messages, *references)
+            if isinstance(
+                source_target := message.metadata.get("system_message_source_target"),
+                str,
+            )
+        )
+        target_projections = []
+        for canonical_target in sorted(canonical_targets):
+            target = await self.resolve_inbox_target(canonical_target)
+            target_projections.append(
+                TargetProjection(canonical_target, target.display_target)
+            )
         latest_seq = await self.get_latest_message_seq(
             source_session.id,
             delivery_states=_HISTORY_DELIVERY_STATES,
@@ -182,6 +213,7 @@ class StorageOperationMixin:
                 first_seq=messages[0].seq if messages else None,
                 last_seq=messages[-1].seq if messages else None,
                 referenced_messages=references,
+                target_projections=tuple(target_projections),
             ),
         )
 
@@ -196,12 +228,18 @@ class StorageOperationMixin:
         if await self.get_bcn_session(caller_session_id) is None:
             raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
         page = await self.list_inbox_targets(limit=limit, offset=offset)
-        targets = tuple(
-            replace(target, current=target.session_id == caller_session_id)
-            for target in page.targets
-        )
+        targets = []
+        for summary in page.targets:
+            target = await self.resolve_inbox_target(summary.target)
+            targets.append(
+                replace(
+                    summary,
+                    target=target.display_target,
+                    current=summary.session_id == caller_session_id,
+                )
+            )
         return InboxListResult(
-            targets=targets,
+            targets=tuple(targets),
             total=page.total,
             shown=len(targets),
             offset=page.offset,
@@ -240,18 +278,37 @@ class StorageOperationMixin:
             latest=True,
             limit=20,
         )
+        references = await _referenced_messages(
+            self,
+            source_target_id,
+            newer_messages,
+        )
+        canonical_targets = {
+            message.target for message in (*newer_messages, *references)
+        }
+        canonical_targets.update(
+            source_target
+            for message in (*newer_messages, *references)
+            if isinstance(
+                source_target := message.metadata.get("system_message_source_target"),
+                str,
+            )
+        )
+        target_projections = []
+        for canonical_target in sorted(canonical_targets):
+            target = await self.resolve_inbox_target(canonical_target)
+            target_projections.append(
+                TargetProjection(canonical_target, target.display_target)
+            )
         return MessageSendFreshnessHold(
             target=payload.target,
             messages=newer_messages,
-            referenced_messages=await _referenced_messages(
-                self,
-                source_target_id,
-                newer_messages,
-            ),
+            referenced_messages=references,
             newer_message_total=newer_total,
             snapshot_seq=source_snapshot_seq,
             current_inbound_seq=current_seq,
             draft_replaced=draft_replaced,
+            target_projections=tuple(target_projections),
         )
 
     async def materialize_outbound_if_fresh(
