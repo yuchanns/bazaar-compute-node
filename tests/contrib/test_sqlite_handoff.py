@@ -282,17 +282,11 @@ async def test_handoff_command_send_then_check_preserves_message_cursors() -> No
             ConsumerCursor(
                 session_id=source_session.id,
                 delivered_through_seq=source_message.seq,
-                inbox_snapshot_seq=source_message.seq,
-                inbox_snapshot_source="read",
-                inbox_snapshot_at_ms=100,
                 updated_at_ms=100,
             ),
             ConsumerCursor(
                 session_id=target_session.id,
                 delivered_through_seq=target_message.seq,
-                inbox_snapshot_seq=target_message.seq,
-                inbox_snapshot_source="check",
-                inbox_snapshot_at_ms=100,
                 updated_at_ms=100,
             ),
         )

@@ -39,8 +39,7 @@ _MESSAGE_COLUMNS = (
     "channel, provider_thread_id, provider_message_id, provider_time_ms, "
     "received_at_ms, sender, message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
-    "provider_payload_ref, command_id, delivery_state, snapshot_seq, "
-    "current_inbound_seq, provider_receipt_ref, created_at_ms, "
+    "provider_payload_ref, command_id, delivery_state, provider_receipt_ref, created_at_ms, "
     "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
     "metadata_json, attachments_json"
 )
@@ -225,6 +224,7 @@ class MessageOperations(RepositoryBase):
         target: str | None = None,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
+        notifying_only: bool = False,
     ) -> int:
         predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
         parameters: list[object] = [session_id]
@@ -234,6 +234,8 @@ class MessageOperations(RepositoryBase):
         if target is not None:
             predicates.append("target = ?")
             parameters.append(target)
+        if notifying_only:
+            predicates.append("notifies_runtime = 1")
         _append_message_filters(
             predicates,
             parameters,
@@ -838,10 +840,9 @@ class MessageOperations(RepositoryBase):
                 "channel_session_id, channel, provider_thread_id, "
                 "provider_message_id, sender, message_type, target, target_kind, "
                 "reply_to_message_id, body, command_id, delivery_state, "
-                "snapshot_seq, current_inbound_seq, provider_receipt_ref, "
-                "created_at_ms, provider_attempted_at_ms, completed_at_ms, "
+                "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
                 "error_kind, error_message, metadata_json, attachments_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.message_id,
                     canonical.seq,
@@ -860,8 +861,6 @@ class MessageOperations(RepositoryBase):
                     canonical.body,
                     canonical.command_id,
                     delivery_state.value,
-                    canonical.snapshot_seq,
-                    canonical.current_inbound_seq,
                     canonical.provider_receipt_ref,
                     canonical.created_at_ms,
                     canonical.provider_attempted_at_ms,
@@ -902,16 +901,13 @@ class MessageOperations(RepositoryBase):
         if delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
         await self.execute(
-            "UPDATE messages SET delivery_state = ?, snapshot_seq = ?, "
-            "current_inbound_seq = ?, provider_message_id = ?, "
+            "UPDATE messages SET delivery_state = ?, provider_message_id = ?, "
             "provider_receipt_ref = ?, provider_attempted_at_ms = ?, "
             "completed_at_ms = ?, error_kind = ?, error_message = ?, "
             "metadata_json = ? WHERE agent_id = /*agent_id*/? "
             "AND direction = 'outbound' AND message_id = ?",
             (
                 delivery_state.value,
-                canonical.snapshot_seq,
-                canonical.current_inbound_seq,
                 canonical.provider_message_id,
                 canonical.provider_receipt_ref,
                 canonical.provider_attempted_at_ms,

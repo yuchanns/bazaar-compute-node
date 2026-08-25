@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from stat import S_IMODE
 from typing import cast
@@ -23,10 +24,15 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
     SCHEMA_MIGRATION,
     STORAGE_ACCESS_MIGRATION,
 )
-from bazaar_compute_node.core.command import MessageDraft, MessageSendFreshnessHold
+from bazaar_compute_node.core.command import (
+    MessageDraft,
+    MessageSendFreshnessHold,
+    OutboundFreshnessPass,
+)
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
     ConsumerCursor,
     InboundAttachment,
     Message,
@@ -46,7 +52,7 @@ from bazaar_compute_node.core.storage import IStorage
 
 
 @pytest.mark.asyncio
-async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
+async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
@@ -76,8 +82,6 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
             body="hello",
             delivery_state=OutboundDeliveryState.PENDING,
             created_at_ms=2,
-            snapshot_seq=3,
-            current_inbound_seq=3,
             provider_attempted_at_ms=4,
         )
 
@@ -117,6 +121,146 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
         assert history.history.snapshot_seq == sent.seq
         assert catalog.targets[0].latest_message_id == sent.message_id
         assert catalog.targets[0].latest_sender == SenderIdentity(name="Test Agent")
+
+        source_channel = ChannelSession(
+            id="channel-source",
+            channel="telegram",
+            provider_thread_id="thread-source",
+            created_at_ms=10,
+            updated_at_ms=10,
+            target_kind=ChannelTargetKind.GROUP,
+        )
+        source_session = BcnSession(
+            id="bcn-source",
+            channel_session_id=source_channel.id,
+            workspace_id="agent-1",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        source_message = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="018f0000-0000-7000-8000-000000000010",
+            session_id=source_session.id,
+            channel_session_id=source_channel.id,
+            channel=source_channel.channel,
+            provider_thread_id=source_channel.provider_thread_id,
+            provider_message_id="provider-source",
+            received_at_ms=10,
+            sender=SenderIdentity(name="Source User"),
+            target="group:source",
+            target_kind=ChannelTargetKind.GROUP,
+            body="source context",
+            metadata={"sender_kind": SenderKind.HUMAN.value},
+        )
+        target_channel = ChannelSession(
+            id="channel-target",
+            channel="telegram",
+            provider_thread_id="thread-target",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        target_session = BcnSession(
+            id="bcn-target",
+            channel_session_id=target_channel.id,
+            workspace_id="agent-1",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        await scope.save_channel_session(source_channel)
+        await scope.save_bcn_session(source_session)
+        source_message = await scope.save_message(source_message)
+        await scope.save_channel_session(target_channel)
+        await scope.save_bcn_session(target_session)
+        draft = MessageDraft(
+            source_target_id=source_session.id,
+            target="dm:target",
+            target_id=target_session.id,
+            body="cross-session payload",
+            attachments=(),
+            reply_to_message_id=None,
+            source_message_id=source_message.message_id,
+            created_at_ms=11,
+        )
+        fresh = await scope.check_outbound_freshness(
+            source_session.id,
+            source_snapshot_seq=source_message.seq,
+            payload=draft,
+            draft_replaced=False,
+        )
+        assert isinstance(fresh, OutboundFreshnessPass)
+        newer_source_message = await scope.save_message(
+            replace(
+                source_message,
+                message_id="018f0000-0000-7000-8000-000000000012",
+                provider_message_id="provider-source-2",
+                received_at_ms=12,
+                body="new source context",
+            )
+        )
+        stale_recheck = await scope.materialize_outbound_if_fresh(
+            source_session.id,
+            fresh.current_inbound_seq,
+            target_session.id,
+            command_id="command-raced",
+            payload=draft,
+            attempted_at_ms=12,
+        )
+        assert isinstance(stale_recheck.outcome, MessageSendFreshnessHold)
+        assert stale_recheck.outcome.messages == (newer_source_message,)
+        assert not any(
+            message.command_id == "command-raced"
+            for message in await scope.list_messages(
+                target_session.id,
+                direction=MessageDirection.OUTBOUND,
+            )
+        )
+        cross_pending = await scope.save_message(
+            Message(
+                direction=MessageDirection.OUTBOUND,
+                seq=0,
+                message_id="outbound-cross",
+                command_id="command-cross",
+                session_id=target_session.id,
+                channel_session_id=target_channel.id,
+                target="dm:target",
+                body="cross-session payload",
+                delivery_state=OutboundDeliveryState.PENDING,
+                created_at_ms=11,
+                provider_attempted_at_ms=12,
+                metadata={
+                    "source_target_id": source_session.id,
+                    "target_id": target_session.id,
+                    "source_message_id": source_message.message_id,
+                    "handoff_message_id": ("018f0000-0000-7000-8000-000000000011"),
+                },
+            )
+        )
+        cross_sent = cross_pending.transition_to(
+            OutboundDeliveryState.SENT,
+            at_ms=13,
+            provider_message_id="provider-cross",
+        )
+        first_finalize = await scope.finalize_outbound_delivery(cross_sent)
+        second_finalize = await scope.finalize_outbound_delivery(cross_sent)
+        target_history = await scope.read_message_history(
+            source_session.id,
+            target="dm:target",
+            around_message_id=cross_pending.message_id,
+            limit=10,
+        )
+
+        assert first_finalize == second_finalize
+        assert first_finalize.handoff_message is not None
+        assert (
+            first_finalize.handoff_message.system_message_kind
+            is SystemMessageKind.HANDOFF
+        )
+        assert first_finalize.outbound.message_id in first_finalize.handoff_message.body
+        assert target_history.history.messages == (
+            first_finalize.outbound,
+            first_finalize.handoff_message,
+        )
     finally:
         await database.stop(timeout=2)
 
@@ -238,9 +382,6 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             ConsumerCursor(
                 session_id=bcn_session.id,
                 delivered_through_seq=anchor.seq,
-                inbox_snapshot_seq=anchor.seq,
-                inbox_snapshot_source="check",
-                inbox_snapshot_at_ms=1_100,
                 updated_at_ms=1_100,
             )
         )
@@ -291,17 +432,19 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         persisted = await scope.get_message(materialized.message_id)
         owners = await storage.list_unread_message_owners()
         catalog = await scope.list_inbox_targets()
-        freshness = await scope.prepare_outbound(
+        freshness = await scope.check_outbound_freshness(
             bcn_session.id,
-            command_id="command-1",
+            source_snapshot_seq=anchor.seq,
             payload=MessageDraft(
+                source_target_id=bcn_session.id,
                 target=anchor.target,
+                target_id=bcn_session.id,
                 body="acknowledged",
                 attachments=(),
                 reply_to_message_id=None,
+                source_message_id=materialized.message_id,
                 created_at_ms=2_200,
             ),
-            attempted_at_ms=2_200,
             draft_replaced=False,
         )
         history = await scope.read_message_history(
@@ -329,8 +472,8 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         assert catalog.targets[0].latest_message_id == materialized.message_id
         assert catalog.targets[0].latest_sender == SenderIdentity(name="system")
         assert catalog.targets[0].last_activity_at_ms == 2_100
-        assert isinstance(freshness.outcome, MessageSendFreshnessHold)
-        assert freshness.outcome.messages == (materialized,)
+        assert isinstance(freshness, MessageSendFreshnessHold)
+        assert freshness.messages == (materialized,)
         assert tuple(message.message_id for message in history.history.messages) == (
             anchor.message_id,
             materialized.message_id,
@@ -370,6 +513,9 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
                 "WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
             )
             message_columns = await session.fetchall("PRAGMA table_info(messages)")
+            cursor_columns = await session.fetchall(
+                "PRAGMA table_info(consumer_cursors)"
+            )
             handoff_columns = await session.fetchall("PRAGMA table_info(handoffs)")
             journal_mode = await session.fetchone("PRAGMA journal_mode")
             busy_timeout = await session.fetchone("PRAGMA busy_timeout")
@@ -417,7 +563,17 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 19
+        assert schema_version["version"] == 20
+        assert {row["name"] for row in message_columns}.isdisjoint(
+            {"snapshot_seq", "current_inbound_seq"}
+        )
+        assert {row["name"] for row in cursor_columns}.isdisjoint(
+            {
+                "inbox_snapshot_seq",
+                "inbox_snapshot_source",
+                "inbox_snapshot_at_ms",
+            }
+        )
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         primary_keys = {row["name"]: row["pk"] for row in message_columns}
@@ -483,7 +639,7 @@ async def test_v19_migrates_only_pending_occurrences_to_reminder_messages() -> N
     anchor_id = "018f0000-0000-7000-8000-000000000004"
 
     async with aiosqlite.connect(database_path) as connection:
-        for migration in MIGRATIONS[:-1]:
+        for migration in MIGRATIONS[:18]:
             for statement in migration.statements:
                 await connection.execute(statement)
             await connection.execute(
@@ -832,7 +988,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 19
+        assert schema_version["version"] == 20
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -941,7 +1097,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 19
+        assert schema_version["version"] == 20
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -1065,8 +1221,7 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
     try:
         async with database.reader() as session, session.transaction():
             rows = await session.fetchall(
-                "SELECT message_id, delivery_state, snapshot_seq, "
-                "current_inbound_seq, provider_attempted_at_ms, completed_at_ms, "
+                "SELECT message_id, delivery_state, provider_attempted_at_ms, completed_at_ms, "
                 "attachments_json, agent_id, sender "
                 "FROM messages WHERE direction = 'outbound' ORDER BY message_id"
             )
@@ -1089,8 +1244,6 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             {
                 "message_id": "outbound-sent",
                 "delivery_state": "sent",
-                "snapshot_seq": 0,
-                "current_inbound_seq": 0,
                 "provider_attempted_at_ms": 5,
                 "completed_at_ms": 6,
                 "attachments_json": "[]",
@@ -1099,7 +1252,13 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             }
         ]
         assert {row["name"] for row in columns}.isdisjoint(
-            {"fresh_check_state", "draft_saved_at_ms", "next_action"}
+            {
+                "fresh_check_state",
+                "snapshot_seq",
+                "current_inbound_seq",
+                "draft_saved_at_ms",
+                "next_action",
+            }
         )
         assert {row["name"] for row in indexes} >= {
             "idx_messages_outbound_command",

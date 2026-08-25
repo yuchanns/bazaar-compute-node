@@ -234,8 +234,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     provider_payload_ref: str | None = None
     command_id: str | None = None
     delivery_state: OutboundDeliveryState | None = None
-    snapshot_seq: int | None = None
-    current_inbound_seq: int | None = None
     created_at_ms: int | None = None
     provider_attempted_at_ms: int | None = None
     provider_receipt_ref: str | None = None
@@ -262,8 +260,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         outbound_fields = (
             self.command_id,
             self.delivery_state,
-            self.snapshot_seq,
-            self.current_inbound_seq,
             self.created_at_ms,
             self.provider_attempted_at_ms,
             self.provider_receipt_ref,
@@ -279,19 +275,13 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         for value, field_name in (
             (self.command_id, "command_id"),
             (self.delivery_state, "delivery_state"),
-            (self.snapshot_seq, "snapshot_seq"),
-            (self.current_inbound_seq, "current_inbound_seq"),
             (self.created_at_ms, "created_at_ms"),
             (self.provider_attempted_at_ms, "provider_attempted_at_ms"),
         ):
             if value is None:
                 raise ValueError(f"{field_name} is required for outbound messages")
-        snapshot_seq = cast(int, self.snapshot_seq)
-        current_inbound_seq = cast(int, self.current_inbound_seq)
         created_at_ms = cast(int, self.created_at_ms)
         provider_attempted_at_ms = cast(int, self.provider_attempted_at_ms)
-        if current_inbound_seq > snapshot_seq:
-            raise ValueError("current inbound sequence exceeds snapshot sequence")
         if provider_attempted_at_ms < created_at_ms:
             raise ValueError("provider attempt cannot precede creation")
 
@@ -383,19 +373,9 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
 class ConsumerCursor:
     session_id: str
     delivered_through_seq: int = 0
-    inbox_snapshot_seq: int | None = None
-    inbox_snapshot_source: str | None = None
-    inbox_snapshot_at_ms: int | None = None
     last_check_at_ms: int | None = None
     last_read_at_ms: int | None = None
     updated_at_ms: int = 0
-
-    def __post_init__(self) -> None:
-        if (
-            self.inbox_snapshot_seq is not None
-            and self.inbox_snapshot_seq < self.delivered_through_seq
-        ):
-            raise ValueError("inbox_snapshot_seq cannot precede delivered_through_seq")
 
 
 @dataclass(frozen=True, slots=True)

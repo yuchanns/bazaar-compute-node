@@ -52,7 +52,10 @@ _SNAPSHOT_READ_OPERATIONS = frozenset(
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
+        "check_outbound_freshness",
+        "finalize_outbound_delivery",
         "record_inbound",
+        "materialize_outbound_if_fresh",
         "materialize_owned_reminder_message",
     }
 )

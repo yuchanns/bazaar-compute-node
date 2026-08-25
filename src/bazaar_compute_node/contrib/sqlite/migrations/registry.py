@@ -28,6 +28,9 @@ from .v16_remove_outbound_drafts import OUTBOUND_DRAFT_REMOVAL_MIGRATION
 from .v17_remove_agent_identity_triggers import STORAGE_ACCESS_MIGRATION
 from .v18_unify_messages import MESSAGE_UNIFICATION_MIGRATION
 from .v19_reminder_system_messages import REMINDER_SYSTEM_MESSAGE_MIGRATION
+from .v20_remove_freshness_persistence import (
+    FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
+)
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -72,6 +75,7 @@ MIGRATIONS = _migration_ledger(
     STORAGE_ACCESS_MIGRATION,
     MESSAGE_UNIFICATION_MIGRATION,
     REMINDER_SYSTEM_MESSAGE_MIGRATION,
+    FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
 )
 
 

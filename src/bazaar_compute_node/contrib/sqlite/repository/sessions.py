@@ -84,8 +84,7 @@ class SessionOperations(RepositoryBase):
         if await self.get_bcn_session(session_id) is None:
             return None
         row = await self.fetchone(
-            "SELECT session_id, delivered_through_seq, inbox_snapshot_seq, "
-            "inbox_snapshot_source, inbox_snapshot_at_ms, last_check_at_ms, "
+            "SELECT session_id, delivered_through_seq, last_check_at_ms, "
             "last_read_at_ms, updated_at_ms FROM consumer_cursors WHERE session_id = ?",
             (session_id,),
         )
@@ -99,25 +98,19 @@ class SessionOperations(RepositoryBase):
             cursor.session_id,
             direction=MessageDirection.INBOUND,
         )
-        latest_message_seq = await self.get_latest_message_seq(cursor.session_id)
         validate_cursor_bounds(
             cursor,
             latest_inbound_seq=latest_inbound_seq,
-            latest_message_seq=latest_message_seq,
         )
         existing = await self.get_consumer_cursor(cursor.session_id)
         if existing is not None:
             validate_consumer_cursor_update(existing, cursor)
             await self.execute(
                 "UPDATE consumer_cursors SET delivered_through_seq = ?, "
-                "inbox_snapshot_seq = ?, inbox_snapshot_source = ?, "
-                "inbox_snapshot_at_ms = ?, last_check_at_ms = ?, "
+                "last_check_at_ms = ?, "
                 "last_read_at_ms = ?, updated_at_ms = ? WHERE session_id = ?",
                 (
                     cursor.delivered_through_seq,
-                    cursor.inbox_snapshot_seq,
-                    cursor.inbox_snapshot_source,
-                    cursor.inbox_snapshot_at_ms,
                     cursor.last_check_at_ms,
                     cursor.last_read_at_ms,
                     cursor.updated_at_ms,
@@ -127,16 +120,12 @@ class SessionOperations(RepositoryBase):
             return
         await self.execute(
             "INSERT INTO consumer_cursors ("
-            "session_id, delivered_through_seq, inbox_snapshot_seq, "
-            "inbox_snapshot_source, inbox_snapshot_at_ms, last_check_at_ms, "
+            "session_id, delivered_through_seq, last_check_at_ms, "
             "last_read_at_ms, updated_at_ms"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?)",
             (
                 cursor.session_id,
                 cursor.delivered_through_seq,
-                cursor.inbox_snapshot_seq,
-                cursor.inbox_snapshot_source,
-                cursor.inbox_snapshot_at_ms,
                 cursor.last_check_at_ms,
                 cursor.last_read_at_ms,
                 cursor.updated_at_ms,

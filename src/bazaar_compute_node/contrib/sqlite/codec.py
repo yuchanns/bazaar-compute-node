@@ -153,8 +153,6 @@ def message_from_row(
         delivery_state=OutboundDeliveryState(
             _required_text(row["delivery_state"], "message.delivery_state")
         ),
-        snapshot_seq=cast(int, row["snapshot_seq"]),
-        current_inbound_seq=cast(int, row["current_inbound_seq"]),
         created_at_ms=cast(int, row["created_at_ms"]),
         provider_attempted_at_ms=cast(int, row["provider_attempted_at_ms"]),
         provider_receipt_ref=_optional_text(
@@ -203,13 +201,6 @@ def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
         session_id=_required_text(row["session_id"], "session_id"),
         delivered_through_seq=cast(int, row["delivered_through_seq"]),
-        inbox_snapshot_seq=cast(int | None, row["inbox_snapshot_seq"]),
-        inbox_snapshot_source=_optional_string_value(
-            row["inbox_snapshot_source"],
-            "inbox_snapshot_source",
-            allow_empty=False,
-        ),
-        inbox_snapshot_at_ms=cast(int | None, row["inbox_snapshot_at_ms"]),
         last_check_at_ms=cast(int | None, row["last_check_at_ms"]),
         last_read_at_ms=cast(int | None, row["last_read_at_ms"]),
         updated_at_ms=cast(int, row["updated_at_ms"]),
@@ -250,16 +241,10 @@ def validate_outbound_message_input(message: object) -> None:
         (message.error_message, "error_message"),
     ):
         _validate_optional_input_text(value, field_name)
-    snapshot_seq = message.snapshot_seq
-    current_inbound_seq = message.current_inbound_seq
     created_at_ms = message.created_at_ms
     provider_attempted_at_ms = message.provider_attempted_at_ms
-    assert snapshot_seq is not None
-    assert current_inbound_seq is not None
     assert created_at_ms is not None
     assert provider_attempted_at_ms is not None
-    if current_inbound_seq > snapshot_seq:
-        raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
     if provider_attempted_at_ms < created_at_ms:
         raise ValueError("outbound provider attempt cannot precede creation")
     if (
@@ -317,12 +302,6 @@ def validate_outbound_update(
     existing: Message[OutboundAttachment],
     incoming: Message[OutboundAttachment],
 ) -> Message[OutboundAttachment]:
-    if (
-        incoming.snapshot_seq != existing.snapshot_seq
-        or incoming.current_inbound_seq != existing.current_inbound_seq
-    ):
-        raise ValueError("outbound snapshot evidence cannot change")
-
     incoming_state = incoming.delivery_state
     existing_state = existing.delivery_state
     if incoming_state is None or existing_state is None:
@@ -406,31 +385,15 @@ def _validate_optional_input_text(value: object, field_name: str) -> None:
 def validate_consumer_cursor_input(cursor: object) -> None:
     if not isinstance(cursor, ConsumerCursor):
         raise TypeError("cursor must be a ConsumerCursor")
-    source = cursor.inbox_snapshot_source
-    if source is not None and source not in {"check", "read"}:
-        raise ValueError("inbox_snapshot_source must be 'check' or 'read'")
-    if cursor.inbox_snapshot_seq is None:
-        if cursor.inbox_snapshot_source is not None:
-            raise ValueError("inbox snapshot source requires a snapshot sequence")
-        if cursor.inbox_snapshot_at_ms is not None:
-            raise ValueError("inbox snapshot time requires a snapshot sequence")
-    elif cursor.inbox_snapshot_at_ms is None:
-        raise ValueError("inbox snapshot sequence requires a snapshot time")
 
 
 def validate_cursor_bounds(
     cursor: ConsumerCursor,
     *,
     latest_inbound_seq: int,
-    latest_message_seq: int,
 ) -> None:
     if cursor.delivered_through_seq > latest_inbound_seq:
         raise ValueError("delivered cursor cannot exceed the latest inbound sequence")
-    if (
-        cursor.inbox_snapshot_seq is not None
-        and cursor.inbox_snapshot_seq > latest_message_seq
-    ):
-        raise ValueError("inbox snapshot cannot exceed the latest message sequence")
 
 
 def validate_consumer_cursor_update(
@@ -441,22 +404,7 @@ def validate_consumer_cursor_update(
         raise ValueError("consumer cursor updated_at_ms cannot move backwards")
     if incoming.delivered_through_seq < existing.delivered_through_seq:
         raise ValueError("delivered cursor cannot move backwards")
-    if existing.inbox_snapshot_seq is not None and (
-        incoming.inbox_snapshot_seq is None
-        or incoming.inbox_snapshot_seq < existing.inbox_snapshot_seq
-    ):
-        raise ValueError("inbox snapshot cannot move backwards")
-    if (
-        incoming.inbox_snapshot_source == "read"
-        and incoming.delivered_through_seq != existing.delivered_through_seq
-    ):
-        raise ValueError("read snapshot cannot advance the delivered cursor")
     for incoming_value, existing_value, field_name in (
-        (
-            incoming.inbox_snapshot_at_ms,
-            existing.inbox_snapshot_at_ms,
-            "inbox_snapshot_at_ms",
-        ),
         (incoming.last_check_at_ms, existing.last_check_at_ms, "last_check_at_ms"),
         (incoming.last_read_at_ms, existing.last_read_at_ms, "last_read_at_ms"),
     ):
@@ -527,17 +475,6 @@ def _optional_text(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     return _string_value(value, field_name, allow_empty=False)
-
-
-def _optional_string_value(
-    value: object,
-    field_name: str,
-    *,
-    allow_empty: bool,
-) -> str | None:
-    if value is None:
-        return None
-    return _string_value(value, field_name, allow_empty=allow_empty)
 
 
 def _string_value(value: object, field_name: str, *, allow_empty: bool) -> str:

@@ -23,7 +23,6 @@ from bazaar_compute_node.core.command import (
     IHandoffService,
     IReminderService,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.handoff import (
     HandoffCheckItem,
@@ -235,7 +234,7 @@ async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
+async def test_message_send_renders_freshness_hold() -> None:
     message = Message(
         direction=MessageDirection.INBOUND,
         seq=7,
@@ -253,17 +252,14 @@ async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
     )
     service = SimpleNamespace(
         send=AsyncMock(
-            side_effect=(
-                MessageSendFreshnessHold(
-                    target="dm:source",
-                    messages=(message,),
-                    referenced_messages=(),
-                    newer_message_total=1,
-                    snapshot_seq=6,
-                    current_inbound_seq=7,
-                    draft_replaced=False,
-                ),
-                MessageSendHandoffRequired(target="dm:target"),
+            return_value=MessageSendFreshnessHold(
+                target="dm:source",
+                messages=(message,),
+                referenced_messages=(),
+                newer_message_total=1,
+                snapshot_seq=6,
+                current_inbound_seq=7,
+                draft_replaced=False,
             )
         )
     )
@@ -286,15 +282,6 @@ async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
     }
 
     freshness = await dispatcher(request)
-    cross_session = await dispatcher(
-        {
-            **request,
-            "target": "dm:target",
-            "body": "",
-            "send_draft": True,
-        }
-    )
-
     assert freshness["ok"] is True
     freshness_result = cast(Mapping[str, object], freshness["result"])
     freshness_text = cast(str, freshness_result["text"])
@@ -304,16 +291,16 @@ async def test_message_send_renders_freshness_and_cross_session_holds() -> None:
     assert "[1/1 seq=7 msg=message-7" in freshness_text
     assert "End of window: 1/1 shown." in freshness_text
     assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
-    assert cross_session["ok"] is True
-    cross_result = cast(Mapping[str, object], cross_session["result"])
-    cross_text = cast(str, cross_result["text"])
-    assert cross_text.startswith(
-        "Your message was not sent because the target belongs to another conversation."
-    )
-    assert 'bcc handoff send --target "dm:target"' in cross_text
-    assert "background, goal, and next action" in cross_text
-    assert cross_text.endswith("You can also choose not to send anything.")
-    assert service.send.await_args_list[1].kwargs["send_draft"] is True
+    assert set(service.send.await_args.kwargs) == {
+        "session_id",
+        "command_id",
+        "target",
+        "body",
+        "created_at_ms",
+        "attachment_paths",
+        "reply_to_message_id",
+        "send_draft",
+    }
 
 
 @pytest.mark.asyncio

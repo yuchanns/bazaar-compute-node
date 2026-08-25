@@ -190,6 +190,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             node_id=lambda: self.agent_id,
             workspace=workspace,
             clock=self._clock,
+            publish_wake=self.publish_inbox_wake,
         )
         self._turns = SessionTurnCoordinator(
             agent_id=agent_id,

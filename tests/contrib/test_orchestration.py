@@ -40,7 +40,6 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.command import (
     ICommandService,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -1056,21 +1055,8 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             body="revised draft",
             created_at_ms=6,
         )
-        assert isinstance(revised, MessageSendFreshnessHold)
-        assert revised.draft_replaced is True
-        assert len(channel.send_attempts) == 1
-
-        await orchestrator.command_service.check("bcn-1")
-        delivered_revised = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-send-revised",
-            target="#test:bcn-1",
-            body="",
-            created_at_ms=7,
-            send_draft=True,
-        )
-        assert isinstance(delivered_revised, Message)
-        assert delivered_revised.body == "revised draft"
+        assert isinstance(revised, Message)
+        assert revised.body == "revised draft"
         assert len(channel.send_attempts) == 2
     finally:
         await orchestrator.stop(timeout=1)
@@ -1199,7 +1185,9 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
 
 @pytest.mark.asyncio
-async def test_send_validates_target_and_preserves_provider_delivery_states() -> None:
+async def test_send_delivers_cross_session_and_preserves_provider_delivery_states() -> (
+    None
+):
     orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
@@ -1215,7 +1203,9 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 == 1
             )
         )
-        await orchestrator._record_inbound(make_message(session_id="bcn-other"))
+        target_anchor = make_message(session_id="bcn-other")
+        await orchestrator._record_inbound(target_anchor)
+        await orchestrator.command_service.check("bcn-1")
 
         cross_session_target = await orchestrator.command_service.send(
             session_id="bcn-1",
@@ -1223,19 +1213,70 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             target="#test:bcn-other",
             body="reply",
             created_at_ms=2,
+            reply_to_message_id=target_anchor.message_id,
         )
-        assert cross_session_target == MessageSendHandoffRequired(
-            target="#test:bcn-other"
+        assert isinstance(cross_session_target, Message)
+        assert cross_session_target.session_id == "bcn-other"
+        assert cross_session_target.delivery_state is OutboundDeliveryState.SENT
+        assert channel.send_attempts[-1].session_id == "bcn-other"
+        assert channel.send_attempts[-1].provider_reply_to_message_id == (
+            target_anchor.provider_message_id
         )
-        assert not _stored_message_index(
-            storage,
-            direction=MessageDirection.OUTBOUND,
+        target_messages = _stored_messages(storage, "bcn-other")
+        handoff_message = target_messages[-1]
+        assert handoff_message.system_message_kind is SystemMessageKind.HANDOFF
+        assert handoff_message.metadata["system_message_outbound_message_id"] == (
+            cross_session_target.message_id
         )
-        assert not channel.send_attempts
+        assert cross_session_target.message_id in handoff_message.body
+        assert handoff_message.metadata["system_message_source_target"] == (
+            "#test:bcn-1"
+        )
         assert any(
-            event.event_name == "tool.bcc.message.send.cross_session_hold"
-            for event in audit.events
+            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
+        with pytest.raises(ValueError, match="target conversation"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-cross-session-invalid-reply",
+                target="#test:bcn-other",
+                body="invalid reply",
+                created_at_ms=3,
+                reply_to_message_id=make_message(seq=1).message_id,
+            )
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_rejected",
+                error_message="provider rejected cross-session delivery",
+            )
+        )
+        failed_cross_session = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-cross-session-failed",
+            target="#test:bcn-other",
+            body="failed cross-session reply",
+            created_at_ms=3,
+        )
+        assert isinstance(failed_cross_session, Message)
+        assert failed_cross_session.delivery_state is OutboundDeliveryState.FAILED
+        assert (
+            sum(
+                message.system_message_kind is SystemMessageKind.HANDOFF
+                for message in _stored_messages(storage, "bcn-other")
+            )
+            == 1
+        )
+        with pytest.raises(ValueError, match="another target"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-cross-session-wrong-draft-target",
+                target="#test:bcn-1",
+                body="",
+                created_at_ms=3,
+                send_draft=True,
+            )
+        cross_session_attempt_count = len(channel.send_attempts)
 
         await orchestrator.command_service.check("bcn-1")
         with pytest.raises(ValueError, match="must not be empty"):
@@ -1253,7 +1294,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 direction=MessageDirection.OUTBOUND,
             ).values()
         )
-        assert not channel.send_attempts
+        assert len(channel.send_attempts) == cross_session_attempt_count
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1271,7 +1312,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(queued, Message)
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[0]]
+        assert channel.queued_messages == [channel.send_attempts[2]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1357,8 +1398,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(failed, Message)
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 4
-        assert not channel.sent_messages
+        assert len(channel.send_attempts) == 6
+        assert len(channel.sent_messages) == 1
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )

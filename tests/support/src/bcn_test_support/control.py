@@ -73,7 +73,6 @@ class TestControl:
             "cursors": {
                 session_id: {
                     "delivered_through_seq": cursor.delivered_through_seq,
-                    "inbox_snapshot_seq": cursor.inbox_snapshot_seq,
                 }
                 for session_id, cursor in storage.cursors.items()
             },
@@ -179,8 +178,6 @@ def _serialize_message(message: Message) -> dict[str, object]:
         ),
         "received_at_ms": message.received_at_ms,
         "created_at_ms": message.created_at_ms,
-        "snapshot_seq": message.snapshot_seq,
-        "current_inbound_seq": message.current_inbound_seq,
         "provider_message_id": message.provider_message_id,
         "provider_receipt_ref": message.provider_receipt_ref,
         "provider_attempted_at_ms": message.provider_attempted_at_ms,

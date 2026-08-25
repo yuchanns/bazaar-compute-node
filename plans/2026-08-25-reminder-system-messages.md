@@ -208,10 +208,11 @@ Reminder system Message 使用 `direction=inbound` 与 `notifies_runtime=true`�
 `check_messages`、consumer cursor 和 fresh-check snapshot 可以直接覆盖它：
 
 - `message check` 返回 provider inbound 与 system Reminder Message，并把
-  `delivered_through_seq` / `inbox_snapshot_seq` 推进到本批次最新 inbox seq；
-- system Message 是正常 inbound Message；如果它的 seq 高于 outbound snapshot，现有 freshness
+  durable `delivered_through_seq` 推进到本批次最新 inbox seq，同时只在当前
+  `SessionCommandService` 进程内更新 freshness snapshot；
+- system Message 是正常 inbound Message；如果它的 seq 高于进程内 snapshot，现有 freshness
   hold 正常包含它，并通过 history formatter 只显示 durable body，不追加 agent instructions；
-- 任何新 inbound Message 的 seq 高于最近 snapshot 时，现有 freshness hold 继续生效；
+- 任何新 inbound Message 的 seq 高于进程内最近 snapshot 时，现有 freshness hold 继续生效；
 - `message read` 不移动 consumer cursor，并正常返回 Reminder system Message。
 
 `bcc inbox list` 把尚未消费的 Reminder system Message 计入 pending count；由于它也是 history
@@ -364,12 +365,19 @@ internal `target_id`。delivery
 为 `sent/queued` 后删除 A 的 draft；hold、failed、partial 与 unknown 保留 draft。进程重启后 draft
 仍按现有合同丢失，不新增 durable draft table。
 
-freshness hold 只读取 A 在 `inbox_snapshot_seq` 之后的 notifying inbound Message，返回现有
+freshness snapshot 只存在于 `SessionCommandService` 的 process-local map；`message check`、同会话
+`message read` 和 freshness hold 展示的新上下文会更新它，进程重启后丢失。freshness hold 只读取 A
+在该 snapshot 之后的 notifying inbound Message，返回现有
 `MessageSendFreshnessHold` 与同一套 bounded context/draft 文案，不增加 cross-session outcome 或特殊
-提示。hold 返回的 A context 已展示给当前 runtime，因此同时只推进 A 的
-`inbox_snapshot_seq/inbox_snapshot_at_ms`，source 记为 `read`；`delivered_through_seq` 不动，之后
-`message check` 仍能正常消费这些 Message。`--send-draft` 在 A 没有更新 inbound 时可以直接重试；
+提示。hold 返回的 A context 已展示给当前 runtime，因此只更新进程内 snapshot；durable
+`delivered_through_seq` 不动，之后 `message check` 仍能正常消费这些 Message。`--send-draft` 在 A
+没有更新 inbound 时可以直接重试；
 若 A 又收到新 Message，则再次返回同样的 hold。
+
+freshness evidence 不属于 Message 或 consumer delivery cursor。migration 20 从 `messages` 删除
+`snapshot_seq/current_inbound_seq`，并从 `consumer_cursors` 删除
+`inbox_snapshot_seq/inbox_snapshot_source/inbox_snapshot_at_ms`。outbound row 只记录消息与 provider
+delivery 事实；consumer cursor 只保留未读交付边界及既有操作时间字段。
 
 ### 5.2 Fresh check 与 outbound materialization 解耦
 
@@ -390,7 +398,8 @@ materialize_outbound_if_fresh(
 ) -> pending outbound | MessageSendFreshnessHold
 ```
 
-第一阶段只读/推进 A 的 freshness snapshot；第二阶段由 single-writer transaction 再次读取 A 的最新
+第一阶段只读/更新 A 的 process-local freshness snapshot；第二阶段由 single-writer transaction
+再次读取 A 的最新
 inbound seq：
 
 - 若高于 `expected_source_seq`，不创建 outbound，返回 A 的新 freshness hold；
@@ -490,7 +499,7 @@ operation 遇到已存在的同 ID Message时必须校验 session、source/outbo
   3.3 节 generic unread recovery 重发 ordinary inbox wake；
 - 重复 finalize：复用相同 `handoff_message_id`，不产生第二条 system Message。
 
-新增 migration 20 `v20_remove_handoffs.py`。对旧 `handoffs` table：
+新增 migration 21 `v21_remove_handoffs.py`。对旧 `handoffs` table：
 
 1. `read_at_ms IS NULL` row 转为 target session 的 unread system Message，复用 `handoff_id` 作为
    Message ID，并保留 source target/message metadata。旧 row 的 `source_message_id` 非空时原样
@@ -780,8 +789,11 @@ uv run scripts/pyright_lsp_check.py --outputjson .
   CLI 或 request field；
 - 将 draft key 改为 source session A，实现第 5.1 节的单 draft、target/session 校验与
   sent/queued 清理规则；
-- 拆分 A-only freshness 与 B-owned outbound materialization；A→B 时只读取/推进 A snapshot，
-  绝不读取或改写 B cursor/unread；
+- 拆分 A-only freshness 与 B-owned outbound materialization；A→B 时只使用 A 的 process-local
+  snapshot，绝不读取或改写 B cursor/unread；
+- 增加 migration 20，删除 Message 的 `snapshot_seq/current_inbound_seq` 和 consumer cursor 的
+  `inbox_snapshot_seq/inbox_snapshot_source/inbox_snapshot_at_ms`，repository/codec/test support 同步
+  删除这些 durable 字段；
 - 在 transaction 内 recheck A latest seq 后才插入 B pending outbound，并在 B 的 delivery lane
   使用 B ChannelSession 直接调用 Channel；
 - 使用 compound finalize 在 sent/queued 时原子保存 B outbound final state 和第 5.4 节
@@ -813,7 +825,7 @@ uv run scripts/pyright_lsp_check.py --outputjson .
 - 执行第 6 节尚未在 Task 2 完成的 Handoff CLI/app/core/storage/test 删除清单；
 - 执行第 7 节尚未在 Task 2 完成的 Handoff developer-instruction 精确删除
   清单；
-- 增加 migration 20，按第 5.5 节迁移 old pending Handoff rows、不重投已读 row，然后
+- 增加 migration 21，按第 5.5 节迁移 old pending Handoff rows、不重投已读 row，然后
   drop Handoff indexes/table；
 - 删除剩余的专用 Handoff notice/wake，只保留 Task 2 已建立的 generic ordinary
   inbox wake/recovery；

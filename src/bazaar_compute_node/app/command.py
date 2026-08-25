@@ -21,7 +21,6 @@ from ..core.command import (
     ICommandService,
     InboxListResult,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
@@ -509,11 +508,6 @@ class CommandDispatcher:
                     "ok": True,
                     "result": {"text": format_freshness_hold(result)},
                 }
-            if isinstance(result, MessageSendHandoffRequired):
-                return {
-                    "ok": True,
-                    "result": {"text": format_cross_session_hold(result.target)},
-                }
             delivery_state = result.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
@@ -653,6 +647,24 @@ def format_check_message(message: Mapping[str, object]) -> str:
             "\nReply in the channel or create/reply in a thread as appropriate; "
             "use each message's `target` and `msg` fields to choose the exact target."
         )
+    elif message.get("system_message_kind") == "handoff":
+        source_target = cast(str, message["system_message_source_target"])
+        source_message_id = cast(
+            str,
+            message["system_message_source_message_id"],
+        )
+        rendered += (
+            "\nTo understand why this message was sent, inspect the source context:"
+            "\n  bcc message read --target "
+            f"{json.dumps(source_target)} --around {json.dumps(source_message_id)}"
+            "\nIf you have no objection to why the message was sent, do not announce "
+            "or explain the handoff, and do not repeat or respond to the referenced "
+            "message; it has already been delivered. Continue only work already in "
+            "progress in this conversation that is independent of that message; if "
+            "there is none, stop."
+            "\nMention the handoff only when its reason is unclear, conflicts with "
+            "the current conversation, or requires a decision."
+        )
     return rendered
 
 
@@ -738,23 +750,3 @@ def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
         )
     )
     return "\n".join(lines)
-
-
-def format_cross_session_hold(target: str) -> str:
-    quoted_target = json.dumps(target)
-    return "\n".join(
-        (
-            "Your message was not sent because the target belongs to another conversation.",
-            "",
-            (
-                "To continue this work in the target conversation, send a "
-                "self-contained handoff:"
-            ),
-            f"  bcc handoff send --target {quoted_target} <<'BCCMSG'",
-            "  enough context to understand the background, goal, and next action",
-            "  BCCMSG",
-            "This creates a handoff notice that wakes you in that conversation.",
-            "",
-            "You can also choose not to send anything.",
-        )
-    )

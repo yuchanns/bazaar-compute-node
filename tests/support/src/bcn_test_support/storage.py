@@ -428,6 +428,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         target: str | None = None,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
+        notifying_only: bool = False,
     ) -> int:
         messages = self._filtered_messages(
             session_id,
@@ -437,6 +438,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         return sum(
             (after_seq is None or message.seq > after_seq)
             and (target is None or message.target == target)
+            and (not notifying_only or message.notifies_runtime)
             for message in messages
         )
 
@@ -901,16 +903,10 @@ def _validate_outbound_message_input(message: object) -> None:
         (message.error_message, "error_message"),
     ):
         _validate_optional_input_text(value, field_name)
-    snapshot_seq = message.snapshot_seq
-    current_inbound_seq = message.current_inbound_seq
     created_at_ms = message.created_at_ms
     provider_attempted_at_ms = message.provider_attempted_at_ms
-    assert snapshot_seq is not None
-    assert current_inbound_seq is not None
     assert created_at_ms is not None
     assert provider_attempted_at_ms is not None
-    if current_inbound_seq > snapshot_seq:
-        raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
     if provider_attempted_at_ms < created_at_ms:
         raise ValueError("outbound provider attempt cannot precede creation")
     if (
@@ -968,12 +964,6 @@ def _validate_outbound_update(
     existing: Message,
     incoming: Message,
 ) -> Message:
-    if (
-        incoming.snapshot_seq != existing.snapshot_seq
-        or incoming.current_inbound_seq != existing.current_inbound_seq
-    ):
-        raise ValueError("outbound snapshot evidence cannot change")
-
     incoming_state = incoming.delivery_state
     existing_state = existing.delivery_state
     if incoming_state is None or existing_state is None:

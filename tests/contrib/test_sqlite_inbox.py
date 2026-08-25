@@ -130,9 +130,6 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
             ConsumerCursor(
                 session_id=read_session.id,
                 delivered_through_seq=read.seq,
-                inbox_snapshot_seq=read.seq,
-                inbox_snapshot_source="check",
-                inbox_snapshot_at_ms=202,
                 updated_at_ms=202,
             )
         )

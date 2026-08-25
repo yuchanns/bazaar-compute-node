@@ -95,21 +95,24 @@ class InboxListResult:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageSendHandoffRequired:
-    """Route work through a handoff instead of creating an outbound message."""
-
-    target: str
-
-
-@dataclass(frozen=True, slots=True)
 class MessageDraft:
-    """One process-local outbound payload owned by a resolved BCN session."""
+    """One process-local outbound payload owned by its source BCN session."""
 
+    source_target_id: str
     target: str
+    target_id: str
     body: str
     attachments: tuple[OutboundAttachment, ...]
     reply_to_message_id: str | None
+    source_message_id: str
     created_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundFreshnessPass:
+    """Stable source boundary used by target-owned outbound materialization."""
+
+    current_inbound_seq: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +137,14 @@ class MessageSendFreshnessHold:
             raise ValueError("freshness hold requires a stale snapshot boundary")
 
 
-type MessageSendResult = (
-    Message[OutboundAttachment] | MessageSendFreshnessHold | MessageSendHandoffRequired
-)
+type MessageSendResult = Message[OutboundAttachment] | MessageSendFreshnessHold
+
+
+def render_handoff_message_body(source_target: str, outbound_message_id: str) -> str:
+    return (
+        f"🤝 Handoff from {source_target} — message {outbound_message_id} "
+        "was sent here from that conversation."
+    )
 
 
 class SessionNotFoundError(ValueError):
