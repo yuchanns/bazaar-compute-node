@@ -274,7 +274,13 @@ class ApprovalDecision(StrEnum):
 class SenderKind(StrEnum):
     HUMAN = "human"
     AGENT = "agent"
+    SYSTEM = "system"
     UNKNOWN = "unknown"
+
+
+class SystemMessageKind(StrEnum):
+    REMINDER = "reminder"
+    HANDOFF = "handoff"
 
 
 class ReminderState(StrEnum):

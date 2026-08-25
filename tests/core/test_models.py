@@ -20,6 +20,7 @@ from bazaar_compute_node.core.models import (
     SessionRuntimeSignal,
     SessionRuntimeState,
     StateTransitionError,
+    SystemMessageKind,
     reduce_session_runtime_state,
 )
 
@@ -89,12 +90,74 @@ def make_inbox_target() -> InboxTargetSummary:
     )
 
 
+def make_system_message(
+    kind: SystemMessageKind,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
+        seq=0,
+        message_id="system-message-1",
+        session_id="bcn-1",
+        channel_session_id="channel-1",
+        channel="test",
+        provider_thread_id="thread-1",
+        provider_message_id=None,
+        received_at_ms=2,
+        sender=SenderIdentity(id="system", name="system"),
+        target="dm:channel-1",
+        body="system event",
+        metadata={
+            "sender_kind": SenderKind.SYSTEM.value,
+            "system_message_kind": kind.value,
+            **(metadata or {}),
+        },
+    )
+
+
 def test_sender_identity_separates_stable_id_from_display_name() -> None:
     named = SenderIdentity(id="test-user-id", name="test-user")
     unnamed = SenderIdentity(id="test-user-id")
 
     assert named.display_name == "test-user"
     assert unnamed.display_name == "test-user-id"
+
+
+def test_system_message_kinds_have_typed_metadata_contracts() -> None:
+    reminder = make_system_message(SystemMessageKind.REMINDER)
+    handoff = make_system_message(
+        SystemMessageKind.HANDOFF,
+        metadata={
+            "system_message_source_target": "dm:source",
+            "system_message_source_message_id": "source-message-1",
+        },
+    )
+
+    assert reminder.sender_kind is SenderKind.SYSTEM
+    assert reminder.system_message_kind is SystemMessageKind.REMINDER
+    assert handoff.system_message_kind is SystemMessageKind.HANDOFF
+    with pytest.raises(ValueError, match="provider identity"):
+        reminder.inbound_identity()
+
+
+def test_system_message_kind_is_reserved_for_valid_system_envelopes() -> None:
+    with pytest.raises(ValueError, match="only system messages"):
+        Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="message-1",
+            session_id="bcn-1",
+            channel_session_id="channel-1",
+            channel="test",
+            provider_thread_id="thread-1",
+            provider_message_id="provider-message-1",
+            received_at_ms=2,
+            sender=SenderIdentity(name="user"),
+            target="dm:channel-1",
+            body="hello",
+            metadata={"system_message_kind": SystemMessageKind.REMINDER.value},
+        )
 
 
 @pytest.mark.parametrize(

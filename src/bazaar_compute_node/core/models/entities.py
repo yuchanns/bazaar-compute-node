@@ -17,6 +17,7 @@ from .states import (
     RuntimeTurnState,
     SenderKind,
     StreamEventKind,
+    SystemMessageKind,
     ensure_transition,
 )
 
@@ -336,11 +337,59 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         for value, field_name in (
             (self.channel, "channel"),
             (self.provider_thread_id, "provider_thread_id"),
-            (self.provider_message_id, "provider_message_id"),
         ):
             if value is None:
                 raise ValueError(f"{field_name} is required for inbound messages")
             _validate_text(value, field_name)
+        sender_kind = self.sender_kind
+        system_message_kind = self.system_message_kind
+        if sender_kind is SenderKind.SYSTEM:
+            if self.provider_message_id is not None:
+                raise ValueError("system messages cannot have provider identity")
+            if self.provider_time_ms is not None:
+                raise ValueError("system messages cannot have provider time")
+            if self.sender != SenderIdentity(id="system", name="system"):
+                raise ValueError("system messages require the system sender identity")
+            if self.message_type != "text":
+                raise ValueError("system messages must use the text message type")
+            if self.attachments:
+                raise ValueError("system messages cannot have attachments")
+            if self.reply_to_message_id is not None:
+                raise ValueError("system messages cannot reply to another message")
+            if self.mentions_agent:
+                raise ValueError("system messages cannot mention the agent")
+            if not self.notifies_runtime:
+                raise ValueError("system messages must notify the runtime")
+            if self.provider_payload_ref is not None:
+                raise ValueError("system messages cannot have provider payloads")
+            if system_message_kind is SystemMessageKind.REMINDER:
+                if any(
+                    key in self.metadata
+                    for key in (
+                        "system_message_source_target",
+                        "system_message_source_message_id",
+                    )
+                ):
+                    raise ValueError(
+                        "reminder system messages cannot have source context"
+                    )
+            else:
+                for key in (
+                    "system_message_source_target",
+                    "system_message_source_message_id",
+                ):
+                    value = self.metadata.get(key)
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(
+                            f"handoff system messages require metadata {key}"
+                        )
+        else:
+            provider_message_id = self.provider_message_id
+            if provider_message_id is None:
+                raise ValueError(
+                    "provider_message_id is required for provider inbound messages"
+                )
+            _validate_text(provider_message_id, "provider_message_id")
         if self.received_at_ms is None:
             raise ValueError("received_at_ms is required for inbound messages")
         if not all(
@@ -363,6 +412,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
             raise ValueError("inbound messages cannot contain outbound delivery fields")
 
     def _validate_outbound(self) -> None:
+        _ = self.system_message_kind
         for value, field_name in (
             (self.command_id, "command_id"),
             (self.delivery_state, "delivery_state"),
@@ -406,12 +456,34 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
             return SenderKind(value)
         except ValueError as error:
             raise ValueError(
-                "metadata sender_kind must be human, agent, or unknown"
+                "metadata sender_kind must be human, agent, system, or unknown"
+            ) from error
+
+    @property
+    def system_message_kind(self) -> SystemMessageKind | None:
+        value = self.metadata.get("system_message_kind")
+        if self.sender_kind is not SenderKind.SYSTEM:
+            if value is not None:
+                raise ValueError(
+                    "only system messages can have metadata system_message_kind"
+                )
+            return None
+        if not isinstance(value, str):
+            raise TypeError(
+                "system messages require string system_message_kind metadata"
+            )
+        try:
+            return SystemMessageKind(value)
+        except ValueError as error:
+            raise ValueError(
+                "metadata system_message_kind must be reminder or handoff"
             ) from error
 
     def inbound_identity(self) -> tuple[str, str, str]:
         if self.direction is not MessageDirection.INBOUND:
             raise ValueError("only inbound messages have provider identity")
+        if self.sender_kind is SenderKind.SYSTEM:
+            raise ValueError("system messages do not have provider identity")
         channel = self.channel
         provider_thread_id = self.provider_thread_id
         provider_message_id = self.provider_message_id

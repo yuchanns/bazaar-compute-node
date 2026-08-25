@@ -80,6 +80,17 @@ def serialize_message(message: Message) -> dict[str, object]:
             else {"id": message.sender.id, "name": message.sender.name}
         ),
         "sender_kind": message.sender_kind.value,
+        "system_message_kind": (
+            None
+            if message.system_message_kind is None
+            else message.system_message_kind.value
+        ),
+        "system_message_source_target": message.metadata.get(
+            "system_message_source_target"
+        ),
+        "system_message_source_message_id": message.metadata.get(
+            "system_message_source_message_id"
+        ),
         "message_type": message.message_type,
         "canonical_target": message.target,
         "target_kind": message.target_kind.value,

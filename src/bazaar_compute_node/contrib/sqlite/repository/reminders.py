@@ -5,6 +5,8 @@ from typing import cast
 from uuid import uuid7
 
 from ....core.models import (
+    InboundAttachment,
+    Message,
     MessageDirection,
     OwnedReminder,
     OwnedReminderOccurrence,
@@ -12,8 +14,10 @@ from ....core.models import (
     ReminderOccurrence,
     ReminderOwner,
     ReminderState,
+    SenderKind,
+    SystemMessageKind,
 )
-from ....core.reminder import canonical_id_reference
+from ....core.reminder import canonical_id_reference, render_reminder_fire_body
 from ..codec import (
     _required_text,
 )
@@ -520,6 +524,111 @@ class ReminderOperations(RepositoryBase):
             ),
         )
         return OwnedReminderOccurrence(reminder.agent_id, canonical)
+
+    async def materialize_owned_reminder_message(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        system_message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment]:
+        incoming = reminder.reminder
+        existing_owned = await self.get_owned_reminder(
+            reminder.agent_id,
+            incoming.owner_session_id,
+            incoming.reminder_id,
+        )
+        if existing_owned is None:
+            raise ValueError("reminder not found")
+        existing = existing_owned.reminder
+        self._validate_expected_revision(existing, expected_revision)
+        self._validate_reminder_identity(existing, incoming)
+        if existing.state is not ReminderState.SCHEDULED:
+            raise ValueError("only a scheduled reminder can fire")
+        if incoming.revision != expected_revision + 1:
+            raise ValueError("reminder revision must advance by exactly one")
+        if incoming.last_occurrence_no != existing.last_occurrence_no + 1:
+            raise ValueError("reminder occurrence number must advance by exactly one")
+        if incoming.last_fired_at_ms is None:
+            raise ValueError("fired reminder requires a fire time")
+        scheduled_for_ms = existing.next_fire_at_ms
+        if scheduled_for_ms is None:
+            raise RuntimeError("scheduled reminder has no next fire time")
+        if incoming.last_fired_at_ms < scheduled_for_ms:
+            raise ValueError("reminder fire time precedes its scheduled slot")
+        if (
+            incoming.repeat_rule is not None
+            and incoming.next_fire_at_ms is not None
+            and incoming.next_fire_at_ms <= scheduled_for_ms
+        ):
+            raise ValueError("recurring next fire must follow the scheduled slot")
+        if incoming.updated_at_ms != incoming.last_fired_at_ms:
+            raise ValueError("reminder update time does not match fire time")
+        if incoming.title != existing.title:
+            raise ValueError("fire cannot change reminder title")
+        if incoming.repeat_rule != existing.repeat_rule:
+            raise ValueError("fire cannot change reminder cadence")
+        if system_message.sender_kind is not SenderKind.SYSTEM:
+            raise ValueError("reminder fire requires a system message")
+        if system_message.system_message_kind is not SystemMessageKind.REMINDER:
+            raise ValueError("reminder fire requires reminder system metadata")
+        if system_message.session_id != incoming.owner_session_id:
+            raise ValueError("system message owner binding does not match reminder")
+        if system_message.received_at_ms != incoming.last_fired_at_ms:
+            raise ValueError("system message time does not match reminder fire")
+        anchor = await self.fetchone(
+            "SELECT channel_session_id, channel, provider_thread_id, target, "
+            "target_kind FROM messages WHERE agent_id = ? AND session_id = ? "
+            "AND message_id = ? AND direction = 'inbound' "
+            "AND provider_message_id IS NOT NULL",
+            (
+                reminder.agent_id,
+                incoming.owner_session_id,
+                incoming.anchor_message_id,
+            ),
+        )
+        if anchor is None:
+            raise ValueError("reminder anchor message is missing")
+        if (
+            system_message.channel_session_id != anchor["channel_session_id"]
+            or system_message.channel != anchor["channel"]
+            or system_message.provider_thread_id != anchor["provider_thread_id"]
+            or system_message.target != anchor["target"]
+            or system_message.target_kind.value != anchor["target_kind"]
+        ):
+            raise ValueError("system message binding does not match reminder anchor")
+        expected_body = render_reminder_fire_body(
+            incoming,
+            system_message.target,
+            incoming.next_fire_at_ms,
+        )
+        if system_message.body != expected_body:
+            raise ValueError("system message body does not match reminder fire")
+
+        await self.execute(
+            "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "
+            "repeat_rule = ?, timezone = ?, revision = ?, last_occurrence_no = ?, "
+            "updated_at_ms = ?, last_fired_at_ms = ?, canceled_at_ms = ? "
+            "WHERE agent_id = ? AND reminder_id = ? AND owner_session_id = ?",
+            (
+                incoming.title,
+                incoming.state.value,
+                incoming.next_fire_at_ms,
+                incoming.repeat_rule,
+                incoming.timezone,
+                incoming.revision,
+                incoming.last_occurrence_no,
+                incoming.updated_at_ms,
+                incoming.last_fired_at_ms,
+                incoming.canceled_at_ms,
+                reminder.agent_id,
+                incoming.reminder_id,
+                incoming.owner_session_id,
+            ),
+        )
+        return await self._save_system_message_for_agent(
+            system_message,
+            reminder.agent_id,
+        )
 
     async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]:
         parameters: tuple[object, ...] = ()

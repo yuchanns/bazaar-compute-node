@@ -157,6 +157,14 @@ class RepositoryBase:
         del message_id
         raise NotImplementedError
 
+    async def _save_system_message_for_agent(
+        self,
+        message: Message[InboundAttachment],
+        agent_id: str,
+    ) -> Message[InboundAttachment]:
+        del message, agent_id
+        raise NotImplementedError
+
     def _agent_local_id(self, kind: str, local_id: str) -> str:
         del kind, local_id
         raise NotImplementedError

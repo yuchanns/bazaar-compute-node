@@ -19,6 +19,7 @@ from ...core.models import (
     OutboundDeliveryState,
     RuntimeAttempt,
     SenderIdentity,
+    SenderKind,
 )
 
 
@@ -94,6 +95,14 @@ def message_from_row(
 ) -> Message[InboundAttachment | OutboundAttachment]:
     direction = MessageDirection(_required_text(row["direction"], "direction"))
     sender = _optional_text(row["sender"], "sender")
+    metadata = _decode_metadata(row["metadata_json"], "metadata_json")
+    sender_identity = None
+    if sender is not None:
+        sender_identity = (
+            SenderIdentity(id="system", name="system")
+            if metadata.get("sender_kind") == SenderKind.SYSTEM.value
+            else SenderIdentity(name=sender)
+        )
     common = {
         "direction": direction,
         "seq": cast(int, row["seq"]),
@@ -109,7 +118,7 @@ def message_from_row(
         "provider_message_id": _optional_text(
             row["provider_message_id"], "provider_message_id"
         ),
-        "sender": SenderIdentity(name=sender) if sender is not None else None,
+        "sender": sender_identity,
         "message_type": _required_text(row["message_type"], "message_type"),
         "target": _required_text(row["target"], "target"),
         "target_kind": ChannelTargetKind(
@@ -119,7 +128,7 @@ def message_from_row(
             row["reply_to_message_id"], "reply_to_message_id"
         ),
         "body": _string_value(row["body"], "body", allow_empty=True),
-        "metadata": _decode_metadata(row["metadata_json"], "metadata_json"),
+        "metadata": metadata,
     }
     if direction is MessageDirection.INBOUND:
         return Message(

@@ -84,6 +84,26 @@ class HandoffWakeResult:
     anchor_message: Message[InboundAttachment]
 
 
+@dataclass(frozen=True, slots=True)
+class UnreadMessageOwner:
+    agent_id: str
+    trigger_message: Message[InboundAttachment]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.agent_id, str) or not self.agent_id:
+            raise ValueError("agent_id must be a non-empty string")
+        if not isinstance(self.trigger_message, Message):
+            raise TypeError("trigger_message must be a Message")
+        if self.trigger_message.direction is not MessageDirection.INBOUND:
+            raise ValueError("trigger_message must be inbound")
+        if not self.trigger_message.notifies_runtime:
+            raise ValueError("trigger_message must notify the runtime")
+
+    @property
+    def owner_session_id(self) -> str:
+        return self.trigger_message.session_id
+
+
 _HISTORY_DELIVERY_STATES = frozenset(
     {OutboundDeliveryState.QUEUED, OutboundDeliveryState.SENT}
 )
@@ -699,7 +719,16 @@ class _StorageOperations(Protocol):
         occurrence: OwnedReminderOccurrence,
     ) -> OwnedReminderOccurrence: ...
 
+    async def materialize_owned_reminder_message(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        system_message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment]: ...
+
     async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]: ...
+
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]: ...
 
 
 class IStorage(IAsyncLifecycle, _StorageOperations, Protocol):

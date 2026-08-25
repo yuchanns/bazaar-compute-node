@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from stat import S_IMODE
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -25,15 +26,22 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ConsumerCursor,
     InboundAttachment,
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    OwnedReminder,
+    Reminder,
+    ReminderState,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
+    SystemMessageKind,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.reminder import render_reminder_fire_body
+from bazaar_compute_node.core.storage import IStorage
 
 
 @pytest.mark.asyncio
@@ -172,6 +180,130 @@ async def test_sqlite_persists_sender_display_name_and_kind(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        storage = cast(IStorage, database)
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        anchor = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="018f0000-0000-7000-8000-000000000002",
+            session_id=bcn_session.id,
+            channel_session_id=channel_session.id,
+            channel=channel_session.channel,
+            provider_thread_id=channel_session.provider_thread_id,
+            provider_message_id="provider-message-1",
+            received_at_ms=1_000,
+            sender=SenderIdentity(id="user-1", name="Test User"),
+            target="dm:channel-1",
+            body="remember this",
+            metadata={"sender_kind": SenderKind.HUMAN.value},
+        )
+        reminder = Reminder(
+            reminder_id="018f0000-0000-7000-8000-000000000001",
+            owner_session_id=bcn_session.id,
+            anchor_message_id=anchor.message_id,
+            title="Review the pull request",
+            state=ReminderState.SCHEDULED,
+            next_fire_at_ms=2_000,
+            repeat_rule=None,
+            timezone="UTC",
+            revision=1,
+            last_occurrence_no=0,
+            created_at_ms=1_000,
+            updated_at_ms=1_000,
+        )
+
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+        anchor = await scope.save_message(anchor)
+        reminder = await scope.save_new_reminder(reminder)
+        fired = reminder.record_fire(
+            scheduled_for_ms=2_000,
+            fired_at_ms=2_100,
+            next_fire_at_ms=None,
+        )
+
+        def system_message(message_id: str) -> Message:
+            return Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=message_id,
+                session_id=bcn_session.id,
+                channel_session_id=channel_session.id,
+                channel=channel_session.channel,
+                provider_thread_id=channel_session.provider_thread_id,
+                provider_message_id=None,
+                provider_time_ms=None,
+                received_at_ms=2_100,
+                sender=SenderIdentity(id="system", name="system"),
+                target=anchor.target,
+                target_kind=anchor.target_kind,
+                body=render_reminder_fire_body(fired, anchor.target, None),
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
+
+        with pytest.raises(ValueError, match="already in use"):
+            await storage.materialize_owned_reminder_message(
+                reminder.revision,
+                OwnedReminder("agent-1", fired),
+                system_message(anchor.message_id),
+            )
+        assert (
+            await scope.get_reminder(bcn_session.id, reminder.reminder_id) == reminder
+        )
+
+        materialized = await storage.materialize_owned_reminder_message(
+            reminder.revision,
+            OwnedReminder("agent-1", fired),
+            system_message("018f0000-0000-7000-8000-000000000003"),
+        )
+        persisted = await scope.get_message(materialized.message_id)
+        owners = await storage.list_unread_message_owners()
+
+        assert materialized.seq == anchor.seq + 1
+        assert persisted == materialized
+        assert persisted is not None
+        assert persisted.sender == SenderIdentity(id="system", name="system")
+        assert persisted.system_message_kind is SystemMessageKind.REMINDER
+        assert await scope.get_reminder(bcn_session.id, reminder.reminder_id) == fired
+        assert len(owners) == 1
+        assert owners[0].agent_id == "agent-1"
+        assert owners[0].owner_session_id == bcn_session.id
+        assert owners[0].trigger_message == materialized
+
+        await scope.save_consumer_cursor(
+            ConsumerCursor(
+                session_id=bcn_session.id,
+                delivered_through_seq=materialized.seq,
+                updated_at_ms=2_200,
+            )
+        )
+        assert await storage.list_unread_message_owners() == ()
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
     data_dir = resolve_data_dir()
     database = SqliteDatabase()
@@ -242,7 +374,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 19
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         primary_keys = {row["name"]: row["pk"] for row in message_columns}
@@ -452,7 +584,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 19
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -561,7 +693,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 19
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

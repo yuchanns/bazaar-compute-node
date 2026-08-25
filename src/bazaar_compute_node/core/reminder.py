@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Self
 from unicodedata import category
@@ -45,6 +46,7 @@ __all__ = [
     "parse_duration",
     "parse_fire_at",
     "parse_repeat_rule",
+    "render_reminder_fire_body",
     "resolve_schedule",
 ]
 
@@ -281,6 +283,28 @@ class ReminderCancelResult:
 
     def __post_init__(self) -> None:
         _require_reminder(self.reminder)
+
+
+def render_reminder_fire_body(
+    reminder: Reminder,
+    target: str,
+    next_fire_at_ms: int | None,
+) -> str:
+    _require_reminder(reminder)
+    if not isinstance(target, str) or not target:
+        raise ValueError("target must be a non-empty string")
+    title = json.dumps(reminder.title, ensure_ascii=False)
+    prefix = f"🔔 Reminder #{reminder.reminder_id[:8]}"
+    if reminder.repeat_rule is None:
+        if next_fire_at_ms is not None:
+            raise ValueError("one-time reminder fire cannot have a next iteration")
+        return f"{prefix} (one-time) — {target} — {title}"
+    if next_fire_at_ms is None:
+        raise ValueError("recurring reminder fire requires a next iteration")
+    return (
+        f"{prefix} (recurring · {reminder.repeat_rule}) — {target} — {title}\n"
+        f"Next iteration: {format_utc_timestamp(next_fire_at_ms)}"
+    )
 
 
 def canonical_id_reference(value: str) -> str:

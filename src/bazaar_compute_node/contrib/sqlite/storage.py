@@ -34,6 +34,7 @@ _READ_OPERATIONS = frozenset(
         "list_pending_handoffs",
         "list_pending_reminder_occurrences",
         "list_pending_reminder_owners",
+        "list_unread_message_owners",
         "list_ready_attachment_paths",
         "list_reminders",
         "list_sessions_with_pending_reminders",
@@ -57,6 +58,7 @@ _SNAPSHOT_READ_OPERATIONS = frozenset(
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
         "record_inbound",
+        "materialize_owned_reminder_message",
         "save_fired_occurrence",
         "save_owned_fired_occurrence",
     }

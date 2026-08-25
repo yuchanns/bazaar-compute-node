@@ -18,6 +18,7 @@ from bazaar_compute_node.core.reminder import (
     parse_duration,
     parse_fire_at,
     parse_repeat_rule,
+    render_reminder_fire_body,
     resolve_schedule,
 )
 
@@ -32,6 +33,7 @@ def utc_ms(value: str) -> int:
 
 def make_reminder(
     *,
+    title: str = "Review the pull request",
     state: ReminderState = ReminderState.SCHEDULED,
     next_fire_at_ms: int | None = 2_000,
     repeat_rule: str | None = None,
@@ -45,7 +47,7 @@ def make_reminder(
         reminder_id=_REMINDER_ID,
         owner_session_id="session-1",
         anchor_message_id=_MESSAGE_ID,
-        title="Review the pull request",
+        title=title,
         state=state,
         next_fire_at_ms=next_fire_at_ms,
         repeat_rule=repeat_rule,
@@ -221,6 +223,25 @@ def test_one_time_and_recurring_fire_follow_the_state_contract() -> None:
     assert advanced.state is ReminderState.SCHEDULED
     assert advanced.next_fire_at_ms == 902_000
     assert advanced.last_occurrence_no == 1
+
+
+def test_reminder_fire_body_matches_durable_formatter_vectors() -> None:
+    target = "group:release"
+    one_time = make_reminder(title='Review "release" ✨')
+    recurring = make_reminder(
+        title='Review "release" ✨',
+        repeat_rule="every:15m",
+    )
+    next_fire_at_ms = utc_ms("2026-08-25T04:15:00Z")
+
+    assert render_reminder_fire_body(one_time, target, None) == (
+        '🔔 Reminder #018f0000 (one-time) — group:release — "Review \\"release\\" ✨"'
+    )
+    assert render_reminder_fire_body(recurring, target, next_fire_at_ms) == (
+        "🔔 Reminder #018f0000 (recurring · every:15m) — group:release — "
+        '"Review \\"release\\" ✨"\n'
+        "Next iteration: 2026-08-25T04:15:00.000Z"
+    )
 
 
 def test_fired_reminder_can_be_snoozed_but_not_updated_or_canceled() -> None:

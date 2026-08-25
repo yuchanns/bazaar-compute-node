@@ -36,6 +36,7 @@ from .states import (
     SessionRuntimeState,
     StateTransitionError,
     StreamEventKind,
+    SystemMessageKind,
     reduce_session_runtime_state,
 )
 
@@ -78,5 +79,6 @@ __all__ = [
     "StateTransitionError",
     "StreamEvent",
     "StreamEventKind",
+    "SystemMessageKind",
     "reduce_session_runtime_state",
 ]
