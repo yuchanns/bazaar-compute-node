@@ -5,6 +5,8 @@
   ],
   "pythonVersion": "3.14",
   "pythonPlatform": "All",
+  "venvPath": ".",
+  "venv": ".venv",
   "typeCheckingMode": "basic",
   "reportUnreachable": "warning",
   "reportUnusedFunction": "warning",
