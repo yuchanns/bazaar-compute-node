@@ -6,7 +6,6 @@ import getpass
 import locale
 import os
 import platform
-import plistlib
 import shlex
 import shutil
 import subprocess
@@ -15,10 +14,10 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from xml.etree import ElementTree
 
 from ..core.paths import resolve_data_dir
 from ..i18n import Translator, create_translator
+from ..rendering import TextTemplate
 from .config import ConfigurationError, load_control_configuration, resolve_config_path
 from .transport import LocalCommandClient, local_endpoint_for_path
 
@@ -26,9 +25,15 @@ SYSTEMD_UNIT_NAME = "bcn.service"
 LAUNCHD_LABEL = "io.github.yuchanns.bazaar-compute-node"
 WINDOWS_TASK_NAME = r"\BazaarComputeNode"
 MANAGED_MARKER = "Managed by bazaar-compute-node."
-TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 WINDOWS_STOP_ATTEMPTS = 100
 WINDOWS_STOP_INTERVAL = 0.05
+
+_SYSTEMD_UNIT_TEMPLATE = TextTemplate.from_resource("system_service/systemd.service")
+_LAUNCHD_PLIST_TEMPLATE = TextTemplate.from_resource("system_service/launchd.plist")
+_LAUNCHD_WRAPPER_TEMPLATE = TextTemplate.from_resource("system_service/launchd.sh")
+_WINDOWS_TASK_TEMPLATE = TextTemplate.from_resource("system_service/windows.xml")
+_WINDOWS_LAUNCHER_TEMPLATE = TextTemplate.from_resource("system_service/windows.vbs")
+_WINDOWS_WRAPPER_TEMPLATE = TextTemplate.from_resource("system_service/windows.ps1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,109 +171,53 @@ def _powershell_literal(path: Path | str | None) -> str:
 
 
 def _render_systemd_unit(context: SystemServiceContext) -> str:
-    executable = _require_executable(context)
-    lines = [
-        f"# {MANAGED_MARKER}",
-        "[Unit]",
-        "Description=Bazaar Compute Node",
-        "",
-        "[Service]",
-        "Type=simple",
-        f"ExecStart={_systemd_quote(executable)} run --config {_systemd_quote(context.config_path)}",
-        f"WorkingDirectory={_systemd_quote(context.data_dir)}",
-    ]
-    if context.env_file is not None:
-        lines.append(f"EnvironmentFile=-{_systemd_quote(context.env_file)}")
-    lines.extend(
-        (
-            "Restart=on-failure",
-            "RestartSec=5",
-            "KillSignal=SIGTERM",
-            "TimeoutStopSec=15",
-            "UMask=0077",
-            "StandardOutput=journal",
-            "StandardError=journal",
-            "",
-            "[Install]",
-            "WantedBy=default.target",
-            "",
-        )
+    return _SYSTEMD_UNIT_TEMPLATE.render(
+        {
+            "managed_marker": MANAGED_MARKER,
+            "executable": _systemd_quote(_require_executable(context)),
+            "config_path": _systemd_quote(context.config_path),
+            "data_dir": _systemd_quote(context.data_dir),
+            "environment_file": (
+                "" if context.env_file is None else _systemd_quote(context.env_file)
+            ),
+        }
     )
-    return "\n".join(lines)
 
 
 def _render_launchd_wrapper() -> str:
-    return f"""#!/bin/sh
-# {MANAGED_MARKER}
-set -eu
-
-if [ -n "${{BCN_ENV_FILE:-}}" ] && [ -f "$BCN_ENV_FILE" ]; then
-    set -a
-    . "$BCN_ENV_FILE"
-    set +a
-fi
-
-exec "$BCN_EXECUTABLE" run --config "$BCN_CONFIG"
-"""
+    return _LAUNCHD_WRAPPER_TEMPLATE.render({"managed_marker": MANAGED_MARKER})
 
 
 def _render_launchd_plist(
     context: SystemServiceContext,
     wrapper_path: Path,
 ) -> bytes:
-    payload = {
-        "Label": LAUNCHD_LABEL,
-        "Comment": MANAGED_MARKER,
-        "ProgramArguments": [str(wrapper_path)],
-        "WorkingDirectory": str(context.data_dir),
-        "EnvironmentVariables": {
-            "BCN_CONFIG": str(context.config_path),
-            "BCN_ENV_FILE": "" if context.env_file is None else str(context.env_file),
-            "BCN_EXECUTABLE": str(_require_executable(context)),
-        },
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ProcessType": "Background",
-        "ThrottleInterval": 5,
-        "StandardOutPath": str(context.log_path),
-        "StandardErrorPath": str(context.log_path),
-    }
-    return plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
+    return _LAUNCHD_PLIST_TEMPLATE.render(
+        {
+            "label": LAUNCHD_LABEL,
+            "managed_marker": MANAGED_MARKER,
+            "wrapper_path": str(wrapper_path),
+            "data_dir": str(context.data_dir),
+            "config_path": str(context.config_path),
+            "environment_file": (
+                "" if context.env_file is None else str(context.env_file)
+            ),
+            "executable": str(_require_executable(context)),
+            "log_path": str(context.log_path),
+        }
+    ).encode("utf-8")
 
 
 def _render_windows_wrapper(context: SystemServiceContext) -> str:
-    executable = _powershell_literal(_require_executable(context))
-    config_path = _powershell_literal(context.config_path)
-    environment_script = _powershell_literal(context.env_file)
-    log_path = _powershell_literal(context.log_path)
-    return f"""# {MANAGED_MARKER}
-$ErrorActionPreference = 'Stop'
-
-$executable = {executable}
-$configPath = {config_path}
-$environmentScript = {environment_script}
-$logPath = {log_path}
-
-if ($environmentScript -and (Test-Path -LiteralPath $environmentScript)) {{
-    try {{
-        . $environmentScript
-    }} catch {{
-        $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
-        exit 1
-    }}
-}}
-
-# Native stderr is routed to the service log and must not terminate the wrapper.
-$ErrorActionPreference = 'Continue'
-try {{
-    & $executable run --config $configPath *>> $logPath
-    $exitCode = $LASTEXITCODE
-}} catch {{
-    $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
-    exit 1
-}}
-exit $exitCode
-"""
+    return _WINDOWS_WRAPPER_TEMPLATE.render(
+        {
+            "managed_marker": MANAGED_MARKER,
+            "executable": _powershell_literal(_require_executable(context)),
+            "config_path": _powershell_literal(context.config_path),
+            "environment_script": _powershell_literal(context.env_file),
+            "log_path": _powershell_literal(context.log_path),
+        }
+    )
 
 
 def _vbs_literal(value: Path | str) -> str:
@@ -280,80 +229,27 @@ def _render_windows_launcher(wrapper_path: Path) -> str:
         "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden "
         f'-ExecutionPolicy Bypass -File "{wrapper_path}"'
     )
-    return f"""' {MANAGED_MARKER}
-Option Explicit
-
-Dim shell
-Dim command
-Dim exitCode
-
-Set shell = CreateObject("WScript.Shell")
-command = {command}
-exitCode = shell.Run(command, 0, True)
-WScript.Quit exitCode
-"""
-
-
-def _add_task_element(
-    parent: ElementTree.Element,
-    name: str,
-    text: str | None = None,
-) -> ElementTree.Element:
-    element = ElementTree.SubElement(parent, f"{{{TASK_NAMESPACE}}}{name}")
-    if text is not None:
-        element.text = text
-    return element
+    return _WINDOWS_LAUNCHER_TEMPLATE.render(
+        {
+            "managed_marker": MANAGED_MARKER,
+            "command": command,
+        }
+    )
 
 
 def _render_windows_task(
     context: SystemServiceContext,
     launcher_path: Path,
 ) -> bytes:
-    ElementTree.register_namespace("", TASK_NAMESPACE)
-    task = ElementTree.Element(
-        f"{{{TASK_NAMESPACE}}}Task",
-        {"version": "1.4"},
+    rendered = _WINDOWS_TASK_TEMPLATE.render(
+        {
+            "user": context.user,
+            "managed_marker": MANAGED_MARKER,
+            "arguments": f'//B //Nologo "{launcher_path}"',
+            "data_dir": str(context.data_dir),
+        }
     )
-    registration = _add_task_element(task, "RegistrationInfo")
-    _add_task_element(registration, "Author", context.user)
-    _add_task_element(registration, "Description", MANAGED_MARKER)
-    triggers = _add_task_element(task, "Triggers")
-    logon_trigger = _add_task_element(triggers, "LogonTrigger")
-    _add_task_element(logon_trigger, "Enabled", "true")
-    _add_task_element(logon_trigger, "UserId", context.user)
-    principals = _add_task_element(task, "Principals")
-    principal = ElementTree.SubElement(
-        principals,
-        f"{{{TASK_NAMESPACE}}}Principal",
-        {"id": "Author"},
-    )
-    _add_task_element(principal, "UserId", context.user)
-    _add_task_element(principal, "LogonType", "InteractiveToken")
-    _add_task_element(principal, "RunLevel", "LeastPrivilege")
-    settings = _add_task_element(task, "Settings")
-    _add_task_element(settings, "MultipleInstancesPolicy", "IgnoreNew")
-    _add_task_element(settings, "DisallowStartIfOnBatteries", "false")
-    _add_task_element(settings, "StopIfGoingOnBatteries", "false")
-    _add_task_element(settings, "AllowHardTerminate", "true")
-    _add_task_element(settings, "StartWhenAvailable", "true")
-    _add_task_element(settings, "ExecutionTimeLimit", "PT0S")
-    restart = _add_task_element(settings, "RestartOnFailure")
-    _add_task_element(restart, "Interval", "PT5M")
-    _add_task_element(restart, "Count", "3")
-    actions = ElementTree.SubElement(
-        task,
-        f"{{{TASK_NAMESPACE}}}Actions",
-        {"Context": "Author"},
-    )
-    action = _add_task_element(actions, "Exec")
-    _add_task_element(action, "Command", "wscript.exe")
-    _add_task_element(
-        action,
-        "Arguments",
-        f'//B //Nologo "{launcher_path}"',
-    )
-    _add_task_element(action, "WorkingDirectory", str(context.data_dir))
-    return ElementTree.tostring(task, encoding="utf-16", xml_declaration=True)
+    return rendered.encode("utf-16")
 
 
 def _write_managed_file(path: Path, content: str | bytes, *, mode: int) -> None:
