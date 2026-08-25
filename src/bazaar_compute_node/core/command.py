@@ -24,6 +24,12 @@ from .reminder import (
 
 
 @dataclass(frozen=True, slots=True)
+class TargetProjection:
+    canonical_target: str
+    display_target: str
+
+
+@dataclass(frozen=True, slots=True)
 class MessageCheckResult:
     """Drain result with a snapshot independent from the delivery cursor."""
 
@@ -33,6 +39,7 @@ class MessageCheckResult:
     referenced_messages: tuple[
         Message[InboundAttachment | OutboundAttachment], ...
     ] = ()
+    target_projections: tuple[TargetProjection, ...] = ()
 
     def __post_init__(self) -> None:
         if self.delivered_through_seq > self.snapshot_seq:
@@ -50,6 +57,7 @@ class MessageReadResult:
     referenced_messages: tuple[
         Message[InboundAttachment | OutboundAttachment], ...
     ] = ()
+    target_projections: tuple[TargetProjection, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.first_seq is None) != (self.last_seq is None):
@@ -120,6 +128,7 @@ class MessageSendFreshnessHold:
     snapshot_seq: int | None
     current_inbound_seq: int
     draft_replaced: bool
+    target_projections: tuple[TargetProjection, ...] = ()
 
     def __post_init__(self) -> None:
         if self.newer_message_total < len(self.messages):
@@ -131,7 +140,19 @@ class MessageSendFreshnessHold:
             raise ValueError("freshness hold requires a stale snapshot boundary")
 
 
-type MessageSendResult = Message[OutboundAttachment] | MessageSendFreshnessHold
+@dataclass(frozen=True, slots=True)
+class MessageSendSuccess:
+    message: Message[OutboundAttachment]
+    target: str
+
+
+type MessageSendResult = MessageSendSuccess | MessageSendFreshnessHold
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadUnfollowResult:
+    target: str
+    changed: bool
 
 
 def render_handoff_message_body(source_target: str, outbound_message_id: str) -> str:
@@ -156,7 +177,7 @@ class ICommandService(Protocol):
         self,
         session_id: str,
         *,
-        target: str,
+        raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
@@ -178,7 +199,7 @@ class ICommandService(Protocol):
         *,
         session_id: str,
         command_id: str,
-        target: str,
+        raw_target: str,
         body: str,
         created_at_ms: int,
         attachment_paths: tuple[str, ...] = (),
@@ -188,7 +209,9 @@ class ICommandService(Protocol):
         """Run the session fresh-check before calling the Channel port."""
         ...
 
-    async def unfollow(self, session_id: str, *, target: str) -> bool:
+    async def unfollow(
+        self, session_id: str, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         """Disable future group notifications and report whether state changed."""
         ...
 

@@ -32,6 +32,7 @@ def message_payload(
     return {
         "seq": seq,
         "message_id": message_id,
+        "target": target,
         "canonical_target": target,
         "provider_time_ms": provider_time_ms,
         "received_at_ms": received_at_ms,

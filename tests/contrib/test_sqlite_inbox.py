@@ -10,6 +10,7 @@ from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
     ChannelTargetKind,
+    ChannelTargetPresentation,
     ConsumerCursor,
     Message,
     MessageDirection,
@@ -102,7 +103,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
             channel_session=pending_channel,
             bcn_session=pending_session,
             message_id="message-pending",
-            target="dm:shared-target",
+            target="dm:channel-pending",
             received_at_ms=301,
             sender_name="pending-sender",
             provider_time_ms=300_000,
@@ -121,7 +122,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
             channel_session=read_channel,
             bcn_session=read_session,
             message_id="message-read",
-            target="group:read-target",
+            target="group:channel-read",
             received_at_ms=201,
             sender_name="read-sender",
             provider_time_ms=None,
@@ -155,7 +156,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
             channel_session=foreign_channel,
             bcn_session=foreign_session,
             message_id="message-foreign",
-            target="dm:shared-target",
+            target="dm:channel-foreign",
             received_at_ms=1_000,
             sender_name="foreign-sender",
             provider_time_ms=1_000_000,
@@ -169,7 +170,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         empty_page = await repository.list_inbox_targets(limit=2, offset=3)
         cursor_after = await repository.get_consumer_cursor(pending.session_id)
         read_cursor_after = await repository.get_consumer_cursor(read.session_id)
-        pending_owner = await repository.resolve_inbox_target("dm:shared-target")
+        pending_owner = await repository.resolve_inbox_target("dm:channel-pending")
         empty_owner = await repository.resolve_inbox_target("dm:channel-empty")
 
         assert [target.session_id for target in first_page.targets] == [
@@ -204,8 +205,8 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         )
         assert cursor_after == cursor_before
         assert read_cursor_after == read_cursor_before
-        assert pending_owner.id == pending_session.id
-        assert empty_owner.id == "session-empty"
+        assert pending_owner.bcn_session.id == pending_session.id
+        assert empty_owner.bcn_session.id == "session-empty"
     finally:
         await database.stop(timeout=2)
 
@@ -226,6 +227,12 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
             channel_session_id="channel-first",
             last_activity_at_ms=2,
         )
+        await repository.save_channel_session(
+            first_channel.with_target_presentation(
+                ChannelTargetPresentation(handle="ambiguous"),
+                updated_at_ms=3,
+            )
+        )
         await _append_message(
             repository,
             channel_session=first_channel,
@@ -243,6 +250,12 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
             channel_session_id="channel-second",
             last_activity_at_ms=1,
         )
+        await repository.save_channel_session(
+            second_channel.with_target_presentation(
+                ChannelTargetPresentation(handle="Ambiguous"),
+                updated_at_ms=3,
+            )
+        )
         await _append_message(
             repository,
             channel_session=second_channel,
@@ -257,6 +270,6 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
         with pytest.raises(InboxTargetResolutionError):
             await repository.resolve_inbox_target("dm:missing")
         with pytest.raises(InboxTargetResolutionError):
-            await repository.resolve_inbox_target("dm:ambiguous")
+            await repository.resolve_inbox_target("dm:@ambiguous")
     finally:
         await database.stop(timeout=2)

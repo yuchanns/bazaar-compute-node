@@ -110,7 +110,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
         )
         history = await scope.read_message_history(
             bcn_session.id,
-            target=pending.target,
+            raw_target=pending.target,
             around_message_id=pending.message_id,
             limit=10,
         )
@@ -148,7 +148,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
             provider_message_id="provider-source",
             received_at_ms=10,
             sender=SenderIdentity(name="Source User"),
-            target="group:source",
+            target="group:channel-source",
             target_kind=ChannelTargetKind.GROUP,
             body="source context",
             metadata={"sender_kind": SenderKind.HUMAN.value},
@@ -174,7 +174,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
         await scope.save_bcn_session(target_session)
         draft = MessageDraft(
             source_target_id=source_session.id,
-            target="dm:target",
+            target="dm:channel-target",
             target_id=target_session.id,
             body="cross-session payload",
             attachments=(),
@@ -223,7 +223,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
                 command_id="command-cross",
                 session_id=target_session.id,
                 channel_session_id=target_channel.id,
-                target="dm:target",
+                target="dm:channel-target",
                 body="cross-session payload",
                 delivery_state=OutboundDeliveryState.PENDING,
                 created_at_ms=11,
@@ -245,7 +245,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
         second_finalize = await scope.finalize_outbound_delivery(cross_sent)
         target_history = await scope.read_message_history(
             source_session.id,
-            target="dm:target",
+            raw_target="dm:channel-target",
             around_message_id=cross_pending.message_id,
             limit=10,
         )
@@ -449,7 +449,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         )
         history = await scope.read_message_history(
             bcn_session.id,
-            target=anchor.target,
+            raw_target=anchor.target,
             around_message_id=materialized.message_id,
             limit=10,
         )
@@ -560,7 +560,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 21
+        assert schema_version["version"] == 22
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -993,7 +993,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 21
+        assert schema_version["version"] == 22
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1102,7 +1102,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 21
+        assert schema_version["version"] == 22
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

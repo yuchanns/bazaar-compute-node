@@ -22,6 +22,7 @@ from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
     MessageSendFreshnessHold,
+    MessageSendSuccess,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -208,7 +209,7 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert set(service.send.await_args.kwargs) == {
         "session_id",
         "command_id",
-        "target",
+        "raw_target",
         "body",
         "created_at_ms",
         "attachment_paths",
@@ -264,11 +265,16 @@ async def test_message_send_renders_provider_outcomes() -> None:
     )
 
     for state, ok, code, expected_text in outcomes:
-        service.send.return_value = SimpleNamespace(
-            delivery_state=state,
+        service.send.return_value = MessageSendSuccess(
+            message=cast(
+                Message,
+                SimpleNamespace(
+                    delivery_state=state,
+                    message_id="outbound-1",
+                    error_message="provider outcome",
+                ),
+            ),
             target="dm:source",
-            message_id="outbound-1",
-            error_message="provider outcome",
         )
         response = await dispatcher(request)
 

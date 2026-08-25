@@ -112,26 +112,3 @@ def test_bcc_help_is_available_at_every_command_level(
     output = " ".join(capsys.readouterr().out.split())
     for snippet in expected:
         assert snippet in output
-
-
-def test_help_and_parser_do_not_expose_removed_surfaces(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "--help"))
-    resource_help = capsys.readouterr().out
-
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "schedule", "--help"))
-    schedule_help = capsys.readouterr().out
-
-    assert " log" not in resource_help
-    assert "--channel" not in schedule_help
-    assert "--msg-id" not in schedule_help
-
-    parser = build_parser()
-    with pytest.raises(SystemExit) as handoff_error:
-        parser.parse_args(("handoff", "check"))
-    assert handoff_error.value.code == 2

@@ -9,7 +9,7 @@ import aiosqlite
 
 from ....core.inbox import InboxTargetPage
 from ....core.models import (
-    BcnSession,
+    ChannelSession,
     ChannelTargetKind,
     InboundAttachment,
     InboxTargetSummary,
@@ -20,7 +20,11 @@ from ....core.models import (
     SenderIdentity,
     SenderKind,
 )
-from ....core.storage import InboxTargetResolutionError, UnreadMessageOwner
+from ....core.storage import (
+    InboxTargetResolutionError,
+    ResolvedInboxTarget,
+    UnreadMessageOwner,
+)
 from ..codec import (
     bcn_session_from_row,
     encode_metadata,
@@ -275,7 +279,27 @@ class MessageOperations(RepositoryBase):
             offset=offset,
         )
 
-    async def resolve_inbox_target(self, target: str) -> BcnSession:
+    async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        parameters: tuple[object, ...]
+        if raw_target.startswith("#"):
+            label, separator, channel_session_id = raw_target.rpartition(":")
+            if separator and len(label) > 1 and channel_session_id:
+                predicate = "channel.target_kind = 'group' AND channel.id = ?"
+                parameters = (channel_session_id,)
+            else:
+                predicate = "0"
+                parameters = ()
+        elif raw_target.startswith("dm:@") and len(raw_target) > 4:
+            predicate = "channel.target_kind = 'dm' AND channel.target_handle_key = ?"
+            parameters = (raw_target[4:].casefold(),)
+        else:
+            target_kind, separator, channel_session_id = raw_target.partition(":")
+            if separator and target_kind in {"dm", "group"} and channel_session_id:
+                predicate = "channel.target_kind = ? AND channel.id = ?"
+                parameters = (target_kind, channel_session_id)
+            else:
+                predicate = "0"
+                parameters = ()
         rows = await self.fetchall(
             "SELECT bcn.id, bcn.channel_session_id, bcn.workspace_id, "
             "bcn.created_at_ms, bcn.updated_at_ms, bcn.last_activity_at_ms, "
@@ -285,22 +309,40 @@ class MessageOperations(RepositoryBase):
             "ON channel.agent_id = /*agent_id*/? "
             "AND channel.id = bcn.channel_session_id "
             "WHERE bcn.agent_id = /*agent_id*/? "
-            "AND ("
-            "channel.target_kind || ':' || channel.id = ? "
-            "OR EXISTS ("
-            "SELECT 1 FROM messages AS message "
-            "WHERE message.agent_id = /*agent_id*/? "
-            "AND message.session_id = bcn.id "
-            "AND message.target = ?"
-            ")"
-            ") ORDER BY bcn.id",
-            (target, target),
+            f"AND ({predicate}) ORDER BY bcn.id",
+            parameters,
         )
         if len(rows) != 1:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to exactly one owned session"
             )
-        return bcn_session_from_row(rows[0])
+        target = bcn_session_from_row(rows[0])
+        channel_session = cast(
+            ChannelSession,
+            await self.get_channel_session(target.channel_session_id),
+        )
+        handle_is_unique = True
+        if channel_session.target_handle_key is not None:
+            count_row = cast(
+                aiosqlite.Row,
+                await self.fetchone(
+                    "SELECT COUNT(*) AS target_count "
+                    "FROM bcn_sessions AS bcn "
+                    "JOIN channel_sessions AS channel "
+                    "ON channel.agent_id = /*agent_id*/? "
+                    "AND channel.id = bcn.channel_session_id "
+                    "WHERE bcn.agent_id = /*agent_id*/? "
+                    "AND channel.target_kind = 'dm' "
+                    "AND channel.target_handle_key = ?",
+                    (channel_session.target_handle_key,),
+                ),
+            )
+            handle_is_unique = cast(int, count_row["target_count"]) == 1
+        return ResolvedInboxTarget(
+            bcn_session=target,
+            channel_session=channel_session,
+            handle_is_unique=handle_is_unique,
+        )
 
     async def find_message(
         self,

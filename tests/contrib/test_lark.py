@@ -410,6 +410,7 @@ async def test_lark_inbound_sender_kind_uses_provider_sender_type(
         },
         thread_identity=LarkThreadIdentity("ou_bot", "oc_chat", "omt_thread"),
         target_kind=ChannelTargetKind.DM,
+        presentation=None,
         sender_payload={
             "sender_id": {"open_id": "ou_sender"},
             "sender_type": sender_type,

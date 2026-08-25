@@ -35,6 +35,7 @@ class SessionOperations(RepositoryBase):
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel, provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
+            "target_display_name, target_handle, target_handle_key, "
             "provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
             "AND provider_thread_id = ? ORDER BY rowid",
@@ -47,6 +48,7 @@ class SessionOperations(RepositoryBase):
         row = await self.fetchone(
             "SELECT id, channel, provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
+            "target_display_name, target_handle, target_handle_key, "
             "provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND id = ?",
             (session_id,),
@@ -147,9 +149,10 @@ class SessionOperations(RepositoryBase):
             await self.execute(
                 "INSERT INTO channel_sessions ("
                 "agent_id, id, channel, provider_thread_id, target_kind, following, "
-                "provider_identity_ref_json, created_at_ms, updated_at_ms, "
+                "provider_identity_ref_json, target_display_name, target_handle, "
+                "target_handle_key, created_at_ms, updated_at_ms, "
                 "last_inbound_at_ms, last_outbound_at_ms"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._require_agent_id(),
                     session.id,
@@ -158,6 +161,9 @@ class SessionOperations(RepositoryBase):
                     session.target_kind.value,
                     int(session.following),
                     encode_metadata(session.metadata),
+                    session.target_display_name,
+                    session.target_handle,
+                    session.target_handle_key,
                     session.created_at_ms,
                     session.updated_at_ms,
                     session.last_inbound_at_ms,
@@ -170,7 +176,8 @@ class SessionOperations(RepositoryBase):
         await self.execute(
             "UPDATE channel_sessions SET target_kind = ?, following = ?, "
             "updated_at_ms = ?, last_inbound_at_ms = ?, last_outbound_at_ms = ?, "
-            "provider_identity_ref_json = ? WHERE id = ?",
+            "provider_identity_ref_json = ?, target_display_name = ?, "
+            "target_handle = ?, target_handle_key = ? WHERE id = ?",
             (
                 session.target_kind.value,
                 int(session.following),
@@ -178,6 +185,9 @@ class SessionOperations(RepositoryBase):
                 session.last_inbound_at_ms,
                 session.last_outbound_at_ms,
                 encode_metadata(session.metadata),
+                session.target_display_name,
+                session.target_handle,
+                session.target_handle_key,
                 session.id,
             ),
         )

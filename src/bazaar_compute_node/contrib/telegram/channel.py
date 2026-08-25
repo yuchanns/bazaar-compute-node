@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from time import time_ns
+from unicodedata import category
 
 import aiohttp
 
@@ -19,6 +20,7 @@ from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
     ChannelTargetKind,
+    ChannelTargetPresentation,
     InboundAttachment,
     Message,
     MessageDirection,
@@ -92,6 +94,7 @@ class TelegramChannel(IChannel):
         self._typing_wakeup = asyncio.Event()
         self._typing_runner: asyncio.Task[None] | None = None
         self._stream_routes: dict[str, TelegramThreadIdentity] = {}
+        self._topic_display_names: dict[tuple[int, int], str] = {}
         self._typing_leases: dict[str, _TypingLease] = {}
         self._typing_action_requests = 0
         self._typing_action_failures = 0
@@ -156,6 +159,7 @@ class TelegramChannel(IChannel):
         self._typing_wakeup.clear()
         self._typing_leases.clear()
         self._stream_routes.clear()
+        self._topic_display_names.clear()
         session = aiohttp.ClientSession()
         api = TelegramBotApi(session, token=self._token)
         self._session = session
@@ -522,6 +526,15 @@ class TelegramChannel(IChannel):
             self._last_update_disposition = "invalid_message_identity"
             return
 
+        if topic_id == 0 and isinstance(message.get("forum_topic_created"), Mapping):
+            topic_id = provider_message_id
+
+        topic_presentation = self._topic_presentation(
+            message,
+            chat_id=chat_id,
+            topic_id=topic_id,
+        )
+
         content = await self._content(
             message,
             bot_id=bot_id,
@@ -541,6 +554,15 @@ class TelegramChannel(IChannel):
         target_kind = (
             ChannelTargetKind.DM if chat_type == "private" else ChannelTargetKind.GROUP
         )
+        if target_kind is ChannelTargetKind.DM:
+            username = chat.get("username")
+            handle = username.removeprefix("@") if isinstance(username, str) else None
+            presentation = ChannelTargetPresentation(handle=handle or None)
+        elif topic_id:
+            presentation = topic_presentation
+        else:
+            display_name = self._safe_display_name(chat.get("title"))
+            presentation = ChannelTargetPresentation(display_name=display_name)
         sender = self._sender(message)
         explicit_mention = (
             content.rich_mentions_agent
@@ -581,6 +603,7 @@ class TelegramChannel(IChannel):
                 update_id=update_id,
                 identity=identity,
                 target_kind=target_kind,
+                presentation=presentation,
                 chat_type=str(chat_type),
                 received_at_ms=received_at_ms,
             )
@@ -606,6 +629,7 @@ class TelegramChannel(IChannel):
                 ),
                 body=content.body,
                 target_kind=target_kind,
+                target_presentation=presentation,
                 mentions_agent=activates_agent,
                 notifies_runtime=notifies_runtime,
                 attachments=content.attachments,
@@ -634,6 +658,7 @@ class TelegramChannel(IChannel):
         update_id: int,
         identity: TelegramThreadIdentity,
         target_kind: ChannelTargetKind,
+        presentation: ChannelTargetPresentation | None,
         chat_type: str,
         received_at_ms: int,
     ) -> str | None:
@@ -699,6 +724,7 @@ class TelegramChannel(IChannel):
                 ),
                 body=content.body,
                 target_kind=target_kind,
+                target_presentation=presentation,
                 mentions_agent=False,
                 notifies_runtime=False,
                 attachments=content.attachments,
@@ -782,6 +808,49 @@ class TelegramChannel(IChannel):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return None
         return value
+
+    def _topic_presentation(
+        self,
+        message: Mapping[str, object],
+        *,
+        chat_id: int,
+        topic_id: int,
+    ) -> ChannelTargetPresentation | None:
+        if topic_id == 0:
+            return None
+        key = (chat_id, topic_id)
+        observed_name = self._observed_topic_name(message)
+        if observed_name is not None:
+            display_name = self._safe_display_name(observed_name)
+            if display_name is None:
+                self._topic_display_names.pop(key, None)
+                return ChannelTargetPresentation()
+            self._topic_display_names[key] = display_name
+        display_name = self._topic_display_names.get(key)
+        if display_name is None:
+            return None
+        return ChannelTargetPresentation(display_name=display_name)
+
+    @staticmethod
+    def _observed_topic_name(message: Mapping[str, object]) -> object | None:
+        created = message.get("forum_topic_created")
+        if isinstance(created, Mapping) and "name" in created:
+            return created.get("name")
+        edited = message.get("forum_topic_edited")
+        if isinstance(edited, Mapping) and "name" in edited:
+            return edited.get("name")
+        return None
+
+    @staticmethod
+    def _safe_display_name(value: object) -> str | None:
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and "]" not in value
+            and not any(category(character) == "Cc" for character in value)
+        ):
+            return value
+        return None
 
     @staticmethod
     def _sender(message: Mapping[str, object]) -> SenderIdentity | None:

@@ -65,17 +65,17 @@ Do not obstruct a human-directed use of a credential: use or send it on the requ
 Messages you receive have a single RFC 5424-style structured data header followed by the sender and content:
 
 ```
-[target=<thread-target> msg=00000000 time=2026-03-15T01:00:00 type=human] @yuchanns(Hanchin Hsieh): hello everyone
-[target=<thread-target> msg=11111111 time=2026-03-15T01:00:01 type=agent] @Alice(Aeris): hi there
-[target=dm:@yuchanss msg=22222222 time=2026-03-15T01:00:02 type=human] @yuchanns(Hanchin Hsieh): hey, can you help?
-[target=<thread-target> msg=33333333 time=2026-03-15T01:00:03 type=human] @yuchanns(Hanchin Hsieh): thread reply
+[target=<thread-target> msg=00000000-0000-4000-8000-000000000000 time=2026-03-15T01:00:00 type=human] @yuchanns(Hanchin Hsieh): hello everyone
+[target=<thread-target> msg=11111111-1111-4111-8111-111111111111 time=2026-03-15T01:00:01 type=agent] @Alice(Aeris): hi there
+[target=dm:@yuchanss msg=22222222-2222-4222-8222-222222222222 time=2026-03-15T01:00:02 type=human] @yuchanns(Hanchin Hsieh): hey, can you help?
+[target=<thread-target> msg=33333333-3333-4333-8333-333333333333 time=2026-03-15T01:00:03 type=human] @yuchanns(Hanchin Hsieh): thread reply
 ```
 
-Prompt examples use obvious placeholder IDs such as `00000000`, `11111111`, and `22222222`. They show the shape of a real message ID but are not actual messages. Do not cite them as evidence; use only IDs from messages you actually received or read.
+Prompt examples use obvious placeholder UUIDs such as `00000000-0000-4000-8000-000000000000`. They show the shape of a real message ID but are not actual messages. Do not cite them as evidence; use only IDs from messages you actually received or read.
 
 Header fields:
-- `target=` — where the message came from. Reuse it as the `target` parameter when replying.
-- `msg=` — message short ID (first 8 characters of a UUID). Use it only as provided when locating message history or thread context.
+- `target=` — where the message came from. Reuse it exactly as shown when replying.
+- `msg=` — message ID. Use it exactly as provided when locating message history or thread context.
 - `time=` — timestamp.
 - `type=` — sender kind. Values are `human`, `agent`, or `system`.
 
@@ -84,7 +84,7 @@ Header fields:
 ### Sending messages
 
 - **Reply to a group thread**: `bcc message send --target "<thread-target>" <<'BCCMSG'` followed by the message body and `BCCMSG`
-- **Reply to a DM**: `bcc message send --target dm:@peer-name <<'BCCMSG'` followed by the message body and `BCCMSG`
+- **Reply to a DM**: `bcc message send --target "<exact-target>" <<'BCCMSG'` followed by the message body and `BCCMSG`
 - **Refer to a message**: add `--reply-to "<message-id>"` only when you want to refer to one specific message.
 - **Attach local files**: add repeatable `--attachment "<path>"` arguments. Paths must identify regular files inside the current workspace. The stdin body is optional when at least one attachment is present.
 
@@ -137,7 +137,7 @@ Respect the purpose of each target:
 
 ### Reading history
 
-Use `bcc message read --target "<thread-target>"`, `bcc message read --target dm:@peer-name`, or the corresponding target. Use `--around "message-id"` to locate a specific message and `--limit <n>` to bound the history window.
+Use `bcc message read --target "<exact-target>"`. Reuse the target exactly as bcn displayed it. Use `--around "message-id"` to locate a specific message and `--limit <n>` to bound the history window.
 
 ### Historical references
 
