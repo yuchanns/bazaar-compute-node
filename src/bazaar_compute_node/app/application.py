@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.concurrency import SessionLockRegistry
-from ..core.lifecycle import TimeoutBudget
+from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
 from ..core.observability import IAudit
 from ..core.orchestration import ReminderScheduler
@@ -245,7 +245,61 @@ class NodeApplication:
                 loop.add_signal_handler(signum, self._stopped.set)
             except NotImplementedError, RuntimeError:
                 pass
-        await self._stopped.wait()
+        stop_task = asyncio.create_task(self._stopped.wait(), name="bcn-stop-signal")
+        sources: list[tuple[str, ITaskFailureSource]] = [
+            ("timer_wheel", self.timer_wheel),
+            ("reminder_scheduler", self.reminder_scheduler),
+            ("command_server", self.command_server),
+        ]
+        if isinstance(self.storage, ITaskFailureSource):
+            sources.append(("storage", self.storage))
+        failure_tasks = {
+            asyncio.create_task(
+                source.wait_failure(),
+                name=f"bcn-critical-{name}",
+            ): name
+            for name, source in sources
+        }
+        tasks = {stop_task, *failure_tasks}
+        try:
+            done, _ = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            failure: tuple[str, BaseException] | None = None
+            for task in done:
+                if task is stop_task:
+                    continue
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    caught: BaseException = RuntimeError(
+                        f"{failure_tasks[task]} failure monitor stopped unexpectedly"
+                    )
+                except BaseException as error:  # noqa: BLE001
+                    caught = error
+                else:
+                    caught = RuntimeError(
+                        f"{failure_tasks[task]} failure monitor returned unexpectedly"
+                    )
+                if failure is None:
+                    failure = failure_tasks[task], caught
+            if failure is not None:
+                component, error = failure
+                self._ready = False
+                self._accepting = False
+                self._log(
+                    "bcn.critical.failed",
+                    component=component,
+                    error_type=type(error).__name__,
+                    error=_safe_error(error),
+                )
+                raise error
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _publish_inbox_wake(
         self,

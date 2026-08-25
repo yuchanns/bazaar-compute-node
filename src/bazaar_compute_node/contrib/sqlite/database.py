@@ -198,6 +198,10 @@ class SqliteDatabase:
                 self._executor = None
                 self._schema_version = None
 
+    async def wait_failure(self) -> None:
+        executor = self._require_executor()
+        await executor.wait_failure()
+
     async def fetchone(
         self,
         statement: str,

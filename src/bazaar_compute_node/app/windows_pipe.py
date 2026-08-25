@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from bazaar_compute_node.core.lifecycle import TaskFailureSignal
 from bazaar_compute_node.core.paths import resolve_data_dir
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
@@ -301,6 +302,7 @@ class WindowsNamedPipeServer:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._startup_errors: list[BaseException] = []
+        self._failure = TaskFailureSignal()
         self._thread: threading.Thread | None = None
         self._workers: set[threading.Thread] = set()
         self._workers_lock = threading.Lock()
@@ -317,6 +319,7 @@ class WindowsNamedPipeServer:
         self._stop.clear()
         self._ready.clear()
         self._startup_errors.clear()
+        self._failure.reset()
         self._thread = threading.Thread(
             target=self._serve,
             name="bcn-windows-named-pipe",
@@ -332,6 +335,7 @@ class WindowsNamedPipeServer:
             raise TimeoutError("Windows named pipe server did not become ready")
 
     async def stop(self) -> None:
+        self._failure.disable()
         thread = self._thread
         if thread is None:
             _release_mutex(self._mutex)
@@ -352,8 +356,16 @@ class WindowsNamedPipeServer:
         try:
             self._serve_loop()
         except Exception as error:  # noqa: BLE001
-            self._startup_errors.append(error)
-            self._ready.set()
+            if not self._ready.is_set():
+                self._startup_errors.append(error)
+                self._ready.set()
+                return
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._failure.fail, error)
+
+    async def wait_failure(self) -> None:
+        await self._failure.wait()
 
     def _serve_loop(self) -> None:
         initialized = False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -10,6 +11,10 @@ from types import TracebackType
 from typing import TypeVar
 
 import aiosqlite
+
+from ...core.lifecycle import TaskFailureSignal
+
+_LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -222,6 +227,7 @@ class SqliteExecutor:
         self._write_queue = asyncio.Queue[_WriteRequest[object] | None]()
         self._writer_task: asyncio.Task[None] | None = None
         self._reader_reaper_task: asyncio.Task[None] | None = None
+        self._failure = TaskFailureSignal()
         self._reader_reaper_stop = asyncio.Event()
         self._accepting = False
         self._borrowed_readers = 0
@@ -238,6 +244,7 @@ class SqliteExecutor:
         if self._writer_task is not None:
             return
         self._accepting = True
+        self._failure.reset()
         self._reader_reaper_stop.clear()
         self._writer_task = asyncio.create_task(
             self._run_writer(),
@@ -247,10 +254,17 @@ class SqliteExecutor:
             self._reap_idle_readers(),
             name="bcn-sqlite-reader-reaper",
         )
+        self._failure.observe(self._writer_task, component="SQLite writer")
+        self._reader_reaper_task.add_done_callback(self._reader_reaper_done)
 
     async def stop(self) -> None:
         if self._closed:
             return
+        writer_task = self._writer_task
+        if writer_task is not None and writer_task.done():
+            await self.abort()
+            return
+        self._failure.disable()
         self._accepting = False
         await self._write_queue.join()
         async with self._reader_condition:
@@ -274,6 +288,7 @@ class SqliteExecutor:
         """Interrupt active work and close all connections after a failed drain."""
         if self._closed:
             return
+        self._failure.disable()
         self._accepting = False
         async with self._reader_condition:
             self._reader_condition.notify_all()
@@ -309,10 +324,7 @@ class SqliteExecutor:
         writer_task = self._writer_task
         if writer_task is not None:
             writer_task.cancel()
-            try:
-                await writer_task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(writer_task, return_exceptions=True)
             self._writer_task = None
 
         await self._stop_reader_reaper()
@@ -520,7 +532,15 @@ class SqliteExecutor:
                     to_close.append(reader.connection)
                     excess -= 1
             for connection in to_close:
-                await connection.close()
+                try:
+                    await connection.close()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOGGER.exception("SQLite idle reader close failed")
+
+    async def wait_failure(self) -> None:
+        await self._failure.wait()
 
     async def _stop_reader_reaper(self) -> None:
         task = self._reader_reaper_task
@@ -529,6 +549,22 @@ class SqliteExecutor:
         self._reader_reaper_stop.set()
         await task
         self._reader_reaper_task = None
+
+    def _reader_reaper_done(self, task: asyncio.Task[None]) -> None:
+        if not self._accepting:
+            return
+        self._reader_reaper_task = None
+        error = (
+            RuntimeError("SQLite reader reaper was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception()
+            or RuntimeError("SQLite reader reaper stopped unexpectedly")
+        )
+        _LOGGER.error(
+            "SQLite reader reaper failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     def _require_accepting(self) -> None:
         if not self._accepting:

@@ -277,6 +277,7 @@ class AgentApplication:
             "channel": self.channel.name,
             "runtime": self.runtime.name,
             "channel_health": dict(self.channel.health),
+            "orchestrator_health": self.orchestrator.health,
         }
 
     async def _cleanup_partial_start(self) -> None:

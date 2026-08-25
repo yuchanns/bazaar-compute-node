@@ -7,7 +7,7 @@ from time import time_ns
 from uuid import uuid7
 
 from ..concurrency import ISessionConcurrency
-from ..lifecycle import IAsyncLifecycle
+from ..lifecycle import IAsyncLifecycle, TaskFailureSignal
 from ..models import (
     InboundAttachment,
     Message,
@@ -54,6 +54,7 @@ class ReminderScheduler(IAsyncLifecycle):
         self._clock = clock or _current_time_ms
         self._poke = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._failure = TaskFailureSignal()
         self._active_timer: Timer | None = None
         self._started = False
         self._stopping = False
@@ -79,10 +80,12 @@ class ReminderScheduler(IAsyncLifecycle):
             await self._publish_pending_recovery()
             await self._materialize_due_batches()
         self._started = True
+        self._failure.reset()
         self._task = asyncio.create_task(
             self._run(),
             name="bcn-reminder-scheduler",
         )
+        self._failure.observe(self._task, component="reminder scheduler")
 
     async def stop(self, *, timeout: float) -> None:
         if timeout <= 0:
@@ -90,12 +93,19 @@ class ReminderScheduler(IAsyncLifecycle):
         task = self._task
         if task is None and not self._started:
             return
+        self._failure.disable()
         self._stopping = True
         self._poke.set()
         timer = self._active_timer
         if timer is not None and timer.active:
             timer.cancel()
         if task is not None:
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+                self._task = None
+                self._active_timer = None
+                self._started = False
+                return
             try:
                 async with asyncio.timeout(timeout):
                     await task
@@ -108,6 +118,9 @@ class ReminderScheduler(IAsyncLifecycle):
         self._task = None
         self._active_timer = None
         self._started = False
+
+    async def wait_failure(self) -> None:
+        await self._failure.wait()
 
     async def _run(self) -> None:
         try:
@@ -246,7 +259,21 @@ class ReminderScheduler(IAsyncLifecycle):
                 direction=MessageDirection.INBOUND,
             )
             if anchor is None:
-                raise ValueError("Reminder anchor message is missing")
+                canceled = current.cancel(at_ms=fired_at_ms)
+                await self._storage.save_reminder_transition(
+                    current.revision,
+                    canceled,
+                )
+                self._logger.error(
+                    "reminder anchor is missing; reminder canceled",
+                    extra={
+                        "agent_id": owner.agent_id,
+                        "owner_session_id": current.owner_session_id,
+                        "reminder_id": current.reminder_id,
+                        "anchor_message_id": current.anchor_message_id,
+                    },
+                )
+                return None
             system_message = Message[InboundAttachment](
                 direction=MessageDirection.INBOUND,
                 seq=0,

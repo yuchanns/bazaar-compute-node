@@ -201,6 +201,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._expired_runtime_ids: set[str] = set()
         self._receive_task: asyncio.Task[None] | None = None
         self._runtime_expire_task: asyncio.Task[None] | None = None
+        self._background_failures: dict[str, str] = {}
         self._started = False
         self._stopping = False
         self._shutdown_errors: list[str] = []
@@ -216,6 +217,13 @@ class SessionOrchestrator(IAsyncLifecycle):
     @property
     def shutdown_errors(self) -> tuple[str, ...]:
         return tuple(self._shutdown_errors)
+
+    @property
+    def health(self) -> dict[str, object]:
+        return {
+            "state": "degraded" if self._background_failures else "ready",
+            "background_failures": dict(self._background_failures),
+        }
 
     def session_runtime_state(self, session_id: str) -> SessionRuntimeState | None:
         """Return process-local runtime lifecycle state for one BCN session."""
@@ -259,11 +267,26 @@ class SessionOrchestrator(IAsyncLifecycle):
             return runtime_queue
         runtime_queue = asyncio.Queue()
         self._runtime_queues[session_id] = runtime_queue
-        self._runtime_workers[session_id] = asyncio.create_task(
-            self._runtime_loop(session_id, runtime_queue),
+        self._start_runtime_worker(session_id, runtime_queue)
+        return runtime_queue
+
+    def _start_runtime_worker(
+        self,
+        session_id: str,
+        queue: asyncio.Queue[_RuntimeQueueItem],
+    ) -> None:
+        worker = asyncio.create_task(
+            self._runtime_loop(session_id, queue),
             name=f"bcn-runtime-{self.agent_id}-{session_id}",
         )
-        return runtime_queue
+        self._runtime_workers[session_id] = worker
+        worker.add_done_callback(
+            lambda completed: self._runtime_worker_done(
+                session_id,
+                queue,
+                completed,
+            )
+        )
 
     def _create_runtime_session(
         self,
@@ -398,14 +421,17 @@ class SessionOrchestrator(IAsyncLifecycle):
             await self._runtime.stop(timeout=timeout)
             raise
         self._started = True
+        self._background_failures.clear()
         self._receive_task = asyncio.create_task(
             self._receive_loop(),
             name=f"bcn-channel-receive-{self.agent_id}",
         )
+        self._observe_background_task("channel_receive", self._receive_task)
         self._runtime_expire_task = asyncio.create_task(
             self._receive_runtime_expire_loop(),
             name=f"bcn-runtime-expire-events-{self.agent_id}",
         )
+        self._observe_background_task("runtime_expire", self._runtime_expire_task)
 
     async def stop(self, *, timeout: float) -> None:
         if self._stopping:
@@ -574,6 +600,10 @@ class SessionOrchestrator(IAsyncLifecycle):
                         queue,
                         queue_quiescent=not pending and queue.empty(),
                     )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._logger.exception("runtime idle expiry failed")
                 finally:
                     queue.task_done()
                 continue
@@ -584,6 +614,10 @@ class SessionOrchestrator(IAsyncLifecycle):
                         item,
                         queue,
                     )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._logger.exception("runtime context expiry failed")
                 finally:
                     queue.task_done()
                 continue
@@ -907,6 +941,57 @@ class SessionOrchestrator(IAsyncLifecycle):
             ),
             exc_info=(type(error), error, error.__traceback__),
         )
+
+    def _observe_background_task(
+        self,
+        name: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            lambda completed: self._background_task_done(name, completed)
+        )
+
+    def _background_task_done(
+        self,
+        name: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._stopping:
+            return
+        error = (
+            RuntimeError(f"{name} was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception() or RuntimeError(f"{name} stopped unexpectedly")
+        )
+        self._background_failures[name] = type(error).__name__
+        self._logger.error(
+            "%s failed: %s",
+            name,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+    def _runtime_worker_done(
+        self,
+        session_id: str,
+        queue: asyncio.Queue[_RuntimeQueueItem],
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._stopping or self._runtime_workers.get(session_id) is not task:
+            return
+        error = (
+            RuntimeError("runtime worker was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception() or RuntimeError("runtime worker stopped unexpectedly")
+        )
+        self._background_failures[f"runtime_worker:{session_id}"] = type(error).__name__
+        self._logger.error(
+            "runtime worker failed for session %s: %s",
+            session_id,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self._start_runtime_worker(session_id, queue)
 
     async def _record_inbound(
         self,

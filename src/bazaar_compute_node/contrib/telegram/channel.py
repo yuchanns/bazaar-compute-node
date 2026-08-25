@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from time import time_ns
@@ -41,6 +42,7 @@ _STOP = object()
 _MAX_RECONNECT_DELAY_SECONDS = 30.0
 _TYPING_REFRESH_SECONDS = 4.0
 _TYPING_REQUEST_TIMEOUT_SECONDS = 3.0
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,10 +194,12 @@ class TelegramChannel(IChannel):
                 self._run_typing_dispatcher(),
                 name="bcn-telegram-typing",
             )
+            self._typing_runner.add_done_callback(self._typing_runner_done)
             self._runner = asyncio.create_task(
                 self._run(),
                 name="bcn-telegram-channel",
             )
+            self._runner.add_done_callback(self._runner_done)
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError("Telegram channel startup deadline expired")
@@ -343,6 +347,39 @@ class TelegramChannel(IChannel):
             raise
         except Exception:  # noqa: BLE001
             self._typing_action_failures += 1
+
+    def _typing_runner_done(self, task: asyncio.Task[None]) -> None:
+        if self._stopping.is_set():
+            return
+        error = (
+            RuntimeError("Telegram typing dispatcher was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception()
+            or RuntimeError("Telegram typing dispatcher stopped unexpectedly")
+        )
+        self._typing_action_failures += 1
+        _LOGGER.error(
+            "Telegram typing dispatcher failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+    def _runner_done(self, task: asyncio.Task[None]) -> None:
+        if self._stopping.is_set():
+            return
+        error = (
+            RuntimeError("Telegram channel runner was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception()
+            or RuntimeError("Telegram channel runner stopped unexpectedly")
+        )
+        self._state = "degraded"
+        self._last_poll_error_kind = type(error).__name__
+        _LOGGER.error(
+            "Telegram channel runner failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     async def send(
         self,

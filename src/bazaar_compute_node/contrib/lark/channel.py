@@ -242,6 +242,7 @@ class LarkChannel(IChannel):
                     self._run_typing_dispatcher(),
                     name="bcn-lark-typing",
                 )
+                self._typing_runner.add_done_callback(self._typing_runner_done)
                 await transport.start(timeout=_remaining(deadline))
                 generation = transport.health.get("connection_generation", 0)
                 self._connection_generation = (
@@ -998,6 +999,22 @@ class LarkChannel(IChannel):
         state.reaction_id = reaction_id
         if state.terminal or self._typing_stopping:
             self._typing_states.pop(command.session_id, None)
+
+    def _typing_runner_done(self, task: asyncio.Task[None]) -> None:
+        if self._typing_stopping:
+            return
+        error = (
+            RuntimeError("Lark typing dispatcher was canceled unexpectedly")
+            if task.cancelled()
+            else task.exception()
+            or RuntimeError("Lark typing dispatcher stopped unexpectedly")
+        )
+        self._typing_failures += 1
+        _LOGGER.error(
+            "Lark typing dispatcher failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     async def _stop_typing(self, *, timeout: float) -> None:
         self._typing_stopping = True
