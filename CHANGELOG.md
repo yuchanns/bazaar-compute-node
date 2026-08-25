@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.27 - 2026-08-25
+
+## What's Changed
+* feat: deliver reminders and handoffs as system messages by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/44
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.26...v0.1.27
+
 ## 0.1.26 - 2026-08-24
 
 ## What's Changed
