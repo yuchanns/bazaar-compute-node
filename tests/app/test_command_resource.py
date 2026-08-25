@@ -20,19 +20,12 @@ from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
 from bazaar_compute_node.core.command import (
     ICommandService,
-    IHandoffService,
     IReminderService,
     MessageSendFreshnessHold,
-)
-from bazaar_compute_node.core.handoff import (
-    HandoffCheckItem,
-    HandoffCheckResult,
-    HandoffSendResult,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
-    Handoff,
     InboxTargetSummary,
     Message,
     MessageDirection,
@@ -40,7 +33,6 @@ from bazaar_compute_node.core.models import (
 )
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
-SOURCE_MESSAGE_ID = "019d2f00-0000-7000-8000-000000000001"
 
 
 def make_configuration() -> NodeConfiguration:
@@ -157,83 +149,6 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
 
 
 @pytest.mark.asyncio
-async def test_handoff_routes_validate_binding_and_serialize_results() -> None:
-    bindings: list[str] = []
-
-    async def validate_binding(
-        session_id: str,
-        raw_request: Mapping[str, object],
-    ) -> None:
-        del raw_request
-        bindings.append(session_id)
-
-    handoff = Handoff(
-        handoff_id="handoff-1",
-        command_id="command-1",
-        source_session_id="session-source",
-        target_session_id="session-target",
-        source_message_id=SOURCE_MESSAGE_ID,
-        body="Continue task.",
-        created_at_ms=1_000,
-    )
-    handoff_service = SimpleNamespace(
-        send=AsyncMock(
-            return_value=HandoffSendResult(handoff=handoff, target="dm:target")
-        ),
-        check=AsyncMock(
-            return_value=HandoffCheckResult(
-                items=(
-                    HandoffCheckItem(
-                        handoff=handoff.mark_read(at_ms=2_000),
-                        source_target="group:source",
-                    ),
-                ),
-                has_more=False,
-            )
-        ),
-    )
-    dispatcher = CommandDispatcher(
-        cast(ICommandService, object()),
-        reminder_service=cast(IReminderService, object()),
-        handoff_service=cast(IHandoffService, handoff_service),
-        timeout_budget=make_budget(),
-        session_binding_validator=validate_binding,
-    )
-    dispatcher.start_accepting()
-
-    sent = await dispatcher(
-        {
-            "kind": "command",
-            "resource": "handoff",
-            "command": "send",
-            "session_id": "session-source",
-            "target": "dm:target",
-            "body": "Continue task.",
-            "command_id": "command-1",
-            "source_message_id": SOURCE_MESSAGE_ID,
-            "created_at_ms": 1_000,
-        }
-    )
-    checked = await dispatcher(
-        {
-            "kind": "command",
-            "resource": "handoff",
-            "command": "check",
-            "session_id": "session-target",
-        }
-    )
-
-    assert sent["ok"] is True
-    sent_result = cast(Mapping[str, object], sent["result"])
-    assert sent_result["target"] == "dm:target"
-    assert checked["ok"] is True
-    result = cast(Mapping[str, object], checked["result"])
-    items = cast(list[Mapping[str, object]], result["items"])
-    assert items[0]["source_target"] == "group:source"
-    assert bindings == ["session-source", "session-target"]
-
-
-@pytest.mark.asyncio
 async def test_message_send_renders_freshness_hold() -> None:
     message = Message(
         direction=MessageDirection.INBOUND,
@@ -266,7 +181,6 @@ async def test_message_send_renders_freshness_hold() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
-        handoff_service=cast(IHandoffService, object()),
         timeout_budget=make_budget(),
     )
     dispatcher.start_accepting()
@@ -309,7 +223,6 @@ async def test_message_send_renders_provider_outcomes() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
-        handoff_service=cast(IHandoffService, object()),
         timeout_budget=make_budget(),
     )
     dispatcher.start_accepting()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 
 
-def test_developer_instructions_remove_only_reminder_check_notice_surface() -> None:
+def test_developer_instructions_remove_legacy_resource_notice_surfaces() -> None:
     rendered = DeveloperInstructionContext(
         agent_name="Test Agent",
         bot_name=None,
@@ -23,6 +23,6 @@ def test_developer_instructions_remove_only_reminder_check_notice_surface() -> N
     assert "Reminder occurrences" not in rendered
     assert "does not call the external Channel" in rendered
 
-    assert "**Handoffs** — `bcc handoff send`, `bcc handoff check`." in rendered
-    assert "[handoff notice" in rendered
-    assert "Handoffs pending:" in rendered
+    assert "bcc handoff" not in rendered
+    assert "[handoff notice" not in rendered
+    assert "Handoffs pending:" not in rendered

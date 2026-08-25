@@ -40,7 +40,7 @@ from ..runtime import (
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
-from ..storage import IHandoffStorageScope, IStorageScope
+from ..storage import IStorageScope
 from ..timerwheel import (
     Timer,
     TimerCancelledError,
@@ -54,7 +54,6 @@ from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
     SessionContext,
     SessionTurnCoordinator,
-    handoff_notice,
     inbox_notice,
 )
 
@@ -84,13 +83,6 @@ class _RuntimeNotification:
 
 
 @dataclass(frozen=True, slots=True)
-class _HandoffNotification:
-    anchor_message: Message
-    context: _DurableSessionContext
-    wake_id: str
-
-
-@dataclass(frozen=True, slots=True)
 class _RuntimeExpiry:
     bcn_session_id: str
     runtime_session_id: str
@@ -98,10 +90,7 @@ class _RuntimeExpiry:
     generation: int
 
 
-type _WakeNotification = _RuntimeNotification | _HandoffNotification
-type _RuntimeQueueItem = (
-    _RuntimeNotification | _HandoffNotification | _RuntimeExpiry | RuntimeExpire
-)
+type _RuntimeQueueItem = _RuntimeNotification | _RuntimeExpiry | RuntimeExpire
 
 
 @dataclass(slots=True)
@@ -122,7 +111,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         channel: IChannel,
         runtime: IRuntime,
         storage: IStorageScope,
-        handoff_storage: IHandoffStorageScope | None = None,
         audit: IAudit,
         timeout_budget: TimeoutBudget,
         timer_wheel: TimerWheel,
@@ -147,7 +135,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._channel = channel
         self._runtime = runtime
         self._storage = storage
-        self._handoff_storage = handoff_storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
         self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
@@ -262,30 +249,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 wake_id=str(uuid7()),
             )
         )
-
-    async def publish_handoff_wake(self, session_id: str) -> None:
-        if self._stopping:
-            return
-        if not self._started:
-            raise RuntimeError("session orchestrator is not started")
-        wake = await self._require_handoff_storage().load_handoff_wake(session_id)
-        if wake is None:
-            return
-        self._runtime_queue_for_session(session_id).put_nowait(
-            _HandoffNotification(
-                anchor_message=wake.anchor_message,
-                context=_DurableSessionContext(
-                    wake.channel_session,
-                    wake.bcn_session,
-                ),
-                wake_id=str(uuid7()),
-            )
-        )
-
-    def _require_handoff_storage(self) -> IHandoffStorageScope:
-        if self._handoff_storage is None:
-            raise RuntimeError("handoff storage is not configured")
-        return self._handoff_storage
 
     def _runtime_queue_for_session(
         self,
@@ -625,20 +588,19 @@ class SessionOrchestrator(IAsyncLifecycle):
                     queue.task_done()
                 continue
 
-            batch: list[_WakeNotification] = [item]
-            if isinstance(item, _RuntimeNotification):
-                while True:
-                    if pending:
-                        candidate = pending.pop(0)
-                    else:
-                        try:
-                            candidate = queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    if not isinstance(candidate, _RuntimeNotification):
-                        pending.insert(0, candidate)
+            batch: list[_RuntimeNotification] = [item]
+            while True:
+                if pending:
+                    candidate = pending.pop(0)
+                else:
+                    try:
+                        candidate = queue.get_nowait()
+                    except asyncio.QueueEmpty:
                         break
-                    batch.append(candidate)
+                if not isinstance(candidate, _RuntimeNotification):
+                    pending.insert(0, candidate)
+                    break
+                batch.append(candidate)
             runtime_session = self.runtime_session(batch[0].context.bcn_session.id)
             if runtime_session is not None:
                 await self._cancel_runtime_timer(runtime_session)
@@ -657,10 +619,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     if queue_task in done:
                         queued_item = queue_task.result()
                         queue_item_consumed = True
-                        if isinstance(
-                            queued_item,
-                            _RuntimeNotification | _HandoffNotification,
-                        ):
+                        if isinstance(queued_item, _RuntimeNotification):
                             runtime_session = self.runtime_session(
                                 queued_item.context.bcn_session.id
                             )
@@ -691,13 +650,8 @@ class SessionOrchestrator(IAsyncLifecycle):
                 await self._start_runtime_timer_if_idle(
                     batch[0].context.bcn_session.id,
                 )
-                route_message = (
-                    batch[0].message
-                    if isinstance(batch[0], _RuntimeNotification)
-                    else batch[0].anchor_message
-                )
                 try:
-                    await self._error_reporter.report(route_message, result)
+                    await self._error_reporter.report(batch[0].message, result)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -749,10 +703,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                         and not notification.completion.done()
                     ):
                         notification.completion.set_exception(error)
-                if (
-                    isinstance(batch[0], _HandoffNotification)
-                    or batch[0].completion is None
-                ):
+                if batch[0].completion is None:
                     self._logger.exception("wake runtime notification failed")
             finally:
                 if not queue_task.done():
@@ -767,38 +718,29 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for _ in range(len(batch)):
                     queue.task_done()
 
-    async def _steer_active_turn(self, notification: _WakeNotification) -> None:
+    async def _steer_active_turn(self, notification: _RuntimeNotification) -> None:
         session_id = notification.context.bcn_session.id
         runtime_session = self.runtime_session(session_id)
         if runtime_session is None:
             return
-        if isinstance(notification, _RuntimeNotification):
-            cursor = await self._storage.get_consumer_cursor(session_id)
-            delivered_through_seq = (
-                cursor.delivered_through_seq if cursor is not None else 0
-            )
-            unread = await self._storage.list_messages(
-                session_id,
-                after_seq=delivered_through_seq,
-                direction=MessageDirection.INBOUND,
-                notifying_only=True,
-            )
-            if not unread:
-                return
-            message = notification.message
-            input_text = inbox_notice(
-                (message,),
-                total_unread_count=len(unread),
-                closing_bracket_on_own_line=False,
-            )
-        else:
-            pending_count = (
-                await self._require_handoff_storage().count_pending_handoffs(session_id)
-            )
-            if pending_count == 0:
-                return
-            message = notification.anchor_message
-            input_text = handoff_notice(session_id, pending_count)
+        cursor = await self._storage.get_consumer_cursor(session_id)
+        delivered_through_seq = (
+            cursor.delivered_through_seq if cursor is not None else 0
+        )
+        unread = await self._storage.list_messages(
+            session_id,
+            after_seq=delivered_through_seq,
+            direction=MessageDirection.INBOUND,
+            notifying_only=True,
+        )
+        if not unread:
+            return
+        message = notification.message
+        input_text = inbox_notice(
+            (message,),
+            total_unread_count=len(unread),
+            closing_bracket_on_own_line=False,
+        )
         active_turn = next(
             (
                 turn
@@ -1005,56 +947,36 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _run_notification(
         self,
-        notification: _WakeNotification,
+        notification: _RuntimeNotification,
     ) -> RuntimeTurn | None:
         durable_context = notification.context
-        if isinstance(notification, _RuntimeNotification):
-            message = notification.message
-            cursor = await self._storage.get_consumer_cursor(
-                durable_context.bcn_session.id
-            )
-            delivered_through_seq = (
-                cursor.delivered_through_seq if cursor is not None else 0
-            )
-            unread = await self._storage.list_messages(
-                durable_context.bcn_session.id,
-                after_seq=delivered_through_seq,
-                direction=MessageDirection.INBOUND,
-                notifying_only=True,
-            )
-            if not unread:
-                return None
-            client_user_message_id = notification.wake_id or message.message_id
-            turn_id = f"turn-{client_user_message_id}"
-            if await self._storage.get_runtime_attempt(turn_id) is not None:
-                return self._runtime_turns.get(turn_id)
-            input_text = inbox_notice(
-                unread,
-                total_unread_count=len(unread),
-                closing_bracket_on_own_line=True,
-            )
-            observation_source = (
-                SessionRuntimeObservationSource.SESSION
-                if notification.wake_id is not None
-                else SessionRuntimeObservationSource.CHANNEL
-            )
-        else:
-            message = notification.anchor_message
-            storage = self._require_handoff_storage()
-            pending_count = await storage.count_pending_handoffs(
-                durable_context.bcn_session.id
-            )
-            if pending_count == 0:
-                return None
-            client_user_message_id = notification.wake_id
-            turn_id = f"turn-{client_user_message_id}"
-            if await storage.get_runtime_attempt(turn_id) is not None:
-                return self._runtime_turns.get(turn_id)
-            input_text = handoff_notice(
-                durable_context.bcn_session.id,
-                pending_count,
-            )
-            observation_source = SessionRuntimeObservationSource.SESSION
+        message = notification.message
+        cursor = await self._storage.get_consumer_cursor(durable_context.bcn_session.id)
+        delivered_through_seq = (
+            cursor.delivered_through_seq if cursor is not None else 0
+        )
+        unread = await self._storage.list_messages(
+            durable_context.bcn_session.id,
+            after_seq=delivered_through_seq,
+            direction=MessageDirection.INBOUND,
+            notifying_only=True,
+        )
+        if not unread:
+            return None
+        client_user_message_id = notification.wake_id or message.message_id
+        turn_id = f"turn-{client_user_message_id}"
+        if await self._storage.get_runtime_attempt(turn_id) is not None:
+            return self._runtime_turns.get(turn_id)
+        input_text = inbox_notice(
+            unread,
+            total_unread_count=len(unread),
+            closing_bracket_on_own_line=True,
+        )
+        observation_source = (
+            SessionRuntimeObservationSource.SESSION
+            if notification.wake_id is not None
+            else SessionRuntimeObservationSource.CHANNEL
+        )
 
         runtime_session = self.runtime_session(durable_context.bcn_session.id)
         context = (

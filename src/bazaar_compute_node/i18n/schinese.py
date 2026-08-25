@@ -36,7 +36,6 @@ MESSAGES = MappingProxyType(
         ),
         "cli.bcn.endpoint": "Unix 上的本机命令端点路径；Windows 上使用命名管道。",
         "cli.bcn.foreground": "在当前进程中运行选定的节点，而不是派生后台进程。",
-        "cli.bcn.system_service": "宿主机服务管理。",
         "cli.system_service.description": "管理 bcn 的用户级宿主机服务。",
         "cli.system_service.env_file": (
             "符合当前平台格式的环境文件；Windows 上为 PowerShell 环境脚本。"

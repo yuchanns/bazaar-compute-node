@@ -15,14 +15,12 @@ from .command import (
     SessionNotFoundError,
     render_handoff_message_body,
 )
-from .handoff import HandoffCheckItem, HandoffCheckResult
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
     BcnSession,
     ChannelSession,
     ConsumerCursor,
-    Handoff,
     InboundAttachment,
     Message,
     MessageDirection,
@@ -40,10 +38,6 @@ from .models import (
 
 class InboxTargetResolutionError(ValueError):
     """A target does not resolve to exactly one Agent-owned BCN session."""
-
-
-class HandoffConflictError(ValueError):
-    """A handoff command ID is already associated with another payload."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +68,6 @@ class MaterializeOutboundResult:
 class FinalizeOutboundResult:
     outbound: Message[OutboundAttachment]
     handoff_message: Message[InboundAttachment] | None
-
-
-@dataclass(frozen=True, slots=True)
-class HandoffWakeResult:
-    channel_session: ChannelSession
-    bcn_session: BcnSession
-    anchor_message: Message[InboundAttachment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,79 +415,6 @@ class StorageOperationMixin:
             handoff_message=handoff_message,
         )
 
-    async def check_handoffs(
-        self,
-        session_id: str,
-        *,
-        limit: int,
-        read_at_ms: int,
-    ) -> HandoffCheckResult:
-        self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-        handoffs = await self.list_pending_handoffs(session_id, limit=limit)
-        if not handoffs:
-            return HandoffCheckResult(items=(), has_more=False)
-        source_targets = []
-        for handoff in handoffs:
-            source = (
-                await self.get_latest_message(
-                    handoff.source_session_id,
-                    direction=MessageDirection.INBOUND,
-                )
-                if handoff.source_message_id is None
-                else await self.resolve_message(
-                    handoff.source_session_id,
-                    handoff.source_message_id,
-                    direction=MessageDirection.INBOUND,
-                )
-            )
-            if source is None:
-                raise ValueError(
-                    f"Handoff source context is missing: {handoff.handoff_id}"
-                )
-            source_targets.append(source.target)
-        marked = await self.mark_handoffs_read(
-            session_id,
-            tuple(handoff.handoff_id for handoff in handoffs),
-            read_at_ms=read_at_ms,
-        )
-        marked_by_id = {handoff.handoff_id: handoff for handoff in marked}
-        return HandoffCheckResult(
-            items=tuple(
-                HandoffCheckItem(
-                    handoff=marked_by_id[handoff.handoff_id],
-                    source_target=source_target,
-                )
-                for handoff, source_target in zip(
-                    handoffs,
-                    source_targets,
-                    strict=True,
-                )
-            ),
-            has_more=await self.count_pending_handoffs(session_id) > 0,
-        )
-
-    async def load_handoff_wake(self, session_id: str) -> HandoffWakeResult | None:
-        self = _operations(self)  # noqa: PLW0642
-        if await self.count_pending_handoffs(session_id) == 0:
-            return None
-        bcn_session = await self.get_bcn_session(session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {session_id}")
-        channel_session = await self.get_channel_session(bcn_session.channel_session_id)
-        anchor = await self.get_latest_message(
-            session_id,
-            direction=MessageDirection.INBOUND,
-        )
-        if channel_session is None or anchor is None:
-            raise ValueError("Handoff wake context is incomplete")
-        return HandoffWakeResult(
-            channel_session=channel_session,
-            bcn_session=bcn_session,
-            anchor_message=anchor,
-        )
-
 
 async def _referenced_messages(
     storage: Any,
@@ -603,11 +517,6 @@ class _StorageOperations(Protocol):
         self,
         outbound: Message[OutboundAttachment],
     ) -> FinalizeOutboundResult: ...
-
-    async def load_handoff_wake(
-        self,
-        session_id: str,
-    ) -> HandoffWakeResult | None: ...
 
     async def find_channel_session(
         self, *, channel: str, provider_thread_id: str
@@ -777,31 +686,3 @@ class IStorageScope(IStorage, Protocol):
 
     @property
     def agent_name(self) -> str: ...
-
-
-class IHandoffStorageScope(IStorageScope, Protocol):
-    """Agent storage scope with handoff operations."""
-
-    async def check_handoffs(
-        self,
-        session_id: str,
-        *,
-        limit: int,
-        read_at_ms: int,
-    ) -> HandoffCheckResult: ...
-
-    async def save_handoff(self, handoff: Handoff) -> Handoff: ...
-
-    async def list_pending_handoffs(
-        self, target_session_id: str, *, limit: int
-    ) -> tuple[Handoff, ...]: ...
-
-    async def count_pending_handoffs(self, target_session_id: str) -> int: ...
-
-    async def mark_handoffs_read(
-        self,
-        target_session_id: str,
-        handoff_ids: tuple[str, ...],
-        *,
-        read_at_ms: int,
-    ) -> tuple[Handoff, ...]: ...

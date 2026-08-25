@@ -46,7 +46,6 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
-    Handoff,
     Message,
     MessageDirection,
     OutboundDeliveryState,
@@ -75,7 +74,7 @@ from bazaar_compute_node.core.runtime import (
     RuntimeCommandContext,
     RuntimeSessionReconciliation,
 )
-from bazaar_compute_node.core.storage import IHandoffStorageScope, IStorage
+from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import (
     ENGLISH,
@@ -263,7 +262,6 @@ async def make_sqlite_node() -> tuple[
         channel=channel,
         runtime=runtime,
         storage=storage_scope,
-        handoff_storage=cast(IHandoffStorageScope, storage_scope),
         audit=audit,
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
@@ -2054,72 +2052,6 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
             stream.release()
         await asyncio.gather(active_task, return_exceptions=True)
         await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_handoff_wakes_start_idle_target_and_steer_active_target() -> None:
-    orchestrator, _, runtime, storage, _ = await make_sqlite_node()
-    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
-    active_task = orchestrator.dispatch_inbound(make_message(session_id="bcn-active"))
-    try:
-        await runtime.turn_started.wait()
-        source_context, _, _ = await orchestrator._record_inbound(
-            make_message(session_id="bcn-source")
-        )
-        idle_context, _, _ = await orchestrator._record_inbound(
-            make_message(session_id="bcn-idle")
-        )
-        assert source_context is not None
-        assert idle_context is not None
-        scope = storage.scope("workspace-1", "Test Agent")
-        for number, target_session_id in enumerate(
-            ("bcn-idle", "bcn-idle", "bcn-active")
-        ):
-            await scope.save_handoff(
-                Handoff(
-                    handoff_id=f"handoff-{number}",
-                    command_id=f"command-{number}",
-                    source_session_id=source_context.bcn_session.id,
-                    target_session_id=target_session_id,
-                    source_message_id=None,
-                    body=f"Hidden task {number}.",
-                    created_at_ms=number + 1,
-                )
-            )
-
-        await orchestrator.publish_handoff_wake("bcn-idle")
-        await orchestrator.publish_handoff_wake("bcn-active")
-        async with asyncio.timeout(1):
-            while len(runtime.started_turns) != 2 or len(runtime.steered_turns) != 1:
-                await asyncio.sleep(0.01)
-
-        idle_notice = runtime.started_turns[1][2]
-        active_session, _, active_notice = runtime.steered_turns[0]
-        assert runtime.started_turns[1][0].bcn_session_id == "bcn-idle"
-        assert idle_notice == (
-            "[handoff notice session=bcn-idle]\n"
-            "Handoffs pending: 2. Use `bcc handoff check` to read them."
-        )
-        assert active_session.bcn_session_id == "bcn-active"
-        assert active_notice == (
-            "[handoff notice session=bcn-active]\n"
-            "Handoffs pending: 1. Use `bcc handoff check` to read them."
-        )
-        pending = await scope.list_pending_handoffs("bcn-active", limit=100)
-        await scope.mark_handoffs_read(
-            "bcn-active",
-            tuple(item.handoff_id for item in pending),
-            read_at_ms=4,
-        )
-    finally:
-        for stream in tuple(runtime.active_streams):
-            stream.release()
-        await asyncio.gather(active_task, return_exceptions=True)
-        queue = orchestrator._runtime_queues.get("bcn-active")
-        if queue is not None:
-            await asyncio.wait_for(queue.join(), timeout=1)
-        await orchestrator.stop(timeout=1)
-        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio

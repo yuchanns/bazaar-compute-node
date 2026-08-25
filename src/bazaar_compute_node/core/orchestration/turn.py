@@ -146,14 +146,6 @@ def inbox_notice(
     return "\n".join(lines)
 
 
-def handoff_notice(session_id: str, pending_count: int) -> str:
-    return (
-        f"[handoff notice session={session_id}]\n"
-        f"Handoffs pending: {pending_count}. "
-        "Use `bcc handoff check` to read them."
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     channel_session: ChannelSession

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from ...core.storage import IHandoffStorageScope
+from ...core.storage import IStorageScope
 from .database import SqliteDatabase as _BaseSqliteDatabase
 from .executor import SqliteSession
 from .repository import SqliteRepository
@@ -11,7 +11,6 @@ from .repository import SqliteRepository
 _READ_OPERATIONS = frozenset(
     {
         "count_messages",
-        "count_pending_handoffs",
         "find_bcn_session",
         "find_channel_session",
         "find_message",
@@ -31,11 +30,9 @@ _READ_OPERATIONS = frozenset(
         "list_due_reminders",
         "list_messages",
         "list_inbox_targets",
-        "list_pending_handoffs",
         "list_unread_message_owners",
         "list_ready_attachment_paths",
         "list_reminders",
-        "load_handoff_wake",
         "read_inbox_catalog",
         "read_message_history",
         "resolve_message",
@@ -43,12 +40,7 @@ _READ_OPERATIONS = frozenset(
     }
 )
 
-_SNAPSHOT_READ_OPERATIONS = frozenset(
-    {
-        "load_handoff_wake",
-        "read_message_history",
-    }
-)
+_SNAPSHOT_READ_OPERATIONS = frozenset({"read_message_history"})
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
@@ -87,10 +79,10 @@ class SqliteStorageScope:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
 
-    def scope(self, agent_id: str, agent_name: str) -> IHandoffStorageScope:
+    def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
         if agent_id != self.agent_id or agent_name != self.agent_name:
             raise ValueError("an Agent storage scope cannot be rebound")
-        return cast(IHandoffStorageScope, self)
+        return cast(IStorageScope, self)
 
     def __getattr__(self, method_name: str):
         if method_name.startswith("_") or not hasattr(SqliteRepository, method_name):
@@ -120,11 +112,8 @@ class SqliteStorageScope:
 
 
 class SqliteDatabase(_BaseSqliteDatabase):
-    def scope(self, agent_id: str, agent_name: str) -> IHandoffStorageScope:
-        return cast(
-            IHandoffStorageScope,
-            SqliteStorageScope(self, agent_id, agent_name),
-        )
+    def scope(self, agent_id: str, agent_name: str) -> IStorageScope:
+        return cast(IStorageScope, SqliteStorageScope(self, agent_id, agent_name))
 
     def __getattr__(self, method_name: str):
         if method_name.startswith("_") or not hasattr(SqliteRepository, method_name):

@@ -15,7 +15,6 @@ from .entities import (
     SenderIdentity,
     StreamEvent,
 )
-from .handoff import Handoff
 from .reminder import Reminder
 from .reminder_owner import OwnedReminder, ReminderOwner
 from .states import (
@@ -51,7 +50,6 @@ __all__ = [
     "ChannelSession",
     "ChannelTargetKind",
     "ConsumerCursor",
-    "Handoff",
     "InboundAttachment",
     "InboxTargetSummary",
     "Message",

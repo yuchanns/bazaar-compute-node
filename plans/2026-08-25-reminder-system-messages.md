@@ -483,7 +483,7 @@ work 则结束。只在 reason 不清、与当前 conversation 冲突或需要 d
 整个 suffix 不持久化，不在 `message read` 中重复。
 `system_message_kind=reminder` 继续使用第 2.3 节的 Reminder suffix，两者不通过正文前缀猜类型。
 
-### 5.5 Crash、retry 与旧 Handoff migration
+### 5.5 Crash、retry 与旧 Handoff schema removal
 
 pending outbound 的唯一 `command_id` 保持现有 command/outbound identity 与 conflict boundary，不声称
 provider call exactly-once。预分配并随 pending outbound 持久化的 `handoff_message_id` 使已有
@@ -499,24 +499,9 @@ operation 遇到已存在的同 ID Message时必须校验 session、source/outbo
   3.3 节 generic unread recovery 重发 ordinary inbox wake；
 - 重复 finalize：复用相同 `handoff_message_id`，不产生第二条 system Message。
 
-新增 migration 21 `v21_remove_handoffs.py`。对旧 `handoffs` table：
-
-1. `read_at_ms IS NULL` row 转为 target session 的 unread system Message，复用 `handoff_id` 作为
-   Message ID，并保留 source target/message metadata。旧 row 的 `source_message_id` 非空时原样
-   保留；为空时使用 source session 在 `created_at_ms` 当时已存在的最新 inbound
-   Message，若旧数据违反 Handoff 创建前必须存在 source anchor 的不变量则 migration
-   明确失败，不伪造 `--around` ID。migration-only durable body 为：
-
-   ```text
-   🤝 Handoff from <source-target>
-   <original-handoff-body>
-   ```
-
-   这类 Message 使用同一个 check-only source-context suffix，使旧 pending work 不丢失；不伪造
-   provider outbound 或 `<outbound-message-id>`。
-2. 已读 row 不迁移，避免重新交付已消费 work。
-3. 删除 Handoff index 与 `handoffs` table；删除 schema、codec、repository、test support 中的全部
-   Handoff persistence API。
+新增 migration 21 `v21_remove_handoffs.py`，直接删除 Handoff index 与 `handoffs`
+table。旧 row 无论 read state 都不迁移、不重投，也不转换为 system Message。同时删除
+schema、codec、repository、test support 中的全部 Handoff persistence API。
 
 ## 6. CLI surface 减量
 
@@ -554,7 +539,7 @@ bcc reminder cancel
 - `app/command.py` 中 `MessageSendHandoffRequired` response branch 与
   `format_cross_session_hold()`；跨会话成功/失败使用普通 message-send response；
 - SQLite 的 `handoff_codec.py`、`repository/handoffs.py`、repository facade mixin、storage
-  exports/scope 与 Handoff protocol imports；旧 v15 migration ledger 保持不变，v20 完成迁移后
+  exports/scope 与 Handoff protocol imports；旧 v15 migration ledger 保持不变，v21 完成迁移后
   删除当前 schema 的 Handoff table/index；
 - `tests/test_bcc_handoff.py`、`tests/core/test_handoff.py`、
   `tests/contrib/test_sqlite_handoff.py`，以及 help/app/process/dispatch/orchestration/storage tests 中的
@@ -686,9 +671,10 @@ src/bazaar_compute_node/
 │   ├── reminder_codec.py               # remove occurrence codec
 │   ├── handoff_codec.py                # delete old Handoff codec
 │   ├── migrations/
-│   │   ├── registry.py                 # register v19 and v20
+│   │   ├── registry.py                 # register v19, v20, and v21
 │   │   ├── v19_reminder_system_messages.py
-│   │   └── v20_remove_handoffs.py
+│   │   ├── v20_remove_freshness_persistence.py
+│   │   └── v21_remove_handoffs.py
 │   ├── repository/messages.py          # system Message and compound outbound operations
 │   ├── repository/reminders.py         # atomic fire
 │   ├── repository/handoffs.py          # delete old repository
@@ -705,7 +691,7 @@ tests/
 ├── app/                                # direct-send/dispatch/composition/process behavior
 ├── contrib/
 │   ├── test_orchestration.py           # unified ordinary notices
-│   ├── test_sqlite_database.py         # v19/v20 schema and migration
+│   ├── test_sqlite_database.py         # v19-v21 schema and migration
 │   └── test_sqlite_handoff.py          # delete old repository tests
 ├── core/
 │   ├── test_instruction.py             # exact deletion assertions
@@ -825,8 +811,7 @@ uv run scripts/pyright_lsp_check.py --outputjson .
 - 执行第 6 节尚未在 Task 2 完成的 Handoff CLI/app/core/storage/test 删除清单；
 - 执行第 7 节尚未在 Task 2 完成的 Handoff developer-instruction 精确删除
   清单；
-- 增加 migration 21，按第 5.5 节迁移 old pending Handoff rows、不重投已读 row，然后
-  drop Handoff indexes/table；
+- 增加 migration 21，按第 5.5 节直接 drop Handoff indexes/table，不迁移任何旧 row；
 - 删除剩余的专用 Handoff notice/wake，只保留 Task 2 已建立的 generic ordinary
   inbox wake/recovery；
 - 增加 Reminder/Handoff `message check` exact-output tests，断言各自 check-only suffix；
@@ -865,11 +850,11 @@ git diff --check
 
 ```bash
 rg -n "ReminderOccurrence|OwnedReminderOccurrence|reminder_notice|MessageSendHandoffRequired|format_cross_session_hold|IHandoffService|IHandoffStorageScope|HandoffCommandService|HandoffWakeResult|handoff_notice|publish_handoff_wake" \
-  src/bazaar_compute_node --glob '!**/migrations/v12_add_reminders.py' --glob '!**/migrations/v15_add_handoffs.py' --glob '!**/migrations/v19_reminder_system_messages.py' --glob '!**/migrations/v20_remove_handoffs.py'
+  src/bazaar_compute_node --glob '!**/migrations/v12_add_reminders.py' --glob '!**/migrations/v15_add_handoffs.py' --glob '!**/migrations/v19_reminder_system_messages.py' --glob '!**/migrations/v20_remove_freshness_persistence.py' --glob '!**/migrations/v21_remove_handoffs.py'
 rg -n "bcc reminder check|bcc handoff|Reminders pending:|Handoffs pending:|\[reminder notice|\[handoff notice" src
 ```
 
-两条命令都必须无匹配。旧 migration ledger 保持不可变；确认 v20 schema 不存在
+两条命令都必须无匹配。旧 migration ledger 保持不可变；确认 v21 schema 不存在
 `reminder_occurrences` 或 `handoffs`，Reminder CLI help 只列五个命令，且无 Handoff resource。
 确认 A→B 发送只用 A freshness，B 拥有 outbound/history 且收到 Handoff system Message；确认
 `message check` 按 system kind 追加正确 suffix，而 `message read`/`--around`/freshness/catalog

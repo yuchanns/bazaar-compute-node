@@ -516,7 +516,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             cursor_columns = await session.fetchall(
                 "PRAGMA table_info(consumer_cursors)"
             )
-            handoff_columns = await session.fetchall("PRAGMA table_info(handoffs)")
             journal_mode = await session.fetchone("PRAGMA journal_mode")
             busy_timeout = await session.fetchone("PRAGMA busy_timeout")
             provider_identity_columns = await session.fetchall(
@@ -538,7 +537,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "bcn_sessions",
             "channel_sessions",
             "consumer_cursors",
-            "handoffs",
             "inbound_attachments",
             "messages",
             "reminders",
@@ -552,7 +550,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "idx_messages_outbound_command",
             "idx_messages_outbound_state_created",
             "idx_messages_reply_to_message",
-            "idx_handoffs_agent_target_read_seq",
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_attempts_session_started",
@@ -563,7 +560,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 20
+        assert schema_version["version"] == 21
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -584,18 +581,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert "delivery_state" in primary_keys
         assert "attachments_json" in primary_keys
         assert "agent_id" in primary_keys
-        assert {row["name"] for row in handoff_columns} == {
-            "seq",
-            "handoff_id",
-            "command_id",
-            "agent_id",
-            "source_session_id",
-            "target_session_id",
-            "source_message_id",
-            "body",
-            "created_at_ms",
-            "read_at_ms",
-        }
         assert [row["name"] for row in provider_identity_columns] == [
             "agent_id",
             "channel",
@@ -629,7 +614,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v19_migrates_only_pending_occurrences_to_reminder_messages() -> None:
+async def test_v19_migrates_pending_reminders_and_v21_drops_handoffs() -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir()
     database_path = data_dir / "bcn.sqlite3"
@@ -637,6 +622,7 @@ async def test_v19_migrates_only_pending_occurrences_to_reminder_messages() -> N
     recurring_id = "018f0000-0000-7000-8000-000000000002"
     read_id = "018f0000-0000-7000-8000-000000000003"
     anchor_id = "018f0000-0000-7000-8000-000000000004"
+    discarded_handoff_id = "018f0000-0000-7000-8000-000000000005"
 
     async with aiosqlite.connect(database_path) as connection:
         for migration in MIGRATIONS[:18]:
@@ -763,6 +749,14 @@ async def test_v19_migrates_only_pending_occurrences_to_reminder_messages() -> N
                     fired_at,
                 ),
             )
+        await connection.execute(
+            "INSERT INTO handoffs "
+            "(handoff_id, command_id, agent_id, source_session_id, "
+            "target_session_id, source_message_id, body, created_at_ms, read_at_ms) "
+            "VALUES (?, 'handoff-command', 'agent-1', 'session-1', 'session-1', "
+            "?, 'Discarded context.', 1100, NULL)",
+            (discarded_handoff_id, anchor_id),
+        )
         await connection.commit()
 
     database = SqliteDatabase()
@@ -823,12 +817,23 @@ async def test_v19_migrates_only_pending_occurrences_to_reminder_messages() -> N
             and message.notifies_runtime
             for message in migrated.values()
         )
+        assert discarded_handoff_id not in {
+            message.message_id
+            for message in await scope.list_messages(
+                "session-1",
+                direction=MessageDirection.INBOUND,
+            )
+        }
         async with database.reader() as session, session.transaction():
             occurrence_table = await session.fetchone(
                 "SELECT 1 FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'reminder_occurrences'"
             )
+            handoff_table = await session.fetchone(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'handoffs'"
+            )
         assert occurrence_table is None
+        assert handoff_table is None
     finally:
         await database.stop(timeout=2)
 
@@ -988,7 +993,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 20
+        assert schema_version["version"] == 21
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1097,7 +1102,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 20
+        assert schema_version["version"] == 21
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

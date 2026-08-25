@@ -31,6 +31,7 @@ from .v19_reminder_system_messages import REMINDER_SYSTEM_MESSAGE_MIGRATION
 from .v20_remove_freshness_persistence import (
     FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
 )
+from .v21_remove_handoffs import HANDOFF_REMOVAL_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -76,6 +77,7 @@ MIGRATIONS = _migration_ledger(
     MESSAGE_UNIFICATION_MIGRATION,
     REMINDER_SYSTEM_MESSAGE_MIGRATION,
     FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
+    HANDOFF_REMOVAL_MIGRATION,
 )
 
 

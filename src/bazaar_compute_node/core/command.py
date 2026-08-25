@@ -3,12 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .handoff import (
-    HandoffCheckRequest,
-    HandoffCheckResult,
-    HandoffSendRequest,
-    HandoffSendResult,
-)
 from .models import (
     InboundAttachment,
     InboxTargetSummary,
@@ -231,19 +225,3 @@ class IReminderService(Protocol):
         session_id: str,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult: ...
-
-
-class IHandoffService(Protocol):
-    """Session-bound handoff command surface used by the local wrapper."""
-
-    async def send(
-        self,
-        session_id: str,
-        request: HandoffSendRequest,
-    ) -> HandoffSendResult: ...
-
-    async def check(
-        self,
-        session_id: str,
-        request: HandoffCheckRequest,
-    ) -> HandoffCheckResult: ...
