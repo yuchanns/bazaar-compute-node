@@ -13,7 +13,6 @@ from ....core.models import (
     MessageDirection,
 )
 from ....core.storage import RecordInboundResult, StorageOperationMixin
-from .handoffs import HandoffOperations
 from .messages import MessageOperations
 from .reminders import ReminderOperations
 from .sessions import SessionOperations
@@ -24,7 +23,6 @@ class SqliteRepository(
     SessionOperations,
     MessageOperations,
     ReminderOperations,
-    HandoffOperations,
 ):
     async def record_inbound(
         self,

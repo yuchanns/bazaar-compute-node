@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Self
 from unicodedata import category
 from uuid import UUID
 
-from .models import Reminder, ReminderOccurrence, ReminderState
+from .models import Reminder, ReminderState
 from .reminder_schedule import (
     RecurrenceKind,
     ReminderDuration,
@@ -24,9 +25,6 @@ __all__ = [
     "RecurrenceKind",
     "ReminderCancelRequest",
     "ReminderCancelResult",
-    "ReminderCheckItem",
-    "ReminderCheckRequest",
-    "ReminderCheckResult",
     "ReminderDuration",
     "ReminderListRequest",
     "ReminderListResult",
@@ -45,6 +43,7 @@ __all__ = [
     "parse_duration",
     "parse_fire_at",
     "parse_repeat_rule",
+    "render_reminder_fire_body",
     "resolve_schedule",
 ]
 
@@ -92,11 +91,6 @@ class ReminderScheduleRequest:
             repeat_rule=schedule.repeat_rule,
             timezone=schedule.timezone,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderCheckRequest:
-    limit: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,34 +215,6 @@ class ReminderScheduleResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ReminderCheckItem:
-    occurrence: ReminderOccurrence
-    title: str
-    canonical_target: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.occurrence, ReminderOccurrence):
-            raise TypeError("occurrence must be a ReminderOccurrence")
-        _validate_title(self.title)
-        if not isinstance(self.canonical_target, str) or not self.canonical_target:
-            raise ValueError("canonical_target must be a non-empty string")
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderCheckResult:
-    items: tuple[ReminderCheckItem, ...]
-    has_more: bool
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.items, tuple) or not all(
-            isinstance(item, ReminderCheckItem) for item in self.items
-        ):
-            raise TypeError("items must be a tuple of ReminderCheckItem values")
-        if not isinstance(self.has_more, bool):
-            raise TypeError("has_more must be a boolean")
-
-
-@dataclass(frozen=True, slots=True)
 class ReminderListResult:
     reminders: tuple[Reminder, ...]
 
@@ -281,6 +247,28 @@ class ReminderCancelResult:
 
     def __post_init__(self) -> None:
         _require_reminder(self.reminder)
+
+
+def render_reminder_fire_body(
+    reminder: Reminder,
+    target: str,
+    next_fire_at_ms: int | None,
+) -> str:
+    _require_reminder(reminder)
+    if not isinstance(target, str) or not target:
+        raise ValueError("target must be a non-empty string")
+    title = json.dumps(reminder.title, ensure_ascii=False)
+    prefix = f"🔔 Reminder #{reminder.reminder_id[:8]}"
+    if reminder.repeat_rule is None:
+        if next_fire_at_ms is not None:
+            raise ValueError("one-time reminder fire cannot have a next iteration")
+        return f"{prefix} (one-time) — {target} — {title}"
+    if next_fire_at_ms is None:
+        raise ValueError("recurring reminder fire requires a next iteration")
+    return (
+        f"{prefix} (recurring · {reminder.repeat_rule}) — {target} — {title}\n"
+        f"Next iteration: {format_utc_timestamp(next_fire_at_ms)}"
+    )
 
 
 def canonical_id_reference(value: str) -> str:

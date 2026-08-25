@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from bazaar_compute_node.core.models import Reminder, ReminderOccurrence, ReminderState
+from bazaar_compute_node.core.models import Reminder, ReminderState
 from bazaar_compute_node.core.reminder import (
     ReminderCancelRequest,
     ReminderListRequest,
@@ -23,7 +23,6 @@ from bazaar_compute_node.core.reminder import (
 
 _REMINDER_ID = "018f0000-0000-7000-8000-000000000001"
 _MESSAGE_ID = "018f0000-0000-7000-8000-000000000002"
-_OCCURRENCE_ID = "018f0000-0000-7000-8000-000000000003"
 
 
 def utc_ms(value: str) -> int:
@@ -32,6 +31,7 @@ def utc_ms(value: str) -> int:
 
 def make_reminder(
     *,
+    title: str = "Review the pull request",
     state: ReminderState = ReminderState.SCHEDULED,
     next_fire_at_ms: int | None = 2_000,
     repeat_rule: str | None = None,
@@ -45,7 +45,7 @@ def make_reminder(
         reminder_id=_REMINDER_ID,
         owner_session_id="session-1",
         anchor_message_id=_MESSAGE_ID,
-        title="Review the pull request",
+        title=title,
         state=state,
         next_fire_at_ms=next_fire_at_ms,
         repeat_rule=repeat_rule,
@@ -282,28 +282,6 @@ def test_title_and_model_field_combinations_fail_closed() -> None:
             updated_at_ms=2_000,
             last_fired_at_ms=2_000,
         )
-
-
-def test_occurrence_pending_marker_is_one_way() -> None:
-    occurrence = ReminderOccurrence(
-        occurrence_id=_OCCURRENCE_ID,
-        reminder_id=_REMINDER_ID,
-        owner_session_id="session-1",
-        occurrence_no=1,
-        anchor_message_id=_MESSAGE_ID,
-        scheduled_for_ms=2_000,
-        fired_at_ms=2_010,
-        next_fire_at_ms=None,
-        overdue=False,
-        read_at_ms=None,
-        created_at_ms=2_010,
-    )
-
-    assert occurrence.pending is True
-    read = occurrence.mark_read(at_ms=2_020)
-    assert read.pending is False
-    with pytest.raises(ValueError, match="already read"):
-        read.mark_read(at_ms=2_030)
 
 
 def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:

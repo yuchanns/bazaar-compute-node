@@ -14,16 +14,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StrictBool,
-    StrictInt,
     StrictStr,
     ValidationError,
-    field_validator,
 )
 
 from .app.command import format_check_message, format_message_time, format_read_message
 from .app.transport import LocalCommandClient
-from .core.reminder import canonical_id_reference, format_utc_timestamp
+from .core.reminder import format_utc_timestamp
 
 
 class BccCommandError(RuntimeError):
@@ -48,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Session-scoped collaboration commands for a Bazaar Compute Node. "
             "Use these commands from the current agent session to inspect messages, "
-            "send replies, hand off work, manage thread attention, and schedule "
+            "send replies, manage thread attention, and schedule "
             "persistent reminders."
         ),
         epilog=(
@@ -59,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="resource",
         required=True,
-        metavar="{message,inbox,handoff,thread,reminder}",
+        metavar="{message,inbox,thread,reminder}",
         title="resources",
     )
 
@@ -194,45 +191,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Group/thread target to unfollow.",
     )
 
-    handoff_parser = subparsers.add_parser(
-        "handoff",
-        help="Cross-session handoff operations",
-        description="Cross-session handoff operations",
-    )
-    handoff_subparsers = handoff_parser.add_subparsers(
-        dest="command",
-        required=True,
-        metavar="{send,check}",
-        title="handoff commands",
-    )
-    handoff_send_parser = handoff_subparsers.add_parser(
-        "send",
-        help="Send a handoff to another conversation owned by this agent.",
-        description=(
-            "Persist a handoff for another conversation owned by this agent and "
-            "wake its runtime. The handoff body is read from stdin."
-        ),
-    )
-    handoff_send_parser.add_argument(
-        "--target",
-        required=True,
-        metavar="<target>",
-        help="Target conversation, as shown by `bcc inbox list`.",
-    )
-    handoff_send_parser.add_argument(
-        "--message-id",
-        metavar="<message-id>",
-        help="Optional inbound message in the current session used as source context.",
-    )
-    handoff_subparsers.add_parser(
-        "check",
-        help="Drain pending handoffs.",
-        description=(
-            "Read up to 100 pending handoffs for the current session and mark "
-            "exactly the returned handoffs as read."
-        ),
-    )
-
     reminder_parser = subparsers.add_parser(
         "reminder",
         help="Reminder operations",
@@ -241,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     reminder_subparsers = reminder_parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{schedule,check,list,snooze,update,cancel}",
+        metavar="{schedule,list,snooze,update,cancel}",
         title="reminder commands",
     )
 
@@ -290,17 +248,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--message-id",
         metavar="<id>",
         help="Required full uuid for the local inbound message used as anchor.",
-    )
-
-    reminder_subparsers.add_parser(
-        "check",
-        help="Drain pending Reminder occurrences.",
-        description=(
-            "Read up to 100 pending Reminder occurrences for the current session and "
-            "mark exactly the returned occurrences as read. Use this after a Reminder "
-            "notice. A read marker means the occurrence was inspected, not that its "
-            "business task was completed."
-        ),
     )
 
     list_parser = reminder_subparsers.add_parser(
@@ -446,16 +393,6 @@ async def _request(
             request["offset"] = args.offset
     elif args.resource == "thread":
         request["target"] = args.target
-    elif args.resource == "handoff":
-        if args.command == "send":
-            request.update(
-                {
-                    "target": args.target,
-                    "body": body if body is not None else "",
-                    "command_id": f"bcc-{uuid7().hex}",
-                    "source_message_id": args.message_id,
-                }
-            )
     elif args.resource == "reminder":
         if args.command == "schedule":
             request.update(
@@ -666,43 +603,6 @@ def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
     )
 
 
-def serialize_reminder_check(result: Mapping[str, object]) -> str:
-    items = cast(list[Mapping[str, object]], result["items"])
-    has_more = cast(bool, result["has_more"])
-    if not items:
-        return "No pending reminders."
-
-    lines: list[str] = []
-    for item in items:
-        occurrence = cast(Mapping[str, object], item["occurrence"])
-        reminder_id = cast(str, occurrence["reminder_id"])
-        occurrence_no = cast(int, occurrence["occurrence_no"])
-        scheduled = format_utc_timestamp(cast(int, occurrence["scheduled_for_ms"]))
-        fired = format_utc_timestamp(cast(int, occurrence["fired_at_ms"]))
-        overdue = cast(bool, occurrence["overdue"])
-        next_fire_at_ms = cast(int | None, occurrence["next_fire_at_ms"])
-        next_text = (
-            format_utc_timestamp(next_fire_at_ms)
-            if next_fire_at_ms is not None
-            else "none"
-        )
-        target = cast(str, item["canonical_target"])
-        anchor = cast(str, occurrence["anchor_message_id"])
-        title = cast(str, item["title"])
-        lines.append(
-            f"[class=due id={reminder_id} occurrence={occurrence_no} "
-            f"scheduled={scheduled} fired={fired} "
-            f"overdue={str(overdue).lower()} next={next_text} "
-            f"target={target} anchor={anchor}] {title}"
-        )
-    lines.append(
-        "More pending reminders remain. Run `bcc reminder check` again."
-        if has_more
-        else "No more pending reminders."
-    )
-    return "\n".join(lines)
-
-
 def serialize_reminder_list(result: Mapping[str, object]) -> str:
     reminders = cast(list[Mapping[str, object]], result["reminders"])
     if not reminders:
@@ -762,116 +662,12 @@ def serialize_reminder_cancel(result: Mapping[str, object]) -> str:
     return _serialize_reminder_mutation(result, verb="canceled", include_next=False)
 
 
-HandoffText = Annotated[StrictStr, Field(min_length=1)]
-HandoffTime = Annotated[StrictInt, Field(ge=0)]
-
-
-class _HandoffResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    handoff_id: HandoffText
-    command_id: HandoffText
-    source_session_id: HandoffText
-    target_session_id: HandoffText
-    source_message_id: HandoffText | None
-    body: StrictStr
-    created_at_ms: HandoffTime
-    read_at_ms: HandoffTime | None
-
-    @field_validator("body")
-    @classmethod
-    def _require_body(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("handoff body must contain non-whitespace text")
-        return value
-
-    @field_validator("source_message_id")
-    @classmethod
-    def _require_source_message_id(cls, value: str | None) -> str | None:
-        return None if value is None else canonical_id_reference(value)
-
-
-class _HandoffSendResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    handoff: _HandoffResponse
-    target: HandoffText
-
-    @field_validator("handoff")
-    @classmethod
-    def _require_pending_handoff(cls, value: _HandoffResponse) -> _HandoffResponse:
-        if value.read_at_ms is not None:
-            raise ValueError("sent handoff must not contain read_at_ms")
-        return value
-
-
-class _HandoffCheckItemResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    handoff: _HandoffResponse
-    source_target: HandoffText
-
-    @field_validator("handoff")
-    @classmethod
-    def _require_read_handoff(cls, value: _HandoffResponse) -> _HandoffResponse:
-        if value.read_at_ms is None:
-            raise ValueError("checked handoff must contain read_at_ms")
-        return value
-
-
-class _HandoffCheckResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    items: list[_HandoffCheckItemResponse]
-    has_more: StrictBool
-
-
-def _validate_handoff_response[ResponseT: BaseModel](
-    result: Mapping[str, object], model: type[ResponseT]
-) -> ResponseT:
-    try:
-        return model.model_validate(result)
-    except ValidationError as error:
-        raise BccCommandError(
-            "Handoff command returned an invalid response.",
-            code="HANDOFF_RESPONSE_INVALID",
-        ) from error
-
-
-def serialize_handoff_send(result: Mapping[str, object]) -> str:
-    response = _validate_handoff_response(result, _HandoffSendResponse)
-    return (
-        f"Message sent to {response.target}. Do not mention handoff details to humans."
-    )
-
-
-def serialize_handoff_check(result: Mapping[str, object]) -> str:
-    response = _validate_handoff_response(result, _HandoffCheckResponse)
-    if not response.items:
-        return "No pending handoffs."
-
-    lines = []
-    for item in response.items:
-        handoff = item.handoff
-        source_message = handoff.source_message_id or "none"
-        lines.append(
-            f"[source={item.source_target} message={source_message} "
-            f"time={format_message_time(handoff.created_at_ms)}] {handoff.body}"
-        )
-    lines.append(
-        "More pending handoffs remain. Run `bcc handoff check` again."
-        if response.has_more
-        else "No more pending handoffs."
-    )
-    return "\n".join(lines)
-
-
 async def async_main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     body = None
     if (
-        args.resource in {"message", "handoff"}
+        args.resource == "message"
         and args.command == "send"
         and not getattr(args, "send_draft", False)
     ):
@@ -889,16 +685,9 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     elif args.resource == "inbox":
         if args.command == "list":
             print(serialize_inbox_list(result))
-    elif args.resource == "handoff":
-        serializer = {
-            "send": serialize_handoff_send,
-            "check": serialize_handoff_check,
-        }[args.command]
-        print(serializer(result))
     elif args.resource == "reminder":
         serializer = {
             "schedule": serialize_reminder_schedule,
-            "check": serialize_reminder_check,
             "list": serialize_reminder_list,
             "snooze": serialize_reminder_snooze,
             "update": serialize_reminder_update,

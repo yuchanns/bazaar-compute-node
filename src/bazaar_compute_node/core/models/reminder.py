@@ -2,20 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Self
-from unicodedata import category
 
 from .states import REMINDER_TRANSITIONS, ReminderState, ensure_transition
-
-
-def _validate_text(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be a non-empty string")
-
-
-def _validate_title(value: str) -> None:
-    _validate_text(value, "title")
-    if any(category(character) == "Cc" for character in value):
-        raise ValueError("title cannot contain control characters")
 
 
 def _validate_transition_time(current_ms: int, incoming_ms: int) -> None:
@@ -41,18 +29,6 @@ class Reminder:
     canceled_at_ms: int | None = None
 
     def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.reminder_id, "reminder_id"),
-            (self.owner_session_id, "owner_session_id"),
-            (self.anchor_message_id, "anchor_message_id"),
-            (self.timezone, "timezone"),
-        ):
-            _validate_text(value, field_name)
-        _validate_title(self.title)
-        if not isinstance(self.state, ReminderState):
-            raise TypeError("state must be a ReminderState")
-        if self.repeat_rule is not None:
-            _validate_text(self.repeat_rule, "repeat_rule")
         if self.updated_at_ms < self.created_at_ms:
             raise ValueError("updated_at_ms cannot precede created_at_ms")
         for value, field_name in (
@@ -115,7 +91,6 @@ class Reminder:
 
     def update_title(self, title: str, *, at_ms: int) -> Self:
         self._require_scheduled("updated")
-        _validate_title(title)
         _validate_transition_time(self.updated_at_ms, at_ms)
         return replace(
             self,
@@ -138,7 +113,6 @@ class Reminder:
 
     def update_cadence(self, repeat_rule: str, *, at_ms: int) -> Self:
         self._require_scheduled("updated")
-        _validate_text(repeat_rule, "repeat_rule")
         _validate_transition_time(self.updated_at_ms, at_ms)
         return replace(
             self,
@@ -206,53 +180,3 @@ class Reminder:
                 f"only a scheduled reminder can be {operation}; current state is "
                 f"{self.state.value}"
             )
-
-
-@dataclass(frozen=True, slots=True)
-class ReminderOccurrence:
-    occurrence_id: str
-    reminder_id: str
-    owner_session_id: str
-    occurrence_no: int
-    anchor_message_id: str
-    scheduled_for_ms: int
-    fired_at_ms: int
-    next_fire_at_ms: int | None
-    overdue: bool
-    read_at_ms: int | None
-    created_at_ms: int
-
-    def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.occurrence_id, "occurrence_id"),
-            (self.reminder_id, "reminder_id"),
-            (self.owner_session_id, "owner_session_id"),
-            (self.anchor_message_id, "anchor_message_id"),
-        ):
-            _validate_text(value, field_name)
-        if self.fired_at_ms < self.scheduled_for_ms:
-            raise ValueError("fired_at_ms cannot precede scheduled_for_ms")
-        if self.created_at_ms < self.fired_at_ms:
-            raise ValueError("created_at_ms cannot precede fired_at_ms")
-        if (
-            self.next_fire_at_ms is not None
-            and self.next_fire_at_ms <= self.scheduled_for_ms
-        ):
-            raise ValueError("next_fire_at_ms must follow scheduled_for_ms")
-        if not isinstance(self.overdue, bool):
-            raise TypeError("overdue must be a boolean")
-        if self.overdue and self.fired_at_ms == self.scheduled_for_ms:
-            raise ValueError("an overdue occurrence must fire after its scheduled time")
-        if self.read_at_ms is not None and self.read_at_ms < self.created_at_ms:
-            raise ValueError("read_at_ms cannot precede created_at_ms")
-
-    @property
-    def pending(self) -> bool:
-        return self.read_at_ms is None
-
-    def mark_read(self, *, at_ms: int) -> Self:
-        if self.read_at_ms is not None:
-            raise ValueError("reminder occurrence was already read")
-        if at_ms < self.created_at_ms:
-            raise ValueError("read time cannot precede occurrence creation")
-        return replace(self, read_at_ms=at_ms)

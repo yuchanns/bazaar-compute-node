@@ -45,7 +45,6 @@ MESSAGES = MappingProxyType(
         "cli.bcn.foreground": (
             "Run the selected node in the current process instead of daemonizing."
         ),
-        "cli.bcn.system_service": "Host service management.",
         "cli.system_service.description": "Manage the user-level host service for bcn.",
         "cli.system_service.env_file": (
             "Platform-compatible environment file; on Windows this is a PowerShell "

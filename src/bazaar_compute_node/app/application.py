@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
+from ..core.models import InboundAttachment, Message
 from ..core.observability import IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
@@ -77,7 +78,7 @@ class NodeApplication:
             storage=self.storage,
             timer_wheel=self.timer_wheel,
             concurrency=self._reminder_concurrency,
-            publish_wake=self._publish_reminder_wake,
+            publish_wake=self._publish_inbox_wake,
         )
         self.command_server = LocalCommandServer(
             self._dispatch,
@@ -246,24 +247,28 @@ class NodeApplication:
                 pass
         await self._stopped.wait()
 
-    async def _publish_reminder_wake(self, agent_id: str, session_id: str) -> bool:
+    async def _publish_inbox_wake(
+        self,
+        agent_id: str,
+        message: Message[InboundAttachment],
+    ) -> bool:
         agent = self.agents.get(agent_id)
         if agent is None or not agent.started:
             self._log(
                 "reminder.wake.agent_unavailable",
                 agent_id=agent_id,
-                owner_session_id=session_id,
+                owner_session_id=message.session_id,
             )
             return False
         try:
-            await agent.publish_reminder_wake(session_id)
+            await agent.publish_inbox_wake(message)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
             self._log(
                 "reminder.wake.failed",
                 agent_id=agent_id,
-                owner_session_id=session_id,
+                owner_session_id=message.session_id,
                 error_type=type(error).__name__,
                 error=_safe_error(error),
             )

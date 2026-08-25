@@ -51,7 +51,6 @@ from bazaar_compute_node.bcc import build_parser
                 "Reminder operations",
                 "reminder commands:",
                 "schedule",
-                "check",
                 "list",
                 "snooze",
                 "update",
@@ -68,13 +67,6 @@ from bazaar_compute_node.bcc import build_parser
                 "--tz <iana>",
                 "--message-id <id>",
                 "weekly:mon,fri@09:00",
-            ),
-        ),
-        (
-            ("reminder", "check", "--help"),
-            (
-                "up to 100 pending Reminder occurrences",
-                "mark exactly the returned occurrences as read",
             ),
         ),
         (
@@ -122,7 +114,7 @@ def test_bcc_help_is_available_at_every_command_level(
         assert snippet in output
 
 
-def test_reminder_help_does_not_advertise_removed_surface(
+def test_help_and_parser_do_not_expose_removed_surfaces(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     parser = build_parser()
@@ -138,3 +130,8 @@ def test_reminder_help_does_not_advertise_removed_surface(
     assert " log" not in resource_help
     assert "--channel" not in schedule_help
     assert "--msg-id" not in schedule_help
+
+    parser = build_parser()
+    with pytest.raises(SystemExit) as handoff_error:
+        parser.parse_args(("handoff", "check"))
+    assert handoff_error.value.code == 2

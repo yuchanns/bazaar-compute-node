@@ -281,7 +281,8 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     assert build_turn_steer_params(
         "thread-1",
         "turn-1",
-        "[inbox notice session=bcn-1]\nInbox update: 1 unread message(s).",
+        "[inbox notice:\nInbox update: 1 unread message total; "
+        "1 changed target\ndm:alice  pending: 1 message]",
     ) == {
         "threadId": "thread-1",
         "expectedTurnId": "turn-1",
@@ -289,7 +290,8 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
             {
                 "type": "text",
                 "text": (
-                    "[inbox notice session=bcn-1]\nInbox update: 1 unread message(s)."
+                    "[inbox notice:\nInbox update: 1 unread message total; "
+                    "1 changed target\ndm:alice  pending: 1 message]"
                 ),
             }
         ],
@@ -520,8 +522,8 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         assert not await runtime.steer_turn(
             session,
             turn,
-            "[inbox notice session=bcn-without-active-turn]\n"
-            "Inbox update: 1 unread message(s).",
+            "[inbox notice:\nInbox update: 1 unread message total; "
+            "1 changed target\ndm:alice  pending: 1 message]",
             timeout=1,
         )
     finally:

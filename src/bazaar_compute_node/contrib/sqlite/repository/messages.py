@@ -18,8 +18,9 @@ from ....core.models import (
     OutboundAttachment,
     OutboundDeliveryState,
     SenderIdentity,
+    SenderKind,
 )
-from ....core.storage import InboxTargetResolutionError
+from ....core.storage import InboxTargetResolutionError, UnreadMessageOwner
 from ..codec import (
     bcn_session_from_row,
     encode_metadata,
@@ -38,8 +39,7 @@ _MESSAGE_COLUMNS = (
     "channel, provider_thread_id, provider_message_id, provider_time_ms, "
     "received_at_ms, sender, message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
-    "provider_payload_ref, command_id, delivery_state, snapshot_seq, "
-    "current_inbound_seq, provider_receipt_ref, created_at_ms, "
+    "provider_payload_ref, command_id, delivery_state, provider_receipt_ref, created_at_ms, "
     "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
     "metadata_json, attachments_json"
 )
@@ -180,6 +180,11 @@ class MessageOperations(RepositoryBase):
     async def save_message(self, message: Message) -> Message:
         validate_message_input(message)
         if message.direction is MessageDirection.INBOUND:
+            if message.sender_kind is SenderKind.SYSTEM:
+                return await self._save_system_message_for_agent(
+                    cast(Message[InboundAttachment], message),
+                    self._require_agent_id(),
+                )
             return await self._save_inbound_message(
                 cast(Message[InboundAttachment], message)
             )
@@ -219,6 +224,7 @@ class MessageOperations(RepositoryBase):
         target: str | None = None,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
+        notifying_only: bool = False,
     ) -> int:
         predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
         parameters: list[object] = [session_id]
@@ -228,6 +234,8 @@ class MessageOperations(RepositoryBase):
         if target is not None:
             predicates.append("target = ?")
             parameters.append(target)
+        if notifying_only:
+            predicates.append("notifies_runtime = 1")
         _append_message_filters(
             predicates,
             parameters,
@@ -337,6 +345,41 @@ class MessageOperations(RepositoryBase):
             "ORDER BY attachment.attachment_id"
         )
         return tuple(str(row["relative_path"]) for row in rows)
+
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]:
+        predicates = [
+            "message.direction = 'inbound'",
+            "message.notifies_runtime = 1",
+            "message.seq > COALESCE(cursor.delivered_through_seq, 0)",
+        ]
+        parameters: tuple[object, ...] = ()
+        if self.agent_id is not None:
+            predicates.append("message.agent_id = ?")
+            parameters = (self.agent_id,)
+        rows = await self.fetchall(
+            "WITH unread_ranked AS (SELECT message.*, "
+            "ROW_NUMBER() OVER (PARTITION BY message.agent_id, "
+            "message.session_id ORDER BY message.seq DESC, message.message_id DESC) "
+            "AS unread_rank FROM messages AS message "
+            "LEFT JOIN consumer_cursors AS cursor "
+            "ON cursor.session_id = message.session_id WHERE "
+            + " AND ".join(predicates)
+            + ") SELECT "
+            + _MESSAGE_COLUMNS
+            + " FROM unread_ranked WHERE unread_rank = 1 "
+            "ORDER BY agent_id, session_id",
+            parameters,
+        )
+        owners: list[UnreadMessageOwner] = []
+        for row in rows:
+            message = await self._message_from_row(row)
+            owners.append(
+                UnreadMessageOwner(
+                    agent_id=cast(str, row["agent_id"]),
+                    trigger_message=cast(Message[InboundAttachment], message),
+                )
+            )
+        return tuple(owners)
 
     async def list_messages(
         self,
@@ -524,6 +567,52 @@ class MessageOperations(RepositoryBase):
             )
         canonical = replace(canonical, attachments=tuple(canonical_attachments))
 
+        await self._insert_inbound_message(canonical, self._require_agent_id())
+        return canonical
+
+    async def _save_system_message_for_agent(
+        self,
+        message: Message[InboundAttachment],
+        agent_id: str,
+    ) -> Message[InboundAttachment]:
+        validate_inbound_message_input(message)
+        if message.sender_kind is not SenderKind.SYSTEM:
+            raise ValueError("system persistence requires a system message")
+        binding = await self.fetchone(
+            "SELECT bcn.channel_session_id, channel.channel, "
+            "channel.provider_thread_id, channel.target_kind "
+            "FROM bcn_sessions AS bcn JOIN channel_sessions AS channel "
+            "ON channel.agent_id = bcn.agent_id "
+            "AND channel.id = bcn.channel_session_id "
+            "WHERE bcn.agent_id = ? AND bcn.id = ?",
+            (agent_id, message.session_id),
+        )
+        if binding is None:
+            raise ValueError(f"unknown bcn session: {message.session_id}")
+        if (
+            message.channel_session_id != binding["channel_session_id"]
+            or message.channel != binding["channel"]
+            or message.provider_thread_id != binding["provider_thread_id"]
+            or message.target_kind.value != binding["target_kind"]
+        ):
+            raise ValueError("system message binding does not match channel session")
+        if (
+            await self.fetchone(
+                "SELECT 1 FROM messages WHERE message_id = ?",
+                (message.message_id,),
+            )
+            is not None
+        ):
+            raise ValueError("system message id is already in use")
+        canonical = replace(message, seq=await self._next_message_seq())
+        await self._insert_inbound_message(canonical, agent_id)
+        return canonical
+
+    async def _insert_inbound_message(
+        self,
+        canonical: Message[InboundAttachment],
+        agent_id: str,
+    ) -> None:
         await self.execute(
             "INSERT INTO messages ("
             "message_id, seq, direction, agent_id, session_id, channel_session_id, "
@@ -536,7 +625,7 @@ class MessageOperations(RepositoryBase):
                 canonical.message_id,
                 canonical.seq,
                 canonical.direction.value,
-                self._require_agent_id(),
+                agent_id,
                 canonical.session_id,
                 canonical.channel_session_id,
                 canonical.channel,
@@ -578,7 +667,6 @@ class MessageOperations(RepositoryBase):
                     attachment.error,
                 ),
             )
-        return canonical
 
     async def get_message(
         self,
@@ -619,6 +707,32 @@ class MessageOperations(RepositoryBase):
             parameters,
             direction=direction,
             delivery_states=delivery_states,
+        )
+        row = await self.fetchone(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
+            + " AND ".join(predicates),
+            parameters,
+        )
+        return await self._message_from_row(row) if row is not None else None
+
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        bound_agent_id = self._bound_agent_id()
+        if bound_agent_id is not None and bound_agent_id != agent_id:
+            return None
+        predicates = ["agent_id = ?", "session_id = ?", "message_id = ?"]
+        parameters: list[object] = [agent_id, session_id, message_id]
+        _append_message_filters(
+            predicates,
+            parameters,
+            direction=direction,
+            delivery_states=None,
         )
         row = await self.fetchone(
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE "
@@ -726,10 +840,9 @@ class MessageOperations(RepositoryBase):
                 "channel_session_id, channel, provider_thread_id, "
                 "provider_message_id, sender, message_type, target, target_kind, "
                 "reply_to_message_id, body, command_id, delivery_state, "
-                "snapshot_seq, current_inbound_seq, provider_receipt_ref, "
-                "created_at_ms, provider_attempted_at_ms, completed_at_ms, "
+                "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
                 "error_kind, error_message, metadata_json, attachments_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.message_id,
                     canonical.seq,
@@ -748,8 +861,6 @@ class MessageOperations(RepositoryBase):
                     canonical.body,
                     canonical.command_id,
                     delivery_state.value,
-                    canonical.snapshot_seq,
-                    canonical.current_inbound_seq,
                     canonical.provider_receipt_ref,
                     canonical.created_at_ms,
                     canonical.provider_attempted_at_ms,
@@ -790,16 +901,13 @@ class MessageOperations(RepositoryBase):
         if delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
         await self.execute(
-            "UPDATE messages SET delivery_state = ?, snapshot_seq = ?, "
-            "current_inbound_seq = ?, provider_message_id = ?, "
+            "UPDATE messages SET delivery_state = ?, provider_message_id = ?, "
             "provider_receipt_ref = ?, provider_attempted_at_ms = ?, "
             "completed_at_ms = ?, error_kind = ?, error_message = ?, "
             "metadata_json = ? WHERE agent_id = /*agent_id*/? "
             "AND direction = 'outbound' AND message_id = ?",
             (
                 delivery_state.value,
-                canonical.snapshot_seq,
-                canonical.current_inbound_seq,
                 canonical.provider_message_id,
                 canonical.provider_receipt_ref,
                 canonical.provider_attempted_at_ms,

@@ -21,7 +21,6 @@ from ..core.command import (
     ICommandService,
     InboxListResult,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
     SessionNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
@@ -80,6 +79,17 @@ def serialize_message(message: Message) -> dict[str, object]:
             else {"id": message.sender.id, "name": message.sender.name}
         ),
         "sender_kind": message.sender_kind.value,
+        "system_message_kind": (
+            None
+            if message.system_message_kind is None
+            else message.system_message_kind.value
+        ),
+        "system_message_source_target": message.metadata.get(
+            "system_message_source_target"
+        ),
+        "system_message_source_message_id": message.metadata.get(
+            "system_message_source_message_id"
+        ),
         "message_type": message.message_type,
         "canonical_target": message.target,
         "target_kind": message.target_kind.value,
@@ -498,11 +508,6 @@ class CommandDispatcher:
                     "ok": True,
                     "result": {"text": format_freshness_hold(result)},
                 }
-            if isinstance(result, MessageSendHandoffRequired):
-                return {
-                    "ok": True,
-                    "result": {"text": format_cross_session_hold(result.target)},
-                }
             delivery_state = result.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
@@ -622,17 +627,45 @@ def format_check_message(message: Mapping[str, object]) -> str:
     target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
-    line = (
-        f"[target={target} msg={message_id} time={timestamp} "
-        f"type={sender_kind} mentioned={str(message['mentions_agent']).lower()}"
-    )
+    line = f"[target={target} msg={message_id} time={timestamp} type={sender_kind}"
     reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
         line += f" reply_to={cast(str, reply_to_message_id)}"
     line += "] "
     if sender is not None:
-        line += f"{sender} "
-    return line + body + _attachment_suffix(message)
+        line += f"{sender}: "
+    rendered = line + body + _attachment_suffix(message)
+    if message.get("system_message_kind") == "reminder":
+        operation = (
+            "(to snooze/update/cancel: bcc reminder --help)"
+            if "\nNext iteration: " in body
+            else "(to snooze/cancel: bcc reminder --help)"
+        )
+        rendered += (
+            f"\n{operation}"
+            "\nRespond as appropriate. Complete all your work before stopping."
+            "\nReply in the channel or create/reply in a thread as appropriate; "
+            "use each message's `target` and `msg` fields to choose the exact target."
+        )
+    elif message.get("system_message_kind") == "handoff":
+        source_target = cast(str, message["system_message_source_target"])
+        source_message_id = cast(
+            str,
+            message["system_message_source_message_id"],
+        )
+        rendered += (
+            "\nTo understand why this message was sent, inspect the source context:"
+            "\n  bcc message read --target "
+            f"{json.dumps(source_target)} --around {json.dumps(source_message_id)}"
+            "\nIf you have no objection to why the message was sent, do not announce "
+            "or explain the handoff, and do not repeat or respond to the referenced "
+            "message; it has already been delivered. Continue only work already in "
+            "progress in this conversation that is independent of that message; if "
+            "there is none, stop."
+            "\nMention the handoff only when its reason is unclear, conflicts with "
+            "the current conversation, or requires a decision."
+        )
+    return rendered
 
 
 def format_read_message(
@@ -650,14 +683,13 @@ def format_read_message(
         f"time={timestamp}",
         f"type={sender_kind}",
         f"replyTarget={target}",
-        f"mentioned={str(message['mentions_agent']).lower()}",
     ]
     reply_to_message_id = message["reply_to_message_id"]
     if reply_to_message_id is not None:
         fields.append(f"replyTo={cast(str, reply_to_message_id)}")
     line = f"[{index}/{count} {' '.join(fields)}] "
     if sender is not None:
-        line += f"{sender} "
+        line += f"{sender}: "
     return line + body + _attachment_suffix(message)
 
 
@@ -718,23 +750,3 @@ def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
         )
     )
     return "\n".join(lines)
-
-
-def format_cross_session_hold(target: str) -> str:
-    quoted_target = json.dumps(target)
-    return "\n".join(
-        (
-            "Your message was not sent because the target belongs to another conversation.",
-            "",
-            (
-                "To continue this work in the target conversation, send a "
-                "self-contained handoff:"
-            ),
-            f"  bcc handoff send --target {quoted_target} <<'BCCMSG'",
-            "  enough context to understand the background, goal, and next action",
-            "  BCCMSG",
-            "This creates a handoff notice that wakes you in that conversation.",
-            "",
-            "You can also choose not to send anything.",
-        )
-    )

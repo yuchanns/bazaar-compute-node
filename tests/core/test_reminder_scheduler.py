@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -19,9 +18,17 @@ from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.models import (
     BcnSession,
+    ChannelSession,
+    ChannelTargetKind,
+    ConsumerCursor,
+    InboundAttachment,
+    Message,
+    MessageDirection,
     Reminder,
-    ReminderOccurrence,
     ReminderState,
+    SenderIdentity,
+    SenderKind,
+    SystemMessageKind,
 )
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
 from bazaar_compute_node.core.storage import IStorage
@@ -37,26 +44,56 @@ _REMINDER_B = "018f0000-0000-7000-8000-000000000002"
 _REMINDER_C = "018f0000-0000-7000-8000-000000000003"
 
 
-def add_session(storage: MemoryStorage, *, agent_id: str, session_id: str) -> None:
+def add_session(storage: MemoryStorage, *, agent_id: str, session_id: str) -> str:
+    channel_session_id = f"channel-{session_id}"
+    storage.channel_sessions[channel_session_id] = ChannelSession(
+        id=channel_session_id,
+        channel="test",
+        provider_thread_id=f"provider-{session_id}",
+        created_at_ms=0,
+        updated_at_ms=0,
+        target_kind=ChannelTargetKind.DM,
+    )
     storage.bcn_sessions[session_id] = BcnSession(
         id=session_id,
-        channel_session_id=f"channel-{session_id}",
+        channel_session_id=channel_session_id,
         workspace_id=agent_id,
         created_at_ms=0,
         updated_at_ms=0,
     )
+    anchor_id = f"018f0000-0000-7000-8000-{len(storage.messages) + 10:012d}"
+    storage.messages[session_id] = [
+        Message[InboundAttachment](
+            direction=MessageDirection.INBOUND,
+            seq=len(storage.messages) + 1,
+            message_id=anchor_id,
+            session_id=session_id,
+            channel_session_id=channel_session_id,
+            channel="test",
+            provider_thread_id=f"provider-{session_id}",
+            provider_message_id=f"provider-message-{session_id}",
+            received_at_ms=0,
+            sender=SenderIdentity(name="human"),
+            target=f"dm:{session_id}",
+            target_kind=ChannelTargetKind.DM,
+            body="anchor",
+            metadata={"sender_kind": SenderKind.HUMAN.value},
+        )
+    ]
+    return anchor_id
 
 
 def make_scheduled_reminder(
     reminder_id: str,
     *,
     session_id: str,
+    anchor_message_id: str,
     next_fire_at_ms: int = 100,
 ) -> Reminder:
     return Reminder(
         reminder_id=reminder_id,
         owner_session_id=session_id,
-        anchor_message_id=f"anchor-{session_id}",
+        anchor_message_id=anchor_message_id,
         title=f"Reminder {reminder_id}",
         state=ReminderState.SCHEDULED,
         next_fire_at_ms=next_fire_at_ms,
@@ -69,53 +106,14 @@ def make_scheduled_reminder(
     )
 
 
-def make_fired_reminder(reminder_id: str, *, session_id: str) -> Reminder:
-    return Reminder(
-        reminder_id=reminder_id,
-        owner_session_id=session_id,
-        anchor_message_id=f"anchor-{session_id}",
-        title=f"Reminder {reminder_id}",
-        state=ReminderState.FIRED,
-        next_fire_at_ms=None,
-        repeat_rule=None,
-        timezone="UTC",
-        revision=2,
-        last_occurrence_no=1,
-        created_at_ms=0,
-        updated_at_ms=100,
-        last_fired_at_ms=100,
-    )
-
-
-def make_pending_occurrence(
-    reminder_id: str,
-    *,
-    session_id: str,
-    occurrence_id: str,
-) -> ReminderOccurrence:
-    return ReminderOccurrence(
-        occurrence_id=occurrence_id,
-        reminder_id=reminder_id,
-        owner_session_id=session_id,
-        occurrence_no=1,
-        anchor_message_id=f"anchor-{session_id}",
-        scheduled_for_ms=100,
-        fired_at_ms=100,
-        next_fire_at_ms=None,
-        overdue=False,
-        read_at_ms=None,
-        created_at_ms=100,
-    )
-
-
 async def start_scheduler(
     storage: MemoryStorage,
     *,
-    publish_wake: Callable[[str, str], bool],
+    publish_wake: Callable[[str, Message[InboundAttachment]], bool],
     clock: Callable[[], int] = lambda: 100,
 ) -> tuple[ReminderScheduler, TimerWheel]:
-    async def publish(agent_id: str, session_id: str) -> bool:
-        return publish_wake(agent_id, session_id)
+    async def publish(agent_id: str, message: Message[InboundAttachment]) -> bool:
+        return publish_wake(agent_id, message)
 
     timer_wheel = TimerWheel()
     await timer_wheel.start()
@@ -139,27 +137,50 @@ async def stop_scheduler(
 
 
 @pytest.mark.asyncio
-async def test_global_scheduler_routes_due_wakes_by_agent_and_session() -> None:
+async def test_global_scheduler_materializes_system_messages_and_routes_wakes() -> None:
     storage = MemoryStorage()
-    add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
-    add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_C)
-    add_session(storage, agent_id=_AGENT_B, session_id=_SESSION_B)
+    anchors = {
+        _SESSION_A: add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A),
+        _SESSION_C: add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_C),
+        _SESSION_B: add_session(storage, agent_id=_AGENT_B, session_id=_SESSION_B),
+    }
     storage.reminders.update(
         {
-            _REMINDER_A: make_scheduled_reminder(_REMINDER_A, session_id=_SESSION_A),
-            _REMINDER_B: make_scheduled_reminder(_REMINDER_B, session_id=_SESSION_B),
-            _REMINDER_C: make_scheduled_reminder(_REMINDER_C, session_id=_SESSION_C),
+            _REMINDER_A: make_scheduled_reminder(
+                _REMINDER_A,
+                session_id=_SESSION_A,
+                anchor_message_id=anchors[_SESSION_A],
+            ),
+            _REMINDER_B: make_scheduled_reminder(
+                _REMINDER_B,
+                session_id=_SESSION_B,
+                anchor_message_id=anchors[_SESSION_B],
+            ),
+            _REMINDER_C: make_scheduled_reminder(
+                _REMINDER_C,
+                session_id=_SESSION_C,
+                anchor_message_id=anchors[_SESSION_C],
+            ),
         }
     )
-    wakes: list[tuple[str, str]] = []
+    storage.cursors.update(
+        {
+            session_id: ConsumerCursor(
+                session_id=session_id,
+                delivered_through_seq=storage.messages[session_id][0].seq,
+            )
+            for session_id in anchors
+        }
+    )
+    wakes: list[tuple[str, Message[InboundAttachment]]] = []
 
-    def publish(agent_id: str, session_id: str) -> bool:
-        wakes.append((agent_id, session_id))
+    def publish(agent_id: str, message: Message[InboundAttachment]) -> bool:
+        wakes.append((agent_id, message))
         return True
 
     scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
     try:
-        assert wakes == [
+        assert [(agent_id, message.session_id) for agent_id, message in wakes] == [
             (_AGENT_A, _SESSION_A),
             (_AGENT_A, _SESSION_C),
             (_AGENT_B, _SESSION_B),
@@ -167,80 +188,14 @@ async def test_global_scheduler_routes_due_wakes_by_agent_and_session() -> None:
         assert {reminder.state for reminder in storage.reminders.values()} == {
             ReminderState.FIRED
         }
-        assert len(storage.reminder_occurrences) == 3
-    finally:
-        await stop_scheduler(scheduler, timer_wheel)
-
-
-@pytest.mark.asyncio
-async def test_failed_wake_keeps_due_occurrence_unread() -> None:
-    storage = MemoryStorage()
-    add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
-    storage.reminders[_REMINDER_A] = make_scheduled_reminder(
-        _REMINDER_A, session_id=_SESSION_A
-    )
-    wakes: list[tuple[str, str]] = []
-
-    def publish(agent_id: str, session_id: str) -> bool:
-        wakes.append((agent_id, session_id))
-        return False
-
-    scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
-    try:
-        assert wakes == [(_AGENT_A, _SESSION_A)]
-        owners = await cast(IStorage, storage).list_pending_reminder_owners()
-        assert [(owner.agent_id, owner.owner_session_id) for owner in owners] == [
-            (_AGENT_A, _SESSION_A)
-        ]
-    finally:
-        await stop_scheduler(scheduler, timer_wheel)
-
-
-@pytest.mark.asyncio
-async def test_pending_recovery_is_agent_scoped_and_failure_isolated() -> None:
-    storage = MemoryStorage()
-    add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
-    add_session(storage, agent_id=_AGENT_B, session_id=_SESSION_B)
-    storage.reminders.update(
-        {
-            _REMINDER_A: make_fired_reminder(_REMINDER_A, session_id=_SESSION_A),
-            _REMINDER_B: make_fired_reminder(_REMINDER_B, session_id=_SESSION_B),
-        }
-    )
-    storage.reminder_occurrences.update(
-        {
-            "occurrence-a": make_pending_occurrence(
-                _REMINDER_A,
-                session_id=_SESSION_A,
-                occurrence_id="occurrence-a",
-            ),
-            "occurrence-b": make_pending_occurrence(
-                _REMINDER_B,
-                session_id=_SESSION_B,
-                occurrence_id="occurrence-b",
-            ),
-        }
-    )
-    wakes: list[tuple[str, str]] = []
-
-    def publish(agent_id: str, session_id: str) -> bool:
-        wakes.append((agent_id, session_id))
-        if agent_id == _AGENT_A:
-            raise RuntimeError("agent is unavailable")
-        return True
-
-    scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
-    try:
-        assert wakes == [
-            (_AGENT_A, _SESSION_A),
-            (_AGENT_B, _SESSION_B),
-        ]
+        system_messages = [message for _, message in wakes]
         assert all(
-            occurrence.pending for occurrence in storage.reminder_occurrences.values()
+            message.sender_kind is SenderKind.SYSTEM
+            and message.system_message_kind is SystemMessageKind.REMINDER
+            and message.notifies_runtime
+            for message in system_messages
         )
-        assert scheduler._task is not None
-        await asyncio.sleep(0)
-        assert not scheduler._task.done()
+        assert all("(one-time)" in message.body for message in system_messages)
     finally:
         await stop_scheduler(scheduler, timer_wheel)
 

@@ -153,8 +153,27 @@ class RepositoryBase:
         del session_id, message_id, direction, delivery_states
         raise NotImplementedError
 
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None:
+        del agent_id, session_id, message_id, direction
+        raise NotImplementedError
+
     async def _attachments(self, message_id: str) -> tuple[InboundAttachment, ...]:
         del message_id
+        raise NotImplementedError
+
+    async def _save_system_message_for_agent(
+        self,
+        message: Message[InboundAttachment],
+        agent_id: str,
+    ) -> Message[InboundAttachment]:
+        del message, agent_id
         raise NotImplementedError
 
     def _agent_local_id(self, kind: str, local_id: str) -> str:

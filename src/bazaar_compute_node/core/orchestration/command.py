@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -18,7 +19,6 @@ from ..command import (
     MessageDraft,
     MessageReadResult,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
     MessageSendResult,
     SessionNotFoundError,
 )
@@ -26,6 +26,7 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
+    InboundAttachment,
     Message,
     MessageDirection,
     OutboundAttachment,
@@ -120,6 +121,7 @@ class SessionCommandService(ICommandService):
         node_id: Callable[[], str],
         workspace: Callable[[], Path],
         clock: Callable[[], int],
+        publish_wake: Callable[[Message[InboundAttachment]], Awaitable[None]],
     ) -> None:
         self._delivery = delivery
         self._storage = storage
@@ -128,7 +130,10 @@ class SessionCommandService(ICommandService):
         self._node_id = node_id
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
+        self._publish_wake = publish_wake
         self._drafts: dict[str, MessageDraft] = {}
+        self._freshness_snapshots: dict[str, int] = {}
+        self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
     async def check(self, session_id: str) -> MessageCheckResult:
         async with self._concurrency.for_session(session_id):
@@ -136,6 +141,7 @@ class SessionCommandService(ICommandService):
                 session_id,
                 checked_at_ms=self._clock(),
             )
+            self._observe_freshness(session_id, result.snapshot_seq)
         await self._audit.append_tool(
             operation="bcc.message.check",
             status="completed",
@@ -160,6 +166,8 @@ class SessionCommandService(ICommandService):
             limit=limit,
         )
         result = snapshot.history
+        if snapshot.source_session.id == session_id:
+            self._observe_freshness(session_id, result.snapshot_seq)
         await self._audit.append_tool(
             operation="bcc.message.read",
             status="completed",
@@ -213,7 +221,6 @@ class SessionCommandService(ICommandService):
         send_draft: bool = False,
     ) -> MessageSendResult:
         target_session = await self._storage.resolve_inbox_target(target)
-
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths and not send_draft
@@ -226,103 +233,86 @@ class SessionCommandService(ICommandService):
         if not send_draft and not body.strip() and not attachments:
             raise ValueError("outbound message must not be empty")
 
-        async with self._concurrency.for_session(target_session.id):
+        async with self._concurrency.for_session(session_id):
             if send_draft:
-                draft = self._drafts.get(target_session.id)
+                draft = self._drafts.get(session_id)
                 if draft is None:
                     raise ValueError(f"no active draft for target: {target}")
-                if draft.target != target:
+                if draft.target != target or draft.target_id != target_session.id:
                     raise ValueError(
                         f"active draft belongs to another target: {draft.target}"
                     )
                 payload = draft
             else:
+                source_message = await self._storage.get_latest_message(
+                    session_id,
+                    direction=MessageDirection.INBOUND,
+                )
+                if source_message is None:
+                    raise ValueError(
+                        "current conversation has no inbound source anchor"
+                    )
                 payload = MessageDraft(
+                    source_target_id=session_id,
                     target=target,
+                    target_id=target_session.id,
                     body=body,
                     attachments=attachments,
                     reply_to_message_id=reply_to_message_id,
+                    source_message_id=source_message.message_id,
                     created_at_ms=created_at_ms,
                 )
-            active_draft = self._drafts.get(target_session.id)
+            active_draft = self._drafts.get(session_id)
             draft_replaced = not send_draft and active_draft is not None
-            if not send_draft and target_session.id == session_id:
+            if not send_draft:
                 self._drafts[session_id] = payload
-            prepared = await self._storage.prepare_outbound(
+            freshness = await self._storage.check_outbound_freshness(
                 session_id,
+                source_snapshot_seq=self._freshness_snapshots.get(session_id),
+                payload=payload,
+                draft_replaced=draft_replaced,
+            )
+            if isinstance(freshness, MessageSendFreshnessHold):
+                self._observe_freshness(session_id, freshness.current_inbound_seq)
+                await self._audit_freshness_hold(
+                    session_id=session_id,
+                    command_id=command_id,
+                    target=target,
+                    result=freshness,
+                )
+                return freshness
+            expected_source_seq = freshness.current_inbound_seq
+
+        handoff_message: Message[InboundAttachment] | None = None
+        async with self._concurrency.for_session(target_session.id):
+            prepared = await self._storage.materialize_outbound_if_fresh(
+                session_id,
+                expected_source_seq,
+                target_session.id,
                 command_id=command_id,
                 payload=payload,
                 attempted_at_ms=self._clock(),
-                draft_replaced=draft_replaced,
             )
-            channel_session = prepared.channel_session
-            target_session = prepared.target_session
-            reply_to_provider_message_id = prepared.reply_to_provider_message_id
             result = prepared.outcome
+            if isinstance(result, MessageSendFreshnessHold):
+                self._observe_freshness(session_id, result.current_inbound_seq)
+                await self._audit_freshness_hold(
+                    session_id=session_id,
+                    command_id=command_id,
+                    target=target,
+                    result=result,
+                )
+                return result
+            outbound = result
+            channel_session = prepared.channel_session
             audit_context = self._correlation(
                 session_id=session_id,
                 channel=channel_session.channel,
                 channel_session_id=channel_session.id,
                 command_id=command_id,
+                inbound_seq=expected_source_seq,
+                outbound_message_id=outbound.message_id,
             )
-            if isinstance(result, MessageSendFreshnessHold):
-                audit_context = replace(
-                    audit_context,
-                    inbound_seq=result.current_inbound_seq,
-                )
-            elif isinstance(result, Message):
-                audit_context = replace(
-                    audit_context,
-                    inbound_seq=result.current_inbound_seq,
-                    outbound_message_id=result.message_id,
-                )
-
-            if isinstance(result, MessageSendHandoffRequired):
-                await self._audit.append_tool(
-                    operation="bcc.message.send",
-                    status="cross_session_hold",
-                    state=RuntimeEventState.COMPLETED,
-                    correlation=audit_context,
-                    arguments={
-                        "command_id": command_id,
-                        "target": target,
-                        "source_session_id": session_id,
-                        "target_session_id": target_session.id,
-                    },
-                )
-                return result
-
-            if isinstance(result, MessageSendFreshnessHold):
-                await self._audit.append(
-                    event_name="bcc.send.freshness_hold",
-                    state=RuntimeEventState.COMPLETED,
-                    correlation=audit_context,
-                    metadata={
-                        "target": target,
-                        "snapshot_seq": result.snapshot_seq,
-                        "current_inbound_seq": result.current_inbound_seq,
-                        "shown": len(result.messages),
-                        "total": result.newer_message_total,
-                        "draft_replaced": result.draft_replaced,
-                    },
-                )
-                await self._audit.append_tool(
-                    operation="bcc.message.send",
-                    status="freshness_hold",
-                    state=RuntimeEventState.COMPLETED,
-                    correlation=audit_context,
-                    arguments={
-                        "command_id": command_id,
-                        "target": target,
-                        "shown": len(result.messages),
-                        "total": result.newer_message_total,
-                        "draft_replaced": result.draft_replaced,
-                    },
-                )
-                return result
-
-            outbound = result
-
             await self._audit.append(
                 event_name="bcc.send.fresh_check.passed",
                 state=RuntimeEventState.COMPLETED,
@@ -340,7 +330,9 @@ class SessionCommandService(ICommandService):
                     attachments=outbound.attachments,
                     target_kind=channel_session.target_kind,
                     provider_thread_id=channel_session.provider_thread_id,
-                    provider_reply_to_message_id=reply_to_provider_message_id,
+                    provider_reply_to_message_id=(
+                        prepared.reply_to_provider_message_id
+                    ),
                 )
             )
             attempted_at_ms = outbound.provider_attempted_at_ms or self._clock()
@@ -378,14 +370,20 @@ class SessionCommandService(ICommandService):
                     },
                 )
 
-            await self._storage.save_message(outbound)
+            finalized = await self._storage.finalize_outbound_delivery(outbound)
+            outbound = finalized.outbound
+            handoff_message = finalized.handoff_message
             delivery_state = outbound.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
-            if delivery_state in {
-                OutboundDeliveryState.SENT,
-                OutboundDeliveryState.QUEUED,
-            }:
+            if (
+                delivery_state
+                in {
+                    OutboundDeliveryState.SENT,
+                    OutboundDeliveryState.QUEUED,
+                }
+                and self._drafts.get(session_id) is payload
+            ):
                 self._drafts.pop(session_id, None)
             await self._audit.append(
                 event_name=f"channel.outbound.{delivery_state.value}",
@@ -408,7 +406,59 @@ class SessionCommandService(ICommandService):
                 error_kind=terminal_kind,
                 error_message=outbound.error_message,
             )
-            return outbound
+        if handoff_message is not None:
+            try:
+                await self._publish_wake(handoff_message)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception("Handoff inbox wake could not be published")
+        return outbound
+
+    def _observe_freshness(self, session_id: str, seq: int) -> None:
+        previous = self._freshness_snapshots.get(session_id)
+        if previous is None or seq > previous:
+            self._freshness_snapshots[session_id] = seq
+
+    async def _audit_freshness_hold(
+        self,
+        *,
+        session_id: str,
+        command_id: str,
+        target: str,
+        result: MessageSendFreshnessHold,
+    ) -> None:
+        audit_context = self._correlation(
+            session_id=session_id,
+            command_id=command_id,
+            inbound_seq=result.current_inbound_seq,
+        )
+        await self._audit.append(
+            event_name="bcc.send.freshness_hold",
+            state=RuntimeEventState.COMPLETED,
+            correlation=audit_context,
+            metadata={
+                "target": target,
+                "snapshot_seq": result.snapshot_seq,
+                "current_inbound_seq": result.current_inbound_seq,
+                "shown": len(result.messages),
+                "total": result.newer_message_total,
+                "draft_replaced": result.draft_replaced,
+            },
+        )
+        await self._audit.append_tool(
+            operation="bcc.message.send",
+            status="freshness_hold",
+            state=RuntimeEventState.COMPLETED,
+            correlation=audit_context,
+            arguments={
+                "command_id": command_id,
+                "target": target,
+                "shown": len(result.messages),
+                "total": result.newer_message_total,
+                "draft_replaced": result.draft_replaced,
+            },
+        )
 
     async def unfollow(self, session_id: str, *, target: str) -> bool:
         async with self._concurrency.for_session(session_id):

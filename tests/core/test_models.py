@@ -68,8 +68,6 @@ def make_outbound_message() -> Message:
         body="hello",
         delivery_state=OutboundDeliveryState.PENDING,
         created_at_ms=1,
-        snapshot_seq=10,
-        current_inbound_seq=10,
         provider_attempted_at_ms=2,
     )
 

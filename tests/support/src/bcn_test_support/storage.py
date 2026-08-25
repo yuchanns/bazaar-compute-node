@@ -26,6 +26,7 @@ from bazaar_compute_node.core.storage import (
     IStorageScope,
     RecordInboundResult,
     StorageOperationMixin,
+    UnreadMessageOwner,
 )
 
 
@@ -427,6 +428,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         target: str | None = None,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
+        notifying_only: bool = False,
     ) -> int:
         messages = self._filtered_messages(
             session_id,
@@ -436,6 +438,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         return sum(
             (after_seq is None or message.seq > after_seq)
             and (target is None or message.target == target)
+            and (not notifying_only or message.notifies_runtime)
             for message in messages
         )
 
@@ -546,6 +549,33 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             if isinstance(attachment, InboundAttachment)
             and attachment.state == "ready"
             and attachment.relative_path is not None
+        )
+
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]:
+        owners = []
+        for session in self._scoped_bcn_sessions():
+            cursor = self._storage.cursors.get(session.id)
+            delivered_through_seq = cursor.delivered_through_seq if cursor else 0
+            unread = [
+                message
+                for message in self._filtered_messages(
+                    session.id,
+                    direction=MessageDirection.INBOUND,
+                )
+                if message.notifies_runtime and message.seq > delivered_through_seq
+            ]
+            if unread:
+                owners.append(
+                    UnreadMessageOwner(
+                        agent_id=session.workspace_id,
+                        trigger_message=unread[-1],
+                    )
+                )
+        return tuple(
+            sorted(
+                owners,
+                key=lambda owner: (owner.agent_id, owner.owner_session_id),
+            )
         )
 
     async def list_messages(
@@ -679,17 +709,19 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if message.direction is not MessageDirection.INBOUND:
             raise ValueError("inbound persistence requires an inbound message")
         messages = self._storage.messages.setdefault(message.session_id, [])
-        provider_matches = [
-            existing
-            for session_messages in self._storage.messages.values()
-            for existing in session_messages
-            if existing.direction is MessageDirection.INBOUND
-            and (
-                existing.channel == message.channel
+        provider_matches = (
+            [
+                existing
+                for session_messages in self._storage.messages.values()
+                for existing in session_messages
+                if existing.direction is MessageDirection.INBOUND
+                and existing.channel == message.channel
                 and existing.provider_thread_id == message.provider_thread_id
                 and existing.provider_message_id == message.provider_message_id
-            )
-        ]
+            ]
+            if message.provider_message_id is not None
+            else []
+        )
         if provider_matches:
             return provider_matches[0]
         for existing in (
@@ -762,6 +794,25 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 if message.message_id == message_id
             ),
             None,
+        )
+
+    async def get_owned_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message | None:
+        if self._agent_id is not None and self._agent_id != agent_id:
+            return None
+        session = self._storage.bcn_sessions.get(session_id)
+        if session is None or session.workspace_id != agent_id:
+            return None
+        return await self.resolve_message(
+            session_id,
+            message_id,
+            direction=direction,
         )
 
     async def _save_outbound_message(self, message: Message) -> Message:
@@ -852,16 +903,10 @@ def _validate_outbound_message_input(message: object) -> None:
         (message.error_message, "error_message"),
     ):
         _validate_optional_input_text(value, field_name)
-    snapshot_seq = message.snapshot_seq
-    current_inbound_seq = message.current_inbound_seq
     created_at_ms = message.created_at_ms
     provider_attempted_at_ms = message.provider_attempted_at_ms
-    assert snapshot_seq is not None
-    assert current_inbound_seq is not None
     assert created_at_ms is not None
     assert provider_attempted_at_ms is not None
-    if current_inbound_seq > snapshot_seq:
-        raise ValueError("outbound current inbound sequence exceeds snapshot sequence")
     if provider_attempted_at_ms < created_at_ms:
         raise ValueError("outbound provider attempt cannot precede creation")
     if (
@@ -919,12 +964,6 @@ def _validate_outbound_update(
     existing: Message,
     incoming: Message,
 ) -> Message:
-    if (
-        incoming.snapshot_seq != existing.snapshot_seq
-        or incoming.current_inbound_seq != existing.current_inbound_seq
-    ):
-        raise ValueError("outbound snapshot evidence cannot change")
-
     incoming_state = incoming.delivery_state
     existing_state = existing.delivery_state
     if incoming_state is None or existing_state is None:

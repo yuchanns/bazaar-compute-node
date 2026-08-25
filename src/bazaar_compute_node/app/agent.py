@@ -10,21 +10,17 @@ import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from time import time_ns
-from typing import cast
 
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
 from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import RuntimeSession
+from ..core.models import InboundAttachment, Message, RuntimeSession
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
-from ..core.orchestration.handoff_command import HandoffCommandService
 from ..core.orchestration.reminder_command import ReminderCommandService
-from ..core.orchestration.services import SessionAuditRecorder
 from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
-from ..core.storage import IHandoffStorageScope, IStorageScope
+from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
 from ..i18n import Translator
 from .attachments import AttachmentMaterializer
@@ -82,7 +78,6 @@ class AgentApplication:
         self.agent_id = configuration.id
         self.name = configuration.name
         self.storage = storage
-        self._handoff_storage = cast(IHandoffStorageScope, storage)
         self.audit = audit
         self.timer_wheel = timer_wheel
         self.timeout_budget = timeout_budget
@@ -152,7 +147,6 @@ class AgentApplication:
             channel=self.channel,
             runtime=self.runtime,
             storage=self.storage,
-            handoff_storage=self._handoff_storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
             timer_wheel=self.timer_wheel,
@@ -167,16 +161,6 @@ class AgentApplication:
             concurrency=reminder_concurrency,
             poke=reminder_poke,
         )
-        self.handoff_service = HandoffCommandService(
-            storage=self._handoff_storage,
-            audit=SessionAuditRecorder(
-                sink=self.audit,
-                timeout_budget=self.timeout_budget,
-                clock=lambda: time_ns() // 1_000_000,
-            ),
-            publish_wake=self.publish_handoff_wake,
-            node_id=lambda: self.agent_id,
-        )
         self._provider_control_handler = (
             factories.control(self._adapter_context())
             if factories.control is not None
@@ -185,7 +169,6 @@ class AgentApplication:
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             reminder_service=self.reminder_service,
-            handoff_service=self.handoff_service,
             timeout_budget=self.timeout_budget,
             control_handler=(
                 self._handle_control
@@ -281,15 +264,10 @@ class AgentApplication:
             return False
         return await self.storage.get_bcn_session(session_id) is not None
 
-    async def publish_reminder_wake(self, session_id: str) -> None:
+    async def publish_inbox_wake(self, message: Message[InboundAttachment]) -> None:
         if not self._started:
             raise RuntimeError("Agent application is not started")
-        await self.orchestrator.publish_reminder_wake(session_id)
-
-    async def publish_handoff_wake(self, session_id: str) -> None:
-        if not self._started:
-            raise RuntimeError("Agent application is not started")
-        await self.orchestrator.publish_handoff_wake(session_id)
+        await self.orchestrator.publish_inbox_wake(message)
 
     def health_record(self) -> dict[str, object]:
         return {

@@ -40,40 +40,41 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.command import (
     ICommandService,
     MessageSendFreshnessHold,
-    MessageSendHandoffRequired,
 )
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
-    Handoff,
     Message,
     MessageDirection,
     OutboundDeliveryState,
-    ReminderOccurrence,
+    RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
+    SenderKind,
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
     SessionRuntimeState,
+    SystemMessageKind,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.session import (
     _RuntimeNotification,
 )
+from bazaar_compute_node.core.orchestration.turn import inbox_notice
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     RuntimeCommandContext,
     RuntimeSessionReconciliation,
 )
-from bazaar_compute_node.core.storage import IHandoffStorageScope, IStorage
+from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import (
     ENGLISH,
@@ -164,6 +165,50 @@ def make_budget() -> TimeoutBudget:
     )
 
 
+def test_inbox_notice_matches_target_delta_contract() -> None:
+    group_first = replace(
+        make_message(
+            seq=1,
+            message_id="11111111-1111-4111-8111-111111111111",
+        ),
+        target="group:thread",
+        target_kind=ChannelTargetKind.GROUP,
+        metadata={"sender_kind": "human", "threaded": True},
+    )
+    group_latest = replace(
+        make_message(
+            seq=2,
+            message_id="22222222-2222-4222-8222-222222222222",
+        ),
+        target="group:thread",
+        target_kind=ChannelTargetKind.GROUP,
+        mentions_agent=True,
+        metadata={"sender_kind": "human", "threaded": True},
+    )
+    direct = replace(
+        make_message(
+            seq=3,
+            message_id="33333333-3333-4333-8333-333333333333",
+        ),
+        target="dm:alice",
+    )
+
+    assert inbox_notice(
+        (group_first, group_latest, direct),
+        total_unread_count=5,
+        closing_bracket_on_own_line=True,
+    ) == (
+        "[inbox notice:\n"
+        "Inbox update: 5 unread messages total; 2 changed targets\n"
+        "dm:alice  pending: 1 message · first msg=33333333 · "
+        "latest sender @Sender · latest msg=33333333 · dm\n"
+        "group:thread  pending: 2 messages · first msg=11111111 · "
+        "latest sender @Sender · latest msg=22222222 · "
+        "you were mentioned · thread\n"
+        "]"
+    )
+
+
 async def make_node(
     *,
     workspace: Callable[[], Path] = Path.cwd,
@@ -217,7 +262,6 @@ async def make_sqlite_node() -> tuple[
         channel=channel,
         runtime=runtime,
         storage=storage_scope,
-        handoff_storage=cast(IHandoffStorageScope, storage_scope),
         audit=audit,
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
@@ -1009,21 +1053,8 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             body="revised draft",
             created_at_ms=6,
         )
-        assert isinstance(revised, MessageSendFreshnessHold)
-        assert revised.draft_replaced is True
-        assert len(channel.send_attempts) == 1
-
-        await orchestrator.command_service.check("bcn-1")
-        delivered_revised = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-send-revised",
-            target="#test:bcn-1",
-            body="",
-            created_at_ms=7,
-            send_draft=True,
-        )
-        assert isinstance(delivered_revised, Message)
-        assert delivered_revised.body == "revised draft"
+        assert isinstance(revised, Message)
+        assert revised.body == "revised draft"
         assert len(channel.send_attempts) == 2
     finally:
         await orchestrator.stop(timeout=1)
@@ -1152,7 +1183,9 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
 
 @pytest.mark.asyncio
-async def test_send_validates_target_and_preserves_provider_delivery_states() -> None:
+async def test_send_delivers_cross_session_and_preserves_provider_delivery_states() -> (
+    None
+):
     orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
@@ -1168,7 +1201,9 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 == 1
             )
         )
-        await orchestrator._record_inbound(make_message(session_id="bcn-other"))
+        target_anchor = make_message(session_id="bcn-other")
+        await orchestrator._record_inbound(target_anchor)
+        await orchestrator.command_service.check("bcn-1")
 
         cross_session_target = await orchestrator.command_service.send(
             session_id="bcn-1",
@@ -1176,19 +1211,70 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
             target="#test:bcn-other",
             body="reply",
             created_at_ms=2,
+            reply_to_message_id=target_anchor.message_id,
         )
-        assert cross_session_target == MessageSendHandoffRequired(
-            target="#test:bcn-other"
+        assert isinstance(cross_session_target, Message)
+        assert cross_session_target.session_id == "bcn-other"
+        assert cross_session_target.delivery_state is OutboundDeliveryState.SENT
+        assert channel.send_attempts[-1].session_id == "bcn-other"
+        assert channel.send_attempts[-1].provider_reply_to_message_id == (
+            target_anchor.provider_message_id
         )
-        assert not _stored_message_index(
-            storage,
-            direction=MessageDirection.OUTBOUND,
+        target_messages = _stored_messages(storage, "bcn-other")
+        handoff_message = target_messages[-1]
+        assert handoff_message.system_message_kind is SystemMessageKind.HANDOFF
+        assert handoff_message.metadata["system_message_outbound_message_id"] == (
+            cross_session_target.message_id
         )
-        assert not channel.send_attempts
+        assert cross_session_target.message_id in handoff_message.body
+        assert handoff_message.metadata["system_message_source_target"] == (
+            "#test:bcn-1"
+        )
         assert any(
-            event.event_name == "tool.bcc.message.send.cross_session_hold"
-            for event in audit.events
+            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
+        with pytest.raises(ValueError, match="target conversation"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-cross-session-invalid-reply",
+                target="#test:bcn-other",
+                body="invalid reply",
+                created_at_ms=3,
+                reply_to_message_id=make_message(seq=1).message_id,
+            )
+        channel.queue_send_result(
+            ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_rejected",
+                error_message="provider rejected cross-session delivery",
+            )
+        )
+        failed_cross_session = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-cross-session-failed",
+            target="#test:bcn-other",
+            body="failed cross-session reply",
+            created_at_ms=3,
+        )
+        assert isinstance(failed_cross_session, Message)
+        assert failed_cross_session.delivery_state is OutboundDeliveryState.FAILED
+        assert (
+            sum(
+                message.system_message_kind is SystemMessageKind.HANDOFF
+                for message in _stored_messages(storage, "bcn-other")
+            )
+            == 1
+        )
+        with pytest.raises(ValueError, match="another target"):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-cross-session-wrong-draft-target",
+                target="#test:bcn-1",
+                body="",
+                created_at_ms=3,
+                send_draft=True,
+            )
+        cross_session_attempt_count = len(channel.send_attempts)
 
         await orchestrator.command_service.check("bcn-1")
         with pytest.raises(ValueError, match="must not be empty"):
@@ -1206,7 +1292,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
                 direction=MessageDirection.OUTBOUND,
             ).values()
         )
-        assert not channel.send_attempts
+        assert len(channel.send_attempts) == cross_session_attempt_count
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1224,7 +1310,7 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(queued, Message)
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[0]]
+        assert channel.queued_messages == [channel.send_attempts[2]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1310,8 +1396,8 @@ async def test_send_validates_target_and_preserves_provider_delivery_states() ->
         assert isinstance(failed, Message)
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 4
-        assert not channel.sent_messages
+        assert len(channel.send_attempts) == 6
+        assert len(channel.sent_messages) == 1
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )
@@ -1375,16 +1461,17 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert steered_session == orchestrator.runtime_session("bcn-1")
         assert steered_turn.turn_id == "turn-message-bcn-1-1"
         assert steer_input == (
-            "[inbox notice session=bcn-1]\n"
-            "Inbox update: 2 unread message(s). "
-            "Use the message command to read them."
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 1 changed target\n"
+            "#test:bcn-1  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm]"
         )
         second_body = second.body
         assert second_body is not None
         assert second_body not in steer_input
         second_sender = second.sender
         assert second_sender is not None
-        assert second_sender.display_name not in steer_input
+        assert f"latest sender @{second_sender.display_name}" in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()
@@ -1402,7 +1489,13 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
             for event in audit.events
         )
         assert len(runtime.started_turns) == 2
-        assert "session=bcn-1" in runtime.started_turns[1][2]
+        assert runtime.started_turns[1][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 1 changed target\n"
+            "#test:bcn-1  pending: 2 messages · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1815,7 +1908,9 @@ async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
+async def test_reminder_system_message_error_feedback_uses_target_without_reply() -> (
+    None
+):
     orchestrator, channel, runtime, storage, _ = await make_node()
     anchor = make_message(seq=1, message_id=str(uuid7()))
     try:
@@ -1826,102 +1921,137 @@ async def test_reminder_error_feedback_replies_to_anchor_message() -> None:
             "bcn-1",
             direction=MessageDirection.INBOUND,
         )[0]
-        occurrence_id = str(uuid7())
-        storage.reminder_occurrences[occurrence_id] = ReminderOccurrence(
-            occurrence_id=occurrence_id,
-            reminder_id=str(uuid7()),
-            owner_session_id="bcn-1",
-            occurrence_no=1,
-            anchor_message_id=canonical_anchor.message_id,
-            scheduled_for_ms=2,
-            fired_at_ms=2,
-            next_fire_at_ms=None,
-            overdue=False,
-            read_at_ms=None,
-            created_at_ms=2,
+        reminder_message = await cast(IStorage, storage).save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=str(uuid7()),
+                session_id=canonical_anchor.session_id,
+                channel_session_id=canonical_anchor.channel_session_id,
+                channel=canonical_anchor.channel,
+                provider_thread_id=canonical_anchor.provider_thread_id,
+                provider_message_id=None,
+                received_at_ms=2,
+                sender=SenderIdentity(name="system"),
+                target=canonical_anchor.target,
+                target_kind=canonical_anchor.target_kind,
+                body='🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
         )
         runtime.queue_turn_plan(
             TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
         )
 
-        await orchestrator.publish_reminder_wake("bcn-1")
+        await orchestrator.publish_inbox_wake(reminder_message)
         await wait_until(lambda: len(channel.send_attempts) == 1)
 
         request = channel.send_attempts[0]
         assert request.session_id == canonical_anchor.session_id
         assert request.target_kind is canonical_anchor.target_kind
         assert request.provider_thread_id == canonical_anchor.provider_thread_id
-        assert request.provider_reply_to_message_id == (
-            canonical_anchor.provider_message_id
-        )
+        assert request.provider_reply_to_message_id is None
     finally:
         await orchestrator.stop(timeout=1)
 
 
 @pytest.mark.asyncio
-async def test_handoff_wakes_start_idle_target_and_steer_active_target() -> None:
-    orchestrator, _, runtime, storage, _ = await make_sqlite_node()
+async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates() -> (
+    None
+):
+    orchestrator, _, runtime, storage, _ = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
-    active_task = orchestrator.dispatch_inbound(make_message(session_id="bcn-active"))
+    active_task = orchestrator.dispatch_inbound(
+        make_message(session_id="bcn-active", seq=1)
+    )
     try:
         await runtime.turn_started.wait()
-        source_context, _, _ = await orchestrator._record_inbound(
-            make_message(session_id="bcn-source")
+        idle_context, idle_anchor, created = await orchestrator._record_inbound(
+            make_message(session_id="bcn-idle", seq=2)
         )
-        idle_context, _, _ = await orchestrator._record_inbound(
-            make_message(session_id="bcn-idle")
-        )
-        assert source_context is not None
         assert idle_context is not None
-        scope = storage.scope("workspace-1", "Test Agent")
-        for number, target_session_id in enumerate(
-            ("bcn-idle", "bcn-idle", "bcn-active")
-        ):
-            await scope.save_handoff(
-                Handoff(
-                    handoff_id=f"handoff-{number}",
-                    command_id=f"command-{number}",
-                    source_session_id=source_context.bcn_session.id,
-                    target_session_id=target_session_id,
-                    source_message_id=None,
-                    body=f"Hidden task {number}.",
-                    created_at_ms=number + 1,
+        assert created
+        active_anchor = _stored_messages(
+            storage,
+            "bcn-active",
+            direction=MessageDirection.INBOUND,
+        )[0]
+
+        async def save_reminder_message(
+            anchor: Message, received_at_ms: int
+        ) -> Message:
+            return await cast(IStorage, storage).save_message(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=0,
+                    message_id=str(uuid7()),
+                    session_id=anchor.session_id,
+                    channel_session_id=anchor.channel_session_id,
+                    channel=anchor.channel,
+                    provider_thread_id=anchor.provider_thread_id,
+                    provider_message_id=None,
+                    received_at_ms=received_at_ms,
+                    sender=SenderIdentity(name="system"),
+                    target=anchor.target,
+                    target_kind=anchor.target_kind,
+                    body=(
+                        f'🔔 Reminder #019c1234 (one-time) — {anchor.target} — "Review"'
+                    ),
+                    metadata={
+                        "sender_kind": SenderKind.SYSTEM.value,
+                        "system_message_kind": SystemMessageKind.REMINDER.value,
+                    },
                 )
             )
 
-        await orchestrator.publish_handoff_wake("bcn-idle")
-        await orchestrator.publish_handoff_wake("bcn-active")
+        idle_reminder = await save_reminder_message(idle_anchor, 3)
+        active_reminder = await save_reminder_message(active_anchor, 4)
+        storage.runtime_attempts[f"turn-{idle_reminder.message_id}"] = RuntimeAttempt(
+            turn_id=f"turn-{idle_reminder.message_id}",
+            session_id="previous-runtime",
+            client_user_message_id=idle_reminder.message_id,
+            started_at_ms=2,
+        )
+        await orchestrator.publish_inbox_wake(idle_reminder)
+        await orchestrator.publish_inbox_wake(active_reminder)
         async with asyncio.timeout(1):
             while len(runtime.started_turns) != 2 or len(runtime.steered_turns) != 1:
                 await asyncio.sleep(0.01)
 
         idle_notice = runtime.started_turns[1][2]
-        active_session, _, active_notice = runtime.steered_turns[0]
-        assert runtime.started_turns[1][0].bcn_session_id == "bcn-idle"
-        assert idle_notice == (
-            "[handoff notice session=bcn-idle]\n"
-            "Handoffs pending: 2. Use `bcc handoff check` to read them."
+        _, _, active_notice = runtime.steered_turns[0]
+        assert "Inbox update: 2 unread messages total; 1 changed target" in idle_notice
+        assert "pending: 2 messages" in idle_notice
+        assert "latest sender @system" in idle_notice
+        assert (
+            "Inbox update: 2 unread messages total; 1 changed target" in active_notice
         )
-        assert active_session.bcn_session_id == "bcn-active"
-        assert active_notice == (
-            "[handoff notice session=bcn-active]\n"
-            "Handoffs pending: 1. Use `bcc handoff check` to read them."
+        assert "pending: 1 message" in active_notice
+        assert "latest sender @system" in active_notice
+        assert "reminder notice" not in idle_notice + active_notice
+
+        await cast(IStorage, storage).check_messages(
+            "bcn-idle",
+            checked_at_ms=5,
         )
-        pending = await scope.list_pending_handoffs("bcn-active", limit=100)
-        await scope.mark_handoffs_read(
+        await cast(IStorage, storage).check_messages(
             "bcn-active",
-            tuple(item.handoff_id for item in pending),
-            read_at_ms=4,
+            checked_at_ms=5,
         )
+        await orchestrator.publish_inbox_wake(idle_reminder)
+        await orchestrator.publish_inbox_wake(active_reminder)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(runtime.started_turns) == 2
+        assert len(runtime.steered_turns) == 1
     finally:
         for stream in tuple(runtime.active_streams):
             stream.release()
         await asyncio.gather(active_task, return_exceptions=True)
-        queue = orchestrator._runtime_queues.get("bcn-active")
-        if queue is not None:
-            await asyncio.wait_for(queue.join(), timeout=1)
         await orchestrator.stop(timeout=1)
-        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio

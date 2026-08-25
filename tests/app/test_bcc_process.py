@@ -451,7 +451,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert "Read window: 2 returned" in history_output.out
         assert f"msg={outbound_message_id}" in history_output.out
         assert "type=agent" in history_output.out
-        assert "@Agent A reply" in history_output.out
+        assert "@Agent A: reply" in history_output.out
 
         latest_response = await LocalCommandClient.request(
             node.endpoint,

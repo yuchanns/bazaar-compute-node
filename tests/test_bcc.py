@@ -206,7 +206,7 @@ def test_check_serializer_matches_text() -> None:
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
-        "type=human mentioned=false] @sender-id(sender) message body"
+        "type=human] @sender-id(sender): message body"
     )
 
 
@@ -236,6 +236,97 @@ def test_check_serializer_renders_unknown_sender_kind() -> None:
     assert "type=unknown" in serialize_check(result)
 
 
+def test_only_message_check_appends_system_message_suffixes() -> None:
+    message = message_payload(
+        sender_id=None,
+        sender_name="system",
+        sender_kind="system",
+    )
+    reminder_cases = (
+        (
+            '🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+            "(to snooze/cancel: bcc reminder --help)",
+        ),
+        (
+            (
+                "🔔 Reminder #019c1234 (recurring · every:15m) — dm:alice — "
+                '"Review"\nNext iteration: 2026-08-25T04:15:00.000Z'
+            ),
+            "(to snooze/update/cancel: bcc reminder --help)",
+        ),
+    )
+    for body, operation in reminder_cases:
+        message["body"] = body
+        message["system_message_kind"] = "reminder"
+        checked = serialize_check(
+            {
+                "messages": [message],
+                "referenced_messages": [],
+                "snapshot_seq": 7,
+                "delivered_through_seq": 7,
+            }
+        )
+        read = serialize_read(
+            {
+                "messages": [message],
+                "referenced_messages": [],
+                "snapshot_seq": 7,
+                "first_seq": 7,
+                "last_seq": 7,
+            }
+        )
+        assert checked.endswith(
+            f"{body}\n{operation}\n"
+            "Respond as appropriate. Complete all your work before stopping.\n"
+            "Reply in the channel or create/reply in a thread as appropriate; "
+            "use each message's `target` and `msg` fields to choose the exact target."
+        )
+        assert operation not in read
+        assert "Respond as appropriate" not in read
+        assert body in read
+
+    handoff_body = (
+        "🤝 Handoff from group:source — message outbound-message-1 was sent "
+        "here from that conversation."
+    )
+    message.update(
+        body=handoff_body,
+        system_message_kind="handoff",
+        system_message_source_target="group:source",
+        system_message_source_message_id="source-message-1",
+    )
+    handoff_result = {
+        "messages": [message],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+    checked = serialize_check(handoff_result)
+    read = serialize_read(
+        {
+            "messages": [message],
+            "referenced_messages": [],
+            "snapshot_seq": 7,
+            "first_seq": 7,
+            "last_seq": 7,
+        },
+    )
+    assert checked.endswith(
+        f"{handoff_body}\n"
+        "To understand why this message was sent, inspect the source context:\n"
+        '  bcc message read --target "group:source" --around "source-message-1"\n'
+        "If you have no objection to why the message was sent, do not announce "
+        "or explain the handoff, and do not repeat or respond to the referenced "
+        "message; it has already been delivered. Continue only work already in "
+        "progress in this conversation that is independent of that message; if "
+        "there is none, stop.\n"
+        "Mention the handoff only when its reason is unclear, conflicts with the "
+        "current conversation, or requires a decision."
+    )
+    assert "inspect the source context" not in read
+    assert handoff_body in read
+
+
 def test_check_serializer_renders_provider_username_as_sender() -> None:
     result = {
         "messages": [message_payload(sender_name="test-user")],
@@ -244,7 +335,7 @@ def test_check_serializer_renders_provider_username_as_sender() -> None:
         "delivered_through_seq": 7,
     }
 
-    assert "@sender-id(test-user) message body" in serialize_check(result)
+    assert "@sender-id(test-user): message body" in serialize_check(result)
 
 
 def test_check_serializer_falls_back_to_sender_id() -> None:
@@ -255,7 +346,7 @@ def test_check_serializer_falls_back_to_sender_id() -> None:
         "delivered_through_seq": 7,
     }
 
-    assert "@sender-id message body" in serialize_check(result)
+    assert "@sender-id: message body" in serialize_check(result)
 
 
 def test_check_serializer_preserves_zero_provider_timestamp() -> None:
@@ -381,13 +472,31 @@ def test_message_send_accepts_ordered_repeatable_attachments() -> None:
 
 
 def test_message_send_accepts_active_draft_mode() -> None:
-    args = build_parser().parse_args(
+    parser = build_parser()
+    args = parser.parse_args(
         ("message", "send", "--send-draft", "--target", "#work:parent123")
     )
 
     assert args.send_draft is True
     assert args.reply_to is None
     assert args.attachment == []
+    assert not {
+        "source",
+        "source_target",
+        "source_target_id",
+        "target_id",
+    }.intersection(vars(args))
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            (
+                "message",
+                "send",
+                "--target",
+                "#work:parent123",
+                "--source-target",
+                "#work:source",
+            )
+        )
 
 
 def test_read_serializer_includes_positioning_and_reply_target() -> None:
@@ -403,8 +512,7 @@ def test_read_serializer_includes_positioning_and_reply_target() -> None:
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
-        "type=human replyTarget=#work:parent123 "
-        "mentioned=false] @sender-id(sender) message body"
+        "type=human replyTarget=#work:parent123] @sender-id(sender): message body"
     )
 
 

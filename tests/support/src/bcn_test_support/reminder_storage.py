@@ -3,19 +3,23 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 from types import TracebackType
-from typing import Self, cast
+from typing import Self
 from uuid import uuid7
 
 from bazaar_compute_node.core.models import (
+    InboundAttachment,
+    Message,
     MessageDirection,
     OwnedReminder,
-    OwnedReminderOccurrence,
     Reminder,
-    ReminderOccurrence,
-    ReminderOwner,
     ReminderState,
+    SenderKind,
+    SystemMessageKind,
 )
-from bazaar_compute_node.core.reminder import canonical_id_reference
+from bazaar_compute_node.core.reminder import (
+    canonical_id_reference,
+    render_reminder_fire_body,
+)
 
 from .storage import (
     MemoryStorage as _BaseMemoryStorage,
@@ -29,7 +33,6 @@ class MemoryStorage(_BaseMemoryStorage):
     def __init__(self) -> None:
         super().__init__()
         self.reminders: dict[str, Reminder] = {}
-        self.reminder_occurrences: dict[str, ReminderOccurrence] = {}
 
     def _operation_for_agent(
         self,
@@ -53,20 +56,11 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     ) -> None:
         super().__init__(storage, agent_id=agent_id, agent_name=agent_name)
         self._reminder_storage = storage
-        self._reminder_snapshot: (
-            tuple[
-                dict[str, Reminder],
-                dict[str, ReminderOccurrence],
-            ]
-            | None
-        ) = None
+        self._reminder_snapshot: dict[str, Reminder] | None = None
 
     async def __aenter__(self) -> Self:
         await super().__aenter__()
-        self._reminder_snapshot = (
-            deepcopy(self._reminder_storage.reminders),
-            deepcopy(self._reminder_storage.reminder_occurrences),
-        )
+        self._reminder_snapshot = deepcopy(self._reminder_storage.reminders)
         return self
 
     async def __aexit__(
@@ -76,10 +70,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         traceback: TracebackType | None,
     ) -> bool:
         if exc_type is not None and self._reminder_snapshot is not None:
-            (
-                self._reminder_storage.reminders,
-                self._reminder_storage.reminder_occurrences,
-            ) = self._reminder_snapshot
+            self._reminder_storage.reminders = self._reminder_snapshot
         return await super().__aexit__(exc_type, exc_value, traceback)
 
     async def get_reminder(
@@ -167,7 +158,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if existing.state is ReminderState.CANCELED:
             raise ValueError("a canceled reminder cannot transition")
         if reminder.state is ReminderState.FIRED:
-            raise ValueError("reminder fire must use save_fired_occurrence")
+            raise ValueError("reminder fire must materialize a system message")
         if existing.state is ReminderState.FIRED:
             if reminder.state is not ReminderState.SCHEDULED:
                 raise ValueError("a fired reminder can only be snoozed to scheduled")
@@ -275,166 +266,50 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         )
         return tuple(reminders[:limit])
 
-    async def save_fired_occurrence(
+    async def materialize_owned_reminder_message(
         self,
         expected_revision: int,
-        reminder: object,
-        occurrence: object,
-    ) -> ReminderOccurrence:
-        if not isinstance(reminder, Reminder):
-            raise TypeError("reminder must be a Reminder")
-        if not isinstance(occurrence, ReminderOccurrence):
-            raise TypeError("occurrence must be a ReminderOccurrence")
-        existing = await self.get_reminder(
-            reminder.owner_session_id, reminder.reminder_id
+        reminder: OwnedReminder,
+        system_message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment]:
+        incoming = reminder.reminder
+        existing_owned = await self.get_owned_reminder(
+            reminder.agent_id,
+            incoming.owner_session_id,
+            incoming.reminder_id,
         )
-        if existing is None:
+        if existing_owned is None:
             raise ValueError("reminder not found")
+        existing = existing_owned.reminder
         _validate_expected_revision(existing, expected_revision)
-        _validate_reminder_identity(existing, reminder)
+        _validate_reminder_identity(existing, incoming)
         if existing.state is not ReminderState.SCHEDULED:
             raise ValueError("only a scheduled reminder can fire")
-        if reminder.revision != expected_revision + 1:
+        if incoming.revision != expected_revision + 1:
             raise ValueError("reminder revision must advance by exactly one")
-        if reminder.last_occurrence_no != existing.last_occurrence_no + 1:
+        if incoming.last_occurrence_no != existing.last_occurrence_no + 1:
             raise ValueError("reminder occurrence number must advance by exactly one")
-        if reminder.last_fired_at_ms != occurrence.fired_at_ms:
-            raise ValueError("reminder fire time does not match occurrence")
-        if reminder.updated_at_ms != occurrence.fired_at_ms:
-            raise ValueError("reminder update time does not match occurrence fire")
-        if reminder.title != existing.title:
-            raise ValueError("fire cannot change reminder title")
-        if reminder.repeat_rule != existing.repeat_rule:
-            raise ValueError("fire cannot change reminder cadence")
-        if occurrence.reminder_id != existing.reminder_id:
-            raise ValueError("occurrence reminder binding does not match")
-        if occurrence.owner_session_id != existing.owner_session_id:
-            raise ValueError("occurrence owner binding does not match")
-        if occurrence.anchor_message_id != existing.anchor_message_id:
-            raise ValueError("occurrence anchor binding does not match")
-        if occurrence.occurrence_no != reminder.last_occurrence_no:
-            raise ValueError("occurrence number does not match reminder history")
-        if occurrence.scheduled_for_ms != existing.next_fire_at_ms:
-            raise ValueError("occurrence scheduled slot does not match reminder")
-        if occurrence.next_fire_at_ms != reminder.next_fire_at_ms:
-            raise ValueError("occurrence next fire does not match reminder")
-        if occurrence.overdue != (occurrence.fired_at_ms > occurrence.scheduled_for_ms):
-            raise ValueError("occurrence overdue flag does not match fire time")
-        if occurrence.read_at_ms is not None:
-            raise ValueError("a new occurrence must be pending")
-        if any(
-            persisted.reminder_id == existing.reminder_id
-            and persisted.occurrence_no == occurrence.occurrence_no
-            for persisted in self._reminder_storage.reminder_occurrences.values()
+        if incoming.last_fired_at_ms is None:
+            raise ValueError("fired reminder requires a fire time")
+        if system_message.sender_kind is not SenderKind.SYSTEM:
+            raise ValueError("reminder fire requires a system message")
+        if system_message.system_message_kind is not SystemMessageKind.REMINDER:
+            raise ValueError("reminder fire requires reminder system metadata")
+        anchor = await self.resolve_message(
+            incoming.owner_session_id,
+            incoming.anchor_message_id,
+            direction=MessageDirection.INBOUND,
+        )
+        if anchor is None:
+            raise ValueError("Reminder anchor message is missing")
+        if system_message.body != render_reminder_fire_body(
+            incoming,
+            anchor.target,
+            incoming.next_fire_at_ms,
         ):
-            raise ValueError("reminder occurrence number is already persisted")
-        canonical = replace(occurrence, occurrence_id=str(uuid7()))
-        self._reminder_storage.reminder_occurrences[canonical.occurrence_id] = canonical
-        self._reminder_storage.reminders[reminder.reminder_id] = reminder
-        return canonical
-
-    async def save_owned_fired_occurrence(
-        self,
-        expected_revision: int,
-        reminder: object,
-        occurrence: object,
-    ) -> OwnedReminderOccurrence:
-        if not isinstance(reminder, OwnedReminder):
-            raise TypeError("reminder must be an OwnedReminder")
-        if not isinstance(occurrence, OwnedReminderOccurrence):
-            raise TypeError("occurrence must be an OwnedReminderOccurrence")
-        if reminder.agent_id != occurrence.agent_id:
-            raise ValueError("Reminder and occurrence Agent ownership does not match")
-        if (
-            await self.get_owned_reminder(
-                reminder.agent_id,
-                reminder.reminder.owner_session_id,
-                reminder.reminder.reminder_id,
-            )
-            is None
-        ):
-            raise ValueError("reminder not found")
-        canonical = await self.save_fired_occurrence(
-            expected_revision,
-            reminder.reminder,
-            occurrence.occurrence,
-        )
-        return OwnedReminderOccurrence(reminder.agent_id, canonical)
-
-    async def list_pending_reminder_occurrences(
-        self,
-        owner_session_id: str,
-        *,
-        limit: int,
-    ) -> tuple[ReminderOccurrence, ...]:
-        occurrences = [
-            occurrence
-            for occurrence in self._reminder_storage.reminder_occurrences.values()
-            if occurrence.owner_session_id == owner_session_id and occurrence.pending
-        ]
-        occurrences.sort(
-            key=lambda occurrence: (occurrence.fired_at_ms, occurrence.occurrence_id)
-        )
-        return tuple(occurrences[:limit])
-
-    async def count_pending_reminder_occurrences(self, owner_session_id: str) -> int:
-        return sum(
-            occurrence.owner_session_id == owner_session_id and occurrence.pending
-            for occurrence in self._reminder_storage.reminder_occurrences.values()
-        )
-
-    async def mark_reminder_occurrences_read(
-        self,
-        owner_session_id: str,
-        occurrence_ids: object,
-        *,
-        read_at_ms: int,
-    ) -> tuple[ReminderOccurrence, ...]:
-        if not isinstance(occurrence_ids, tuple):
-            raise TypeError("occurrence_ids must be a tuple")
-        occurrence_ids = cast(tuple[str, ...], occurrence_ids)
-        if not occurrence_ids:
-            return ()
-        if len(set(occurrence_ids)) != len(occurrence_ids):
-            raise ValueError("occurrence_ids cannot contain duplicates")
-        marked: list[ReminderOccurrence] = []
-        for occurrence_id in occurrence_ids:
-            reference = canonical_id_reference(occurrence_id)
-            occurrence = self._reminder_storage.reminder_occurrences.get(reference)
-            if occurrence is None or occurrence.owner_session_id != owner_session_id:
-                raise ValueError("reminder occurrence does not belong to owner")
-            updated = occurrence.mark_read(at_ms=read_at_ms)
-            self._reminder_storage.reminder_occurrences[reference] = updated
-            marked.append(updated)
-        return tuple(marked)
-
-    async def list_sessions_with_pending_reminders(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    occurrence.owner_session_id
-                    for occurrence in self._reminder_storage.reminder_occurrences.values()
-                    if occurrence.pending
-                }
-            )
-        )
-
-    async def list_pending_reminder_owners(self) -> tuple[ReminderOwner, ...]:
-        owners: set[ReminderOwner] = set()
-        for occurrence in self._reminder_storage.reminder_occurrences.values():
-            if not occurrence.pending:
-                continue
-            agent_id = self._agent_id_for_session(occurrence.owner_session_id)
-            if agent_id is not None:
-                owners.add(
-                    ReminderOwner(
-                        agent_id=agent_id,
-                        owner_session_id=occurrence.owner_session_id,
-                    )
-                )
-        return tuple(
-            sorted(owners, key=lambda owner: (owner.agent_id, owner.owner_session_id))
-        )
+            raise ValueError("system message body does not match reminder fire")
+        self._reminder_storage.reminders[incoming.reminder_id] = incoming
+        return await self._save_inbound_message(system_message)
 
     def _owned_reminder(self, reminder: Reminder) -> OwnedReminder | None:
         agent_id = self._agent_id_for_session(reminder.owner_session_id)

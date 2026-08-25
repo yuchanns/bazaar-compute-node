@@ -5,7 +5,6 @@ import pytest
 from bazaar_compute_node.bcc import (
     build_parser,
     serialize_reminder_cancel,
-    serialize_reminder_check,
     serialize_reminder_list,
     serialize_reminder_schedule,
     serialize_reminder_snooze,
@@ -14,7 +13,6 @@ from bazaar_compute_node.bcc import (
 
 REMINDER_ID = "019c1234-0000-7000-8000-000000000001"
 ANCHOR_ID = "019c5678-0000-7000-8000-000000000001"
-OCCURRENCE_ID = "019c9999-0000-7000-8000-000000000001"
 
 
 def reminder_payload(
@@ -43,15 +41,17 @@ def reminder_payload(
     }
 
 
-def test_reminder_parser_exposes_only_the_six_supported_commands() -> None:
+def test_reminder_parser_exposes_only_the_five_supported_commands() -> None:
     parser = build_parser()
-    for command in ("schedule", "check", "list", "snooze", "update", "cancel"):
+    for command in ("schedule", "list", "snooze", "update", "cancel"):
         args = parser.parse_args(("reminder", command))
         assert args.resource == "reminder"
         assert args.command == command
 
     with pytest.raises(SystemExit):
         parser.parse_args(("reminder", "log"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(("reminder", "check"))
     with pytest.raises(SystemExit):
         parser.parse_args(("reminder", "schedule", "--channel", "dm:alice"))
     with pytest.raises(SystemExit):
@@ -63,72 +63,6 @@ def test_reminder_schedule_serializer_matches_text() -> None:
     assert output == (
         f'Reminder scheduled: #{REMINDER_ID} (one-time) "Inspect reminder"\n'
         "Next: 2027-01-15T08:00:00.000Z"
-    )
-
-
-def test_reminder_check_serializer_renders_due_snapshot_and_terminal_line() -> None:
-    result = {
-        "items": [
-            {
-                "occurrence": {
-                    "occurrence_id": OCCURRENCE_ID,
-                    "reminder_id": REMINDER_ID,
-                    "owner_session_id": "bcn-a",
-                    "occurrence_no": 3,
-                    "anchor_message_id": ANCHOR_ID,
-                    "scheduled_for_ms": 1_800_000_000_000,
-                    "fired_at_ms": 1_800_000_001_000,
-                    "next_fire_at_ms": 1_800_000_900_000,
-                    "overdue": True,
-                    "read_at_ms": 1_800_000_002_000,
-                    "created_at_ms": 1_800_000_001_000,
-                },
-                "title": "Inspect reminder",
-                "canonical_target": "dm:channel-a",
-            }
-        ],
-        "has_more": False,
-    }
-
-    output = serialize_reminder_check(result)
-    assert output == (
-        f"[class=due id={REMINDER_ID} occurrence=3 "
-        "scheduled=2027-01-15T08:00:00.000Z "
-        "fired=2027-01-15T08:00:01.000Z overdue=true "
-        "next=2027-01-15T08:15:00.000Z target=dm:channel-a "
-        f"anchor={ANCHOR_ID}] Inspect reminder\n"
-        "No more pending reminders."
-    )
-
-
-def test_reminder_check_serializer_distinguishes_empty_and_more() -> None:
-    assert serialize_reminder_check({"items": [], "has_more": False}) == (
-        "No pending reminders."
-    )
-    result = {
-        "items": [
-            {
-                "occurrence": {
-                    "occurrence_id": OCCURRENCE_ID,
-                    "reminder_id": REMINDER_ID,
-                    "owner_session_id": "bcn-a",
-                    "occurrence_no": 1,
-                    "anchor_message_id": ANCHOR_ID,
-                    "scheduled_for_ms": 1_800_000_000_000,
-                    "fired_at_ms": 1_800_000_000_000,
-                    "next_fire_at_ms": None,
-                    "overdue": False,
-                    "read_at_ms": 1_800_000_000_001,
-                    "created_at_ms": 1_800_000_000_000,
-                },
-                "title": "Inspect reminder",
-                "canonical_target": "dm:channel-a",
-            }
-        ],
-        "has_more": True,
-    }
-    assert serialize_reminder_check(result).endswith(
-        "More pending reminders remain. Run `bcc reminder check` again."
     )
 
 

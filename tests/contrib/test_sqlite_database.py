@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from stat import S_IMODE
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -22,22 +24,35 @@ from bazaar_compute_node.contrib.sqlite.migrations import (
     SCHEMA_MIGRATION,
     STORAGE_ACCESS_MIGRATION,
 )
+from bazaar_compute_node.core.command import (
+    MessageDraft,
+    MessageSendFreshnessHold,
+    OutboundFreshnessPass,
+)
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
+    ChannelTargetKind,
+    ConsumerCursor,
     InboundAttachment,
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    OwnedReminder,
+    Reminder,
+    ReminderState,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
+    SystemMessageKind,
 )
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
+from bazaar_compute_node.core.reminder import render_reminder_fire_body
+from bazaar_compute_node.core.storage import IStorage
 
 
 @pytest.mark.asyncio
-async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
+async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
@@ -67,8 +82,6 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
             body="hello",
             delivery_state=OutboundDeliveryState.PENDING,
             created_at_ms=2,
-            snapshot_seq=3,
-            current_inbound_seq=3,
             provider_attempted_at_ms=4,
         )
 
@@ -108,6 +121,146 @@ async def test_sqlite_persists_provider_attempt_lifecycle() -> None:
         assert history.history.snapshot_seq == sent.seq
         assert catalog.targets[0].latest_message_id == sent.message_id
         assert catalog.targets[0].latest_sender == SenderIdentity(name="Test Agent")
+
+        source_channel = ChannelSession(
+            id="channel-source",
+            channel="telegram",
+            provider_thread_id="thread-source",
+            created_at_ms=10,
+            updated_at_ms=10,
+            target_kind=ChannelTargetKind.GROUP,
+        )
+        source_session = BcnSession(
+            id="bcn-source",
+            channel_session_id=source_channel.id,
+            workspace_id="agent-1",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        source_message = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="018f0000-0000-7000-8000-000000000010",
+            session_id=source_session.id,
+            channel_session_id=source_channel.id,
+            channel=source_channel.channel,
+            provider_thread_id=source_channel.provider_thread_id,
+            provider_message_id="provider-source",
+            received_at_ms=10,
+            sender=SenderIdentity(name="Source User"),
+            target="group:source",
+            target_kind=ChannelTargetKind.GROUP,
+            body="source context",
+            metadata={"sender_kind": SenderKind.HUMAN.value},
+        )
+        target_channel = ChannelSession(
+            id="channel-target",
+            channel="telegram",
+            provider_thread_id="thread-target",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        target_session = BcnSession(
+            id="bcn-target",
+            channel_session_id=target_channel.id,
+            workspace_id="agent-1",
+            created_at_ms=10,
+            updated_at_ms=10,
+        )
+        await scope.save_channel_session(source_channel)
+        await scope.save_bcn_session(source_session)
+        source_message = await scope.save_message(source_message)
+        await scope.save_channel_session(target_channel)
+        await scope.save_bcn_session(target_session)
+        draft = MessageDraft(
+            source_target_id=source_session.id,
+            target="dm:target",
+            target_id=target_session.id,
+            body="cross-session payload",
+            attachments=(),
+            reply_to_message_id=None,
+            source_message_id=source_message.message_id,
+            created_at_ms=11,
+        )
+        fresh = await scope.check_outbound_freshness(
+            source_session.id,
+            source_snapshot_seq=source_message.seq,
+            payload=draft,
+            draft_replaced=False,
+        )
+        assert isinstance(fresh, OutboundFreshnessPass)
+        newer_source_message = await scope.save_message(
+            replace(
+                source_message,
+                message_id="018f0000-0000-7000-8000-000000000012",
+                provider_message_id="provider-source-2",
+                received_at_ms=12,
+                body="new source context",
+            )
+        )
+        stale_recheck = await scope.materialize_outbound_if_fresh(
+            source_session.id,
+            fresh.current_inbound_seq,
+            target_session.id,
+            command_id="command-raced",
+            payload=draft,
+            attempted_at_ms=12,
+        )
+        assert isinstance(stale_recheck.outcome, MessageSendFreshnessHold)
+        assert stale_recheck.outcome.messages == (newer_source_message,)
+        assert not any(
+            message.command_id == "command-raced"
+            for message in await scope.list_messages(
+                target_session.id,
+                direction=MessageDirection.OUTBOUND,
+            )
+        )
+        cross_pending = await scope.save_message(
+            Message(
+                direction=MessageDirection.OUTBOUND,
+                seq=0,
+                message_id="outbound-cross",
+                command_id="command-cross",
+                session_id=target_session.id,
+                channel_session_id=target_channel.id,
+                target="dm:target",
+                body="cross-session payload",
+                delivery_state=OutboundDeliveryState.PENDING,
+                created_at_ms=11,
+                provider_attempted_at_ms=12,
+                metadata={
+                    "source_target_id": source_session.id,
+                    "target_id": target_session.id,
+                    "source_message_id": source_message.message_id,
+                    "handoff_message_id": ("018f0000-0000-7000-8000-000000000011"),
+                },
+            )
+        )
+        cross_sent = cross_pending.transition_to(
+            OutboundDeliveryState.SENT,
+            at_ms=13,
+            provider_message_id="provider-cross",
+        )
+        first_finalize = await scope.finalize_outbound_delivery(cross_sent)
+        second_finalize = await scope.finalize_outbound_delivery(cross_sent)
+        target_history = await scope.read_message_history(
+            source_session.id,
+            target="dm:target",
+            around_message_id=cross_pending.message_id,
+            limit=10,
+        )
+
+        assert first_finalize == second_finalize
+        assert first_finalize.handoff_message is not None
+        assert (
+            first_finalize.handoff_message.system_message_kind
+            is SystemMessageKind.HANDOFF
+        )
+        assert first_finalize.outbound.message_id in first_finalize.handoff_message.body
+        assert target_history.history.messages == (
+            first_finalize.outbound,
+            first_finalize.handoff_message,
+        )
     finally:
         await database.stop(timeout=2)
 
@@ -172,6 +325,174 @@ async def test_sqlite_persists_sender_display_name_and_kind(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        storage = cast(IStorage, database)
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        anchor = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="018f0000-0000-7000-8000-000000000002",
+            session_id=bcn_session.id,
+            channel_session_id=channel_session.id,
+            channel=channel_session.channel,
+            provider_thread_id=channel_session.provider_thread_id,
+            provider_message_id="provider-message-1",
+            received_at_ms=1_000,
+            sender=SenderIdentity(id="user-1", name="Test User"),
+            target="dm:channel-1",
+            body="remember this",
+            metadata={"sender_kind": SenderKind.HUMAN.value},
+        )
+        reminder = Reminder(
+            reminder_id="018f0000-0000-7000-8000-000000000001",
+            owner_session_id=bcn_session.id,
+            anchor_message_id=anchor.message_id,
+            title="Review the pull request",
+            state=ReminderState.SCHEDULED,
+            next_fire_at_ms=2_000,
+            repeat_rule=None,
+            timezone="UTC",
+            revision=1,
+            last_occurrence_no=0,
+            created_at_ms=1_000,
+            updated_at_ms=1_000,
+        )
+
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+        anchor = await scope.save_message(anchor)
+        await scope.save_consumer_cursor(
+            ConsumerCursor(
+                session_id=bcn_session.id,
+                delivered_through_seq=anchor.seq,
+                updated_at_ms=1_100,
+            )
+        )
+        reminder = await scope.save_new_reminder(reminder)
+        fired = reminder.record_fire(
+            scheduled_for_ms=2_000,
+            fired_at_ms=2_100,
+            next_fire_at_ms=None,
+        )
+
+        def system_message(message_id: str) -> Message:
+            return Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=message_id,
+                session_id=bcn_session.id,
+                channel_session_id=channel_session.id,
+                channel=channel_session.channel,
+                provider_thread_id=channel_session.provider_thread_id,
+                provider_message_id=None,
+                provider_time_ms=None,
+                received_at_ms=2_100,
+                sender=SenderIdentity(id="system", name="system"),
+                target=anchor.target,
+                target_kind=anchor.target_kind,
+                body=render_reminder_fire_body(fired, anchor.target, None),
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
+
+        with pytest.raises(ValueError, match="already in use"):
+            await storage.materialize_owned_reminder_message(
+                reminder.revision,
+                OwnedReminder("agent-1", fired),
+                system_message(anchor.message_id),
+            )
+        assert (
+            await scope.get_reminder(bcn_session.id, reminder.reminder_id) == reminder
+        )
+
+        materialized = await storage.materialize_owned_reminder_message(
+            reminder.revision,
+            OwnedReminder("agent-1", fired),
+            system_message("018f0000-0000-7000-8000-000000000003"),
+        )
+        persisted = await scope.get_message(materialized.message_id)
+        owners = await storage.list_unread_message_owners()
+        catalog = await scope.list_inbox_targets()
+        freshness = await scope.check_outbound_freshness(
+            bcn_session.id,
+            source_snapshot_seq=anchor.seq,
+            payload=MessageDraft(
+                source_target_id=bcn_session.id,
+                target=anchor.target,
+                target_id=bcn_session.id,
+                body="acknowledged",
+                attachments=(),
+                reply_to_message_id=None,
+                source_message_id=materialized.message_id,
+                created_at_ms=2_200,
+            ),
+            draft_replaced=False,
+        )
+        history = await scope.read_message_history(
+            bcn_session.id,
+            target=anchor.target,
+            around_message_id=materialized.message_id,
+            limit=10,
+        )
+        checked = await scope.check_messages(
+            bcn_session.id,
+            checked_at_ms=2_300,
+        )
+
+        assert materialized.seq == anchor.seq + 1
+        assert persisted == materialized
+        assert persisted is not None
+        assert persisted.sender == SenderIdentity(id="system", name="system")
+        assert persisted.system_message_kind is SystemMessageKind.REMINDER
+        assert await scope.get_reminder(bcn_session.id, reminder.reminder_id) == fired
+        assert len(owners) == 1
+        assert owners[0].agent_id == "agent-1"
+        assert owners[0].owner_session_id == bcn_session.id
+        assert owners[0].trigger_message == materialized
+        assert catalog.targets[0].pending_count == 1
+        assert catalog.targets[0].latest_message_id == materialized.message_id
+        assert catalog.targets[0].latest_sender == SenderIdentity(name="system")
+        assert catalog.targets[0].last_activity_at_ms == 2_100
+        assert isinstance(freshness, MessageSendFreshnessHold)
+        assert freshness.messages == (materialized,)
+        assert tuple(message.message_id for message in history.history.messages) == (
+            anchor.message_id,
+            materialized.message_id,
+        )
+        assert history.history.messages[-1].body == materialized.body
+        assert (
+            history.history.messages[-1].system_message_kind
+            is SystemMessageKind.REMINDER
+        )
+        assert tuple(message.message_id for message in checked.messages) == (
+            materialized.message_id,
+        )
+
+        assert await storage.list_unread_message_owners() == ()
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
     data_dir = resolve_data_dir()
     database = SqliteDatabase()
@@ -192,7 +513,9 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
                 "WHERE type = 'index' AND name LIKE 'idx_%' ORDER BY name"
             )
             message_columns = await session.fetchall("PRAGMA table_info(messages)")
-            handoff_columns = await session.fetchall("PRAGMA table_info(handoffs)")
+            cursor_columns = await session.fetchall(
+                "PRAGMA table_info(consumer_cursors)"
+            )
             journal_mode = await session.fetchone("PRAGMA journal_mode")
             busy_timeout = await session.fetchone("PRAGMA busy_timeout")
             provider_identity_columns = await session.fetchall(
@@ -214,10 +537,8 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "bcn_sessions",
             "channel_sessions",
             "consumer_cursors",
-            "handoffs",
             "inbound_attachments",
             "messages",
-            "reminder_occurrences",
             "reminders",
             "runtime_attempts",
             "schema_migrations",
@@ -229,20 +550,27 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "idx_messages_outbound_command",
             "idx_messages_outbound_state_created",
             "idx_messages_reply_to_message",
-            "idx_handoffs_agent_target_read_seq",
             "idx_bcn_sessions_channel",
             "idx_channel_sessions_provider_identity",
             "idx_runtime_attempts_session_started",
             "idx_reminders_state_next",
             "idx_reminders_owner_state_updated",
-            "idx_reminder_occurrences_owner_read_fired",
-            "idx_reminder_occurrences_reminder_number",
         } <= {row["name"] for row in indexes}
         assert "compaction_completed_at_ms" in {
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 21
+        assert {row["name"] for row in message_columns}.isdisjoint(
+            {"snapshot_seq", "current_inbound_seq"}
+        )
+        assert {row["name"] for row in cursor_columns}.isdisjoint(
+            {
+                "inbox_snapshot_seq",
+                "inbox_snapshot_source",
+                "inbox_snapshot_at_ms",
+            }
+        )
         assert compaction_row is not None
         assert compaction_row["compaction_completed_at_ms"] is not None
         primary_keys = {row["name"]: row["pk"] for row in message_columns}
@@ -253,18 +581,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert "delivery_state" in primary_keys
         assert "attachments_json" in primary_keys
         assert "agent_id" in primary_keys
-        assert {row["name"] for row in handoff_columns} == {
-            "seq",
-            "handoff_id",
-            "command_id",
-            "agent_id",
-            "source_session_id",
-            "target_session_id",
-            "source_message_id",
-            "body",
-            "created_at_ms",
-            "read_at_ms",
-        }
         assert [row["name"] for row in provider_identity_columns] == [
             "agent_id",
             "channel",
@@ -295,6 +611,231 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
         assert restarted_scope.agent_name == scope.agent_name
     finally:
         await restarted.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_v19_migrates_pending_reminders_and_v21_drops_handoffs() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+    one_time_id = "018f0000-0000-7000-8000-000000000001"
+    recurring_id = "018f0000-0000-7000-8000-000000000002"
+    read_id = "018f0000-0000-7000-8000-000000000003"
+    anchor_id = "018f0000-0000-7000-8000-000000000004"
+    discarded_handoff_id = "018f0000-0000-7000-8000-000000000005"
+
+    async with aiosqlite.connect(database_path) as connection:
+        for migration in MIGRATIONS[:18]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+            await connection.commit()
+
+        await connection.execute(
+            "INSERT INTO channel_sessions "
+            "(id, channel, provider_thread_id, target_kind, following, "
+            "created_at_ms, updated_at_ms, agent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("channel-1", "test", "thread-1", "group", 1, 1, 1, "agent-1"),
+        )
+        await connection.execute(
+            "INSERT INTO bcn_sessions "
+            "(id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "agent_id) VALUES (?, ?, ?, ?, ?, ?)",
+            ("session-1", "channel-1", "agent-1", 1, 1, "agent-1"),
+        )
+        await connection.execute(
+            "INSERT INTO messages "
+            "(message_id, seq, direction, agent_id, session_id, channel_session_id, "
+            "channel, provider_thread_id, provider_message_id, received_at_ms, "
+            "sender, message_type, target, target_kind, body, mentions_agent, "
+            "notifies_runtime, metadata_json) "
+            "VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?, 'text', ?, ?, ?, 0, 1, ?)",
+            (
+                anchor_id,
+                7,
+                "agent-1",
+                "session-1",
+                "channel-1",
+                "test",
+                "thread-1",
+                "provider-anchor",
+                1,
+                "human",
+                "group:release",
+                "group",
+                "anchor",
+                '{"sender_kind":"human"}',
+            ),
+        )
+        reminder_rows = (
+            (
+                one_time_id,
+                'Review "release" ✨',
+                "fired",
+                None,
+                None,
+                2,
+                1,
+                1_000,
+            ),
+            (
+                recurring_id,
+                'Review "release" ✨',
+                "scheduled",
+                1_800_000,
+                "every:15m",
+                2,
+                1,
+                2_000,
+            ),
+            (read_id, "Already read", "fired", None, None, 2, 1, 500),
+        )
+        for (
+            reminder_id,
+            title,
+            state,
+            next_fire,
+            repeat_rule,
+            revision,
+            count,
+            fired,
+        ) in reminder_rows:
+            await connection.execute(
+                "INSERT INTO reminders "
+                "(reminder_id, owner_session_id, anchor_message_id, title, state, "
+                "next_fire_at_ms, repeat_rule, timezone, revision, "
+                "last_occurrence_no, created_at_ms, updated_at_ms, "
+                "last_fired_at_ms, agent_id) "
+                "VALUES (?, 'session-1', ?, ?, ?, ?, ?, 'UTC', ?, ?, 1, ?, ?, 'agent-1')",
+                (
+                    reminder_id,
+                    anchor_id,
+                    title,
+                    state,
+                    next_fire,
+                    repeat_rule,
+                    revision,
+                    count,
+                    fired,
+                    fired,
+                ),
+            )
+        occurrence_rows = (
+            (one_time_id, one_time_id, 1_000, None, None),
+            (recurring_id, recurring_id, 2_000, 1_800_000, None),
+            (read_id, read_id, 500, None, 600),
+        )
+        for occurrence_id, reminder_id, fired_at, next_fire, read_at in occurrence_rows:
+            await connection.execute(
+                "INSERT INTO reminder_occurrences "
+                "(occurrence_id, reminder_id, owner_session_id, occurrence_no, "
+                "anchor_message_id, scheduled_for_ms, fired_at_ms, next_fire_at_ms, "
+                "overdue, read_at_ms, created_at_ms, agent_id) "
+                "VALUES (?, ?, 'session-1', 1, ?, ?, ?, ?, 0, ?, ?, 'agent-1')",
+                (
+                    occurrence_id,
+                    reminder_id,
+                    anchor_id,
+                    fired_at,
+                    fired_at,
+                    next_fire,
+                    read_at,
+                    fired_at,
+                ),
+            )
+        await connection.execute(
+            "INSERT INTO handoffs "
+            "(handoff_id, command_id, agent_id, source_session_id, "
+            "target_session_id, source_message_id, body, created_at_ms, read_at_ms) "
+            "VALUES (?, 'handoff-command', 'agent-1', 'session-1', 'session-1', "
+            "?, 'Discarded context.', 1100, NULL)",
+            (discarded_handoff_id, anchor_id),
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        messages = await scope.list_messages(
+            "session-1",
+            direction=MessageDirection.INBOUND,
+        )
+        migrated = {message.message_id: message for message in messages[1:]}
+        one_time = Reminder(
+            reminder_id=one_time_id,
+            owner_session_id="session-1",
+            anchor_message_id=anchor_id,
+            title='Review "release" ✨',
+            state=ReminderState.FIRED,
+            next_fire_at_ms=None,
+            repeat_rule=None,
+            timezone="UTC",
+            revision=2,
+            last_occurrence_no=1,
+            created_at_ms=1,
+            updated_at_ms=1_000,
+            last_fired_at_ms=1_000,
+        )
+        recurring = Reminder(
+            reminder_id=recurring_id,
+            owner_session_id="session-1",
+            anchor_message_id=anchor_id,
+            title='Review "release" ✨',
+            state=ReminderState.SCHEDULED,
+            next_fire_at_ms=1_800_000,
+            repeat_rule="every:15m",
+            timezone="UTC",
+            revision=2,
+            last_occurrence_no=1,
+            created_at_ms=1,
+            updated_at_ms=2_000,
+            last_fired_at_ms=2_000,
+        )
+
+        assert tuple(message.seq for message in messages) == (7, 8, 9)
+        assert set(migrated) == {one_time_id, recurring_id}
+        assert migrated[one_time_id].body == render_reminder_fire_body(
+            one_time,
+            "group:release",
+            None,
+        )
+        assert migrated[recurring_id].body == render_reminder_fire_body(
+            recurring,
+            "group:release",
+            1_800_000,
+        )
+        assert all(
+            message.sender_kind is SenderKind.SYSTEM
+            and message.system_message_kind is SystemMessageKind.REMINDER
+            and message.notifies_runtime
+            for message in migrated.values()
+        )
+        assert discarded_handoff_id not in {
+            message.message_id
+            for message in await scope.list_messages(
+                "session-1",
+                direction=MessageDirection.INBOUND,
+            )
+        }
+        async with database.reader() as session, session.transaction():
+            occurrence_table = await session.fetchone(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'reminder_occurrences'"
+            )
+            handoff_table = await session.fetchone(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'handoffs'"
+            )
+        assert occurrence_table is None
+        assert handoff_table is None
+    finally:
+        await database.stop(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -452,7 +993,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 21
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -561,7 +1102,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 18
+        assert schema_version["version"] == 21
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -685,8 +1226,7 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
     try:
         async with database.reader() as session, session.transaction():
             rows = await session.fetchall(
-                "SELECT message_id, delivery_state, snapshot_seq, "
-                "current_inbound_seq, provider_attempted_at_ms, completed_at_ms, "
+                "SELECT message_id, delivery_state, provider_attempted_at_ms, completed_at_ms, "
                 "attachments_json, agent_id, sender "
                 "FROM messages WHERE direction = 'outbound' ORDER BY message_id"
             )
@@ -709,8 +1249,6 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             {
                 "message_id": "outbound-sent",
                 "delivery_state": "sent",
-                "snapshot_seq": 0,
-                "current_inbound_seq": 0,
                 "provider_attempted_at_ms": 5,
                 "completed_at_ms": 6,
                 "attachments_json": "[]",
@@ -719,7 +1257,13 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             }
         ]
         assert {row["name"] for row in columns}.isdisjoint(
-            {"fresh_check_state", "draft_saved_at_ms", "next_action"}
+            {
+                "fresh_check_state",
+                "snapshot_seq",
+                "current_inbound_seq",
+                "draft_saved_at_ms",
+                "next_action",
+            }
         )
         assert {row["name"] for row in indexes} >= {
             "idx_messages_outbound_command",
