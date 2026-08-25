@@ -731,7 +731,9 @@ class LarkChannel(IChannel):
                 isinstance(raw_name, str)
                 and raw_name.strip()
                 and "]" not in raw_name
-                and not any(category(character) == "Cc" for character in raw_name)
+                and not any(
+                    category(character) in {"Cc", "Zl", "Zp"} for character in raw_name
+                )
             ):
                 name = raw_name
             else:

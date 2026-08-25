@@ -847,7 +847,9 @@ class TelegramChannel(IChannel):
             isinstance(value, str)
             and value.strip()
             and "]" not in value
-            and not any(category(character) == "Cc" for character in value)
+            and not any(
+                category(character) in {"Cc", "Zl", "Zp"} for character in value
+            )
         ):
             return value
         return None

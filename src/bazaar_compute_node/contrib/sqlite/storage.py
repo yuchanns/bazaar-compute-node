@@ -40,7 +40,7 @@ _READ_OPERATIONS = frozenset(
     }
 )
 
-_SNAPSHOT_READ_OPERATIONS = frozenset({"read_message_history"})
+_SNAPSHOT_READ_OPERATIONS = frozenset({"read_inbox_catalog", "read_message_history"})
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
