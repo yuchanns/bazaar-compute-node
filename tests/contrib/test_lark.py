@@ -698,7 +698,7 @@ def test_lark_approval_card_content_contains_bounded_action_values() -> None:
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
-            description="Run the requested command.",
+            description="Run {{ requested }} command.",
         ),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id=LarkThreadIdentity("ou_bot", "oc_chat").provider_thread_id,
@@ -721,7 +721,9 @@ def test_lark_approval_card_content_contains_bounded_action_values() -> None:
     }
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "markdown"
-    assert "command execution" in elements[0]["content"]
+    assert elements[0]["content"] == (
+        "**Action:** command execution\n\nRun {{ requested }} command."
+    )
     columns = elements[1]["columns"]
     assert [column["elements"][0]["behaviors"][0]["value"] for column in columns] == [
         {"action": "approve", "token": "approval-token"},
@@ -736,6 +738,9 @@ def test_lark_approval_card_content_contains_bounded_action_values() -> None:
         )
     )
     assert chinese_card["header"]["title"]["content"] == "需要审批"
+    assert chinese_card["body"]["elements"][0]["content"] == (
+        "**操作：** 命令执行\n\nRun {{ requested }} command."
+    )
     assert [
         column["elements"][0]["text"]["content"]
         for column in chinese_card["body"]["elements"][1]["columns"]

@@ -442,9 +442,13 @@ def _approval_card_content(
         if action_key is not None
         else request.approval.action.replace("_", " ")
     )
-    markdown = translator.text("approval.prompt.action", {"action": action})
-    if request.approval.description:
-        markdown = f"{markdown}\n\n{request.approval.description}"
+    markdown = translator.text(
+        "approval.prompt.lark",
+        {
+            "action": action,
+            "description": request.approval.description,
+        },
+    )
     elements: list[dict[str, object]] = [{"tag": "markdown", "content": markdown}]
     if decision is None:
         elements.append(

@@ -412,16 +412,19 @@ class TelegramApprovalChannel(TelegramChannel):
             if action_key is not None
             else request.approval.action.replace("_", " ")
         )
-        lines = [
-            self._translator.text("approval.prompt.title"),
-            "",
-            self._translator.text("approval.prompt.action", {"action": action}),
-        ]
         description = request.approval.description
-        if description:
-            fence = TelegramApprovalChannel._markdown_fence(description)
-            lines.extend(("", fence, description, fence))
-        return "\n".join(lines)
+        return self._translator.text(
+            "approval.prompt.telegram",
+            {
+                "action": action,
+                "description": description,
+                "description_fence": (
+                    TelegramApprovalChannel._markdown_fence(description)
+                    if description
+                    else ""
+                ),
+            },
+        )
 
     @staticmethod
     def _markdown_fence(value: str) -> str:
