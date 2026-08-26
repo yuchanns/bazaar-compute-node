@@ -438,6 +438,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
         if os.name != "nt":
             await asyncio.to_thread(workspace.chmod, 0o700)
         environment = dict(self._context.environment_for_session(session))
+        environment["CLAUDE_AGENT_SDK_CLIENT_APP"] = (
+            f"{self._context.client_info.name}/{self._context.client_info.version}"
+        )
         deadline = asyncio.get_running_loop().time() + min(
             timeout, self._context.startup_timeout_seconds
         )
