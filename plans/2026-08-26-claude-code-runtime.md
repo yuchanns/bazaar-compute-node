@@ -21,7 +21,7 @@
 
 ## 已确认依据
 
-- 当前 `IRuntime` 已提供 `start_session`、`reconcile_session`、`start_turn`、`steer_turn`、`interrupt_turn`、`has_background_job` 和 `stop_session`，无需扩展 core API。
+- 当前 `IRuntime` 已提供 `start_session`、`reconcile_session`、`start_turn`、`steer_turn`、`interrupt_turn`、`has_background_job` 和 `stop_session`；Task 6 将原本只承载 context expiry 的 runtime lifecycle receive contract 扩展为 provider-neutral event stream，使 adapter 还能上报某个 runtime session 的 background-idle edge。
 - `RuntimeSession.provider_thread_id` 可以持久化 Claude session ID；BCN turn/session correlation 不依赖 provider 自身提供 turn ID。
 - `SessionOrchestrator` 已定义 steer 返回 `False` 时的排队行为，也允许 reconcile 返回 idle，因此 Claude adapter 不需要修改 orchestration。
 - Claude Code streaming mode 公开提供 `--input-format stream-json`、`--output-format stream-json`、partial messages、explicit session ID 和 `--resume`；这组参数不需要 `-p` 即可进入 JSONL mode。
@@ -53,7 +53,7 @@ src/bazaar_compute_node/contrib/claude/
 - `tests/e2e/test_claude_runtime.py`：标记 `pytest.mark.e2e`，使用真实外部 Claude Code 覆盖 process、protocol、session、turn、steer、interrupt、approval 和 reconcile。
 - `README.md`：只在现有 Runtime 支持列表或表格加入 Claude 条目。
 
-`app/`、storage schema、command contract、Channel adapter 和 `uv.lock` 继续排除在本计划外。Task 5 对 Core 的唯一扩展是移除 orchestration steer 对 `provider_turn_id is not None` 的错误前置条件：RUNNING turn 是否可 steer 由既有 `IRuntime.steer_turn() -> bool` contract 决定；不新增 Runtime 方法、模型或 schema。foreground turn 结束时若 runtime 仍报告 background work，orchestrator 有意不启动 idle timer；background 后续完成不主动重启 timer，下一次 inbound/turn 完成后再按当时状态决定是否启动。Task 5 不改变这一既有 idle 语义。
+`app/`、storage schema、command contract、Channel adapter 和 `uv.lock` 继续排除在本计划外。Task 5 对 Core 的唯一扩展是移除 orchestration steer 对 `provider_turn_id is not None` 的错误前置条件：RUNNING turn 是否可 steer 由既有 `IRuntime.steer_turn() -> bool` contract 决定。Task 6 经 review 后扩展 provider-neutral runtime lifecycle event contract；foreground turn 结束时若 runtime 仍报告 background work，orchestrator 不启动 idle timer，background 集合随后从非空变为空时由 owning provider process 上报 exact runtime-session event，Core 重新检查该 session 仍为 IDLE 且 background 为空后启动完整 idle timeout。
 
 所有涉及外部 Claude 的测试与验收不使用 fake、mock、stub、httptest、替代 executable/process、生成的 provider transcript 或 production test injection；subprocess/session/turn/steer/interrupt/approval/reconcile 场景都归类到 `tests/e2e/` 并驱动 PATH 中真实安装且已认证的 `claude >= 2.1.239`。缺少 executable、认证或 provider connectivity 时明确报告验收阻塞，不以 skip 计为通过。测试使用自然输入并断言 protocol/state/correlation invariant，不断言模型的精确回答文本。provider-independent 的 Core orchestration contract 继续使用现有 test-support Runtime 做确定性状态验证，不伪造 Claude protocol 或 transcript。
 
@@ -299,7 +299,7 @@ BCN rejected/timeout response：
 - 收到 human-origin result 后在 connection state lock 下递减 `pending_human_results`；只在计数归零时收敛当前 BCN turn stream 并清理 active turn state。process 和 stdin 保持可用于同一 RuntimeSession 的下一 turn。
 - `interrupt_turn` 发送 interrupt control request 后继续 drain，直到 interrupted result 或 transport error，再关闭当前 turn stream。
 - `local_agent` / `local_workflow` task start/notification/update envelopes 按固定 terminal status 集合更新 active background task IDs；`has_background_job` 读取该集合。
-- foreground terminal 时若 background task set 非空，Core 有意不启动 idle timer；set 后续变空不产生 RuntimeExpire 或 timer restart。下一次 inbound 仍可复用该 connection，并在新 foreground turn 完成后重新评估 idle timer。
+- foreground terminal 时若 background task set 非空，Core 不启动 idle timer；set 后续从非空变为空时产生 exact runtime-session background-idle event。下一次 inbound 仍可复用该 connection；Core 串行处理迟到 event，并在启动 timer 前重新确认 current binding、IDLE state 与 background 空集合。
 
 ### Approval bridge
 
@@ -320,7 +320,7 @@ BCN rejected/timeout response：
 | `IAsyncLifecycle.stop(timeout)` | 禁止新 session/turn，关闭所有 live process stdin，等待退出，并在剩余 timeout 内 terminate/kill。 | 只释放 Claude Runtime 自己拥有的 process/task；传播 caller cancellation；重复 stop 幂等。 |
 | `name` | 固定返回 `"claudecode"`。 | 与 runtime entry point 同名，用于 registry、audit 和 persisted `RuntimeSession.runtime`；`"claude"` 只是外部 CLI executable 名。 |
 | `environment_variable_names()` | 按上节固定顺序返回 `CLAUDE_CONFIG_DIR`、`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、四个 `CLAUDE_CODE_USE_*` provider switch、`SSL_CERT_FILE` 与三项 proxy 变量；provider-specific 云凭据/项目/region 由 `env_include` 显式加入。 | `process.py` 只接收 `environment_for_session(session)` 的结果，不读取或合并 ambient environment；不自动透传整个 `AWS_*`、`GOOGLE_*` 或 `AZURE_*` family。 |
-| `receive_expire()` | Claude CLI 没有 Codex app-server 的 global context-change notification；实现为阻塞读取 adapter-owned queue，当前没有 producer。 | 不把单个 child death 写入该 queue，因为 orchestrator 会把一次 `RuntimeExpire` 扩散到该 Runtime 的全部 sessions。active child death 由 turn stream 产出 unknown；idle child death 让下一次 `start_turn` 抛 `RuntimeSessionUnavailable` 并由现有 orchestration 重建 session。 |
+| `receive_event()` | 阻塞读取 adapter-owned lifecycle queue。Claude task lifecycle 在 delegated background set 从非空变为空时写入 `RuntimeBackgroundIdle`；Claude CLI 没有 Codex app-server 的 global context-change notification。 | 不把单个 child death写入该 queue。active child death 由 turn stream 产出 unknown；idle child death让下一次 `start_turn` 抛 `RuntimeSessionUnavailable` 并由现有 orchestration 重建 session。 |
 | `start_session(session, timeout)` | 创建 workspace，生成 UUID；先用 session environment probe version，再启动不带 `-p` 的 `claude --output-format stream-json --verbose ... --input-format stream-json` process，使用 `--session-id=<uuid>`，发送 initialization control request 并等待 response。 | handshake confirmed 后把 UUID 写入 `provider_thread_id`；首次 user input 尚未写入。version/spawn/init 确定失败返回 `FAILED`，超时或 write outcome 不可判定返回 `UNKNOWN`。 |
 | `reconcile_session(session, turn, approval_handler, timeout)` | 用 session environment probe version，再使用 `--resume=<provider_thread_id>` 启动新的 streaming process 并完成 initialization。 | 没有 active turn 时 confirmed `IDLE`；daemon/process 已丢失的 active turn 无法恢复原 stdout stream，返回 confirmed `IDLE` 让现有 orchestration 保留该 turn 的 unknown 结果并允许后续新 turn。 |
 | `stop_session(session, timeout)` | 从 registry 摘除 connection，关闭 stdin 并 bounded wait，必要时 terminate/kill，清理 control futures、approval 和 background-task state。 | process 已不存在时仍 confirmed；成功回收后返回原 `RuntimeSession`；caller cancellation 传播。 |
@@ -551,6 +551,48 @@ git diff --check
 ```
 
 自动化 approval 验收通过真实 orchestration + `TestChannel` 控制面批准、拒绝并让一条等待中的审批超时，确认 Claude tool request、BCN approval request、human decision、provider-visible allow/deny 与 turn terminal 全链路；不得直接向 runtime 注入测试 approval handler。完成 Task 5 后停止，提交 Plan 与代码 diff、自动门禁和 live E2E 结果给 Hanchin review；未获指令不 commit/push。
+
+### Task 6：background-idle lifecycle event
+
+修改范围：
+
+- `plans/2026-08-26-claude-code-runtime.md`
+- `src/bazaar_compute_node/core/runtime.py`
+- `src/bazaar_compute_node/core/orchestration/session.py`
+- `src/bazaar_compute_node/contrib/claude/runtime.py`
+- `src/bazaar_compute_node/contrib/codex/runtime.py`
+- `tests/support/src/bcn_test_support/runtime.py`
+- `tests/core/test_ports.py`
+- `tests/contrib/test_claude.py`
+- `tests/contrib/test_codex.py`
+- `tests/contrib/test_orchestration.py`
+- `tests/e2e/test_claude_runtime.py`
+- `tests/contrib/test_codex.py`
+
+实现内容：
+
+1. 新增 provider-neutral `RuntimeBackgroundIdle(runtime_session_id)`，与 `RuntimeExpire` 组成 `RuntimeLifecycleEvent`；将只接收 expire 的 Runtime port/consumer 改名为 `receive_event()`。`RuntimeExpire` 保持 global context-change 语义并扩散到该 Agent 的全部 live sessions，`RuntimeBackgroundIdle` 只投递给 ID 相同的 current runtime session，不能影响同一 provider process registry 中的其他 session。
+2. Core 将 background-idle event 放入目标 session 已有的 runtime queue 串行处理。handler 必须重新解析 current runtime binding，丢弃旧 runtime-session event，并调用现有 idle-timer gate；只有 session 此刻仍为 `IDLE`、未过期且 `has_background_job()` 再次返回 `False` 时才启动完整 idle timeout。event 与 turn terminal、inbound 或 expiry 竞态时由同一 queue 收敛，重复 event 只重置为一个当前 timer binding。
+3. Claude connection 继续由唯一 Client router 观察 SDK-reference task lifecycle。仅当受支持的 `local_agent` / `local_workflow` active ID set 确实从非空变为空时，向该 Runtime 的 lifecycle queue 写入 owning runtime-session event；未知 task notification、重复 terminal、单个 task 完成但集合仍非空都不发送。
+4. Codex 在 POSIX 上复用同一 app-server process 的 notification router 观察属于 owning thread 的 `item/completed(commandExecution)`，不消费 turn stream 所需 notification。`has_background_job()` 和完成观察均通过 `thread/backgroundTerminals/list` 更新 per-connection observed state；完成观察按 connection 串行刷新，只有先前观察到非空且本次确认为空才发送 event。旧 connection、provider query failure 与 Windows 不发送；Windows 继续保持 background-conservative 行为。
+5. 确定性测试覆盖 Core exact-session routing、旧 binding、WORKING/IDLE gate、background 复检、重复 edge，以及 Claude 多 task transition 和 Codex per-connection nonempty-to-empty refresh。测试支持 Runtime 直接发布 lifecycle event，不为 production 添加测试 hook。
+6. 分别使用真实 Claude/Kimi 与 Codex provider、真实 orchestration 和 `TestChannel` 做 E2E。自然业务输入要求启动短暂后台工作并先返回前台确认；验证 foreground terminal 时同一 child PID 仍因 background 存活、background 结束后 lifecycle event 命中原 runtime session、idle timer 到期回收该 PID。测试通过 TestChannel 注入 inbound、处理 approval 和观察 audit/output，不直接驱动 runtime 或 fake approval handler。
+
+验证：
+
+```bash
+uv run pytest tests/core/test_ports.py tests/contrib/test_claude.py tests/contrib/test_codex.py tests/contrib/test_orchestration.py
+uv run pytest -m e2e tests/e2e/test_claude_runtime.py tests/contrib/test_codex.py
+uv run pytest -m 'not e2e' -q
+uv run ruff format --check .
+uv run ruff check .
+uv run scripts/pyright_lsp_check.py --outputjson .
+uv run python -m compileall -q src tests
+uv lock --check
+git diff --check
+```
+
+完成 Task 6 后停止，提交 Plan、代码 diff、确定性门禁和两个 provider 的 live E2E 结果给 Hanchin review；获准后 commit/push。
 
 ## 完成条件
 

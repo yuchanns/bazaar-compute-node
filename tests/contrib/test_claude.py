@@ -15,6 +15,7 @@ from bazaar_compute_node.contrib.claude.process import (
     decode_stdout_line,
 )
 from bazaar_compute_node.contrib.claude.protocol import ClaudeProtocolError
+from bazaar_compute_node.contrib.claude.runtime import _Connection, _observe_background
 from bazaar_compute_node.core.models import RuntimeSession
 from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeSandboxMode
 
@@ -128,4 +129,61 @@ def test_claude_runtime_factory_preserves_runtime_options() -> None:
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
+    )
+
+
+def test_claude_background_tasks_emit_only_the_idle_edge() -> None:
+    supervisor = ProcessSupervisor(
+        ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})
+    )
+    connection = _Connection(
+        supervisor,
+        Client(supervisor),
+        Path.cwd(),
+        "provider-session-1",
+        (2, 1, 239),
+    )
+
+    assert not _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-1",
+            "task_type": "local_agent",
+        },
+    )
+    assert not _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-2",
+            "task_type": "local_workflow",
+        },
+    )
+    assert not _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-1",
+        },
+    )
+    assert _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-2",
+            "patch": {"status": "completed"},
+        },
+    )
+    assert not _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-2",
+        },
     )

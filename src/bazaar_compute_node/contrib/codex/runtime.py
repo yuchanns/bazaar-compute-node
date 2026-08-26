@@ -5,7 +5,8 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import time_ns
 from typing import Any
@@ -24,8 +25,10 @@ from ...core.paths import resolve_workspace_dir
 from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeBackgroundIdle,
     RuntimeCommandContext,
     RuntimeExpire,
+    RuntimeLifecycleEvent,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
@@ -57,6 +60,7 @@ _INITIALIZE_ATTEMPTS = 2
 _RECONCILE_ATTEMPTS = 2
 _WORKSPACE_AGENTS_WATCH_ID = "bcn-agents-workspace"
 _CODEX_HOME_AGENTS_WATCH_ID = "bcn-agents-codex-home"
+_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(slots=True)
@@ -66,6 +70,8 @@ class _Connection:
     workspace: Path
     provider_thread_id: str
     active_turn_id: str | None = None
+    background_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    background_job_present: bool = False
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
@@ -104,7 +110,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._model = model
         self._effort = effort
         self._connections: dict[str, _Connection] = {}
-        self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
+        self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
+        self._background_refresh_tasks: set[asyncio.Task[None]] = set()
         self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
         self._stopping = False
@@ -126,6 +133,11 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._stopping = True
         connections = tuple(self._connections.items())
         self._connections.clear()
+        refresh_tasks = tuple(self._background_refresh_tasks)
+        for task in refresh_tasks:
+            task.cancel()
+        if refresh_tasks:
+            await asyncio.gather(*refresh_tasks, return_exceptions=True)
         for _, connection in connections:
             try:
                 await connection.supervisor.stop(timeout=timeout)
@@ -135,8 +147,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 continue
         self._started = False
 
-    async def receive_expire(self) -> RuntimeExpire:
-        return await self._expire_events.get()
+    async def receive_event(self) -> RuntimeLifecycleEvent:
+        return await self._lifecycle_events.get()
 
     async def start_session(
         self,
@@ -536,13 +548,17 @@ class Runtime(IRuntime, IAsyncLifecycle):
         if connection is None or not provider_thread_id:
             return False
         try:
-            response = await connection.client.list_background_terminals(
-                provider_thread_id,
-                timeout=timeout,
-            )
+            async with connection.background_state_lock:
+                response = await connection.client.list_background_terminals(
+                    provider_thread_id,
+                    timeout=timeout,
+                )
+                present = parse_background_terminals_response(response)
+                if self._connections.get(session.id) is connection:
+                    _record_background_state(connection, present)
         except AppServerProtocolError, JsonlTransportError:
             return False
-        return parse_background_terminals_response(response)
+        return present
 
     async def stop_session(
         self,
@@ -595,15 +611,30 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 method = message.get("method")
                 if method == "skills/changed":
                     parse_skills_changed_notification(message)
-                    self._expire_events.put_nowait(RuntimeExpire(runtime_session_id))
+                    self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
                     return True
+                if method == "item/completed" and os.name != "nt":
+                    params = message.get("params")
+                    item = params.get("item") if isinstance(params, Mapping) else None
+                    if (
+                        isinstance(params, Mapping)
+                        and isinstance(params.get("threadId"), str)
+                        and isinstance(item, Mapping)
+                        and item.get("type") == "commandExecution"
+                    ):
+                        task = asyncio.create_task(
+                            self._refresh_background_state(runtime_session_id),
+                            name=f"bcn-codex-background-{runtime_session_id}",
+                        )
+                        self._background_refresh_tasks.add(task)
+                        task.add_done_callback(self._background_refresh_tasks.discard)
                 if method != "fs/changed":
                     return False
                 changed = parse_fs_changed_notification(message)
                 target = targets.get(changed.watch_id)
                 if target is None or target not in changed.changed_paths:
                     return False
-                self._expire_events.put_nowait(RuntimeExpire(runtime_session_id))
+                self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
                 return True
 
             supervisor = JsonlProcessSupervisor(
@@ -653,6 +684,28 @@ class Runtime(IRuntime, IAsyncLifecycle):
             )
         raise AssertionError("Codex initialization retry loop did not return")
 
+    async def _refresh_background_state(self, session_id: str) -> None:
+        connection = self._connections.get(session_id)
+        if connection is None:
+            return
+        async with connection.background_state_lock:
+            if self._connections.get(session_id) is not connection:
+                return
+            try:
+                response = await connection.client.list_background_terminals(
+                    connection.provider_thread_id,
+                    timeout=_BACKGROUND_REFRESH_TIMEOUT_SECONDS,
+                )
+                present = parse_background_terminals_response(response)
+            except asyncio.CancelledError:
+                raise
+            except AppServerProtocolError, JsonlTransportError:
+                return
+            if self._connections.get(session_id) is not connection:
+                return
+            if _record_background_state(connection, present):
+                self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(session_id))
+
     async def _stop_connection(
         self,
         connection: _Connection,
@@ -674,6 +727,12 @@ class Runtime(IRuntime, IAsyncLifecycle):
     def _ensure_started(self) -> None:
         if not self._started or self._stopping:
             raise RuntimeError("Codex App Server runtime is not started")
+
+
+def _record_background_state(connection: _Connection, present: bool) -> bool:
+    was_present = connection.background_job_present
+    connection.background_job_present = present
+    return was_present and not present
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

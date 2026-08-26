@@ -109,6 +109,7 @@ def _node(
     endpoint: Path,
     *,
     provider_call_seconds: float = 30,
+    idle_timeout_seconds: float = 0,
 ) -> tuple[NodeApplication, TestChannel, RecordingAudit, str]:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the runtime integration test")
@@ -130,6 +131,7 @@ def _node(
                         kind="claudecode",
                         model="kimi",
                         sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
+                        idle_timeout_seconds=idle_timeout_seconds,
                     ),
                 ),
             ),
@@ -186,15 +188,29 @@ async def _wait_for_turn_completion(
     *,
     session_id: str,
     turn_id: str,
+    timeout: float = 180,
 ) -> None:
-    async with asyncio.timeout(180):
-        while not any(
-            event.correlation.bcn_session_id == session_id
-            and event.event_name.endswith("turn.completed")
-            and event.correlation.turn_id == turn_id
-            for event in audit.events
-        ):
+    terminal_event = None
+    async with asyncio.timeout(timeout):
+        while terminal_event is None:
+            terminal_event = next(
+                (
+                    event
+                    for event in audit.events
+                    if event.correlation.bcn_session_id == session_id
+                    and event.event_name
+                    in {
+                        "claudecode.turn.completed",
+                        "claudecode.turn.failed",
+                        "claudecode.turn.cancelled",
+                        "claudecode.turn.unknown",
+                    }
+                    and event.correlation.turn_id == turn_id
+                ),
+                None,
+            )
             await asyncio.sleep(0.05)
+    assert terminal_event.event_name == "claudecode.turn.completed", terminal_event
 
 
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
@@ -620,6 +636,55 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
         for note in (approved_note, rejected_note, timed_out_note):
             if note.exists():
                 note.unlink()
+
+
+@pytest.mark.asyncio
+async def test_real_claude_background_idle_event_restarts_runtime_timer(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(
+        system_temp_dir / "claude-background-idle.sock",
+        idle_timeout_seconds=0.25,
+    )
+    session_id = f"claude-background-idle-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    message = _message(
+        session_id,
+        body=(
+            "Ask a background teammate to run `sleep 20`. Confirm as soon as the "
+            "teammate starts, without waiting for the command to finish."
+        ),
+    )
+    try:
+        await node.start()
+        await channel.inject(message)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{message.message_id}",
+            timeout=600,
+        )
+        agent = node.agents[agent_id]
+        assert isinstance(agent.runtime, Runtime)
+        runtime = agent.runtime
+        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert runtime_session is not None
+        assert await runtime.has_background_job(runtime_session, timeout=30)
+        connection = runtime._connections[runtime_session.id]
+        pid = connection.supervisor.pid
+        assert pid is not None
+        assert connection.supervisor.is_running
+
+        async with asyncio.timeout(600):
+            while agent.orchestrator.runtime_session(scoped_session_id) is not None:
+                await asyncio.sleep(0.05)
+        assert not connection.supervisor.is_running
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        await node.stop()
 
 
 @pytest.mark.asyncio

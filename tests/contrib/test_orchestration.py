@@ -3176,8 +3176,19 @@ async def test_background_job_suppresses_runtime_idle_timeout() -> None:
         assert orchestrator._runtime_timers == {}
         assert runtime.stopped_sessions == []
 
+        runtime.emit_background_idle("stale-runtime")
+        await asyncio.sleep(0)
+        assert orchestrator._runtime_timers == {}
+        runtime.emit_background_idle(runtime_session.id)
+        await asyncio.sleep(0)
+        assert orchestrator._runtime_timers == {}
+
         runtime.background_job_present = False
-        await orchestrator.handle_inbound(make_message(seq=2))
+        runtime.emit_background_idle(runtime_session.id)
+        runtime.emit_background_idle(runtime_session.id)
+        async with asyncio.timeout(1):
+            while not orchestrator._runtime_timers:
+                await asyncio.sleep(0.01)
         binding = orchestrator._runtime_timers.get("bcn-1")
         assert binding is not None
         assert binding.timer.active

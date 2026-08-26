@@ -26,8 +26,9 @@ from ...core.paths import resolve_workspace_dir
 from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeBackgroundIdle,
     RuntimeCommandContext,
-    RuntimeExpire,
+    RuntimeLifecycleEvent,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
@@ -75,7 +76,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._model = model
         self._effort = effort
         self._connections: dict[str, _Connection] = {}
-        self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
+        self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
         self._started = False
         self._stopping = False
 
@@ -120,8 +121,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 continue
         self._started = False
 
-    async def receive_expire(self) -> RuntimeExpire:
-        return await self._expire_events.get()
+    async def receive_event(self) -> RuntimeLifecycleEvent:
+        return await self._lifecycle_events.get()
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
@@ -492,9 +493,12 @@ class Runtime(IRuntime, IAsyncLifecycle):
             provider_thread_id,
             claude_version,
         )
-        client.set_message_observer(
-            lambda message: _observe_background(connection, message)
-        )
+
+        def observe(message: dict[str, object]) -> None:
+            if _observe_background(connection, message):
+                self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(session.id))
+
+        client.set_message_observer(observe)
         return connection
 
     async def _stop_connection(
@@ -579,32 +583,32 @@ def _sandbox_settings(
     return settings
 
 
-def _observe_background(connection: _Connection, message: dict[str, object]) -> None:
+def _observe_background(connection: _Connection, message: dict[str, object]) -> bool:
     if message.get("type") != "system":
-        return
+        return False
     subtype = message.get("subtype")
     task_id = message.get("task_id")
     if not isinstance(task_id, str) or not task_id:
-        return
+        return False
     if subtype == "task_started" and message.get("task_type") in {
         "local_agent",
         "local_workflow",
     }:
         connection.active_background_task_ids.add(task_id)
-        return
+        return False
+    was_active = bool(connection.active_background_task_ids)
     if subtype == "task_notification":
         connection.active_background_task_ids.discard(task_id)
-        return
-    if subtype != "task_updated":
-        return
-    patch = message.get("patch")
-    if isinstance(patch, dict) and patch.get("status") in {
-        "completed",
-        "failed",
-        "stopped",
-        "killed",
-    }:
-        connection.active_background_task_ids.discard(task_id)
+    elif subtype == "task_updated":
+        patch = message.get("patch")
+        if isinstance(patch, dict) and patch.get("status") in {
+            "completed",
+            "failed",
+            "stopped",
+            "killed",
+        }:
+            connection.active_background_task_ids.discard(task_id)
+    return was_active and not connection.active_background_task_ids
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

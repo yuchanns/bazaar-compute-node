@@ -9,7 +9,11 @@ from bazaar_compute_node.core.channel import AgentScopedChannel, ChannelIdentity
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
-from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeExpire
+from bazaar_compute_node.core.runtime import (
+    RuntimeBackgroundIdle,
+    RuntimeCommandContext,
+    RuntimeExpire,
+)
 
 
 def test_channel_identity_requires_one_safe_provider_field() -> None:
@@ -105,23 +109,27 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
         )
 
 
-def test_runtime_expire_requires_runtime_session_identity() -> None:
+def test_runtime_lifecycle_events_require_runtime_session_identity() -> None:
     with pytest.raises(ValueError, match="runtime_session_id"):
         RuntimeExpire("")
     with pytest.raises(ValueError, match="runtime_session_id"):
         RuntimeExpire(None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="runtime_session_id"):
+        RuntimeBackgroundIdle("")
+    with pytest.raises(ValueError, match="runtime_session_id"):
+        RuntimeBackgroundIdle(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
 async def test_test_runtime_delivers_expiry_to_one_waiter() -> None:
     runtime = TestRuntime()
     await runtime.start(timeout=1)
-    receiver = asyncio.create_task(runtime.receive_expire())
+    receiver = asyncio.create_task(runtime.receive_event())
 
     runtime.emit_expire("runtime-1")
 
     assert await receiver == RuntimeExpire("runtime-1")
-    cancelled_receiver = asyncio.create_task(runtime.receive_expire())
+    cancelled_receiver = asyncio.create_task(runtime.receive_event())
     await asyncio.sleep(0)
     cancelled_receiver.cancel()
     with pytest.raises(asyncio.CancelledError):
