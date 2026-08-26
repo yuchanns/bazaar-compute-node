@@ -5,7 +5,7 @@ import json
 import os
 import re
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import time_ns
 from typing import Any
@@ -14,7 +14,13 @@ from uuid import uuid4
 from ...core.approval import IApprovalHandler
 from ...core.instruction import DeveloperInstructionContext
 from ...core.lifecycle import IAsyncLifecycle
-from ...core.models import RuntimeSession, RuntimeTurn, SessionRuntimeState
+from ...core.models import (
+    RuntimeEventState,
+    RuntimeSession,
+    RuntimeTurn,
+    RuntimeTurnState,
+    SessionRuntimeState,
+)
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.paths import resolve_workspace_dir
 from ...core.runtime import (
@@ -24,8 +30,10 @@ from ...core.runtime import (
     RuntimeExpire,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
+    RuntimeSessionUnavailable,
 )
 from .client import Client
+from .events import TurnEventStream
 from .process import ProcessSpec, ProcessSupervisor, build_arguments
 from .protocol import ClaudeControlError, ClaudeProtocolError, ClaudeTransportError
 
@@ -40,6 +48,11 @@ class _Connection:
     workspace: Path
     provider_thread_id: str
     claude_version: tuple[int, int, int]
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_turn_id: str | None = None
+    pending_human_results: int = 0
+    active_stream: TurnEventStream | None = None
+    active_background_task_ids: set[str] = field(default_factory=set)
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
@@ -203,8 +216,70 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> IRuntimeTurnStream:
-        del session, turn, input_text, approval_handler, timeout
-        raise NotImplementedError("Claude turn streaming is introduced in Task 2")
+        del approval_handler
+        self._ensure_started()
+        connection = self._connections.get(session.id)
+        if connection is None or not connection.supervisor.is_running:
+            raise RuntimeSessionUnavailable("Claude Code process is not running")
+        initial_error: BaseException | None = None
+        initial_error_state = RuntimeEventState.UNKNOWN
+        initial_error_kind = "provider_unknown"
+        async with connection.state_lock:
+            if connection.active_turn_id is not None:
+                raise RuntimeError(
+                    f"runtime session already has an active turn: "
+                    f"{connection.active_turn_id}"
+                )
+            connection.active_turn_id = turn.turn_id
+            connection.pending_human_results = 1
+            try:
+                await connection.client.send_user_message(input_text, timeout=timeout)
+            except asyncio.CancelledError:
+                connection.active_turn_id = None
+                connection.pending_human_results = 0
+                raise
+            except Exception as error:  # noqa: BLE001
+                initial_error = error
+                if isinstance(error, ClaudeControlError):
+                    initial_error_state = RuntimeEventState.FAILED
+                    initial_error_kind = "provider_failed"
+                elif isinstance(error, ClaudeProtocolError):
+                    initial_error_state = RuntimeEventState.FAILED
+                    initial_error_kind = "protocol"
+
+        async def claim_result(message: dict[str, object]) -> bool:
+            del message
+            async with connection.state_lock:
+                if connection.active_turn_id != turn.turn_id:
+                    return False
+                if connection.pending_human_results > 1:
+                    connection.pending_human_results -= 1
+                    return False
+                connection.pending_human_results = 0
+                return True
+
+        async def close_turn() -> None:
+            async with connection.state_lock:
+                if connection.active_turn_id == turn.turn_id:
+                    connection.active_turn_id = None
+                    connection.pending_human_results = 0
+                    connection.active_stream = None
+
+        stream = TurnEventStream(
+            connection.client,
+            session_id=session.bcn_session_id,
+            turn_id=turn.turn_id,
+            provider_thread_id=connection.provider_thread_id,
+            claude_version=connection.claude_version,
+            claim_result=claim_result,
+            on_closed=close_turn,
+            initial_error=initial_error,
+            initial_error_state=initial_error_state,
+            initial_error_kind=initial_error_kind,
+        )
+        async with connection.state_lock:
+            connection.active_stream = stream
+        return stream
 
     async def steer_turn(
         self,
@@ -214,8 +289,21 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> bool:
-        del session, turn, input_text, timeout
-        return False
+        self._ensure_started()
+        connection = self._connections.get(session.id)
+        if connection is None or not connection.supervisor.is_running:
+            return False
+        async with connection.state_lock:
+            if connection.active_turn_id != turn.turn_id:
+                return False
+            try:
+                await connection.client.send_user_message(input_text, timeout=timeout)
+            except asyncio.CancelledError:
+                raise
+            except ClaudeTransportError:
+                return False
+            connection.pending_human_results += 1
+            return True
 
     async def interrupt_turn(
         self,
@@ -224,18 +312,73 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> ProviderCallResult[RuntimeTurn]:
-        del session, turn, timeout
+        self._ensure_started()
+        connection = self._connections.get(session.id)
+        if connection is None:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_failed",
+                error_message="runtime turn has no active provider binding",
+            )
+        async with connection.state_lock:
+            if connection.active_turn_id != turn.turn_id:
+                return ProviderCallResult(
+                    status=ProviderCallStatus.FAILED,
+                    error_kind="provider_failed",
+                    error_message="runtime turn has no active provider binding",
+                )
+            stream = connection.active_stream
+        if stream is None:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="provider_failed",
+                error_message="runtime turn stream is unavailable",
+            )
+        try:
+            await connection.client.control({"subtype": "interrupt"}, timeout=timeout)
+            terminal = await stream.wait_terminal(timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            result = _provider_result(error)
+            return ProviderCallResult(
+                status=result.status,
+                error_kind=result.error_kind,
+                error_message=result.error_message,
+            )
+        state = {
+            RuntimeEventState.COMPLETED: RuntimeTurnState.COMPLETED,
+            RuntimeEventState.FAILED: RuntimeTurnState.FAILED,
+            RuntimeEventState.CANCELLED: RuntimeTurnState.CANCELLED,
+            RuntimeEventState.UNKNOWN: RuntimeTurnState.UNKNOWN,
+        }.get(terminal.state)
+        if state is None:
+            return ProviderCallResult(
+                status=ProviderCallStatus.UNKNOWN,
+                error_kind="provider_unknown",
+                error_message="interrupt completed without a terminal result",
+            )
         return ProviderCallResult(
-            status=ProviderCallStatus.FAILED,
-            error_kind="provider_failed",
-            error_message="Claude turn interruption is introduced in Task 3",
+            status=ProviderCallStatus.CONFIRMED,
+            value=turn.transition_to(
+                state,
+                at_ms=time_ns() // 1_000_000,
+                error_kind=terminal.error_kind,
+                error_message=terminal.error_message,
+                latest_event_name=terminal.event_name,
+            ),
+            receipt={"provider_thread_id": connection.provider_thread_id},
         )
 
     async def has_background_job(
         self, session: RuntimeSession, *, timeout: float
     ) -> bool:
-        del session, timeout
-        return False
+        del timeout
+        connection = self._connections.get(session.id)
+        if connection is None:
+            return False
+        async with connection.state_lock:
+            return bool(connection.active_background_task_ids)
 
     async def _open_connection(
         self,
@@ -305,13 +448,17 @@ class Runtime(IRuntime, IAsyncLifecycle):
             await supervisor.stop(timeout=timeout)
             await client.close()
             raise
-        return _Connection(
+        connection = _Connection(
             supervisor,
             client,
             workspace,
             provider_thread_id,
             claude_version,
         )
+        client.set_message_observer(
+            lambda message: _observe_background(connection, message)
+        )
+        return connection
 
     async def _stop_connection(
         self, connection: _Connection, *, timeout: float
@@ -378,6 +525,34 @@ def _sandbox_settings(
         sandbox["network"] = {"allowedDomains": []}
         settings["permissions"] = {"deny": ["WebFetch", "WebSearch"]}
     return settings
+
+
+def _observe_background(connection: _Connection, message: dict[str, object]) -> None:
+    if message.get("type") != "system":
+        return
+    subtype = message.get("subtype")
+    task_id = message.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        return
+    if subtype == "task_started" and message.get("task_type") in {
+        "local_agent",
+        "local_workflow",
+    }:
+        connection.active_background_task_ids.add(task_id)
+        return
+    if subtype == "task_notification":
+        connection.active_background_task_ids.discard(task_id)
+        return
+    if subtype != "task_updated":
+        return
+    patch = message.get("patch")
+    if isinstance(patch, dict) and patch.get("status") in {
+        "completed",
+        "failed",
+        "stopped",
+        "killed",
+    }:
+        connection.active_background_task_ids.discard(task_id)
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

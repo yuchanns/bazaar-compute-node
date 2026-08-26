@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from .process import ProcessSupervisor
 from .protocol import (
@@ -18,9 +18,12 @@ class Client:
 
     def __init__(self, supervisor: ProcessSupervisor) -> None:
         self._supervisor = supervisor
-        self._messages: asyncio.Queue[JsonObject] = asyncio.Queue(maxsize=100)
+        self._messages: asyncio.Queue[JsonObject | BaseException] = asyncio.Queue(
+            maxsize=100
+        )
         self._pending: dict[str, asyncio.Future[JsonObject]] = {}
         self._reader_task: asyncio.Task[None] | None = None
+        self._message_observer: Callable[[JsonObject], None] | None = None
         self._request_counter = 0
 
     @property
@@ -32,6 +35,11 @@ class Client:
             self._reader_task = asyncio.create_task(
                 self._read_messages(), name="claude-code-client"
             )
+
+    def set_message_observer(
+        self, observer: Callable[[JsonObject], None] | None
+    ) -> None:
+        self._message_observer = observer
 
     async def initialize(self, *, timeout: float) -> JsonObject:
         return await self.control(
@@ -67,7 +75,10 @@ class Client:
                 future.cancel()
 
     async def receive(self) -> JsonObject:
-        return await self._messages.get()
+        item = await self._messages.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def send_user_message(self, text: str, *, timeout: float) -> None:
         await self._supervisor.send(
@@ -92,6 +103,8 @@ class Client:
         try:
             while True:
                 envelope = await self._supervisor.receive()
+                if self._message_observer is not None:
+                    self._message_observer(envelope)
                 if envelope["type"] == "control_response":
                     response = envelope["response"]
                     request_id = (
@@ -109,6 +122,7 @@ class Client:
             raise
         except Exception as error:  # noqa: BLE001
             self._fail_pending(error)
+            await self._messages.put(error)
 
     def _fail_pending(self, error: BaseException) -> None:
         pending = tuple(self._pending.values())
