@@ -13,7 +13,7 @@
 ## 目标
 
 1. 新增直接驱动外部 `claude` executable 的 Runtime adapter，使 BCN 可以通过现有 `IRuntime` contract 运行 Claude Code session。
-2. 每个 `RuntimeSession` 持有一个长生命周期 Claude Code process，支持 session 启停、turn streaming、运行中 steer、interrupt、tool approval、background task 状态和进程重启后的 session resume/reconcile。
+2. 每个 `RuntimeSession` 持有一个长生命周期 Claude Code process，支持 session 启停、turn streaming、运行中 steer、tool approval、background task 状态和进程重启后的 session resume/reconcile。
 3. 保持 provider-neutral core contract 不变；Claude 特有的 process、protocol、client 和 event mapping 封装在 `src/bazaar_compute_node/contrib/claude/`。
 4. Claude Code 由节点独立安装，BCN package 不依赖或内嵌 `claude-agent-sdk` 和 Claude Code binary。
 5. 保持 BCN Runtime 子进程环境正向白名单约束，child environment 精确来自现有 Runtime composition。
@@ -21,11 +21,11 @@
 
 ## 已确认依据
 
-- 当前 `IRuntime` 已提供 `start_session`、`reconcile_session`、`start_turn`、`steer_turn`、`interrupt_turn`、`has_background_job` 和 `stop_session`；Task 6 将原本只承载 context expiry 的 runtime lifecycle receive contract 扩展为 provider-neutral event stream，使 adapter 还能上报某个 runtime session 的 background-idle edge。
+- 当前 `IRuntime` 已提供 `start_session`、`reconcile_session`、`start_turn`、`steer_turn`、`has_background_job` 和 `stop_session`；Task 6 将原本只承载 context expiry 的 runtime lifecycle receive contract 扩展为 provider-neutral event stream，使 adapter 还能上报某个 runtime session 的 background-idle edge。
 - `RuntimeSession.provider_thread_id` 可以持久化 Claude session ID；BCN turn/session correlation 不依赖 provider 自身提供 turn ID。
 - `SessionOrchestrator` 已定义 steer 返回 `False` 时的排队行为，也允许 reconcile 返回 idle，因此 Claude adapter 不需要修改 orchestration。
 - Claude Code streaming mode 公开提供 `--input-format stream-json`、`--output-format stream-json`、partial messages、explicit session ID 和 `--resume`；这组参数不需要 `-p` 即可进入 JSONL mode。
-- Claude Code 的 permission/interrupt control messages 是 Agent SDK 使用的 stdio protocol；direct adapter 以官方 SDK 源码为 reference，将所需子集封装在 `process.py`、`protocol.py`、`client.py` 和 contract tests 中。
+- Claude Code 的 permission control messages 是 Agent SDK 使用的 stdio protocol；direct adapter 以官方 SDK 源码为 reference，将所需子集封装在 `process.py`、`protocol.py`、`client.py` 和 contract tests 中。
 - compatibility reference 固定为 `claude-agent-sdk==0.2.144` 和其内嵌 Claude Code `2.1.239`；BCN 要求 external CLI `>=2.1.239`，确保本计划使用的 terminal reason、message origin、task lifecycle 和 sandbox fields 已存在。BCN 启动每个 connection 时使用该 session 的精确 environment 检查 executable version，并验证 protocol initialization，不静默兼容未知 wire shape。
 - streaming stdin 可以维持动态输入流，因此 active turn 的新增 inbound 可以写入同一 process 实现真实 steer。
 - `AskUserQuestion` 需要结构化答案，不能映射为 BCN 的二元 `ApprovalResult`；通过 CLI `--disallowedTools AskUserQuestion` 不向模型暴露该工具，adapter 不接收或专门处理该 tool request。
@@ -50,19 +50,19 @@ src/bazaar_compute_node/contrib/claude/
 
 - `pyproject.toml`：只新增 `claudecode` runtime entry point，不新增 Python dependency 或 extra。
 - `tests/contrib/test_claude.py`：只覆盖不依赖外部 provider 的 command construction、framing、queue/state 和 mapping 纯逻辑，不使用 fake/mock process 或 provider transcript。
-- `tests/e2e/test_claude_runtime.py`：标记 `pytest.mark.e2e`，使用真实外部 Claude Code 覆盖 process、protocol、session、turn、steer、interrupt、approval 和 reconcile。
+- `tests/e2e/test_claude_runtime.py`：标记 `pytest.mark.e2e`，使用真实外部 Claude Code 覆盖 process、protocol、session、turn、steer、approval 和 reconcile。
 - `README.md`：只在现有 Runtime 支持列表或表格加入 Claude 条目。
 
 `app/`、storage schema、command contract、Channel adapter 和 `uv.lock` 继续排除在本计划外。Task 5 对 Core 的唯一扩展是移除 orchestration steer 对 `provider_turn_id is not None` 的错误前置条件：RUNNING turn 是否可 steer 由既有 `IRuntime.steer_turn() -> bool` contract 决定。Task 6 经 review 后扩展 provider-neutral runtime lifecycle event contract；foreground turn 结束时若 runtime 仍报告 background work，orchestrator 不启动 idle timer，background 集合随后从非空变为空时由 owning provider process 上报 exact runtime-session event，Core 重新检查该 session 仍为 IDLE 且 background 为空后启动完整 idle timeout。
 
-所有涉及外部 Claude 的测试与验收不使用 fake、mock、stub、httptest、替代 executable/process、生成的 provider transcript 或 production test injection；subprocess/session/turn/steer/interrupt/approval/reconcile 场景都归类到 `tests/e2e/` 并驱动 PATH 中真实安装且已认证的 `claude >= 2.1.239`。缺少 executable、认证或 provider connectivity 时明确报告验收阻塞，不以 skip 计为通过。测试使用自然输入并断言 protocol/state/correlation invariant，不断言模型的精确回答文本。provider-independent 的 Core orchestration contract 继续使用现有 test-support Runtime 做确定性状态验证，不伪造 Claude protocol 或 transcript。
+所有涉及外部 Claude 的测试与验收不使用 fake、mock、stub、httptest、替代 executable/process、生成的 provider transcript 或 production test injection；subprocess/session/turn/steer/approval/reconcile 场景都归类到 `tests/e2e/` 并驱动 PATH 中真实安装且已认证的 `claude >= 2.1.239`。缺少 executable、认证或 provider connectivity 时明确报告验收阻塞，不以 skip 计为通过。测试使用自然输入并断言 protocol/state/correlation invariant，不断言模型的精确回答文本。provider-independent 的 Core orchestration contract 继续使用现有 test-support Runtime 做确定性状态验证，不伪造 Claude protocol 或 transcript。
 
 ## 固定 SDK 源码参考结果
 
 参考版本固定为 Python Agent SDK `0.2.144` / bundled Claude Code `2.1.239`，对应模块为：
 
 - `_internal/transport/subprocess_cli.py`：argv、version check、1 MiB line bound、stdout/stderr framing、write serialization 和 process close escalation；其 bounded message queue 不沿用。
-- `_internal/query.py`：initialize、outbound/inbound control correlation、permission callback、interrupt、task lifecycle 和 message queue cleanup。
+- `_internal/query.py`：initialize、outbound/inbound control correlation、permission callback、task lifecycle 和 message queue cleanup。
 - `_internal/message_parser.py` 与公开 `types.py`：user/assistant/system/result/stream/task envelope fields 和 terminal metadata。
 - `client.py`：persistent client 的 user-message envelope、query/receive split 和 connection reuse。
 
@@ -156,18 +156,6 @@ CLI success response：
 - outbound request ID 是单 connection monotonic counter 加随机 suffix；pending map 在 response、timeout、reader failure、cancellation 和 close 时清理。
 - `control_response.response.subtype == "error"` 使用其 `error` 作为确定 provider failure；success 只返回内层 `response` object。
 - CLI 发 `control_cancel_request` 时，以其 `request_id` 取消 matching inbound handler；handler 不再写 response。
-
-Interrupt 使用同一个 request/response correlation：
-
-```json
-{
-  "type": "control_request",
-  "request_id": "req_<counter>_<random>",
-  "request": {"subtype": "interrupt"}
-}
-```
-
-control success 只确认 interrupt 已被 CLI 接受；BCN 继续读到 `result.terminal_reason` 为 `"aborted_streaming"` 或 `"aborted_tools"` 才产生 cancelled terminal。
 
 ### Permission control reference
 
@@ -268,10 +256,10 @@ BCN rejected/timeout response：
 ### Protocol 与 client
 
 - 使用 Agent SDK `0.2.144` 的 `_internal/transport/subprocess_cli.py` 作为 command construction、stdout line framing、stderr drain、version check 和 process cleanup reference；message queue lifecycle 与 Codex Runtime 对齐。
-- 使用 `_internal/query.py` 作为 initialize/interrupt/permission control correlation reference，使用 `_internal/message_parser.py` 和公开 message types 作为 provider envelope reference。
+- 使用 `_internal/query.py` 作为 initialize/permission control correlation reference，使用 `_internal/message_parser.py` 和公开 message types 作为 provider envelope reference。
 - 启动 argv 与 reference 保持同形：`claude --output-format stream-json --verbose ... --input-format stream-json`，并按 session options 加入 partial messages、stdio permission prompt、session ID/resume、system prompt、model 和 settings；不添加 `-p`。
 - `protocol.py` 在 provider boundary 验证 user/system/assistant/result/stream/control envelopes，保留未知内容字段但拒绝无法安全路由的 envelope。
-- `client.py` 负责 user input、control request/response correlation、interrupt request、permission response 和 initialization handshake。
+- `client.py` 负责 user input、control request/response correlation、permission response 和 initialization handshake。
 - request ID 由 connection 本地生成；pending control future 在 response、timeout、process exit 和 cancellation 时确定清理。
 - Claude Code protocol 差异集中在 `protocol.py` / `client.py`，Runtime 不直接拼装 JSON；SDK source 仅作为行为 reference，BCN package 不 import、vendor 或安装 SDK。
 
@@ -297,7 +285,6 @@ BCN rejected/timeout response：
 - Claude system/assistant/result/partial stream envelopes 映射为 provider-neutral `RuntimeEvent` / `StreamEvent`；文本、thinking、tool use、tool result、usage、terminal result 和 provider errors 保留可用字段。
 - Claude stream-json 没有 Codex 式 universal `turnId`；保持 `provider_turn_id=None`，不制造不稳定 identity。改用 Claude 自身的 streaming-input turn provenance：BCN outbound 明确标记 `origin={"kind":"human"}`，session-injected `user` / `result` 携带 non-human origin，且其间输出按 wire order 属于同一个 injected turn。router 由此跟踪 provider lane；无 channel inbound 时 injected turn 留在 connection 层，有 inbound 时新的 BCN turn adopt 该 lane 并以 initial input steer，行为等价于对 provider 已运行 turn 的 steer。
 - 收到 human-origin result 后在 connection state lock 下递减 `pending_human_results`；只在计数归零时收敛当前 BCN turn stream 并清理 active turn state。process 和 stdin 保持可用于同一 RuntimeSession 的下一 turn。
-- `interrupt_turn` 发送 interrupt control request 后继续 drain，直到 interrupted result 或 transport error，再关闭当前 turn stream。
 - `local_agent` / `local_workflow` task start/notification/update envelopes 按固定 terminal status 集合更新 active background task IDs；`has_background_job` 读取该集合。
 - foreground terminal 时若 background task set 非空，Core 不启动 idle timer；set 后续从非空变为空时产生 exact runtime-session background-idle event。下一次 inbound 仍可复用该 connection；Core 串行处理迟到 event，并在启动 timer 前重新确认 current binding、IDLE state 与 background 空集合。
 
@@ -331,9 +318,8 @@ BCN rejected/timeout response：
 | --- | --- | --- |
 | `start_turn(session, turn, input_text, approval_handler, timeout)` | 校验 connection idle 后，把 canonical input 编码为 stream-json user envelope 写入 stdin，绑定本 turn 的 approval handler，并返回 `ClaudeTurnEventStream`。 | write 前发现 process unavailable 抛 `RuntimeSessionUnavailable`，让 orchestrator 安全重建 session；write 后 outcome 不明由 stream 产出 terminal unknown。 |
 | `IRuntimeTurnStream.__anext__()` | 持续读取该 connection 的 assistant/system/stream/result/control envelopes；control request 内联处理，业务 envelope 映射为 `RuntimeEvent` 或 `StreamEvent`。 | 每个 turn 首先产出 started，恰好产出一个 terminal；protocol/transport 无法判定时 terminal state 为 `UNKNOWN`。 |
-| `IRuntimeTurnStream.aclose()` | 停止该 consumer、解绑 approval handler 并清理 stream-local state，不直接关闭可复用的 session process。 | process lifecycle 仍由 interrupt/stop_session/Runtime stop 管理；重复 close 幂等。 |
+| `IRuntimeTurnStream.aclose()` | 停止该 consumer、解绑 approval handler 并清理 stream-local state，不直接关闭可复用的 session process。 | process lifecycle 仍由 stop_session/Runtime stop 管理；重复 close 幂等。 |
 | `steer_turn(session, turn, input_text, timeout)` | active turn 匹配时向同一 stdin 写新的 stream-json user envelope。 | write confirmed 返回 `True`；没有 matching active turn、process 已退出或无法安全写入时返回 `False`，现有 orchestrator 把 inbound 留给下一 turn。 |
-| `interrupt_turn(session, turn, timeout)` | 写入 `{"type":"control_request","request_id":...,"request":{"subtype":"interrupt"}}`，等待 matching control response，再由 event stream drain 到 interrupted result。 | response confirmed 后返回 cancelled `RuntimeTurn`；明确拒绝/失败返回 `FAILED`；request 已写但 response 不可判定返回 `UNKNOWN`。 |
 | `has_background_job(session, timeout)` | 读取 connection 中由 `local_agent` / `local_workflow` task start/notification/update envelopes 维护的 active task ID set。 | 纯内存查询；connection 不存在返回 `False`；timeout/cancellation 遵守 core call boundary。 |
 | `IApprovalHandler.request_approval()` bridge | Claude `can_use_tool` control request 转成 `ApprovalRequest`，以 `tool_use_id` 作为 core `request_id`；decision 转成 matching stdio control response。 | approved -> allow，rejected/timeout -> deny；turn/session cancellation 终止等待并清理 correlation。`AskUserQuestion` 已由 argv 禁用，不进入 bridge。 |
 
@@ -351,7 +337,6 @@ BCN rejected/timeout response：
 | successful human-origin `result` with more pending inputs | `StreamEvent(kind=TURN_PROGRESS)` 并递减 `pending_human_results`，不提前 terminal。 |
 | successful human-origin `result` with no pending input | terminal `RuntimeEvent(state=COMPLETED, event_name="claudecode.turn.completed")`，usage/cost/session ID 放入 metadata。 |
 | non-human-origin `result` | 收敛 injected provider lane；即使该 lane 已被新 BCN turn adopt，也不结束其 active foreground stream。 |
-| interrupted/aborted `result` | terminal `RuntimeEvent(state=CANCELLED, event_name="claudecode.turn.interrupted")`。 |
 | provider-declared error `result` | terminal `RuntimeEvent(state=FAILED, error_kind="provider_failed")`。 |
 | malformed envelope、stdout EOF、process exit 或 result 缺失 | terminal `RuntimeEvent(state=UNKNOWN, error_kind="provider_unknown")`，附安全错误摘要和有界 stderr tail。 |
 
@@ -444,9 +429,8 @@ git diff --check
 
 1. 实现 persistent streaming input、`start_turn`、`IRuntimeTurnStream` 和 active-turn `steer_turn`，使用 state lock + `pending_human_results` 解决 result/steer race。
 2. 按固定 message/result reference 映射 origin、system/assistant/result envelopes、partial stream、usage 和 provider/process errors，保证每个 stream 恰好一个 terminal。
-3. 实现 `interrupt_turn` request-and-drain、turn state cleanup 和 process disconnect handling。
-4. 只跟踪 `local_agent` / `local_workflow` 的 start/notification/terminal update，并实现 `has_background_job`。
-5. 使用真实、已认证的 Claude session 和自然输入覆盖 start -> stream -> terminal、运行中 steer、interrupt request/response + aborted result、delegated background task lifecycle、idle/active child exit 和 authoritative provider error；测试只断言观察到的 wire/state invariant，不固定模型文本。result/steer lock ordering、event dispatch 和 terminal uniqueness 的确定性并发逻辑在同一真实 stream observation 上施加调度压力，不用替代 process 重放顺序。
+3. 只跟踪 `local_agent` / `local_workflow` 的 start/notification/terminal update，并实现 `has_background_job`。
+4. 使用真实、已认证的 Claude session 和自然输入覆盖 start -> stream -> terminal、运行中 steer、delegated background task lifecycle、idle/active child exit 和 authoritative provider error；测试只断言观察到的 wire/state invariant，不固定模型文本。result/steer lock ordering、event dispatch 和 terminal uniqueness 的确定性并发逻辑在同一真实 stream observation 上施加调度压力，不用替代 process 重放顺序。
 
 验证沿用 Task 1 命令，并显式运行 `uv run pytest -m e2e tests/e2e/test_claude_runtime.py`。完成后停止等待 review。
 
@@ -463,7 +447,7 @@ git diff --check
 实现内容：
 
 1. 实现 per-turn stdio permission request bridge 和 tool-use correlation。
-2. 按固定 wire shape 映射 allow/deny、timeout、`control_cancel_request`、interrupt 和 session shutdown cleanup；allow 必须回传原始 `updatedInput`，deny 必须携带 provider-visible message。
+2. 按固定 wire shape 映射 allow/deny、timeout、`control_cancel_request` 和 session shutdown cleanup；allow 必须回传原始 `updatedInput`，deny 必须携带 provider-visible message。
 3. 完成 deferred tool result 分类，以及 permission/control envelope 不兼容时的 provider-unknown boundary。
 4. 覆盖批准后继续、拒绝后继续、approval 中断，以及 resumed session 的下一 turn approval。
 
@@ -598,7 +582,7 @@ git diff --check
 
 - `claudecode` runtime 可通过同名 entry point 加载，BCN Python package 不安装、import 或 vendor Claude Agent SDK，也不携带 Claude Code binary。
 - fresh 与 resumed RuntimeSession 均可连接外部 Claude Code，Claude session ID 稳定保存于 `provider_thread_id`。
-- start、stream、steer、interrupt、approval、background task、stop 和 reconcile 均满足现有 `IRuntime` contract。
+- start、stream、steer、approval、background task、stop 和 reconcile 均满足现有 `IRuntime` contract。
 - Claude child 只收到 BCN 正向白名单环境，sandbox/network/system prompt 映射有测试覆盖。
 - Claude protocol error、process exit、permission deny/timeout、deferred result 和 crashed active turn 均有确定的 provider-neutral result。
 - protocol failure 后 owning connection 不再复用；connection router 可保留或由新 BCN turn adopt 跨-turn injected provider lane，且 non-human result 不误终止 foreground；`provider_turn_id=None` 的 RUNNING turn 仍可从 Channel 路径 steer；每次 stdin operation 的单一 deadline 覆盖 write lock 与完整 I/O。

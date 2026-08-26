@@ -221,14 +221,6 @@ class TurnEventStream(IRuntimeTurnStream):
         if not terminal:
             return _progress(self._session_id, message)
         metadata = _result_metadata(message)
-        terminal_reason = message.get("terminal_reason")
-        if terminal_reason in {"aborted_streaming", "aborted_tools"}:
-            return await self._terminal_event(
-                RuntimeEventState.CANCELLED,
-                event_name="claudecode.turn.interrupted",
-                error_kind="cancelled",
-                metadata=metadata,
-            )
         if message.get("deferred_tool_use"):
             return await self._terminal_event(
                 RuntimeEventState.FAILED,

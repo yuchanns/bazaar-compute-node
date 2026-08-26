@@ -48,11 +48,9 @@ from bazaar_compute_node.core.models import (
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
-    RuntimeTurnState,
     SenderIdentity,
     StreamEventKind,
 )
-from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
     IRuntime,
@@ -314,48 +312,6 @@ async def test_real_claude_turn_stream_and_running_steer(
             audit,
             session_id=scoped_session_id,
             turn_id=f"turn-{first.message_id}",
-        )
-    finally:
-        await node.stop()
-
-
-@pytest.mark.asyncio
-async def test_real_claude_interrupt_drains_aborted_result(
-    system_temp_dir: Path,
-) -> None:
-    node, channel, audit, agent_id = _node(system_temp_dir / "claude-interrupt.sock")
-    session_id = f"claude-interrupt-{uuid4()}"
-    scoped_session_id = str(
-        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
-    )
-    message = _message(
-        session_id,
-        body="Write a long, detailed tutorial with many sections and examples.",
-    )
-    try:
-        await node.start()
-        await channel.inject(message)
-        async with asyncio.timeout(120):
-            while not any(
-                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
-                for event in channel.stream_events
-            ):
-                await asyncio.sleep(0.05)
-        agent = node.agents[agent_id]
-        assert isinstance(agent.runtime, Runtime)
-        turn = agent.orchestrator._runtime_turns[f"turn-{message.message_id}"]
-        interrupted = await agent.orchestrator.interrupt_turn(
-            scoped_session_id,
-            turn.turn_id,
-        )
-        assert interrupted.status is ProviderCallStatus.CONFIRMED
-        assert interrupted.value is not None
-        assert interrupted.value.state is RuntimeTurnState.INTERRUPTING
-        await _wait_for_turn_completion(
-            audit,
-            session_id=scoped_session_id,
-            turn_id=turn.turn_id,
-            expected_event_name="claudecode.turn.cancelled",
         )
     finally:
         await node.stop()

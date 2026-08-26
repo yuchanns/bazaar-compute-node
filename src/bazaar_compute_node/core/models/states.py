@@ -214,7 +214,6 @@ def reduce_session_runtime_state(
 class RuntimeTurnState(StrEnum):
     STARTING = "starting"
     RUNNING = "running"
-    INTERRUPTING = "interrupting"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -314,16 +313,6 @@ RUNTIME_TURN_TRANSITIONS: Mapping[RuntimeTurnState, frozenset[RuntimeTurnState]]
     ),
     RuntimeTurnState.RUNNING: frozenset(
         {
-            RuntimeTurnState.INTERRUPTING,
-            RuntimeTurnState.COMPLETED,
-            RuntimeTurnState.FAILED,
-            RuntimeTurnState.CANCELLED,
-            RuntimeTurnState.UNKNOWN,
-        }
-    ),
-    RuntimeTurnState.INTERRUPTING: frozenset(
-        {
-            RuntimeTurnState.RUNNING,
             RuntimeTurnState.COMPLETED,
             RuntimeTurnState.FAILED,
             RuntimeTurnState.CANCELLED,

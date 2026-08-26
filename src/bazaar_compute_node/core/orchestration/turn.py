@@ -30,7 +30,6 @@ from ..models import (
     SessionRuntimeSignal,
     StreamEvent,
 )
-from ..outcomes import ProviderCallResult, ProviderCallStatus
 from ..runtime import IRuntime, IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorageScope
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
@@ -469,20 +468,12 @@ class SessionTurnCoordinator:
         if not isinstance(input_text, str) or not input_text:
             raise ValueError("turn input_text must be a non-empty string")
         try:
-            async with self._concurrency.for_session(context.bcn_session.id):
-                current_turn = self._turns.get(turn.turn_id)
-                if (
-                    current_turn is None
-                    or current_turn.state is not RuntimeTurnState.RUNNING
-                ):
-                    accepted = False
-                else:
-                    accepted = await self._runtime.steer_turn(
-                        context.runtime_session,
-                        current_turn,
-                        input_text,
-                        timeout=self._timeout_budget.provider_call_seconds,
-                    )
+            accepted = await self._runtime.steer_turn(
+                context.runtime_session,
+                turn,
+                input_text,
+                timeout=self._timeout_budget.provider_call_seconds,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -511,119 +502,6 @@ class SessionTurnCoordinator:
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
 
-    async def interrupt_turn(
-        self,
-        context: SessionContext,
-        turn: RuntimeTurn,
-    ) -> ProviderCallResult[RuntimeTurn]:
-        correlation = CorrelationContext(
-            node_id=self._agent_id,
-            channel=context.channel_session.channel,
-            channel_session_id=context.channel_session.id,
-            bcn_session_id=context.bcn_session.id,
-            runtime_session_id=context.runtime_session.id,
-            provider_thread_id=context.runtime_session.provider_thread_id,
-            turn_id=turn.turn_id,
-            provider_turn_id=turn.provider_turn_id,
-        )
-        async with self._concurrency.for_session(context.bcn_session.id):
-            current_turn = self._turns.get(turn.turn_id)
-            if current_turn is None or current_turn.session_id != (
-                context.runtime_session.id
-            ):
-                return ProviderCallResult(
-                    status=ProviderCallStatus.FAILED,
-                    error_kind="provider_failed",
-                    error_message="runtime turn has no active provider binding",
-                )
-            if current_turn.state is RuntimeTurnState.INTERRUPTING:
-                return ProviderCallResult(
-                    status=ProviderCallStatus.QUEUED,
-                    value=current_turn,
-                )
-            if current_turn.state is not RuntimeTurnState.RUNNING:
-                return ProviderCallResult(
-                    status=ProviderCallStatus.FAILED,
-                    error_kind="provider_failed",
-                    error_message="runtime turn is not running",
-                )
-            current_turn = current_turn.transition_to(
-                RuntimeTurnState.INTERRUPTING,
-                at_ms=self._clock(),
-            )
-            self._turns[turn.turn_id] = current_turn
-
-        await self._audit.append(
-            event_name="runtime.request.turn.interrupt.requested",
-            state=RuntimeEventState.STARTED,
-            correlation=correlation,
-            metadata={"provider_method": "turn/interrupt"},
-        )
-        try:
-            result = await self._runtime.interrupt_turn(
-                context.runtime_session,
-                current_turn,
-                timeout=self._timeout_budget.provider_call_seconds,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            result = ProviderCallResult(
-                status=ProviderCallStatus.UNKNOWN,
-                error_kind="provider_unknown",
-                error_message=f"runtime interrupt failed: {type(error).__name__}",
-            )
-
-        if result.status is ProviderCallStatus.FAILED:
-            async with self._concurrency.for_session(context.bcn_session.id):
-                latest_turn = self._turns.get(turn.turn_id)
-                if (
-                    latest_turn is not None
-                    and latest_turn.state is RuntimeTurnState.INTERRUPTING
-                ):
-                    self._turns[turn.turn_id] = latest_turn.transition_to(
-                        RuntimeTurnState.RUNNING,
-                        at_ms=self._clock(),
-                    )
-        try:
-            error_kind = ErrorKind(result.error_kind) if result.error_kind else None
-        except ValueError:
-            error_kind = ErrorKind.INTERNAL
-        await self._audit.append(
-            event_name=f"runtime.request.turn.interrupt.{result.status.value}",
-            state=(
-                RuntimeEventState.COMPLETED
-                if result.status
-                in {ProviderCallStatus.CONFIRMED, ProviderCallStatus.QUEUED}
-                else RuntimeEventState.UNKNOWN
-                if result.status
-                in {ProviderCallStatus.UNKNOWN, ProviderCallStatus.PARTIAL}
-                else RuntimeEventState.FAILED
-            ),
-            correlation=correlation,
-            error_kind=error_kind,
-            error_message=result.error_message,
-            metadata={"provider_method": "turn/interrupt"},
-        )
-        if result.status in {
-            ProviderCallStatus.CONFIRMED,
-            ProviderCallStatus.QUEUED,
-            ProviderCallStatus.PARTIAL,
-        }:
-            return ProviderCallResult(
-                status=result.status,
-                value=current_turn,
-                error_kind=result.error_kind,
-                error_message=result.error_message,
-                receipt=result.receipt,
-            )
-        return ProviderCallResult(
-            status=result.status,
-            error_kind=result.error_kind,
-            error_message=result.error_message,
-            receipt=result.receipt,
-        )
-
     async def finish_turn(
         self,
         turn: RuntimeTurn,
@@ -635,7 +513,6 @@ class SessionTurnCoordinator:
         session_id: str,
     ) -> RuntimeTurn:
         async with self._concurrency.for_session(session_id):
-            turn = self._turns.get(turn.turn_id, turn)
             if turn.state in {
                 RuntimeTurnState.COMPLETED,
                 RuntimeTurnState.FAILED,
@@ -695,14 +572,8 @@ class SessionTurnCoordinator:
         if event.turn_id is not None and event.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         async with self._concurrency.for_session(message.session_id):
-            turn = self._turns.get(turn.turn_id, turn)
             signal = _runtime_event_signal(event)
-            if (
-                turn.state is RuntimeTurnState.INTERRUPTING
-                and not _is_terminal_turn_event(event)
-            ):
-                target_state = RuntimeTurnState.INTERRUPTING
-            elif not _is_turn_event(event.event_name):
+            if not _is_turn_event(event.event_name):
                 target_state = turn.state
             elif event.state is RuntimeEventState.STARTED:
                 target_state = RuntimeTurnState.RUNNING

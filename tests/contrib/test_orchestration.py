@@ -1992,52 +1992,6 @@ async def test_active_turn_without_provider_id_still_attempts_runtime_steer() ->
 
 
 @pytest.mark.asyncio
-async def test_core_interrupt_state_prevents_late_inbound_from_steering() -> None:
-    orchestrator, channel, runtime, storage, audit = await make_node()
-    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
-    first = make_message(seq=1)
-    second = make_message(seq=2)
-
-    try:
-        await channel.inject(first)
-        await wait_until(lambda: bool(runtime.active_streams))
-        turn = runtime.started_turns[0][1]
-
-        interrupted = await orchestrator.interrupt_turn("bcn-1", turn.turn_id)
-        assert interrupted.status is ProviderCallStatus.CONFIRMED
-        assert interrupted.value is not None
-        assert interrupted.value.state is RuntimeTurnState.INTERRUPTING
-        assert runtime.interrupted_turns[0][1].state is RuntimeTurnState.INTERRUPTING
-
-        runtime.queue_turn_plan(TestTurnPlan())
-        await channel.inject(second)
-        await wait_until(
-            lambda: (
-                second
-                in _stored_messages(
-                    storage,
-                    "bcn-1",
-                    direction=MessageDirection.INBOUND,
-                )
-            )
-        )
-        next(iter(runtime.active_streams)).release()
-        await wait_until(
-            lambda: any(
-                event.event_name == "runtime.turn.completed"
-                and event.correlation.turn_id == f"turn-{second.message_id}"
-                for event in audit.events
-            )
-        )
-
-        assert not runtime.steered_turns
-    finally:
-        if runtime.active_streams:
-            next(iter(runtime.active_streams)).release()
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
 async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
     None
 ):

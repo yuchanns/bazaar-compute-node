@@ -1337,7 +1337,7 @@ event 和 approval 转成 Phase 1 的中立 contract。
 
 #### Task 4B：thread/turn protocol adapter
 
-- 实现 initialize、thread start/resume、turn start、event stream、interrupt 和 turn completion
+- 实现 initialize、thread start/resume、turn start、event stream 和 turn completion
   的 provider protocol mapping。
 - 保存 provider thread/turn ids 与本地 runtime session/turn/client user message mapping；
   `turn/completed` 是唯一权威本地终态，`error.willRetry=true` 不能提前结束 turn。
@@ -1352,7 +1352,7 @@ event 和 approval 转成 Phase 1 的中立 contract。
   socket endpoint；Windows 使用 per-user named pipe 与 named mutex，不保存 PID/lock 文件或
   运行 provider 元数据。
 - 真实场景验证不只断言 wire response：使用自然语言驱动真实 turn，验证同一 thread 的自然
-  follow-up、跨进程 resume 后的自然 follow-up、两个真实 process 的交错 event stream、interrupt，
+  follow-up、跨进程 resume 后的自然 follow-up、两个真实 process 的交错 event stream，
   以及 `error.willRetry=true` 保持非终态。不得断言模型的精确回答文本；应观察 provider/local
   thread-turn id、event 顺序、session correlation、resume history 和 terminal state。
 

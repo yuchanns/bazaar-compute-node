@@ -444,55 +444,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             on_closed=lambda: self._clear_active_turn(session.id, turn.turn_id),
         )
 
-    async def interrupt_turn(
-        self,
-        session: RuntimeSession,
-        turn: RuntimeTurn,
-        *,
-        timeout: float,
-    ) -> ProviderCallResult[RuntimeTurn]:
-        self._ensure_started()
-        connection = self._connections.get(session.id)
-        provider_turn_id = turn.provider_turn_id
-        if connection is None or provider_turn_id is None:
-            return ProviderCallResult(
-                status=ProviderCallStatus.FAILED,
-                error_kind="provider_failed",
-                error_message="runtime turn has no active provider binding",
-            )
-        try:
-            await connection.client.interrupt_turn(
-                connection.provider_thread_id,
-                provider_turn_id,
-                timeout=timeout,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            result = _provider_result(error)
-            if not isinstance(error, JsonlRemoteError):
-                if self._connections.get(session.id) is connection:
-                    self._connections.pop(session.id, None)
-                await self._stop_connection(connection, timeout=timeout)
-                return ProviderCallResult(
-                    status=ProviderCallStatus.UNKNOWN,
-                    error_kind=result.error_kind,
-                    error_message=result.error_message,
-                )
-            return ProviderCallResult(
-                status=result.status,
-                error_kind=result.error_kind,
-                error_message=result.error_message,
-            )
-        return ProviderCallResult(
-            status=ProviderCallStatus.QUEUED,
-            value=turn,
-            receipt={
-                "provider_thread_id": connection.provider_thread_id,
-                "provider_turn_id": provider_turn_id,
-            },
-        )
-
     async def steer_turn(
         self,
         session: RuntimeSession,

@@ -44,7 +44,6 @@ from bazaar_compute_node.contrib.codex import (
     build_initialize_params,
     build_thread_resume_params,
     build_thread_start_params,
-    build_turn_interrupt_params,
     build_turn_start_params,
     build_turn_steer_params,
     parse_background_terminals_response,
@@ -271,10 +270,6 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
             "networkAccess": True,
         },
         "input": [{"type": "text", "text": "natural follow-up"}],
-    }
-    assert build_turn_interrupt_params("thread-1", "turn-1") == {
-        "threadId": "thread-1",
-        "turnId": "turn-1",
     }
     assert build_turn_steer_params(
         "thread-1",

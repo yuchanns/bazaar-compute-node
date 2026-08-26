@@ -18,7 +18,6 @@ from ...core.models import (
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
-    RuntimeTurnState,
     SessionRuntimeState,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -349,94 +348,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 return False
             connection.pending_human_results += 1
             return True
-
-    async def interrupt_turn(
-        self,
-        session: RuntimeSession,
-        turn: RuntimeTurn,
-        *,
-        timeout: float,
-    ) -> ProviderCallResult[RuntimeTurn]:
-        self._ensure_started()
-        connection = self._connections.get(session.id)
-        if connection is None:
-            return ProviderCallResult(
-                status=ProviderCallStatus.FAILED,
-                error_kind="provider_failed",
-                error_message="runtime turn has no active provider binding",
-            )
-        async with connection.state_lock:
-            if connection.active_turn_id != turn.turn_id:
-                return ProviderCallResult(
-                    status=ProviderCallStatus.FAILED,
-                    error_kind="provider_failed",
-                    error_message="runtime turn has no active provider binding",
-                )
-            stream = connection.active_stream
-            send_interrupt = stream is not None and connection.pending_human_results > 0
-        if stream is None:
-            return ProviderCallResult(
-                status=ProviderCallStatus.FAILED,
-                error_kind="provider_failed",
-                error_message="runtime turn stream is unavailable",
-            )
-        if send_interrupt:
-            try:
-                await connection.client.control(
-                    {"subtype": "interrupt"}, timeout=timeout
-                )
-            except asyncio.CancelledError:
-                raise
-            except ClaudeControlError as error:
-                result = _provider_result(error)
-                return ProviderCallResult(
-                    status=result.status,
-                    error_kind=result.error_kind,
-                    error_message=result.error_message,
-                )
-            except Exception as error:  # noqa: BLE001
-                await self._retire_connection(session.id, connection)
-                result = _provider_result(error)
-                return ProviderCallResult(
-                    status=ProviderCallStatus.UNKNOWN,
-                    error_kind=result.error_kind,
-                    error_message=result.error_message,
-                )
-        try:
-            terminal = await stream.wait_terminal(timeout=timeout)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            await self._retire_connection(session.id, connection)
-            result = _provider_result(error)
-            return ProviderCallResult(
-                status=ProviderCallStatus.UNKNOWN,
-                error_kind=result.error_kind,
-                error_message=result.error_message,
-            )
-        state = {
-            RuntimeEventState.COMPLETED: RuntimeTurnState.COMPLETED,
-            RuntimeEventState.FAILED: RuntimeTurnState.FAILED,
-            RuntimeEventState.CANCELLED: RuntimeTurnState.CANCELLED,
-            RuntimeEventState.UNKNOWN: RuntimeTurnState.UNKNOWN,
-        }.get(terminal.state)
-        if state is None:
-            return ProviderCallResult(
-                status=ProviderCallStatus.UNKNOWN,
-                error_kind="provider_unknown",
-                error_message="interrupt completed without a terminal result",
-            )
-        return ProviderCallResult(
-            status=ProviderCallStatus.CONFIRMED,
-            value=turn.transition_to(
-                state,
-                at_ms=time_ns() // 1_000_000,
-                error_kind=terminal.error_kind,
-                error_message=terminal.error_message,
-                latest_event_name=terminal.event_name,
-            ),
-            receipt={"provider_thread_id": connection.provider_thread_id},
-        )
 
     async def has_background_job(
         self, session: RuntimeSession, *, timeout: float
