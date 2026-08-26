@@ -222,9 +222,9 @@ class Client:
                     continue
                 self._message_sequence += 1
                 sequence = self._message_sequence
+                await self._route_business_message(envelope, sequence)
                 if self._message_observer is not None:
                     self._message_observer(envelope)
-                await self._route_business_message(envelope, sequence)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001

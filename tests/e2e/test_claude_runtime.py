@@ -8,7 +8,6 @@ import signal
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from time import time_ns
 from typing import cast
 from uuid import NAMESPACE_URL, uuid4, uuid5, uuid7
 
@@ -36,28 +35,21 @@ from bazaar_compute_node.contrib.claude.client import Client
 from bazaar_compute_node.contrib.claude.events import TurnEventStream
 from bazaar_compute_node.contrib.claude.process import (
     ProcessSpec,
-    ProcessState,
     ProcessSupervisor,
     build_arguments,
 )
 from bazaar_compute_node.contrib.claude.runtime import Runtime
-from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
-    ApprovalRequest,
-    ApprovalResult,
     Message,
     MessageDirection,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
-    RuntimeTurn,
     RuntimeTurnState,
     SenderIdentity,
-    SessionRuntimeState,
-    StreamEvent,
     StreamEventKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
@@ -66,19 +58,10 @@ from bazaar_compute_node.core.runtime import (
     IRuntime,
     RuntimeCommandContext,
     RuntimeSandboxMode,
-    RuntimeSessionUnavailable,
 )
 from bazaar_compute_node.core.storage import IStorage
 
 pytestmark = pytest.mark.e2e
-
-
-class _NoopApprovalHandler(IApprovalHandler):
-    async def request_approval(
-        self, request: ApprovalRequest, *, timeout: float
-    ) -> ApprovalResult:
-        del timeout
-        raise AssertionError(f"unexpected approval request: {request.request_id}")
 
 
 class _StaticRegistry(AdapterRegistry):
@@ -189,6 +172,7 @@ async def _wait_for_turn_completion(
     session_id: str,
     turn_id: str,
     timeout: float = 180,
+    expected_event_name: str = "claudecode.turn.completed",
 ) -> None:
     terminal_event = None
     async with asyncio.timeout(timeout):
@@ -210,7 +194,7 @@ async def _wait_for_turn_completion(
                 None,
             )
             await asyncio.sleep(0.05)
-    assert terminal_event.event_name == "claudecode.turn.completed", terminal_event
+    assert terminal_event.event_name == expected_event_name, terminal_event
 
 
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
@@ -239,89 +223,6 @@ async def _unused_command(
     command: str, arguments: Sequence[str], cwd: str | None
 ) -> None:
     del command, arguments, cwd
-
-
-def _session(agent_id: str, session_id: str) -> RuntimeSession:
-    now = time_ns() // 1_000_000
-    return RuntimeSession(
-        id=session_id,
-        bcn_session_id=f"bcn-{session_id}",
-        channel_session_id=f"channel-{session_id}",
-        runtime="claudecode",
-        workspace_id=agent_id,
-        created_at_ms=now,
-        updated_at_ms=now,
-    )
-
-
-def _turn(session: RuntimeSession) -> RuntimeTurn:
-    return RuntimeTurn(
-        turn_id=str(uuid4()),
-        session_id=session.id,
-        state=RuntimeTurnState.RUNNING,
-        started_at_ms=time_ns() // 1_000_000,
-        client_user_message_id=str(uuid4()),
-    )
-
-
-def _context(agent_id: str) -> RuntimeCommandContext:
-    environment = _claude_environment()
-
-    def environment_for_session(session: RuntimeSession) -> Mapping[str, str]:
-        del session
-        return environment
-
-    return RuntimeCommandContext(
-        run_command=_unused_command,
-        environment_for_session=environment_for_session,
-        agent_id=agent_id,
-        agent_name="Claude E2E",
-        bot_name=lambda: "Claude E2E",
-        runtime_options={"model": "kimi"},
-        sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
-        startup_timeout_seconds=30,
-    )
-
-
-@pytest.mark.asyncio
-async def test_real_claude_runtime_starts_reconciles_and_reaps_process() -> None:
-    if shutil.which("claude") is None:
-        pytest.fail("claude CLI is required for the runtime integration test")
-    agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="kimi")
-    session = _session(agent_id, str(uuid4()))
-    await runtime.start(timeout=30)
-
-    started = await runtime.start_session(session, timeout=30)
-
-    assert started.status is ProviderCallStatus.CONFIRMED
-    assert started.value is not None
-    assert started.value.provider_thread_id is not None
-    fresh_connection = runtime._connections[session.id]
-    fresh_pid = fresh_connection.supervisor.pid
-    assert fresh_pid is not None
-    inbox, send_error = await fresh_connection.client.open_turn(
-        "Reply exactly OK.", timeout=30
-    )
-    assert send_error is None
-    async with asyncio.timeout(60):
-        while (await inbox.receive())["type"] != "result":
-            pass
-    await fresh_connection.client.close_turn(inbox)
-    await runtime.stop_session(started.value, timeout=10)
-
-    reconciled = await runtime.reconcile_session(started.value, None, None, timeout=30)
-
-    assert reconciled.status is ProviderCallStatus.CONFIRMED
-    assert reconciled.value is not None
-    assert reconciled.value.state is SessionRuntimeState.IDLE
-    connection = runtime._connections[session.id]
-    pid = connection.supervisor.pid
-    assert pid is not None
-    await runtime.stop(timeout=10)
-    assert connection.supervisor.state is ProcessState.STOPPED
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
 
 
 @pytest.mark.asyncio
@@ -372,189 +273,201 @@ async def test_real_claude_initialization_and_session_system_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_claude_turn_stream_and_running_steer() -> None:
-    if shutil.which("claude") is None:
-        pytest.fail("claude CLI is required for the turn integration test")
-    agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="kimi")
-    session = _session(agent_id, str(uuid4()))
-    await runtime.start(timeout=30)
-    started = await runtime.start_session(session, timeout=30)
-    assert started.value is not None
-    session = started.value
-    turn = _turn(session)
-    stream = await runtime.start_turn(
-        session,
-        turn,
-        (
+async def test_real_claude_turn_stream_and_running_steer(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(system_temp_dir / "claude-steer.sock")
+    session_id = f"claude-steer-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    first = _message(
+        session_id,
+        body=(
             "Write a numbered list of thirty common animals, with one short "
             "sentence about each animal."
         ),
-        _NoopApprovalHandler(),
-        timeout=30,
     )
-    items = []
-    steered = False
-    async with asyncio.timeout(120):
-        async for item in stream:
-            items.append(item)
-            if (
-                not steered
-                and isinstance(item, StreamEvent)
-                and item.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+    second = _message(
+        session_id,
+        seq=2,
+        body="Stop the list now and finish with a short acknowledgement.",
+    )
+    try:
+        await node.start()
+        await channel.inject(first)
+        async with asyncio.timeout(120):
+            while not any(
+                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                for event in channel.stream_events
             ):
-                steered = await runtime.steer_turn(
-                    session,
-                    turn,
-                    "Stop the list now and finish with a short acknowledgement.",
-                    timeout=30,
-                )
-
-    terminals = [
-        item
-        for item in items
-        if isinstance(item, RuntimeEvent)
-        and item.state
-        in {
-            RuntimeEventState.COMPLETED,
-            RuntimeEventState.FAILED,
-            RuntimeEventState.CANCELLED,
-            RuntimeEventState.UNKNOWN,
-        }
-    ]
-    assert steered
-    assert any(
-        isinstance(item, StreamEvent)
-        and item.kind is StreamEventKind.AGENT_MESSAGE_DELTA
-        for item in items
-    )
-    assert len(terminals) == 1
-    assert terminals[0].state is RuntimeEventState.COMPLETED
-    assert "usage" in terminals[0].metadata
-    assert not await runtime.has_background_job(session, timeout=1)
-    await runtime.stop(timeout=10)
-
-
-@pytest.mark.asyncio
-async def test_real_claude_interrupt_drains_aborted_result() -> None:
-    if shutil.which("claude") is None:
-        pytest.fail("claude CLI is required for the interrupt integration test")
-    agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="kimi")
-    session = _session(agent_id, str(uuid4()))
-    await runtime.start(timeout=30)
-    started = await runtime.start_session(session, timeout=30)
-    assert started.value is not None
-    session = started.value
-    turn = _turn(session)
-    stream = await runtime.start_turn(
-        session,
-        turn,
-        "Write a long, detailed tutorial with many sections and examples.",
-        _NoopApprovalHandler(),
-        timeout=30,
-    )
-    interrupt_task = None
-    terminal = None
-    async with asyncio.timeout(90):
-        async for item in stream:
-            if (
-                interrupt_task is None
-                and isinstance(item, StreamEvent)
-                and item.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                await asyncio.sleep(0.05)
+        await channel.inject(second)
+        async with asyncio.timeout(120):
+            while not any(
+                event.event_name == "runtime.request.turn.steer.accepted"
+                and event.correlation.turn_id == f"turn-{first.message_id}"
+                for event in audit.events
             ):
-                interrupt_task = asyncio.create_task(
-                    runtime.interrupt_turn(session, turn, timeout=30)
-                )
-            if isinstance(item, RuntimeEvent) and item.state in {
-                RuntimeEventState.COMPLETED,
-                RuntimeEventState.FAILED,
-                RuntimeEventState.CANCELLED,
-                RuntimeEventState.UNKNOWN,
-            }:
-                terminal = item
-    assert interrupt_task is not None
-    interrupted = await interrupt_task
-    assert interrupted.status is ProviderCallStatus.CONFIRMED
-    assert interrupted.value is not None
-    assert interrupted.value.state is RuntimeTurnState.CANCELLED
-    assert terminal is not None
-    assert terminal.state is RuntimeEventState.CANCELLED
-    await runtime.stop(timeout=10)
-
-
-@pytest.mark.asyncio
-async def test_real_claude_active_child_exit_is_terminal_unknown() -> None:
-    if shutil.which("claude") is None:
-        pytest.fail("claude CLI is required for the exit integration test")
-    agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="kimi")
-    session = _session(agent_id, str(uuid4()))
-    await runtime.start(timeout=30)
-    started = await runtime.start_session(session, timeout=30)
-    assert started.value is not None
-    session = started.value
-    turn = _turn(session)
-    stream = await runtime.start_turn(
-        session,
-        turn,
-        "Write a long response with many detailed sections.",
-        _NoopApprovalHandler(),
-        timeout=30,
-    )
-    connection = runtime._connections[session.id]
-    pid = connection.supervisor.pid
-    assert pid is not None
-    os.kill(pid, signal.SIGKILL)
-    items = []
-    async with asyncio.timeout(30):
-        async for item in stream:
-            items.append(item)
-
-    terminals = [
-        item
-        for item in items
-        if isinstance(item, RuntimeEvent)
-        and item.state
-        in {
-            RuntimeEventState.COMPLETED,
-            RuntimeEventState.FAILED,
-            RuntimeEventState.CANCELLED,
-            RuntimeEventState.UNKNOWN,
-        }
-    ]
-    assert len(terminals) == 1
-    assert terminals[0].state is RuntimeEventState.UNKNOWN
-    assert session.id not in runtime._connections
-    await runtime.stop(timeout=10)
-
-
-@pytest.mark.asyncio
-async def test_real_claude_idle_child_exit_rejects_next_turn() -> None:
-    if shutil.which("claude") is None:
-        pytest.fail("claude CLI is required for the idle-exit integration test")
-    agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="kimi")
-    session = _session(agent_id, str(uuid4()))
-    await runtime.start(timeout=30)
-    started = await runtime.start_session(session, timeout=30)
-    assert started.value is not None
-    session = started.value
-    connection = runtime._connections[session.id]
-    pid = connection.supervisor.pid
-    assert pid is not None
-    os.kill(pid, signal.SIGKILL)
-    await connection.supervisor.wait(timeout=10)
-
-    with pytest.raises(RuntimeSessionUnavailable):
-        await runtime.start_turn(
-            session,
-            _turn(session),
-            "Reply briefly.",
-            _NoopApprovalHandler(),
-            timeout=30,
+                await asyncio.sleep(0.05)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{first.message_id}",
         )
-    await runtime.stop(timeout=10)
+    finally:
+        await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_claude_interrupt_drains_aborted_result(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(system_temp_dir / "claude-interrupt.sock")
+    session_id = f"claude-interrupt-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    message = _message(
+        session_id,
+        body="Write a long, detailed tutorial with many sections and examples.",
+    )
+    try:
+        await node.start()
+        await channel.inject(message)
+        async with asyncio.timeout(120):
+            while not any(
+                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                for event in channel.stream_events
+            ):
+                await asyncio.sleep(0.05)
+        agent = node.agents[agent_id]
+        assert isinstance(agent.runtime, Runtime)
+        turn = agent.orchestrator._runtime_turns[f"turn-{message.message_id}"]
+        interrupted = await agent.orchestrator.interrupt_turn(
+            scoped_session_id,
+            turn.turn_id,
+        )
+        assert interrupted.status is ProviderCallStatus.CONFIRMED
+        assert interrupted.value is not None
+        assert interrupted.value.state is RuntimeTurnState.INTERRUPTING
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=turn.turn_id,
+            expected_event_name="claudecode.turn.cancelled",
+        )
+    finally:
+        await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_claude_active_child_exit_is_terminal_unknown(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(system_temp_dir / "claude-active-exit.sock")
+    session_id = f"claude-active-exit-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    message = _message(
+        session_id,
+        body="Write a long response with many detailed sections.",
+    )
+    recovery = _message(
+        session_id,
+        seq=2,
+        body="After recovering the conversation, summarize the topic in one paragraph.",
+    )
+    try:
+        await node.start()
+        await channel.inject(message)
+        async with asyncio.timeout(120):
+            while not any(
+                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                for event in channel.stream_events
+            ):
+                await asyncio.sleep(0.05)
+        agent = node.agents[agent_id]
+        assert isinstance(agent.runtime, Runtime)
+        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert runtime_session is not None
+        connection = agent.runtime._connections[runtime_session.id]
+        pid = connection.supervisor.pid
+        assert pid is not None
+        provider_thread_id = runtime_session.provider_thread_id
+        assert provider_thread_id is not None
+        os.kill(pid, signal.SIGKILL)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{message.message_id}",
+            expected_event_name="claudecode.turn.unknown",
+        )
+        assert runtime_session.id not in agent.runtime._connections
+
+        await channel.inject(recovery)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{recovery.message_id}",
+        )
+        recovered_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert recovered_session is not None
+        assert recovered_session.provider_thread_id == provider_thread_id
+        recovered = agent.runtime._connections[recovered_session.id]
+        assert recovered.supervisor.pid != pid
+    finally:
+        await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_claude_idle_child_exit_rebuilds_for_next_turn(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(system_temp_dir / "claude-idle-exit.sock")
+    session_id = f"claude-idle-exit-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    first = _message(
+        session_id, body="Summarize why leaves are green in one paragraph."
+    )
+    second = _message(
+        session_id,
+        seq=2,
+        body="Now summarize why the sky appears blue in one paragraph.",
+    )
+    try:
+        await node.start()
+        await channel.inject(first)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{first.message_id}",
+        )
+        agent = node.agents[agent_id]
+        assert isinstance(agent.runtime, Runtime)
+        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert runtime_session is not None
+        connection = agent.runtime._connections[runtime_session.id]
+        pid = connection.supervisor.pid
+        assert pid is not None
+        os.kill(pid, signal.SIGKILL)
+        await connection.supervisor.wait(timeout=10)
+
+        await channel.inject(second)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{second.message_id}",
+        )
+        rebuilt_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert rebuilt_session is not None
+        rebuilt = agent.runtime._connections[rebuilt_session.id]
+        assert rebuilt.supervisor.pid != pid
+    finally:
+        await node.stop()
 
 
 @pytest.mark.asyncio

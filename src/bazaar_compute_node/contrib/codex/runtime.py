@@ -470,6 +470,15 @@ class Runtime(IRuntime, IAsyncLifecycle):
             raise
         except Exception as error:  # noqa: BLE001
             result = _provider_result(error)
+            if not isinstance(error, JsonlRemoteError):
+                if self._connections.get(session.id) is connection:
+                    self._connections.pop(session.id, None)
+                await self._stop_connection(connection, timeout=timeout)
+                return ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind=result.error_kind,
+                    error_message=result.error_message,
+                )
             return ProviderCallResult(
                 status=result.status,
                 error_kind=result.error_kind,
@@ -601,12 +610,14 @@ class Runtime(IRuntime, IAsyncLifecycle):
         environment = dict(self._context.environment_for_session(session))
         for attempt in range(_INITIALIZE_ATTEMPTS):
             watch_targets: dict[str, Path] = {}
+            connection_holder: list[_Connection] = []
 
             def route_notification(
                 message: dict[str, object],
                 *,
                 targets: dict[str, Path] = watch_targets,
                 runtime_session_id: str = session.id,
+                origin_holder: list[_Connection] = connection_holder,
             ) -> bool:
                 method = message.get("method")
                 if method == "skills/changed":
@@ -622,8 +633,14 @@ class Runtime(IRuntime, IAsyncLifecycle):
                         and isinstance(item, Mapping)
                         and item.get("type") == "commandExecution"
                     ):
+                        if not origin_holder:
+                            return False
+                        origin = origin_holder[0]
                         task = asyncio.create_task(
-                            self._refresh_background_state(runtime_session_id),
+                            self._refresh_background_state(
+                                runtime_session_id,
+                                origin,
+                            ),
                             name=f"bcn-codex-background-{runtime_session_id}",
                         )
                         self._background_refresh_tasks.add(task)
@@ -676,17 +693,22 @@ class Runtime(IRuntime, IAsyncLifecycle):
             except BaseException:
                 await supervisor.stop(timeout=timeout)
                 raise
-            return _Connection(
+            connection = _Connection(
                 supervisor=supervisor,
                 client=client,
                 workspace=workspace,
                 provider_thread_id=session.provider_thread_id or "",
             )
+            connection_holder.append(connection)
+            return connection
         raise AssertionError("Codex initialization retry loop did not return")
 
-    async def _refresh_background_state(self, session_id: str) -> None:
-        connection = self._connections.get(session_id)
-        if connection is None:
+    async def _refresh_background_state(
+        self,
+        session_id: str,
+        connection: _Connection,
+    ) -> None:
+        if self._connections.get(session_id) is not connection:
             return
         async with connection.background_state_lock:
             if self._connections.get(session_id) is not connection:

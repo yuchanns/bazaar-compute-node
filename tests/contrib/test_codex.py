@@ -1087,9 +1087,12 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         assert pid is not None
         assert connection.supervisor.is_running
 
-        async with asyncio.timeout(600):
-            while agent.orchestrator.runtime_session(scoped_session_id) is not None:
-                await asyncio.sleep(0.05)
+        await _wait_for_audit_event(
+            audit,
+            session_id=scoped_session_id,
+            event_name="runtime.process.stop.completed",
+        )
+        assert agent.orchestrator.runtime_session(scoped_session_id) is None
         assert not connection.supervisor.is_running
         assert connection.supervisor.returncode is not None
         with pytest.raises(ProcessLookupError):
@@ -1220,12 +1223,13 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
         )
 
     now_ms = time_ns() // 1_000_000
+    agent_id = "agent-test"
     session = RuntimeSession(
         id=f"runtime-context-{uuid7()}",
         bcn_session_id=f"bcn-context-{uuid7()}",
         channel_session_id=f"channel-context-{uuid7()}",
         runtime="codex",
-        workspace_id=f"workspace-context-{uuid7()}",
+        workspace_id=agent_id,
         created_at_ms=now_ms,
         updated_at_ms=now_ms,
     )
@@ -1235,7 +1239,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
             environment_for_session=lambda _: dict(os.environ),
             agent_name="Test Agent",
             bot_name=lambda: "provider_bot",
-            agent_id="agent-test",
+            agent_id=agent_id,
         ),
         executable=codex,
     )

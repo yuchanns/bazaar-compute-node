@@ -79,6 +79,7 @@ class TestRuntime(IRuntime):
         self.reconciled_sessions: list[RuntimeSession] = []
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
+        self.interrupted_turns: list[tuple[RuntimeSession, RuntimeTurn]] = []
         self.steered_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.background_job_present = False
         self.background_jobs: set[str] = set()
@@ -227,8 +228,13 @@ class TestRuntime(IRuntime):
         *,
         timeout: float,
     ) -> ProviderCallResult[RuntimeTurn]:
-        del session, timeout
-        if turn.state in {RuntimeTurnState.STARTING, RuntimeTurnState.RUNNING}:
+        del timeout
+        self.interrupted_turns.append((session, turn))
+        if turn.state in {
+            RuntimeTurnState.STARTING,
+            RuntimeTurnState.RUNNING,
+            RuntimeTurnState.INTERRUPTING,
+        }:
             turn = turn.transition_to(
                 RuntimeTurnState.CANCELLED,
                 at_ms=time_ns() // 1_000_000,

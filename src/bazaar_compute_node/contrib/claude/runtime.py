@@ -60,6 +60,7 @@ class _Connection:
     pending_human_results: int = 0
     active_stream: TurnEventStream | None = None
     active_background_task_ids: set[str] = field(default_factory=set)
+    background_active: bool = False
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
@@ -372,21 +373,44 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     error_message="runtime turn has no active provider binding",
                 )
             stream = connection.active_stream
+            send_interrupt = stream is not None and connection.pending_human_results > 0
         if stream is None:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_failed",
                 error_message="runtime turn stream is unavailable",
             )
+        if send_interrupt:
+            try:
+                await connection.client.control(
+                    {"subtype": "interrupt"}, timeout=timeout
+                )
+            except asyncio.CancelledError:
+                raise
+            except ClaudeControlError as error:
+                result = _provider_result(error)
+                return ProviderCallResult(
+                    status=result.status,
+                    error_kind=result.error_kind,
+                    error_message=result.error_message,
+                )
+            except Exception as error:  # noqa: BLE001
+                await self._retire_connection(session.id, connection)
+                result = _provider_result(error)
+                return ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind=result.error_kind,
+                    error_message=result.error_message,
+                )
         try:
-            await connection.client.control({"subtype": "interrupt"}, timeout=timeout)
             terminal = await stream.wait_terminal(timeout=timeout)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
+            await self._retire_connection(session.id, connection)
             result = _provider_result(error)
             return ProviderCallResult(
-                status=result.status,
+                status=ProviderCallStatus.UNKNOWN,
                 error_kind=result.error_kind,
                 error_message=result.error_message,
             )
@@ -422,7 +446,10 @@ class Runtime(IRuntime, IAsyncLifecycle):
         if connection is None:
             return False
         async with connection.state_lock:
-            return bool(connection.active_background_task_ids)
+            return bool(
+                connection.active_background_task_ids
+                or connection.client.injected_turn_active
+            )
 
     async def _open_connection(
         self,
@@ -605,31 +632,31 @@ def _sandbox_settings(
 
 
 def _observe_background(connection: _Connection, message: dict[str, object]) -> bool:
-    if message.get("type") != "system":
-        return False
-    subtype = message.get("subtype")
-    task_id = message.get("task_id")
-    if not isinstance(task_id, str) or not task_id:
-        return False
-    if subtype == "task_started" and message.get("task_type") in {
-        "local_agent",
-        "local_workflow",
-    }:
-        connection.active_background_task_ids.add(task_id)
-        return False
-    was_active = bool(connection.active_background_task_ids)
-    if subtype == "task_notification":
-        connection.active_background_task_ids.discard(task_id)
-    elif subtype == "task_updated":
-        patch = message.get("patch")
-        if isinstance(patch, dict) and patch.get("status") in {
-            "completed",
-            "failed",
-            "stopped",
-            "killed",
-        }:
-            connection.active_background_task_ids.discard(task_id)
-    return was_active and not connection.active_background_task_ids
+    was_active = connection.background_active
+    if message.get("type") == "system":
+        subtype = message.get("subtype")
+        task_id = message.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            if subtype == "task_started" and message.get("task_type") in {
+                "local_agent",
+                "local_workflow",
+            }:
+                connection.active_background_task_ids.add(task_id)
+            elif subtype == "task_notification":
+                connection.active_background_task_ids.discard(task_id)
+            elif subtype == "task_updated":
+                patch = message.get("patch")
+                if isinstance(patch, dict) and patch.get("status") in {
+                    "completed",
+                    "failed",
+                    "stopped",
+                    "killed",
+                }:
+                    connection.active_background_task_ids.discard(task_id)
+    connection.background_active = bool(
+        connection.active_background_task_ids or connection.client.injected_turn_active
+    )
+    return was_active and not connection.background_active
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

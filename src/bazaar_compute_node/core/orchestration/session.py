@@ -32,7 +32,7 @@ from ..models import (
     SessionRuntimeState,
 )
 from ..observability import IAudit
-from ..outcomes import ProviderCallStatus
+from ..outcomes import ProviderCallResult, ProviderCallStatus
 from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
@@ -237,6 +237,40 @@ class SessionOrchestrator(IAsyncLifecycle):
         """Return the process-local runtime session bound to one BCN session."""
 
         return self._runtime_sessions.get(session_id)
+
+    async def interrupt_turn(
+        self,
+        session_id: str,
+        turn_id: str,
+    ) -> ProviderCallResult[RuntimeTurn]:
+        if not self._started or self._stopping:
+            raise RuntimeError("session orchestrator is not running")
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        if not turn_id:
+            raise ValueError("turn_id must be a non-empty string")
+        runtime_session = self.runtime_session(session_id)
+        turn = self._runtime_turns.get(turn_id)
+        if runtime_session is None or turn is None:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind=ErrorKind.PROVIDER_FAILED.value,
+                error_message="runtime turn has no active provider binding",
+            )
+        bcn_session = await self._storage.get_bcn_session(session_id)
+        if bcn_session is None:
+            raise ValueError(f"unknown bcn session: {session_id}")
+        channel_session = await self._storage.get_channel_session(
+            bcn_session.channel_session_id
+        )
+        if channel_session is None:
+            raise ValueError(
+                f"unknown channel session: {bcn_session.channel_session_id}"
+            )
+        return await self._turns.interrupt_turn(
+            SessionContext(channel_session, bcn_session, runtime_session),
+            turn,
+        )
 
     async def publish_inbox_wake(self, message: Message) -> None:
         if self._stopping:
