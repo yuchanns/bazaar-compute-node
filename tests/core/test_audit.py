@@ -7,11 +7,23 @@ import pytest
 from bazaar_compute_node.core.approval import ApprovalBinding
 from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
 from bazaar_compute_node.core.correlation import CorrelationContext
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     RuntimeEventState,
 )
 from bazaar_compute_node.core.observability import LogLevel
+from bazaar_compute_node.core.orchestration.services import SessionAuditRecorder
+
+
+class _FailingAudit:
+    @property
+    def name(self) -> str:
+        return "failing"
+
+    async def append(self, event: AuditEvent, *, timeout: float) -> None:
+        del event, timeout
+        raise OSError("audit sink unavailable")
 
 
 def make_approval_request() -> ApprovalRequest:
@@ -72,3 +84,18 @@ def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
             correlation=event.correlation,
             metadata={"token": "secret"},
         )
+
+
+@pytest.mark.asyncio
+async def test_session_audit_failure_does_not_fail_business_operation() -> None:
+    recorder = SessionAuditRecorder(
+        sink=_FailingAudit(),
+        timeout_budget=TimeoutBudget(1, 1, 1, 1),
+        clock=lambda: 1,
+    )
+
+    await recorder.append(
+        event_name="runtime.turn.completed",
+        state=RuntimeEventState.COMPLETED,
+        correlation=CorrelationContext(bcn_session_id="session-1"),
+    )

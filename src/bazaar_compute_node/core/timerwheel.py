@@ -4,6 +4,8 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+from .lifecycle import TaskFailureSignal
+
 _NEAR_BITS = 8
 _NEAR_SIZE = 1 << _NEAR_BITS
 _LEVEL_BITS = 6
@@ -144,6 +146,7 @@ class TimerWheel:
         self._poke = asyncio.Event()
         self._waiting_poke: asyncio.Event | None = None
         self._driver_task: asyncio.Task[None] | None = None
+        self._failure = TaskFailureSignal()
         self._started = False
         self._closed = False
 
@@ -165,15 +168,18 @@ class TimerWheel:
         if self._closed:
             raise TimerWheelClosedError("timer wheel is closed")
         self._started = True
+        self._failure.reset()
         self._current_tick = time.monotonic_ns() // (self._tick_ms * 1_000_000)
         self._driver_task = asyncio.create_task(
             self._run(),
             name="bcn-timer-wheel",
         )
+        self._failure.observe(self._driver_task, component="timer wheel driver")
 
     async def close(self) -> None:
         if self._closed:
             return
+        self._failure.disable()
         self._closed = True
         self._started = False
         driver_task = self._driver_task
@@ -190,6 +196,9 @@ class TimerWheel:
                 bucket.clear()
         for entry in entries:
             entry.timer._close()
+
+    async def wait_failure(self) -> None:
+        await self._failure.wait()
 
     def create(self, delay_ms: int) -> Timer:
         self._require_running()

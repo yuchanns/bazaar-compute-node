@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable, Mapping
 
 from ..audit import AuditEvent, ErrorKind
@@ -45,6 +47,7 @@ class SessionAuditRecorder:
         self._sink = sink
         self._timeout_budget = timeout_budget
         self._clock = clock
+        self._logger = logging.getLogger("bazaar_compute_node.audit.fallback")
 
     async def append(
         self,
@@ -56,19 +59,28 @@ class SessionAuditRecorder:
         error_message: str | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> None:
-        await self._sink.append(
-            AuditEvent(
-                event_name=event_name,
-                state=state,
-                created_at_ms=self._clock(),
-                correlation=correlation,
-                level=LogLevel.ERROR if error_kind else LogLevel.INFO,
-                error_kind=error_kind,
-                error_message=error_message,
-                metadata=metadata or {},
-            ),
-            timeout=self._timeout_budget.command_seconds,
+        event = AuditEvent(
+            event_name=event_name,
+            state=state,
+            created_at_ms=self._clock(),
+            correlation=correlation,
+            level=LogLevel.ERROR if error_kind else LogLevel.INFO,
+            error_kind=error_kind,
+            error_message=error_message,
+            metadata=metadata or {},
         )
+        try:
+            await self._sink.append(
+                event,
+                timeout=self._timeout_budget.command_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception(
+                "audit append failed",
+                extra={"event_name": event_name},
+            )
 
     async def append_tool(
         self,

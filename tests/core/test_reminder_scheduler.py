@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -201,6 +202,49 @@ async def test_global_scheduler_materializes_system_messages_and_routes_wakes() 
 
 
 @pytest.mark.asyncio
+async def test_scheduler_cancels_orphan_and_materializes_valid_reminder() -> None:
+    storage = MemoryStorage()
+    orphan_anchor = add_session(
+        storage,
+        agent_id=_AGENT_A,
+        session_id=_SESSION_A,
+    )
+    valid_anchor = add_session(
+        storage,
+        agent_id=_AGENT_A,
+        session_id=_SESSION_B,
+    )
+    storage.reminders.update(
+        {
+            _REMINDER_A: make_scheduled_reminder(
+                _REMINDER_A,
+                session_id=_SESSION_A,
+                anchor_message_id=orphan_anchor,
+            ),
+            _REMINDER_B: make_scheduled_reminder(
+                _REMINDER_B,
+                session_id=_SESSION_B,
+                anchor_message_id=valid_anchor,
+            ),
+        }
+    )
+    storage.messages[_SESSION_A].clear()
+    wakes: list[tuple[str, Message[InboundAttachment]]] = []
+
+    def publish(agent_id: str, message: Message[InboundAttachment]) -> bool:
+        wakes.append((agent_id, message))
+        return True
+
+    scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
+    try:
+        assert storage.reminders[_REMINDER_A].state is ReminderState.CANCELED
+        assert storage.reminders[_REMINDER_B].state is ReminderState.FIRED
+        assert any(message.session_id == _SESSION_B for _, message in wakes)
+    finally:
+        await stop_scheduler(scheduler, timer_wheel)
+
+
+@pytest.mark.asyncio
 async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> None:
     agent_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
     node = NodeApplication(
@@ -228,5 +272,26 @@ async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> N
         assert health["failed_agents"] == 1
         assert node.reminder_scheduler._task is not None
         assert not node.reminder_scheduler._task.done()
+    finally:
+        await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_node_exits_when_shared_timer_driver_stops(tmp_path: Path) -> None:
+    node = NodeApplication(
+        configuration=NodeConfiguration(storage="test", audit="test", agents=()),
+        shared_factories=AdapterRegistry().load_shared(storage="test", audit="test"),
+        endpoint_path=tmp_path / "bcn.sock",
+    )
+
+    await node.start()
+    try:
+        driver = node.timer_wheel._driver_task
+        assert driver is not None
+        driver.cancel()
+
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(node.wait(), timeout=1)
+        assert node.ready is False
     finally:
         await node.stop()

@@ -134,6 +134,13 @@ class LocalCommandServer:
             if (path_stat.st_dev, path_stat.st_ino) == identity:
                 await asyncio.to_thread(path.unlink)
 
+    async def wait_failure(self) -> None:
+        windows_server = self._windows_server
+        if windows_server is not None:
+            await windows_server.wait_failure()
+            return
+        await asyncio.Future()
+
     async def _handle_client(
         self,
         reader: asyncio.StreamReader,

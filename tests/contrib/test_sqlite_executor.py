@@ -165,3 +165,20 @@ async def test_query_only_reader_is_reused_and_shutdown_drains_borrowers() -> No
         release_borrower.set()
         await borrower_task
         await stop_task
+
+
+@pytest.mark.asyncio
+async def test_writer_termination_reports_shared_storage_failure() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        executor = database._executor
+        assert executor is not None
+        writer = executor._writer_task
+        assert writer is not None
+        writer.cancel()
+
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(database.wait_failure(), timeout=1)
+    finally:
+        await database.stop(timeout=2)

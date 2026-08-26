@@ -350,6 +350,30 @@ async def test_orchestrator_uses_agent_scoped_storage_before_runtime() -> None:
         await orchestrator.stop(timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_degrades_and_recovers_local_worker_failures() -> None:
+    orchestrator, _, _, storage, _ = await make_node()
+    try:
+        orchestrator._runtime_queue_for_session("session-1")
+        worker = orchestrator._runtime_workers["session-1"]
+        worker.cancel()
+        await wait_until(
+            lambda: orchestrator._runtime_workers.get("session-1") is not worker
+        )
+
+        receive_task = orchestrator._receive_task
+        assert receive_task is not None
+        receive_task.cancel()
+        await wait_until(lambda: "channel_receive" in orchestrator._background_failures)
+
+        assert orchestrator.health["state"] == "degraded"
+        assert "channel_receive" in orchestrator._background_failures
+        assert "runtime_worker:session-1" in orchestrator._background_failures
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=1)
+
+
 async def wait_until(predicate: object) -> None:
     if not callable(predicate):
         raise TypeError("predicate must be callable")
