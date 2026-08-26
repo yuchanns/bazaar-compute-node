@@ -16,3 +16,5 @@
 14. 代码内部禁止无脑添加异常数据校验, 对于输入数据的校验，应当在接口边界使用 pydantic 进行校验
 15. 禁止任何反向测试和精确断言, 这种测试毫无意义
 16. 禁止使用 fake/mock 测试, 对于外部依赖的测试, 应当使用真实测试, 并归类为 e2e 测试
+17. Provider runtime 的 e2e 测试必须使用 TestChannel 作为控制面，通过它注入 inbound、观察输出并处理审批；
+    禁止绕过 orchestration 直接用测试 approval handler 模拟 Channel 行为
