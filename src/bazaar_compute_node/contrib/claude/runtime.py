@@ -77,6 +77,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._effort = effort
         self._connections: dict[str, _Connection] = {}
         self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
+        self._retirement_tasks: set[asyncio.Task[None]] = set()
         self._started = False
         self._stopping = False
 
@@ -110,6 +111,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
         if self._stopping:
             return
         self._stopping = True
+        retirement_tasks = tuple(self._retirement_tasks)
+        if retirement_tasks:
+            await asyncio.gather(*retirement_tasks, return_exceptions=True)
         connections = tuple(self._connections.values())
         self._connections.clear()
         for connection in connections:
@@ -334,6 +338,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
         async with connection.state_lock:
             if connection.active_turn_id != turn.turn_id:
                 return False
+            if connection.pending_human_results == 0:
+                return False
             try:
                 await connection.client.send_user_message(input_text, timeout=timeout)
             except asyncio.CancelledError:
@@ -498,6 +504,18 @@ class Runtime(IRuntime, IAsyncLifecycle):
         )
 
         def observe(message: dict[str, object]) -> None:
+            if (
+                message["type"] == "conversation_reset"
+                and not client.has_foreground_turn
+                and not self._stopping
+            ):
+                task = asyncio.create_task(
+                    self._retire_connection(session.id, connection),
+                    name=f"claude-code-retire-{session.id}",
+                )
+                self._retirement_tasks.add(task)
+                task.add_done_callback(self._retirement_tasks.discard)
+                return
             if _observe_background(connection, message):
                 self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(session.id))
 

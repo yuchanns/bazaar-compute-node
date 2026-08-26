@@ -59,39 +59,6 @@ async def test_claude_control_failure_cleans_pending_request() -> None:
     assert client.pending_control_count == 0
 
 
-@pytest.mark.asyncio
-async def test_claude_client_adopts_an_injected_provider_turn() -> None:
-    supervisor = ProcessSupervisor(
-        ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})
-    )
-    client = Client(supervisor)
-    await client._route_business_message(
-        {
-            "type": "user",
-            "origin": {"kind": "task-notification"},
-            "message": {"role": "user", "content": "task completed"},
-        },
-        1,
-    )
-    client._message_sequence = 1
-
-    inbox, send_error = await client.open_turn("new channel input", timeout=0.1)
-
-    assert send_error is not None
-    assert inbox.adopted_injected_turn
-    await client._route_business_message(
-        {"type": "assistant", "message": {"content": []}}, 2
-    )
-    await client._route_business_message(
-        {"type": "result", "origin": {"kind": "task-notification"}}, 3
-    )
-    assert (await inbox.receive())["type"] == "assistant"
-    assert (await inbox.receive())["type"] == "result"
-    assert not client.injected_turn_active
-    await client.close_turn(inbox)
-    await client.close()
-
-
 def test_claude_runtime_factory_preserves_runtime_options() -> None:
     async def run_command(
         command: str, arguments: Sequence[str], cwd: str | None

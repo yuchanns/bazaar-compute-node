@@ -60,6 +60,10 @@ class Client:
     def injected_turn_active(self) -> bool:
         return self._injected_origin is not None
 
+    @property
+    def has_foreground_turn(self) -> bool:
+        return self._turn_inbox is not None
+
     def start(self) -> None:
         if self._reader_task is None:
             self._reader_task = asyncio.create_task(

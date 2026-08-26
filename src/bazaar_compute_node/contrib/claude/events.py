@@ -71,8 +71,7 @@ class TurnEventStream(IRuntimeTurnStream):
         if not self._initial_emitted:
             self._initial_emitted = True
             if self._initial_error is not None:
-                if isinstance(self._initial_error, ClaudeTransportError):
-                    await self._on_unusable(self._initial_error)
+                await self._on_unusable(self._initial_error)
                 return await self._terminal_event(
                     self._initial_error_state,
                     event_name="claudecode.turn.start.unknown",
@@ -112,6 +111,10 @@ class TurnEventStream(IRuntimeTurnStream):
 
     async def aclose(self) -> None:
         self._closed = True
+        if not self._terminal_emitted:
+            await self._on_unusable(
+                RuntimeError("Claude turn stream closed before a terminal result")
+            )
         await self._call_closed()
 
     async def wait_terminal(self, *, timeout: float) -> RuntimeEvent:
