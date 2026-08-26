@@ -4,6 +4,7 @@ import asyncio
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 
 from .process import ProcessSupervisor
 from .protocol import (
@@ -16,17 +17,35 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(eq=False, slots=True)
+class TurnInbox:
+    """One BCN foreground turn's view of the connection message stream."""
+
+    minimum_sequence: int
+    adopted_injected_turn: bool = False
+    _messages: asyncio.Queue[JsonObject | BaseException] = field(
+        default_factory=asyncio.Queue
+    )
+
+    async def receive(self) -> JsonObject:
+        item = await self._messages.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
 class Client:
-    """Correlate Claude CLI control traffic while retaining business envelopes."""
+    """Correlate controls and route persistent-session provider turns."""
 
     def __init__(self, supervisor: ProcessSupervisor) -> None:
         self._supervisor = supervisor
-        self._messages: asyncio.Queue[JsonObject | BaseException] = asyncio.Queue(
-            maxsize=100
-        )
         self._pending: dict[str, asyncio.Future[JsonObject]] = {}
         self._inflight_requests: dict[str, asyncio.Task[None]] = {}
         self._reader_task: asyncio.Task[None] | None = None
+        self._route_lock = asyncio.Lock()
+        self._turn_inbox: TurnInbox | None = None
+        self._message_sequence = 0
+        self._injected_origin: str | None = None
         self._message_observer: Callable[[JsonObject], None] | None = None
         self._control_request_handler: (
             Callable[[JsonObject], Awaitable[Mapping[str, object]]] | None
@@ -36,6 +55,10 @@ class Client:
     @property
     def pending_control_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def injected_turn_active(self) -> bool:
+        return self._injected_origin is not None
 
     def start(self) -> None:
         if self._reader_task is None:
@@ -89,8 +112,7 @@ class Client:
                         "type": "control_request",
                         "request_id": request_id,
                         "request": dict(request),
-                    },
-                    timeout=timeout,
+                    }
                 )
                 response = await asyncio.shield(future)
             return parse_control_response(response)
@@ -100,22 +122,38 @@ class Client:
             if not future.done():
                 future.cancel()
 
-    async def receive(self) -> JsonObject:
-        item = await self._messages.get()
-        if isinstance(item, BaseException):
-            raise item
-        return item
+    async def open_turn(
+        self, text: str, *, timeout: float
+    ) -> tuple[TurnInbox, BaseException | None]:
+        """Attach a foreground inbox and submit its first human input atomically."""
+        self.start()
+        inbox = TurnInbox(self._message_sequence + 1)
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._route_lock:
+                    if self._turn_inbox is not None:
+                        raise RuntimeError(
+                            "Claude client already has a foreground turn"
+                        )
+                    inbox.minimum_sequence = self._message_sequence + 1
+                    self._turn_inbox = inbox
+                    inbox.adopted_injected_turn = self._injected_origin is not None
+                    await self._supervisor.send(_user_envelope(text))
+        except asyncio.CancelledError:
+            await self.close_turn(inbox)
+            raise
+        except Exception as error:  # noqa: BLE001
+            return inbox, error
+        return inbox, None
+
+    async def close_turn(self, inbox: TurnInbox) -> None:
+        async with self._route_lock:
+            if self._turn_inbox is inbox:
+                self._turn_inbox = None
 
     async def send_user_message(self, text: str, *, timeout: float) -> None:
-        await self._supervisor.send(
-            {
-                "type": "user",
-                "session_id": "",
-                "message": {"role": "user", "content": text},
-                "parent_tool_use_id": None,
-            },
-            timeout=timeout,
-        )
+        async with asyncio.timeout(timeout):
+            await self._supervisor.send(_user_envelope(text))
 
     async def close(self) -> None:
         self._control_request_handler = None
@@ -139,8 +177,6 @@ class Client:
         try:
             while True:
                 envelope = await self._supervisor.receive()
-                if self._message_observer is not None:
-                    self._message_observer(envelope)
                 if envelope["type"] == "control_response":
                     response = envelope["response"]
                     request_id = (
@@ -156,7 +192,7 @@ class Client:
                 if envelope["type"] == "control_request":
                     request_id = envelope.get("request_id")
                     if not isinstance(request_id, str) or not request_id:
-                        await self._messages.put(
+                        self._publish_failure(
                             ClaudeProtocolError(
                                 "incoming control request requires a request_id"
                             )
@@ -180,7 +216,11 @@ class Client:
                         if task is not None:
                             task.cancel()
                     continue
-                await self._messages.put(envelope)
+                self._message_sequence += 1
+                sequence = self._message_sequence
+                if self._message_observer is not None:
+                    self._message_observer(envelope)
+                await self._route_business_message(envelope, sequence)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -197,17 +237,17 @@ class Client:
                     "Claude control request has no active turn handler"
                 )
             response = await handler(envelope)
-            await self._supervisor.send(
-                {
-                    "type": "control_response",
-                    "response": {
-                        "subtype": "success",
-                        "request_id": request_id,
-                        "response": dict(response),
+            async with asyncio.timeout(10):
+                await self._supervisor.send(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": request_id,
+                            "response": dict(response),
+                        },
                     },
-                },
-                timeout=10,
-            )
+                )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -219,19 +259,36 @@ class Client:
                 },
             )
             try:
-                await self._supervisor.send(
-                    {
-                        "type": "control_response",
-                        "response": {
-                            "subtype": "error",
-                            "request_id": request_id,
-                            "error": f"permission bridge failed: {type(error).__name__}",
+                async with asyncio.timeout(10):
+                    await self._supervisor.send(
+                        {
+                            "type": "control_response",
+                            "response": {
+                                "subtype": "error",
+                                "request_id": request_id,
+                                "error": (
+                                    f"permission bridge failed: {type(error).__name__}"
+                                ),
+                            },
                         },
-                    },
-                    timeout=10,
-                )
+                    )
             except Exception as send_error:  # noqa: BLE001
                 self._publish_failure(send_error)
+
+    async def _route_business_message(
+        self, envelope: JsonObject, sequence: int
+    ) -> None:
+        async with self._route_lock:
+            origin = _origin_kind(envelope)
+            if envelope["type"] == "user" and origin not in {None, "human"}:
+                self._injected_origin = origin
+            inbox = self._turn_inbox
+            if inbox is not None and self._injected_origin is not None:
+                inbox.adopted_injected_turn = True
+            if inbox is not None and sequence >= inbox.minimum_sequence:
+                inbox._messages.put_nowait(envelope)
+            if envelope["type"] == "result" and origin not in {None, "human"}:
+                self._injected_origin = None
 
     def _discard_request(self, request_id: str, completed: asyncio.Task[None]) -> None:
         if self._inflight_requests.get(request_id) is completed:
@@ -240,11 +297,9 @@ class Client:
             completed.exception()
 
     def _publish_failure(self, error: BaseException) -> None:
-        try:
-            self._messages.put_nowait(error)
-        except asyncio.QueueFull:
-            self._messages.get_nowait()
-            self._messages.put_nowait(error)
+        inbox = self._turn_inbox
+        if inbox is not None:
+            inbox._messages.put_nowait(error)
 
     def _fail_pending(self, error: BaseException) -> None:
         pending = tuple(self._pending.values())
@@ -258,4 +313,22 @@ class Client:
         return f"req_{self._request_counter}_{secrets.token_hex(4)}"
 
 
-__all__ = ["Client"]
+def _user_envelope(text: str) -> JsonObject:
+    return {
+        "type": "user",
+        "session_id": "default",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+        "origin": {"kind": "human"},
+    }
+
+
+def _origin_kind(envelope: Mapping[str, object]) -> str | None:
+    origin = envelope.get("origin")
+    if not isinstance(origin, Mapping):
+        return None
+    kind = origin.get("kind")
+    return kind if isinstance(kind, str) and kind else None
+
+
+__all__ = ["Client", "TurnInbox"]

@@ -14,11 +14,12 @@ from ...core.models import (
     StreamEventKind,
 )
 from ...core.runtime import IRuntimeTurnStream, RuntimeStreamItem
-from .client import Client
+from .client import TurnInbox
 from .protocol import ClaudeProtocolError, ClaudeTransportError, JsonObject
 
 ResultClaim = Callable[[JsonObject], Awaitable[bool]]
 ClosedHandler = Callable[[], Awaitable[None]]
+UnusableHandler = Callable[[BaseException], Awaitable[None]]
 _LOGGER = logging.getLogger("bazaar_compute_node.runtime.claudecode")
 
 
@@ -27,7 +28,7 @@ class TurnEventStream(IRuntimeTurnStream):
 
     def __init__(
         self,
-        client: Client,
+        inbox: TurnInbox,
         *,
         session_id: str,
         turn_id: str,
@@ -35,17 +36,19 @@ class TurnEventStream(IRuntimeTurnStream):
         claude_version: tuple[int, int, int],
         claim_result: ResultClaim,
         on_closed: ClosedHandler,
+        on_unusable: UnusableHandler,
         initial_error: BaseException | None = None,
         initial_error_state: RuntimeEventState = RuntimeEventState.UNKNOWN,
         initial_error_kind: str = "provider_unknown",
     ) -> None:
-        self._client = client
+        self._inbox = inbox
         self._session_id = session_id
         self._turn_id = turn_id
         self._provider_thread_id = provider_thread_id
         self._claude_version = claude_version
         self._claim_result = claim_result
         self._on_closed = on_closed
+        self._on_unusable = on_unusable
         self._initial_error = initial_error
         self._initial_error_state = initial_error_state
         self._initial_error_kind = initial_error_kind
@@ -68,6 +71,8 @@ class TurnEventStream(IRuntimeTurnStream):
         if not self._initial_emitted:
             self._initial_emitted = True
             if self._initial_error is not None:
+                if isinstance(self._initial_error, ClaudeTransportError):
+                    await self._on_unusable(self._initial_error)
                 return await self._terminal_event(
                     self._initial_error_state,
                     event_name="claudecode.turn.start.unknown",
@@ -81,11 +86,12 @@ class TurnEventStream(IRuntimeTurnStream):
             )
         while not self._closed:
             try:
-                message = await self._client.receive()
+                message = await self._inbox.receive()
                 item = await self._map_message(message)
             except asyncio.CancelledError:
                 raise
             except (ClaudeProtocolError, TypeError, ValueError) as error:
+                await self._on_unusable(error)
                 return await self._terminal_event(
                     RuntimeEventState.UNKNOWN,
                     event_name="claudecode.turn.protocol.unknown",
@@ -93,6 +99,7 @@ class TurnEventStream(IRuntimeTurnStream):
                     error_message=_safe_error_message(error),
                 )
             except ClaudeTransportError as error:
+                await self._on_unusable(error)
                 return await self._terminal_event(
                     RuntimeEventState.UNKNOWN,
                     event_name="claudecode.turn.transport.unknown",
@@ -181,6 +188,9 @@ class TurnEventStream(IRuntimeTurnStream):
                 content=None,
             )
         if kind == "conversation_reset":
+            await self._on_unusable(
+                ClaudeProtocolError("Claude conversation was reset")
+            )
             return await self._terminal_event(
                 RuntimeEventState.UNKNOWN,
                 event_name="claudecode.turn.conversation_reset",

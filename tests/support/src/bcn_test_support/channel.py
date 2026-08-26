@@ -51,6 +51,7 @@ class TestChannel(IChannel):
         self.queued_messages: list[ChannelSendRequest] = []
         self.sent_messages: list[ChannelSendRequest] = []
         self.approval_requests: list[ApprovalRequest] = []
+        self.cancelled_approval_requests: list[ApprovalRequest] = []
         self.channel_approval_requests: list[ChannelApprovalRequest] = []
         self.approval_results: list[ApprovalResult] = []
         self.events: list[RuntimeStreamItem] = []
@@ -60,6 +61,9 @@ class TestChannel(IChannel):
         self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._send_results: deque[ProviderCallResult[ChannelDeliveryReceipt]] = deque()
         self._approval_results: deque[ApprovalResult] = deque()
+        self._approval_decision = ApprovalDecision.APPROVED
+        self._approval_reason: str | None = None
+        self._approval_gate: asyncio.Event | None = None
         self._stop_marker = object()
         self._stop_requested = False
 
@@ -120,6 +124,23 @@ class TestChannel(IChannel):
     def queue_approval_result(self, result: ApprovalResult) -> None:
         self._approval_results.append(result)
 
+    def set_approval_decision(
+        self,
+        decision: ApprovalDecision,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        self._approval_decision = decision
+        self._approval_reason = reason
+
+    def block_approvals(self) -> None:
+        self._approval_gate = asyncio.Event()
+
+    def release_approvals(self) -> None:
+        if self._approval_gate is not None:
+            self._approval_gate.set()
+            self._approval_gate = None
+
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
@@ -153,13 +174,21 @@ class TestChannel(IChannel):
         self.channel_approval_requests.append(request)
         approval = request.approval
         self.approval_requests.append(approval)
+        gate = self._approval_gate
+        if gate is not None:
+            try:
+                await gate.wait()
+            except asyncio.CancelledError:
+                self.cancelled_approval_requests.append(approval)
+                raise
         if self._approval_results:
             result = self._approval_results.popleft()
         else:
             result = ApprovalResult(
                 request_id=approval.request_id,
-                decision=ApprovalDecision.APPROVED,
+                decision=self._approval_decision,
                 decided_at_ms=approval.created_at_ms,
+                reason=self._approval_reason,
             )
         self.approval_results.append(result)
         return result

@@ -1963,6 +1963,35 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_turn_without_provider_id_still_attempts_runtime_steer() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    first = make_message(seq=1)
+    second = make_message(seq=2)
+
+    try:
+        await channel.inject(first)
+        await wait_until(lambda: bool(runtime.active_streams))
+        _, started_turn, _ = runtime.started_turns[0]
+        active_turn = orchestrator._runtime_turns[started_turn.turn_id]
+        assert active_turn.state is RuntimeTurnState.RUNNING
+        orchestrator._runtime_turns[started_turn.turn_id] = replace(
+            active_turn, provider_turn_id=None
+        )
+
+        await channel.inject(second)
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+
+        _, steered_turn, _ = runtime.steered_turns[0]
+        assert steered_turn.turn_id == started_turn.turn_id
+        assert steered_turn.provider_turn_id is None
+    finally:
+        if runtime.active_streams:
+            next(iter(runtime.active_streams)).release()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
     None
 ):

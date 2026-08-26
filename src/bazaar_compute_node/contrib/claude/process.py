@@ -19,7 +19,6 @@ from .protocol import (
 )
 
 MAX_JSONL_BYTES = 1024 * 1024
-INCOMING_QUEUE_SIZE = 100
 _READ_CHUNK_BYTES = 64 * 1024
 _CLOSED = object()
 
@@ -102,7 +101,7 @@ def decode_stdout_line(line: bytes) -> JsonObject | None:
 
 
 class ProcessSupervisor:
-    """Own one long-lived Claude CLI process and its bounded JSONL transport."""
+    """Own one long-lived Claude CLI process and its JSONL transport."""
 
     def __init__(self, spec: ProcessSpec, *, stderr_tail_limit: int = 64) -> None:
         self.spec = spec
@@ -111,9 +110,7 @@ class ProcessSupervisor:
         self._returncode: int | None = None
         self._fatal_error: ClaudeTransportError | None = None
         self._stderr_tail: deque[str] = deque(maxlen=stderr_tail_limit)
-        self._incoming: asyncio.Queue[JsonObject | object] = asyncio.Queue(
-            maxsize=INCOMING_QUEUE_SIZE
-        )
+        self._incoming: asyncio.Queue[JsonObject | object] = asyncio.Queue()
         self._stdout_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._watch_task: asyncio.Task[None] | None = None
@@ -170,7 +167,7 @@ class ProcessSupervisor:
                 self._watch_process(process), name="claude-code-process"
             )
 
-    async def send(self, envelope: Mapping[str, object], *, timeout: float) -> None:
+    async def send(self, envelope: Mapping[str, object]) -> None:
         message = validate_envelope(envelope)
         encoded = (
             json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
@@ -184,9 +181,8 @@ class ProcessSupervisor:
             if process is None or process.stdin is None:
                 raise ClaudeProcessNotRunning
             try:
-                async with asyncio.timeout(timeout):
-                    process.stdin.write(encoded)
-                    await process.stdin.drain()
+                process.stdin.write(encoded)
+                await process.stdin.drain()
             except (BrokenPipeError, ConnectionError, OSError) as error:
                 raise ClaudeProcessExited(
                     process.returncode, self.stderr_tail
@@ -331,7 +327,6 @@ class ProcessSupervisor:
 
 
 __all__ = [
-    "INCOMING_QUEUE_SIZE",
     "MAX_JSONL_BYTES",
     "ProcessSpec",
     "ProcessState",

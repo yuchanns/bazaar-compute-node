@@ -781,7 +781,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for turn in self._runtime_turns.values()
                 if turn.session_id == runtime_session.id
                 and turn.state is RuntimeTurnState.RUNNING
-                and turn.provider_turn_id is not None
             ),
             None,
         )

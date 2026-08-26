@@ -44,6 +44,7 @@ from .protocol import ClaudeControlError, ClaudeProtocolError, ClaudeTransportEr
 
 _MINIMUM_VERSION = (2, 1, 239)
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)")
+_UNUSABLE_CONNECTION_STOP_SECONDS = 10.0
 
 
 @dataclass(slots=True)
@@ -228,6 +229,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         initial_error: BaseException | None = None
         initial_error_state = RuntimeEventState.UNKNOWN
         initial_error_kind = "provider_unknown"
+        inbox = None
         async with connection.state_lock:
             if connection.active_turn_id is not None:
                 raise RuntimeError(
@@ -257,21 +259,24 @@ class Runtime(IRuntime, IAsyncLifecycle):
 
             connection.client.set_control_request_handler(handle_permission)
             try:
-                await connection.client.send_user_message(input_text, timeout=timeout)
+                (
+                    inbox,
+                    initial_error,
+                ) = await connection.client.open_turn(input_text, timeout=timeout)
             except asyncio.CancelledError:
                 connection.active_turn_id = None
                 connection.pending_human_results = 0
                 await connection.client.clear_control_request_handler(handle_permission)
                 raise
-            except Exception as error:  # noqa: BLE001
-                initial_error = error
+            if initial_error is not None:
                 await connection.client.clear_control_request_handler(handle_permission)
-                if isinstance(error, ClaudeControlError):
+                if isinstance(initial_error, ClaudeControlError):
                     initial_error_state = RuntimeEventState.FAILED
                     initial_error_kind = "provider_failed"
-                elif isinstance(error, ClaudeProtocolError):
+                elif isinstance(initial_error, ClaudeProtocolError):
                     initial_error_state = RuntimeEventState.FAILED
                     initial_error_kind = "protocol"
+        assert inbox is not None
 
         async def claim_result(message: dict[str, object]) -> bool:
             del message
@@ -285,21 +290,26 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 return True
 
         async def close_turn() -> None:
-            await connection.client.clear_control_request_handler(handle_permission)
+            await connection.client.close_turn(inbox)
             async with connection.state_lock:
                 if connection.active_turn_id == turn.turn_id:
                     connection.active_turn_id = None
                     connection.pending_human_results = 0
                     connection.active_stream = None
 
+        async def retire_connection(error: BaseException) -> None:
+            del error
+            await self._retire_connection(session.id, connection)
+
         stream = TurnEventStream(
-            connection.client,
+            inbox,
             session_id=session.bcn_session_id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             claude_version=connection.claude_version,
             claim_result=claim_result,
             on_closed=close_turn,
+            on_unusable=retire_connection,
             initial_error=initial_error,
             initial_error_state=initial_error_state,
             initial_error_kind=initial_error_kind,
@@ -494,6 +504,21 @@ class Runtime(IRuntime, IAsyncLifecycle):
             await connection.supervisor.stop(timeout=timeout)
         finally:
             await connection.client.close()
+
+    async def _retire_connection(
+        self, session_id: str, connection: _Connection
+    ) -> None:
+        if self._connections.get(session_id) is not connection:
+            return
+        self._connections.pop(session_id, None)
+        try:
+            await self._stop_connection(
+                connection, timeout=_UNUSABLE_CONNECTION_STOP_SECONDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except OSError, TimeoutError, ClaudeTransportError:
+            return
 
     def _ensure_started(self) -> None:
         if not self._started or self._stopping:
