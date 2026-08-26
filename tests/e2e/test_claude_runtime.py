@@ -24,6 +24,7 @@ from bazaar_compute_node.contrib.claude.process import (
 from bazaar_compute_node.contrib.claude.runtime import Runtime
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
     RuntimeEvent,
@@ -52,6 +53,45 @@ class _NoopApprovalHandler(IApprovalHandler):
     ) -> ApprovalResult:
         del timeout
         raise AssertionError(f"unexpected approval request: {request.request_id}")
+
+
+class _RecordingApprovalHandler(IApprovalHandler):
+    def __init__(self, decision: ApprovalDecision, reason: str | None = None) -> None:
+        self.decision = decision
+        self.reason = reason
+        self.requests: list[ApprovalRequest] = []
+        self.requested = asyncio.Event()
+
+    async def request_approval(
+        self, request: ApprovalRequest, *, timeout: float
+    ) -> ApprovalResult:
+        del timeout
+        self.requests.append(request)
+        self.requested.set()
+        return ApprovalResult(
+            request_id=request.request_id,
+            decision=self.decision,
+            decided_at_ms=time_ns() // 1_000_000,
+            reason=self.reason,
+        )
+
+
+class _BlockingApprovalHandler(IApprovalHandler):
+    def __init__(self) -> None:
+        self.requested = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def request_approval(
+        self, request: ApprovalRequest, *, timeout: float
+    ) -> ApprovalResult:
+        del request, timeout
+        self.requested.set()
+        try:
+            await asyncio.Future[None]()
+            raise AssertionError("blocking approval completed without cancellation")
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
@@ -118,7 +158,7 @@ def _context(agent_id: str) -> RuntimeCommandContext:
         agent_id=agent_id,
         agent_name="Claude E2E",
         bot_name=lambda: "Claude E2E",
-        runtime_options={"model": "glm-5.3"},
+        runtime_options={"model": "kimi"},
         sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
         startup_timeout_seconds=30,
     )
@@ -129,7 +169,7 @@ async def test_real_claude_runtime_starts_reconciles_and_reaps_process() -> None
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the runtime integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
 
@@ -179,7 +219,7 @@ async def test_real_claude_workspace_sandbox_fails_closed_when_unavailable() -> 
         network_access=False,
         startup_timeout_seconds=context.startup_timeout_seconds,
     )
-    runtime = Runtime(context, model="glm-5.3")
+    runtime = Runtime(context, model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
 
@@ -205,7 +245,7 @@ async def test_real_claude_initialization_and_session_system_message() -> None:
                 system_prompt="Reply concisely.",
                 settings=json.dumps({"sandbox": {"enabled": False}}),
                 session_id=session_id,
-                model="glm-5.3",
+                model="kimi",
             ),
             cwd=workspace,
             environment=_claude_environment(),
@@ -240,7 +280,7 @@ async def test_real_claude_turn_stream_and_running_steer() -> None:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the turn integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
     started = await runtime.start_session(session, timeout=30)
@@ -304,7 +344,7 @@ async def test_real_claude_interrupt_drains_aborted_result() -> None:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the interrupt integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
     started = await runtime.start_session(session, timeout=30)
@@ -348,11 +388,311 @@ async def test_real_claude_interrupt_drains_aborted_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_real_claude_approved_bash_continues_turn() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    approval_handler = _RecordingApprovalHandler(ApprovalDecision.APPROVED)
+    filename = f"approved-{uuid4()}.txt"
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        (
+            f"Use the Bash tool, and no other tool, to run printf approved > "
+            f"{filename}. Then report that the operation finished."
+        ),
+        approval_handler,
+        timeout=30,
+    )
+    terminal = None
+    async with asyncio.timeout(90):
+        async for item in stream:
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+
+    assert approval_handler.requests
+    assert approval_handler.requests[0].action == "Bash"
+    assert approval_handler.requests[0].turn_id is not None
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.COMPLETED
+    workspace = resolve_workspace_dir(agent_id)
+    assert (workspace / filename).read_text() == "approved"
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_real_claude_rejected_bash_reports_permission_denial() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    approval_handler = _RecordingApprovalHandler(
+        ApprovalDecision.REJECTED, "The workspace owner rejected this operation."
+    )
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        (
+            "Use the Bash tool, and no other tool, to create a file named "
+            "rejected-operation.txt. If permission is denied, explain that result."
+        ),
+        approval_handler,
+        timeout=30,
+    )
+    terminal = None
+    tool_results: list[str] = []
+    async with asyncio.timeout(90):
+        async for item in stream:
+            if (
+                isinstance(item, StreamEvent)
+                and item.kind is StreamEventKind.TOOL_PROGRESS
+                and item.content is not None
+            ):
+                tool_results.append(item.content)
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+
+    assert approval_handler.requests
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.COMPLETED
+    permission_denials = terminal.metadata.get("permission_denials")
+    assert isinstance(permission_denials, list)
+    assert permission_denials
+    assert any("workspace owner" in result.lower() for result in tool_results)
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_real_claude_interrupt_cancels_pending_approval() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    approval_handler = _BlockingApprovalHandler()
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    turn = _turn(session)
+    stream = await runtime.start_turn(
+        session,
+        turn,
+        (
+            "Use the Bash tool, and no other tool, to create a file named "
+            "interrupt-approval.txt."
+        ),
+        approval_handler,
+        timeout=30,
+    )
+
+    async def consume() -> RuntimeEvent | None:
+        terminal = None
+        async for item in stream:
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+        return terminal
+
+    consumer = asyncio.create_task(consume())
+    async with asyncio.timeout(60):
+        await approval_handler.requested.wait()
+    interrupted = await runtime.interrupt_turn(session, turn, timeout=30)
+    async with asyncio.timeout(30):
+        terminal = await consumer
+        await approval_handler.cancelled.wait()
+
+    assert interrupted.status is ProviderCallStatus.CONFIRMED
+    assert interrupted.value is not None
+    assert interrupted.value.state is RuntimeTurnState.CANCELLED
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.CANCELLED
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_real_claude_approval_timeout_returns_visible_denial() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    approval_handler = _BlockingApprovalHandler()
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        (
+            "Use the Bash tool, and no other tool, to create a file named "
+            "timed-out-approval.txt. If permission is denied, explain that result."
+        ),
+        approval_handler,
+        timeout=2,
+    )
+    terminal = None
+    tool_results: list[str] = []
+    async with asyncio.timeout(90):
+        async for item in stream:
+            if (
+                isinstance(item, StreamEvent)
+                and item.kind is StreamEventKind.TOOL_PROGRESS
+                and item.content is not None
+            ):
+                tool_results.append(item.content)
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+
+    assert approval_handler.requested.is_set()
+    assert approval_handler.cancelled.is_set()
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.COMPLETED
+    assert any("timed out" in result.lower() for result in tool_results)
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_real_claude_session_shutdown_cancels_pending_approval() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    approval_handler = _BlockingApprovalHandler()
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        (
+            "Use the Bash tool, and no other tool, to create a file named "
+            "shutdown-approval.txt."
+        ),
+        approval_handler,
+        timeout=30,
+    )
+
+    async def consume() -> RuntimeEvent | None:
+        terminal = None
+        async for item in stream:
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+        return terminal
+
+    consumer = asyncio.create_task(consume())
+    async with asyncio.timeout(60):
+        await approval_handler.requested.wait()
+    stopped = await runtime.stop_session(session, timeout=10)
+    async with asyncio.timeout(30):
+        terminal = await consumer
+        await approval_handler.cancelled.wait()
+
+    assert stopped.status is ProviderCallStatus.CONFIRMED
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.UNKNOWN
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_real_claude_resumed_session_approves_next_turn() -> None:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the approval integration test")
+    agent_id = f"claude-e2e-{uuid4()}"
+    runtime = Runtime(_context(agent_id), model="kimi")
+    session = _session(agent_id, str(uuid4()))
+    await runtime.start(timeout=30)
+    started = await runtime.start_session(session, timeout=30)
+    assert started.value is not None
+    session = started.value
+    first_stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        "Reply briefly without using tools.",
+        _NoopApprovalHandler(),
+        timeout=30,
+    )
+    async with asyncio.timeout(60):
+        async for _ in first_stream:
+            pass
+    await runtime.stop_session(session, timeout=10)
+    reconciled = await runtime.reconcile_session(session, None, None, timeout=30)
+    assert reconciled.status is ProviderCallStatus.CONFIRMED
+
+    approval_handler = _RecordingApprovalHandler(ApprovalDecision.APPROVED)
+    filename = f"resumed-approved-{uuid4()}.txt"
+    second_stream = await runtime.start_turn(
+        session,
+        _turn(session),
+        (
+            f"Use the Bash tool, and no other tool, to run printf resumed > "
+            f"{filename}. Then report that the operation finished."
+        ),
+        approval_handler,
+        timeout=30,
+    )
+    terminal = None
+    async with asyncio.timeout(90):
+        async for item in second_stream:
+            if isinstance(item, RuntimeEvent) and item.state in {
+                RuntimeEventState.COMPLETED,
+                RuntimeEventState.FAILED,
+                RuntimeEventState.CANCELLED,
+                RuntimeEventState.UNKNOWN,
+            }:
+                terminal = item
+
+    assert approval_handler.requests
+    assert terminal is not None
+    assert terminal.state is RuntimeEventState.COMPLETED
+    assert (resolve_workspace_dir(agent_id) / filename).read_text() == "resumed"
+    await runtime.stop(timeout=10)
+
+
+@pytest.mark.asyncio
 async def test_real_claude_active_child_exit_is_terminal_unknown() -> None:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the exit integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
     started = await runtime.start_session(session, timeout=30)
@@ -397,7 +737,7 @@ async def test_real_claude_idle_child_exit_rejects_next_turn() -> None:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the idle-exit integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
     started = await runtime.start_session(session, timeout=30)
@@ -425,7 +765,7 @@ async def test_real_claude_delegated_background_task_lifecycle() -> None:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the background-task integration test")
     agent_id = f"claude-e2e-{uuid4()}"
-    runtime = Runtime(_context(agent_id), model="glm-5.3")
+    runtime = Runtime(_context(agent_id), model="kimi")
     session = _session(agent_id, str(uuid4()))
     await runtime.start(timeout=30)
     started = await runtime.start_session(session, timeout=30)
@@ -490,7 +830,7 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
         system_prompt="Follow the user's tool instruction.",
         settings=json.dumps({"sandbox": {"enabled": False}}),
         session_id=session_id,
-        model="glm-5.3",
+        model="kimi",
     )
     supervisor = ProcessSupervisor(
         ProcessSpec(

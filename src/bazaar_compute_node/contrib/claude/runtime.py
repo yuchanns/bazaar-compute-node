@@ -32,6 +32,11 @@ from ...core.runtime import (
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
+from .approval import (
+    build_approval_response,
+    deny_approval,
+    parse_approval_request,
+)
 from .client import Client
 from .events import TurnEventStream
 from .process import ProcessSpec, ProcessSupervisor, build_arguments
@@ -216,7 +221,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> IRuntimeTurnStream:
-        del approval_handler
         self._ensure_started()
         connection = self._connections.get(session.id)
         if connection is None or not connection.supervisor.is_running:
@@ -232,14 +236,36 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 )
             connection.active_turn_id = turn.turn_id
             connection.pending_human_results = 1
+
+            async def handle_permission(
+                message: dict[str, object],
+            ) -> dict[str, object]:
+                approval = parse_approval_request(
+                    message,
+                    session_id=session.bcn_session_id,
+                    runtime_session_id=session.id,
+                    turn_id=turn.turn_id,
+                )
+                try:
+                    async with asyncio.timeout(timeout):
+                        result = await approval_handler.request_approval(
+                            approval.request, timeout=timeout
+                        )
+                except TimeoutError:
+                    return deny_approval("Permission request timed out.")
+                return build_approval_response(approval, result)
+
+            connection.client.set_control_request_handler(handle_permission)
             try:
                 await connection.client.send_user_message(input_text, timeout=timeout)
             except asyncio.CancelledError:
                 connection.active_turn_id = None
                 connection.pending_human_results = 0
+                await connection.client.clear_control_request_handler(handle_permission)
                 raise
             except Exception as error:  # noqa: BLE001
                 initial_error = error
+                await connection.client.clear_control_request_handler(handle_permission)
                 if isinstance(error, ClaudeControlError):
                     initial_error_state = RuntimeEventState.FAILED
                     initial_error_kind = "provider_failed"
@@ -259,6 +285,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 return True
 
         async def close_turn() -> None:
+            await connection.client.clear_control_request_handler(handle_permission)
             async with connection.state_lock:
                 if connection.active_turn_id == turn.turn_id:
                     connection.active_turn_id = None
@@ -518,7 +545,7 @@ def _sandbox_settings(
         "enabled": True,
         "failIfUnavailable": True,
         "autoAllowBashIfSandboxed": True,
-        "allowUnsandboxedCommands": False,
+        "allowUnsandboxedCommands": True,
     }
     settings: dict[str, object] = {"sandbox": sandbox}
     if not network_access:
