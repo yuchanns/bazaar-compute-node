@@ -325,6 +325,56 @@ async def test_sqlite_persists_sender_identity_and_kind(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_preserves_wecom_sender_without_display_name() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="wecom",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        message = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id="message-1",
+            session_id=bcn_session.id,
+            channel_session_id=channel_session.id,
+            channel="wecom",
+            provider_thread_id=channel_session.provider_thread_id,
+            provider_message_id="provider-message-1",
+            received_at_ms=1,
+            sender=SenderIdentity(id="test-user-id"),
+            message_type="text",
+            target="dm:channel-1",
+            body="hello",
+        )
+
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+        await scope.save_message(message)
+        persisted = await scope.find_message(
+            *message.inbound_identity(),
+            direction=MessageDirection.INBOUND,
+        )
+
+        assert persisted is not None
+        assert persisted.sender == SenderIdentity(id="test-user-id")
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)

@@ -91,6 +91,7 @@ def _node(
     *,
     provider_call_seconds: float = 30,
     idle_timeout_seconds: float = 0,
+    sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.DANGER_FULL_ACCESS,
 ) -> tuple[NodeApplication, TestChannel, RecordingAudit, str]:
     if shutil.which("claude") is None:
         pytest.fail("claude CLI is required for the runtime integration test")
@@ -111,7 +112,7 @@ def _node(
                     runtime=RuntimeConfiguration(
                         kind="claudecode",
                         model="claude-opus-5",
-                        sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
+                        sandbox_mode=sandbox_mode,
                         idle_timeout_seconds=idle_timeout_seconds,
                     ),
                 ),
@@ -452,7 +453,10 @@ async def test_real_claude_idle_child_exit_rebuilds_for_next_turn(
 async def test_real_claude_approval_lifecycle_uses_test_channel(
     system_temp_dir: Path,
 ) -> None:
-    node, channel, audit, agent_id = _node(system_temp_dir / "claude-approval.sock")
+    node, channel, audit, agent_id = _node(
+        system_temp_dir / "claude-approval.sock",
+        sandbox_mode=RuntimeSandboxMode.WORKSPACE_WRITE,
+    )
     session_id = f"claude-approval-{uuid4()}"
     scoped_session_id = str(
         uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
@@ -527,6 +531,46 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
         for note in (approved_note, rejected_note, timed_out_note):
             if note.exists():
                 note.unlink()
+
+
+@pytest.mark.asyncio
+async def test_real_claude_danger_full_access_bypasses_approval(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _node(
+        system_temp_dir / "claude-danger-full-access.sock"
+    )
+    session_id = f"claude-danger-full-access-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    workspace = resolve_workspace_dir(agent_id)
+    note = workspace / f"danger-full-access-{uuid4()}.md"
+    channel.block_approvals()
+    try:
+        await node.start()
+        message = _message(
+            session_id,
+            body=(
+                f"Add a project note named {note.name} stating that the permission "
+                "mapping was verified, then confirm the update."
+            ),
+        )
+        await channel.inject(message)
+        await _wait_for_turn_completion(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{message.message_id}",
+        )
+        assert (
+            "permission mapping was verified"
+            in note.read_text(encoding="utf-8").lower()
+        )
+    finally:
+        channel.release_approvals()
+        await node.stop()
+        if note.exists():
+            note.unlink()
 
 
 @pytest.mark.asyncio

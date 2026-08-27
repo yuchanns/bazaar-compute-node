@@ -53,6 +53,17 @@ def test_claude_command_uses_sdk_style_streaming_contract() -> None:
     assert arguments[arguments.index("--disallowedTools") + 1] == "AskUserQuestion"
 
 
+def test_claude_command_can_bypass_permissions() -> None:
+    arguments = build_arguments(
+        system_prompt="BCN instructions",
+        settings='{"sandbox":{"enabled":false}}',
+        permission_mode="bypassPermissions",
+        session_id="session-1",
+    )
+
+    assert arguments[arguments.index("--permission-mode") + 1] == "bypassPermissions"
+
+
 def test_claude_stdout_framing_has_one_mib_boundary() -> None:
     prefix = b'{"type":"system","subtype":"init","padding":"'
     suffix = b'"}'
@@ -85,6 +96,35 @@ async def test_claude_process_exit_uses_result_error_when_stderr_is_empty(
     assert result["type"] == "result"
     with pytest.raises(ClaudeProcessExited, match="sandbox dependency missing"):
         await supervisor.receive()
+
+
+@pytest.mark.asyncio
+async def test_claude_process_exit_drops_error_from_earlier_result(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "import sys;"
+        'print(\'{"type":"result","subtype":"error_during_execution",'
+        '"duration_ms":1,"duration_api_ms":1,"is_error":true,'
+        '"num_turns":0,"session_id":"session-1",'
+        '"errors":["stale failure"]}\',flush=True);'
+        'print(\'{"type":"result","subtype":"success",'
+        '"duration_ms":1,"duration_api_ms":1,"is_error":false,'
+        '"num_turns":1,"session_id":"session-1","result":"done"}\',flush=True);'
+        "sys.exit(1)"
+    )
+    supervisor = ProcessSupervisor(
+        ProcessSpec(sys.executable, ("-c", script), tmp_path, os.environ)
+    )
+
+    await supervisor.start(timeout=5)
+    assert (await supervisor.receive())["type"] == "result"
+    assert (await supervisor.receive())["type"] == "result"
+
+    with pytest.raises(ClaudeProcessExited) as error:
+        await supervisor.receive()
+    assert "stale failure" not in str(error.value)
+    assert error.value.result_error_tail == ()
 
 
 @pytest.mark.asyncio
