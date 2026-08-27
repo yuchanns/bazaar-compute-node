@@ -1128,6 +1128,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             ):
                 break
             if establishment_attempt == 0:
+                if (
+                    self._state_machine.get(context.bcn_session.id)
+                    is SessionRuntimeState.UNKNOWN
+                ):
+                    self._abandon_runtime_session(context.runtime_session)
                 await self._discard_runtime_session(context.runtime_session)
                 context = self._create_runtime_session(durable_context)
         turn = RuntimeTurn(
@@ -1178,6 +1183,8 @@ class SessionOrchestrator(IAsyncLifecycle):
                     correlation=self._turns.turn_correlation(message, context, turn),
                     session_id=context.bcn_session.id,
                 )
+                if runtime_state is SessionRuntimeState.UNKNOWN:
+                    self._abandon_runtime_session(context.runtime_session)
                 await self._discard_runtime_session(context.runtime_session)
                 return finished
             self._state_machine.apply_observation(
@@ -1509,6 +1516,45 @@ class SessionOrchestrator(IAsyncLifecycle):
             await asyncio.wait_for(asyncio.shield(gathered), timeout=timeout)
         except TimeoutError:
             self._shutdown_errors.append("runtime session teardown: shutdown timeout")
+
+    def _abandon_runtime_session(self, runtime_session: RuntimeSession) -> None:
+        process_correlation = CorrelationContext(
+            node_id=self.agent_id,
+            channel_session_id=runtime_session.channel_session_id,
+            bcn_session_id=runtime_session.bcn_session_id,
+            runtime_session_id=runtime_session.id,
+            provider_thread_id=runtime_session.provider_thread_id,
+        )
+        task = asyncio.create_task(
+            self._complete_abandoned_runtime_session_teardown(
+                runtime_session,
+                correlation=process_correlation,
+            ),
+            name=f"bcn-runtime-teardown-{runtime_session.id}",
+        )
+        self._runtime_teardown_tasks.add(task)
+        task.add_done_callback(self._forget_runtime_teardown_task)
+
+    async def _complete_abandoned_runtime_session_teardown(
+        self,
+        runtime_session: RuntimeSession,
+        *,
+        correlation: CorrelationContext,
+    ) -> None:
+        await self._audit.append(
+            event_name="runtime.process.stop.requested",
+            state=RuntimeEventState.STARTED,
+            correlation=correlation,
+            metadata={
+                "runtime": runtime_session.runtime,
+                "workspace_id": runtime_session.workspace_id,
+            },
+        )
+        await self._complete_runtime_session_teardown(
+            runtime_session,
+            correlation=correlation,
+            timeout=self._timeout_budget.provider_call_seconds,
+        )
 
     def _schedule_runtime_session_teardown(
         self,

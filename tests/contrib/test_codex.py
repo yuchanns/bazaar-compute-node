@@ -710,6 +710,7 @@ print("not-json", flush=True)
         python_process(
             """
 import sys
+print("fatal app-server detail", file=sys.stderr, flush=True)
 sys.exit(7)
 """,
             cwd=tmp_path,
@@ -720,6 +721,7 @@ sys.exit(7)
     assert exited.state is JsonlProcessState.FAILED
     assert exited.fatal_error is not None
     assert exited.fatal_error.kind == "process_exited"
+    assert str(exited.fatal_error).endswith(": fatal app-server detail")
     await exited.stop(timeout=2)
 
 

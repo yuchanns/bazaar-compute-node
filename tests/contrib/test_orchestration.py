@@ -2596,6 +2596,45 @@ async def test_runtime_start_failure_replaces_session_for_current_inbound() -> N
 
 
 @pytest.mark.asyncio
+async def test_repeated_unknown_runtime_start_abandons_each_session_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    release_stop = asyncio.Event()
+
+    async def blocked_stop_session(
+        session: RuntimeSession,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSession]:
+        assert timeout == 1
+        runtime.stopped_sessions.append(session)
+        await release_stop.wait()
+        return ProviderCallResult(status=ProviderCallStatus.CONFIRMED, value=session)
+
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    try:
+        for _ in range(2):
+            runtime.queue_start_result(
+                ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind="provider_unknown",
+                    error_message="start outcome is unknown",
+                )
+            )
+
+        result = await orchestrator.dispatch_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.UNKNOWN
+        await wait_until(lambda: runtime.stopped_sessions == runtime.started_sessions)
+        assert orchestrator.runtime_session("bcn-1") is None
+    finally:
+        release_stop.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     (ProviderCallStatus.FAILED, ProviderCallStatus.UNKNOWN),

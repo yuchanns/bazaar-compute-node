@@ -32,8 +32,11 @@ class JsonlProcessExited(JsonlTransportError):
         self.returncode = returncode
         self.stderr_tail = stderr_tail
         returncode_text = "unknown" if returncode is None else str(returncode)
+        message = f"JSONL process exited with return code {returncode_text}"
+        if stderr_tail:
+            message = f"{message}: {stderr_tail[-1]}"
         super().__init__(
-            f"JSONL process exited with return code {returncode_text}",
+            message,
             kind="process_exited",
         )
 
