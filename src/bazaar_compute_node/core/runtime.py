@@ -44,6 +44,20 @@ class RuntimeExpire:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeBackgroundIdle:
+    """Report that one runtime session's background work became idle."""
+
+    runtime_session_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime_session_id, str) or not self.runtime_session_id:
+            raise ValueError("runtime_session_id must be a non-empty string")
+
+
+type RuntimeLifecycleEvent = RuntimeExpire | RuntimeBackgroundIdle
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeCommandContext:
     """Generic command capability made available to one Agent runtime adapter."""
 
@@ -98,7 +112,7 @@ class IRuntime(IAsyncLifecycle, Protocol):
 
     def environment_variable_names(self) -> Sequence[str]: ...
 
-    async def receive_expire(self) -> RuntimeExpire: ...
+    async def receive_event(self) -> RuntimeLifecycleEvent: ...
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
@@ -131,14 +145,6 @@ class IRuntime(IAsyncLifecycle, Protocol):
         *,
         timeout: float,
     ) -> bool: ...
-
-    async def interrupt_turn(
-        self,
-        session: RuntimeSession,
-        turn: RuntimeTurn,
-        *,
-        timeout: float,
-    ) -> ProviderCallResult[RuntimeTurn]: ...
 
     async def has_background_job(
         self, session: RuntimeSession, *, timeout: float

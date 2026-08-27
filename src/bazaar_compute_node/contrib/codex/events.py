@@ -176,14 +176,6 @@ class TurnEventStream(IRuntimeTurnStream):
                     error_message=turn.error_message or "Codex turn failed",
                     metadata=metadata,
                 )
-            if turn.status == "interrupted":
-                return self._terminal_event(
-                    RuntimeEventState.CANCELLED,
-                    event_name="codex.turn.interrupted",
-                    error_kind="cancelled",
-                    error_message=turn.error_message,
-                    metadata=metadata,
-                )
             return self._terminal_event(
                 RuntimeEventState.UNKNOWN,
                 event_name="codex.turn.unknown",

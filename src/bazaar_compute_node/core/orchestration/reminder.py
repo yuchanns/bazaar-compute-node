@@ -238,15 +238,35 @@ class ReminderScheduler(IAsyncLifecycle):
             fired_at_ms = self._clock()
             if fired_at_ms < scheduled_for_ms:
                 return None
-            next_fire_at_ms = (
-                next_recurrence_ms(
-                    scheduled_for_ms=scheduled_for_ms,
-                    repeat_rule=current.repeat_rule,
-                    timezone=current.timezone,
+            try:
+                next_fire_at_ms = (
+                    next_recurrence_ms(
+                        scheduled_for_ms=scheduled_for_ms,
+                        repeat_rule=current.repeat_rule,
+                        timezone=current.timezone,
+                    )
+                    if current.repeat_rule is not None
+                    else None
                 )
-                if current.repeat_rule is not None
-                else None
-            )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                canceled = current.cancel(at_ms=fired_at_ms)
+                await self._storage.save_reminder_transition(
+                    current.revision,
+                    canceled,
+                )
+                self._logger.error(
+                    "reminder recurrence is invalid; reminder canceled",
+                    extra={
+                        "agent_id": owner.agent_id,
+                        "owner_session_id": current.owner_session_id,
+                        "reminder_id": current.reminder_id,
+                        "error_type": type(error).__name__,
+                    },
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+                return None
             fired = current.record_fire(
                 scheduled_for_ms=scheduled_for_ms,
                 fired_at_ms=fired_at_ms,

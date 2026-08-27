@@ -15,7 +15,6 @@ from bazaar_compute_node.core.models import (
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
-    RuntimeTurnState,
     SessionRuntimeState,
     StreamEvent,
     StreamEventKind,
@@ -24,7 +23,9 @@ from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallSt
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeBackgroundIdle,
     RuntimeExpire,
+    RuntimeLifecycleEvent,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
@@ -91,7 +92,7 @@ class TestRuntime(IRuntime):
         ] = deque()
         self._reconcile_turn_plans: deque[TestTurnPlan] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
-        self._expire_events: asyncio.Queue[RuntimeExpire] = asyncio.Queue()
+        self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
         self._update_seq = 0
 
     async def start(self, *, timeout: float) -> None:
@@ -124,10 +125,13 @@ class TestRuntime(IRuntime):
         self._stop_results.append(result)
 
     def emit_expire(self, runtime_session_id: str) -> None:
-        self._expire_events.put_nowait(RuntimeExpire(runtime_session_id))
+        self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
 
-    async def receive_expire(self) -> RuntimeExpire:
-        return await self._expire_events.get()
+    def emit_background_idle(self, runtime_session_id: str) -> None:
+        self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(runtime_session_id))
+
+    async def receive_event(self) -> RuntimeLifecycleEvent:
+        return await self._lifecycle_events.get()
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
@@ -214,24 +218,6 @@ class TestRuntime(IRuntime):
         self.active_streams.add(stream)
         self.turn_started.set()
         return stream
-
-    async def interrupt_turn(
-        self,
-        session: RuntimeSession,
-        turn: RuntimeTurn,
-        *,
-        timeout: float,
-    ) -> ProviderCallResult[RuntimeTurn]:
-        del session, timeout
-        if turn.state in {RuntimeTurnState.STARTING, RuntimeTurnState.RUNNING}:
-            turn = turn.transition_to(
-                RuntimeTurnState.CANCELLED,
-                at_ms=time_ns() // 1_000_000,
-            )
-        return ProviderCallResult(
-            status=ProviderCallStatus.CONFIRMED,
-            value=turn,
-        )
 
     async def has_background_job(
         self, session: RuntimeSession, *, timeout: float

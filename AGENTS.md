@@ -1,7 +1,9 @@
 1. 禁止编写 normalize 或者同等含义的方法. 正常内联即可
 2. 禁止封装无意义的只使用一次的小函数片段
 3. 必须使用 ruff 进行代码格式检查
-4. 在没有计划的情况下，新增一个功能，必须经过讨论后编写 plans/{your_plan}.md
+4. 在没有计划的情况下，新增一个功能，必须经过讨论后编写 plans/{your_plan}.md. 不要写非目标,
+   不要写反向计划, 不做的事情不用写出来. 编写 plan 时禁止把参考推迟到执行时, 必须在 plan
+   中明确参考调研后的结论和实现细节
 5. 必须按照 plan 的 tasks 串行开发，每完成一个 task 都停下来等待 review
 6. 代码修改完成后，必须在仓库根目录执行 `uv run scripts/pyright_lsp_check.py --outputjson .`，并确保检查通过
 7. 禁止为了方便测试而修改生产代码加入不必要的注入函数或者可覆盖的环境变量
@@ -13,3 +15,12 @@
 13. 当变量在后续没有被使用时，优先复用同名, 例如: 不要使用 resolved_xxx = resolved(xxx), 而是使用 xxx = resolved(xxx) 进行变量遮蔽
 14. 代码内部禁止无脑添加异常数据校验, 对于输入数据的校验，应当在接口边界使用 pydantic 进行校验
 15. 禁止任何反向测试和精确断言, 这种测试毫无意义
+16. 禁止使用 fake/mock 测试, 对于外部依赖的测试, 应当使用真实测试, 并归类为 e2e 测试
+17. Provider runtime 的 e2e 测试必须使用 TestChannel 作为控制面，通过它注入 inbound、观察输出并处理审批；
+    禁止绕过 orchestration 直接用测试 approval handler 模拟 Channel 行为
+18. 已发布的 migration 属于不可变历史：禁止修改其任何内容（包括注释、空白、名称和 SQL）；schema 变化只能新增 migration。
+    禁止修改或绕过 migration checksum 校验，也禁止手工篡改 migration ledger
+19. BCN e2e 测试必须使用测试专用配置、临时数据库和隔离进程；禁止安装开发分支覆盖正式 uv tool，禁止启动、停止、
+    重启或复用正式 `bcn.service`，禁止连接 `~/.bcn` 的正式数据库、socket 或 Channel
+20. 发现额外 BCN 进程时，必须先核对其 PPID、启动来源、配置和用途；人工为故障恢复而启动的临时进程未经操作者明确确认
+    禁止终止。运行当前 agent 的 BCN 进程不得由该 agent 自行终止

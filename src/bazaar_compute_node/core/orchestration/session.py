@@ -36,6 +36,7 @@ from ..outcomes import ProviderCallStatus
 from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeBackgroundIdle,
     RuntimeExpire,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
@@ -90,7 +91,9 @@ class _RuntimeExpiry:
     generation: int
 
 
-type _RuntimeQueueItem = _RuntimeNotification | _RuntimeExpiry | RuntimeExpire
+type _RuntimeQueueItem = (
+    _RuntimeNotification | _RuntimeExpiry | RuntimeExpire | RuntimeBackgroundIdle
+)
 
 
 @dataclass(slots=True)
@@ -200,7 +203,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_timers: dict[str, _RuntimeTimerBinding] = {}
         self._expired_runtime_ids: set[str] = set()
         self._receive_task: asyncio.Task[None] | None = None
-        self._runtime_expire_task: asyncio.Task[None] | None = None
+        self._runtime_event_task: asyncio.Task[None] | None = None
         self._background_failures: dict[str, str] = {}
         self._started = False
         self._stopping = False
@@ -427,11 +430,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             name=f"bcn-channel-receive-{self.agent_id}",
         )
         self._observe_background_task("channel_receive", self._receive_task)
-        self._runtime_expire_task = asyncio.create_task(
-            self._receive_runtime_expire_loop(),
-            name=f"bcn-runtime-expire-events-{self.agent_id}",
+        self._runtime_event_task = asyncio.create_task(
+            self._receive_runtime_event_loop(),
+            name=f"bcn-runtime-lifecycle-events-{self.agent_id}",
         )
-        self._observe_background_task("runtime_expire", self._runtime_expire_task)
+        self._observe_background_task("runtime_event", self._runtime_event_task)
 
     async def stop(self, *, timeout: float) -> None:
         if self._stopping:
@@ -453,14 +456,14 @@ class SessionOrchestrator(IAsyncLifecycle):
                 self._shutdown_errors.append("channel.receive: shutdown timeout")
         self._receive_task = None
 
-        runtime_expire_task = self._runtime_expire_task
-        if runtime_expire_task is not None and not runtime_expire_task.done():
-            runtime_expire_task.cancel()
+        runtime_event_task = self._runtime_event_task
+        if runtime_event_task is not None and not runtime_event_task.done():
+            runtime_event_task.cancel()
             try:
-                await asyncio.wait_for(runtime_expire_task, timeout=timeout)
+                await asyncio.wait_for(runtime_event_task, timeout=timeout)
             except TimeoutError, asyncio.CancelledError:
-                self._shutdown_errors.append("runtime.expire: shutdown timeout")
-        self._runtime_expire_task = None
+                self._shutdown_errors.append("runtime.event: shutdown timeout")
+        self._runtime_event_task = None
 
         active_tasks = tuple(self._active_tasks)
         for task in active_tasks:
@@ -621,6 +624,16 @@ class SessionOrchestrator(IAsyncLifecycle):
                 finally:
                     queue.task_done()
                 continue
+            if isinstance(item, RuntimeBackgroundIdle):
+                try:
+                    await self._handle_runtime_background_idle(session_id, item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._logger.exception("runtime background idle event failed")
+                finally:
+                    queue.task_done()
+                continue
 
             batch: list[_RuntimeNotification] = [item]
             while True:
@@ -668,11 +681,17 @@ class SessionOrchestrator(IAsyncLifecycle):
                                 queue_quiescent=False,
                             )
                             queue.task_done()
-                        else:
+                        elif isinstance(queued_item, RuntimeExpire):
                             await self._handle_runtime_context_expire(
                                 session_id,
                                 queued_item,
                                 queue,
+                            )
+                            queue.task_done()
+                        else:
+                            await self._handle_runtime_background_idle(
+                                session_id,
+                                queued_item,
                             )
                             queue.task_done()
                     if turn_task in done:
@@ -781,7 +800,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for turn in self._runtime_turns.values()
                 if turn.session_id == runtime_session.id
                 and turn.state is RuntimeTurnState.RUNNING
-                and turn.provider_turn_id is not None
             ),
             None,
         )
@@ -834,6 +852,16 @@ class SessionOrchestrator(IAsyncLifecycle):
             queue,
             queue_quiescent=True,
         )
+
+    async def _handle_runtime_background_idle(
+        self,
+        session_id: str,
+        event: RuntimeBackgroundIdle,
+    ) -> None:
+        runtime_session = self.runtime_session(session_id)
+        if runtime_session is None or runtime_session.id != event.runtime_session_id:
+            return
+        await self._start_runtime_timer_if_idle(session_id)
 
     async def _stop_expired_runtime_if_idle(
         self,
@@ -892,16 +920,28 @@ class SessionOrchestrator(IAsyncLifecycle):
                 break
             self.dispatch_inbound(message)
 
-    async def _receive_runtime_expire_loop(self) -> None:
+    async def _receive_runtime_event_loop(self) -> None:
         while True:
-            expire = await self._runtime.receive_expire()
+            event = await self._runtime.receive_event()
             if self._stopping:
                 return
+            if isinstance(event, RuntimeBackgroundIdle):
+                source = next(
+                    (
+                        runtime_session
+                        for runtime_session in self._runtime_sessions.values()
+                        if runtime_session.id == event.runtime_session_id
+                    ),
+                    None,
+                )
+                if source is not None:
+                    self._runtime_queues[source.bcn_session_id].put_nowait(event)
+                continue
             source = next(
                 (
                     runtime_session
                     for runtime_session in self._runtime_sessions.values()
-                    if runtime_session.id == expire.runtime_session_id
+                    if runtime_session.id == event.runtime_session_id
                 ),
                 None,
             )
@@ -1088,6 +1128,11 @@ class SessionOrchestrator(IAsyncLifecycle):
             ):
                 break
             if establishment_attempt == 0:
+                if (
+                    self._state_machine.get(context.bcn_session.id)
+                    is SessionRuntimeState.UNKNOWN
+                ):
+                    self._abandon_runtime_session(context.runtime_session)
                 await self._discard_runtime_session(context.runtime_session)
                 context = self._create_runtime_session(durable_context)
         turn = RuntimeTurn(
@@ -1138,6 +1183,8 @@ class SessionOrchestrator(IAsyncLifecycle):
                     correlation=self._turns.turn_correlation(message, context, turn),
                     session_id=context.bcn_session.id,
                 )
+                if runtime_state is SessionRuntimeState.UNKNOWN:
+                    self._abandon_runtime_session(context.runtime_session)
                 await self._discard_runtime_session(context.runtime_session)
                 return finished
             self._state_machine.apply_observation(
@@ -1469,6 +1516,45 @@ class SessionOrchestrator(IAsyncLifecycle):
             await asyncio.wait_for(asyncio.shield(gathered), timeout=timeout)
         except TimeoutError:
             self._shutdown_errors.append("runtime session teardown: shutdown timeout")
+
+    def _abandon_runtime_session(self, runtime_session: RuntimeSession) -> None:
+        process_correlation = CorrelationContext(
+            node_id=self.agent_id,
+            channel_session_id=runtime_session.channel_session_id,
+            bcn_session_id=runtime_session.bcn_session_id,
+            runtime_session_id=runtime_session.id,
+            provider_thread_id=runtime_session.provider_thread_id,
+        )
+        task = asyncio.create_task(
+            self._complete_abandoned_runtime_session_teardown(
+                runtime_session,
+                correlation=process_correlation,
+            ),
+            name=f"bcn-runtime-teardown-{runtime_session.id}",
+        )
+        self._runtime_teardown_tasks.add(task)
+        task.add_done_callback(self._forget_runtime_teardown_task)
+
+    async def _complete_abandoned_runtime_session_teardown(
+        self,
+        runtime_session: RuntimeSession,
+        *,
+        correlation: CorrelationContext,
+    ) -> None:
+        await self._audit.append(
+            event_name="runtime.process.stop.requested",
+            state=RuntimeEventState.STARTED,
+            correlation=correlation,
+            metadata={
+                "runtime": runtime_session.runtime,
+                "workspace_id": runtime_session.workspace_id,
+            },
+        )
+        await self._complete_runtime_session_teardown(
+            runtime_session,
+            correlation=correlation,
+            timeout=self._timeout_budget.provider_call_seconds,
+        )
 
     def _schedule_runtime_session_teardown(
         self,

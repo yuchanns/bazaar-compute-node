@@ -93,7 +93,7 @@ Windows: Get-Content "$env:USERPROFILE\.bcn\system-service.log" -Wait
 | Status / 状态 | Runtime / 运行时 |
 | --- | --- |
 | ✅ | Codex |
-| 🚧 | Claude Code |
+| ✅ | Claude Code |
 | 🚧 | Pi |
 | 🚧 | Hermes Agent |
 | 🚧 | DeepSeek Harness |

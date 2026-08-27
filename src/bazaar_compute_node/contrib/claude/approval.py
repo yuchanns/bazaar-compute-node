@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from time import time_ns
+
+from ...core.models import ApprovalDecision, ApprovalRequest, ApprovalResult
+from .protocol import ClaudeProtocolError, JsonObject
+
+_MAX_APPROVAL_DESCRIPTION = 4_000
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalEnvelope:
+    """Claude permission request plus its provider-neutral projection."""
+
+    control_request_id: str
+    tool_name: str
+    tool_input: Mapping[str, object]
+    request: ApprovalRequest
+
+
+def parse_approval_request(
+    message: Mapping[str, object],
+    *,
+    session_id: str,
+    runtime_session_id: str,
+    turn_id: str,
+) -> ApprovalEnvelope:
+    if message.get("type") != "control_request":
+        raise ClaudeProtocolError("message is not a control request")
+    control_request_id = message.get("request_id")
+    if not isinstance(control_request_id, str) or not control_request_id:
+        raise ClaudeProtocolError("permission control request requires a request_id")
+    request = message.get("request")
+    if not isinstance(request, Mapping) or request.get("subtype") != "can_use_tool":
+        raise ClaudeProtocolError("unsupported Claude control request subtype")
+    tool_use_id = request.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        raise ClaudeProtocolError("permission request requires a tool_use_id")
+    tool_name = request.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name:
+        raise ClaudeProtocolError("permission request requires a tool_name")
+    tool_input = request.get("input")
+    if not isinstance(tool_input, Mapping):
+        raise ClaudeProtocolError("permission request input must be an object")
+
+    description = _description(request, tool_input)
+    return ApprovalEnvelope(
+        control_request_id=control_request_id,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        request=ApprovalRequest(
+            request_id=tool_use_id,
+            session_id=session_id,
+            runtime_session_id=runtime_session_id,
+            action=tool_name,
+            created_at_ms=time_ns() // 1_000_000,
+            turn_id=turn_id,
+            description=description,
+            metadata={
+                "provider_control_request_id": control_request_id,
+                "provider_tool_name": tool_name,
+                "provider_input": dict(tool_input),
+            },
+        ),
+    )
+
+
+def build_approval_response(
+    approval: ApprovalEnvelope, result: ApprovalResult
+) -> JsonObject:
+    if result.request_id != approval.request.request_id:
+        raise ValueError("approval result request id does not match tool use")
+    if result.decision is ApprovalDecision.APPROVED:
+        return {"behavior": "allow", "updatedInput": dict(approval.tool_input)}
+    return {
+        "behavior": "deny",
+        "message": result.reason or "Permission denied by the user.",
+    }
+
+
+def deny_approval(message: str) -> JsonObject:
+    return {"behavior": "deny", "message": message}
+
+
+def _description(
+    request: Mapping[str, object], tool_input: Mapping[str, object]
+) -> str:
+    parts = []
+    for field_name in ("description", "title", "display_name", "decision_reason"):
+        value = request.get(field_name)
+        if isinstance(value, str) and value.strip() and value.strip() not in parts:
+            parts.append(value.strip())
+    try:
+        encoded_input = json.dumps(
+            dict(tool_input),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except TypeError, ValueError:
+        encoded_input = "[input unavailable]"
+    parts.append(f"{request['tool_name']} input: {encoded_input}")
+    description = "\n".join(parts)
+    if len(description) > _MAX_APPROVAL_DESCRIPTION:
+        return description[: _MAX_APPROVAL_DESCRIPTION - 1] + "…"
+    return description
+
+
+__all__ = [
+    "ApprovalEnvelope",
+    "build_approval_response",
+    "deny_approval",
+    "parse_approval_request",
+]

@@ -117,8 +117,12 @@ class NodeApplication:
 
         self._started = True
         self._stopped.clear()
-        for agent_configuration in self.configuration.agents:
-            await self._start_agent(agent_configuration)
+        async with asyncio.TaskGroup() as group:
+            for agent_configuration in self.configuration.agents:
+                group.create_task(
+                    self._start_agent(agent_configuration),
+                    name=f"bcn-agent-start-{agent_configuration.id}",
+                )
         try:
             await self.reminder_scheduler.start(
                 timeout=self.timeout_budget.startup_seconds,
@@ -141,26 +145,27 @@ class NodeApplication:
     async def _start_agent(self, configuration: AgentConfiguration) -> None:
         application: AgentApplication | None = None
         try:
-            factories = await asyncio.to_thread(
-                self._registry.load_agent,
-                channel=configuration.channel.kind,
-                runtime=configuration.runtime.kind,
-                storage=self.configuration.storage,
-            )
-            storage_scope = self.storage.scope(configuration.id, configuration.name)
-            application = AgentApplication(
-                configuration=configuration,
-                factories=factories,
-                storage=storage_scope,
-                audit=self.audit,
-                timer_wheel=self.timer_wheel,
-                reminder_concurrency=self._reminder_concurrency,
-                reminder_poke=self.reminder_scheduler.poke,
-                endpoint=lambda: self.endpoint,
-                timeout_budget=self.timeout_budget,
-                translator=self.translator,
-            )
-            await application.start()
+            async with asyncio.timeout(self.timeout_budget.startup_seconds):
+                factories = await asyncio.to_thread(
+                    self._registry.load_agent,
+                    channel=configuration.channel.kind,
+                    runtime=configuration.runtime.kind,
+                    storage=self.configuration.storage,
+                )
+                storage_scope = self.storage.scope(configuration.id, configuration.name)
+                application = AgentApplication(
+                    configuration=configuration,
+                    factories=factories,
+                    storage=storage_scope,
+                    audit=self.audit,
+                    timer_wheel=self.timer_wheel,
+                    reminder_concurrency=self._reminder_concurrency,
+                    reminder_poke=self.reminder_scheduler.poke,
+                    endpoint=lambda: self.endpoint,
+                    timeout_budget=self.timeout_budget,
+                    translator=self.translator,
+                )
+                await application.start()
         except asyncio.CancelledError:
             if application is not None:
                 await self._stop_agent_after_failed_start(application)
@@ -410,7 +415,8 @@ class NodeApplication:
 
     async def _stop_agent_after_failed_start(self, agent: AgentApplication) -> None:
         try:
-            await agent.stop()
+            async with asyncio.timeout(self.timeout_budget.shutdown_seconds):
+                await agent.stop()
         except BaseException as error:
             self._logger.debug(
                 "agent cleanup after failed start failed",

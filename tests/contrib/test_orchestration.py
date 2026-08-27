@@ -1963,6 +1963,35 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_turn_without_provider_id_still_attempts_runtime_steer() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    first = make_message(seq=1)
+    second = make_message(seq=2)
+
+    try:
+        await channel.inject(first)
+        await wait_until(lambda: bool(runtime.active_streams))
+        _, started_turn, _ = runtime.started_turns[0]
+        active_turn = orchestrator._runtime_turns[started_turn.turn_id]
+        assert active_turn.state is RuntimeTurnState.RUNNING
+        orchestrator._runtime_turns[started_turn.turn_id] = replace(
+            active_turn, provider_turn_id=None
+        )
+
+        await channel.inject(second)
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+
+        _, steered_turn, _ = runtime.steered_turns[0]
+        assert steered_turn.turn_id == started_turn.turn_id
+        assert steered_turn.provider_turn_id is None
+    finally:
+        if runtime.active_streams:
+            next(iter(runtime.active_streams)).release()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
     None
 ):
@@ -2567,6 +2596,45 @@ async def test_runtime_start_failure_replaces_session_for_current_inbound() -> N
 
 
 @pytest.mark.asyncio
+async def test_repeated_unknown_runtime_start_abandons_each_session_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator, _, runtime, _, _ = await make_node()
+    release_stop = asyncio.Event()
+
+    async def blocked_stop_session(
+        session: RuntimeSession,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSession]:
+        assert timeout == 1
+        runtime.stopped_sessions.append(session)
+        await release_stop.wait()
+        return ProviderCallResult(status=ProviderCallStatus.CONFIRMED, value=session)
+
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    try:
+        for _ in range(2):
+            runtime.queue_start_result(
+                ProviderCallResult(
+                    status=ProviderCallStatus.UNKNOWN,
+                    error_kind="provider_unknown",
+                    error_message="start outcome is unknown",
+                )
+            )
+
+        result = await orchestrator.dispatch_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.UNKNOWN
+        await wait_until(lambda: runtime.stopped_sessions == runtime.started_sessions)
+        assert orchestrator.runtime_session("bcn-1") is None
+    finally:
+        release_stop.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     (ProviderCallStatus.FAILED, ProviderCallStatus.UNKNOWN),
@@ -3147,8 +3215,19 @@ async def test_background_job_suppresses_runtime_idle_timeout() -> None:
         assert orchestrator._runtime_timers == {}
         assert runtime.stopped_sessions == []
 
+        runtime.emit_background_idle("stale-runtime")
+        await asyncio.sleep(0)
+        assert orchestrator._runtime_timers == {}
+        runtime.emit_background_idle(runtime_session.id)
+        await asyncio.sleep(0)
+        assert orchestrator._runtime_timers == {}
+
         runtime.background_job_present = False
-        await orchestrator.handle_inbound(make_message(seq=2))
+        runtime.emit_background_idle(runtime_session.id)
+        runtime.emit_background_idle(runtime_session.id)
+        async with asyncio.timeout(1):
+            while not orchestrator._runtime_timers:
+                await asyncio.sleep(0.01)
         binding = orchestrator._runtime_timers.get("bcn-1")
         assert binding is not None
         assert binding.timer.active

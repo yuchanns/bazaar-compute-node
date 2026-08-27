@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from ...core.utils import UnlimitedLineReader
 from .protocol import (
     JsonlMessage,
     JsonlProcessExited,
@@ -63,7 +64,6 @@ class JsonlProcessSpec:
 
 
 _QUEUE_CLOSED = object()
-_JSONL_READ_CHUNK_BYTES = 64 * 1024
 
 
 class JsonlProcessSupervisor:
@@ -334,41 +334,26 @@ class JsonlProcessSupervisor:
             await self._protocol_failure("stdout pipe is unavailable")
             return
         line_number = 0
-        buffer = bytearray()
+        reader = UnlimitedLineReader(stdout)
         try:
-            while True:
-                chunk = await stdout.read(_JSONL_READ_CHUNK_BYTES)
-                if chunk:
-                    buffer.extend(chunk)
-                elif buffer:
-                    buffer.append(ord("\n"))
-                else:
-                    break
-                while True:
-                    boundary = buffer.find(b"\n")
-                    if boundary < 0:
-                        break
-                    line = bytes(buffer[:boundary])
-                    del buffer[: boundary + 1]
-                    line_number += 1
-                    try:
-                        decoded = line.decode("utf-8")
-                        payload = json.loads(decoded)
-                    except UnicodeDecodeError, json.JSONDecodeError:
-                        await self._protocol_failure(
-                            "stdout contains invalid JSONL",
-                            line_number=line_number,
-                        )
-                        return
-                    if not isinstance(payload, dict):
-                        await self._protocol_failure(
-                            "stdout JSONL item must be an object",
-                            line_number=line_number,
-                        )
-                        return
-                    self._route_message(cast(JsonlMessage, payload))
-                if not chunk:
-                    break
+            while line := await reader.readline():
+                line_number += 1
+                try:
+                    decoded = line.decode("utf-8")
+                    payload = json.loads(decoded)
+                except UnicodeDecodeError, json.JSONDecodeError:
+                    await self._protocol_failure(
+                        "stdout contains invalid JSONL",
+                        line_number=line_number,
+                    )
+                    return
+                if not isinstance(payload, dict):
+                    await self._protocol_failure(
+                        "stdout JSONL item must be an object",
+                        line_number=line_number,
+                    )
+                    return
+                self._route_message(cast(JsonlMessage, payload))
         except asyncio.CancelledError:
             raise
         except (ConnectionError, OSError) as error:
@@ -378,8 +363,9 @@ class JsonlProcessSupervisor:
         stderr = process.stderr
         if stderr is None:
             return
+        reader = UnlimitedLineReader(stderr)
         try:
-            while line := await stderr.readline():
+            while line := await reader.readline():
                 text = line.decode("utf-8", errors="replace").rstrip("\r\n")
                 self._stderr_tail.append(text)
                 if self._stderr_handler is not None:

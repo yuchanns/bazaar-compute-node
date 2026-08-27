@@ -166,12 +166,6 @@ def build_turn_start_params(
     return params
 
 
-def build_turn_interrupt_params(thread_id: str, turn_id: str) -> dict[str, object]:
-    _validate_non_empty_string("thread_id", thread_id)
-    _validate_non_empty_string("turn_id", turn_id)
-    return {"threadId": thread_id, "turnId": turn_id}
-
-
 def build_turn_steer_params(
     thread_id: str,
     turn_id: str,
@@ -301,19 +295,6 @@ class Client:
                 cwd=cwd,
                 sandbox_policy=sandbox_policy,
             ),
-            timeout=timeout,
-        )
-
-    async def interrupt_turn(
-        self,
-        thread_id: str,
-        turn_id: str,
-        *,
-        timeout: float,
-    ) -> JsonlMessage:
-        return await self.supervisor.request(
-            "turn/interrupt",
-            build_turn_interrupt_params(thread_id, turn_id),
             timeout=timeout,
         )
 
@@ -555,7 +536,6 @@ __all__ = [
     "build_initialize_params",
     "build_thread_resume_params",
     "build_thread_start_params",
-    "build_turn_interrupt_params",
     "build_turn_start_params",
     "parse_background_terminals_response",
     "parse_error_notification",
