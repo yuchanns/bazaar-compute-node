@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.30 - 2026-08-27
+
+## What's Changed
+* feat: add Claude Code runtime support by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/48
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.29...v0.1.30
+
 ## 0.1.29 - 2026-08-26
 
 ## What's Changed
