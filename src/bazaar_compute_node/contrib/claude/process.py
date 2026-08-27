@@ -255,6 +255,7 @@ class ProcessSupervisor:
                 if payload is None:
                     continue
                 if payload["type"] == "result":
+                    self._result_error_tail.clear()
                     errors = payload.get("errors")
                     if isinstance(errors, list):
                         for error in errors:

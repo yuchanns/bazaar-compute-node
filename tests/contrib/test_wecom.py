@@ -28,6 +28,7 @@ from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     Message,
     OutboundAttachment,
+    SenderIdentity,
     SenderKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
@@ -512,6 +513,7 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
     inbound = channel._inbound.get_nowait()
     assert isinstance(inbound, Message)
     assert inbound.provider_payload_ref is None
+    assert inbound.sender == SenderIdentity(id="user-id")
     assert inbound.sender_kind is SenderKind.HUMAN
 
 

@@ -99,6 +99,35 @@ async def test_claude_process_exit_uses_result_error_when_stderr_is_empty(
 
 
 @pytest.mark.asyncio
+async def test_claude_process_exit_drops_error_from_earlier_result(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "import sys;"
+        'print(\'{"type":"result","subtype":"error_during_execution",'
+        '"duration_ms":1,"duration_api_ms":1,"is_error":true,'
+        '"num_turns":0,"session_id":"session-1",'
+        '"errors":["stale failure"]}\',flush=True);'
+        'print(\'{"type":"result","subtype":"success",'
+        '"duration_ms":1,"duration_api_ms":1,"is_error":false,'
+        '"num_turns":1,"session_id":"session-1","result":"done"}\',flush=True);'
+        "sys.exit(1)"
+    )
+    supervisor = ProcessSupervisor(
+        ProcessSpec(sys.executable, ("-c", script), tmp_path, os.environ)
+    )
+
+    await supervisor.start(timeout=5)
+    assert (await supervisor.receive())["type"] == "result"
+    assert (await supervisor.receive())["type"] == "result"
+
+    with pytest.raises(ClaudeProcessExited) as error:
+        await supervisor.receive()
+    assert "stale failure" not in str(error.value)
+    assert error.value.result_error_tail == ()
+
+
+@pytest.mark.asyncio
 async def test_claude_control_failure_cleans_pending_request() -> None:
     supervisor = ProcessSupervisor(
         ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})

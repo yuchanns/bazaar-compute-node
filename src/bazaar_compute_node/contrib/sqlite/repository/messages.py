@@ -679,11 +679,7 @@ class MessageOperations(RepositoryBase):
                 canonical.provider_message_id,
                 canonical.provider_time_ms,
                 canonical.received_at_ms,
-                (
-                    canonical.sender.display_name
-                    if canonical.sender is not None
-                    else None
-                ),
+                canonical.sender.name if canonical.sender is not None else None,
                 canonical.sender.id if canonical.sender is not None else None,
                 canonical.message_type,
                 canonical.target,
@@ -900,7 +896,7 @@ class MessageOperations(RepositoryBase):
                     canonical.channel,
                     canonical.provider_thread_id,
                     canonical.provider_message_id,
-                    sender.display_name,
+                    sender.name,
                     sender.id,
                     canonical.message_type,
                     canonical.target,
