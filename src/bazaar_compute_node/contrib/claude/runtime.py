@@ -45,6 +45,7 @@ from .protocol import ClaudeControlError, ClaudeProtocolError, ClaudeTransportEr
 _MINIMUM_VERSION = (2, 1, 239)
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)")
 _UNUSABLE_CONNECTION_STOP_SECONDS = 10.0
+_STEER_RESULT_GRACE_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -57,6 +58,7 @@ class _Connection:
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_turn_id: str | None = None
     pending_human_results: int = 0
+    queued_human_cycle_started: asyncio.Event = field(default_factory=asyncio.Event)
     active_stream: TurnEventStream | None = None
     active_background_task_ids: set[str] = field(default_factory=set)
     background_active: bool = False
@@ -243,6 +245,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 )
             connection.active_turn_id = turn.turn_id
             connection.pending_human_results = 1
+            connection.queued_human_cycle_started.clear()
 
             async def handle_permission(
                 message: dict[str, object],
@@ -289,6 +292,15 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 if connection.active_turn_id != turn.turn_id:
                     return False
                 if connection.pending_human_results > 1:
+                    try:
+                        # Claude may coalesce a queued inbox notice into the current
+                        # provider cycle. A new init proves another result will follow.
+                        async with asyncio.timeout(_STEER_RESULT_GRACE_SECONDS):
+                            await connection.queued_human_cycle_started.wait()
+                    except TimeoutError:
+                        connection.pending_human_results = 0
+                        return True
+                    connection.queued_human_cycle_started.clear()
                     connection.pending_human_results -= 1
                     return False
                 connection.pending_human_results = 0
@@ -340,6 +352,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 return False
             if connection.pending_human_results == 0:
                 return False
+            if connection.pending_human_results == 1:
+                connection.queued_human_cycle_started.clear()
             try:
                 await connection.client.send_user_message(input_text, timeout=timeout)
             except asyncio.CancelledError:
@@ -359,7 +373,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         async with connection.state_lock:
             return bool(
                 connection.active_background_task_ids
-                or connection.client.injected_turn_active
+                or connection.client.provider_wake_active
             )
 
     async def _open_connection(
@@ -442,6 +456,12 @@ class Runtime(IRuntime, IAsyncLifecycle):
         )
 
         def observe(message: dict[str, object]) -> None:
+            if (
+                message["type"] == "system"
+                and message.get("subtype") == "init"
+                and connection.pending_human_results > 1
+            ):
+                connection.queued_human_cycle_started.set()
             if (
                 message["type"] == "conversation_reset"
                 and not client.has_foreground_turn
@@ -567,7 +587,7 @@ def _observe_background(connection: _Connection, message: dict[str, object]) -> 
                 }:
                     connection.active_background_task_ids.discard(task_id)
     connection.background_active = bool(
-        connection.active_background_task_ids or connection.client.injected_turn_active
+        connection.active_background_task_ids or connection.client.provider_wake_active
     )
     return was_active and not connection.background_active
 

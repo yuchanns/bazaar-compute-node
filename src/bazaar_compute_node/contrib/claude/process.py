@@ -20,6 +20,7 @@ from .protocol import (
 )
 
 MAX_JSONL_BYTES = 1024 * 1024
+_EXIT_PIPE_DRAIN_SECONDS = 1
 _CLOSED = object()
 
 
@@ -228,6 +229,7 @@ class ProcessSupervisor:
             self._returncode = process.returncode
             await self._join_tasks(cancel=True)
             self._state = ProcessState.STOPPED
+            self._exit_event.set()
 
     async def _read_stdout(self, process: asyncio.subprocess.Process) -> None:
         stdout = process.stdout
@@ -265,10 +267,18 @@ class ProcessSupervisor:
 
     async def _watch_process(self, process: asyncio.subprocess.Process) -> None:
         self._returncode = await process.wait()
-        await asyncio.gather(
-            *(task for task in (self._stdout_task, self._stderr_task) if task),
-            return_exceptions=True,
+        readers = tuple(
+            task for task in (self._stdout_task, self._stderr_task) if task is not None
         )
+        if readers:
+            try:
+                async with asyncio.timeout(_EXIT_PIPE_DRAIN_SECONDS):
+                    await asyncio.gather(*readers, return_exceptions=True)
+            except TimeoutError:
+                for task in readers:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*readers, return_exceptions=True)
         if self._returncode and self._fatal_error is None:
             self._fatal_error = ClaudeProcessExited(self._returncode, self.stderr_tail)
         self._state = (

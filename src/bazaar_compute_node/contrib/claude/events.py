@@ -215,7 +215,13 @@ class TurnEventStream(IRuntimeTurnStream):
             if not isinstance(field_value, int) or isinstance(field_value, bool):
                 raise ClaudeProtocolError(f"Claude result {field_name} is invalid")
         origin = message.get("origin")
-        if isinstance(origin, Mapping) and origin.get("kind") != "human":
+        # A foreground turn opened during a provider-owned wake adopts that cycle,
+        # so its non-human result is also the foreground terminal.
+        if (
+            isinstance(origin, Mapping)
+            and origin.get("kind") != "human"
+            and not self._inbox.adopted_provider_wake
+        ):
             return _progress(self._session_id, message)
         terminal = await self._claim_result(message)
         if not terminal:

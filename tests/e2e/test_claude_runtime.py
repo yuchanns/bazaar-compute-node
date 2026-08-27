@@ -110,7 +110,7 @@ def _node(
                     channel=ChannelConfiguration(kind="test"),
                     runtime=RuntimeConfiguration(
                         kind="claudecode",
-                        model="kimi",
+                        model="claude-opus-5",
                         sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
                         idle_timeout_seconds=idle_timeout_seconds,
                     ),
@@ -125,7 +125,7 @@ def _node(
             channel=channel,
             runtime=lambda context: Runtime(
                 context,
-                model="kimi",
+                model="claude-opus-5",
             ),
         ),
         endpoint_path=endpoint,
@@ -186,6 +186,10 @@ async def _wait_for_turn_completion(
                         "claudecode.turn.failed",
                         "claudecode.turn.cancelled",
                         "claudecode.turn.unknown",
+                        "claudecode.turn.transport.unknown",
+                        "claudecode.turn.protocol.unknown",
+                        "claudecode.turn.start.unknown",
+                        "claudecode.turn.conversation_reset",
                     }
                     and event.correlation.turn_id == turn_id
                 ),
@@ -193,6 +197,22 @@ async def _wait_for_turn_completion(
             )
             await asyncio.sleep(0.05)
     assert terminal_event.event_name == expected_event_name, terminal_event
+
+
+async def _wait_for_audit_event(
+    audit: RecordingAudit,
+    *,
+    session_id: str,
+    event_name: str,
+    timeout: float = 60,
+) -> None:
+    async with asyncio.timeout(timeout):
+        while not any(
+            event.event_name == event_name
+            and event.correlation.bcn_session_id == session_id
+            for event in audit.events
+        ):
+            await asyncio.sleep(0.05)
 
 
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
@@ -238,7 +258,7 @@ async def test_real_claude_initialization_and_session_system_message() -> None:
                 system_prompt="Reply concisely.",
                 settings=json.dumps({"sandbox": {"enabled": False}}),
                 session_id=session_id,
-                model="kimi",
+                model="claude-opus-5",
             ),
             cwd=workspace,
             environment=_claude_environment(),
@@ -296,7 +316,9 @@ async def test_real_claude_turn_stream_and_running_steer(
         await channel.inject(first)
         async with asyncio.timeout(120):
             while not any(
-                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                event.kind is StreamEventKind.TOOL_PROGRESS
+                and event.content is not None
+                and "thirty common animals" in event.content
                 for event in channel.stream_events
             ):
                 await asyncio.sleep(0.05)
@@ -358,7 +380,7 @@ async def test_real_claude_active_child_exit_is_terminal_unknown(
             audit,
             session_id=scoped_session_id,
             turn_id=f"turn-{message.message_id}",
-            expected_event_name="claudecode.turn.unknown",
+            expected_event_name="claudecode.turn.transport.unknown",
         )
         assert runtime_session.id not in agent.runtime._connections
 
@@ -522,8 +544,9 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
     message = _message(
         session_id,
         body=(
-            "Ask a background teammate to run `sleep 20`. Confirm as soon as the "
-            "teammate starts, without waiting for the command to finish."
+            "Ask a background teammate to independently verify one hundred arithmetic "
+            "identities, spending at least twenty seconds on the review. Confirm as "
+            "soon as the review starts, without waiting for its findings."
         ),
     )
     try:
@@ -549,6 +572,11 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
         async with asyncio.timeout(600):
             while agent.orchestrator.runtime_session(scoped_session_id) is not None:
                 await asyncio.sleep(0.05)
+        await _wait_for_audit_event(
+            audit,
+            session_id=scoped_session_id,
+            event_name="runtime.process.stop.completed",
+        )
         assert not connection.supervisor.is_running
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
@@ -612,11 +640,9 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
                             ) -> None:
                                 if previous is not None:
                                     previous(message)
-                                origin = message.get("origin")
                                 if (
-                                    message.get("type") == "user"
-                                    and isinstance(origin, Mapping)
-                                    and origin.get("kind") not in {None, "human"}
+                                    message.get("type") == "system"
+                                    and message.get("subtype") == "task_notification"
                                     and not second_injected.is_set()
                                 ):
                                     second_injected.set()
@@ -651,7 +677,7 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
             while True:
                 inbox = connection.client._turn_inbox
                 observed_adoption = observed_adoption or (
-                    inbox is not None and inbox.adopted_injected_turn
+                    inbox is not None and inbox.adopted_provider_wake
                 )
                 if any(
                     event.correlation.bcn_session_id == scoped_session_id
@@ -667,9 +693,9 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
                 json.dumps(
                     {
                         "observed_adoption": observed_adoption,
-                        "injected_turn_active": connection.client.injected_turn_active,
+                        "provider_wake_active": connection.client.provider_wake_active,
                         "inbox_adopted": (
-                            inbox.adopted_injected_turn if inbox is not None else None
+                            inbox.adopted_provider_wake if inbox is not None else None
                         ),
                         "inbox_size": (
                             inbox._messages.qsize() if inbox is not None else None
@@ -724,7 +750,7 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
         system_prompt="Follow the user's tool instruction.",
         settings=json.dumps({"sandbox": {"enabled": False}}),
         session_id=session_id,
-        model="kimi",
+        model="claude-opus-5",
     )
     supervisor = ProcessSupervisor(
         ProcessSpec(

@@ -5,6 +5,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum, auto
 
 from .process import ProcessSupervisor
 from .protocol import (
@@ -18,12 +19,119 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 
+class ProviderCycleState(Enum):
+    """Claude's observable provider-cycle state."""
+
+    IDLE = auto()
+    FOREGROUND = auto()
+    PROVIDER_WAKE = auto()
+    PROVIDER_WAKE_ADOPTED = auto()
+
+
+class _ProviderCycleEvent(Enum):
+    FOREGROUND_OPENED = auto()
+    FOREGROUND_CLOSED = auto()
+    PROVIDER_WAKE_STARTED = auto()
+    PROVIDER_WAKE_FINISHED = auto()
+
+
+_PROVIDER_CYCLE_TRANSITIONS: dict[
+    tuple[ProviderCycleState, _ProviderCycleEvent], ProviderCycleState
+] = {
+    (ProviderCycleState.IDLE, _ProviderCycleEvent.FOREGROUND_OPENED): (
+        ProviderCycleState.FOREGROUND
+    ),
+    (ProviderCycleState.IDLE, _ProviderCycleEvent.FOREGROUND_CLOSED): (
+        ProviderCycleState.IDLE
+    ),
+    (ProviderCycleState.IDLE, _ProviderCycleEvent.PROVIDER_WAKE_STARTED): (
+        ProviderCycleState.PROVIDER_WAKE
+    ),
+    (ProviderCycleState.IDLE, _ProviderCycleEvent.PROVIDER_WAKE_FINISHED): (
+        ProviderCycleState.IDLE
+    ),
+    (ProviderCycleState.FOREGROUND, _ProviderCycleEvent.FOREGROUND_CLOSED): (
+        ProviderCycleState.IDLE
+    ),
+    (ProviderCycleState.FOREGROUND, _ProviderCycleEvent.PROVIDER_WAKE_STARTED): (
+        ProviderCycleState.PROVIDER_WAKE_ADOPTED
+    ),
+    (ProviderCycleState.FOREGROUND, _ProviderCycleEvent.PROVIDER_WAKE_FINISHED): (
+        ProviderCycleState.FOREGROUND
+    ),
+    (ProviderCycleState.PROVIDER_WAKE, _ProviderCycleEvent.FOREGROUND_OPENED): (
+        ProviderCycleState.PROVIDER_WAKE_ADOPTED
+    ),
+    (ProviderCycleState.PROVIDER_WAKE, _ProviderCycleEvent.FOREGROUND_CLOSED): (
+        ProviderCycleState.PROVIDER_WAKE
+    ),
+    (ProviderCycleState.PROVIDER_WAKE, _ProviderCycleEvent.PROVIDER_WAKE_STARTED): (
+        ProviderCycleState.PROVIDER_WAKE
+    ),
+    (ProviderCycleState.PROVIDER_WAKE, _ProviderCycleEvent.PROVIDER_WAKE_FINISHED): (
+        ProviderCycleState.IDLE
+    ),
+    (
+        ProviderCycleState.PROVIDER_WAKE_ADOPTED,
+        _ProviderCycleEvent.FOREGROUND_CLOSED,
+    ): ProviderCycleState.PROVIDER_WAKE,
+    (
+        ProviderCycleState.PROVIDER_WAKE_ADOPTED,
+        _ProviderCycleEvent.PROVIDER_WAKE_STARTED,
+    ): ProviderCycleState.PROVIDER_WAKE_ADOPTED,
+    (
+        ProviderCycleState.PROVIDER_WAKE_ADOPTED,
+        _ProviderCycleEvent.PROVIDER_WAKE_FINISHED,
+    ): ProviderCycleState.FOREGROUND,
+}
+
+
+@dataclass(slots=True)
+class ProviderCycleStateMachine:
+    """Centralize foreground/provider-wake ownership transitions."""
+
+    state: ProviderCycleState = ProviderCycleState.IDLE
+
+    @property
+    def provider_wake_active(self) -> bool:
+        return self.state in {
+            ProviderCycleState.PROVIDER_WAKE,
+            ProviderCycleState.PROVIDER_WAKE_ADOPTED,
+        }
+
+    @property
+    def provider_wake_adopted(self) -> bool:
+        return self.state is ProviderCycleState.PROVIDER_WAKE_ADOPTED
+
+    def foreground_opened(self) -> bool:
+        self._transition(_ProviderCycleEvent.FOREGROUND_OPENED)
+        return self.provider_wake_adopted
+
+    def foreground_closed(self) -> None:
+        self._transition(_ProviderCycleEvent.FOREGROUND_CLOSED)
+
+    def provider_wake_started(self) -> None:
+        self._transition(_ProviderCycleEvent.PROVIDER_WAKE_STARTED)
+
+    def provider_wake_finished(self) -> None:
+        self._transition(_ProviderCycleEvent.PROVIDER_WAKE_FINISHED)
+
+    def _transition(self, event: _ProviderCycleEvent) -> None:
+        try:
+            self.state = _PROVIDER_CYCLE_TRANSITIONS[self.state, event]
+        except KeyError as error:
+            raise RuntimeError(
+                f"invalid Claude provider-cycle transition: "
+                f"{self.state.name} + {event.name}"
+            ) from error
+
+
 @dataclass(eq=False, slots=True)
 class TurnInbox:
     """One BCN foreground turn's view of the connection message stream."""
 
     minimum_sequence: int
-    adopted_injected_turn: bool = False
+    adopted_provider_wake: bool = False
     _messages: asyncio.Queue[JsonObject | BaseException] = field(
         default_factory=asyncio.Queue
     )
@@ -46,7 +154,7 @@ class Client:
         self._route_lock = asyncio.Lock()
         self._turn_inbox: TurnInbox | None = None
         self._message_sequence = 0
-        self._injected_origin: str | None = None
+        self._provider_cycle = ProviderCycleStateMachine()
         self._message_observer: Callable[[JsonObject], None] | None = None
         self._control_request_handler: (
             Callable[[JsonObject], Awaitable[Mapping[str, object]]] | None
@@ -58,8 +166,12 @@ class Client:
         return len(self._pending)
 
     @property
-    def injected_turn_active(self) -> bool:
-        return self._injected_origin is not None
+    def provider_wake_active(self) -> bool:
+        return self._provider_cycle.provider_wake_active
+
+    @property
+    def provider_cycle_state(self) -> ProviderCycleState:
+        return self._provider_cycle.state
 
     @property
     def has_foreground_turn(self) -> bool:
@@ -142,7 +254,9 @@ class Client:
                         )
                     inbox.minimum_sequence = self._message_sequence + 1
                     self._turn_inbox = inbox
-                    inbox.adopted_injected_turn = self._injected_origin is not None
+                    inbox.adopted_provider_wake = (
+                        self._provider_cycle.foreground_opened()
+                    )
                     await self._supervisor.send(_user_envelope(text))
         except asyncio.CancelledError:
             await self.close_turn(inbox)
@@ -155,6 +269,7 @@ class Client:
         async with self._route_lock:
             if self._turn_inbox is inbox:
                 self._turn_inbox = None
+                self._provider_cycle.foreground_closed()
 
     async def send_user_message(self, text: str, *, timeout: float) -> None:
         async with asyncio.timeout(timeout):
@@ -303,15 +418,22 @@ class Client:
     ) -> None:
         async with self._route_lock:
             origin = _origin_kind(envelope)
-            if envelope["type"] == "user" and origin not in {None, "human"}:
-                self._injected_origin = origin
+            if (
+                envelope["type"] == "system"
+                and envelope.get("subtype") == "task_notification"
+            ):
+                # Claude resumes a provider-owned cycle for completed background
+                # work before emitting its task-notification result.
+                self._provider_cycle.provider_wake_started()
+            elif envelope["type"] == "user" and origin not in {None, "human"}:
+                self._provider_cycle.provider_wake_started()
             inbox = self._turn_inbox
-            if inbox is not None and self._injected_origin is not None:
-                inbox.adopted_injected_turn = True
+            if inbox is not None and self._provider_cycle.provider_wake_adopted:
+                inbox.adopted_provider_wake = True
             if inbox is not None and sequence >= inbox.minimum_sequence:
                 inbox._messages.put_nowait(envelope)
             if envelope["type"] == "result" and origin not in {None, "human"}:
-                self._injected_origin = None
+                self._provider_cycle.provider_wake_finished()
 
     def _discard_request(self, request_id: str, completed: asyncio.Task[None]) -> None:
         if self._inflight_requests.get(request_id) is completed:
@@ -354,4 +476,9 @@ def _origin_kind(envelope: Mapping[str, object]) -> str | None:
     return kind if isinstance(kind, str) and kind else None
 
 
-__all__ = ["Client", "TurnInbox"]
+__all__ = [
+    "Client",
+    "ProviderCycleState",
+    "ProviderCycleStateMachine",
+    "TurnInbox",
+]
