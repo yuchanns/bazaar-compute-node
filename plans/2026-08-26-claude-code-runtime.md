@@ -239,7 +239,7 @@ BCN rejected/timeout response：
 - `network_access=true` 不附加 domain deny policy；新 domain 仍走 Claude permission/control flow。
 - `network_access=false` 在 sandbox 中增加 `network.allowedDomains=[]`，并在 settings `permissions.deny` 加入 `WebFetch`、`WebSearch`。sandboxed Bash 自动允许；命令需要退出 sandbox 时进入同一 stdio permission flow，不由 adapter 额外 deny。
 - 自动 sandbox/permission policy 先行裁决；只有自动策略无法决定时才请求 human approval，human decision 是最终裁决。批准 unsandboxed fallback 代表操作者显式允许该次命令超出自动 workspace/network containment，adapter 不覆盖该决定。
-- `danger-full-access` 使用 `sandbox.enabled=false`；tool permission control 仍启用，不等于 `bypassPermissions`。
+- `danger-full-access` 使用 `sandbox.enabled=false` 和 `permission-mode=bypassPermissions`，同时移除 filesystem sandbox 与 tool permission prompts。
 - native platform 无法启动 requested sandbox 时，`workspace-write` session startup 失败，不静默降级为 unsandboxed execution。
 
 ## Runtime 设计
@@ -274,7 +274,7 @@ BCN rejected/timeout response：
 ### Sandbox 与 system prompt
 
 - `workspace-write` 通过 Claude Code settings JSON 启用 sandbox、在 sandbox 不可用时 fail closed，并按 BCN `network_access` 生成自动 network policy；需要 unsandboxed fallback 的命令进入 stdio approval，human decision 为最终裁决。
-- `danger-full-access` 关闭 Claude sandbox，但 stdio tool approval 仍然生效。
+- `danger-full-access` 关闭 Claude sandbox，并使用 `bypassPermissions` 跳过 stdio tool approval。
 - 使用 Claude Code 默认 system prompt，通过 `--append-system-prompt` 注入 `DeveloperInstructionContext.render()` 的 BCN instructions。
 - settings、system prompt 和 model 作为独立 argv values 传入，不经过 shell。
 
@@ -369,7 +369,7 @@ BCN rejected/timeout response：
 | `runtime_options["model"]` | `--model <value>`。 |
 | `runtime_options["effort"]` | 配置存在时使用 `--effort <value>`；最低支持版本已固定为 reference CLI `2.1.239`。 |
 | `sandbox_mode=workspace-write` | settings 中使用 `enabled=true`、`failIfUnavailable=true`、`autoAllowBashIfSandboxed=true`、`allowUnsandboxedCommands=true`；自动策略未决定时由 human approval 最终裁决。 |
-| `sandbox_mode=danger-full-access` | settings 中使用 `sandbox.enabled=false`；stdio approval 仍保持启用。 |
+| `sandbox_mode=danger-full-access` | settings 中使用 `sandbox.enabled=false`，argv 使用 `--permission-mode bypassPermissions`。 |
 | `network_access=true` | 不附加 domain deny；Claude sandbox 对新 domain 的 permission request 进入 BCN approval bridge。 |
 | `network_access=false` | `network.allowedDomains=[]` + deny `WebFetch` / `WebSearch`；unsandboxed fallback 仍进入 human approval，不由 adapter 强制覆盖人工决定。 |
 | `environment_for_session(session)` | 原样作为 child `env` mapping；不经过 shell，不追加 daemon environment。 |

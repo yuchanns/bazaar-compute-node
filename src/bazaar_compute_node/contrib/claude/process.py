@@ -48,6 +48,7 @@ def build_arguments(
     *,
     system_prompt: str,
     settings: str,
+    permission_mode: str = "default",
     session_id: str | None = None,
     resume: str | None = None,
     model: str | None = None,
@@ -69,7 +70,7 @@ def build_arguments(
             "--permission-prompt-tool",
             "stdio",
             "--permission-mode",
-            "default",
+            permission_mode,
             "--disallowedTools",
             "AskUserQuestion",
             f"--session-id={session_id}"

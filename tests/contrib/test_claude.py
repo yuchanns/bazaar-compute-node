@@ -53,6 +53,17 @@ def test_claude_command_uses_sdk_style_streaming_contract() -> None:
     assert arguments[arguments.index("--disallowedTools") + 1] == "AskUserQuestion"
 
 
+def test_claude_command_can_bypass_permissions() -> None:
+    arguments = build_arguments(
+        system_prompt="BCN instructions",
+        settings='{"sandbox":{"enabled":false}}',
+        permission_mode="bypassPermissions",
+        session_id="session-1",
+    )
+
+    assert arguments[arguments.index("--permission-mode") + 1] == "bypassPermissions"
+
+
 def test_claude_stdout_framing_has_one_mib_boundary() -> None:
     prefix = b'{"type":"system","subtype":"init","padding":"'
     suffix = b'"}'

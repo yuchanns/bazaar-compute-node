@@ -426,6 +426,11 @@ class Runtime(IRuntime, IAsyncLifecycle):
         arguments = build_arguments(
             system_prompt=prompt,
             settings=settings,
+            permission_mode=(
+                "bypassPermissions"
+                if self._context.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
+                else "default"
+            ),
             session_id=None if resume else provider_thread_id,
             resume=provider_thread_id if resume else None,
             model=self._model,
