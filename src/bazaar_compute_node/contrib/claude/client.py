@@ -10,6 +10,7 @@ from .process import ProcessSupervisor
 from .protocol import (
     ClaudeProcessExited,
     ClaudeProtocolError,
+    ClaudeTransportError,
     JsonObject,
     parse_control_response,
 )
@@ -241,17 +242,6 @@ class Client:
                     "Claude control request has no active turn handler"
                 )
             response = await handler(envelope)
-            async with asyncio.timeout(10):
-                await self._supervisor.send(
-                    {
-                        "type": "control_response",
-                        "response": {
-                            "subtype": "success",
-                            "request_id": request_id,
-                            "response": dict(response),
-                        },
-                    },
-                )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -277,7 +267,36 @@ class Client:
                         },
                     )
             except Exception as send_error:  # noqa: BLE001
-                self._publish_failure(send_error)
+                self._publish_failure(
+                    send_error
+                    if isinstance(send_error, ClaudeTransportError)
+                    else ClaudeTransportError(
+                        f"control response write failed: {type(send_error).__name__}"
+                    )
+                )
+            return
+        try:
+            async with asyncio.timeout(10):
+                await self._supervisor.send(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": request_id,
+                            "response": dict(response),
+                        },
+                    },
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._publish_failure(
+                error
+                if isinstance(error, ClaudeTransportError)
+                else ClaudeTransportError(
+                    f"control response write failed: {type(error).__name__}"
+                )
+            )
 
     async def _route_business_message(
         self, envelope: JsonObject, sequence: int

@@ -495,22 +495,24 @@ async def _check_version(
     *,
     timeout: float,
 ) -> tuple[int, int, int]:
-    process = await asyncio.create_subprocess_exec(
-        executable,
-        "--version",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(cwd),
-        env=environment,
-    )
+    process: asyncio.subprocess.Process | None = None
     try:
         async with asyncio.timeout(timeout):
+            process = await asyncio.create_subprocess_exec(
+                executable,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
+                env=environment,
+            )
             stdout, stderr = await process.communicate()
     except BaseException:
-        if process.returncode is None:
+        if process is not None and process.returncode is None:
             process.kill()
             await process.wait()
         raise
+    assert process is not None
     text = stdout.decode(errors="replace").strip()
     match = _VERSION_PATTERN.search(text)
     if process.returncode != 0 or match is None:

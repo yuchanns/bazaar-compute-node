@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from ..core.utils import UnlimitedLineReader
+
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 StreamPair = tuple[asyncio.StreamReader, asyncio.StreamWriter]
 
@@ -147,7 +149,7 @@ class LocalCommandServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            line = await reader.readline()
+            line = await UnlimitedLineReader(reader).readline()
             if not line:
                 return
             payload = json.loads(line)
@@ -267,7 +269,7 @@ class LocalCommandClient:
                 + b"\n"
             )
             await writer.drain()
-            line = await reader.readline()
+            line = await UnlimitedLineReader(reader).readline()
             if not line:
                 raise ConnectionError("local command server closed without a response")
             response = json.loads(line)

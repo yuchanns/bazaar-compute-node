@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from ...core.utils import UnlimitedLineReader
 from .protocol import (
     ClaudeProcessExited,
     ClaudeProcessNotRunning,
@@ -19,7 +20,6 @@ from .protocol import (
 )
 
 MAX_JSONL_BYTES = 1024 * 1024
-_READ_CHUNK_BYTES = 64 * 1024
 _CLOSED = object()
 
 
@@ -234,22 +234,13 @@ class ProcessSupervisor:
         if stdout is None:
             await self._fail(ClaudeProtocolError("stdout pipe is unavailable"))
             return
-        buffer = bytearray()
+        reader = UnlimitedLineReader(stdout)
         try:
-            while chunk := await stdout.read(_READ_CHUNK_BYTES):
-                buffer.extend(chunk)
-                if len(buffer) > MAX_JSONL_BYTES and b"\n" not in buffer:
-                    await self._fail(
-                        ClaudeProtocolError("stdout JSONL item exceeds 1 MiB")
-                    )
-                    return
-                while (boundary := buffer.find(b"\n")) >= 0:
-                    line = bytes(buffer[:boundary])
-                    del buffer[: boundary + 1]
-                    payload = decode_stdout_line(line)
-                    if payload is None:
-                        continue
-                    await self._incoming.put(payload)
+            while line := await reader.readline():
+                payload = decode_stdout_line(line.removesuffix(b"\n"))
+                if payload is None:
+                    continue
+                await self._incoming.put(payload)
         except asyncio.CancelledError:
             raise
         except (UnicodeDecodeError, json.JSONDecodeError, ClaudeProtocolError) as error:
@@ -258,10 +249,12 @@ class ProcessSupervisor:
             await self._fail(ClaudeTransportError(type(error).__name__))
 
     async def _read_stderr(self, process: asyncio.subprocess.Process) -> None:
-        if process.stderr is None:
+        stderr = process.stderr
+        if stderr is None:
             return
+        reader = UnlimitedLineReader(stderr)
         try:
-            while line := await process.stderr.readline():
+            while line := await reader.readline():
                 self._stderr_tail.append(
                     line.decode("utf-8", errors="replace").rstrip("\r\n")
                 )
