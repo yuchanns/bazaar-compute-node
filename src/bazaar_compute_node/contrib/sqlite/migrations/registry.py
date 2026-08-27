@@ -33,6 +33,7 @@ from .v20_remove_freshness_persistence import (
 )
 from .v21_remove_handoffs import HANDOFF_REMOVAL_MIGRATION
 from .v22_readable_targets import READABLE_TARGET_MIGRATION
+from .v23_persist_sender_identity import SENDER_IDENTITY_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -80,6 +81,7 @@ MIGRATIONS = _migration_ledger(
     FRESHNESS_PERSISTENCE_REMOVAL_MIGRATION,
     HANDOFF_REMOVAL_MIGRATION,
     READABLE_TARGET_MIGRATION,
+    SENDER_IDENTITY_MIGRATION,
 )
 
 

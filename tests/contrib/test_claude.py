@@ -24,7 +24,10 @@ from bazaar_compute_node.contrib.claude.process import (
     build_arguments,
     decode_stdout_line,
 )
-from bazaar_compute_node.contrib.claude.protocol import ClaudeProtocolError
+from bazaar_compute_node.contrib.claude.protocol import (
+    ClaudeProcessExited,
+    ClaudeProtocolError,
+)
 from bazaar_compute_node.contrib.claude.runtime import _Connection, _observe_background
 from bazaar_compute_node.core.models import (
     RuntimeEvent,
@@ -58,6 +61,30 @@ def test_claude_stdout_framing_has_one_mib_boundary() -> None:
     assert decode_stdout_line(line) is not None
     with pytest.raises(ClaudeProtocolError, match="exceeds 1 MiB"):
         decode_stdout_line(line + b"x")
+
+
+@pytest.mark.asyncio
+async def test_claude_process_exit_uses_result_error_when_stderr_is_empty(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "import sys;"
+        'print(\'{"type":"result","subtype":"error_during_execution",'
+        '"duration_ms":1,"duration_api_ms":1,"is_error":true,'
+        '"num_turns":0,"session_id":"session-1",'
+        '"errors":["sandbox dependency missing"]}\',flush=True);'
+        "sys.exit(1)"
+    )
+    supervisor = ProcessSupervisor(
+        ProcessSpec(sys.executable, ("-c", script), tmp_path, os.environ)
+    )
+
+    await supervisor.start(timeout=5)
+    result = await supervisor.receive()
+
+    assert result["type"] == "result"
+    with pytest.raises(ClaudeProcessExited, match="sandbox dependency missing"):
+        await supervisor.receive()
 
 
 @pytest.mark.asyncio

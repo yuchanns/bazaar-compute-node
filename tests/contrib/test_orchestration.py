@@ -932,6 +932,52 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         await orchestrator.stop(timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
+    orchestrator, channel, runtime, storage, _ = await make_sqlite_node()
+    try:
+        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        assert first_turn is not None
+        runtime_session = orchestrator.runtime_session("bcn-1")
+        assert runtime_session is not None
+        context, message, created = await orchestrator._record_inbound(
+            make_message(seq=2)
+        )
+        persisted = await storage.scope("workspace-1", "Test Agent").get_message(
+            message.message_id,
+            direction=MessageDirection.INBOUND,
+        )
+        assert created is True
+        assert context is not None
+        assert persisted is not None
+        runtime.queue_turn_plan(
+            TestTurnPlan(
+                approval_request=ApprovalRequest(
+                    request_id="approval-persisted-sender",
+                    session_id=message.session_id,
+                    runtime_session_id=runtime_session.id,
+                    action="test-action",
+                    created_at_ms=1,
+                    turn_id="turn-persisted-sender",
+                )
+            )
+        )
+
+        turn = await orchestrator._run_notification(
+            _RuntimeNotification(
+                message=persisted,
+                context=context,
+                wake_id="persisted-sender",
+            )
+        )
+
+        assert turn is not None
+        assert channel.channel_approval_requests[0].provider_sender_id == "sender-id"
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
+
+
 @pytest.mark.parametrize(
     ("sender_kind", "reason"),
     [

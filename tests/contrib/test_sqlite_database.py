@@ -269,7 +269,7 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
 @pytest.mark.parametrize(
     "sender_kind", (SenderKind.HUMAN, SenderKind.AGENT, SenderKind.UNKNOWN)
 )
-async def test_sqlite_persists_sender_display_name_and_kind(
+async def test_sqlite_persists_sender_identity_and_kind(
     sender_kind: SenderKind,
 ) -> None:
     database = SqliteDatabase()
@@ -318,7 +318,7 @@ async def test_sqlite_persists_sender_display_name_and_kind(
         assert live.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert live.sender_kind is sender_kind
         assert persisted is not None
-        assert persisted.sender == SenderIdentity(name="test-user")
+        assert persisted.sender == SenderIdentity(id="test-user-id", name="test-user")
         assert persisted.sender_kind is sender_kind
     finally:
         await database.stop(timeout=2)
@@ -470,7 +470,9 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         assert owners[0].trigger_message == materialized
         assert catalog.targets[0].pending_count == 1
         assert catalog.targets[0].latest_message_id == materialized.message_id
-        assert catalog.targets[0].latest_sender == SenderIdentity(name="system")
+        assert catalog.targets[0].latest_sender == SenderIdentity(
+            id="system", name="system"
+        )
         assert catalog.targets[0].last_activity_at_ms == 2_100
         assert isinstance(freshness, MessageSendFreshnessHold)
         assert freshness.messages == (materialized,)
@@ -560,7 +562,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 22
+        assert schema_version["version"] == 23
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -993,7 +995,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 22
+        assert schema_version["version"] == 23
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1102,7 +1104,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 22
+        assert schema_version["version"] == 23
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -1718,7 +1720,7 @@ async def test_sqlite_v16_fixture_unifies_message_history() -> None:
     )
     decoded = [
         message_from_row(
-            row,
+            cast(aiosqlite.Row, {**dict(row), "sender_id": None}),
             (inbound_attachment,) if row["message_id"] == "inbound-a-2" else (),
         )
         for row in rows

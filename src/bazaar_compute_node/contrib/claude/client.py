@@ -288,7 +288,9 @@ class Client:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         error = ClaudeProcessExited(
-            self._supervisor.returncode, self._supervisor.stderr_tail
+            self._supervisor.returncode,
+            self._supervisor.stderr_tail,
+            self._supervisor.result_error_tail,
         )
         self._fail_pending(error)
         self._publish_failure(error)
