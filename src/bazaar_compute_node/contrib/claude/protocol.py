@@ -19,13 +19,21 @@ class ClaudeProcessNotRunning(ClaudeTransportError):
 
 
 class ClaudeProcessExited(ClaudeTransportError):
-    def __init__(self, returncode: int | None, stderr_tail: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        returncode: int | None,
+        stderr_tail: tuple[str, ...],
+        result_error_tail: tuple[str, ...] = (),
+    ) -> None:
         message = f"Claude CLI exited with code {returncode}"
         if stderr_tail:
             message = f"{message}: {stderr_tail[-1]}"
+        elif result_error_tail:
+            message = f"{message}: {result_error_tail[-1]}"
         super().__init__(message)
         self.returncode = returncode
         self.stderr_tail = stderr_tail
+        self.result_error_tail = result_error_tail
 
 
 class ClaudeControlError(ClaudeProtocolError):

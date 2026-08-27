@@ -111,6 +111,7 @@ class ProcessSupervisor:
         self._returncode: int | None = None
         self._fatal_error: ClaudeTransportError | None = None
         self._stderr_tail: deque[str] = deque(maxlen=stderr_tail_limit)
+        self._result_error_tail: deque[str] = deque(maxlen=stderr_tail_limit)
         self._incoming: asyncio.Queue[JsonObject | object] = asyncio.Queue()
         self._stdout_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
@@ -138,6 +139,10 @@ class ProcessSupervisor:
     @property
     def stderr_tail(self) -> tuple[str, ...]:
         return tuple(self._stderr_tail)
+
+    @property
+    def result_error_tail(self) -> tuple[str, ...]:
+        return tuple(self._result_error_tail)
 
     async def start(self, *, timeout: float) -> None:
         async with self._lifecycle_lock:
@@ -186,7 +191,9 @@ class ProcessSupervisor:
                 await process.stdin.drain()
             except (BrokenPipeError, ConnectionError, OSError) as error:
                 raise ClaudeProcessExited(
-                    process.returncode, self.stderr_tail
+                    process.returncode,
+                    self.stderr_tail,
+                    self.result_error_tail,
                 ) from error
 
     async def receive(self) -> JsonObject:
@@ -194,7 +201,11 @@ class ProcessSupervisor:
         if item is _CLOSED:
             if self._fatal_error is not None:
                 raise self._fatal_error
-            raise ClaudeProcessExited(self._returncode, self.stderr_tail)
+            raise ClaudeProcessExited(
+                self._returncode,
+                self.stderr_tail,
+                self.result_error_tail,
+            )
         return cast(JsonObject, item)
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
@@ -242,6 +253,12 @@ class ProcessSupervisor:
                 payload = decode_stdout_line(line.removesuffix(b"\n"))
                 if payload is None:
                     continue
+                if payload["type"] == "result":
+                    errors = payload.get("errors")
+                    if isinstance(errors, list):
+                        for error in errors:
+                            if isinstance(error, str) and error.strip():
+                                self._result_error_tail.append(error.strip())
                 await self._incoming.put(payload)
         except asyncio.CancelledError:
             raise
@@ -280,7 +297,11 @@ class ProcessSupervisor:
                         task.cancel()
                 await asyncio.gather(*readers, return_exceptions=True)
         if self._returncode and self._fatal_error is None:
-            self._fatal_error = ClaudeProcessExited(self._returncode, self.stderr_tail)
+            self._fatal_error = ClaudeProcessExited(
+                self._returncode,
+                self.stderr_tail,
+                self.result_error_tail,
+            )
         self._state = (
             ProcessState.FAILED
             if self._fatal_error is not None
