@@ -8,7 +8,7 @@
 "cli.agent.remove" = "Remove an Agent definition."
 "cli.agent.runtime" = "Runtime provider kind."
 "cli.agent.selector" = "Exact Agent ID or Agent name."
-"cli.agent.set" = "Set channel/runtime configuration. Repeat as needed, for example --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN or --set runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK."
+"cli.agent.set" = "Set agent/channel/runtime configuration. Repeat as needed, for example --set agent.idle_timeout=600, --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN or --set runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK."
 "cli.bcn.command" = "Daemon, agent configuration, or host service command; providing node options without a command means start."
 "cli.bcn.config" = "Configuration file path; defaults to the node data directory."
 "cli.bcn.database_name" = "SQLite database filename under the node data directory."

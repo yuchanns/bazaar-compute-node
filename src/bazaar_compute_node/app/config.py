@@ -348,7 +348,13 @@ def _parse_runtime_configuration(
     network_access = runtime.get("network_access", True)
     if not isinstance(network_access, bool):
         raise ConfigurationError(f"{prefix}.network_access must be a boolean")
-    env = _environment_map(runtime.get("env", {}), f"{prefix}.env")
+    env = MappingProxyType(
+        {
+            key: _required_text(item, f"{prefix}.env.{key}")
+            for key, item in _table(runtime.get("env", {}), f"{prefix}.env").items()
+        }
+    )
+    _validate_environment_names((*env, *env.values()), f"{prefix}.env")
     standard_keys = {
         "kind",
         "model",
@@ -680,15 +686,6 @@ def _text_list(value: object, field_name: str) -> tuple[str, ...]:
     if len(set(value)) != len(value):
         raise ConfigurationError(f"{field_name} cannot contain duplicates")
     return tuple(value)
-
-
-def _environment_map(value: object, field_name: str) -> Mapping[str, str]:
-    table = _table(value, field_name)
-    mapping = {
-        key: _required_text(item, f"{field_name}.{key}") for key, item in table.items()
-    }
-    _validate_environment_names((*mapping, *mapping.values()), field_name)
-    return MappingProxyType(mapping)
 
 
 def _validate_environment_names(values: Sequence[str], field_name: str) -> None:

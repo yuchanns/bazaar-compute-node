@@ -162,18 +162,15 @@ def _load_shared_factories(
         parser.error(str(error))
 
 
-def _format_runtimes(value: object) -> str:
-    if isinstance(value, Sequence) and not isinstance(value, str):
-        return ",".join(str(item) for item in value)
-    return str(value)
-
-
 def _print_agent_startup_records(records: Sequence[Mapping[str, object]]) -> None:
     for record in records:
+        runtimes = record.get("runtimes")
+        if isinstance(runtimes, Sequence) and not isinstance(runtimes, str):
+            runtimes = ",".join(str(item) for item in runtimes)
         line = (
             f"agent startup id={record.get('agent_id')} name={record.get('name')} "
             f"status={record.get('status')} channel={record.get('channel')} "
-            f"runtime={_format_runtimes(record.get('runtimes'))}"
+            f"runtime={runtimes}"
         )
         error_type = record.get("error_type")
         error = record.get("error")

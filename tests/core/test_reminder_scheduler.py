@@ -308,9 +308,37 @@ async def test_node_exits_when_shared_timer_driver_stops(tmp_path: Path) -> None
         await node.stop()
 
 
+class _StorageRefusingOneReminder(MemoryStorage):
+    """Fail the durable fire of one Reminder the way a storage error would."""
+
+    def __init__(self, reminder_id: str) -> None:
+        super().__init__()
+        self._refused_reminder_id = reminder_id
+
+    async def materialize_owned_reminder_message(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        system_message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment] | None:
+        if reminder.reminder.reminder_id == self._refused_reminder_id:
+            raise RuntimeError("materialize failed")
+        return cast(
+            Message[InboundAttachment] | None,
+            await self._invoke(
+                None,
+                None,
+                "materialize_owned_reminder_message",
+                expected_revision,
+                reminder,
+                system_message,
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> None:
-    storage = MemoryStorage()
+    storage = _StorageRefusingOneReminder(_REMINDER_B)
     anchors = {
         _SESSION_A: add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A),
         _SESSION_B: add_session(storage, agent_id=_AGENT_B, session_id=_SESSION_B),
@@ -351,16 +379,6 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
         publish_wake=_recording_publish(wakes),
         clock=lambda: 100,
     )
-    materialize = scheduler._materialize_due_reminder
-
-    async def fail_on_second(
-        snapshot: OwnedReminder,
-    ) -> tuple[str, Message[InboundAttachment]] | None:
-        if snapshot.reminder.reminder_id == _REMINDER_B:
-            raise RuntimeError("materialize failed")
-        return await materialize(snapshot)
-
-    scheduler._materialize_due_reminder = fail_on_second
     try:
         with pytest.raises(RuntimeError, match="materialize failed"):
             await scheduler._materialize_due_batches()
