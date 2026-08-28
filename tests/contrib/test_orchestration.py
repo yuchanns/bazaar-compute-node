@@ -1736,15 +1736,17 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         assert any(
             event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
-        with pytest.raises(ValueError, match="target conversation"):
-            await orchestrator.command_service.send(
-                session_id="bcn-1",
-                command_id="command-cross-session-invalid-reply",
-                raw_target="dm:channel-bcn-other",
-                body="invalid reply",
-                created_at_ms=3,
-                reply_to_message_id=make_message(seq=1).message_id,
-            )
+        unusable_reply = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-cross-session-invalid-reply",
+            raw_target="dm:channel-bcn-other",
+            body="invalid reply",
+            created_at_ms=3,
+            reply_to_message_id=make_message(seq=1).message_id,
+        )
+        assert isinstance(unusable_reply, MessageSendSuccess)
+        assert unusable_reply.message.delivery_state is OutboundDeliveryState.SENT
+        assert channel.send_attempts[-1].provider_reply_to_message_id is None
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
@@ -1767,7 +1769,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
                 message.system_message_kind is SystemMessageKind.HANDOFF
                 for message in _stored_messages(storage, "bcn-other")
             )
-            == 1
+            == 2
         )
         with pytest.raises(ValueError, match="another target"):
             await orchestrator.command_service.send(
@@ -1815,7 +1817,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         queued = queued.message
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[2]]
+        assert channel.queued_messages == [channel.send_attempts[3]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1904,8 +1906,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         failed = failed.message
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 6
-        assert len(channel.sent_messages) == 1
+        assert len(channel.send_attempts) == 7
+        assert len(channel.sent_messages) == 2
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )
