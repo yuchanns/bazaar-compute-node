@@ -284,7 +284,8 @@ def test_windows_stop_fails_when_managed_process_survives(
         system_service._stop_windows(service_context)
 
 
-def test_linux_start_delegates_to_systemd() -> None:
+def test_linux_lifecycle_delegates_to_systemd() -> None:
+    # start
     with patch.object(system_service, "_run_native_command") as run_native:
         system_service._start_linux()
 
@@ -292,8 +293,7 @@ def test_linux_start_delegates_to_systemd() -> None:
         ["systemctl", "--user", "start", system_service.SYSTEMD_UNIT_NAME]
     )
 
-
-def test_linux_stop_delegates_to_systemd() -> None:
+    # stop
     with patch.object(system_service, "_run_native_command") as run_native:
         system_service._stop_linux()
 
@@ -302,8 +302,7 @@ def test_linux_stop_delegates_to_systemd() -> None:
         check=False,
     )
 
-
-def test_linux_restart_delegates_to_systemd() -> None:
+    # restart
     with patch.object(system_service, "_run_native_command") as run_native:
         system_service._restart_linux()
 
@@ -312,7 +311,8 @@ def test_linux_restart_delegates_to_systemd() -> None:
     )
 
 
-def test_macos_start_kickstarts_loaded_launchd_job(tmp_path: Path) -> None:
+def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
+    # a loaded job is kickstarted
     plist_path = tmp_path / "bcn.plist"
     plist_path.write_bytes(b"plist")
     wrapper_path = tmp_path / "bcn-run.sh"
@@ -347,8 +347,7 @@ def test_macos_start_kickstarts_loaded_launchd_job(tmp_path: Path) -> None:
         ),
     ]
 
-
-def test_macos_start_bootstraps_unloaded_launchd_job(tmp_path: Path) -> None:
+    # an unloaded job is bootstrapped
     plist_path = tmp_path / "bcn.plist"
     plist_path.write_bytes(b"plist")
     wrapper_path = tmp_path / "bcn-run.sh"
@@ -380,8 +379,7 @@ def test_macos_start_bootstraps_unloaded_launchd_job(tmp_path: Path) -> None:
         call(["launchctl", "bootstrap", "gui/501", str(plist_path)]),
     ]
 
-
-def test_macos_restart_does_not_bootout_before_start() -> None:
+    # restart does not bootout before starting
     with (
         patch.object(system_service, "_start_macos") as start,
         patch.object(system_service, "_stop_macos") as stop,

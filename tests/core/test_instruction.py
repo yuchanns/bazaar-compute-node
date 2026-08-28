@@ -6,7 +6,8 @@ from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.rendering import TextTemplate
 
 
-def test_developer_instructions_render_runtime_context_and_identity() -> None:
+def test_developer_instructions_render_identity() -> None:
+    # runtime context and identity are rendered
     context = DeveloperInstructionContext(
         agent_name="Test {{ agent }}",
         bot_name="Test Bot",
@@ -27,8 +28,7 @@ def test_developer_instructions_render_runtime_context_and_identity() -> None:
     assert "- Workspace: /workspace" in rendered
     assert rendered.endswith("your current work.\n\n")
 
-
-def test_developer_instructions_render_identity_without_bot_name() -> None:
+    # identity renders without a bot name
     rendered = DeveloperInstructionContext(
         agent_name="Test Agent",
         bot_name=None,

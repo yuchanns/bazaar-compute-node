@@ -88,7 +88,8 @@ def inbox_target_payload(
     }
 
 
-def test_inbox_list_serializer_renders_targets_and_next_page() -> None:
+def test_inbox_list_serializer() -> None:
+    # a page with more targets to come
     result = {
         "targets": [
             inbox_target_payload(
@@ -127,8 +128,7 @@ def test_inbox_list_serializer_renders_targets_and_next_page() -> None:
         "More message targets remain. Run `bcc inbox list --offset 2`."
     )
 
-
-def test_inbox_list_serializer_renders_target_without_latest_message() -> None:
+    # a target that has no latest message
     result = {
         "targets": [
             inbox_target_payload(
@@ -154,8 +154,7 @@ def test_inbox_list_serializer_renders_target_without_latest_message() -> None:
         "No more message targets."
     )
 
-
-def test_inbox_list_serializer_renders_empty_catalog() -> None:
+    # an empty catalog
     assert serialize_inbox_list(
         {
             "targets": [],
@@ -170,8 +169,7 @@ def test_inbox_list_serializer_renders_empty_catalog() -> None:
         "No message targets."
     )
 
-
-def test_inbox_list_serializer_renders_empty_page_after_catalog() -> None:
+    # an empty page past the end of a catalog
     assert serialize_inbox_list(
         {
             "targets": [],
@@ -211,9 +209,8 @@ def test_check_serializer_matches_text() -> None:
     )
 
 
-def test_check_serializer_renders_agent_sender_kind_separately_from_content_type() -> (
-    None
-):
+def test_check_serializer_renders_sender_kind() -> None:
+    # an agent sender kind replaces the content type
     result = {
         "messages": [message_payload(sender_kind="agent", message_type="text")],
         "referenced_messages": [],
@@ -225,8 +222,7 @@ def test_check_serializer_renders_agent_sender_kind_separately_from_content_type
     assert "type=agent" in output
     assert "type=text" not in output
 
-
-def test_check_serializer_renders_unknown_sender_kind() -> None:
+    # an unrecognised sender kind is passed through
     result = {
         "messages": [message_payload(sender_kind="unknown")],
         "referenced_messages": [],
@@ -328,7 +324,8 @@ def test_only_message_check_appends_system_message_suffixes() -> None:
     assert handoff_body in read
 
 
-def test_check_serializer_renders_provider_username_as_sender() -> None:
+def test_check_serializer_renders_sender_and_time_fallbacks() -> None:
+    # a provider username is preferred for the sender
     result = {
         "messages": [message_payload(sender_name="test-user")],
         "referenced_messages": [],
@@ -338,8 +335,7 @@ def test_check_serializer_renders_provider_username_as_sender() -> None:
 
     assert "@sender-id(test-user): message body" in serialize_check(result)
 
-
-def test_check_serializer_falls_back_to_sender_id() -> None:
+    # the sender id is used when no username is known
     result = {
         "messages": [message_payload(sender_name=None)],
         "referenced_messages": [],
@@ -349,8 +345,7 @@ def test_check_serializer_falls_back_to_sender_id() -> None:
 
     assert "@sender-id: message body" in serialize_check(result)
 
-
-def test_check_serializer_preserves_zero_provider_timestamp() -> None:
+    # a zero provider timestamp is kept, not treated as missing
     result = {
         "messages": [
             message_payload(provider_time_ms=0, received_at_ms=1_700_000_000_000)
@@ -454,7 +449,8 @@ def test_thread_unfollow_requires_an_explicit_target() -> None:
     assert args.target == "#work:parent123"
 
 
-def test_message_send_accepts_ordered_repeatable_attachments() -> None:
+def test_message_send_parser_accepts_attachments_and_draft_mode() -> None:
+    # attachments keep their order and repeat
     args = build_parser().parse_args(
         (
             "message",
@@ -471,8 +467,7 @@ def test_message_send_accepts_ordered_repeatable_attachments() -> None:
     assert args.attachment == ["first.txt", "second.png"]
     assert args.send_draft is False
 
-
-def test_message_send_accepts_active_draft_mode() -> None:
+    # draft mode is accepted without a body
     parser = build_parser()
     args = parser.parse_args(
         ("message", "send", "--send-draft", "--target", "#work:parent123")
@@ -500,7 +495,8 @@ def test_message_send_accepts_active_draft_mode() -> None:
         )
 
 
-def test_read_serializer_includes_positioning_and_reply_target() -> None:
+def test_read_serializer() -> None:
+    # positioning and reply target are rendered
     result = {
         "messages": [message_payload()],
         "referenced_messages": [],
@@ -516,8 +512,7 @@ def test_read_serializer_includes_positioning_and_reply_target() -> None:
         "type=human replyTarget=#work:parent123] @sender-id(sender): message body"
     )
 
-
-def test_read_serializer_handles_empty_optional_thread_metadata() -> None:
+    # absent thread metadata renders as empty
     result = {
         "messages": [message_payload(provider_thread_id=None)],
         "referenced_messages": [],

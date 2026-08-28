@@ -179,27 +179,23 @@ network_access = false
     assert config_path.read_text(encoding="utf-8") == original
 
 
-def test_v2_configuration_requires_non_empty_lang(tmp_path: Path) -> None:
+def test_v2_lang_is_kept_verbatim_and_must_be_non_empty(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        'version = "2"\n\n[node]\nlang = ""\n',
-        encoding="utf-8",
-    )
 
-    with pytest.raises(ConfigurationError, match="node.lang must be non-empty text"):
-        load_node_configuration(config_path)
-
-
-def test_v2_configuration_preserves_unknown_lang(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
+    # a lang the node does not ship is still preserved
     config_path.write_text(
         'version = "2"\n\n[node]\nlang = "ja"\n',
         encoding="utf-8",
     )
+    assert load_node_configuration(config_path).lang == "ja"
 
-    configuration = load_node_configuration(config_path)
-
-    assert configuration.lang == "ja"
+    # an empty lang is refused
+    config_path.write_text(
+        'version = "2"\n\n[node]\nlang = ""\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="node.lang must be non-empty text"):
+        load_node_configuration(config_path)
 
 
 def test_future_configuration_version_is_rejected_without_rewrite(
@@ -235,82 +231,31 @@ def test_failed_atomic_replace_preserves_legacy_configuration(
     assert not tuple(tmp_path.glob(".config.toml.*.tmp"))
 
 
-def test_v2_rejects_duplicate_agent_identity() -> None:
+def test_v2_rejects_invalid_agent_tables() -> None:
+    def agent(**overrides: object) -> dict[str, object]:
+        return {
+            "id": LEGACY_AGENT_ID,
+            "name": "default",
+            "channel": {"kind": "telegram"},
+            "runtime": {"kind": "codex"},
+        } | overrides
+
+    def parse(*agents: dict[str, object]) -> None:
+        config_module._parse_v2_configuration({"version": "2", "agent": list(agents)})
+
+    # agent ids must be unique
     with pytest.raises(ConfigurationError, match="agent.id values must be unique"):
-        config_module._parse_v2_configuration(
-            {
-                "version": "2",
-                "agent": [
-                    {
-                        "id": LEGACY_AGENT_ID,
-                        "name": "first",
-                        "channel": {"kind": "telegram"},
-                        "runtime": {"kind": "codex"},
-                    },
-                    {
-                        "id": LEGACY_AGENT_ID,
-                        "name": "second",
-                        "channel": {"kind": "telegram"},
-                        "runtime": {"kind": "codex"},
-                    },
-                ],
-            }
-        )
+        parse(agent(name="first"), agent(name="second"))
 
-
-def test_v2_rejects_duplicate_agent_names() -> None:
+    # agent names must be unique
     with pytest.raises(ConfigurationError, match="agent.name values must be unique"):
-        config_module._parse_v2_configuration(
-            {
-                "version": "2",
-                "agent": [
-                    {
-                        "id": LEGACY_AGENT_ID,
-                        "name": "same-name",
-                        "channel": {"kind": "telegram"},
-                        "runtime": {"kind": "codex"},
-                    },
-                    {
-                        "id": FALLBACK_AGENT_ID,
-                        "name": "same-name",
-                        "channel": {"kind": "telegram"},
-                        "runtime": {"kind": "codex"},
-                    },
-                ],
-            }
-        )
+        parse(agent(), agent(id=FALLBACK_AGENT_ID))
 
-
-def test_v2_rejects_non_uuid7_agent_id() -> None:
+    # an agent id must be a canonical UUIDv7
     with pytest.raises(ConfigurationError, match="agent.id must be a canonical UUIDv7"):
-        config_module._parse_v2_configuration(
-            {
-                "version": "2",
-                "agent": [
-                    {
-                        "id": "00000000-0000-4000-8000-000000000000",
-                        "name": "default",
-                        "channel": {"kind": "telegram"},
-                        "runtime": {"kind": "codex"},
-                    }
-                ],
-            }
-        )
+        parse(agent(id="00000000-0000-4000-8000-000000000000"))
 
-
-@pytest.mark.parametrize("value", ["bad-name", "", "1INVALID"])
-def test_v2_rejects_invalid_environment_names(value: str) -> None:
-    with pytest.raises(ConfigurationError, match="agent.channel.token_env"):
-        config_module._parse_v2_configuration(
-            {
-                "version": "2",
-                "agent": [
-                    {
-                        "id": LEGACY_AGENT_ID,
-                        "name": "default",
-                        "channel": {"kind": "telegram", "token_env": value},
-                        "runtime": {"kind": "codex"},
-                    }
-                ],
-            }
-        )
+    # environment names must be valid identifiers
+    for value in ("bad-name", "", "1INVALID"):
+        with pytest.raises(ConfigurationError, match="agent.channel.token_env"):
+            parse(agent(channel={"kind": "telegram", "token_env": value}))

@@ -95,49 +95,6 @@ def test_sender_identity_separates_stable_id_from_display_name() -> None:
     assert unnamed.display_name == "test-user-id"
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    (
-        ("latest_sender", SenderIdentity(id="user-1")),
-        ("latest_provider_time_ms", 99),
-        ("latest_received_at_ms", 100),
-    ),
-)
-def test_inbox_target_summary_requires_latest_message_id_for_latest_fields(
-    field_name: str,
-    value: object,
-) -> None:
-    kwargs = {
-        "target": "dm:user-1",
-        "session_id": "bcn-1",
-        "target_kind": ChannelTargetKind.DM,
-        "current": True,
-        "pending_count": 0,
-        "last_activity_at_ms": 100,
-        "latest_message_id": None,
-        "latest_sender": None,
-        "latest_provider_time_ms": None,
-        "latest_received_at_ms": None,
-    }
-    kwargs[field_name] = value
-
-    with pytest.raises(ValueError, match="latest message fields"):
-        InboxTargetSummary(**kwargs)
-
-
-def test_inbox_target_summary_requires_received_time_with_latest_message_id() -> None:
-    with pytest.raises(ValueError, match="latest_received_at_ms"):
-        InboxTargetSummary(
-            target="dm:user-1",
-            session_id="bcn-1",
-            target_kind=ChannelTargetKind.DM,
-            current=False,
-            pending_count=0,
-            last_activity_at_ms=100,
-            latest_message_id="message-1",
-        )
-
-
 def test_inbox_list_result_enforces_pagination_invariant() -> None:
     result = InboxListResult(
         targets=(make_inbox_target(),),

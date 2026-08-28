@@ -687,9 +687,8 @@ async def test_codex_runtime_reports_background_job(
 
 
 @pytest.mark.asyncio
-async def test_jsonl_supervisor_classifies_invalid_json_and_nonzero_exit(
-    tmp_path: Path,
-) -> None:
+async def test_jsonl_supervisor_contract(tmp_path: Path) -> None:
+    # invalid JSON and a nonzero exit are classified
     invalid = JsonlProcessSupervisor(
         python_process(
             """
@@ -724,11 +723,7 @@ sys.exit(7)
     assert str(exited.fatal_error).endswith(": fatal app-server detail")
     await exited.stop(timeout=2)
 
-
-@pytest.mark.asyncio
-async def test_jsonl_supervisor_timeout_cancellation_and_restart(
-    tmp_path: Path,
-) -> None:
+    # timeout, cancellation and restart are handled
     supervisor = JsonlProcessSupervisor(
         python_process(
             """
@@ -755,9 +750,7 @@ for line in sys.stdin:
     await supervisor.stop(timeout=2)
     assert supervisor.state is JsonlProcessState.STOPPED
 
-
-@pytest.mark.asyncio
-async def test_jsonl_supervisor_routes_only_consumed_notifications() -> None:
+    # only consumed notifications are routed
     routed: list[dict[str, object]] = []
 
     def route_notification(message: dict[str, object]) -> bool:
@@ -784,9 +777,7 @@ async def test_jsonl_supervisor_routes_only_consumed_notifications() -> None:
     assert await supervisor.receive(timeout=0.1) == retained
     assert await supervisor.receive(timeout=0.1) == provider_request
 
-
-@pytest.mark.asyncio
-async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> None:
+    # responses stay out of the notification router
     def reject_notification(_: dict[str, object]) -> bool:
         raise AssertionError("response reached the notification router")
 
@@ -800,9 +791,7 @@ async def test_jsonl_supervisor_keeps_responses_out_of_notification_router() -> 
 
     assert await supervisor.receive(timeout=0.1) == response
 
-
-@pytest.mark.asyncio
-async def test_jsonl_supervisor_fails_pending_requests_when_router_raises() -> None:
+    # a raising router fails the pending requests
     def reject_notification(_: dict[str, object]) -> bool:
         raise ValueError("invalid notification")
 

@@ -258,7 +258,8 @@ async def test_lark_channel_send_rechecks_transport_after_send_lock(
     assert calls == 0
 
 
-def test_lark_frame_round_trip_skips_unknown_fields() -> None:
+def test_lark_frame_codec() -> None:
+    # unknown fields survive a round trip
     frame = Frame(
         SeqID=7,
         LogID=8,
@@ -276,8 +277,7 @@ def test_lark_frame_round_trip_skips_unknown_fields() -> None:
 
     assert decoded == frame
 
-
-def test_lark_frame_golden_fixture() -> None:
+    # a recorded provider frame decodes as captured
     fixture = Path(__file__).with_name("fixtures") / "lark_frame.hex"
 
     frame = decode_frame(bytes.fromhex(fixture.read_text()))
@@ -288,8 +288,7 @@ def test_lark_frame_golden_fixture() -> None:
     assert frame.method == 0
     assert frame.headers == [Header(key="type", value="ping")]
 
-
-def test_lark_frame_accepts_empty_optional_header_values() -> None:
+    # empty optional header values are accepted
     frame = Frame(
         SeqID=1,
         LogID=2,
@@ -612,7 +611,8 @@ def test_lark_parent_message_normalizes_message_api_shape() -> None:
     assert sender["sender_id"] == {"open_id": "ou_sender"}
 
 
-def test_lark_outbound_markdown_uses_post_locale_map() -> None:
+def test_lark_outbound_markdown() -> None:
+    # a post locale map carries the rendered markdown
     encoded = markdown_post_content("hello **世界**")
 
     assert json.loads(encoded) == {
@@ -622,8 +622,7 @@ def test_lark_outbound_markdown_uses_post_locale_map() -> None:
         }
     }
 
-
-def test_lark_outbound_markdown_splits_by_codepoints_and_preserves_fences() -> None:
+    # splitting counts codepoints and preserves fences
     content = "intro\n\n```python\n" + ("🙂" * 40) + "\n```\nend"
 
     parts = split_markdown(content, limit=30)
@@ -691,7 +690,8 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     assert channel._typing_queue.empty()
 
 
-def test_lark_approval_card_content_contains_bounded_action_values() -> None:
+def test_lark_approval_card_contract() -> None:
+    # card content keeps action values bounded
     request = ChannelApprovalRequest(
         approval=ApprovalRequest(
             request_id="approval-1",
@@ -760,8 +760,7 @@ def test_lark_approval_card_content_contains_bounded_action_values() -> None:
         "content": "Approved",
     }
 
-
-def test_lark_card_callback_parser_validates_card_button_shape() -> None:
+    # the callback parser validates the button shape
     payload = {
         "header": {"event_id": "event-1"},
         "event": {
