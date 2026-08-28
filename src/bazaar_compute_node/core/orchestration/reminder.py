@@ -29,6 +29,7 @@ from ..timerwheel import (
 )
 
 _WALL_CLOCK_RECHECK_MS = 60_000
+_CYCLE_RETRY_MS = 5_000
 _DUE_BATCH_SIZE = 100
 
 
@@ -124,8 +125,8 @@ class ReminderScheduler(IAsyncLifecycle):
         await self._failure.wait()
 
     async def _run(self) -> None:
-        try:
-            while not self._stopping:
+        while not self._stopping:
+            try:
                 await self._materialize_due_batches()
                 if self._stopping:
                     return
@@ -149,11 +150,18 @@ class ReminderScheduler(IAsyncLifecycle):
                     _WALL_CLOCK_RECHECK_MS,
                 )
                 await self._wait_for_frontier(delay_ms)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.exception("reminder scheduler failed")
-            raise
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception("reminder cycle failed; retrying")
+                try:
+                    await asyncio.wait_for(
+                        self._poke.wait(),
+                        _CYCLE_RETRY_MS / 1_000,
+                    )
+                except TimeoutError:
+                    pass
+                self._poke.clear()
 
     async def _wait_for_frontier(self, delay_ms: int) -> None:
         timer = self._timer_wheel.create(delay_ms)

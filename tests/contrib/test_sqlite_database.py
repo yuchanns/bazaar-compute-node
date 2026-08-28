@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -2147,3 +2148,41 @@ async def test_sqlite_scheduler_fires_reminder_anchored_to_a_system_message() ->
     finally:
         await wheel.close()
         await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_scheduler_survives_a_failed_cycle() -> None:
+    """A storage failure inside the scheduler loop retries instead of stopping it."""
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    wheel = TimerWheel()
+    await wheel.start()
+    scheduler = ReminderScheduler(
+        storage=cast(IStorage, database),
+        timer_wheel=wheel,
+        concurrency=SessionLockRegistry(),
+        publish_wake=_never_published,
+        clock=lambda: 1_000,
+    )
+    try:
+        await scheduler.start(timeout=2)
+        await database.stop(timeout=2)
+        scheduler.poke()
+
+        async def until_cycle_failed() -> None:
+            while scheduler._task is not None and not scheduler._task.done():
+                await asyncio.sleep(0)
+                return
+
+        await asyncio.wait_for(until_cycle_failed(), timeout=2)
+        assert scheduler._task is not None
+        assert scheduler._task.done() is False
+    finally:
+        await scheduler.stop(timeout=2)
+        await wheel.close()
+
+
+async def _never_published(agent_id: str, message: Message) -> bool:
+    del agent_id, message
+    return True
