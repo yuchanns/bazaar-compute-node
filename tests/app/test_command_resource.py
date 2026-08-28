@@ -45,7 +45,7 @@ def make_configuration() -> NodeConfiguration:
                 id=AGENT_ID,
                 name="Test Agent",
                 channel=ChannelConfiguration(kind="test"),
-                runtime=RuntimeConfiguration(kind="test"),
+                runtimes=(RuntimeConfiguration(kind="test"),),
             ),
         ),
     )

@@ -103,13 +103,12 @@ class _StaticRegistry(AdapterRegistry):
         self,
         *,
         channel: str,
-        runtime: str,
-        storage: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel, runtime, storage
+        del channel
         return AgentAdapterFactories(
             channel=StaticChannelBuilder(self._channel),
-            runtime=self._runtime,
+            runtimes={kind: self._runtime for kind in runtimes},
         )
 
 
@@ -461,6 +460,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
         bcn_session_id="bcn-missing-connection",
         channel_session_id="channel-missing-connection",
         runtime="codex",
+        runtime_index=0,
         workspace_id="workspace-missing-connection",
         provider_thread_id="thread-missing-connection",
         created_at_ms=now_ms,
@@ -508,6 +508,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         bcn_session_id="bcn-without-active-turn",
         channel_session_id="channel-without-active-turn",
         runtime="codex",
+        runtime_index=0,
         workspace_id="workspace-without-active-turn",
         provider_thread_id="thread-without-active-turn",
         created_at_ms=now_ms,
@@ -565,6 +566,7 @@ async def test_codex_runtime_stops_session(
         bcn_session_id="bcn-queued-stop",
         channel_session_id="channel-queued-stop",
         runtime="codex",
+        runtime_index=0,
         workspace_id="workspace-queued-stop",
         provider_thread_id="thread-queued-stop",
         created_at_ms=now_ms,
@@ -622,6 +624,7 @@ async def test_windows_codex_runtime_assumes_background_job(
         bcn_session_id="bcn-windows-background-job",
         channel_session_id="channel-windows-background-job",
         runtime="codex",
+        runtime_index=0,
         workspace_id="workspace-windows-background-job",
         provider_thread_id=None,
         created_at_ms=now_ms,
@@ -666,6 +669,7 @@ async def test_codex_runtime_reports_background_job(
         bcn_session_id="bcn-background-job",
         channel_session_id="channel-background-job",
         runtime="codex",
+        runtime_index=0,
         workspace_id="workspace-background-job",
         provider_thread_id="thread-background-job",
         created_at_ms=now_ms,
@@ -979,12 +983,14 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
                     id=agent_id,
                     name=agent_name,
                     channel=ChannelConfiguration(kind="test"),
-                    runtime=RuntimeConfiguration(
-                        kind="codex",
-                        model=TEST_MODEL,
-                        effort=TEST_EFFORT,
-                        idle_timeout_seconds=0.25,
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="codex",
+                            model=TEST_MODEL,
+                            effort=TEST_EFFORT,
+                        ),
                     ),
+                    idle_timeout_seconds=0.25,
                 ),
             ),
         ),
@@ -1057,8 +1063,8 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         assert terminal_event.event_name == "codex.turn.completed", terminal_event
 
         agent = node.agents[agent_id]
-        assert isinstance(agent.runtime, Runtime)
-        runtime = agent.runtime
+        assert isinstance(agent.runtimes[0], Runtime)
+        runtime = agent.runtimes[0]
         runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
         assert runtime_session is not None
         assert await runtime.has_background_job(runtime_session, timeout=30)
@@ -1111,10 +1117,12 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
                     id=agent_id,
                     name=agent_name,
                     channel=ChannelConfiguration(kind="test"),
-                    runtime=RuntimeConfiguration(
-                        kind="codex",
-                        model=TEST_MODEL,
-                        effort=TEST_EFFORT,
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="codex",
+                            model=TEST_MODEL,
+                            effort=TEST_EFFORT,
+                        ),
                     ),
                 ),
             ),
@@ -1211,6 +1219,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
         bcn_session_id=f"bcn-context-{uuid7()}",
         channel_session_id=f"channel-context-{uuid7()}",
         runtime="codex",
+        runtime_index=0,
         workspace_id=agent_id,
         created_at_ms=now_ms,
         updated_at_ms=now_ms,
@@ -1331,6 +1340,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             bcn_session_id=f"bcn-first-{uuid7()}",
             channel_session_id=f"channel-first-{uuid7()}",
             runtime="codex",
+            runtime_index=0,
             workspace_id=agent_id,
             created_at_ms=now,
             updated_at_ms=now,
@@ -1340,6 +1350,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
             bcn_session_id=f"bcn-second-{uuid7()}",
             channel_session_id=f"channel-second-{uuid7()}",
             runtime="codex",
+            runtime_index=0,
             workspace_id=agent_id,
             created_at_ms=now,
             updated_at_ms=now,

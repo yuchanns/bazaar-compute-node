@@ -29,7 +29,7 @@ class AgentStartupResult:
     agent_id: str
     name: str
     channel: str
-    runtime: str
+    runtimes: tuple[str, ...]
     status: str
     error_type: str | None = None
     error: str | None = None
@@ -40,13 +40,17 @@ class AgentStartupResult:
             "name": self.name,
             "status": self.status,
             "channel": self.channel,
-            "runtime": self.runtime,
+            "runtimes": self.runtimes,
         }
         if self.error_type is not None:
             record["error_type"] = self.error_type
         if self.error is not None:
             record["error"] = self.error
         return record
+
+
+def _runtime_kinds(configuration: AgentConfiguration) -> tuple[str, ...]:
+    return tuple(runtime.kind for runtime in configuration.runtimes)
 
 
 class NodeApplication:
@@ -149,8 +153,7 @@ class NodeApplication:
                 factories = await asyncio.to_thread(
                     self._registry.load_agent,
                     channel=configuration.channel.kind,
-                    runtime=configuration.runtime.kind,
-                    storage=self.configuration.storage,
+                    runtimes=_runtime_kinds(configuration),
                 )
                 storage_scope = self.storage.scope(configuration.id, configuration.name)
                 application = AgentApplication(
@@ -177,7 +180,7 @@ class NodeApplication:
                 agent_id=configuration.id,
                 name=configuration.name,
                 channel=configuration.channel.kind,
-                runtime=configuration.runtime.kind,
+                runtimes=_runtime_kinds(configuration),
                 status="failed",
                 error_type=type(error).__name__,
                 error=_safe_error(error),
@@ -191,7 +194,7 @@ class NodeApplication:
             agent_id=configuration.id,
             name=configuration.name,
             channel=configuration.channel.kind,
-            runtime=configuration.runtime.kind,
+            runtimes=_runtime_kinds(configuration),
             status="started",
         )
         self.agent_startup_results[configuration.id] = result
@@ -394,7 +397,7 @@ class NodeApplication:
                     "name": configuration.name,
                     "status": "pending",
                     "channel": configuration.channel.kind,
-                    "runtime": configuration.runtime.kind,
+                    "runtimes": _runtime_kinds(configuration),
                 }
             )
         return {

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
-from bazaar_compute_node.app.command import ControlHandler
 from bazaar_compute_node.core.observability import IAudit
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 from bazaar_compute_node.core.storage import IStorage
 
 from .audit import RecordingAudit
 from .channel import StaticChannelBuilder
-from .control import TestControl
 from .reminder_storage import MemoryStorage
 from .runtime import TestRuntime
 
@@ -41,14 +39,9 @@ def create_audit() -> IAudit:
     return RecordingAudit()
 
 
-def create_control(context: Mapping[str, object]) -> ControlHandler:
-    return TestControl(context).handle
-
-
 __all__ = [
     "builder",
     "create_audit",
-    "create_control",
     "create_runtime",
     "create_storage",
 ]

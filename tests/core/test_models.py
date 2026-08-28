@@ -50,6 +50,7 @@ def make_runtime_session() -> RuntimeSession:
         bcn_session_id="bcn-1",
         channel_session_id="channel-1",
         runtime="test",
+        runtime_index=0,
         workspace_id="workspace-1",
         created_at_ms=1,
         updated_at_ms=1,

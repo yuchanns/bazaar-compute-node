@@ -77,7 +77,7 @@ def start_test_process(
     config_path = data_dir / "test_config.toml"
     config_path.write_text(
         f"""
-version = "2"
+version = "3"
 
 [node]
 storage = "test"
@@ -90,7 +90,7 @@ name = "test-agent"
 [agent.channel]
 kind = "test"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "test"
 """.lstrip(),
         encoding="utf-8",

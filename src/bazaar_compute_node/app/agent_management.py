@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import tomllib
 from dataclasses import replace
 from types import MappingProxyType
@@ -84,24 +85,37 @@ def run_agent_command(
         for agent in configuration.agents:
             print(
                 f"id={agent.id} name={agent.name} "
-                f"channel={agent.channel.kind} runtime={agent.runtime.kind}",
+                f"channel={agent.channel.kind} runtime={_runtime_kinds(agent)}",
                 flush=True,
             )
         return 0
 
     if command == "add":
+        agent_values: dict[str, object] = {}
         channel_options: dict[str, object] = {}
         runtime_values: dict[str, object] = {}
+        runtime_env: dict[str, str] = {}
         seen: set[tuple[str, str]] = set()
         for scope, key, value in args.agent_options:
+            # runtime.env accumulates one name per --set; a repeated name is
+            # simply overwritten, the same as a hand-edited config.toml would be
+            if (scope, key) == ("runtime", "env"):
+                runtime_env.update(value)
+                continue
             identity = (scope, key)
             if identity in seen:
                 parser.error(f"duplicate --set option: {scope}.{key}")
             seen.add(identity)
-            if scope == "channel":
+            if scope == "agent":
+                agent_values[key] = value
+            elif scope == "channel":
                 channel_options[key] = value
             else:
                 runtime_values[key] = value
+
+        idle_timeout = agent_values.pop("idle_timeout", 0)
+        if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, int | float):
+            parser.error("agent.idle_timeout must be a number")
 
         model = runtime_values.pop("model", None)
         effort = runtime_values.pop("effort", None)
@@ -119,16 +133,6 @@ def run_agent_command(
         network_access = runtime_values.pop("network_access", True)
         if not isinstance(network_access, bool):
             parser.error("runtime.network_access must be a boolean")
-        idle_timeout = runtime_values.pop("idle_timeout", 0)
-        if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, int | float):
-            parser.error("runtime.idle_timeout must be a number")
-        raw_env_include = runtime_values.pop("env_include", [])
-        if not isinstance(raw_env_include, list) or any(
-            not isinstance(item, str) or not item for item in raw_env_include
-        ):
-            parser.error("runtime.env_include must be an array of non-empty text")
-        if len(set(raw_env_include)) != len(raw_env_include):
-            parser.error("runtime.env_include cannot contain duplicates")
         if model is not None and not isinstance(model, str):
             parser.error("runtime.model must be text")
         if effort is not None and not isinstance(effort, str):
@@ -142,16 +146,18 @@ def run_agent_command(
                     kind=args.channel,
                     options=MappingProxyType(channel_options),
                 ),
-                runtime=RuntimeConfiguration(
-                    kind=args.runtime,
-                    model=model,
-                    effort=effort,
-                    sandbox_mode=sandbox_mode,
-                    network_access=network_access,
-                    idle_timeout_seconds=idle_timeout,
-                    env_include=tuple(raw_env_include),
-                    options=MappingProxyType(runtime_values),
+                runtimes=(
+                    RuntimeConfiguration(
+                        kind=args.runtime,
+                        model=model,
+                        effort=effort,
+                        sandbox_mode=sandbox_mode,
+                        network_access=network_access,
+                        env=MappingProxyType(runtime_env),
+                        options=MappingProxyType(runtime_values),
+                    ),
                 ),
+                idle_timeout_seconds=idle_timeout,
             )
             updated = replace(
                 configuration,
@@ -162,7 +168,7 @@ def run_agent_command(
             parser.error(str(error))
         print(
             f"Agent added id={agent.id} name={agent.name} "
-            f"channel={agent.channel.kind} runtime={agent.runtime.kind}",
+            f"channel={agent.channel.kind} runtime={_runtime_kinds(agent)}",
             flush=True,
         )
         print("Run `bcn restart` to apply.", flush=True)
@@ -204,23 +210,60 @@ def _agent_option(value: str) -> tuple[str, str, object]:
     if path != path.strip():
         raise argparse.ArgumentTypeError("--set option path cannot contain whitespace")
     scope, dot, key = path.partition(".")
-    if not dot or scope not in {"channel", "runtime"} or not key:
+    if not dot or scope not in {"agent", "channel", "runtime"} or not key:
         raise argparse.ArgumentTypeError(
-            "--set path must start with channel. or runtime."
+            "--set path must start with agent., channel. or runtime."
         )
     if key != key.strip():
         raise argparse.ArgumentTypeError(
             "--set option key cannot contain edge whitespace"
         )
-    if key == "kind":
+    if key == "kind" and scope != "agent":
         raise argparse.ArgumentTypeError(
             f"{scope}.kind must be provided with --{scope}"
         )
+    if scope == "runtime" and key == "env":
+        return scope, key, _env_pair(raw_value)
     try:
         parsed = tomllib.loads(f"value = {raw_value}")["value"]
     except tomllib.TOMLDecodeError:
         parsed = raw_value
+    if scope == "runtime" and key == "env_include":
+        return scope, "env", _env_from_deprecated_include(parsed)
     return scope, key, parsed
+
+
+def _env_pair(value: str) -> dict[str, str]:
+    name, separator, source = value.partition("=")
+    if not separator or not name or not source:
+        raise argparse.ArgumentTypeError(
+            "runtime.env must use <name>=<source>, for example "
+            "--set runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK"
+        )
+    return {name: source}
+
+
+def _env_from_deprecated_include(value: object) -> dict[str, str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise argparse.ArgumentTypeError(
+            "runtime.env_include must be an array of non-empty text"
+        )
+    if len(set(value)) != len(value):
+        raise argparse.ArgumentTypeError(
+            "runtime.env_include cannot contain duplicates"
+        )
+    print(
+        create_translator(None).text("cli.agent.env_include_deprecated"),
+        file=sys.stderr,
+        flush=True,
+    )
+    return {name: name for name in value}
+
+
+def _runtime_kinds(agent: AgentConfiguration) -> str:
+    return ",".join(runtime.kind for runtime in agent.runtimes)
 
 
 __all__ = ["build_agent_parser", "run_agent_command"]

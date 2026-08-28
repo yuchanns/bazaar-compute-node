@@ -20,7 +20,6 @@ from ..core.reminder import (
 from .command import CommandDispatcher as _MessageCommandDispatcher
 from .command import (
     CommandDispatchError,
-    ControlHandler,
     SessionBindingValidator,
     _CommandRequest,
     _parse_command_request,
@@ -185,13 +184,11 @@ class CommandDispatcher(_MessageCommandDispatcher):
         *,
         reminder_service: IReminderService,
         timeout_budget: TimeoutBudget,
-        control_handler: ControlHandler | None = None,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
         super().__init__(
             service,
             timeout_budget=timeout_budget,
-            control_handler=control_handler,
             session_binding_validator=session_binding_validator,
         )
         self._reminder_service = reminder_service

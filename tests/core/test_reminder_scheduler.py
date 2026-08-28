@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
 
@@ -31,6 +31,7 @@ from bazaar_compute_node.core.models import (
     SenderKind,
     SystemMessageKind,
 )
+from bazaar_compute_node.core.models.reminder_owner import OwnedReminder
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -105,6 +106,16 @@ def make_scheduled_reminder(
         created_at_ms=0,
         updated_at_ms=0,
     )
+
+
+def _recording_publish(
+    wakes: list[tuple[str, Message[InboundAttachment]]],
+) -> Callable[[str, Message[InboundAttachment]], Awaitable[bool]]:
+    async def publish(agent_id: str, message: Message[InboundAttachment]) -> bool:
+        wakes.append((agent_id, message))
+        return True
+
+    return publish
 
 
 async def start_scheduler(
@@ -256,7 +267,7 @@ async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> N
                     id=agent_id,
                     name="Failed Agent",
                     channel=ChannelConfiguration(kind="missing-channel"),
-                    runtime=RuntimeConfiguration(kind="missing-runtime"),
+                    runtimes=(RuntimeConfiguration(kind="missing-runtime"),),
                 ),
             ),
         ),
@@ -295,3 +306,88 @@ async def test_node_exits_when_shared_timer_driver_stops(tmp_path: Path) -> None
         assert node.ready is False
     finally:
         await node.stop()
+
+
+class _StorageRefusingOneReminder(MemoryStorage):
+    """Fail the durable fire of one Reminder the way a storage error would."""
+
+    def __init__(self, reminder_id: str) -> None:
+        super().__init__()
+        self._refused_reminder_id = reminder_id
+
+    async def materialize_owned_reminder_message(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+        system_message: Message[InboundAttachment],
+    ) -> Message[InboundAttachment] | None:
+        if reminder.reminder.reminder_id == self._refused_reminder_id:
+            raise RuntimeError("materialize failed")
+        return cast(
+            Message[InboundAttachment] | None,
+            await self._invoke(
+                None,
+                None,
+                "materialize_owned_reminder_message",
+                expected_revision,
+                reminder,
+                system_message,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> None:
+    storage = _StorageRefusingOneReminder(_REMINDER_B)
+    anchors = {
+        _SESSION_A: add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A),
+        _SESSION_B: add_session(storage, agent_id=_AGENT_B, session_id=_SESSION_B),
+    }
+    storage.reminders.update(
+        {
+            _REMINDER_A: make_scheduled_reminder(
+                _REMINDER_A,
+                session_id=_SESSION_A,
+                anchor_message_id=anchors[_SESSION_A],
+                next_fire_at_ms=50,
+            ),
+            _REMINDER_B: make_scheduled_reminder(
+                _REMINDER_B,
+                session_id=_SESSION_B,
+                anchor_message_id=anchors[_SESSION_B],
+                next_fire_at_ms=60,
+            ),
+        }
+    )
+    storage.cursors.update(
+        {
+            session_id: ConsumerCursor(
+                session_id=session_id,
+                delivered_through_seq=storage.messages[session_id][0].seq,
+            )
+            for session_id in anchors
+        }
+    )
+    wakes: list[tuple[str, Message[InboundAttachment]]] = []
+
+    timer_wheel = TimerWheel()
+    await timer_wheel.start()
+    scheduler = ReminderScheduler(
+        storage=cast(IStorage, storage),
+        timer_wheel=timer_wheel,
+        concurrency=SessionLockRegistry(),
+        publish_wake=_recording_publish(wakes),
+        clock=lambda: 100,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="materialize failed"):
+            await scheduler._materialize_due_batches()
+
+        # the first reminder already fired and its unread system message would
+        # never be woken again, so its wake has to survive the failed cycle
+        assert storage.reminders[_REMINDER_A].state is ReminderState.FIRED
+        assert [(agent_id, message.session_id) for agent_id, message in wakes] == [
+            (_AGENT_A, _SESSION_A)
+        ]
+    finally:
+        await timer_wheel.close()

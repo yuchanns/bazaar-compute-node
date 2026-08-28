@@ -30,8 +30,9 @@ from ..models import (
     SessionRuntimeSignal,
     StreamEvent,
 )
-from ..runtime import IRuntime, IRuntimeTurnStream, RuntimeSessionUnavailable
+from ..runtime import IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorageScope
+from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 
 
@@ -174,7 +175,7 @@ class SessionTurnCoordinator:
         *,
         agent_id: str,
         channel: IChannel,
-        runtime: IRuntime,
+        runtimes: RuntimePool,
         storage: IStorageScope,
         audit: SessionAuditRecorder,
         state_machine: SessionRuntimeStateMachine,
@@ -187,7 +188,7 @@ class SessionTurnCoordinator:
             raise ValueError("agent_id must be a non-empty string")
         self._agent_id = agent_id
         self._channel = channel
-        self._runtime = runtime
+        self._runtimes = runtimes
         self._storage = storage
         self._audit = audit
         self._state_machine = state_machine
@@ -318,7 +319,9 @@ class SessionTurnCoordinator:
                 metadata={"provider_method": "turn/start"},
             )
             try:
-                stream = await self._runtime.start_turn(
+                stream = await self._runtimes.get(
+                    context.runtime_session.runtime_index
+                ).start_turn(
                     context.runtime_session,
                     turn,
                     input_text,
@@ -468,7 +471,9 @@ class SessionTurnCoordinator:
         if not isinstance(input_text, str) or not input_text:
             raise ValueError("turn input_text must be a non-empty string")
         try:
-            accepted = await self._runtime.steer_turn(
+            accepted = await self._runtimes.get(
+                context.runtime_session.runtime_index
+            ).steer_turn(
                 context.runtime_session,
                 turn,
                 input_text,

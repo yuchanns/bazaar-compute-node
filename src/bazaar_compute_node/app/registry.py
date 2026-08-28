@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import EntryPoint, entry_points
@@ -10,18 +10,15 @@ from ..core.channel import IChannelBuilder
 from ..core.observability import IAudit
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage
-from .command import ControlHandler
 
 CHANNEL_ENTRY_POINT_GROUP = "bazaar_compute_node.channels"
 RUNTIME_ENTRY_POINT_GROUP = "bazaar_compute_node.runtimes"
 STORAGE_ENTRY_POINT_GROUP = "bazaar_compute_node.storages"
 AUDIT_ENTRY_POINT_GROUP = "bazaar_compute_node.audits"
-CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[], IAudit]
-ControlFactory = Callable[[Mapping[str, object]], ControlHandler]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,8 +30,7 @@ class SharedAdapterFactories:
 @dataclass(frozen=True, slots=True)
 class AgentAdapterFactories:
     channel: IChannelBuilder
-    runtime: RuntimeFactory
-    control: ControlFactory | None = None
+    runtimes: Mapping[str, RuntimeFactory]
 
 
 class ProviderLoadError(RuntimeError):
@@ -66,22 +62,17 @@ class AdapterRegistry:
         self,
         *,
         channel: str,
-        runtime: str,
-        storage: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
         return AgentAdapterFactories(
             channel=self._load_channel_builder(channel),
-            runtime=cast(
-                RuntimeFactory,
-                self._load(RUNTIME_ENTRY_POINT_GROUP, runtime),
-            ),
-            control=cast(
-                ControlFactory | None,
-                self._load_optional(
-                    CONTROL_ENTRY_POINT_GROUP,
-                    f"{channel}+{runtime}+{storage}",
-                ),
-            ),
+            runtimes={
+                kind: cast(
+                    RuntimeFactory,
+                    self._load(RUNTIME_ENTRY_POINT_GROUP, kind),
+                )
+                for kind in dict.fromkeys(runtimes)
+            },
         )
 
     def _load_channel_builder(self, name: str) -> IChannelBuilder:
@@ -119,22 +110,6 @@ class AdapterRegistry:
             ) from error
         if not callable(factory):
             raise ProviderLoadError(f"provider '{name}' from '{group}' is not callable")
-        return factory
-
-    def _load_optional(self, group: str, name: str) -> Any | None:
-        entry_point = self._find(group, name)
-        if entry_point is None:
-            return None
-        try:
-            factory = entry_point.load()
-        except Exception as error:
-            raise ProviderLoadError(
-                f"failed to load optional provider '{name}' from '{group}': {error}"
-            ) from error
-        if not callable(factory):
-            raise ProviderLoadError(
-                f"optional provider '{name}' from '{group}' is not callable"
-            )
         return factory
 
     @staticmethod

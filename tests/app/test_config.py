@@ -17,16 +17,16 @@ LEGACY_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 FALLBACK_AGENT_ID = "0198d4e7-2a28-7448-8228-388be1bf70b7"
 
 
-def test_empty_legacy_config_is_upgraded_to_zero_agent_v2(tmp_path: Path) -> None:
+def test_empty_legacy_config_is_upgraded_to_zero_agent_v3(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     configuration = load_node_configuration(config_path)
 
-    assert configuration.version == "2"
+    assert configuration.version == "3"
     assert configuration.agents == ()
     assert configuration.lang is None
     assert tomllib.loads(config_path.read_text(encoding="utf-8")) == {
-        "version": "2",
+        "version": "3",
         "node": {"storage": "sqlite", "audit": "logging"},
     }
     if os.name != "nt":
@@ -90,19 +90,35 @@ include = ["CUSTOM_CA"]
         "secret_env": "WECOM_SECRET",
         "websocket_url": "wss://wecom.example.test",
     }
-    assert agent.runtime.kind == "codex"
-    assert agent.runtime.model == "gpt-5.6-luna"
-    assert agent.runtime.effort == "max"
-    assert agent.runtime.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
-    assert agent.runtime.network_access is False
-    assert agent.runtime.idle_timeout_seconds == 12.5
-    assert agent.runtime.env_include == ("CUSTOM_CA",)
-    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert written["version"] == "2"
+    assert len(agent.runtimes) == 1
+    runtime = agent.runtimes[0]
+    assert runtime.kind == "codex"
+    assert runtime.model == "gpt-5.6-luna"
+    assert runtime.effort == "max"
+    assert runtime.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
+    assert runtime.network_access is False
+    # the v1 runtime idle timeout is lifted onto the agent by the v2 -> v3 step
+    assert agent.idle_timeout_seconds == 12.5
+    # a v1 include list becomes a same-name v3 mapping in one chained upgrade
+    assert runtime.env == {"CUSTOM_CA": "CUSTOM_CA"}
+    text = config_path.read_text(encoding="utf-8")
+    assert '[agent.runtime.env]\nCUSTOM_CA = "CUSTOM_CA"' in text
+    written = tomllib.loads(text)
+    assert written["version"] == "3"
     assert written["agent"][0]["id"] == LEGACY_AGENT_ID
     assert written["agent"][0]["name"] == "default"
+    assert written["agent"][0]["idle_timeout"] == 12.5
     assert written["agent"][0]["channel"]["kind"] == "wecom"
-    assert written["agent"][0]["runtime"]["kind"] == "codex"
+    assert written["agent"][0]["runtime"] == [
+        {
+            "kind": "codex",
+            "model": "gpt-5.6-luna",
+            "effort": "max",
+            "sandbox_mode": "danger-full-access",
+            "network_access": False,
+            "env": {"CUSTOM_CA": "CUSTOM_CA"},
+        }
+    ]
 
 
 def test_telegram_legacy_config_uses_uuid7_and_default_token_env(
@@ -128,7 +144,9 @@ def test_telegram_legacy_config_uses_uuid7_and_default_token_env(
     assert agent.channel.options == {"token_env": "BCN_TELEGRAM_BOT_TOKEN"}
 
 
-def test_v2_configuration_round_trips_multiple_agents(tmp_path: Path) -> None:
+def test_v2_configuration_is_migrated_to_a_single_element_runtime_array(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -137,7 +155,6 @@ version = "2"
 [node]
 storage = "sqlite"
 audit = "logging"
-lang = "zh-CN"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -150,7 +167,70 @@ token_env = "TELEGRAM_TOKEN"
 [agent.runtime]
 kind = "codex"
 model = "gpt-5.6-luna"
+env_include = ["CODEX_HOME", "CUSTOM_CA"]
+env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
+provider_option = "kept"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration(config_path)
+
+    assert configuration.version == "3"
+    (agent,) = configuration.agents
+    (runtime,) = agent.runtimes
+    assert runtime.kind == "codex"
+    assert runtime.model == "gpt-5.6-luna"
+    # both spellings merge, and the newer env wins the name they share
+    assert runtime.env == {
+        "CODEX_HOME": "BCN_CODEX_HOME_WORK",
+        "CUSTOM_CA": "CUSTOM_CA",
+    }
+    # non-standard runtime keys still reach the provider options untouched
+    assert runtime.options == {"provider_option": "kept"}
+    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert written["version"] == "3"
+    assert written["agent"][0]["runtime"][0]["env"] == {
+        "CODEX_HOME": "BCN_CODEX_HOME_WORK",
+        "CUSTOM_CA": "CUSTOM_CA",
+    }
+
+
+def test_v3_configuration_round_trips_multiple_runtimes(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "3"
+
+[node]
+storage = "sqlite"
+audit = "logging"
+lang = "zh-CN"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "CloudStrife"
 idle_timeout = 60
+
+[agent.channel]
+kind = "telegram"
+token_env = "TELEGRAM_TOKEN"
+
+[[agent.runtime]]
+kind = "claudecode"
+model = "opus"
+
+[agent.runtime.env]
+ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
+SSH_AUTH_SOCK = "SSH_AUTH_SOCK"
+
+[[agent.runtime]]
+kind = "codex"
+network_access = false
+provider_option = "kept"
+
+[agent.runtime.env]
+CODEX_HOME = "BCN_CODEX_HOME_PERSONAL"
 
 [[agent]]
 id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
@@ -160,9 +240,8 @@ name = "Tifa"
 kind = "wecom"
 secret_env = "WECOM_SECRET"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
-network_access = false
 """.lstrip(),
         encoding="utf-8",
     )
@@ -174,24 +253,43 @@ network_access = false
     assert first == second
     assert first.lang == "zh-CN"
     assert [agent.name for agent in first.agents] == ["CloudStrife", "Tifa"]
-    assert first.agents[0].runtime.idle_timeout_seconds == 60
-    assert first.agents[1].runtime.network_access is False
+    assert [runtime.kind for runtime in first.agents[0].runtimes] == [
+        "claudecode",
+        "codex",
+    ]
+    assert first.agents[0].idle_timeout_seconds == 60
+    assert first.agents[0].runtimes[0].env == {
+        "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY_WORK",
+        "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",
+    }
+    assert first.agents[0].runtimes[1].network_access is False
+    assert first.agents[0].runtimes[1].options == {"provider_option": "kept"}
+    assert first.agents[0].runtimes[1].env == {"CODEX_HOME": "BCN_CODEX_HOME_PERSONAL"}
+    assert first.agents[1].runtimes[0].env == {}
+    # an already current configuration is never rewritten
     assert config_path.read_text(encoding="utf-8") == original
 
+    # serializing and re-reading preserves the whole contract
+    round_trip_path = tmp_path / "round-trip.toml"
+    round_trip_path.write_text(
+        config_module._serialize_configuration(first), encoding="utf-8"
+    )
+    assert load_node_configuration(round_trip_path) == first
 
-def test_v2_lang_is_kept_verbatim_and_must_be_non_empty(tmp_path: Path) -> None:
+
+def test_v3_lang_is_kept_verbatim_and_must_be_non_empty(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     # a lang the node does not ship is still preserved
     config_path.write_text(
-        'version = "2"\n\n[node]\nlang = "ja"\n',
+        'version = "3"\n\n[node]\nlang = "ja"\n',
         encoding="utf-8",
     )
     assert load_node_configuration(config_path).lang == "ja"
 
     # an empty lang is refused
     config_path.write_text(
-        'version = "2"\n\n[node]\nlang = ""\n',
+        'version = "3"\n\n[node]\nlang = ""\n',
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="node.lang must be non-empty text"):
@@ -202,7 +300,7 @@ def test_future_configuration_version_is_rejected_without_rewrite(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    original = 'version = "3"\n'
+    original = 'version = "4"\n'
     config_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="unsupported configuration version"):
@@ -231,17 +329,17 @@ def test_failed_atomic_replace_preserves_legacy_configuration(
     assert not tuple(tmp_path.glob(".config.toml.*.tmp"))
 
 
-def test_v2_rejects_invalid_agent_tables() -> None:
+def test_v3_rejects_invalid_agent_tables() -> None:
     def agent(**overrides: object) -> dict[str, object]:
         return {
             "id": LEGACY_AGENT_ID,
             "name": "default",
             "channel": {"kind": "telegram"},
-            "runtime": {"kind": "codex"},
+            "runtime": [{"kind": "codex"}],
         } | overrides
 
     def parse(*agents: dict[str, object]) -> None:
-        config_module._parse_v2_configuration({"version": "2", "agent": list(agents)})
+        config_module._parse_v3_configuration({"version": "3", "agent": list(agents)})
 
     # agent ids must be unique
     with pytest.raises(ConfigurationError, match="agent.id values must be unique"):
@@ -259,3 +357,47 @@ def test_v2_rejects_invalid_agent_tables() -> None:
     for value in ("bad-name", "", "1INVALID"):
         with pytest.raises(ConfigurationError, match="agent.channel.token_env"):
             parse(agent(channel={"kind": "telegram", "token_env": value}))
+
+    # the runtime array carries every runtime of one agent
+    with pytest.raises(
+        ConfigurationError, match=r"agent #1\.runtime must be an array of TOML tables"
+    ):
+        parse(agent(runtime={"kind": "codex"}))
+
+    # an agent without any runtime cannot serve a session
+    with pytest.raises(
+        ConfigurationError, match="agent.runtime must define at least one runtime"
+    ):
+        parse(agent(runtime=[]))
+
+    # env maps a child process name to the name read from the node process
+    with pytest.raises(
+        ConfigurationError,
+        match=r"agent #1\.runtime #2\.env contains an invalid environment name: "
+        "bad-name",
+    ):
+        parse(
+            agent(
+                runtime=[
+                    {"kind": "codex"},
+                    {"kind": "codex", "env": {"bad-name": "CODEX_HOME"}},
+                ]
+            )
+        )
+
+    with pytest.raises(
+        ConfigurationError,
+        match=r"agent #1\.runtime #1\.env contains an invalid environment name: "
+        "1INVALID",
+    ):
+        parse(agent(runtime=[{"kind": "codex", "env": {"CODEX_HOME": "1INVALID"}}]))
+
+    with pytest.raises(
+        ConfigurationError, match=r"agent #1\.runtime #1\.env\.CODEX_HOME"
+    ):
+        parse(agent(runtime=[{"kind": "codex", "env": {"CODEX_HOME": 7}}]))
+
+    with pytest.raises(
+        ConfigurationError, match=r"agent #1\.runtime #1\.env must be a TOML table"
+    ):
+        parse(agent(runtime=[{"kind": "codex", "env": ["CODEX_HOME"]}]))

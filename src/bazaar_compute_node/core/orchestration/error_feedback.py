@@ -19,7 +19,7 @@ from ..models import (
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
-_MESSAGE_KEYS: Mapping[RuntimeTurnState, str] = MappingProxyType(
+MESSAGE_KEYS: Mapping[RuntimeTurnState, str] = MappingProxyType(
     {
         RuntimeTurnState.FAILED: "runtime.error.failed",
         RuntimeTurnState.UNKNOWN: "runtime.error.unknown",
@@ -59,7 +59,7 @@ class RuntimeErrorReporter:
     async def report(self, message: Message, turn: RuntimeTurn | None) -> None:
         if turn is None:
             return
-        message_key = _MESSAGE_KEYS.get(turn.state)
+        message_key = MESSAGE_KEYS.get(turn.state)
         if message_key is None:
             return
 

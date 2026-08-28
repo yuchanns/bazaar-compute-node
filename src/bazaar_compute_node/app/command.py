@@ -292,7 +292,6 @@ def _parse_command_request[RequestT: _CommandRequest](
         raise CommandDispatchError(code, message) from error
 
 
-ControlHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 SessionBindingValidator = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 
@@ -304,12 +303,10 @@ class CommandDispatcher:
         service: ICommandService,
         *,
         timeout_budget: TimeoutBudget,
-        control_handler: ControlHandler | None = None,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
         self._service = service
         self._timeout_budget = timeout_budget
-        self._control_handler = control_handler
         self._session_binding_validator = session_binding_validator
         self._accepting = False
         self._in_flight: set[asyncio.Task[object]] = set()
@@ -367,9 +364,6 @@ class CommandDispatcher:
             if kind == "command":
                 async with asyncio.timeout(self._timeout_budget.command_seconds):
                     return await self._dispatch_command(request)
-            if kind == "control" and self._control_handler is not None:
-                result = await self._control_handler(request)
-                return {"ok": True, "result": dict(result)}
             raise CommandDispatchError(
                 "INVALID_COMMAND", "request kind is not supported"
             )

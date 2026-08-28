@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Container, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import time_ns
@@ -50,7 +50,8 @@ from ..timerwheel import (
 )
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
-from .error_feedback import RuntimeErrorReporter
+from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
+from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
     SessionContext,
@@ -112,7 +113,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         *,
         agent_id: str,
         channel: IChannel,
-        runtime: IRuntime,
+        runtimes: Sequence[IRuntime],
         storage: IStorageScope,
         audit: IAudit,
         timeout_budget: TimeoutBudget,
@@ -126,8 +127,8 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
-        if not isinstance(runtime.name, str) or not runtime.name:
-            raise ValueError("runtime.name must be a non-empty string")
+        self._clock = clock or _current_time_ms
+        self._runtimes = RuntimePool(runtimes, clock=self._clock)
         if (
             isinstance(runtime_idle_timeout_ms, bool)
             or not isinstance(runtime_idle_timeout_ms, int)
@@ -136,14 +137,15 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
         self._agent_id = agent_id
         self._channel = channel
-        self._runtime = runtime
+        self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
         self._storage = storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
-        self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
         self._concurrency = concurrency or SessionLockRegistry()
-        self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}
+        # the runtime a session last ran on outlives the session itself, so a
+        # turn that failed while establishing it can still be attributed
+        self._session_runtime_indices: dict[str, int] = {}
         self._runtime_turns: dict[str, RuntimeTurn] = {}
         self._session_runtime_states: dict[str, SessionRuntimeState] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.session")
@@ -185,7 +187,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._turns = SessionTurnCoordinator(
             agent_id=agent_id,
             channel=channel,
-            runtime=runtime,
+            runtimes=self._runtimes,
             storage=storage,
             audit=self._audit,
             state_machine=self._state_machine,
@@ -203,7 +205,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_timers: dict[str, _RuntimeTimerBinding] = {}
         self._expired_runtime_ids: set[str] = set()
         self._receive_task: asyncio.Task[None] | None = None
-        self._runtime_event_task: asyncio.Task[None] | None = None
+        self._runtime_event_tasks: list[asyncio.Task[None]] = []
         self._background_failures: dict[str, str] = {}
         self._started = False
         self._stopping = False
@@ -294,18 +296,23 @@ class SessionOrchestrator(IAsyncLifecycle):
     def _create_runtime_session(
         self,
         context: _DurableSessionContext,
+        *,
+        exclude: Container[int] = (),
     ) -> SessionContext:
         now_ms = self._clock()
+        runtime_index = self._runtimes.select(exclude=exclude)
         runtime_session = RuntimeSession(
             id=str(uuid7()),
             bcn_session_id=context.bcn_session.id,
             channel_session_id=context.channel_session.id,
-            runtime=self._runtime.name,
+            runtime=self._runtimes.get(runtime_index).name,
+            runtime_index=runtime_index,
             workspace_id=self.agent_id,
             created_at_ms=now_ms,
             updated_at_ms=now_ms,
         )
         self._runtime_sessions[context.bcn_session.id] = runtime_session
+        self._session_runtime_indices[context.bcn_session.id] = runtime_index
         return SessionContext(
             context.channel_session,
             context.bcn_session,
@@ -355,8 +362,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             or self._state_machine.get(session_id) is not SessionRuntimeState.IDLE
         ):
             return
+        runtime = self._runtimes.get(runtime_session.runtime_index)
         try:
-            if await self._runtime.has_background_job(
+            if await runtime.has_background_job(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             ):
@@ -418,10 +426,12 @@ class SessionOrchestrator(IAsyncLifecycle):
         if self._stopping:
             raise RuntimeError("session orchestrator is stopping")
         try:
-            await self._runtime.start(timeout=timeout)
+            for runtime in self._runtimes.all():
+                await runtime.start(timeout=timeout)
             await self._channel.start(timeout=timeout)
         except BaseException:
-            await self._runtime.stop(timeout=timeout)
+            for runtime in self._runtimes.all():
+                await runtime.stop(timeout=timeout)
             raise
         self._started = True
         self._background_failures.clear()
@@ -430,11 +440,13 @@ class SessionOrchestrator(IAsyncLifecycle):
             name=f"bcn-channel-receive-{self.agent_id}",
         )
         self._observe_background_task("channel_receive", self._receive_task)
-        self._runtime_event_task = asyncio.create_task(
-            self._receive_runtime_event_loop(),
-            name=f"bcn-runtime-lifecycle-events-{self.agent_id}",
-        )
-        self._observe_background_task("runtime_event", self._runtime_event_task)
+        for index, runtime in enumerate(self._runtimes.all()):
+            event_task = asyncio.create_task(
+                self._receive_runtime_event_loop(index, runtime),
+                name=f"bcn-runtime-lifecycle-events-{self.agent_id}-{index}",
+            )
+            self._runtime_event_tasks.append(event_task)
+            self._observe_background_task(f"runtime_event:{index}", event_task)
 
     async def stop(self, *, timeout: float) -> None:
         if self._stopping:
@@ -456,14 +468,15 @@ class SessionOrchestrator(IAsyncLifecycle):
                 self._shutdown_errors.append("channel.receive: shutdown timeout")
         self._receive_task = None
 
-        runtime_event_task = self._runtime_event_task
-        if runtime_event_task is not None and not runtime_event_task.done():
-            runtime_event_task.cancel()
+        for index, event_task in enumerate(self._runtime_event_tasks):
+            if event_task.done():
+                continue
+            event_task.cancel()
             try:
-                await asyncio.wait_for(runtime_event_task, timeout=timeout)
+                await asyncio.wait_for(event_task, timeout=timeout)
             except TimeoutError, asyncio.CancelledError:
-                self._shutdown_errors.append("runtime.event: shutdown timeout")
-        self._runtime_event_task = None
+                self._shutdown_errors.append(f"runtime.event:{index}: shutdown timeout")
+        self._runtime_event_tasks.clear()
 
         active_tasks = tuple(self._active_tasks)
         for task in active_tasks:
@@ -498,15 +511,19 @@ class SessionOrchestrator(IAsyncLifecycle):
 
         await self._wait_for_runtime_teardown_tasks(timeout=timeout)
 
-        try:
-            await self._runtime.stop(timeout=timeout)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            self._shutdown_errors.append(f"runtime.stop: {type(error).__name__}")
+        for index, runtime in enumerate(self._runtimes.all()):
+            try:
+                await runtime.stop(timeout=timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001
+                self._shutdown_errors.append(
+                    f"runtime.stop:{index}: {type(error).__name__}"
+                )
         self._started = False
         self._session_runtime_states.clear()
         self._runtime_sessions.clear()
+        self._session_runtime_indices.clear()
         self._runtime_turns.clear()
         self._expired_runtime_ids.clear()
 
@@ -709,6 +726,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     raise
                 except Exception:
                     self._logger.exception("runtime error feedback failed")
+                await self._record_runtime_outcome(batch[0].message, result)
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)
@@ -914,15 +932,72 @@ class SessionOrchestrator(IAsyncLifecycle):
                 timeout=self._timeout_budget.provider_call_seconds,
             )
 
+    async def _hand_turn_to_another_runtime(
+        self,
+        message: Message,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        attempted: set[int],
+    ) -> bool:
+        """Ban the runtime that just failed and say whether another can try."""
+
+        if turn.state not in MESSAGE_KEYS:
+            return False
+        if len(attempted) >= len(self._runtimes.all()):
+            return False
+        await self._record_runtime_outcome(message, turn)
+        await self._discard_runtime_session(context.runtime_session)
+        return True
+
+    async def _record_runtime_outcome(
+        self,
+        message: Message,
+        turn: RuntimeTurn | None,
+    ) -> None:
+        if turn is None:
+            return
+        index = self._session_runtime_indices.get(message.session_id)
+        if index is None:
+            return
+        if turn.state in MESSAGE_KEYS:
+            event_name = "runtime.pool.banned"
+            ban_until_ms = self._runtimes.record_failure(index)
+        elif turn.state is RuntimeTurnState.COMPLETED:
+            lifted_ban_until_ms = self._runtimes.record_success(index)
+            if lifted_ban_until_ms is None:
+                return
+            event_name = "runtime.pool.released"
+            ban_until_ms = lifted_ban_until_ms
+        else:
+            return
+        await self._audit.append(
+            event_name=event_name,
+            state=RuntimeEventState.COMPLETED,
+            correlation=CorrelationContext(
+                node_id=self.agent_id,
+                channel=message.channel,
+                channel_session_id=message.channel_session_id,
+                bcn_session_id=message.session_id,
+                runtime_session_id=turn.session_id,
+                turn_id=turn.turn_id,
+            ),
+            metadata={
+                "runtime_index": index,
+                "runtime": self._runtimes.get(index).name,
+                "ban_until_ms": ban_until_ms,
+                "terminal_state": turn.state.value,
+            },
+        )
+
     async def _receive_loop(self) -> None:
         async for message in self._channel.receive():
             if self._stopping:
                 break
             self.dispatch_inbound(message)
 
-    async def _receive_runtime_event_loop(self) -> None:
+    async def _receive_runtime_event_loop(self, index: int, runtime: IRuntime) -> None:
         while True:
-            event = await self._runtime.receive_event()
+            event = await runtime.receive_event()
             if self._stopping:
                 return
             if isinstance(event, RuntimeBackgroundIdle):
@@ -931,6 +1006,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                         runtime_session
                         for runtime_session in self._runtime_sessions.values()
                         if runtime_session.id == event.runtime_session_id
+                        and runtime_session.runtime_index == index
                     ),
                     None,
                 )
@@ -942,12 +1018,17 @@ class SessionOrchestrator(IAsyncLifecycle):
                     runtime_session
                     for runtime_session in self._runtime_sessions.values()
                     if runtime_session.id == event.runtime_session_id
+                    and runtime_session.runtime_index == index
                 ),
                 None,
             )
             if source is None or source.id in self._expired_runtime_ids:
                 continue
-            targets = tuple(self._runtime_sessions.values())
+            targets = tuple(
+                runtime_session
+                for runtime_session in self._runtime_sessions.values()
+                if runtime_session.runtime_index == index
+            )
             self._expired_runtime_ids.update(
                 runtime_session.id for runtime_session in targets
             )
@@ -1103,187 +1184,223 @@ class SessionOrchestrator(IAsyncLifecycle):
             else SessionRuntimeObservationSource.CHANNEL
         )
 
-        runtime_session = self.runtime_session(durable_context.bcn_session.id)
-        context = (
-            SessionContext(
-                durable_context.channel_session,
-                durable_context.bcn_session,
-                runtime_session,
-            )
-            if runtime_session is not None
-            else self._create_runtime_session(durable_context)
-        )
-        for establishment_attempt in range(2):
-            context, recovered_stream = await self._ensure_runtime_session_or_discard(
-                context
-            )
-            if recovered_stream is not None:
-                await recovered_stream.aclose()
-                raise RuntimeError(
-                    "runtime establishment unexpectedly recovered an active turn"
+        attempted: set[int] = set()
+        runtime_attempt: RuntimeAttempt | None = None
+        while True:
+            runtime_session = self.runtime_session(durable_context.bcn_session.id)
+            context = (
+                SessionContext(
+                    durable_context.channel_session,
+                    durable_context.bcn_session,
+                    runtime_session,
                 )
-            if (
-                self._state_machine.get(context.bcn_session.id)
-                is SessionRuntimeState.IDLE
-            ):
-                break
-            if establishment_attempt == 0:
+                if runtime_session is not None
+                else self._create_runtime_session(
+                    durable_context, exclude=frozenset(attempted)
+                )
+            )
+            attempted.add(context.runtime_session.runtime_index)
+            for establishment_attempt in range(2):
+                (
+                    context,
+                    recovered_stream,
+                ) = await self._ensure_runtime_session_or_discard(context)
+                if recovered_stream is not None:
+                    await recovered_stream.aclose()
+                    raise RuntimeError(
+                        "runtime establishment unexpectedly recovered an active turn"
+                    )
                 if (
                     self._state_machine.get(context.bcn_session.id)
-                    is SessionRuntimeState.UNKNOWN
+                    is SessionRuntimeState.IDLE
                 ):
-                    self._abandon_runtime_session(context.runtime_session)
-                await self._discard_runtime_session(context.runtime_session)
-                context = self._create_runtime_session(durable_context)
-        turn = RuntimeTurn(
-            turn_id=turn_id,
-            session_id=context.runtime_session.id,
-            state=RuntimeTurnState.STARTING,
-            started_at_ms=self._clock(),
-            client_user_message_id=client_user_message_id,
-        )
-        try:
-            await self._storage.save_runtime_attempt(
-                RuntimeAttempt(
+                    break
+                if establishment_attempt == 0:
+                    if (
+                        self._state_machine.get(context.bcn_session.id)
+                        is SessionRuntimeState.UNKNOWN
+                    ):
+                        self._abandon_runtime_session(context.runtime_session)
+                    await self._discard_runtime_session(context.runtime_session)
+                    context = self._create_runtime_session(durable_context)
+            turn = RuntimeTurn(
+                turn_id=turn_id,
+                session_id=context.runtime_session.id,
+                state=RuntimeTurnState.STARTING,
+                started_at_ms=self._clock(),
+                client_user_message_id=client_user_message_id,
+            )
+            if runtime_attempt is None:
+                runtime_attempt = RuntimeAttempt(
                     turn_id=turn.turn_id,
                     session_id=turn.session_id,
                     client_user_message_id=client_user_message_id,
                     started_at_ms=turn.started_at_ms,
                 )
-            )
-        except BaseException:
-            await self._stop_runtime_session(
-                context.runtime_session,
-                timeout=self._timeout_budget.provider_call_seconds,
-            )
-            raise
-        self._runtime_turns[turn.turn_id] = turn
-
-        for attempt in range(2):
-            runtime_state = self._state_machine.get(context.bcn_session.id)
-            if runtime_state is not SessionRuntimeState.IDLE:
-                finish_state = (
-                    RuntimeTurnState.UNKNOWN
-                    if runtime_state is SessionRuntimeState.UNKNOWN
-                    else RuntimeTurnState.FAILED
-                )
-                finished = await self._turns.finish_turn(
-                    turn,
-                    finish_state,
-                    error_kind=(
-                        ErrorKind.PROVIDER_UNKNOWN
-                        if finish_state is RuntimeTurnState.UNKNOWN
-                        else ErrorKind.PROVIDER_FAILED
-                    ),
-                    error_message=(
-                        "runtime session start outcome is unknown"
-                        if finish_state is RuntimeTurnState.UNKNOWN
-                        else "runtime session failed to start"
-                    ),
-                    correlation=self._turns.turn_correlation(message, context, turn),
-                    session_id=context.bcn_session.id,
-                )
-                if runtime_state is SessionRuntimeState.UNKNOWN:
-                    self._abandon_runtime_session(context.runtime_session)
-                await self._discard_runtime_session(context.runtime_session)
-                return finished
-            self._state_machine.apply_observation(
-                context.bcn_session.id,
-                SessionRuntimeObservation(
-                    source=observation_source,
-                    signal=SessionRuntimeSignal.TURN_STARTED,
-                    observed_at_ms=self._clock(),
-                ),
-            )
-            try:
-                result = await self._turns.run_turn(
-                    message,
-                    context,
-                    turn,
-                    input_text=input_text,
-                )
-                runtime_state = self._state_machine.get(context.bcn_session.id)
-                while runtime_state is SessionRuntimeState.UNKNOWN:
-                    (
-                        context,
-                        recovered_stream,
-                    ) = await self._ensure_runtime_session_or_discard(
-                        context,
-                        turn=result,
-                        approval_handler=self._turns.approval_handler(
-                            message,
-                            context,
-                            result,
-                        ),
-                    )
-                    runtime_state = self._state_machine.get(context.bcn_session.id)
-                    recoverable_active_states = {
-                        SessionRuntimeState.WORKING,
-                        SessionRuntimeState.COMPACTION_STARTING,
-                        SessionRuntimeState.COMPACTING,
-                        SessionRuntimeState.COMPACTION_COMPLETED,
-                    }
-                    if recovered_stream is None or runtime_state not in (
-                        recoverable_active_states
-                    ):
-                        if recovered_stream is not None:
-                            await recovered_stream.aclose()
-                        if runtime_state is not SessionRuntimeState.IDLE:
-                            await self._stop_runtime_session(
-                                context.runtime_session,
-                                timeout=self._timeout_budget.provider_call_seconds,
-                            )
-                            runtime_state = self._state_machine.get(
-                                context.bcn_session.id
-                            )
-                        break
-                    recovered_turn = replace(
-                        result,
-                        state=RuntimeTurnState.RUNNING,
-                        completed_at_ms=None,
-                        error_kind=None,
-                        error_message=None,
-                    )
-                    self._runtime_turns[recovered_turn.turn_id] = recovered_turn
-                    result = await self._turns.resume_turn(
-                        message,
-                        context,
-                        recovered_turn,
-                        recovered_stream,
-                    )
-                    runtime_state = self._state_machine.get(context.bcn_session.id)
-                if (
-                    runtime_state is SessionRuntimeState.FAILED
-                    and self.runtime_session(context.bcn_session.id)
-                    is context.runtime_session
-                ):
+                try:
+                    await self._storage.save_runtime_attempt(runtime_attempt)
+                except BaseException:
                     await self._stop_runtime_session(
                         context.runtime_session,
                         timeout=self._timeout_budget.provider_call_seconds,
                     )
-                elif (
-                    runtime_state
-                    not in {SessionRuntimeState.IDLE, SessionRuntimeState.WORKING}
-                    and self.runtime_session(context.bcn_session.id) is not None
-                ):
+                    raise
+            self._runtime_turns[turn.turn_id] = turn
+
+            handed_over = False
+            for unavailable_attempt in range(2):
+                runtime_state = self._state_machine.get(context.bcn_session.id)
+                if runtime_state is not SessionRuntimeState.IDLE:
+                    finish_state = (
+                        RuntimeTurnState.UNKNOWN
+                        if runtime_state is SessionRuntimeState.UNKNOWN
+                        else RuntimeTurnState.FAILED
+                    )
+                    finished = await self._turns.finish_turn(
+                        turn,
+                        finish_state,
+                        error_kind=(
+                            ErrorKind.PROVIDER_UNKNOWN
+                            if finish_state is RuntimeTurnState.UNKNOWN
+                            else ErrorKind.PROVIDER_FAILED
+                        ),
+                        error_message=(
+                            "runtime session start outcome is unknown"
+                            if finish_state is RuntimeTurnState.UNKNOWN
+                            else "runtime session failed to start"
+                        ),
+                        correlation=self._turns.turn_correlation(
+                            message, context, turn
+                        ),
+                        session_id=context.bcn_session.id,
+                    )
+                    if runtime_state is SessionRuntimeState.UNKNOWN:
+                        self._abandon_runtime_session(context.runtime_session)
                     await self._discard_runtime_session(context.runtime_session)
-                return result
-            except RuntimeSessionUnavailable as error:
+                    if await self._hand_turn_to_another_runtime(
+                        message,
+                        context,
+                        finished,
+                        attempted,
+                    ):
+                        handed_over = True
+                        break
+                    return finished
                 self._state_machine.apply_observation(
                     context.bcn_session.id,
                     SessionRuntimeObservation(
-                        source=SessionRuntimeObservationSource.RUNTIME,
-                        signal=(
-                            SessionRuntimeSignal.FAILED
-                            if attempt == 1
-                            else SessionRuntimeSignal.UNKNOWN
-                        ),
+                        source=observation_source,
+                        signal=SessionRuntimeSignal.TURN_STARTED,
                         observed_at_ms=self._clock(),
-                        error_kind=ErrorKind.PROVIDER_FAILED.value,
-                        error_message=str(error),
                     ),
                 )
-                if attempt == 1:
+                try:
+                    result = await self._turns.run_turn(
+                        message,
+                        context,
+                        turn,
+                        input_text=input_text,
+                    )
+                    runtime_state = self._state_machine.get(context.bcn_session.id)
+                    while runtime_state is SessionRuntimeState.UNKNOWN:
+                        (
+                            context,
+                            recovered_stream,
+                        ) = await self._ensure_runtime_session_or_discard(
+                            context,
+                            turn=result,
+                            approval_handler=self._turns.approval_handler(
+                                message,
+                                context,
+                                result,
+                            ),
+                        )
+                        runtime_state = self._state_machine.get(context.bcn_session.id)
+                        recoverable_active_states = {
+                            SessionRuntimeState.WORKING,
+                            SessionRuntimeState.COMPACTION_STARTING,
+                            SessionRuntimeState.COMPACTING,
+                            SessionRuntimeState.COMPACTION_COMPLETED,
+                        }
+                        if recovered_stream is None or runtime_state not in (
+                            recoverable_active_states
+                        ):
+                            if recovered_stream is not None:
+                                await recovered_stream.aclose()
+                            if runtime_state is not SessionRuntimeState.IDLE:
+                                await self._stop_runtime_session(
+                                    context.runtime_session,
+                                    timeout=self._timeout_budget.provider_call_seconds,
+                                )
+                                runtime_state = self._state_machine.get(
+                                    context.bcn_session.id
+                                )
+                            break
+                        recovered_turn = replace(
+                            result,
+                            state=RuntimeTurnState.RUNNING,
+                            completed_at_ms=None,
+                            error_kind=None,
+                            error_message=None,
+                        )
+                        self._runtime_turns[recovered_turn.turn_id] = recovered_turn
+                        result = await self._turns.resume_turn(
+                            message,
+                            context,
+                            recovered_turn,
+                            recovered_stream,
+                        )
+                        runtime_state = self._state_machine.get(context.bcn_session.id)
+                    if (
+                        runtime_state is SessionRuntimeState.FAILED
+                        and self.runtime_session(context.bcn_session.id)
+                        is context.runtime_session
+                    ):
+                        await self._stop_runtime_session(
+                            context.runtime_session,
+                            timeout=self._timeout_budget.provider_call_seconds,
+                        )
+                    elif (
+                        runtime_state
+                        not in {SessionRuntimeState.IDLE, SessionRuntimeState.WORKING}
+                        and self.runtime_session(context.bcn_session.id) is not None
+                    ):
+                        await self._discard_runtime_session(context.runtime_session)
+                    if await self._hand_turn_to_another_runtime(
+                        message,
+                        context,
+                        result,
+                        attempted,
+                    ):
+                        handed_over = True
+                        break
+                    return result
+                except RuntimeSessionUnavailable as error:
+                    self._state_machine.apply_observation(
+                        context.bcn_session.id,
+                        SessionRuntimeObservation(
+                            source=SessionRuntimeObservationSource.RUNTIME,
+                            signal=(
+                                SessionRuntimeSignal.FAILED
+                                if unavailable_attempt == 1
+                                else SessionRuntimeSignal.UNKNOWN
+                            ),
+                            observed_at_ms=self._clock(),
+                            error_kind=ErrorKind.PROVIDER_FAILED.value,
+                            error_message=str(error),
+                        ),
+                    )
+                    if unavailable_attempt == 0:
+                        (
+                            context,
+                            recovered_stream,
+                        ) = await self._ensure_runtime_session_or_discard(context)
+                        if recovered_stream is not None:
+                            await recovered_stream.aclose()
+                            raise RuntimeError(
+                                "runtime retry unexpectedly recovered an active turn"
+                            )
+                        continue
                     finished = await self._turns.finish_turn(
                         turn,
                         RuntimeTurnState.FAILED,
@@ -1297,17 +1414,17 @@ class SessionOrchestrator(IAsyncLifecycle):
                         session_id=context.bcn_session.id,
                     )
                     await self._discard_runtime_session(context.runtime_session)
+                    if await self._hand_turn_to_another_runtime(
+                        message,
+                        context,
+                        finished,
+                        attempted,
+                    ):
+                        handed_over = True
+                        break
                     return finished
-                (
-                    context,
-                    recovered_stream,
-                ) = await self._ensure_runtime_session_or_discard(context)
-                if recovered_stream is not None:
-                    await recovered_stream.aclose()
-                    raise RuntimeError(
-                        "runtime retry unexpectedly recovered an active turn"
-                    )
-        raise AssertionError("runtime pre-start retry loop did not return")
+            if not handed_over:
+                raise AssertionError("runtime turn loop did not return")
 
     async def _ensure_runtime_session(
         self,
@@ -1374,13 +1491,14 @@ class SessionOrchestrator(IAsyncLifecycle):
             },
         )
 
+        runtime = self._runtimes.get(runtime_session.runtime_index)
         if process_operation == "start":
-            provider_result = await self._runtime.start_session(
+            provider_result = await runtime.start_session(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         else:
-            provider_result = await self._runtime.reconcile_session(
+            provider_result = await runtime.reconcile_session(
                 runtime_session,
                 turn,
                 approval_handler,
@@ -1408,6 +1526,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 or updated_runtime.bcn_session_id != context.bcn_session.id
                 or updated_runtime.channel_session_id != context.channel_session.id
                 or updated_runtime.runtime != runtime_session.runtime
+                or updated_runtime.runtime_index != runtime_session.runtime_index
                 or updated_runtime.workspace_id != self.agent_id
                 or updated_runtime.created_at_ms != runtime_session.created_at_ms
             ):
@@ -1582,7 +1701,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         timeout: float,
     ) -> None:
         try:
-            result = await self._runtime.stop_session(runtime_session, timeout=timeout)
+            result = await self._runtimes.get(
+                runtime_session.runtime_index
+            ).stop_session(runtime_session, timeout=timeout)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001

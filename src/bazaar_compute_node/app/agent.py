@@ -9,6 +9,7 @@ import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
@@ -89,7 +90,7 @@ class AgentApplication:
         self._concurrency = SessionLockRegistry()
         self._started = False
         self._stopping = False
-        self._runtime_environment_include = configuration.runtime.env_include
+        self._runtime_configurations = configuration.runtimes
         self._logger = logging.getLogger("bazaar_compute_node.application.agent")
         self._attachment_materializer = AttachmentMaterializer(
             self.workspace_path,
@@ -106,51 +107,60 @@ class AgentApplication:
             )
         )
         self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)
-        runtime_options: dict[str, str] = {
-            key: value
-            for key, value in configuration.runtime.options.items()
-            if isinstance(value, str)
-        }
-        if configuration.runtime.model is not None:
-            runtime_options["model"] = configuration.runtime.model
-        if configuration.runtime.effort is not None:
-            runtime_options["effort"] = configuration.runtime.effort
-        self._runtime_context = RuntimeCommandContext(
-            run_command=self._run_runtime_command,
-            environment_for_session=self._runtime_environment,
-            agent_id=self.agent_id,
-            agent_name=self.name,
-            bot_name=self._bot_name,
-            runtime_options=runtime_options,
-            sandbox_mode=configuration.runtime.sandbox_mode,
-            network_access=configuration.runtime.network_access,
-            startup_timeout_seconds=timeout_budget.startup_seconds,
-        )
-        self.runtime: IRuntime = factories.runtime(self._runtime_context)
-        idle_timeout_seconds = configuration.runtime.idle_timeout_seconds
+        runtime_contexts: list[RuntimeCommandContext] = []
+        runtimes: list[IRuntime] = []
+        for index, runtime_configuration in enumerate(configuration.runtimes):
+            runtime_options: dict[str, str] = {
+                key: value
+                for key, value in runtime_configuration.options.items()
+                if isinstance(value, str)
+            }
+            if runtime_configuration.model is not None:
+                runtime_options["model"] = runtime_configuration.model
+            if runtime_configuration.effort is not None:
+                runtime_options["effort"] = runtime_configuration.effort
+            context = RuntimeCommandContext(
+                run_command=self._run_runtime_command,
+                # the context belongs to one instance, so the index it builds
+                # the child environment for is fixed here
+                environment_for_session=partial(self._runtime_environment, index),
+                agent_id=self.agent_id,
+                agent_name=self.name,
+                bot_name=self._bot_name,
+                runtime_options=runtime_options,
+                sandbox_mode=runtime_configuration.sandbox_mode,
+                network_access=runtime_configuration.network_access,
+                startup_timeout_seconds=timeout_budget.startup_seconds,
+            )
+            runtime_contexts.append(context)
+            runtimes.append(factories.runtimes[runtime_configuration.kind](context))
+        idle_timeout_seconds = configuration.idle_timeout_seconds
         if (
             isinstance(idle_timeout_seconds, bool)
             or not isinstance(idle_timeout_seconds, int | float)
             or not math.isfinite(idle_timeout_seconds)
         ):
-            raise ValueError("runtime idle timeout must be a finite number")
+            raise ValueError("agent idle timeout must be a finite number")
         if (
             idle_timeout_seconds > 0
             and idle_timeout_seconds * 1_000 > timer_wheel.maximum_delay_ms
         ):
-            raise ValueError("runtime idle timeout exceeds the timer horizon")
-        runtime_idle_timeout_ms = (
-            math.ceil(idle_timeout_seconds * 1_000) if idle_timeout_seconds > 0 else 0
-        )
+            raise ValueError("agent idle timeout exceeds the timer horizon")
+        self._runtime_contexts = tuple(runtime_contexts)
+        self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
         self.orchestrator = SessionOrchestrator(
             agent_id=self.agent_id,
             channel=self.channel,
-            runtime=self.runtime,
+            runtimes=self.runtimes,
             storage=self.storage,
             audit=self.audit,
             timeout_budget=self.timeout_budget,
             timer_wheel=self.timer_wheel,
-            runtime_idle_timeout_ms=runtime_idle_timeout_ms,
+            runtime_idle_timeout_ms=(
+                math.ceil(idle_timeout_seconds * 1_000)
+                if idle_timeout_seconds > 0
+                else 0
+            ),
             workspace=self.workspace_path,
             translator=self.translator,
             error_feedback_detail=self._error_feedback_detail,
@@ -161,20 +171,10 @@ class AgentApplication:
             concurrency=reminder_concurrency,
             poke=reminder_poke,
         )
-        self._provider_control_handler = (
-            factories.control(self._adapter_context())
-            if factories.control is not None
-            else None
-        )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             reminder_service=self.reminder_service,
             timeout_budget=self.timeout_budget,
-            control_handler=(
-                self._handle_control
-                if self._provider_control_handler is not None
-                else None
-            ),
             session_binding_validator=self._validate_session_binding,
         )
 
@@ -275,7 +275,7 @@ class AgentApplication:
             "name": self.name,
             "status": "started" if self.started else "stopped",
             "channel": self.channel.name,
-            "runtime": self.runtime.name,
+            "runtimes": tuple(runtime.name for runtime in self.runtimes),
             "channel_health": dict(self.channel.health),
             "orchestrator_health": self.orchestrator.health,
         }
@@ -302,37 +302,6 @@ class AgentApplication:
 
     async def _referenced_attachment_paths(self) -> set[str]:
         return set(await self.storage.list_ready_attachment_paths())
-
-    def _adapter_context(self) -> Mapping[str, object]:
-        return {
-            "agent_id": self.agent_id,
-            "agent_name": self.name,
-            "channel": self.channel,
-            "runtime": self.runtime,
-            "storage": self.storage,
-            "audit": self.audit,
-            "command_log": self.command_log,
-            "is_started": lambda: self._started,
-        }
-
-    async def _handle_control(
-        self,
-        request: Mapping[str, object],
-    ) -> Mapping[str, object]:
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise CommandDispatchError(
-                "SESSION_REQUIRED",
-                "session_id must be a non-empty string",
-            )
-        await self._validate_session_binding(session_id, request)
-        handler = self._provider_control_handler
-        if handler is None:
-            raise CommandDispatchError(
-                "INVALID_COMMAND",
-                "control operation is not supported",
-            )
-        return await handler(request)
 
     async def _validate_session_binding(
         self,
@@ -374,19 +343,26 @@ class AgentApplication:
                 "session capability is invalid",
             )
 
-    def _runtime_environment(self, session: RuntimeSession) -> Mapping[str, str]:
+    def _runtime_environment(
+        self,
+        runtime_index: int,
+        session: RuntimeSession,
+    ) -> Mapping[str, str]:
         runtime_session = self.orchestrator.runtime_session(session.bcn_session_id)
         if runtime_session is None or runtime_session.id != session.id:
             raise RuntimeError("runtime session is not the current live binding")
         return self._build_command_environment(
             session.bcn_session_id,
             session.id,
+            runtime_index=runtime_index,
         )
 
     def _build_command_environment(
         self,
         session_id: str,
         runtime_session_id: str,
+        *,
+        runtime_index: int,
     ) -> dict[str, str]:
         if not session_id:
             raise ValueError("session_id must be a non-empty string")
@@ -395,14 +371,15 @@ class AgentApplication:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
+        environment_bindings = self._runtime_configurations[runtime_index].env
         binding = self._session_capabilities.get(session_id)
         if binding is None or binding.runtime_session_id != runtime_session_id:
             capability = secrets.token_urlsafe(32)
             token_values = [capability]
-            for name in self._runtime_environment_include:
+            for name, source_name in environment_bindings.items():
                 if name != "TOKEN" and not name.endswith("_TOKEN"):
                     continue
-                value = os.environ.get(name)
+                value = os.environ.get(source_name)
                 if value and value not in token_values:
                     token_values.append(value)
             binding = _SessionCapabilityBinding(
@@ -414,19 +391,32 @@ class AgentApplication:
             )
             self._session_capabilities[session_id] = binding
         allowed = set(_PLATFORM_ENVIRONMENT)
-        for name in self.runtime.environment_variable_names():
+        for name in self.runtimes[runtime_index].environment_variable_names():
             if not _ENVIRONMENT_NAME.fullmatch(name):
                 raise ValueError(f"runtime environment name is invalid: {name}")
-            allowed.add(name)
-        for name in self._runtime_environment_include:
-            if not _ENVIRONMENT_NAME.fullmatch(name):
-                raise ValueError(f"runtime environment name is invalid: {name}")
-            if name not in os.environ:
-                raise ValueError(f"runtime environment variable is missing: {name}")
             allowed.add(name)
         environment = {
             name: os.environ[name] for name in sorted(allowed) if os.environ.get(name)
         }
+        bound: dict[str, str] = {}
+        for name, source_name in sorted(environment_bindings.items()):
+            for candidate in (name, source_name):
+                if not _ENVIRONMENT_NAME.fullmatch(candidate):
+                    raise ValueError(
+                        f"runtime environment name is invalid: {candidate}"
+                    )
+            if source_name not in os.environ:
+                raise ValueError(
+                    f"runtime environment variable is missing: {source_name}"
+                )
+            bound[name] = os.environ[source_name]
+        for source_name in environment_bindings.values():
+            # the credential reaches the child only under the name it asked for,
+            # never under the node's own name for it, unless the child asked for
+            # that name as well
+            if source_name not in environment_bindings:
+                environment.pop(source_name, None)
+        environment.update(bound)
         environment["PATH"] = os.pathsep.join(
             (str(wrapper_path.parent), environment.get("PATH", os.defpath))
         )
@@ -479,6 +469,7 @@ class AgentApplication:
         environment = self._build_command_environment(
             session_id,
             runtime_session.id,
+            runtime_index=runtime_session.runtime_index,
         )
         process = await asyncio.create_subprocess_exec(
             str(wrapper_path),
