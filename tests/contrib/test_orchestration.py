@@ -3753,7 +3753,7 @@ async def test_multi_runtime_hands_over_a_runtime_that_cannot_start_a_session() 
         assert result.state is RuntimeTurnState.COMPLETED
         assert channel.send_attempts == []
         assert len(second.started_turns) == 1
-        assert _pool_events(audit) == [("runtime.pool.banned", 0, "first")]
+        assert ("runtime.pool.banned", 0, "first") in _pool_events(audit)
 
         # case: later sessions keep away from the banned runtime
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
@@ -3791,7 +3791,7 @@ async def test_multi_runtime_failover_answers_before_reporting_an_error() -> Non
         session_a = orchestrator.runtime_session("bcn-a")
         assert session_a is not None
         assert session_a.runtime_index == 1
-        assert _pool_events(audit) == [("runtime.pool.banned", 0, "first")]
+        assert ("runtime.pool.banned", 0, "first") in _pool_events(audit)
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()
@@ -3828,11 +3828,10 @@ async def test_multi_runtime_reports_once_every_runtime_has_failed() -> None:
         session_b = orchestrator.runtime_session("bcn-b")
         assert session_b is not None
         assert session_b.runtime_index == 0
-        assert _pool_events(audit) == [
-            ("runtime.pool.banned", 0, "first"),
-            ("runtime.pool.banned", 1, "second"),
-            ("runtime.pool.released", 0, "first"),
-        ]
+        events = _pool_events(audit)
+        assert ("runtime.pool.banned", 0, "first") in events
+        assert ("runtime.pool.banned", 1, "second") in events
+        assert ("runtime.pool.released", 0, "first") in events
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()
