@@ -3732,7 +3732,7 @@ def _pool_events(audit: RecordingAudit) -> list[tuple[str, object, object]]:
 
 
 @pytest.mark.asyncio
-async def test_multi_runtime_bans_the_runtime_that_answered_with_an_error() -> None:
+async def test_multi_runtime_hands_over_a_runtime_that_cannot_start_a_session() -> None:
     (
         orchestrator,
         (first, second),
@@ -3741,78 +3741,98 @@ async def test_multi_runtime_bans_the_runtime_that_answered_with_an_error() -> N
         audit,
     ) = await make_multi_runtime_node()
     try:
-        # case: a turn that reports a failure to the Channel bans its runtime
-        first.queue_turn_plan(
-            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
-        )
-        failed = await orchestrator.handle_inbound(
+        # case: a runtime that cannot start a session is banned and handed over
+        # rather than escaping the ban when its session is discarded
+        first.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
+        first.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
+        result = await orchestrator.handle_inbound(
             make_message(session_id="bcn-a", seq=1)
         )
-        assert failed is not None
-        assert failed.state is RuntimeTurnState.FAILED
-        assert len(channel.send_attempts) == 1
 
-        # case: the next session skips the banned runtime
+        assert result is not None
+        assert result.state is RuntimeTurnState.COMPLETED
+        assert channel.send_attempts == []
+        assert len(second.started_turns) == 1
+        assert _pool_events(audit) == [("runtime.pool.banned", 0, "first")]
+
+        # case: later sessions keep away from the banned runtime
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
         session_b = orchestrator.runtime_session("bcn-b")
         assert session_b is not None
         assert session_b.runtime_index == 1
-
-        # case: an unknown terminal state bans just the same
-        second.queue_turn_plan(
-            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
-        )
-        unknown = await orchestrator.handle_inbound(
-            make_message(session_id="bcn-c", seq=1)
-        )
-        assert unknown is not None
-        assert unknown.state is RuntimeTurnState.UNKNOWN
-
-        # case: with both banned the one banned first is half-opened, and a
-        # completed turn on it lifts the ban again
-        await orchestrator.handle_inbound(make_message(session_id="bcn-d", seq=1))
-        session_d = orchestrator.runtime_session("bcn-d")
-        assert session_d is not None
-        assert session_d.runtime_index == 0
-
-        assert _pool_events(audit) == [
-            ("runtime.pool.banned", 0, "first"),
-            ("runtime.pool.banned", 1, "second"),
-            ("runtime.pool.released", 0, "first"),
-        ]
-        banned = next(
-            event for event in audit.events if event.event_name == "runtime.pool.banned"
-        )
-        assert isinstance(banned.metadata["ban_until_ms"], int)
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
 
 @pytest.mark.asyncio
-async def test_multi_runtime_bans_a_runtime_that_cannot_start_a_session() -> None:
-    orchestrator, (first, second), wheel, channel, _ = await make_multi_runtime_node()
+async def test_multi_runtime_failover_answers_before_reporting_an_error() -> None:
+    (
+        orchestrator,
+        (first, second),
+        wheel,
+        channel,
+        audit,
+    ) = await make_multi_runtime_node()
     try:
-        # case: a start failure converges to a failed turn and bans its runtime
-        first.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
-        first.queue_turn_plan(TestTurnPlan(pre_start_unavailable=True))
-        failed = await orchestrator.handle_inbound(
+        # case: a runtime that fails hands the turn to the next one instead of
+        # answering the Channel with an error
+        first.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+        )
+        result = await orchestrator.handle_inbound(
             make_message(session_id="bcn-a", seq=1)
         )
 
-        assert failed is not None
-        assert failed.state is RuntimeTurnState.FAILED
-        assert len(channel.send_attempts) == 1
-        assert orchestrator.runtime_session("bcn-a") is None
+        assert result is not None
+        assert result.state is RuntimeTurnState.COMPLETED
+        assert channel.send_attempts == []
+        assert len(second.started_turns) == 1
+        session_a = orchestrator.runtime_session("bcn-a")
+        assert session_a is not None
+        assert session_a.runtime_index == 1
+        assert _pool_events(audit) == [("runtime.pool.banned", 0, "first")]
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
 
+
+@pytest.mark.asyncio
+async def test_multi_runtime_reports_once_every_runtime_has_failed() -> None:
+    (
+        orchestrator,
+        (first, second),
+        wheel,
+        channel,
+        audit,
+    ) = await make_multi_runtime_node()
+    try:
+        # case: only a turn that exhausted every runtime answers with an error
+        first.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+        )
+        second.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
+        )
+        result = await orchestrator.handle_inbound(
+            make_message(session_id="bcn-a", seq=1)
+        )
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.UNKNOWN
+        assert len(channel.send_attempts) == 1
+
+        # case: with every runtime banned the next turn probes the one banned
+        # longest ago, and completing on it lifts that ban
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
-        await orchestrator.handle_inbound(make_message(session_id="bcn-c", seq=1))
         session_b = orchestrator.runtime_session("bcn-b")
-        session_c = orchestrator.runtime_session("bcn-c")
         assert session_b is not None
-        assert session_c is not None
-        assert (session_b.runtime_index, session_c.runtime_index) == (1, 1)
-        assert second.started_turns != []
+        assert session_b.runtime_index == 0
+        assert _pool_events(audit) == [
+            ("runtime.pool.banned", 0, "first"),
+            ("runtime.pool.banned", 1, "second"),
+            ("runtime.pool.released", 0, "first"),
+        ]
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 
 from ..runtime import IRuntime
 
@@ -33,11 +33,17 @@ class RuntimePool:
     def get(self, index: int) -> IRuntime:
         return self._runtimes[index]
 
-    def select(self) -> int:
+    def select(self, *, exclude: Container[int] = ()) -> int:
         # configuration order is priority order: a runtime keeps serving until
-        # it fails, and only its ban moves selection on to the next one
+        # it fails, and only its ban moves selection on to the next one.
+        # exclude carries the runtimes one turn has already tried
         now_ms = self._clock()
-        for index in range(len(self._runtimes)):
+        candidates = [
+            index for index in range(len(self._runtimes)) if index not in exclude
+        ]
+        if not candidates:
+            raise ValueError("every runtime is excluded")
+        for index in candidates:
             ban_until_ms = self._ban_until_ms.get(index)
             if ban_until_ms is None or ban_until_ms <= now_ms:
                 self._ban_until_ms.pop(index, None)
@@ -45,7 +51,7 @@ class RuntimePool:
         # everything is banned, so half-open the one banned longest ago and
         # leave its ban standing: a failed probe extends it and moves the slot
         # on to the next runtime, a completed turn lifts it
-        return min(self._ban_until_ms, key=self._ban_until_ms.__getitem__)
+        return min(candidates, key=self._ban_until_ms.__getitem__)
 
     def record_failure(self, index: int) -> int:
         ban_until_ms = self._clock() + _BAN_MS
