@@ -377,6 +377,10 @@ class StorageOperationMixin:
         )
         if not target_messages:
             raise ValueError(f"thread target is not replyable: {payload.target}")
+        # a reply the target cannot resolve is dropped on both sides: keeping the
+        # local id would leave the outbound pointing at a message that reading
+        # this target's history can never resolve
+        reply_to_message_id = None
         reply_to_provider_message_id = None
         if payload.reply_to_message_id is not None:
             reply_message = await self.resolve_message(
@@ -385,6 +389,7 @@ class StorageOperationMixin:
                 delivery_states=_HISTORY_DELIVERY_STATES,
             )
             if reply_message is not None and reply_message.target == payload.target:
+                reply_to_message_id = payload.reply_to_message_id
                 reply_to_provider_message_id = reply_message.provider_message_id
         cross_session = source_target_id != target_id
         metadata: dict[str, object] = {}
@@ -410,7 +415,7 @@ class StorageOperationMixin:
                 delivery_state=OutboundDeliveryState.PENDING,
                 created_at_ms=payload.created_at_ms,
                 provider_attempted_at_ms=attempted_at_ms,
-                reply_to_message_id=payload.reply_to_message_id,
+                reply_to_message_id=reply_to_message_id,
                 metadata=metadata,
             )
         )

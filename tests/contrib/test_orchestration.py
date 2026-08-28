@@ -1715,6 +1715,18 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         assert isinstance(unusable_reply, MessageSendSuccess)
         assert unusable_reply.message.delivery_state is OutboundDeliveryState.SENT
         assert channel.send_attempts[-1].provider_reply_to_message_id is None
+        # falling back to a non-reply send must not persist the reply pointer,
+        # or reading the target's history would keep hitting a dangling id
+        assert unusable_reply.message.reply_to_message_id is None
+        readable = await orchestrator.command_service.read(
+            session_id="bcn-1",
+            raw_target="dm:channel-bcn-other",
+            limit=10,
+        )
+        assert any(
+            message.message_id == unusable_reply.message.message_id
+            for message in readable.messages
+        )
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
