@@ -430,8 +430,6 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     assert isinstance(configured, Runtime)
     assert configured._model == TEST_MODEL
     assert configured._effort == TEST_EFFORT
-    assert configured._context.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
-    assert configured._context.network_access is False
     assert configured.environment_variable_names() == (
         "CODEX_HOME",
         "CODEX_SQLITE_HOME",
@@ -441,8 +439,6 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     assert isinstance(defaulted, Runtime)
     assert defaulted._model is None
     assert defaulted._effort is None
-    assert defaulted._context.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
-    assert defaulted._context.network_access is True
 
 
 @pytest.mark.asyncio

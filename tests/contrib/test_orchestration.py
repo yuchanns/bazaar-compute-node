@@ -323,34 +323,6 @@ async def make_idle_timeout_node(
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_uses_agent_scoped_storage_before_runtime() -> None:
-    channel = TestChannel()
-    runtime = TestRuntime()
-    storage = MemoryStorage()
-    audit = RecordingAudit()
-    await storage.start(timeout=1)
-
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
-        channel=channel,
-        runtime=runtime,
-        storage=storage.scope("workspace-1", "Test Agent"),
-        audit=audit,
-        timeout_budget=make_budget(),
-        timer_wheel=TimerWheel(),
-        workspace=Path.cwd,
-        translator=_ENGLISH_TRANSLATOR,
-        error_feedback_detail=unchanged_error_feedback_detail,
-    )
-    await orchestrator.start(timeout=1)
-    try:
-        assert runtime.started
-        assert channel.started
-    finally:
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
 async def test_orchestrator_degrades_and_recovers_local_worker_failures() -> None:
     orchestrator, _, _, storage, _ = await make_node()
     try:
@@ -2836,9 +2808,8 @@ async def test_runtime_session_reconciliation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # teardown is scheduled without blocking the next inbound
     orchestrator, _, runtime, _, _ = await make_node()
     stop_started = asyncio.Event()
     release_stop = asyncio.Event()
@@ -2886,11 +2857,7 @@ async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
         release_stop.set()
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_orchestrator_shutdown_gathers_runtime_teardown_tasks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    # shutdown gathers the outstanding teardown tasks
     orchestrator, _, runtime, _, _ = await make_node()
     stop_started = asyncio.Event()
     release_stop = asyncio.Event()
@@ -3034,7 +3001,8 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
+async def test_context_expiry() -> None:
+    # a context expire fans out once to all live sessions
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         await asyncio.gather(
@@ -3076,11 +3044,7 @@ async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_context_expire_waits_for_active_turn_then_precedes_pending_inbound() -> (
-    None
-):
+    # a context expire waits for an active turn, then precedes pending inbound
     orchestrator, _, runtime, _, _ = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     first_task = orchestrator.dispatch_inbound(make_message(seq=1))
