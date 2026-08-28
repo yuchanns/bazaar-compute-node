@@ -210,15 +210,20 @@ class ReminderScheduler(IAsyncLifecycle):
             if not due:
                 return
             materialized: list[tuple[str, Message[InboundAttachment]]] = []
-            for reminder in due:
-                result = await self._materialize_due_reminder(reminder)
-                if result is not None:
-                    materialized.append(result)
-            for agent_id, message in sorted(
-                materialized,
-                key=lambda item: (item[0], item[1].session_id, item[1].seq),
-            ):
-                await self._publish_message(agent_id, message)
+            try:
+                for reminder in due:
+                    result = await self._materialize_due_reminder(reminder)
+                    if result is not None:
+                        materialized.append(result)
+            finally:
+                # a reminder that already fired is no longer due, and pending
+                # recovery only runs at startup, so anything committed before
+                # the failure has to be woken on the way out
+                for agent_id, message in sorted(
+                    materialized,
+                    key=lambda item: (item[0], item[1].session_id, item[1].seq),
+                ):
+                    await self._publish_message(agent_id, message)
             await asyncio.sleep(0)
 
     async def _materialize_due_reminder(
