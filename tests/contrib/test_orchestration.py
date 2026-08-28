@@ -2814,7 +2814,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
     stop_started = asyncio.Event()
     release_stop = asyncio.Event()
 
-    async def blocked_stop_session(
+    async def blocked_stop_session_2(
         session: RuntimeSession,
         *,
         timeout: float,
@@ -2828,7 +2828,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
             value=session,
         )
 
-    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session_2)
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
@@ -2863,7 +2863,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
     release_stop = asyncio.Event()
     shutdown_task: asyncio.Task[None] | None = None
 
-    async def blocked_stop_session(
+    async def blocked_stop_session_3(
         session: RuntimeSession,
         *,
         timeout: float,
@@ -2877,7 +2877,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
             value=session,
         )
 
-    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session_3)
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None

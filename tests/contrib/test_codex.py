@@ -788,12 +788,12 @@ for line in sys.stdin:
     assert await supervisor.receive(timeout=0.1) == response
 
     # a raising router fails the pending requests
-    def reject_notification(_: dict[str, object]) -> bool:
+    def reject_notification_2(_: dict[str, object]) -> bool:
         raise ValueError("invalid notification")
 
     supervisor = JsonlProcessSupervisor(
         JsonlProcessSpec(executable="unused"),
-        notification_router=reject_notification,
+        notification_router=reject_notification_2,
     )
     pending = asyncio.get_running_loop().create_future()
     supervisor._pending[1] = pending

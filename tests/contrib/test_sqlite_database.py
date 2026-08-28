@@ -483,6 +483,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             OwnedReminder("agent-1", fired),
             system_message("018f0000-0000-7000-8000-000000000003"),
         )
+        assert materialized is not None
         persisted = await scope.get_message(materialized.message_id)
         owners = await storage.list_unread_message_owners()
         catalog = await scope.list_inbox_targets()
@@ -2120,6 +2121,7 @@ async def test_sqlite_scheduler_fires_reminder_anchored_to_a_system_message() ->
         published: list[str] = []
 
         async def publish(agent_id: str, message: Message) -> bool:
+            del agent_id
             published.append(message.body)
             return True
 
