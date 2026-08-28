@@ -108,11 +108,13 @@ def _node(
                     id=agent_id,
                     name=agent_name,
                     channel=ChannelConfiguration(kind="test"),
-                    runtime=RuntimeConfiguration(
-                        kind="claudecode",
-                        model="claude-opus-5",
-                        sandbox_mode=sandbox_mode,
-                        idle_timeout_seconds=idle_timeout_seconds,
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="claudecode",
+                            model="claude-opus-5",
+                            sandbox_mode=sandbox_mode,
+                            idle_timeout_seconds=idle_timeout_seconds,
+                        ),
                     ),
                 ),
             ),

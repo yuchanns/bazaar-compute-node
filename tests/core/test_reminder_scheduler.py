@@ -256,7 +256,7 @@ async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> N
                     id=agent_id,
                     name="Failed Agent",
                     channel=ChannelConfiguration(kind="missing-channel"),
-                    runtime=RuntimeConfiguration(kind="missing-runtime"),
+                    runtimes=(RuntimeConfiguration(kind="missing-runtime"),),
                 ),
             ),
         ),

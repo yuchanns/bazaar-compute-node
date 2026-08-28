@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -16,7 +16,7 @@ from ..core.paths import resolve_data_dir
 from ..core.runtime import RuntimeSandboxMode
 
 CONFIG_FILENAME = "config.toml"
-CONFIG_VERSION = "2"
+CONFIG_VERSION = "3"
 DEFAULT_AUDIT = "logging"
 DEFAULT_STORAGE = "sqlite"
 DEFAULT_DATABASE_FILENAME = "bcn.sqlite3"
@@ -48,7 +48,7 @@ class RuntimeConfiguration:
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
     idle_timeout_seconds: float = 0
-    env_include: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     options: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
@@ -68,7 +68,9 @@ class RuntimeConfiguration:
             raise ConfigurationError(
                 "agent.runtime.idle_timeout must be a non-negative finite number"
             )
-        _validate_environment_names(self.env_include, "agent.runtime.env_include")
+        _validate_environment_names(
+            (*self.env, *self.env.values()), "agent.runtime.env"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,16 +78,18 @@ class AgentConfiguration:
     id: str
     name: str
     channel: ChannelConfiguration
-    runtime: RuntimeConfiguration
+    runtimes: tuple[RuntimeConfiguration, ...]
 
     def __post_init__(self) -> None:
         _validate_agent_id(self.id, "agent.id")
         _required_text(self.name, "agent.name")
+        if not self.runtimes:
+            raise ConfigurationError("agent.runtime must define at least one runtime")
 
 
 @dataclass(frozen=True, slots=True)
 class NodeConfiguration:
-    """Version 2 persistent node configuration."""
+    """Version 3 persistent node configuration."""
 
     agents: tuple[AgentConfiguration, ...] = ()
     storage: str = DEFAULT_STORAGE
@@ -123,6 +127,40 @@ class ConfigurationError(ValueError):
     """Raised when the persistent bcn configuration is invalid."""
 
 
+@dataclass(frozen=True, slots=True)
+class _ConfigurationUpgrade:
+    """The step that lifts a payload into the next configuration version."""
+
+    apply: Callable[[Mapping[str, object]], dict[str, object]]
+    state: _ConfigurationState
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfigurationState:
+    """One version in the configuration upgrade state machine.
+
+    A state hands its payload to the next state, which is responsible for
+    upgrading it. The state that has no upgrade left is the terminal one: a
+    payload that reaches it is current.
+    """
+
+    version: str
+    upgrade: _ConfigurationUpgrade | None
+
+    @property
+    def is_current(self) -> bool:
+        return self.upgrade is None
+
+    def advance(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        """Move the payload forward until it reaches the terminal state."""
+
+        state = self
+        while (upgrade := state.upgrade) is not None:
+            payload = upgrade.apply(payload)
+            state = upgrade.state
+        return payload
+
+
 def resolve_config_path() -> Path:
     return resolve_data_dir() / CONFIG_FILENAME
 
@@ -130,19 +168,15 @@ def resolve_config_path() -> Path:
 def load_node_configuration(
     path: Path | None = None,
 ) -> NodeConfiguration:
-    """Load v2 configuration, atomically upgrading v1 input before returning."""
+    """Load v3 configuration, advancing older input through the upgrade states."""
 
     path = (path or resolve_config_path()).expanduser()
     payload = _read_configuration(path)
-    version = payload.get("version", "1")
-    if not isinstance(version, str):
-        raise ConfigurationError("top-level version must be text")
-    if version == CONFIG_VERSION:
-        return _parse_v2_configuration(payload)
-    if version != "1":
-        raise ConfigurationError(f"unsupported configuration version: {version}")
+    state = _configuration_state(_payload_version(payload))
+    if state.is_current:
+        return _parse_v3_configuration(payload)
 
-    configuration = _migrate_v1_configuration(payload)
+    configuration = _parse_v3_configuration(state.advance(payload))
     _write_configuration(path, configuration)
     return configuration
 
@@ -152,15 +186,18 @@ def load_control_configuration(path: Path | None = None) -> ControlConfiguration
 
     path = (path or resolve_config_path()).expanduser()
     payload = _read_configuration(path)
-    version = payload.get("version", "1")
-    if not isinstance(version, str):
-        raise ConfigurationError("top-level version must be text")
-    if version not in {"1", CONFIG_VERSION}:
-        raise ConfigurationError(f"unsupported configuration version: {version}")
+    _configuration_state(_payload_version(payload))
     node = _table(payload.get("node", {}), "[node]")
     return ControlConfiguration(
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint")
     )
+
+
+def _payload_version(payload: Mapping[str, object]) -> str:
+    version = payload.get("version", "1")
+    if not isinstance(version, str):
+        raise ConfigurationError("top-level version must be text")
+    return version
 
 
 def _read_configuration(path: Path) -> dict[str, object]:
@@ -219,17 +256,17 @@ def _read_legacy_workspace_id(
         connection.close()
 
 
-def _parse_v2_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
+def _parse_v3_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     node = _table(payload.get("node", {}), "[node]")
     if "channel" in node or "runtime" in node:
         raise ConfigurationError(
-            "version 2 configuration cannot define node.channel or node.runtime"
+            "version 3 configuration cannot define node.channel or node.runtime"
         )
     raw_agents = payload.get("agent", [])
     if not isinstance(raw_agents, list):
         raise ConfigurationError("[[agent]] must be an array of TOML tables")
     agents = tuple(
-        _parse_v2_agent(item, index=index)
+        _parse_v3_agent(item, index=index)
         for index, item in enumerate(raw_agents, start=1)
     )
     return NodeConfiguration(
@@ -243,12 +280,29 @@ def _parse_v2_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     )
 
 
-def _parse_v2_agent(value: object, *, index: int) -> AgentConfiguration:
+def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
     table = _table(value, f"agent #{index}")
     channel = _table(table.get("channel"), f"agent #{index}.channel")
-    runtime = _table(table.get("runtime"), f"agent #{index}.runtime")
     channel_kind = _required_text(channel.get("kind"), f"agent #{index}.channel.kind")
-    runtime_kind = _required_text(runtime.get("kind"), f"agent #{index}.runtime.kind")
+    raw_runtimes = table.get("runtime")
+    if not isinstance(raw_runtimes, list):
+        raise ConfigurationError(
+            f"agent #{index}.runtime must be an array of TOML tables"
+        )
+    runtimes: list[RuntimeConfiguration] = []
+    for position, item in enumerate(raw_runtimes, start=1):
+        runtime = _table(item, f"agent #{index}.runtime #{position}")
+        runtime_kind = _required_text(
+            runtime.get("kind"), f"agent #{index}.runtime #{position}.kind"
+        )
+        runtimes.append(
+            _parse_runtime_configuration(
+                runtime,
+                runtime_kind,
+                index=index,
+                position=position,
+            )
+        )
     return AgentConfiguration(
         id=_required_text(table.get("id"), f"agent #{index}.id"),
         name=_required_text(table.get("name"), f"agent #{index}.name"),
@@ -258,7 +312,7 @@ def _parse_v2_agent(value: object, *, index: int) -> AgentConfiguration:
                 {key: item for key, item in channel.items() if key != "kind"}
             ),
         ),
-        runtime=_parse_runtime_configuration(runtime, runtime_kind, index=index),
+        runtimes=tuple(runtimes),
     )
 
 
@@ -267,22 +321,22 @@ def _parse_runtime_configuration(
     kind: str,
     *,
     index: int,
+    position: int,
 ) -> RuntimeConfiguration:
+    prefix = f"agent #{index}.runtime #{position}"
     sandbox_mode = runtime.get("sandbox_mode", RuntimeSandboxMode.WORKSPACE_WRITE.value)
     if not isinstance(sandbox_mode, str):
-        raise ConfigurationError(f"agent #{index}.runtime.sandbox_mode must be text")
+        raise ConfigurationError(f"{prefix}.sandbox_mode must be text")
     try:
         parsed_sandbox_mode = RuntimeSandboxMode(sandbox_mode)
     except ValueError as error:
         allowed = ", ".join(mode.value for mode in RuntimeSandboxMode)
         raise ConfigurationError(
-            f"agent #{index}.runtime.sandbox_mode must be one of: {allowed}"
+            f"{prefix}.sandbox_mode must be one of: {allowed}"
         ) from error
     network_access = runtime.get("network_access", True)
     if not isinstance(network_access, bool):
-        raise ConfigurationError(
-            f"agent #{index}.runtime.network_access must be a boolean"
-        )
+        raise ConfigurationError(f"{prefix}.network_access must be a boolean")
     idle_timeout = runtime.get("idle_timeout", 0)
     if (
         isinstance(idle_timeout, bool)
@@ -291,12 +345,9 @@ def _parse_runtime_configuration(
         or idle_timeout < 0
     ):
         raise ConfigurationError(
-            f"agent #{index}.runtime.idle_timeout must be a non-negative finite number"
+            f"{prefix}.idle_timeout must be a non-negative finite number"
         )
-    env_include = _text_list(
-        runtime.get("env_include", []), f"agent #{index}.runtime.env_include"
-    )
-    _validate_environment_names(env_include, f"agent #{index}.runtime.env_include")
+    env = _environment_map(runtime.get("env", {}), f"{prefix}.env")
     standard_keys = {
         "kind",
         "model",
@@ -304,25 +355,23 @@ def _parse_runtime_configuration(
         "sandbox_mode",
         "network_access",
         "idle_timeout",
-        "env_include",
+        "env",
     }
     return RuntimeConfiguration(
         kind=kind,
-        model=_optional_text(runtime.get("model"), f"agent #{index}.runtime.model"),
-        effort=_optional_text(runtime.get("effort"), f"agent #{index}.runtime.effort"),
+        model=_optional_text(runtime.get("model"), f"{prefix}.model"),
+        effort=_optional_text(runtime.get("effort"), f"{prefix}.effort"),
         sandbox_mode=parsed_sandbox_mode,
         network_access=network_access,
         idle_timeout_seconds=float(idle_timeout),
-        env_include=env_include,
+        env=env,
         options=MappingProxyType(
             {key: item for key, item in runtime.items() if key not in standard_keys}
         ),
     )
 
 
-def _migrate_v1_configuration(
-    payload: Mapping[str, object],
-) -> NodeConfiguration:
+def _v1_to_v2_payload(payload: Mapping[str, object]) -> dict[str, object]:
     node = _table(payload.get("node", {}), "[node]")
     runtime = _table(payload.get("runtime", {}), "[runtime]")
     runtime_env = _table(runtime.get("env", {}), "[runtime.env]")
@@ -341,16 +390,23 @@ def _migrate_v1_configuration(
     database_name = _optional_text(node.get("database_name"), "node.database_name")
     _validate_database_name(database_name)
 
-    agents: tuple[AgentConfiguration, ...] = ()
+    migrated_node: dict[str, object] = {"storage": storage, "audit": audit}
+    if database_name is not None:
+        migrated_node["database_name"] = database_name
+    if endpoint is not None:
+        migrated_node["endpoint"] = endpoint
+
+    agents: list[dict[str, object]] = []
     if channel_kind is not None and runtime_kind is not None:
         channel_options = _table(
             channels.get(channel_kind, {}), f"[channel.{channel_kind}]"
         )
-        migrated_channel_options = dict(channel_options)
+        migrated_channel = dict(channel_options)
+        migrated_channel["kind"] = channel_kind
         if channel_kind == "telegram":
-            migrated_channel_options.setdefault("token_env", "BCN_TELEGRAM_BOT_TOKEN")
+            migrated_channel.setdefault("token_env", "BCN_TELEGRAM_BOT_TOKEN")
         elif channel_kind == "wecom":
-            migrated_channel_options.setdefault("secret_env", "BCN_WECOM_BOT_SECRET")
+            migrated_channel.setdefault("secret_env", "BCN_WECOM_BOT_SECRET")
 
         raw_sandbox_mode = runtime.get(
             "sandbox_mode", RuntimeSandboxMode.WORKSPACE_WRITE.value
@@ -364,10 +420,9 @@ def _migrate_v1_configuration(
             raise ConfigurationError(
                 f"runtime.sandbox_mode must be one of: {allowed}"
             ) from error
-        raw_network_access = runtime.get("network_access", True)
-        if not isinstance(raw_network_access, bool):
+        network_access = runtime.get("network_access", True)
+        if not isinstance(network_access, bool):
             raise ConfigurationError("runtime.network_access must be a boolean")
-        network_access = raw_network_access
         idle_timeout = runtime.get("idle_timeout", 0)
         if (
             isinstance(idle_timeout, bool)
@@ -380,6 +435,22 @@ def _migrate_v1_configuration(
             )
         env_include = _text_list(runtime_env.get("include", []), "runtime.env.include")
         _validate_environment_names(env_include, "runtime.env.include")
+
+        migrated_runtime: dict[str, object] = {
+            "kind": runtime_kind,
+            "sandbox_mode": sandbox_mode.value,
+            "network_access": network_access,
+            "idle_timeout": float(idle_timeout),
+        }
+        model = _optional_text(runtime.get("model"), "runtime.model")
+        if model is not None:
+            migrated_runtime["model"] = model
+        effort = _optional_text(runtime.get("effort"), "runtime.effort")
+        if effort is not None:
+            migrated_runtime["effort"] = effort
+        if env_include:
+            migrated_runtime["env_include"] = list(env_include)
+
         agent_id = (
             _read_legacy_workspace_id(
                 data_dir=resolve_data_dir(),
@@ -388,34 +459,69 @@ def _migrate_v1_configuration(
             if storage == "sqlite"
             else None
         )
-        agents = (
-            AgentConfiguration(
-                id=agent_id or str(uuid7()),
-                name="default",
-                channel=ChannelConfiguration(
-                    kind=channel_kind,
-                    options=MappingProxyType(migrated_channel_options),
-                ),
-                runtime=RuntimeConfiguration(
-                    kind=runtime_kind,
-                    model=_optional_text(runtime.get("model"), "runtime.model"),
-                    effort=_optional_text(runtime.get("effort"), "runtime.effort"),
-                    sandbox_mode=sandbox_mode,
-                    network_access=network_access,
-                    idle_timeout_seconds=float(idle_timeout),
-                    env_include=env_include,
-                ),
-            ),
+        agents.append(
+            {
+                "id": agent_id or str(uuid7()),
+                "name": "default",
+                "channel": migrated_channel,
+                "runtime": migrated_runtime,
+            }
         )
 
-    return NodeConfiguration(
-        version=CONFIG_VERSION,
-        agents=agents,
-        storage=storage,
-        audit=audit,
-        endpoint=endpoint,
-        database_name=database_name,
-    )
+    return {"version": "2", "node": migrated_node, "agent": agents}
+
+
+def _v2_to_v3_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    raw_agents = payload.get("agent", [])
+    if not isinstance(raw_agents, list):
+        raise ConfigurationError("[[agent]] must be an array of TOML tables")
+
+    agents: list[dict[str, object]] = []
+    for index, item in enumerate(raw_agents, start=1):
+        agent = dict(_table(item, f"agent #{index}"))
+        runtime = dict(_table(agent.get("runtime"), f"agent #{index}.runtime"))
+        env_include = _text_list(
+            runtime.pop("env_include", []), f"agent #{index}.runtime.env_include"
+        )
+        _validate_environment_names(env_include, f"agent #{index}.runtime.env_include")
+        if env_include:
+            included: dict[str, object] = {name: name for name in env_include}
+            existing = runtime.get("env")
+            # the two spellings merge instead of one dropping the other; a key
+            # written both ways keeps the newer env value
+            runtime["env"] = (
+                included | existing if isinstance(existing, dict) else included
+            )
+        agent["runtime"] = [runtime]
+        agents.append(agent)
+
+    return dict(payload) | {"version": "3", "agent": agents}
+
+
+# The upgrade states, newest first so each one can name the state it moves to.
+# Adding a version means writing its upgrade, declaring it as the new terminal
+# state, and giving the state that used to be terminal an upgrade into it.
+_CONFIGURATION_V3 = _ConfigurationState(version="3", upgrade=None)
+_CONFIGURATION_V2 = _ConfigurationState(
+    version="2",
+    upgrade=_ConfigurationUpgrade(apply=_v2_to_v3_payload, state=_CONFIGURATION_V3),
+)
+_CONFIGURATION_V1 = _ConfigurationState(
+    version="1",
+    upgrade=_ConfigurationUpgrade(apply=_v1_to_v2_payload, state=_CONFIGURATION_V2),
+)
+_CONFIGURATION_STATES = (
+    _CONFIGURATION_V1,
+    _CONFIGURATION_V2,
+    _CONFIGURATION_V3,
+)
+
+
+def _configuration_state(version: str) -> _ConfigurationState:
+    for state in _CONFIGURATION_STATES:
+        if state.version == version:
+            return state
+    raise ConfigurationError(f"unsupported configuration version: {version}")
 
 
 def _write_configuration(path: Path, configuration: NodeConfiguration) -> None:
@@ -479,28 +585,29 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
             lines.append(
                 f"{_toml_key(key)} = {_toml_value(agent.channel.options[key])}"
             )
-        lines.extend(
-            (
-                "",
-                "[agent.runtime]",
-                f"kind = {_toml_value(agent.runtime.kind)}",
+        for runtime in agent.runtimes:
+            lines.extend(
+                (
+                    "",
+                    "[[agent.runtime]]",
+                    f"kind = {_toml_value(runtime.kind)}",
+                )
             )
-        )
-        if agent.runtime.model is not None:
-            lines.append(f"model = {_toml_value(agent.runtime.model)}")
-        if agent.runtime.effort is not None:
-            lines.append(f"effort = {_toml_value(agent.runtime.effort)}")
-        lines.append(f"sandbox_mode = {_toml_value(agent.runtime.sandbox_mode.value)}")
-        lines.append(f"network_access = {_toml_value(agent.runtime.network_access)}")
-        lines.append(
-            f"idle_timeout = {_toml_value(agent.runtime.idle_timeout_seconds)}"
-        )
-        if agent.runtime.env_include:
-            lines.append(f"env_include = {_toml_value(agent.runtime.env_include)}")
-        for key in sorted(agent.runtime.options):
-            lines.append(
-                f"{_toml_key(key)} = {_toml_value(agent.runtime.options[key])}"
-            )
+            if runtime.model is not None:
+                lines.append(f"model = {_toml_value(runtime.model)}")
+            if runtime.effort is not None:
+                lines.append(f"effort = {_toml_value(runtime.effort)}")
+            lines.append(f"sandbox_mode = {_toml_value(runtime.sandbox_mode.value)}")
+            lines.append(f"network_access = {_toml_value(runtime.network_access)}")
+            lines.append(f"idle_timeout = {_toml_value(runtime.idle_timeout_seconds)}")
+            for key in sorted(runtime.options):
+                lines.append(f"{_toml_key(key)} = {_toml_value(runtime.options[key])}")
+            if runtime.env:
+                # a sub-table of the array element, so it has to come last or it
+                # would swallow the runtime's own keys
+                lines.extend(("", "[agent.runtime.env]"))
+                for key in sorted(runtime.env):
+                    lines.append(f"{_toml_key(key)} = {_toml_value(runtime.env[key])}")
     return "\n".join(lines) + "\n"
 
 
@@ -562,6 +669,15 @@ def _text_list(value: object, field_name: str) -> tuple[str, ...]:
     if len(set(value)) != len(value):
         raise ConfigurationError(f"{field_name} cannot contain duplicates")
     return tuple(value)
+
+
+def _environment_map(value: object, field_name: str) -> Mapping[str, str]:
+    table = _table(value, field_name)
+    mapping = {
+        key: _required_text(item, f"{field_name}.{key}") for key, item in table.items()
+    }
+    _validate_environment_names((*mapping, *mapping.values()), field_name)
+    return MappingProxyType(mapping)
 
 
 def _validate_environment_names(values: Sequence[str], field_name: str) -> None:

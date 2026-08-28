@@ -79,7 +79,7 @@ class _RoutingRegistry(AdapterRegistry):
 def _make_node(
     tmp_path: Path,
     *,
-    env_include: tuple[str, ...] = (),
+    env: Mapping[str, str] | None = None,
 ) -> tuple[
     NodeApplication,
     dict[str, TestChannel],
@@ -95,10 +95,7 @@ def _make_node(
                 id=agent_id,
                 name=AGENT_NAMES[agent_id],
                 channel=ChannelConfiguration(kind="test"),
-                runtime=RuntimeConfiguration(
-                    kind="test",
-                    env_include=env_include,
-                ),
+                runtimes=(RuntimeConfiguration(kind="test", env=env or {}),),
             )
             for agent_id in (AGENT_A_ID, AGENT_B_ID)
         ),
@@ -271,7 +268,7 @@ async def test_runtime_error_redaction_uses_injected_token_values(
     monkeypatch.setenv("ORDINARY_VALUE", "ordinary-value")
     node, _, _ = _make_node(
         tmp_path,
-        env_include=("SERVICE_TOKEN", "ORDINARY_VALUE"),
+        env={"SERVICE_TOKEN": "SERVICE_TOKEN", "ORDINARY_VALUE": "ORDINARY_VALUE"},
     )
     await node.start()
     try:

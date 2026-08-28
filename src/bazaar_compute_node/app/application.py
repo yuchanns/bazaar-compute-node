@@ -149,7 +149,7 @@ class NodeApplication:
                 factories = await asyncio.to_thread(
                     self._registry.load_agent,
                     channel=configuration.channel.kind,
-                    runtime=configuration.runtime.kind,
+                    runtime=configuration.runtimes[0].kind,
                 )
                 storage_scope = self.storage.scope(configuration.id, configuration.name)
                 application = AgentApplication(
@@ -176,7 +176,7 @@ class NodeApplication:
                 agent_id=configuration.id,
                 name=configuration.name,
                 channel=configuration.channel.kind,
-                runtime=configuration.runtime.kind,
+                runtime=configuration.runtimes[0].kind,
                 status="failed",
                 error_type=type(error).__name__,
                 error=_safe_error(error),
@@ -190,7 +190,7 @@ class NodeApplication:
             agent_id=configuration.id,
             name=configuration.name,
             channel=configuration.channel.kind,
-            runtime=configuration.runtime.kind,
+            runtime=configuration.runtimes[0].kind,
             status="started",
         )
         self.agent_startup_results[configuration.id] = result
@@ -393,7 +393,7 @@ class NodeApplication:
                     "name": configuration.name,
                     "status": "pending",
                     "channel": configuration.channel.kind,
-                    "runtime": configuration.runtime.kind,
+                    "runtime": configuration.runtimes[0].kind,
                 }
             )
         return {

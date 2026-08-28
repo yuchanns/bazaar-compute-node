@@ -89,7 +89,7 @@ class AgentApplication:
         self._concurrency = SessionLockRegistry()
         self._started = False
         self._stopping = False
-        self._runtime_environment_include = configuration.runtime.env_include
+        self._runtime_environment_include = tuple(configuration.runtimes[0].env)
         self._logger = logging.getLogger("bazaar_compute_node.application.agent")
         self._attachment_materializer = AttachmentMaterializer(
             self.workspace_path,
@@ -108,13 +108,13 @@ class AgentApplication:
         self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)
         runtime_options: dict[str, str] = {
             key: value
-            for key, value in configuration.runtime.options.items()
+            for key, value in configuration.runtimes[0].options.items()
             if isinstance(value, str)
         }
-        if configuration.runtime.model is not None:
-            runtime_options["model"] = configuration.runtime.model
-        if configuration.runtime.effort is not None:
-            runtime_options["effort"] = configuration.runtime.effort
+        if configuration.runtimes[0].model is not None:
+            runtime_options["model"] = configuration.runtimes[0].model
+        if configuration.runtimes[0].effort is not None:
+            runtime_options["effort"] = configuration.runtimes[0].effort
         self._runtime_context = RuntimeCommandContext(
             run_command=self._run_runtime_command,
             environment_for_session=self._runtime_environment,
@@ -122,12 +122,12 @@ class AgentApplication:
             agent_name=self.name,
             bot_name=self._bot_name,
             runtime_options=runtime_options,
-            sandbox_mode=configuration.runtime.sandbox_mode,
-            network_access=configuration.runtime.network_access,
+            sandbox_mode=configuration.runtimes[0].sandbox_mode,
+            network_access=configuration.runtimes[0].network_access,
             startup_timeout_seconds=timeout_budget.startup_seconds,
         )
         self.runtime: IRuntime = factories.runtime(self._runtime_context)
-        idle_timeout_seconds = configuration.runtime.idle_timeout_seconds
+        idle_timeout_seconds = configuration.runtimes[0].idle_timeout_seconds
         if (
             isinstance(idle_timeout_seconds, bool)
             or not isinstance(idle_timeout_seconds, int | float)

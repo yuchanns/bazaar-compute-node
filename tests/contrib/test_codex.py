@@ -978,11 +978,13 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
                     id=agent_id,
                     name=agent_name,
                     channel=ChannelConfiguration(kind="test"),
-                    runtime=RuntimeConfiguration(
-                        kind="codex",
-                        model=TEST_MODEL,
-                        effort=TEST_EFFORT,
-                        idle_timeout_seconds=0.25,
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="codex",
+                            model=TEST_MODEL,
+                            effort=TEST_EFFORT,
+                            idle_timeout_seconds=0.25,
+                        ),
                     ),
                 ),
             ),
@@ -1110,10 +1112,12 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
                     id=agent_id,
                     name=agent_name,
                     channel=ChannelConfiguration(kind="test"),
-                    runtime=RuntimeConfiguration(
-                        kind="codex",
-                        model=TEST_MODEL,
-                        effort=TEST_EFFORT,
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="codex",
+                            model=TEST_MODEL,
+                            effort=TEST_EFFORT,
+                        ),
                     ),
                 ),
             ),

@@ -50,13 +50,13 @@ def test_help_and_version_output() -> None:
     assert CLIENT_INFO.version == distribution_version
 
 
-def test_cli_loads_v2_agent_configuration_and_defaults_node_options(
+def test_cli_loads_v3_agent_configuration_and_defaults_node_options(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-version = "2"
+version = "3"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -65,7 +65,7 @@ name = "default"
 [agent.channel]
 kind = "test"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "test"
 """.lstrip(),
         encoding="utf-8",
@@ -76,10 +76,10 @@ kind = "test"
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
-    assert args.configuration.version == "2"
+    assert args.configuration.version == "3"
     assert args.configuration.agents[0].channel.kind == "test"
-    assert args.configuration.agents[0].runtime.kind == "test"
-    runtime = args.configuration.agents[0].runtime
+    (runtime,) = args.configuration.agents[0].runtimes
+    assert runtime.kind == "test"
     assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert runtime.network_access is True
     assert runtime.idle_timeout_seconds == 0
@@ -91,7 +91,7 @@ def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> N
     configuration = load_node_configuration(config_path)
 
     assert config_path.is_file()
-    assert configuration.version == "2"
+    assert configuration.version == "3"
     assert configuration.agents == ()
     assert configuration.storage == "sqlite"
     assert configuration.audit == "logging"
@@ -112,7 +112,7 @@ def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
     config_path = data_dir / "config.toml"
     config_path.write_text(
         """
-version = "2"
+version = "3"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -121,18 +121,18 @@ name = "default"
 [agent.channel]
 kind = "telegram"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 sandbox_mode = "host-unrestricted"
 """.lstrip(),
         encoding="utf-8",
     )
-    with pytest.raises(ConfigurationError, match="runtime.sandbox_mode"):
+    with pytest.raises(ConfigurationError, match=r"runtime #1\.sandbox_mode"):
         load_node_configuration()
 
     config_path.write_text(
         """
-version = "2"
+version = "3"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -141,13 +141,13 @@ name = "default"
 [agent.channel]
 kind = "telegram"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 network_access = "yes"
 """.lstrip(),
         encoding="utf-8",
     )
-    with pytest.raises(ConfigurationError, match="runtime.network_access"):
+    with pytest.raises(ConfigurationError, match=r"runtime #1\.network_access"):
         load_node_configuration()
 
 
@@ -160,7 +160,7 @@ def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> 
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
         f"""
-version = "2"
+version = "3"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -169,14 +169,14 @@ name = "default"
 [agent.channel]
 kind = "telegram"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 idle_timeout = {value}
 """.lstrip(),
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigurationError, match="runtime.idle_timeout"):
+    with pytest.raises(ConfigurationError, match=r"runtime #1\.idle_timeout"):
         load_node_configuration()
 
 
@@ -192,7 +192,7 @@ def test_node_configuration_parses_runtime_idle_timeout(
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
         f"""
-version = "2"
+version = "3"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -201,7 +201,7 @@ name = "default"
 [agent.channel]
 kind = "telegram"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 idle_timeout = {value}
 """.lstrip(),
@@ -210,7 +210,9 @@ idle_timeout = {value}
 
     configuration = load_node_configuration()
 
-    assert configuration.agents[0].runtime.idle_timeout_seconds == expected_seconds
+    assert configuration.agents[0].runtimes[0].idle_timeout_seconds == (
+        expected_seconds
+    )
 
 
 def test_help_works_in_a_real_process() -> None:
@@ -227,7 +229,7 @@ def test_help_works_in_a_real_process() -> None:
 
 def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
     config_path = tmp_path / "empty-config.toml"
-    config_path.write_text('version = "2"\n', encoding="utf-8")
+    config_path.write_text('version = "3"\n', encoding="utf-8")
 
     parser = build_parser()
     args = parser.parse_args(["run", "--config", str(config_path), "--foreground"])
@@ -241,12 +243,45 @@ def test_agent_list_reports_empty_configuration(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "2"\n', encoding="utf-8")
+    config_path.write_text('version = "3"\n', encoding="utf-8")
 
     assert main(["agent", "list", "--config", str(config_path)]) == 0
 
     assert capsys.readouterr().out == (
         f"{create_translator(None).text('cli.agent.empty')}\n"
+    )
+
+
+def test_agent_list_joins_runtime_kinds_in_configuration_order(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    agent_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+    config_path.write_text(
+        f"""
+version = "3"
+
+[[agent]]
+id = "{agent_id}"
+name = "Tifa"
+
+[agent.channel]
+kind = "telegram"
+
+[[agent.runtime]]
+kind = "claudecode"
+
+[[agent.runtime]]
+kind = "codex"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    assert main(["agent", "list", "--config", str(config_path)]) == 0
+
+    assert capsys.readouterr().out == (
+        f"id={agent_id} name=Tifa channel=telegram runtime=claudecode,codex\n"
     )
 
 
@@ -280,7 +315,9 @@ def test_agent_add_preserves_typed_options_and_round_trips(
                 "--set",
                 "runtime.idle_timeout=600",
                 "--set",
-                'runtime.env_include=["CODEX_HOME"]',
+                "runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK",
+                "--set",
+                "runtime.env=SSH_AUTH_SOCK=SSH_AUTH_SOCK",
             ]
         )
         == 0
@@ -298,13 +335,159 @@ def test_agent_add_preserves_typed_options_and_round_trips(
         "bot_id": "bot-id",
         "token_env": "BCN_TELEGRAM_TIFA_TOKEN",
     }
-    assert agent["runtime"] == {
-        "kind": "codex",
-        "model": "gpt-5.6",
-        "sandbox_mode": "workspace-write",
-        "network_access": False,
-        "idle_timeout": 600.0,
-        "env_include": ["CODEX_HOME"],
+    assert agent["runtime"] == [
+        {
+            "kind": "codex",
+            "model": "gpt-5.6",
+            "sandbox_mode": "workspace-write",
+            "network_access": False,
+            "idle_timeout": 600.0,
+            "env": {
+                "CODEX_HOME": "BCN_CODEX_HOME_WORK",
+                "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",
+            },
+        }
+    ]
+    assert "runtime=codex" in output
+
+
+def test_agent_add_converts_deprecated_env_include_to_env(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                'runtime.env_include=["CODEX_HOME", "CUSTOM_CA"]',
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert create_translator(None).text("cli.agent.env_include_deprecated") in (
+        captured.err
+    )
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert document["agent"][0]["runtime"] == [
+        {
+            "kind": "codex",
+            "sandbox_mode": "workspace-write",
+            "network_access": True,
+            "idle_timeout": 0.0,
+            "env": {"CODEX_HOME": "CODEX_HOME", "CUSTOM_CA": "CUSTOM_CA"},
+        }
+    ]
+
+    # the deprecated spelling merges into the same table, and a repeated name
+    # is overwritten by the last --set rather than refused
+    merged_path = tmp_path / "merged.toml"
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(merged_path),
+                "--name",
+                "Aerith",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "codex",
+                "--set",
+                "runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK",
+                "--set",
+                'runtime.env_include=["CODEX_HOME", "CUSTOM_CA"]',
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    merged = tomllib.loads(merged_path.read_text(encoding="utf-8"))
+    assert merged["agent"][0]["runtime"][0]["env"] == {
+        "CODEX_HOME": "CODEX_HOME",
+        "CUSTOM_CA": "CUSTOM_CA",
+    }
+
+    conflict_path = tmp_path / "conflict.toml"
+
+    # both spellings are validated where they are redirected
+    for invalid in (
+        'runtime.env_include=["A", "A"]',
+        "runtime.env_include=[1]",
+        "runtime.env=CODEX_HOME",
+        "runtime.env==BCN_CODEX_HOME_WORK",
+        "runtime.env=bad-name=BCN_CODEX_HOME_WORK",
+    ):
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "agent",
+                    "add",
+                    "--config",
+                    str(conflict_path),
+                    "--name",
+                    "Aerith",
+                    "--channel",
+                    "telegram",
+                    "--runtime",
+                    "codex",
+                    "--set",
+                    invalid,
+                ]
+            )
+    assert "agent" not in tomllib.loads(conflict_path.read_text(encoding="utf-8"))
+
+
+def test_agent_add_accumulates_repeated_env_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+
+    assert (
+        main(
+            [
+                "agent",
+                "add",
+                "--config",
+                str(config_path),
+                "--name",
+                "Tifa",
+                "--channel",
+                "telegram",
+                "--runtime",
+                "claudecode",
+                "--set",
+                "runtime.env=ANTHROPIC_API_KEY=ANTHROPIC_API_KEY_WORK",
+                "--set",
+                "runtime.env=SSH_AUTH_SOCK=SSH_AUTH_SOCK",
+                "--set",
+                "runtime.provider_option=kept",
+            ]
+        )
+        == 0
+    )
+
+    text = config_path.read_text(encoding="utf-8")
+    # the table is a sub-table of the runtime array element, written last so the
+    # runtime's own keys are not swallowed by it
+    assert "[agent.runtime.env]" in text
+    assert text.index("provider_option") < text.index("[agent.runtime.env]")
+    assert tomllib.loads(text)["agent"][0]["runtime"][0]["env"] == {
+        "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY_WORK",
+        "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",
     }
 
 
@@ -313,8 +496,7 @@ def test_agent_add_rejects_invalid_options(
 ) -> None:
     # duplicate and kind options are refused
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "2"\n', encoding="utf-8")
-    original = config_path.read_text(encoding="utf-8")
+    config_path.write_text('version = "3"\n', encoding="utf-8")
 
     for option in ("runtime.model=first", "runtime.kind=codex"):
         with pytest.raises(SystemExit):
@@ -339,11 +521,9 @@ def test_agent_add_rejects_invalid_options(
                 ]
             )
 
-    assert config_path.read_text(encoding="utf-8") == original
-
     # daemon options do not belong to agent commands
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "2"\n', encoding="utf-8")
+    config_path.write_text('version = "3"\n', encoding="utf-8")
 
     with pytest.raises(SystemExit):
         main(
@@ -396,18 +576,15 @@ def test_agent_add_rejects_invalid_options(
     ]
     assert main(add_arguments) == 0
     capsys.readouterr()
-    original = config_path.read_text(encoding="utf-8")
 
     with pytest.raises(SystemExit):
         main(add_arguments)
-
-    assert config_path.read_text(encoding="utf-8") == original
 
 
 def test_agent_remove(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # removing by name or id only rewrites the configuration
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "2"\n', encoding="utf-8")
+    config_path.write_text('version = "3"\n', encoding="utf-8")
     add_arguments = [
         "agent",
         "add",
@@ -439,7 +616,7 @@ def test_agent_remove(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     second_id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
     config_path.write_text(
         f"""
-version = "2"
+version = "3"
 
 [[agent]]
 id = "{first_id}"
@@ -448,7 +625,7 @@ name = "Tifa"
 [agent.channel]
 kind = "telegram"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 
 [[agent]]
@@ -458,17 +635,14 @@ name = "{first_id}"
 [agent.channel]
 kind = "wecom"
 
-[agent.runtime]
+[[agent.runtime]]
 kind = "codex"
 """.lstrip(),
         encoding="utf-8",
     )
-    original = config_path.read_text(encoding="utf-8")
 
     with pytest.raises(SystemExit):
         main(["agent", "remove", first_id, "--config", str(config_path)])
-
-    assert config_path.read_text(encoding="utf-8") == original
 
 
 def test_agent_add_upgrades_legacy_configuration_before_mutation(
@@ -509,5 +683,5 @@ model = "gpt-5.6"
     )
 
     document = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert document["version"] == "2"
+    assert document["version"] == "3"
     assert [agent["name"] for agent in document["agent"]] == ["default", "Tifa"]

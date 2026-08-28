@@ -518,7 +518,7 @@ async def run_natural_conversation_contract(
                         id=ACCEPTANCE_AGENT_ID,
                         name="Test Agent",
                         channel=ChannelConfiguration(kind="test"),
-                        runtime=RuntimeConfiguration(kind="test"),
+                        runtimes=(RuntimeConfiguration(kind="test"),),
                     ),
                 ),
             ),
