@@ -44,7 +44,9 @@
 - 删除 agent 级 provider control 扩展点，让 registry 的 provider 组只剩 runtimes / channels /
   storages / audits；
 - 配置升级到 version 3：`[[agent.runtime]]` 表数组，每个 runtime 有自己的 model / effort /
-  sandbox_mode / network_access / idle_timeout / env；
+  sandbox_mode / network_access / env；
+- `idle_timeout` 是 Agent 级设置，写在 `[[agent]]` 上，一个 Agent 的所有 runtime 共用同一个
+  空闲阈值；
 - `env_include` 数组换成 `env` 表，表达「子进程变量名 → 节点进程变量名」，同一个 key 就能让两个
   同 kind 的 runtime 拿到不同账号的凭据；
 - 迁移链改成 payload→payload，`1 → 2 → 3` 依次套用后统一解析；
@@ -69,6 +71,7 @@ audit = "logging"
 [[agent]]
 id = "01a0420b-af5b-732c-9a95-b40df5e4bc17"
 name = "arima"
+idle_timeout = 600.0
 
 [agent.channel]
 kind = "lark"
@@ -76,16 +79,22 @@ kind = "lark"
 [[agent.runtime]]
 kind = "claudecode"
 model = "opus"
-idle_timeout = 600.0
-env = { SSH_AUTH_SOCK = "SSH_AUTH_SOCK", ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK" }
+
+[agent.runtime.env]
+SSH_AUTH_SOCK = "SSH_AUTH_SOCK"
+ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
 
 [[agent.runtime]]
 kind = "claudecode"
-env = { ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_PERSONAL" }
+
+[agent.runtime.env]
+ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_PERSONAL"
 
 [[agent.runtime]]
 kind = "codex"
-env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
+
+[agent.runtime.env]
+CODEX_HOME = "BCN_CODEX_HOME_WORK"
 ```
 
 `[agent.channel]` 与 `[[agent.runtime]]` 都跟在各自的 `[[agent]]` 元素后面，作用于最近一个数组元素。
@@ -102,33 +111,36 @@ env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
 
 `AgentConfiguration` 的 `runtime: RuntimeConfiguration` 改为
 `runtimes: tuple[RuntimeConfiguration, ...]`，`__post_init__` 要求它非空。
+`idle_timeout_seconds: float` 从 `RuntimeConfiguration` 移到 `AgentConfiguration`，
+非负有限数的校验一并搬过去，错误信息是 `agent.idle_timeout`。
 
 `CONFIG_VERSION` 改为 `"3"`。
 
 ### 3.3 解析与序列化
 
 `_parse_v3_configuration` 保留「不能定义 `node.channel` / `node.runtime`」的等价约束。
-`_parse_v3_agent` 要求 `agent #N.runtime` 是 TOML 表数组，逐个交给
+`_parse_v3_agent` 读取 agent 级的 `idle_timeout`（缺省 0，错误信息前缀 `agent #N.idle_timeout`），
+并要求 `agent #N.runtime` 是 TOML 表数组，逐个交给
 `_parse_runtime_configuration(runtime, kind, index=index, position=position)` 解析，错误信息前缀
 写成 `agent #N.runtime #M.<key>`。
 
-`_parse_runtime_configuration` 的 `standard_keys` 用 `"env"` 替换 `"env_include"`，其余非标准 key
-继续落进 `options`，因此 adapter 侧读取选项的路径不变
-（`contrib/claude/plugin.py:9-11`、`contrib/codex/plugin.py:9-11`）。
+`_parse_runtime_configuration` 的 `standard_keys` 用 `"env"` 替换 `"env_include"`，并去掉
+`"idle_timeout"`，其余非标准 key 继续落进 `options`，因此 adapter 侧读取选项的路径不变
+（`contrib/claude/plugin.py:9-11`、`contrib/codex/plugin.py:9-11`）。`idle_timeout` 不做任何
+特殊处理：它现在由 agent 级读取，写在 runtime 上就和其他未知 key 一样透传给 adapter。
 
-`_serialize_configuration` 为每个 runtime 输出一段 `[[agent.runtime]]`；`env` 非空时按 key 排序
-输出为 inline table，`_toml_value` 增加 Mapping 分支，key 复用 `_toml_key`。
+`_serialize_configuration` 在 `[[agent]]` 段里输出 `idle_timeout`，再为每个 runtime 输出一段
+`[[agent.runtime]]`；`env` 非空时按 key 排序输出为 `[agent.runtime.env]` 子表，且必须排在该
+runtime 自己的标量 key 之后，否则那些 key 会落进 `env` 里。`_toml_value` 本来就有 Mapping
+分支，key 复用 `_toml_key`。
 
 ### 3.4 迁移链
 
-`load_node_configuration` 改成 payload 链：
-
-```text
-{"1": _v1_to_v2_payload, "2": _v2_to_v3_payload}
-```
-
-从文件里读到的 version 开始依次套用，最后统一交给 `_parse_v3_configuration`，只有确实发生
-迁移时才 `_write_configuration`。
+`load_node_configuration` 改成 payload 链，实现成配置等级状态机：每个 version 是一个
+`_ConfigurationState`，状态上挂 `_ConfigurationUpgrade(apply, state)` 指向下一个状态，
+终态的 `upgrade` 是 `None`，`is_current` 就是「没有 upgrade」。从文件里读到的 version 对应的状态
+开始逐级 `advance()`，最后统一交给 `_parse_v3_configuration`，只有确实发生迁移时才
+`_write_configuration`。
 
 - `_v1_to_v2_payload` 承担现在 `_migrate_v1_configuration` 的全部逻辑，但产出 v2 payload dict
   而不是 `NodeConfiguration`：合并 `[node]` / `[runtime]` / `[runtime.env]` / `[channel.*]`，
@@ -136,15 +148,23 @@ env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
   `secret_env` 默认值，并调用
   `_read_legacy_workspace_id(data_dir=resolve_data_dir(), database_name=...)` 取回 agent id；
 - `_v2_to_v3_payload` 把每个 agent 的 `runtime` 表包成单元素表数组，把该表里的
-  `env_include = ["A", "B"]` 改写成 `env = { A = "A", B = "B" }`，并把顶层 version 改成 `"3"`。
+  `idle_timeout` 提到 agent 级的 `idle_timeout`，把 `env_include = ["A", "B"]` 合并进
+  `env = { A = "A", B = "B" }`（同名 key 以已有的 `env` 值为准），并把顶层 version 改成 `"3"`。
 
-`load_control_configuration` 的版本白名单放宽到 `{"1", "2", "3"}`。
+`load_control_configuration` 的版本白名单删掉，改为调用同一个 `_configuration_state()`，
+支持的版本列表因此只存在一处。
 
 ### 3.5 CLI 入口
 
-`--set` 的值本来就是按 TOML 值解析的（`agent_management.py:220` 的
-`tomllib.loads(f"value = {raw_value}")`），所以 `--set runtime.env={ A = "A" }` 这种 inline table
-不需要改 parser 就能用。
+`--set` 增加一个 `agent.` scope，`--set agent.idle_timeout=600` 落到 `AgentConfiguration`；
+`agent.` 下只读 `idle_timeout`，其余 key 直接忽略——`channel.` 与 `runtime.` 下的未知 key
+也是原样带过去的，这里不额外拦。
+
+`--set runtime.env` 是可重复的 `name=source` 对，不要求写 inline table：
+`--set runtime.env=A=B --set runtime.env=C=D` 会累积成一张表。解析放在 `_agent_option` 里、
+tomllib 兜底之前，因此值不会再被 TOML 解码。重复的 name 直接后者覆盖前者，不报错——手工编辑
+`config.toml` 同样防不住，行为保持一致；同一张 `[agent.runtime.env]` 里的重名则由 tomllib
+自己在 bcn 看到之前就拒绝。
 
 `--set runtime.env_include=["A", "B"]` 继续接受，标记为 deprecated。重定向放在
 `_agent_option`（`agent_management.py:200`）里：`runtime.env_include` 直接返回
@@ -154,8 +174,7 @@ env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
 
 这样下游只看得见 `runtime.env` 一个 key：`add` 里 `env_include` 的分支整段删掉，
 `runtime.env` 与 `runtime.env_include` 同时给出时也不需要新的判断——它们的 identity 都是
-`("runtime", "env")`，命中 `agent_management.py:97-98` 已有的
-`duplicate --set option` 检查。
+`("runtime", "env")`，一起并进同一张表，后写的名字覆盖先写的。
 
 提示文案加 `cli.agent.env_include_deprecated` 到 `resources/locales/en.toml` 与 `zh-CN.toml`；
 `cli.agent.set` 的帮助文案同步补上 `runtime.env` 的示例。
@@ -177,8 +196,8 @@ env = { CODEX_HOME = "BCN_CODEX_HOME_WORK" }
 - `runtime_options` 按该配置独立组装（`options` 里的字符串项，加上 `model` / `effort`）；
 - `sandbox_mode`、`network_access` 取该配置自己的值；
 - `self.runtimes: tuple[IRuntime, ...]`，与 `configuration.runtimes` 同序等长；
-- 每个配置的 `idle_timeout_seconds` 各自做 timer horizon 校验，得到同序的
-  `tuple[int, ...]` 的 `runtime_idle_timeout_ms`。
+- Agent 级的 `idle_timeout_seconds` 做一次 timer horizon 校验，换算成单个
+  `runtime_idle_timeout_ms`。
 
 子进程环境需要按下标取回 `RuntimeConfiguration`，直接用 `configuration.runtimes[index]`，
 不另存映射。
@@ -252,8 +271,8 @@ class RuntimePool:
 
 ### 5.3 SessionOrchestrator
 
-`runtime: IRuntime` 改为 `runtimes: Sequence[IRuntime]`，
-`runtime_idle_timeout_ms: int` 改为 `Sequence[int]`。
+`runtime: IRuntime` 改为 `runtimes: Sequence[IRuntime]`；`runtime_idle_timeout_ms` 仍是单个
+`int`，因为空闲阈值是 Agent 级设置。
 
 - `_create_runtime_session`（`session.py:294-313`）：
   `runtime_index = self._runtimes.select()`，`runtime = self._runtimes.get(runtime_index).name`；
@@ -261,7 +280,6 @@ class RuntimePool:
   `_start_or_reconcile_runtime_session` 的 `start_session` / `reconcile_session`
   （`session.py:1378`、`1383`）、`_stop_runtime_session_locked` 的 `stop_session`
   （`session.py:1585`）全部改用 `self._runtimes.get(runtime_session.runtime_index)`；
-- `_start_runtime_timer` 的 idle timeout 按 `runtime_session.runtime_index` 取；
 - `start()`（`session.py:421-424`）依次 start 所有实例，失败时 stop 所有实例；
   `stop()`（`session.py:502`）对所有实例调用 stop，逐个记录 `runtime.stop` 失败。
 
@@ -302,10 +320,9 @@ targets = tuple(
 ### 5.6 SessionTurnCoordinator
 
 `SessionTurnCoordinator.__init__`（`core/orchestration/turn.py:172-183`）的 `runtime: IRuntime`
-改为 `runtimes: RuntimePool`，并新增 `runtime_sessions: dict[str, RuntimeSession]`，由
-`SessionOrchestrator` 传入与 `self._runtime_sessions` 同一个字典引用，方式与现有的
-`turns=self._runtime_turns` 一致。`start_turn`（`turn.py:321`）与 `steer_turn`（`turn.py:471`）
-改用 `self._runtimes.get(context.runtime_session.runtime_index)`。
+改为 `runtimes: RuntimePool`。`start_turn`（`turn.py:321`）与 `steer_turn`（`turn.py:471`）
+改用 `self._runtimes.get(context.runtime_session.runtime_index)`；两处都从
+`context.runtime_session` 拿会话，因此不需要额外传入会话字典。
 
 ## 6. 任务拆分
 
@@ -341,10 +358,11 @@ checks：`uv sync`、`tests/app/test_registry.py`、`tests/app/test_daemon_proce
 
 ### Task 2：配置 version 3
 
-按第 3 节实现 `RuntimeConfiguration.env`、`AgentConfiguration.runtimes`、
-`CONFIG_VERSION = "3"`、`_parse_v3_configuration` / `_parse_v3_agent`、
-`_toml_value` 的 Mapping 分支、`_serialize_configuration` 的 `[[agent.runtime]]` 输出、
-payload 迁移链与 `load_control_configuration` 白名单。
+按第 3 节实现 `RuntimeConfiguration.env`、`AgentConfiguration.runtimes` 与
+`AgentConfiguration.idle_timeout_seconds`、`CONFIG_VERSION = "3"`、
+`_parse_v3_configuration` / `_parse_v3_agent`、`_serialize_configuration` 的 `[[agent]]`
+`idle_timeout` 与 `[[agent.runtime]]` / `[agent.runtime.env]` 输出、配置等级状态机形式的
+payload 迁移链，以及改用同一个状态查找的 `load_control_configuration`。
 
 `app/agent_management.py` 的 `add` 用单元素 `runtimes=(rc,)` 构造，并按 3.5 节处理
 `--set runtime.env` 与 deprecated 的 `--set runtime.env_include`
@@ -357,9 +375,9 @@ payload 迁移链与 `load_control_configuration` 白名单。
 
 测试：更新 `tests/app/test_config.py` 中的版本、解析与 round-trip 契约，覆盖 v1→v3 连续迁移、
 v2→v3 迁移（含 `env_include` 数组转 `env` 表）、v3 原样解析、序列化 round-trip、空
-`[[agent.runtime]]`、`env` 的名称校验与 inline table 序列化；在 `tests/test_cli.py` 覆盖
-`--set runtime.env` inline table、`--set runtime.env_include` 的转换与 deprecation 提示，
-以及两者同时给出时命中已有的 duplicate 检查。
+`[[agent.runtime]]`、`env` 的名称校验与 `[agent.runtime.env]` 子表序列化；在
+`tests/test_cli.py` 覆盖 `--set agent.idle_timeout`、可重复的 `--set runtime.env=name=source`、
+`--set runtime.env_include` 的转换与 deprecation 提示，以及两者同时给出时后者覆盖前者。
 
 checks：`tests/app/test_config.py`、`tests/app/test_composition.py`、`tests/test_cli.py`、
 `ruff format --check .`、`ruff check .`、`uv run scripts/pyright_lsp_check.py --outputjson .`、
@@ -370,8 +388,7 @@ checks：`tests/app/test_config.py`、`tests/app/test_composition.py`、`tests/t
 按第 4 节实现 registry 的 `runtimes` 工厂映射、`AgentApplication` 的多实例构造、
 per-runtime `RuntimeCommandContext`、按会话解析的子进程环境与 `env` 的取值/改名/剥离。
 
-`SessionOrchestrator` 本 Task 接收 `runtimes` 与 `runtime_idle_timeout_ms` 两个序列，
-内部先固定使用下标 0。
+`SessionOrchestrator` 本 Task 把 `runtime` 换成 `runtimes` 序列，内部先固定使用下标 0。
 
 测试：新增 `test_multi_runtime_agents`，本 Task 覆盖两个同 kind、`env` 指向不同来源变量的
 runtime 各自拿到正确的凭据、来源变量名不出现在子进程环境、同名直通项照常传入、
@@ -384,15 +401,18 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`
 ### Task 4：会话与 runtime 绑定
 
 按第 5.1、5.3、5.5、5.6 节实现：`RuntimeSession.runtime_index`、`_create_runtime_session` 选定
-runtime、所有 provider 调用按下标查实例、idle timeout 按下标取、
+runtime、所有 provider 调用按下标查实例、
 start/stop 覆盖所有实例、lifecycle 事件每实例一个 task、`RuntimeExpire` 与
 `RuntimeBackgroundIdle` 收窄到发出事件的 runtime、`SessionTurnCoordinator` 按会话取实例。
 
 本 Task 的 `RuntimePool` 只提供 `all` / `get` / `select`，`select()` 返回下一个下标。
 
-测试：扩展 `test_multi_runtime_agents`，覆盖两个 runtime 各自建立会话、同一会话的 start / turn /
-steer / stop 都落在同一个实例上、runtime A 的 `RuntimeExpire` 不影响 runtime B 的会话、
-两个 runtime 的 idle timeout 各自独立。
+测试：`test_multi_runtime_agents` 是 NodeApplication 层的构造与子进程环境测试，会话绑定要用
+orchestrator 层的 `queue_turn_plan` / `emit_expire` / TimerWheel，因此在
+`tests/contrib/test_orchestration.py` 新增 `make_multi_runtime_node` helper 与两个同级测试
+`test_multi_runtime_session_binding`、`test_multi_runtime_expiry_is_scoped_to_its_runtime`，覆盖
+两个 runtime 各自建立会话、同一会话的 start / turn / steer / stop 都落在同一个实例上、
+runtime A 的 `RuntimeExpire` 不影响 runtime B 的会话。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/core/`、`tests/app/test_composition.py`、
 `ruff format --check .`、`ruff check .`、
@@ -431,14 +451,14 @@ checks：`tests/contrib/test_orchestration.py`、`tests/core/test_audit.py`、
 2. v1 与 v2 配置能连续迁移到 v3 并原地写回，`env_include` 数组变成同名映射的 `env` 表；
    v3 配置解析与序列化 round-trip 稳定。
 3. `bcn agent add --set runtime.env_include=[...]` 仍然可用，写出来的是 `env` 表，并提示改用
-   `--set runtime.env`。
+   `--set runtime.env`；`--set agent.idle_timeout` 写到 `[[agent]]` 上。
 4. 一个 Agent 能同时运行 `claudecode` 与 `codex`，也能运行两个 `claudecode` 实例并分别使用
    `env` 指定来源的账号。
 5. `env` 中来源变量名与子进程变量名不同时，来源名不出现在子进程环境中，子进程变量名拿到
    正确的值。
 6. 每个 runtime session 的 start / turn / steer / background 检查 / reconcile / stop 都落在
    `RuntimeSession.runtime_index` 指向的同一个实例上。
-7. runtime A 的 idle 过期只过期 A 的会话，B 的会话继续服务。
+7. runtime A 发出的 `RuntimeExpire` 只过期 A 的会话，B 的会话继续服务。
 8. 连续创建会话时按配置顺序轮转；turn 终态触发 Channel 错误消息时该 runtime 在 `_BAN_MS`
    内被跳过；全部被 ban 时每次只放行最早被 ban 的一个，成功后立刻恢复参与轮转。
 9. 只配置一个 runtime 的 Agent 在该 runtime 失败后仍能继续选中它。

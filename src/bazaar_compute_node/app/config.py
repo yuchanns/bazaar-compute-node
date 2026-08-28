@@ -47,7 +47,6 @@ class RuntimeConfiguration:
     effort: str | None = None
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
-    idle_timeout_seconds: float = 0
     env: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     options: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -59,15 +58,6 @@ class RuntimeConfiguration:
             raise ConfigurationError("agent.runtime.sandbox_mode is invalid")
         if not isinstance(self.network_access, bool):
             raise ConfigurationError("agent.runtime.network_access must be a boolean")
-        if (
-            isinstance(self.idle_timeout_seconds, bool)
-            or not isinstance(self.idle_timeout_seconds, int | float)
-            or not math.isfinite(self.idle_timeout_seconds)
-            or self.idle_timeout_seconds < 0
-        ):
-            raise ConfigurationError(
-                "agent.runtime.idle_timeout must be a non-negative finite number"
-            )
         _validate_environment_names(
             (*self.env, *self.env.values()), "agent.runtime.env"
         )
@@ -79,12 +69,22 @@ class AgentConfiguration:
     name: str
     channel: ChannelConfiguration
     runtimes: tuple[RuntimeConfiguration, ...]
+    idle_timeout_seconds: float = 0
 
     def __post_init__(self) -> None:
         _validate_agent_id(self.id, "agent.id")
         _required_text(self.name, "agent.name")
         if not self.runtimes:
             raise ConfigurationError("agent.runtime must define at least one runtime")
+        if (
+            isinstance(self.idle_timeout_seconds, bool)
+            or not isinstance(self.idle_timeout_seconds, int | float)
+            or not math.isfinite(self.idle_timeout_seconds)
+            or self.idle_timeout_seconds < 0
+        ):
+            raise ConfigurationError(
+                "agent.idle_timeout must be a non-negative finite number"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +303,16 @@ def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
                 position=position,
             )
         )
+    idle_timeout = table.get("idle_timeout", 0)
+    if (
+        isinstance(idle_timeout, bool)
+        or not isinstance(idle_timeout, int | float)
+        or not math.isfinite(idle_timeout)
+        or idle_timeout < 0
+    ):
+        raise ConfigurationError(
+            f"agent #{index}.idle_timeout must be a non-negative finite number"
+        )
     return AgentConfiguration(
         id=_required_text(table.get("id"), f"agent #{index}.id"),
         name=_required_text(table.get("name"), f"agent #{index}.name"),
@@ -313,6 +323,7 @@ def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
             ),
         ),
         runtimes=tuple(runtimes),
+        idle_timeout_seconds=float(idle_timeout),
     )
 
 
@@ -337,16 +348,6 @@ def _parse_runtime_configuration(
     network_access = runtime.get("network_access", True)
     if not isinstance(network_access, bool):
         raise ConfigurationError(f"{prefix}.network_access must be a boolean")
-    idle_timeout = runtime.get("idle_timeout", 0)
-    if (
-        isinstance(idle_timeout, bool)
-        or not isinstance(idle_timeout, int | float)
-        or not math.isfinite(idle_timeout)
-        or idle_timeout < 0
-    ):
-        raise ConfigurationError(
-            f"{prefix}.idle_timeout must be a non-negative finite number"
-        )
     env = _environment_map(runtime.get("env", {}), f"{prefix}.env")
     standard_keys = {
         "kind",
@@ -354,7 +355,6 @@ def _parse_runtime_configuration(
         "effort",
         "sandbox_mode",
         "network_access",
-        "idle_timeout",
         "env",
     }
     return RuntimeConfiguration(
@@ -363,7 +363,6 @@ def _parse_runtime_configuration(
         effort=_optional_text(runtime.get("effort"), f"{prefix}.effort"),
         sandbox_mode=parsed_sandbox_mode,
         network_access=network_access,
-        idle_timeout_seconds=float(idle_timeout),
         env=env,
         options=MappingProxyType(
             {key: item for key, item in runtime.items() if key not in standard_keys}
@@ -480,6 +479,18 @@ def _v2_to_v3_payload(payload: Mapping[str, object]) -> dict[str, object]:
     for index, item in enumerate(raw_agents, start=1):
         agent = dict(_table(item, f"agent #{index}"))
         runtime = dict(_table(agent.get("runtime"), f"agent #{index}.runtime"))
+        idle_timeout = runtime.pop("idle_timeout", 0)
+        if (
+            isinstance(idle_timeout, bool)
+            or not isinstance(idle_timeout, int | float)
+            or not math.isfinite(idle_timeout)
+            or idle_timeout < 0
+        ):
+            raise ConfigurationError(
+                f"agent #{index}.runtime.idle_timeout "
+                "must be a non-negative finite number"
+            )
+        agent["idle_timeout"] = float(idle_timeout)
         env_include = _text_list(
             runtime.pop("env_include", []), f"agent #{index}.runtime.env_include"
         )
@@ -576,6 +587,7 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
                 "[[agent]]",
                 f"id = {_toml_value(agent.id)}",
                 f"name = {_toml_value(agent.name)}",
+                f"idle_timeout = {_toml_value(agent.idle_timeout_seconds)}",
                 "",
                 "[agent.channel]",
                 f"kind = {_toml_value(agent.channel.kind)}",
@@ -599,7 +611,6 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
                 lines.append(f"effort = {_toml_value(runtime.effort)}")
             lines.append(f"sandbox_mode = {_toml_value(runtime.sandbox_mode.value)}")
             lines.append(f"network_access = {_toml_value(runtime.network_access)}")
-            lines.append(f"idle_timeout = {_toml_value(runtime.idle_timeout_seconds)}")
             for key in sorted(runtime.options):
                 lines.append(f"{_toml_key(key)} = {_toml_value(runtime.options[key])}")
             if runtime.env:

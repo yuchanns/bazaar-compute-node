@@ -51,6 +51,7 @@ from ..timerwheel import (
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import RuntimeErrorReporter
+from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
     SessionContext,
@@ -117,7 +118,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         audit: IAudit,
         timeout_budget: TimeoutBudget,
         timer_wheel: TimerWheel,
-        runtime_idle_timeout_ms: Sequence[int] = (0,),
+        runtime_idle_timeout_ms: int = 0,
         workspace: Callable[[], Path],
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
@@ -126,33 +127,19 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
-        if not runtimes:
-            raise ValueError("runtimes must not be empty")
-        for runtime in runtimes:
-            if not isinstance(runtime.name, str) or not runtime.name:
-                raise ValueError("runtime.name must be a non-empty string")
-        if len(runtime_idle_timeout_ms) != len(runtimes):
-            raise ValueError("runtime_idle_timeout_ms must match runtimes")
-        for idle_timeout_ms in runtime_idle_timeout_ms:
-            if (
-                isinstance(idle_timeout_ms, bool)
-                or not isinstance(idle_timeout_ms, int)
-                or idle_timeout_ms < 0
-            ):
-                raise ValueError(
-                    "runtime_idle_timeout_ms must be a non-negative integer"
-                )
+        self._runtimes = RuntimePool(runtimes)
+        if (
+            isinstance(runtime_idle_timeout_ms, bool)
+            or not isinstance(runtime_idle_timeout_ms, int)
+            or runtime_idle_timeout_ms < 0
+        ):
+            raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
         self._agent_id = agent_id
         self._channel = channel
-        self._runtimes = tuple(runtimes)
-        self._runtime_idle_timeouts_ms = tuple(runtime_idle_timeout_ms)
-        # Task 4 binds each session to a runtime; until then everything runs on
-        # the first one
-        self._runtime = self._runtimes[0]
+        self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
         self._storage = storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
-        self._runtime_idle_timeout_ms = self._runtime_idle_timeouts_ms[0]
         self._concurrency = concurrency or SessionLockRegistry()
         self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}
@@ -197,7 +184,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._turns = SessionTurnCoordinator(
             agent_id=agent_id,
             channel=channel,
-            runtime=runtime,
+            runtimes=self._runtimes,
             storage=storage,
             audit=self._audit,
             state_machine=self._state_machine,
@@ -215,7 +202,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_timers: dict[str, _RuntimeTimerBinding] = {}
         self._expired_runtime_ids: set[str] = set()
         self._receive_task: asyncio.Task[None] | None = None
-        self._runtime_event_task: asyncio.Task[None] | None = None
+        self._runtime_event_tasks: list[asyncio.Task[None]] = []
         self._background_failures: dict[str, str] = {}
         self._started = False
         self._stopping = False
@@ -308,11 +295,13 @@ class SessionOrchestrator(IAsyncLifecycle):
         context: _DurableSessionContext,
     ) -> SessionContext:
         now_ms = self._clock()
+        runtime_index = self._runtimes.select()
         runtime_session = RuntimeSession(
             id=str(uuid7()),
             bcn_session_id=context.bcn_session.id,
             channel_session_id=context.channel_session.id,
-            runtime=self._runtime.name,
+            runtime=self._runtimes.get(runtime_index).name,
+            runtime_index=runtime_index,
             workspace_id=self.agent_id,
             created_at_ms=now_ms,
             updated_at_ms=now_ms,
@@ -367,8 +356,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             or self._state_machine.get(session_id) is not SessionRuntimeState.IDLE
         ):
             return
+        runtime = self._runtimes.get(runtime_session.runtime_index)
         try:
-            if await self._runtime.has_background_job(
+            if await runtime.has_background_job(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             ):
@@ -430,10 +420,12 @@ class SessionOrchestrator(IAsyncLifecycle):
         if self._stopping:
             raise RuntimeError("session orchestrator is stopping")
         try:
-            await self._runtime.start(timeout=timeout)
+            for runtime in self._runtimes.all():
+                await runtime.start(timeout=timeout)
             await self._channel.start(timeout=timeout)
         except BaseException:
-            await self._runtime.stop(timeout=timeout)
+            for runtime in self._runtimes.all():
+                await runtime.stop(timeout=timeout)
             raise
         self._started = True
         self._background_failures.clear()
@@ -442,11 +434,13 @@ class SessionOrchestrator(IAsyncLifecycle):
             name=f"bcn-channel-receive-{self.agent_id}",
         )
         self._observe_background_task("channel_receive", self._receive_task)
-        self._runtime_event_task = asyncio.create_task(
-            self._receive_runtime_event_loop(),
-            name=f"bcn-runtime-lifecycle-events-{self.agent_id}",
-        )
-        self._observe_background_task("runtime_event", self._runtime_event_task)
+        for index, runtime in enumerate(self._runtimes.all()):
+            event_task = asyncio.create_task(
+                self._receive_runtime_event_loop(index, runtime),
+                name=f"bcn-runtime-lifecycle-events-{self.agent_id}-{index}",
+            )
+            self._runtime_event_tasks.append(event_task)
+            self._observe_background_task(f"runtime_event:{index}", event_task)
 
     async def stop(self, *, timeout: float) -> None:
         if self._stopping:
@@ -468,14 +462,15 @@ class SessionOrchestrator(IAsyncLifecycle):
                 self._shutdown_errors.append("channel.receive: shutdown timeout")
         self._receive_task = None
 
-        runtime_event_task = self._runtime_event_task
-        if runtime_event_task is not None and not runtime_event_task.done():
-            runtime_event_task.cancel()
+        for index, event_task in enumerate(self._runtime_event_tasks):
+            if event_task.done():
+                continue
+            event_task.cancel()
             try:
-                await asyncio.wait_for(runtime_event_task, timeout=timeout)
+                await asyncio.wait_for(event_task, timeout=timeout)
             except TimeoutError, asyncio.CancelledError:
-                self._shutdown_errors.append("runtime.event: shutdown timeout")
-        self._runtime_event_task = None
+                self._shutdown_errors.append(f"runtime.event:{index}: shutdown timeout")
+        self._runtime_event_tasks.clear()
 
         active_tasks = tuple(self._active_tasks)
         for task in active_tasks:
@@ -510,12 +505,15 @@ class SessionOrchestrator(IAsyncLifecycle):
 
         await self._wait_for_runtime_teardown_tasks(timeout=timeout)
 
-        try:
-            await self._runtime.stop(timeout=timeout)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            self._shutdown_errors.append(f"runtime.stop: {type(error).__name__}")
+        for index, runtime in enumerate(self._runtimes.all()):
+            try:
+                await runtime.stop(timeout=timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001
+                self._shutdown_errors.append(
+                    f"runtime.stop:{index}: {type(error).__name__}"
+                )
         self._started = False
         self._session_runtime_states.clear()
         self._runtime_sessions.clear()
@@ -932,9 +930,9 @@ class SessionOrchestrator(IAsyncLifecycle):
                 break
             self.dispatch_inbound(message)
 
-    async def _receive_runtime_event_loop(self) -> None:
+    async def _receive_runtime_event_loop(self, index: int, runtime: IRuntime) -> None:
         while True:
-            event = await self._runtime.receive_event()
+            event = await runtime.receive_event()
             if self._stopping:
                 return
             if isinstance(event, RuntimeBackgroundIdle):
@@ -943,6 +941,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                         runtime_session
                         for runtime_session in self._runtime_sessions.values()
                         if runtime_session.id == event.runtime_session_id
+                        and runtime_session.runtime_index == index
                     ),
                     None,
                 )
@@ -954,12 +953,17 @@ class SessionOrchestrator(IAsyncLifecycle):
                     runtime_session
                     for runtime_session in self._runtime_sessions.values()
                     if runtime_session.id == event.runtime_session_id
+                    and runtime_session.runtime_index == index
                 ),
                 None,
             )
             if source is None or source.id in self._expired_runtime_ids:
                 continue
-            targets = tuple(self._runtime_sessions.values())
+            targets = tuple(
+                runtime_session
+                for runtime_session in self._runtime_sessions.values()
+                if runtime_session.runtime_index == index
+            )
             self._expired_runtime_ids.update(
                 runtime_session.id for runtime_session in targets
             )
@@ -1386,13 +1390,14 @@ class SessionOrchestrator(IAsyncLifecycle):
             },
         )
 
+        runtime = self._runtimes.get(runtime_session.runtime_index)
         if process_operation == "start":
-            provider_result = await self._runtime.start_session(
+            provider_result = await runtime.start_session(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
         else:
-            provider_result = await self._runtime.reconcile_session(
+            provider_result = await runtime.reconcile_session(
                 runtime_session,
                 turn,
                 approval_handler,
@@ -1420,6 +1425,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 or updated_runtime.bcn_session_id != context.bcn_session.id
                 or updated_runtime.channel_session_id != context.channel_session.id
                 or updated_runtime.runtime != runtime_session.runtime
+                or updated_runtime.runtime_index != runtime_session.runtime_index
                 or updated_runtime.workspace_id != self.agent_id
                 or updated_runtime.created_at_ms != runtime_session.created_at_ms
             ):
@@ -1594,7 +1600,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         timeout: float,
     ) -> None:
         try:
-            result = await self._runtime.stop_session(runtime_session, timeout=timeout)
+            result = await self._runtimes.get(
+                runtime_session.runtime_index
+            ).stop_session(runtime_session, timeout=timeout)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001

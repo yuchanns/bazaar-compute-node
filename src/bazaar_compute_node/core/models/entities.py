@@ -105,6 +105,7 @@ class RuntimeSession:
     bcn_session_id: str
     channel_session_id: str
     runtime: str
+    runtime_index: int
     workspace_id: str
     created_at_ms: int
     updated_at_ms: int

@@ -91,6 +91,7 @@ def run_agent_command(
         return 0
 
     if command == "add":
+        agent_values: dict[str, object] = {}
         channel_options: dict[str, object] = {}
         runtime_values: dict[str, object] = {}
         runtime_env: dict[str, str] = {}
@@ -105,10 +106,16 @@ def run_agent_command(
             if identity in seen:
                 parser.error(f"duplicate --set option: {scope}.{key}")
             seen.add(identity)
-            if scope == "channel":
+            if scope == "agent":
+                agent_values[key] = value
+            elif scope == "channel":
                 channel_options[key] = value
             else:
                 runtime_values[key] = value
+
+        idle_timeout = agent_values.pop("idle_timeout", 0)
+        if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, int | float):
+            parser.error("agent.idle_timeout must be a number")
 
         model = runtime_values.pop("model", None)
         effort = runtime_values.pop("effort", None)
@@ -126,9 +133,6 @@ def run_agent_command(
         network_access = runtime_values.pop("network_access", True)
         if not isinstance(network_access, bool):
             parser.error("runtime.network_access must be a boolean")
-        idle_timeout = runtime_values.pop("idle_timeout", 0)
-        if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, int | float):
-            parser.error("runtime.idle_timeout must be a number")
         if model is not None and not isinstance(model, str):
             parser.error("runtime.model must be text")
         if effort is not None and not isinstance(effort, str):
@@ -149,11 +153,11 @@ def run_agent_command(
                         effort=effort,
                         sandbox_mode=sandbox_mode,
                         network_access=network_access,
-                        idle_timeout_seconds=idle_timeout,
                         env=MappingProxyType(runtime_env),
                         options=MappingProxyType(runtime_values),
                     ),
                 ),
+                idle_timeout_seconds=idle_timeout,
             )
             updated = replace(
                 configuration,
@@ -206,15 +210,15 @@ def _agent_option(value: str) -> tuple[str, str, object]:
     if path != path.strip():
         raise argparse.ArgumentTypeError("--set option path cannot contain whitespace")
     scope, dot, key = path.partition(".")
-    if not dot or scope not in {"channel", "runtime"} or not key:
+    if not dot or scope not in {"agent", "channel", "runtime"} or not key:
         raise argparse.ArgumentTypeError(
-            "--set path must start with channel. or runtime."
+            "--set path must start with agent., channel. or runtime."
         )
     if key != key.strip():
         raise argparse.ArgumentTypeError(
             "--set option key cannot contain edge whitespace"
         )
-    if key == "kind":
+    if key == "kind" and scope != "agent":
         raise argparse.ArgumentTypeError(
             f"{scope}.kind must be provided with --{scope}"
         )

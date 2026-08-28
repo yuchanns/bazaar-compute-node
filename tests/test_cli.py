@@ -82,7 +82,7 @@ kind = "test"
     assert runtime.kind == "test"
     assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
     assert runtime.network_access is True
-    assert runtime.idle_timeout_seconds == 0
+    assert args.configuration.agents[0].idle_timeout_seconds == 0
 
 
 def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ network_access = "yes"
     "value",
     ['"one"', "true", "nan", "inf", "-inf"],
 )
-def test_node_configuration_rejects_invalid_runtime_idle_timeout(value: str) -> None:
+def test_node_configuration_rejects_invalid_agent_idle_timeout(value: str) -> None:
     data_dir = resolve_data_dir()
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
@@ -165,18 +165,18 @@ version = "3"
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
+idle_timeout = {value}
 
 [agent.channel]
 kind = "telegram"
 
 [[agent.runtime]]
 kind = "codex"
-idle_timeout = {value}
 """.lstrip(),
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigurationError, match=r"runtime #1\.idle_timeout"):
+    with pytest.raises(ConfigurationError, match=r"agent #1\.idle_timeout"):
         load_node_configuration()
 
 
@@ -184,7 +184,7 @@ idle_timeout = {value}
     ("value", "expected_seconds"),
     [("0", 0), ("1", 1), ("0.0001", 0.0001)],
 )
-def test_node_configuration_parses_runtime_idle_timeout(
+def test_node_configuration_parses_agent_idle_timeout(
     value: str,
     expected_seconds: float,
 ) -> None:
@@ -197,22 +197,20 @@ version = "3"
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
+idle_timeout = {value}
 
 [agent.channel]
 kind = "telegram"
 
 [[agent.runtime]]
 kind = "codex"
-idle_timeout = {value}
 """.lstrip(),
         encoding="utf-8",
     )
 
     configuration = load_node_configuration()
 
-    assert configuration.agents[0].runtimes[0].idle_timeout_seconds == (
-        expected_seconds
-    )
+    assert configuration.agents[0].idle_timeout_seconds == expected_seconds
 
 
 def test_help_works_in_a_real_process() -> None:
@@ -313,7 +311,7 @@ def test_agent_add_preserves_typed_options_and_round_trips(
                 "--set",
                 "runtime.network_access=false",
                 "--set",
-                "runtime.idle_timeout=600",
+                "agent.idle_timeout=600",
                 "--set",
                 "runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK",
                 "--set",
@@ -330,6 +328,7 @@ def test_agent_add_preserves_typed_options_and_round_trips(
     agent = document["agent"][0]
     assert UUID(agent["id"]).version == 7
     assert agent["name"] == "Tifa"
+    assert agent["idle_timeout"] == 600.0
     assert agent["channel"] == {
         "kind": "telegram",
         "bot_id": "bot-id",
@@ -341,7 +340,6 @@ def test_agent_add_preserves_typed_options_and_round_trips(
             "model": "gpt-5.6",
             "sandbox_mode": "workspace-write",
             "network_access": False,
-            "idle_timeout": 600.0,
             "env": {
                 "CODEX_HOME": "BCN_CODEX_HOME_WORK",
                 "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",
@@ -387,7 +385,6 @@ def test_agent_add_converts_deprecated_env_include_to_env(
             "kind": "codex",
             "sandbox_mode": "workspace-write",
             "network_access": True,
-            "idle_timeout": 0.0,
             "env": {"CODEX_HOME": "CODEX_HOME", "CUSTOM_CA": "CUSTOM_CA"},
         }
     ]

@@ -109,7 +109,6 @@ class AgentApplication:
         self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
-        runtime_idle_timeout_ms: list[int] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
             runtime_options: dict[str, str] = {
                 key: value
@@ -135,23 +134,18 @@ class AgentApplication:
             )
             runtime_contexts.append(context)
             runtimes.append(factories.runtimes[runtime_configuration.kind](context))
-            idle_timeout_seconds = runtime_configuration.idle_timeout_seconds
-            if (
-                isinstance(idle_timeout_seconds, bool)
-                or not isinstance(idle_timeout_seconds, int | float)
-                or not math.isfinite(idle_timeout_seconds)
-            ):
-                raise ValueError("runtime idle timeout must be a finite number")
-            if (
-                idle_timeout_seconds > 0
-                and idle_timeout_seconds * 1_000 > timer_wheel.maximum_delay_ms
-            ):
-                raise ValueError("runtime idle timeout exceeds the timer horizon")
-            runtime_idle_timeout_ms.append(
-                math.ceil(idle_timeout_seconds * 1_000)
-                if idle_timeout_seconds > 0
-                else 0
-            )
+        idle_timeout_seconds = configuration.idle_timeout_seconds
+        if (
+            isinstance(idle_timeout_seconds, bool)
+            or not isinstance(idle_timeout_seconds, int | float)
+            or not math.isfinite(idle_timeout_seconds)
+        ):
+            raise ValueError("agent idle timeout must be a finite number")
+        if (
+            idle_timeout_seconds > 0
+            and idle_timeout_seconds * 1_000 > timer_wheel.maximum_delay_ms
+        ):
+            raise ValueError("agent idle timeout exceeds the timer horizon")
         self._runtime_contexts = tuple(runtime_contexts)
         self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
         self.orchestrator = SessionOrchestrator(
@@ -162,7 +156,11 @@ class AgentApplication:
             audit=self.audit,
             timeout_budget=self.timeout_budget,
             timer_wheel=self.timer_wheel,
-            runtime_idle_timeout_ms=tuple(runtime_idle_timeout_ms),
+            runtime_idle_timeout_ms=(
+                math.ceil(idle_timeout_seconds * 1_000)
+                if idle_timeout_seconds > 0
+                else 0
+            ),
             workspace=self.workspace_path,
             translator=self.translator,
             error_feedback_detail=self._error_feedback_detail,
@@ -471,8 +469,7 @@ class AgentApplication:
         environment = self._build_command_environment(
             session_id,
             runtime_session.id,
-            # Task 4 binds the session to a runtime and takes the index from it
-            runtime_index=0,
+            runtime_index=runtime_session.runtime_index,
         )
         process = await asyncio.create_subprocess_exec(
             str(wrapper_path),

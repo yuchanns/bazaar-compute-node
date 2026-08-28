@@ -97,7 +97,8 @@ include = ["CUSTOM_CA"]
     assert runtime.effort == "max"
     assert runtime.sandbox_mode is RuntimeSandboxMode.DANGER_FULL_ACCESS
     assert runtime.network_access is False
-    assert runtime.idle_timeout_seconds == 12.5
+    # the v1 runtime idle timeout is lifted onto the agent by the v2 -> v3 step
+    assert agent.idle_timeout_seconds == 12.5
     # a v1 include list becomes a same-name v3 mapping in one chained upgrade
     assert runtime.env == {"CUSTOM_CA": "CUSTOM_CA"}
     text = config_path.read_text(encoding="utf-8")
@@ -106,6 +107,7 @@ include = ["CUSTOM_CA"]
     assert written["version"] == "3"
     assert written["agent"][0]["id"] == LEGACY_AGENT_ID
     assert written["agent"][0]["name"] == "default"
+    assert written["agent"][0]["idle_timeout"] == 12.5
     assert written["agent"][0]["channel"]["kind"] == "wecom"
     assert written["agent"][0]["runtime"] == [
         {
@@ -114,7 +116,6 @@ include = ["CUSTOM_CA"]
             "effort": "max",
             "sandbox_mode": "danger-full-access",
             "network_access": False,
-            "idle_timeout": 12.5,
             "env": {"CUSTOM_CA": "CUSTOM_CA"},
         }
     ]
@@ -209,6 +210,7 @@ lang = "zh-CN"
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "CloudStrife"
+idle_timeout = 60
 
 [agent.channel]
 kind = "telegram"
@@ -217,7 +219,6 @@ token_env = "TELEGRAM_TOKEN"
 [[agent.runtime]]
 kind = "claudecode"
 model = "opus"
-idle_timeout = 60
 
 [agent.runtime.env]
 ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
@@ -256,7 +257,7 @@ kind = "codex"
         "claudecode",
         "codex",
     ]
-    assert first.agents[0].runtimes[0].idle_timeout_seconds == 60
+    assert first.agents[0].idle_timeout_seconds == 60
     assert first.agents[0].runtimes[0].env == {
         "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY_WORK",
         "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",

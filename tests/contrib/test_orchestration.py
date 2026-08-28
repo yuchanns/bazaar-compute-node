@@ -311,7 +311,7 @@ async def make_idle_timeout_node(
         audit=RecordingAudit(),
         timeout_budget=make_budget(),
         timer_wheel=wheel,
-        runtime_idle_timeout_ms=(idle_timeout_ms,),
+        runtime_idle_timeout_ms=idle_timeout_ms,
         workspace=Path.cwd,
         translator=_ENGLISH_TRANSLATOR,
         error_feedback_detail=unchanged_error_feedback_detail,
@@ -3568,3 +3568,96 @@ async def test_multi_runtime_agents(
         assert "TEST_RUNTIME_HOME" not in second
     finally:
         await node.stop()
+
+
+async def make_multi_runtime_node() -> tuple[
+    SessionOrchestrator, tuple[_NamedTestRuntime, _NamedTestRuntime], TimerWheel
+]:
+    channel = TestChannel()
+    runtimes = (_NamedTestRuntime("first", ()), _NamedTestRuntime("second", ()))
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    wheel = TimerWheel()
+    await wheel.start()
+    orchestrator = SessionOrchestrator(
+        agent_id="workspace-1",
+        channel=channel,
+        runtimes=runtimes,
+        storage=storage.scope("workspace-1", "Test Agent"),
+        audit=RecordingAudit(),
+        timeout_budget=make_budget(),
+        timer_wheel=wheel,
+        workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
+    )
+    for runtime in runtimes:
+        runtime.command_service = orchestrator.command_service
+    await orchestrator.start(timeout=1)
+    return orchestrator, runtimes, wheel
+
+
+@pytest.mark.asyncio
+async def test_multi_runtime_session_binding() -> None:
+    # case: consecutive sessions take the runtimes in configuration order
+    orchestrator, (first, second), wheel = await make_multi_runtime_node()
+    first.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    first_task = orchestrator.dispatch_inbound(make_message(session_id="bcn-a", seq=1))
+    try:
+        await first.turn_started.wait()
+        session_a = orchestrator.runtime_session("bcn-a")
+        assert session_a is not None
+        assert (session_a.runtime, session_a.runtime_index) == ("first", 0)
+
+        # case: a steer for a live turn reaches the instance that started it
+        first.queue_turn_plan(TestTurnPlan())
+        second_task = orchestrator.dispatch_inbound(
+            make_message(session_id="bcn-a", seq=2)
+        )
+        await wait_until(lambda: len(first.steered_turns) == 1)
+        next(iter(first.active_streams)).release()
+        await asyncio.gather(first_task, second_task)
+
+        await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
+        session_b = orchestrator.runtime_session("bcn-b")
+        assert session_b is not None
+        assert (session_b.runtime, session_b.runtime_index) == ("second", 1)
+
+        # case: start and turn calls never cross over to the other instance
+        assert [session.id for session in first.started_sessions] == [session_a.id]
+        assert [session.id for session in second.started_sessions] == [session_b.id]
+        assert {session.id for session, _, _ in first.started_turns} == {session_a.id}
+        assert {session.id for session, _, _ in second.started_turns} == {session_b.id}
+        assert {session.id for session, _, _ in first.steered_turns} == {session_a.id}
+        assert second.steered_turns == []
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
+
+    # case: shutdown stops each session through the instance that owns it
+    assert [session.id for session in first.stopped_sessions] == [session_a.id]
+    assert [session.id for session in second.stopped_sessions] == [session_b.id]
+
+
+@pytest.mark.asyncio
+async def test_multi_runtime_expiry_is_scoped_to_its_runtime() -> None:
+    # case: an expire fans out only to the sessions of the runtime that sent it
+    orchestrator, (first, second), wheel = await make_multi_runtime_node()
+    try:
+        await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1))
+        await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
+        session_a = orchestrator.runtime_session("bcn-a")
+        session_b = orchestrator.runtime_session("bcn-b")
+        assert session_a is not None
+        assert session_b is not None
+
+        first.emit_expire(session_a.id)
+        await wait_until(lambda: orchestrator.runtime_session("bcn-a") is None)
+        await wait_until(lambda: len(first.stopped_sessions) == 1)
+
+        assert orchestrator.runtime_session("bcn-b") is session_b
+        assert [session.id for session in first.stopped_sessions] == [session_a.id]
+        assert second.stopped_sessions == []
+    finally:
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
