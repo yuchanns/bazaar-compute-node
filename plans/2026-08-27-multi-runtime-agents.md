@@ -55,7 +55,8 @@
 - `RuntimeSession` 记录所选下标，`SessionOrchestrator` 与 `SessionTurnCoordinator` 按它查实例，
   子进程环境也按它解析；
 - runtime lifecycle 事件每个实例一个 task，`RuntimeExpire` 只影响发出事件的那个 runtime 的会话；
-- 新增 `RuntimePool` 承载 round-robin、ban 与半开，并接入失败/成功上报与审计。
+- 新增 `RuntimePool` 承载 round-robin、ban 与半开，并接入失败/成功上报与审计；
+- 一个 turn 里 runtime 失败时先换下一个 runtime 重试，全部试过仍失败才向 Channel 发错误消息。
 
 ## 3. 配置合同（version 3）
 
@@ -112,7 +113,7 @@ CODEX_HOME = "BCN_CODEX_HOME_WORK"
 `AgentConfiguration` 的 `runtime: RuntimeConfiguration` 改为
 `runtimes: tuple[RuntimeConfiguration, ...]`，`__post_init__` 要求它非空。
 `idle_timeout_seconds: float` 从 `RuntimeConfiguration` 移到 `AgentConfiguration`，
-非负有限数的校验一并搬过去，错误信息是 `agent.idle_timeout`。
+非负有限数的校验一同移至该处，错误信息为 `agent.idle_timeout`。
 
 `CONFIG_VERSION` 改为 `"3"`。
 
@@ -126,13 +127,13 @@ CODEX_HOME = "BCN_CODEX_HOME_WORK"
 
 `_parse_runtime_configuration` 的 `standard_keys` 用 `"env"` 替换 `"env_include"`，并去掉
 `"idle_timeout"`，其余非标准 key 继续落进 `options`，因此 adapter 侧读取选项的路径不变
-（`contrib/claude/plugin.py:9-11`、`contrib/codex/plugin.py:9-11`）。`idle_timeout` 不做任何
-特殊处理：它现在由 agent 级读取，写在 runtime 上就和其他未知 key 一样透传给 adapter。
+（`contrib/claude/plugin.py:9-11`、`contrib/codex/plugin.py:9-11`）。`idle_timeout` 不做特殊
+处理：它由 agent 级读取，写在 runtime 上时与其他未知 key 一样透传给 adapter。
 
 `_serialize_configuration` 在 `[[agent]]` 段里输出 `idle_timeout`，再为每个 runtime 输出一段
 `[[agent.runtime]]`；`env` 非空时按 key 排序输出为 `[agent.runtime.env]` 子表，且必须排在该
-runtime 自己的标量 key 之后，否则那些 key 会落进 `env` 里。`_toml_value` 本来就有 Mapping
-分支，key 复用 `_toml_key`。
+runtime 自身的标量 key 之后，否则这些 key 会落入 `env`。`_toml_value` 已有 Mapping 分支，
+key 复用 `_toml_key`。
 
 ### 3.4 迁移链
 
@@ -157,14 +158,13 @@ runtime 自己的标量 key 之后，否则那些 key 会落进 `env` 里。`_to
 ### 3.5 CLI 入口
 
 `--set` 增加一个 `agent.` scope，`--set agent.idle_timeout=600` 落到 `AgentConfiguration`；
-`agent.` 下只读 `idle_timeout`，其余 key 直接忽略——`channel.` 与 `runtime.` 下的未知 key
-也是原样带过去的，这里不额外拦。
+`agent.` 下只读取 `idle_timeout`，其余 key 忽略；`channel.` 与 `runtime.` 下的未知 key 同样
+原样传递，此处不额外拦截。
 
 `--set runtime.env` 是可重复的 `name=source` 对，不要求写 inline table：
-`--set runtime.env=A=B --set runtime.env=C=D` 会累积成一张表。解析放在 `_agent_option` 里、
-tomllib 兜底之前，因此值不会再被 TOML 解码。重复的 name 直接后者覆盖前者，不报错——手工编辑
-`config.toml` 同样防不住，行为保持一致；同一张 `[agent.runtime.env]` 里的重名则由 tomllib
-自己在 bcn 看到之前就拒绝。
+`--set runtime.env=A=B --set runtime.env=C=D` 累积成一张表。解析放在 `_agent_option` 内、
+tomllib 兜底之前，因此该值不再被 TOML 解码。重复的 name 由后者覆盖前者且不报错，与手工编辑
+`config.toml` 的结果一致；同一张 `[agent.runtime.env]` 内的重名由 tomllib 在 bcn 读到之前拒绝。
 
 `--set runtime.env_include=["A", "B"]` 继续接受，标记为 deprecated。重定向放在
 `_agent_option`（`agent_management.py:200`）里：`runtime.env_include` 直接返回
@@ -258,18 +258,17 @@ class RuntimePool:
 - 构造时要求 `runtimes` 非空，且每个实例的 `name` 是非空文本（原
   `session.py:129-130` 的校验搬到这里）；
 - ban 状态是内存 `dict[int, int]`，下标 → 解禁时间戳（毫秒）；
-- `select()` 按配置顺序找第一个 `ban_until <= now` 的项，顺手丢掉它那条已过期的记录。
-  **配置顺序就是优先级顺序，没有游标**：一个 runtime 只要还能用就一直服务，只有 ban 才会把
-  选择推到下一个。所谓 round-robin 指的是「失败时轮到下一个可用的」，不是每次选择都往后挪一位。
-  三个 runtime 的例子：第一个 turn 选 1、失败并 ban 1、改选 2 成功；第二个 turn 直接从 2 开始；
-  第三个 turn 2 失败并被 ban，改选 3。全部仍在 ban 中时，取 `ban_until` 最小的那个（最早被
-  ban 的）返回，
-  **但不清除它的 ban 记录**：探测失败时 `record_failure` 会把它的 `ban_until` 推到最后，半开名额
-  自然轮到下一个；探测成功时才由 `record_success` 真正解禁。若在 `select()` 里就清掉记录，
-  `record_success` 永远找不到可解禁的项，`runtime.pool.released` 事件就成了死代码；
+- `select()` 按配置顺序取第一个 `ban_until <= now` 的下标，并删除该下标已过期的 ban 记录。
+  配置顺序即优先级顺序，不设游标：一个 runtime 可用时持续服务，只有 ban 会把选择推进到下一个。
+  轮转指的是失败后轮到下一个可用实例，而非每次选择都前进一位。三个 runtime 的行为示例：
+  第一个 turn 选中 1，失败并 ban 1，改选 2 并成功；第二个 turn 从 2 开始；第三个 turn 2 失败
+  并被 ban，改选 3。全部仍在 ban 中时，取 `ban_until` 最小的下标返回，并保留其 ban 记录：
+  探测失败时 `record_failure` 会把它的 `ban_until` 推到最后，半开名额随之轮到下一个；
+  探测成功时由 `record_success` 解禁。若在 `select()` 内清除该记录，`record_success` 将不存在
+  可解禁的项，`runtime.pool.released` 事件永远不会发出；
 - `record_failure(index)` 写入 `ban_until = now + _BAN_MS` 并返回它，`_BAN_MS` 是模块常量
   `3_600_000`；
-- `record_success(index)` 删除并返回该下标的 ban 记录（没有就返回 `None`），让半开探测成功后
+- `record_success(index)` 删除并返回该下标的 ban 记录，不存在时返回 `None`，使半开探测成功后
   立即恢复；
 - 只配置一个 runtime 时，它被 ban 后的下一次 `select()` 立刻走半开分支放行自己。
 
@@ -338,6 +337,62 @@ targets = tuple(
 改为 `runtimes: RuntimePool`。`start_turn`（`turn.py:321`）与 `steer_turn`（`turn.py:471`）
 改用 `self._runtimes.get(context.runtime_session.runtime_index)`；两处都从
 `context.runtime_session` 拿会话，因此不需要额外传入会话字典。
+
+### 5.7 turn 内 runtime failover
+
+一个 runtime 无法完成当前 turn 时，交给下一个未尝试过的 runtime 重跑；所有 runtime 都尝试过
+且仍然失败，才走 5.4 的上报点向 Channel 发错误消息。ban 只作用于选择顺序：仍有未被 ban 的实例
+时，被 ban 的实例不会被选中，直到其 ban 到期。
+
+failover 的判定与失败原因无关，取 5.4 已经收敛的同一个条件：终态命中 `MESSAGE_KEYS`，即
+`RuntimeTurnState.FAILED` 与 `RuntimeTurnState.UNKNOWN` 都触发 failover。`UNKNOWN` 表示本次执行
+结果未知，换 runtime 重跑存在重复执行的可能，此处接受该代价：接手的 runtime 不继承任何上下文，
+它得到的是新建的 runtime session 与同一条 inbox notice，历史记录由它经 `bcc message` 读取，
+failover 是在另一个实例上重新开始而非续跑。`UNKNOWN` 交接时仍先 `_abandon_runtime_session`
+再丢弃会话，与现有处理一致。额度耗尽通常发生在 turn 开始阶段（`start_session` / `start_turn`），
+此时该 runtime 尚未产出内容。
+
+`RuntimePool.select` 增加 `exclude`：
+
+```python
+def select(self, *, exclude: Container[int] = ()) -> int: ...
+```
+
+先收出未被排除的下标作为候选集，正常分支与半开分支都只在候选集内挑选；候选集为空时抛
+`ValueError`，调用方保证不会排除全部下标。
+
+`_run_notification`（`session.py:1089`）现有的两个 `range(2)` 循环保留，在其外层再套一圈按
+runtime 轮的 failover 循环。两者处理的失败类别不同：
+
+- 同一 runtime 内重试一次，处理子进程未能启动的情况，对应 `_ensure_runtime_session_or_discard`
+  未到达 IDLE，以及 `start_turn` 抛 `RuntimeSessionUnavailable`（两个 adapter 均在进程未运行时
+  抛出）。该类失败尚不足以判定这个 runtime 不可用，因此先重试一次；重试仍失败才判定不可用，
+  此时才 ban 并交给下一个。
+- 交给下一个 runtime，处理限额与限流：runtime 已启动并接受了该 turn 之后才拒绝或失败，已可判定
+  它当前不可用，在同一实例上重试只会增加上游负载。
+
+stream 给出的普通终态失败不经过任何重试，直接进入 failover。单 runtime 与多 runtime 不做分支
+区分：`attempted` 覆盖全部下标时 `_hand_turn_to_another_runtime` 返回 `False`。
+
+- `attempted: set[int]`，每一轮解析出 `context` 之后加入其 `runtime_index`；
+- 一个 turn 有三个终态出口（会话未到达 IDLE、turn 跑完得到终态、本地重试后仍然
+  `RuntimeSessionUnavailable`），三处共用
+  `_hand_turn_to_another_runtime(message, context, turn, attempted)`：终态命中 `MESSAGE_KEYS`
+  且仍有未尝试的 runtime 时，调用 5.4 的 `_record_runtime_outcome` 完成 ban 与
+  `runtime.pool.banned` 审计、丢弃当前 runtime session，返回 `True`；外层据此进入下一轮，
+  `_create_runtime_session(exclude=attempted)` 落到一个未尝试过的 runtime 上；
+- 三个出口都返回 `False` 时（终态无需报错，或所有 runtime 都已尝试）返回该终态，由 5.4 的上报点
+  发错误消息并 ban 最后这个 runtime；
+- 只配置一个 runtime 时 `attempted` 一开始即为全集，`_hand_turn_to_another_runtime` 恒为
+  `False`，行为与现状一致。
+
+`RuntimeAttempt` 不重写：`sessions.py:238` 中它是不可变的，以不同 `session_id` 重复
+`save_runtime_attempt` 会抛 `runtime attempt is immutable`。其 `session_id` 只被写入，唯一的
+读取是按 `turn_id` 判存在性做幂等，因此 failover 时保留该行，它记录 turn 最初所属的 runtime
+session；随之改变的是内存中的 `RuntimeTurn.session_id` 与 `self._runtime_turns[turn_id]`，
+`finish_turn` 与 correlation 使用后者。
+
+5.4 中写审计事件的代码抽为一个方法，供 failover 循环与上报点共用。
 
 ## 6. 任务拆分
 
@@ -439,21 +494,38 @@ checks：`tests/contrib/test_orchestration.py`、`tests/core/`、`tests/app/test
 在 `session.py:704-710` 的错误反馈点按 `MESSAGE_KEYS` 命中与否上报，并记录
 `runtime.pool.banned` / `runtime.pool.released` 审计事件。
 
-测试：`RuntimePool` 的轮转、ban、到期、半开与解禁用直接构造 pool 的
+测试：轮转、ban、到期、半开与解禁由直接构造 pool 的
 `test_runtime_pool_moves_on_to_the_next_runtime_when_one_is_banned` 与
-`test_single_runtime_pool_always_offers_its_only_runtime`
-覆盖（时间相关分支靠构造函数已有的 `clock` 驱动）；接线部分用
-`test_multi_runtime_bans_the_runtime_that_answered_with_an_error` 与
-`test_multi_runtime_bans_a_runtime_that_cannot_start_a_session` 覆盖 turn 以 FAILED / UNKNOWN
-收敛并向 Channel 发出错误消息后该 runtime 被跳过、start 失败经 `RuntimeSessionUnavailable`
-收敛成 FAILED 后被跳过、全部被 ban 时只放行最早被 ban 的一个、半开成功后解禁，以及
-`runtime.pool.banned` / `runtime.pool.released` 审计事件。
+`test_single_runtime_pool_always_offers_its_only_runtime` 覆盖，时间相关分支由构造函数已有的
+`clock` 驱动；接线部分覆盖 turn 以 FAILED / UNKNOWN 收敛并向 Channel 发出错误消息后该 runtime
+被跳过、start 失败经 `RuntimeSessionUnavailable` 收敛成 FAILED 后被跳过、全部被 ban 时只放行
+最早被 ban 的一个、半开成功后解禁，以及 `runtime.pool.banned` / `runtime.pool.released`
+审计事件。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/core/test_audit.py`、
 `tests/core/test_error_feedback.py`、`ruff format --check .`、`ruff check .`、
 `uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
 
-### Task 6：最终验收
+### Task 6：turn 内 runtime failover
+
+按第 5.7 节实现 `RuntimePool.select` 的 `exclude`、`_run_notification` 的 failover 循环，
+以及 `runtime.pool.banned` 审计写入的复用。
+
+测试：新增 `test_multi_runtime_failover_answers_before_reporting_an_error`（第一个 runtime 的
+turn 以 FAILED 收敛后换第二个重跑并成功、Channel 上没有错误消息、第一个被 ban）与
+`test_multi_runtime_reports_once_every_runtime_has_failed`（第二个跑出 `UNKNOWN`，两个都试过
+之后才发一条错误消息、两个都被 ban；随后一个 turn 走半开探测最早被 ban 的那个并解禁）。
+Task 5 的接线测试按 failover 后的行为改写为
+`test_multi_runtime_hands_over_a_runtime_that_cannot_start_a_session`，断言 start 失败在同一
+runtime 重试一次后仍失败时被 ban 并交给下一个 runtime。既有的单 runtime 重试测试
+（`test_pre_start_failure_reconciles_and_retries_the_current_inbound`、
+`test_repeated_pre_start_failure_stops_after_one_retry`、
+`test_runtime_start_failure_handling`）保持不变，它们约束的是「同一 runtime 重试一次」这条契约。
+
+checks：`tests/contrib/test_orchestration.py`、`tests/core/`、`ruff format --check .`、
+`ruff check .`、`uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
+
+### Task 7：最终验收
 
 - 运行完整非 e2e pytest suite；
 - 运行 `ruff format --check .`、`ruff check .`、
@@ -483,4 +555,6 @@ checks：`tests/contrib/test_orchestration.py`、`tests/core/test_audit.py`、
 9. 只配置一个 runtime 的 Agent 在该 runtime 失败后仍能继续选中它。
 10. `runtime.pool.banned` / `runtime.pool.released` 出现在审计流中，metadata 含下标、
     adapter kind 与 `ban_until_ms`。
-11. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。
+11. 一个 turn 里第一个 runtime 失败时换下一个重跑，成功就不向 Channel 发错误消息；所有
+    runtime 都失败时只发一条错误消息；`FAILED` 与 `UNKNOWN` 都触发 failover。
+12. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。
