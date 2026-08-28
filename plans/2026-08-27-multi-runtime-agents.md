@@ -251,17 +251,26 @@ class RuntimePool:
     def all(self) -> tuple[IRuntime, ...]: ...
     def get(self, index: int) -> IRuntime: ...
     def select(self) -> int: ...
-    def record_failure(self, index: int) -> None: ...
-    def record_success(self, index: int) -> None: ...
+    def record_failure(self, index: int) -> int: ...
+    def record_success(self, index: int) -> int | None: ...
 ```
 
 - 构造时要求 `runtimes` 非空，且每个实例的 `name` 是非空文本（原
   `session.py:129-130` 的校验搬到这里）；
 - ban 状态是内存 `dict[int, int]`，下标 → 解禁时间戳（毫秒）；
-- `select()` 从游标位置开始按下标顺序找第一个 `ban_until <= now` 的项，游标随之前进一位；
-  全部仍在 ban 中时，取 `ban_until` 最小的那个（最早被 ban 的），清除它的 ban 记录并返回它；
-- `record_failure(index)` 写入 `ban_until = now + _BAN_MS`，`_BAN_MS` 是模块常量 `3_600_000`；
-- `record_success(index)` 删除该下标的 ban 记录，让半开探测成功后立即恢复；
+- `select()` 按配置顺序找第一个 `ban_until <= now` 的项，顺手丢掉它那条已过期的记录。
+  **配置顺序就是优先级顺序，没有游标**：一个 runtime 只要还能用就一直服务，只有 ban 才会把
+  选择推到下一个。所谓 round-robin 指的是「失败时轮到下一个可用的」，不是每次选择都往后挪一位。
+  三个 runtime 的例子：第一个 turn 选 1、失败并 ban 1、改选 2 成功；第二个 turn 直接从 2 开始；
+  第三个 turn 2 失败并被 ban，改选 3。全部仍在 ban 中时，取 `ban_until` 最小的那个（最早被
+  ban 的）返回，
+  **但不清除它的 ban 记录**：探测失败时 `record_failure` 会把它的 `ban_until` 推到最后，半开名额
+  自然轮到下一个；探测成功时才由 `record_success` 真正解禁。若在 `select()` 里就清掉记录，
+  `record_success` 永远找不到可解禁的项，`runtime.pool.released` 事件就成了死代码；
+- `record_failure(index)` 写入 `ban_until = now + _BAN_MS` 并返回它，`_BAN_MS` 是模块常量
+  `3_600_000`；
+- `record_success(index)` 删除并返回该下标的 ban 记录（没有就返回 `None`），让半开探测成功后
+  立即恢复；
 - 只配置一个 runtime 时，它被 ban 后的下一次 `select()` 立刻走半开分支放行自己。
 
 `SessionOrchestrator` 在 `__init__` 里用自己的 `self._clock`（`session.py:125` 已有的
@@ -290,11 +299,17 @@ class RuntimePool:
 只有 `RuntimeTurnState.FAILED` 与 `RuntimeTurnState.UNKNOWN` 会发消息。
 
 上报点就放在唯一调用 `self._error_reporter.report(...)` 的地方（`session.py:704-710`）：
-`result.state` 命中 `_MESSAGE_KEYS` 时对 `self._runtime_sessions[session_id].runtime_index` 调用
-`record_failure`，`RuntimeTurnState.COMPLETED` 时调用 `record_success`，其余终态不上报；
-会话此时已被移除则跳过。
+`result.state` 命中 `MESSAGE_KEYS` 时调用 `record_failure`，`RuntimeTurnState.COMPLETED` 时调用
+`record_success`，其余终态不上报。`_MESSAGE_KEYS` 改名成 `MESSAGE_KEYS`，让上报点和
+`RuntimeErrorReporter` 共用同一份判定，不复制条件。
 
-`start_session` / `reconcile_session` 的 FAILED / UNKNOWN 不需要单独上报：它们会让本次 turn 以
+下标不能从 `self._runtime_sessions[session_id]` 取：建立会话失败时
+`_ensure_runtime_session_or_discard` 会在本次 turn 收敛之前就把会话丢掉，到上报点已经查不到，
+而这恰恰是最该 ban 的一类失败。改为 `SessionOrchestrator` 维护
+`_session_runtime_indices: dict[str, int]`，在 `_create_runtime_session` 里写入，生命周期与
+`_runtime_queues` 一致、在 `stop()` 里清空；上报点按 BCN session id 取下标。
+
+`start_session` / `reconcile_session` 的 FAILED / UNKNOWN 因此不需要单独上报：它们会让本次 turn 以
 `RuntimeSessionUnavailable`（`turn.py:345`）收敛成 FAILED turn，从同一个上报点进入 ban。
 
 ### 5.5 lifecycle 事件与过期
@@ -421,14 +436,18 @@ checks：`tests/contrib/test_orchestration.py`、`tests/core/`、`tests/app/test
 ### Task 5：round-robin 与 ban
 
 按第 5.2、5.4 节补全 `RuntimePool` 的 ban 状态、半开与 `record_failure` / `record_success`，
-在 `session.py:704-710` 的错误反馈点按 `_MESSAGE_KEYS` 命中与否上报，并记录
+在 `session.py:704-710` 的错误反馈点按 `MESSAGE_KEYS` 命中与否上报，并记录
 `runtime.pool.banned` / `runtime.pool.released` 审计事件。
 
-测试：扩展 `test_multi_runtime_agents`，覆盖连续建会话时的轮转顺序、turn 以 FAILED 收敛并向
-Channel 发出错误消息后该 runtime 被跳过、UNKNOWN 同样被跳过、start 失败经
-`RuntimeSessionUnavailable` 收敛成 FAILED 后被跳过、COMPLETED 后解除 ban、全部被 ban 时只放行
-最早被 ban 的一个、半开成功后立即恢复参与轮转、ban 到期后自动恢复、只配置一个 runtime 时
-它始终可被选中。
+测试：`RuntimePool` 的轮转、ban、到期、半开与解禁用直接构造 pool 的
+`test_runtime_pool_moves_on_to_the_next_runtime_when_one_is_banned` 与
+`test_single_runtime_pool_always_offers_its_only_runtime`
+覆盖（时间相关分支靠构造函数已有的 `clock` 驱动）；接线部分用
+`test_multi_runtime_bans_the_runtime_that_answered_with_an_error` 与
+`test_multi_runtime_bans_a_runtime_that_cannot_start_a_session` 覆盖 turn 以 FAILED / UNKNOWN
+收敛并向 Channel 发出错误消息后该 runtime 被跳过、start 失败经 `RuntimeSessionUnavailable`
+收敛成 FAILED 后被跳过、全部被 ban 时只放行最早被 ban 的一个、半开成功后解禁，以及
+`runtime.pool.banned` / `runtime.pool.released` 审计事件。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/core/test_audit.py`、
 `tests/core/test_error_feedback.py`、`ruff format --check .`、`ruff check .`、
@@ -459,8 +478,8 @@ checks：`tests/contrib/test_orchestration.py`、`tests/core/test_audit.py`、
 6. 每个 runtime session 的 start / turn / steer / background 检查 / reconcile / stop 都落在
    `RuntimeSession.runtime_index` 指向的同一个实例上。
 7. runtime A 发出的 `RuntimeExpire` 只过期 A 的会话，B 的会话继续服务。
-8. 连续创建会话时按配置顺序轮转；turn 终态触发 Channel 错误消息时该 runtime 在 `_BAN_MS`
-   内被跳过；全部被 ban 时每次只放行最早被 ban 的一个，成功后立刻恢复参与轮转。
+8. 会话按配置顺序优先选第一个没被 ban 的 runtime；turn 终态触发 Channel 错误消息时该 runtime
+   在 `_BAN_MS` 内被跳过，选择落到下一个；全部被 ban 时每次只放行最早被 ban 的一个，成功后立刻恢复参与轮转。
 9. 只配置一个 runtime 的 Agent 在该 runtime 失败后仍能继续选中它。
 10. `runtime.pool.banned` / `runtime.pool.released` 出现在审计流中，metadata 含下标、
     adapter kind 与 `ban_until_ms`。

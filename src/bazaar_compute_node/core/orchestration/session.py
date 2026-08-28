@@ -50,7 +50,7 @@ from ..timerwheel import (
 )
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
-from .error_feedback import RuntimeErrorReporter
+from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
 from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
@@ -127,7 +127,8 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
-        self._runtimes = RuntimePool(runtimes)
+        self._clock = clock or _current_time_ms
+        self._runtimes = RuntimePool(runtimes, clock=self._clock)
         if (
             isinstance(runtime_idle_timeout_ms, bool)
             or not isinstance(runtime_idle_timeout_ms, int)
@@ -141,8 +142,10 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
         self._concurrency = concurrency or SessionLockRegistry()
-        self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}
+        # the runtime a session last ran on outlives the session itself, so a
+        # turn that failed while establishing it can still be attributed
+        self._session_runtime_indices: dict[str, int] = {}
         self._runtime_turns: dict[str, RuntimeTurn] = {}
         self._session_runtime_states: dict[str, SessionRuntimeState] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.session")
@@ -307,6 +310,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             updated_at_ms=now_ms,
         )
         self._runtime_sessions[context.bcn_session.id] = runtime_session
+        self._session_runtime_indices[context.bcn_session.id] = runtime_index
         return SessionContext(
             context.channel_session,
             context.bcn_session,
@@ -517,6 +521,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._started = False
         self._session_runtime_states.clear()
         self._runtime_sessions.clear()
+        self._session_runtime_indices.clear()
         self._runtime_turns.clear()
         self._expired_runtime_ids.clear()
 
@@ -719,6 +724,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     raise
                 except Exception:
                     self._logger.exception("runtime error feedback failed")
+                await self._record_runtime_outcome(batch[0].message, result)
                 for notification in batch:
                     if (
                         isinstance(notification, _RuntimeNotification)
@@ -923,6 +929,46 @@ class SessionOrchestrator(IAsyncLifecycle):
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
+
+    async def _record_runtime_outcome(
+        self,
+        message: Message,
+        turn: RuntimeTurn | None,
+    ) -> None:
+        if turn is None:
+            return
+        index = self._session_runtime_indices.get(message.session_id)
+        if index is None:
+            return
+        if turn.state in MESSAGE_KEYS:
+            event_name = "runtime.pool.banned"
+            ban_until_ms = self._runtimes.record_failure(index)
+        elif turn.state is RuntimeTurnState.COMPLETED:
+            lifted_ban_until_ms = self._runtimes.record_success(index)
+            if lifted_ban_until_ms is None:
+                return
+            event_name = "runtime.pool.released"
+            ban_until_ms = lifted_ban_until_ms
+        else:
+            return
+        await self._audit.append(
+            event_name=event_name,
+            state=RuntimeEventState.COMPLETED,
+            correlation=CorrelationContext(
+                node_id=self.agent_id,
+                channel=message.channel,
+                channel_session_id=message.channel_session_id,
+                bcn_session_id=message.session_id,
+                runtime_session_id=turn.session_id,
+                turn_id=turn.turn_id,
+            ),
+            metadata={
+                "runtime_index": index,
+                "runtime": self._runtimes.get(index).name,
+                "ban_until_ms": ban_until_ms,
+                "terminal_state": turn.state.value,
+            },
+        )
 
     async def _receive_loop(self) -> None:
         async for message in self._channel.receive():
