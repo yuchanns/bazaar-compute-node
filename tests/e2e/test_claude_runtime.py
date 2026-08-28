@@ -858,3 +858,171 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
     await client.close_turn(inbox)
     await supervisor.stop(timeout=10)
     await client.close()
+
+
+class _PerConfigurationRegistry(AdapterRegistry):
+    """Build one Claude Code instance per runtime configuration."""
+
+    def __init__(self, channel: IChannel) -> None:
+        self._channel = channel
+
+    def load_agent(
+        self,
+        *,
+        channel: str,
+        runtimes: Sequence[str],
+    ) -> AgentAdapterFactories:
+        del channel
+        return AgentAdapterFactories(
+            channel=StaticChannelBuilder(self._channel),
+            runtimes={
+                kind: lambda context: Runtime(
+                    context,
+                    model=str(context.runtime_options["model"]),
+                )
+                for kind in runtimes
+            },
+        )
+
+
+async def _wait_for_turn_event(
+    audit: RecordingAudit,
+    *,
+    session_id: str,
+    turn_id: str,
+    event_name: str,
+    timeout: float = 600,
+) -> None:
+    """Wait for one named provider event of a turn.
+
+    A turn that fails over produces a terminal event per runtime it tried, so
+    the shared helper would settle on the first instance's failure.
+    """
+
+    async with asyncio.timeout(timeout):
+        while not any(
+            event.event_name == event_name
+            and event.correlation.bcn_session_id == session_id
+            and event.correlation.turn_id == turn_id
+            for event in audit.events
+        ):
+            await asyncio.sleep(0.05)
+
+
+def _multi_runtime_node(
+    endpoint: Path,
+    *,
+    first_model: str,
+    second_model: str,
+) -> tuple[NodeApplication, TestChannel, RecordingAudit, str]:
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the runtime integration test")
+    agent_id = str(uuid7())
+    channel = TestChannel()
+    storage = MemoryStorage()
+    audit = RecordingAudit()
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            storage="memory",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=agent_id,
+                    name="Claude Multi Runtime E2E",
+                    channel=ChannelConfiguration(kind="test"),
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="claudecode",
+                            model=first_model,
+                            sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
+                        ),
+                        RuntimeConfiguration(
+                            kind="claudecode",
+                            model=second_model,
+                            sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, storage),
+            audit=lambda: audit,
+        ),
+        registry=_PerConfigurationRegistry(channel),
+        endpoint_path=endpoint,
+        timeout_budget=TimeoutBudget(
+            startup_seconds=30,
+            provider_call_seconds=60,
+            command_seconds=30,
+            shutdown_seconds=30,
+        ),
+    )
+    return node, channel, audit, agent_id
+
+
+@pytest.mark.asyncio
+async def test_real_claude_hands_a_failing_runtime_over_to_the_next_one(
+    system_temp_dir: Path,
+) -> None:
+    node, channel, audit, agent_id = _multi_runtime_node(
+        system_temp_dir / "claude-multi-runtime.sock",
+        first_model="claude-model-that-does-not-exist",
+        second_model="claude-opus-5",
+    )
+    session_id = f"claude-multi-runtime-{uuid4()}"
+    scoped_session_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
+    )
+    follow_up_id = f"claude-multi-runtime-follow-{uuid4()}"
+    scoped_follow_up_id = str(
+        uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{follow_up_id}")
+    )
+    try:
+        await node.start()
+        agent = node.agents[agent_id]
+
+        # case: one live Claude Code instance per runtime configuration
+        assert len(agent.runtimes) == 2
+        assert agent.runtimes[0] is not agent.runtimes[1]
+
+        # case: the turn the first instance cannot serve is answered by the
+        # second one
+        message = _message(session_id, body="Reply with the single word READY.")
+        await channel.inject(message)
+        await _wait_for_turn_event(
+            audit,
+            session_id=scoped_session_id,
+            turn_id=f"turn-{message.message_id}",
+            event_name="claudecode.turn.completed",
+        )
+        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        assert runtime_session is not None
+        assert runtime_session.runtime_index == 1
+        assert any(
+            event.event_name == "claudecode.turn.failed"
+            and event.correlation.turn_id == f"turn-{message.message_id}"
+            for event in audit.events
+        )
+
+        # case: the runtime that failed is the one that gets banned
+        assert any(
+            event.event_name == "runtime.pool.banned"
+            and event.metadata["runtime_index"] == 0
+            for event in audit.events
+        )
+
+        # case: the next session keeps away from the runtime that was banned
+        follow_up = _message(follow_up_id, body="Reply with the single word READY.")
+        await channel.inject(follow_up)
+        await _wait_for_turn_event(
+            audit,
+            session_id=scoped_follow_up_id,
+            turn_id=f"turn-{follow_up.message_id}",
+            event_name="claudecode.turn.completed",
+        )
+        follow_up_session = agent.orchestrator.runtime_session(scoped_follow_up_id)
+        assert follow_up_session is not None
+        assert follow_up_session.runtime_index == 1
+    finally:
+        await node.stop()
