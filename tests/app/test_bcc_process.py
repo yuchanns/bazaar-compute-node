@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -63,16 +63,16 @@ class _RoutingRegistry(AdapterRegistry):
         self,
         *,
         channel: str,
-        runtime: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel, runtime
+        del channel
 
         def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
             return self._runtimes[context.agent_id]
 
         return AgentAdapterFactories(
             channel=_RoutingChannelBuilder(self._channels),
-            runtime=runtime_factory,
+            runtimes={kind: runtime_factory for kind in runtimes},
         )
 
 
@@ -151,7 +151,7 @@ async def test_runtime_bot_name_prefers_channel_name_with_id_fallback(
 
     await node.start()
     try:
-        context = node.agents[AGENT_A_ID]._runtime_context
+        (context,) = node.agents[AGENT_A_ID]._runtime_contexts
         assert context.agent_name == AGENT_NAMES[AGENT_A_ID]
         assert context.bot_name() == "Provider Name"
 
@@ -186,6 +186,7 @@ async def test_agents_install_isolated_wrappers_and_runtime_paths(
             environment = application._build_command_environment(
                 f"session-{agent_id}",
                 f"runtime-{agent_id}",
+                runtime_index=0,
             )
             wrapper_directory = wrapper_directories[agent_id]
             wrapper_path = wrapper_directory / wrapper_name
@@ -276,6 +277,7 @@ async def test_runtime_error_redaction_uses_injected_token_values(
         environment = application._build_command_environment(
             "session-agent-a",
             "runtime-agent-a",
+            runtime_index=0,
         )
         detail = application._error_feedback_detail(
             "session-agent-a",
@@ -309,6 +311,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         environment = application._build_command_environment(
             runtime_session.bcn_session_id,
             runtime_session.id,
+            runtime_index=0,
         )
         request = {
             "kind": "command",

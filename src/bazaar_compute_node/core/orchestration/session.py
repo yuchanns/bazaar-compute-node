@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import time_ns
@@ -112,12 +112,12 @@ class SessionOrchestrator(IAsyncLifecycle):
         *,
         agent_id: str,
         channel: IChannel,
-        runtime: IRuntime,
+        runtimes: Sequence[IRuntime],
         storage: IStorageScope,
         audit: IAudit,
         timeout_budget: TimeoutBudget,
         timer_wheel: TimerWheel,
-        runtime_idle_timeout_ms: int = 0,
+        runtime_idle_timeout_ms: Sequence[int] = (0,),
         workspace: Callable[[], Path],
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
@@ -126,21 +126,33 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
-        if not isinstance(runtime.name, str) or not runtime.name:
-            raise ValueError("runtime.name must be a non-empty string")
-        if (
-            isinstance(runtime_idle_timeout_ms, bool)
-            or not isinstance(runtime_idle_timeout_ms, int)
-            or runtime_idle_timeout_ms < 0
-        ):
-            raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
+        if not runtimes:
+            raise ValueError("runtimes must not be empty")
+        for runtime in runtimes:
+            if not isinstance(runtime.name, str) or not runtime.name:
+                raise ValueError("runtime.name must be a non-empty string")
+        if len(runtime_idle_timeout_ms) != len(runtimes):
+            raise ValueError("runtime_idle_timeout_ms must match runtimes")
+        for idle_timeout_ms in runtime_idle_timeout_ms:
+            if (
+                isinstance(idle_timeout_ms, bool)
+                or not isinstance(idle_timeout_ms, int)
+                or idle_timeout_ms < 0
+            ):
+                raise ValueError(
+                    "runtime_idle_timeout_ms must be a non-negative integer"
+                )
         self._agent_id = agent_id
         self._channel = channel
-        self._runtime = runtime
+        self._runtimes = tuple(runtimes)
+        self._runtime_idle_timeouts_ms = tuple(runtime_idle_timeout_ms)
+        # Task 4 binds each session to a runtime; until then everything runs on
+        # the first one
+        self._runtime = self._runtimes[0]
         self._storage = storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
-        self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
+        self._runtime_idle_timeout_ms = self._runtime_idle_timeouts_ms[0]
         self._concurrency = concurrency or SessionLockRegistry()
         self._clock = clock or _current_time_ms
         self._runtime_sessions: dict[str, RuntimeSession] = {}

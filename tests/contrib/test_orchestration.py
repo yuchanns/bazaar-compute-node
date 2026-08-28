@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -121,12 +121,12 @@ class _AcceptanceRegistry(AdapterRegistry):
         self,
         *,
         channel: str,
-        runtime: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel, runtime
+        del channel
         return AgentAdapterFactories(
             channel=StaticChannelBuilder(self._channel),
-            runtime=self._runtime,
+            runtimes={kind: self._runtime for kind in runtimes},
         )
 
 
@@ -245,7 +245,7 @@ async def make_node(
     orchestrator = SessionOrchestrator(
         agent_id="workspace-1",
         channel=channel,
-        runtime=runtime,
+        runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
         audit=audit,
         timeout_budget=make_budget(),
@@ -275,7 +275,7 @@ async def make_sqlite_node() -> tuple[
     orchestrator = SessionOrchestrator(
         agent_id="workspace-1",
         channel=channel,
-        runtime=runtime,
+        runtimes=(runtime,),
         storage=storage_scope,
         audit=audit,
         timeout_budget=make_budget(),
@@ -306,12 +306,12 @@ async def make_idle_timeout_node(
     orchestrator = SessionOrchestrator(
         agent_id="workspace-1",
         channel=channel,
-        runtime=runtime,
+        runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
         audit=RecordingAudit(),
         timeout_budget=make_budget(),
         timer_wheel=wheel,
-        runtime_idle_timeout_ms=idle_timeout_ms,
+        runtime_idle_timeout_ms=(idle_timeout_ms,),
         workspace=Path.cwd,
         translator=_ENGLISH_TRANSLATOR,
         error_feedback_detail=unchanged_error_feedback_detail,
@@ -2960,7 +2960,7 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
     second = SessionOrchestrator(
         agent_id="workspace-1",
         channel=channel,
-        runtime=runtime,
+        runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
         audit=RecordingAudit(),
         timeout_budget=make_budget(),
@@ -3389,3 +3389,170 @@ async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
         assert len(channel.send_attempts) == 1
     finally:
         await orchestrator.stop(timeout=1)
+
+
+class _NamedTestRuntime(TestRuntime):
+    """A test runtime that reports the kind and variables it was built for."""
+
+    def __init__(self, kind: str, environment_names: tuple[str, ...]) -> None:
+        super().__init__()
+        self._kind = kind
+        self._environment_names = environment_names
+
+    @property
+    def name(self) -> str:
+        return self._kind
+
+    def environment_variable_names(self) -> tuple[str, ...]:
+        return self._environment_names
+
+
+class _MultiRuntimeRegistry(AdapterRegistry):
+    """Serve one runtime factory per kind, recording the contexts it builds."""
+
+    def __init__(self, channel: IChannel, kinds: Mapping[str, tuple[str, ...]]) -> None:
+        self._channel = channel
+        self._kinds = kinds
+        self.contexts: list[RuntimeCommandContext] = []
+
+    def load_agent(
+        self,
+        *,
+        channel: str,
+        runtimes: Sequence[str],
+    ) -> AgentAdapterFactories:
+        del channel
+        missing = [kind for kind in runtimes if kind not in self._kinds]
+        if missing:
+            raise AssertionError(f"unexpected runtime kinds: {missing}")
+        return AgentAdapterFactories(
+            channel=StaticChannelBuilder(self._channel),
+            runtimes={kind: self._factory(kind) for kind in dict.fromkeys(runtimes)},
+        )
+
+    def _factory(self, kind: str) -> Callable[[RuntimeCommandContext], IRuntime]:
+        names = self._kinds[kind]
+
+        def build(context: RuntimeCommandContext) -> IRuntime:
+            self.contexts.append(context)
+            return _NamedTestRuntime(kind, names)
+
+        return build
+
+
+@pytest.mark.asyncio
+async def test_multi_runtime_agents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BCN_TEST_TOKEN_WORK", "work-token")
+    monkeypatch.setenv("BCN_TEST_TOKEN_PERSONAL", "personal-token")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/agent.sock")
+    monkeypatch.setenv("TEST_RUNTIME_HOME", "/home/test-runtime")
+    monkeypatch.setenv("OTHER_RUNTIME_HOME", "/home/other-runtime")
+
+    channel = TestChannel()
+    registry = _MultiRuntimeRegistry(
+        cast(IChannel, channel),
+        {
+            "test": ("TEST_RUNTIME_HOME",),
+            "other": ("OTHER_RUNTIME_HOME",),
+        },
+    )
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=ACCEPTANCE_AGENT_ID,
+                    name="Multi Runtime Agent",
+                    channel=ChannelConfiguration(kind="test"),
+                    runtimes=(
+                        RuntimeConfiguration(
+                            kind="test",
+                            model="first-model",
+                            env={
+                                "TEST_TOKEN": "BCN_TEST_TOKEN_WORK",
+                                "SSH_AUTH_SOCK": "SSH_AUTH_SOCK",
+                            },
+                        ),
+                        RuntimeConfiguration(
+                            kind="other",
+                            model="second-model",
+                            env={
+                                "TEST_TOKEN": "BCN_TEST_TOKEN_PERSONAL",
+                                "BCN_TEST_TOKEN_PERSONAL": ("BCN_TEST_TOKEN_PERSONAL"),
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, SqliteDatabase()),
+            audit=lambda: RecordingAudit(),
+        ),
+        registry=registry,
+        endpoint_path=tmp_path / "multi-runtime.sock",
+        timeout_budget=TimeoutBudget(
+            startup_seconds=5,
+            provider_call_seconds=5,
+            command_seconds=5,
+            shutdown_seconds=5,
+        ),
+    )
+    await node.start()
+    try:
+        assert node.agent_startup_results[ACCEPTANCE_AGENT_ID].status == "started", (
+            node.agent_startup_results[ACCEPTANCE_AGENT_ID]
+        )
+        application = node.agents[ACCEPTANCE_AGENT_ID]
+
+        # case: one instance and one command context per runtime configuration
+        assert [runtime.name for runtime in application.runtimes] == ["test", "other"]
+        assert [context.runtime_options["model"] for context in registry.contexts] == [
+            "first-model",
+            "second-model",
+        ]
+
+        # case: health reports every runtime, not just the first one
+        assert application.health_record()["runtimes"] == ("test", "other")
+        assert node.agent_startup_results[ACCEPTANCE_AGENT_ID].as_health_record()[
+            "runtimes"
+        ] == ("test", "other")
+
+        first = application._build_command_environment(
+            "session-multi",
+            "runtime-session-multi",
+            runtime_index=0,
+        )
+        second = application._build_command_environment(
+            "session-multi",
+            "runtime-session-multi",
+            runtime_index=1,
+        )
+
+        # case: the same env name reads a different source variable per runtime
+        assert first["TEST_TOKEN"] == "work-token"
+        assert second["TEST_TOKEN"] == "personal-token"
+
+        # case: a renamed credential reaches the child only under the child name
+        assert "BCN_TEST_TOKEN_WORK" not in first
+        assert "BCN_TEST_TOKEN_PERSONAL" not in first
+        assert "BCN_TEST_TOKEN_WORK" not in second
+
+        # case: a source name is only stripped when nothing else asked for it
+        assert second["BCN_TEST_TOKEN_PERSONAL"] == "personal-token"
+
+        # case: a name that is the same on both sides is passed straight through
+        assert first["SSH_AUTH_SOCK"] == "/run/agent.sock"
+        assert "SSH_AUTH_SOCK" not in second
+
+        # case: environment_variable_names() applies per runtime
+        assert first["TEST_RUNTIME_HOME"] == "/home/test-runtime"
+        assert "OTHER_RUNTIME_HOME" not in first
+        assert second["OTHER_RUNTIME_HOME"] == "/home/other-runtime"
+        assert "TEST_RUNTIME_HOME" not in second
+    finally:
+        await node.stop()

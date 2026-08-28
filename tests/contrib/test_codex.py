@@ -103,12 +103,12 @@ class _StaticRegistry(AdapterRegistry):
         self,
         *,
         channel: str,
-        runtime: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel, runtime
+        del channel
         return AgentAdapterFactories(
             channel=StaticChannelBuilder(self._channel),
-            runtime=self._runtime,
+            runtimes={kind: self._runtime for kind in runtimes},
         )
 
 
@@ -1058,8 +1058,8 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         assert terminal_event.event_name == "codex.turn.completed", terminal_event
 
         agent = node.agents[agent_id]
-        assert isinstance(agent.runtime, Runtime)
-        runtime = agent.runtime
+        assert isinstance(agent.runtimes[0], Runtime)
+        runtime = agent.runtimes[0]
         runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
         assert runtime_session is not None
         assert await runtime.has_background_job(runtime_session, timeout=30)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import EntryPoint, entry_points
@@ -30,7 +30,7 @@ class SharedAdapterFactories:
 @dataclass(frozen=True, slots=True)
 class AgentAdapterFactories:
     channel: IChannelBuilder
-    runtime: RuntimeFactory
+    runtimes: Mapping[str, RuntimeFactory]
 
 
 class ProviderLoadError(RuntimeError):
@@ -62,14 +62,17 @@ class AdapterRegistry:
         self,
         *,
         channel: str,
-        runtime: str,
+        runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
         return AgentAdapterFactories(
             channel=self._load_channel_builder(channel),
-            runtime=cast(
-                RuntimeFactory,
-                self._load(RUNTIME_ENTRY_POINT_GROUP, runtime),
-            ),
+            runtimes={
+                kind: cast(
+                    RuntimeFactory,
+                    self._load(RUNTIME_ENTRY_POINT_GROUP, kind),
+                )
+                for kind in dict.fromkeys(runtimes)
+            },
         )
 
     def _load_channel_builder(self, name: str) -> IChannelBuilder:
