@@ -24,15 +24,15 @@ from bazaar_compute_node.core.runtime import RuntimeSandboxMode
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
-def test_help_shows_the_resolved_data_dir() -> None:
+def test_help_and_version_output() -> None:
+    # help shows the resolved data dir
     help_text = build_parser().format_help()
 
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
     ).replace("\n", "")
 
-
-def test_cli_help_uses_the_selected_translator() -> None:
+    # help follows the selected translator
     translator = create_translator(SIMPLIFIED_CHINESE)
 
     root_help = build_parser(translator).format_help()
@@ -43,8 +43,7 @@ def test_cli_help_uses_the_selected_translator() -> None:
     assert "管理 bcn 配置文件中的 Agent 定义" in agent_help
     assert "管理 bcn 的用户级宿主机服务" in service_help
 
-
-def test_runtime_version_matches_distribution_metadata() -> None:
+    # the reported version matches distribution metadata
     distribution_version = version("bazaar-compute-node")
 
     assert __version__ == distribution_version
@@ -309,9 +308,10 @@ def test_agent_add_preserves_typed_options_and_round_trips(
     }
 
 
-def test_agent_add_rejects_duplicate_and_kind_options(
-    tmp_path: Path,
+def test_agent_add_rejects_invalid_options(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # duplicate and kind options are refused
     config_path = tmp_path / "config.toml"
     config_path.write_text('version = "2"\n', encoding="utf-8")
     original = config_path.read_text(encoding="utf-8")
@@ -341,8 +341,7 @@ def test_agent_add_rejects_duplicate_and_kind_options(
 
     assert config_path.read_text(encoding="utf-8") == original
 
-
-def test_agent_commands_reject_daemon_options(tmp_path: Path) -> None:
+    # daemon options do not belong to agent commands
     config_path = tmp_path / "config.toml"
     config_path.write_text('version = "2"\n', encoding="utf-8")
 
@@ -358,9 +357,8 @@ def test_agent_commands_reject_daemon_options(tmp_path: Path) -> None:
             ]
         )
 
-
-def test_agent_add_rejects_option_key_edge_whitespace(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
+    # option keys cannot carry edge whitespace, and nothing is written
+    config_path = tmp_path / "never-written.toml"
 
     with pytest.raises(SystemExit):
         main(
@@ -382,12 +380,8 @@ def test_agent_add_rejects_option_key_edge_whitespace(tmp_path: Path) -> None:
 
     assert not config_path.exists()
 
-
-def test_agent_add_rejects_name_conflict_without_writing(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    config_path = tmp_path / "config.toml"
+    # a name conflict is refused before anything is written
+    config_path = tmp_path / "conflict.toml"
     add_arguments = [
         "agent",
         "add",
@@ -410,10 +404,8 @@ def test_agent_add_rejects_name_conflict_without_writing(
     assert config_path.read_text(encoding="utf-8") == original
 
 
-def test_agent_remove_by_name_and_id_only_changes_configuration(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_agent_remove(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # removing by name or id only rewrites the configuration
     config_path = tmp_path / "config.toml"
     config_path.write_text('version = "2"\n', encoding="utf-8")
     add_arguments = [
@@ -441,10 +433,7 @@ def test_agent_remove_by_name_and_id_only_changes_configuration(
     assert main(["agent", "remove", first_id, "--config", str(config_path)]) == 0
     assert tomllib.loads(config_path.read_text(encoding="utf-8")).get("agent", []) == []
 
-
-def test_agent_remove_rejects_ambiguous_id_or_name_selector(
-    tmp_path: Path,
-) -> None:
+    # an ambiguous selector is refused
     config_path = tmp_path / "config.toml"
     first_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
     second_id = "0198d4e7-2a28-7448-8228-388be1bf70b7"

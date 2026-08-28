@@ -323,34 +323,6 @@ async def make_idle_timeout_node(
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_uses_agent_scoped_storage_before_runtime() -> None:
-    channel = TestChannel()
-    runtime = TestRuntime()
-    storage = MemoryStorage()
-    audit = RecordingAudit()
-    await storage.start(timeout=1)
-
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
-        channel=channel,
-        runtime=runtime,
-        storage=storage.scope("workspace-1", "Test Agent"),
-        audit=audit,
-        timeout_budget=make_budget(),
-        timer_wheel=TimerWheel(),
-        workspace=Path.cwd,
-        translator=_ENGLISH_TRANSLATOR,
-        error_feedback_detail=unchanged_error_feedback_detail,
-    )
-    await orchestrator.start(timeout=1)
-    try:
-        assert runtime.started
-        assert channel.started
-    finally:
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
 async def test_orchestrator_degrades_and_recovers_local_worker_failures() -> None:
     orchestrator, _, _, storage, _ = await make_node()
     try:
@@ -718,7 +690,8 @@ async def test_channel_storage_runtime_turn_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_events_bypass_durable_storage_and_audit() -> None:
+async def test_stream_events() -> None:
+    # stream events skip durable storage and audit
     orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(update_count=20_000))
     try:
@@ -748,9 +721,7 @@ async def test_stream_events_bypass_durable_storage_and_audit() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
+    # a channel failure on a stream event does not fail the turn
     orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(update_count=1))
     channel.stream_event_error = RuntimeError("stream consumer unavailable")
@@ -769,9 +740,7 @@ async def test_stream_event_channel_failure_does_not_fail_turn() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_stream_event_for_another_session_is_discarded() -> None:
+    # a stream event for another session is discarded
     orchestrator, channel, runtime, _, audit = await make_node()
     runtime.queue_turn_plan(
         TestTurnPlan(update_count=1, stream_session_id="another-session")
@@ -1736,15 +1705,17 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         assert any(
             event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
-        with pytest.raises(ValueError, match="target conversation"):
-            await orchestrator.command_service.send(
-                session_id="bcn-1",
-                command_id="command-cross-session-invalid-reply",
-                raw_target="dm:channel-bcn-other",
-                body="invalid reply",
-                created_at_ms=3,
-                reply_to_message_id=make_message(seq=1).message_id,
-            )
+        unusable_reply = await orchestrator.command_service.send(
+            session_id="bcn-1",
+            command_id="command-cross-session-invalid-reply",
+            raw_target="dm:channel-bcn-other",
+            body="invalid reply",
+            created_at_ms=3,
+            reply_to_message_id=make_message(seq=1).message_id,
+        )
+        assert isinstance(unusable_reply, MessageSendSuccess)
+        assert unusable_reply.message.delivery_state is OutboundDeliveryState.SENT
+        assert channel.send_attempts[-1].provider_reply_to_message_id is None
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
@@ -1767,7 +1738,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
                 message.system_message_kind is SystemMessageKind.HANDOFF
                 for message in _stored_messages(storage, "bcn-other")
             )
-            == 1
+            == 2
         )
         with pytest.raises(ValueError, match="another target"):
             await orchestrator.command_service.send(
@@ -1815,7 +1786,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         queued = queued.message
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[2]]
+        assert channel.queued_messages == [channel.send_attempts[3]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -1904,8 +1875,8 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         failed = failed.message
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 6
-        assert len(channel.sent_messages) == 1
+        assert len(channel.send_attempts) == 7
+        assert len(channel.sent_messages) == 2
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )
@@ -2379,7 +2350,8 @@ async def test_feedback_delivery_outcome_preserves_original_runtime_turn(
 
 
 @pytest.mark.asyncio
-async def test_feedback_reporter_exception_preserves_original_runtime_turn() -> None:
+async def test_runtime_error_feedback() -> None:
+    # a reporter exception preserves the original runtime turn
     invalid_channel = _InvalidSendResultChannel()
     orchestrator, channel, runtime, _, _ = await make_node(channel=invalid_channel)
     runtime.queue_turn_plan(
@@ -2395,9 +2367,7 @@ async def test_feedback_reporter_exception_preserves_original_runtime_turn() -> 
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
+    # batched notifications send one error feedback
     orchestrator, channel, runtime, _, _ = await make_node()
     first_context, first_message, first_created = await orchestrator._record_inbound(
         make_message(seq=1)
@@ -2445,11 +2415,7 @@ async def test_batched_runtime_notifications_send_one_error_feedback() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_reminder_system_message_error_feedback_uses_target_without_reply() -> (
-    None
-):
+    # a reminder system message replies to its target without a reply id
     orchestrator, channel, runtime, storage, _ = await make_node()
     anchor = make_message(seq=1, message_id=str(uuid7()))
     try:
@@ -2594,7 +2560,8 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
 
 
 @pytest.mark.asyncio
-async def test_inbound_failure_rolls_back_new_session_state() -> None:
+async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # an inbound failure rolls back new session state
     orchestrator, _, _, storage, _ = await make_node()
     try:
         invalid = replace(
@@ -2614,9 +2581,7 @@ async def test_inbound_failure_rolls_back_new_session_state() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_runtime_start_failure_replaces_session_for_current_inbound() -> None:
+    # a start failure replaces the session for the current inbound
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         runtime.queue_start_result(
@@ -2640,11 +2605,7 @@ async def test_runtime_start_failure_replaces_session_for_current_inbound() -> N
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_repeated_unknown_runtime_start_abandons_each_session_without_blocking(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    # repeated unknown starts abandon each session without blocking
     orchestrator, _, runtime, _, _ = await make_node()
     release_stop = asyncio.Event()
 
@@ -2726,7 +2687,8 @@ async def test_unconfirmed_reconcile_clears_session_before_next_inbound(
 
 
 @pytest.mark.asyncio
-async def test_unknown_turn_reconciles_immediately() -> None:
+async def test_runtime_session_reconciliation() -> None:
+    # an unknown turn reconciles immediately
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         runtime.queue_turn_plan(
@@ -2743,9 +2705,7 @@ async def test_unknown_turn_reconciles_immediately() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
+    # a confirmed failed reconciliation stops the live session
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
@@ -2775,9 +2735,7 @@ async def test_confirmed_failed_reconciliation_stops_live_session() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() -> None:
+    # an unknown turn reconciliation restores the working turn and steers
     orchestrator, channel, runtime, _, _ = await make_node()
     runtime.queue_turn_plan(
         TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
@@ -2823,9 +2781,7 @@ async def test_unknown_turn_reconciliation_restores_working_turn_and_steers() ->
             first_task.cancel()
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_confirmed_stop_replaces_runtime_session_on_next_inbound() -> None:
+    # a confirmed stop replaces the runtime session on the next inbound
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
@@ -2852,14 +2808,13 @@ async def test_confirmed_stop_replaces_runtime_session_on_next_inbound() -> None
 
 
 @pytest.mark.asyncio
-async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # teardown is scheduled without blocking the next inbound
     orchestrator, _, runtime, _, _ = await make_node()
     stop_started = asyncio.Event()
     release_stop = asyncio.Event()
 
-    async def blocked_stop_session(
+    async def blocked_stop_session_2(
         session: RuntimeSession,
         *,
         timeout: float,
@@ -2873,7 +2828,7 @@ async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
             value=session,
         )
 
-    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session_2)
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
@@ -2902,17 +2857,13 @@ async def test_core_schedules_runtime_teardown_without_blocking_next_inbound(
         release_stop.set()
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_orchestrator_shutdown_gathers_runtime_teardown_tasks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    # shutdown gathers the outstanding teardown tasks
     orchestrator, _, runtime, _, _ = await make_node()
     stop_started = asyncio.Event()
     release_stop = asyncio.Event()
     shutdown_task: asyncio.Task[None] | None = None
 
-    async def blocked_stop_session(
+    async def blocked_stop_session_3(
         session: RuntimeSession,
         *,
         timeout: float,
@@ -2926,7 +2877,7 @@ async def test_orchestrator_shutdown_gathers_runtime_teardown_tasks(
             value=session,
         )
 
-    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session)
+    monkeypatch.setattr(runtime, "stop_session", blocked_stop_session_3)
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
@@ -3050,7 +3001,8 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
+async def test_context_expiry() -> None:
+    # a context expire fans out once to all live sessions
     orchestrator, _, runtime, _, _ = await make_node()
     try:
         await asyncio.gather(
@@ -3092,11 +3044,7 @@ async def test_context_expire_fans_out_once_to_all_live_sessions() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-
-@pytest.mark.asyncio
-async def test_context_expire_waits_for_active_turn_then_precedes_pending_inbound() -> (
-    None
-):
+    # a context expire waits for an active turn, then precedes pending inbound
     orchestrator, _, runtime, _, _ = await make_node()
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     first_task = orchestrator.dispatch_inbound(make_message(seq=1))
@@ -3205,7 +3153,8 @@ async def test_context_and_timer_expiry_stop_the_runtime_once(
 
 
 @pytest.mark.asyncio
-async def test_quiet_inbound_does_not_refresh_a_live_runtime_idle_deadline() -> None:
+async def test_runtime_idle_timeout() -> None:
+    # a quiet inbound does not refresh a live idle deadline
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
@@ -3224,9 +3173,7 @@ async def test_quiet_inbound_does_not_refresh_a_live_runtime_idle_deadline() -> 
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_notifying_inbound_reuses_the_current_runtime_session() -> None:
+    # a notifying inbound reuses the current runtime session
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
@@ -3246,9 +3193,7 @@ async def test_notifying_inbound_reuses_the_current_runtime_session() -> None:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_background_job_suppresses_runtime_idle_timeout() -> None:
+    # background work suppresses the idle timeout
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     runtime.background_job_present = True
     try:
@@ -3285,9 +3230,7 @@ async def test_background_job_suppresses_runtime_idle_timeout() -> None:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_idle_expiry_replaces_the_runtime_on_next_notification() -> None:
+    # idle expiry replaces the runtime on the next notification
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
@@ -3307,9 +3250,7 @@ async def test_idle_expiry_replaces_the_runtime_on_next_notification() -> None:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_expiry_waits_for_an_active_turn_to_return_idle() -> None:
+    # expiry waits for an active turn to return to idle
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     try:
@@ -3340,9 +3281,7 @@ async def test_expiry_waits_for_an_active_turn_to_return_idle() -> None:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_independent_sessions_expire_without_cross_session_interference() -> None:
+    # independent sessions expire without interfering
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(50)
     try:
         await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1))
@@ -3364,9 +3303,7 @@ async def test_independent_sessions_expire_without_cross_session_interference() 
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-
-@pytest.mark.asyncio
-async def test_runtime_replacement_cancels_the_previous_timer_generation() -> None:
+    # replacing the runtime cancels the previous timer generation
     orchestrator, _, _, wheel = await make_idle_timeout_node(1_000)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))

@@ -13,12 +13,9 @@ from bazaar_compute_node.core.models import (
     OwnedReminder,
     Reminder,
     ReminderState,
-    SenderKind,
-    SystemMessageKind,
 )
 from bazaar_compute_node.core.reminder import (
     canonical_id_reference,
-    render_reminder_fire_body,
 )
 
 from .storage import (
@@ -222,6 +219,27 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
             return None
         return OwnedReminder(agent_id=agent_id, reminder=reminder)
 
+    async def save_owned_reminder_transition(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+    ) -> Reminder | None:
+        owned = await self.get_owned_reminder(
+            reminder.agent_id,
+            reminder.reminder.owner_session_id,
+            reminder.reminder.reminder_id,
+        )
+        if owned is None:
+            return None
+        if owned.reminder.revision != expected_revision:
+            return None
+        if owned.reminder.state is ReminderState.CANCELED:
+            return None
+        self._reminder_storage.reminders[reminder.reminder.reminder_id] = (
+            reminder.reminder
+        )
+        return reminder.reminder
+
     async def get_next_scheduled_owned_reminder(self) -> OwnedReminder | None:
         reminders = [
             owned
@@ -271,7 +289,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         expected_revision: int,
         reminder: OwnedReminder,
         system_message: Message[InboundAttachment],
-    ) -> Message[InboundAttachment]:
+    ) -> Message[InboundAttachment] | None:
         incoming = reminder.reminder
         existing_owned = await self.get_owned_reminder(
             reminder.agent_id,
@@ -279,35 +297,21 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
             incoming.reminder_id,
         )
         if existing_owned is None:
-            raise ValueError("reminder not found")
+            return None
         existing = existing_owned.reminder
-        _validate_expected_revision(existing, expected_revision)
-        _validate_reminder_identity(existing, incoming)
+        if existing.revision != expected_revision:
+            return None
         if existing.state is not ReminderState.SCHEDULED:
-            raise ValueError("only a scheduled reminder can fire")
-        if incoming.revision != expected_revision + 1:
-            raise ValueError("reminder revision must advance by exactly one")
-        if incoming.last_occurrence_no != existing.last_occurrence_no + 1:
-            raise ValueError("reminder occurrence number must advance by exactly one")
-        if incoming.last_fired_at_ms is None:
-            raise ValueError("fired reminder requires a fire time")
-        if system_message.sender_kind is not SenderKind.SYSTEM:
-            raise ValueError("reminder fire requires a system message")
-        if system_message.system_message_kind is not SystemMessageKind.REMINDER:
-            raise ValueError("reminder fire requires reminder system metadata")
+            return None
+        if existing.next_fire_at_ms is None:
+            return None
         anchor = await self.resolve_message(
             incoming.owner_session_id,
             incoming.anchor_message_id,
             direction=MessageDirection.INBOUND,
         )
         if anchor is None:
-            raise ValueError("Reminder anchor message is missing")
-        if system_message.body != render_reminder_fire_body(
-            incoming,
-            anchor.target,
-            incoming.next_fire_at_ms,
-        ):
-            raise ValueError("system message body does not match reminder fire")
+            return None
         self._reminder_storage.reminders[incoming.reminder_id] = incoming
         return await self._save_inbound_message(system_message)
 

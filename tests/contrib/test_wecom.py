@@ -53,7 +53,8 @@ def test_wecom_exposes_provider_id_without_display_name(tmp_path: Path) -> None:
     assert channel.get_identity() == ChannelIdentity(id="bot-id")
 
 
-def test_wecom_markdown_split_preserves_unicode_and_block_boundaries() -> None:
+def test_wecom_markdown_split() -> None:
+    # unicode and block boundaries survive a split
     content = ("Heading\n\nParagraph with \u4f60\u597d.\n\n" * 20).rstrip()
 
     chunks = split_markdown(content, limit=128)
@@ -62,8 +63,7 @@ def test_wecom_markdown_split_preserves_unicode_and_block_boundaries() -> None:
     assert "".join(chunks) == content
     assert all(len(chunk.encode("utf-8")) <= 128 for chunk in chunks)
 
-
-def test_wecom_markdown_split_closes_and_reopens_fenced_blocks() -> None:
+    # a fenced block is closed and reopened across parts
     content = "```python\n" + ("print('\u4f60\u597d')\n" * 40) + "```"
 
     chunks = split_markdown(content, limit=96)
@@ -90,13 +90,13 @@ def test_wecom_filename_decodes_provider_content_disposition() -> None:
 
 @pytest.mark.asyncio
 async def test_wecom_approval_uses_nested_request_identity(tmp_path: Path) -> None:
-    async def referenced_paths() -> set[str]:
+    async def referenced_paths_2() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_2),
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -273,7 +273,8 @@ def test_wecom_prepares_current_attachment_content(tmp_path: Path) -> None:
     assert prepared.md5 == hashlib.md5(b"changed", usedforsecurity=False).hexdigest()
 
 
-def test_wecom_delivery_receipt_tracks_visible_parts_and_upload_requests() -> None:
+def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
+    # a receipt tracks visible parts and upload requests
     receipt = WeComChannel._delivery_receipt(
         2,
         1,
@@ -317,15 +318,14 @@ def test_wecom_delivery_receipt_tracks_visible_parts_and_upload_requests() -> No
         "provider_receipt_ref": "send-1",
     }
 
-
-def test_wecom_failure_after_visible_part_is_partial(tmp_path: Path) -> None:
-    async def referenced_paths() -> set[str]:
+    # failing after a visible part is partial
+    async def referenced_paths_3() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_3),
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -361,15 +361,14 @@ def test_wecom_failure_after_visible_part_is_partial(tmp_path: Path) -> None:
     assert result.value is not None
     assert result.value.provider_receipt_ref == "send-1"
 
-
-def test_wecom_failure_before_visible_part_is_failed(tmp_path: Path) -> None:
-    async def referenced_paths() -> set[str]:
+    # failing before any visible part is a failure
+    async def referenced_paths_4() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_4),
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -402,13 +401,13 @@ def test_wecom_failure_before_visible_part_is_failed(tmp_path: Path) -> None:
 async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
     tmp_path: Path,
 ) -> None:
-    async def referenced_paths() -> set[str]:
+    async def referenced_paths_5() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_5),
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -438,7 +437,7 @@ async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
 async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
     tmp_path: Path,
 ) -> None:
-    async def referenced_paths() -> set[str]:
+    async def referenced_paths_6() -> set[str]:
         return set()
 
     channel = WeComChannel(
@@ -446,7 +445,7 @@ async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
             agent_id="agent-test",
             attachments=AttachmentMaterializer(
                 lambda: tmp_path,
-                referenced_paths,
+                referenced_paths_6,
             ),
             options={},
             workspace=lambda: tmp_path,
@@ -480,13 +479,13 @@ async def test_wecom_does_not_emit_provider_events_as_inbound_messages(
 
 @pytest.mark.asyncio
 async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None:
-    async def referenced_paths() -> set[str]:
+    async def referenced_paths_7() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_7),
             options={},
             workspace=lambda: tmp_path,
         ),
@@ -521,13 +520,13 @@ async def test_wecom_does_not_persist_inbound_request_id(tmp_path: Path) -> None
 async def test_wecom_emits_quoted_text_before_the_current_message(
     tmp_path: Path,
 ) -> None:
-    async def referenced_paths() -> set[str]:
+    async def referenced_paths_8() -> set[str]:
         return set()
 
     channel = WeComChannel(
         ChannelContext(
             agent_id="agent-test",
-            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_8),
             options={},
             workspace=lambda: tmp_path,
         ),

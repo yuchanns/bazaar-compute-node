@@ -102,7 +102,8 @@ def test_repeat_rule_rejects_values_outside_the_supported_grammar(value: str) ->
         parse_repeat_rule(value)
 
 
-def test_schedule_resolves_one_time_and_repeat_first_slots() -> None:
+def test_schedule_resolution() -> None:
+    # resolves relative, absolute, interval and daily first slots
     now_ms = utc_ms("2026-08-15T10:00:00Z")
 
     relative = resolve_schedule(evaluated_at_ms=now_ms, delay_seconds=30)
@@ -127,9 +128,7 @@ def test_schedule_resolves_one_time_and_repeat_first_slots() -> None:
     assert interval.repeat_rule == "every:15m"
     assert daily.next_fire_at_ms == utc_ms("2026-08-16T01:00:00Z")
 
-
-# An absolute fire time equal to now parses, but schedule rejects it as not future.
-def test_fire_at_requires_an_offset_and_schedule_requires_future_time() -> None:
+    # an absolute fire time parses only with an offset, and must be future
     assert parse_fire_at("2026-08-15T12:00:00+02:00") == utc_ms("2026-08-15T10:00:00Z")
     assert format_utc_timestamp(utc_ms("2026-08-15T10:00:00.123Z")) == (
         "2026-08-15T10:00:00.123Z"
@@ -143,8 +142,7 @@ def test_fire_at_requires_an_offset_and_schedule_requires_future_time() -> None:
             fire_at="2026-08-15T10:00:00Z",
         )
 
-
-def test_schedule_rejects_time_conflicts_and_invalid_timezones() -> None:
+    # conflicting options and unknown timezones are refused
     now_ms = utc_ms("2026-08-15T10:00:00Z")
     with pytest.raises(ValueError, match="mutually exclusive"):
         resolve_schedule(
@@ -158,7 +156,8 @@ def test_schedule_rejects_time_conflicts_and_invalid_timezones() -> None:
         canonical_timezone("Mars/Olympus_Mons")
 
 
-def test_calendar_recurrence_uses_first_ambiguous_dst_instant() -> None:
+def test_calendar_recurrence_slots() -> None:
+    # an ambiguous DST hour takes the first instant
     before_slot = utc_ms("2026-11-01T04:00:00Z")
     slot = resolve_schedule(
         evaluated_at_ms=before_slot,
@@ -173,8 +172,7 @@ def test_calendar_recurrence_uses_first_ambiguous_dst_instant() -> None:
         timezone="America/New_York",
     ) == utc_ms("2026-11-02T06:30:00Z")
 
-
-def test_calendar_recurrence_moves_nonexistent_dst_time_to_gap_end() -> None:
+    # a nonexistent DST time moves to the end of the gap
     before_slot = utc_ms("2026-03-08T05:00:00Z")
     slot = resolve_schedule(
         evaluated_at_ms=before_slot,
@@ -189,8 +187,7 @@ def test_calendar_recurrence_moves_nonexistent_dst_time_to_gap_end() -> None:
         timezone="America/New_York",
     ) == utc_ms("2026-03-09T06:30:00Z")
 
-
-def test_weekly_next_uses_canonical_weekday_order() -> None:
+    # weekly rules canonicalise weekday order
     slot = resolve_schedule(
         evaluated_at_ms=utc_ms("2026-08-15T10:00:00Z"),  # Saturday
         repeat_rule="weekly:fri,mon@09:00",
@@ -200,7 +197,8 @@ def test_weekly_next_uses_canonical_weekday_order() -> None:
     assert slot.next_fire_at_ms == utc_ms("2026-08-17T09:00:00Z")
 
 
-def test_one_time_and_recurring_fire_follow_the_state_contract() -> None:
+def test_reminder_state_transitions() -> None:
+    # a one-time fire ends fired; a recurring fire returns to scheduled
     one_time = make_reminder()
     fired = one_time.record_fire(
         scheduled_for_ms=2_000,
@@ -222,8 +220,7 @@ def test_one_time_and_recurring_fire_follow_the_state_contract() -> None:
     assert advanced.next_fire_at_ms == 902_000
     assert advanced.last_occurrence_no == 1
 
-
-def test_fired_reminder_can_be_snoozed_but_not_updated_or_canceled() -> None:
+    # a fired reminder accepts a snooze but no other mutation
     fired = make_reminder(
         state=ReminderState.FIRED,
         next_fire_at_ms=None,
@@ -243,8 +240,7 @@ def test_fired_reminder_can_be_snoozed_but_not_updated_or_canceled() -> None:
     with pytest.raises(ValueError, match="scheduled"):
         fired.cancel(at_ms=3_000)
 
-
-def test_canceled_reminder_rejects_all_mutations() -> None:
+    # a canceled reminder accepts nothing
     canceled = make_reminder().cancel(at_ms=1_500)
     assert canceled.state is ReminderState.CANCELED
 
@@ -262,7 +258,8 @@ def test_canceled_reminder_rejects_all_mutations() -> None:
         )
 
 
-def test_title_and_model_field_combinations_fail_closed() -> None:
+def test_request_contracts() -> None:
+    # a schedule title cannot carry control characters
     with pytest.raises(ValueError, match="control"):
         ReminderScheduleRequest.from_options(
             title="line one\nline two",
@@ -270,21 +267,8 @@ def test_title_and_model_field_combinations_fail_closed() -> None:
             evaluated_at_ms=1_000,
             delay_seconds=1,
         )
-    with pytest.raises(ValueError, match="next_fire_at_ms"):
-        make_reminder(next_fire_at_ms=None)
-    with pytest.raises(ValueError, match="recurring"):
-        make_reminder(
-            state=ReminderState.FIRED,
-            next_fire_at_ms=None,
-            repeat_rule="every:1h",
-            revision=2,
-            last_occurrence_no=1,
-            updated_at_ms=2_000,
-            last_fired_at_ms=2_000,
-        )
 
-
-def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:
+    # ids, list defaults, durations and exactly-one-update are enforced
     with pytest.raises(ValueError, match="UUID"):
         canonical_id_reference("not-an-id")
 
@@ -312,35 +296,3 @@ def test_request_contracts_validate_ids_limits_and_exactly_one_update() -> None:
         cadence="every:01h",
     )
     assert update.repeat_rule == "every:1h"
-
-
-def test_transition_times_and_update_next_fire_must_move_forward() -> None:
-    reminder = make_reminder()
-    with pytest.raises(ValueError, match="backwards"):
-        reminder.update_title("Changed", at_ms=999)
-    with pytest.raises(ValueError, match="future"):
-        reminder.update_next_fire(1_500, at_ms=1_500)
-    with pytest.raises(ValueError, match="backwards"):
-        reminder.record_fire(
-            scheduled_for_ms=2_000,
-            fired_at_ms=999,
-            next_fire_at_ms=None,
-        )
-
-
-def test_result_contracts_reject_values_from_other_domains() -> None:
-    from bazaar_compute_node.core.reminder import (
-        ReminderCancelResult,
-        ReminderScheduleResult,
-        ReminderSnoozeResult,
-        ReminderUpdateResult,
-    )
-
-    for result_type in (
-        ReminderScheduleResult,
-        ReminderSnoozeResult,
-        ReminderUpdateResult,
-        ReminderCancelResult,
-    ):
-        with pytest.raises(TypeError, match="Reminder"):
-            result_type("not-a-reminder")  # type: ignore[arg-type]

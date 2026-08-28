@@ -384,11 +384,8 @@ class StorageOperationMixin:
                 payload.reply_to_message_id,
                 delivery_states=_HISTORY_DELIVERY_STATES,
             )
-            if reply_message is None or reply_message.target != payload.target:
-                raise ValueError(
-                    "reply target does not belong to the target conversation"
-                )
-            reply_to_provider_message_id = reply_message.provider_message_id
+            if reply_message is not None and reply_message.target == payload.target:
+                reply_to_provider_message_id = reply_message.provider_message_id
         cross_session = source_target_id != target_id
         metadata: dict[str, object] = {}
         if cross_session:
@@ -730,12 +727,18 @@ class _StorageOperations(Protocol):
         limit: int,
     ) -> tuple[OwnedReminder, ...]: ...
 
+    async def save_owned_reminder_transition(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+    ) -> Reminder | None: ...
+
     async def materialize_owned_reminder_message(
         self,
         expected_revision: int,
         reminder: OwnedReminder,
         system_message: Message[InboundAttachment],
-    ) -> Message[InboundAttachment]: ...
+    ) -> Message[InboundAttachment] | None: ...
 
     async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]: ...
 

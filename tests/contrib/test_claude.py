@@ -75,9 +75,8 @@ def test_claude_stdout_framing_has_one_mib_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claude_process_exit_uses_result_error_when_stderr_is_empty(
-    tmp_path: Path,
-) -> None:
+async def test_claude_process_exit_error_reporting(tmp_path: Path) -> None:
+    # a result error is used when stderr is empty
     script = (
         "import sys;"
         'print(\'{"type":"result","subtype":"error_during_execution",'
@@ -97,11 +96,7 @@ async def test_claude_process_exit_uses_result_error_when_stderr_is_empty(
     with pytest.raises(ClaudeProcessExited, match="sandbox dependency missing"):
         await supervisor.receive()
 
-
-@pytest.mark.asyncio
-async def test_claude_process_exit_drops_error_from_earlier_result(
-    tmp_path: Path,
-) -> None:
+    # an error from an earlier result is dropped
     script = (
         "import sys;"
         'print(\'{"type":"result","subtype":"error_during_execution",'
@@ -126,9 +121,7 @@ async def test_claude_process_exit_drops_error_from_earlier_result(
     assert "stale failure" not in str(error.value)
     assert error.value.result_error_tail == ()
 
-
-@pytest.mark.asyncio
-async def test_claude_control_failure_cleans_pending_request() -> None:
+    # a control failure cleans up the pending request
     supervisor = ProcessSupervisor(
         ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})
     )
@@ -211,7 +204,8 @@ def test_claude_provider_cycle_rejects_second_foreground() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claude_task_notification_adopts_foreground_turn() -> None:
+async def test_claude_task_notification_adoption() -> None:
+    # a task notification adopts the foreground turn
     supervisor = ProcessSupervisor(
         ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})
     )
@@ -247,9 +241,7 @@ async def test_claude_task_notification_adopts_foreground_turn() -> None:
     assert not client.provider_wake_active
     assert client.provider_cycle_state is ProviderCycleState.FOREGROUND
 
-
-@pytest.mark.asyncio
-async def test_claude_adopted_task_notification_result_completes_turn() -> None:
+    # an adopted notification result completes the turn
     inbox = TurnInbox(1)
     inbox.adopted_provider_wake = True
     closed = False

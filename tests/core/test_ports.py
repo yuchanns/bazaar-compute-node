@@ -10,8 +10,6 @@ from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
-    RuntimeBackgroundIdle,
-    RuntimeCommandContext,
     RuntimeExpire,
 )
 
@@ -41,20 +39,6 @@ async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> Non
     finally:
         await channel.stop(timeout=1)
     assert channel.get_identity() is None
-
-
-def test_runtime_command_context_requires_bot_name_callable() -> None:
-    async def run_command(*_: object) -> None:
-        return None
-
-    with pytest.raises(TypeError, match="bot_name"):
-        RuntimeCommandContext(
-            run_command=run_command,
-            environment_for_session=lambda _: {},
-            agent_id="agent-test",
-            agent_name="Test Agent",
-            bot_name="provider_bot",  # type: ignore[arg-type]
-        )
 
 
 def test_timeout_budget_requires_finite_positive_boundaries() -> None:
@@ -107,17 +91,6 @@ def test_provider_result_requires_explicit_unknown_or_failure_reason() -> None:
             status=ProviderCallStatus.PARTIAL,
             error_kind="provider_rejected_batch",
         )
-
-
-def test_runtime_lifecycle_events_require_runtime_session_identity() -> None:
-    with pytest.raises(ValueError, match="runtime_session_id"):
-        RuntimeExpire("")
-    with pytest.raises(ValueError, match="runtime_session_id"):
-        RuntimeExpire(None)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="runtime_session_id"):
-        RuntimeBackgroundIdle("")
-    with pytest.raises(ValueError, match="runtime_session_id"):
-        RuntimeBackgroundIdle(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

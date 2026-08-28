@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -29,6 +30,7 @@ from bazaar_compute_node.core.command import (
     MessageSendFreshnessHold,
     OutboundFreshnessPass,
 )
+from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.models import (
     BcnSession,
     ChannelSession,
@@ -46,9 +48,11 @@ from bazaar_compute_node.core.models import (
     SenderKind,
     SystemMessageKind,
 )
+from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 from bazaar_compute_node.core.reminder import render_reminder_fire_body
 from bazaar_compute_node.core.storage import IStorage
+from bazaar_compute_node.core.timerwheel import TimerWheel
 
 
 @pytest.mark.asyncio
@@ -479,6 +483,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             OwnedReminder("agent-1", fired),
             system_message("018f0000-0000-7000-8000-000000000003"),
         )
+        assert materialized is not None
         persisted = await scope.get_message(materialized.message_id)
         owners = await storage.list_unread_message_owners()
         catalog = await scope.list_inbox_targets()
@@ -2019,3 +2024,167 @@ def test_default_workspace_uses_the_home_bcn_root() -> None:
         resolve_workspace_dir("workspace-1")
         == resolve_data_dir() / "workspaces" / "workspace-1"
     )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_scheduler_fires_reminder_anchored_to_a_system_message() -> None:
+    """A Reminder anchored to an earlier fire is accepted on input and fires."""
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    wheel = TimerWheel()
+    await wheel.start()
+    try:
+        storage = cast(IStorage, database)
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        bcn_session = BcnSession(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        await scope.save_channel_session(channel_session)
+        await scope.save_bcn_session(bcn_session)
+
+        anchor = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="018f0000-0000-7000-8000-0000000000a1",
+                session_id=bcn_session.id,
+                channel_session_id=channel_session.id,
+                channel=channel_session.channel,
+                provider_thread_id=channel_session.provider_thread_id,
+                provider_message_id="provider-message-1",
+                received_at_ms=1_000,
+                sender=SenderIdentity(id="user-1", name="Test User"),
+                target="dm:channel-1",
+                body="remember this",
+                metadata={"sender_kind": SenderKind.HUMAN.value},
+            )
+        )
+        # A previous Reminder fire: inbound, but with no provider message behind it.
+        system_anchor = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="018f0000-0000-7000-8000-0000000000a2",
+                session_id=bcn_session.id,
+                channel_session_id=channel_session.id,
+                channel=channel_session.channel,
+                provider_thread_id=channel_session.provider_thread_id,
+                provider_message_id=None,
+                provider_time_ms=None,
+                received_at_ms=1_500,
+                sender=SenderIdentity(id="system", name="system"),
+                target=anchor.target,
+                target_kind=anchor.target_kind,
+                body="reminder fired",
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                },
+            )
+        )
+
+        def scheduled(anchor_message_id: str, title: str) -> Reminder:
+            return Reminder(
+                reminder_id="018f0000-0000-7000-8000-0000000000b1",
+                owner_session_id=bcn_session.id,
+                anchor_message_id=anchor_message_id,
+                title=title,
+                state=ReminderState.SCHEDULED,
+                next_fire_at_ms=2_000,
+                repeat_rule=None,
+                timezone="UTC",
+                revision=1,
+                last_occurrence_no=0,
+                created_at_ms=1_000,
+                updated_at_ms=1_000,
+            )
+
+        on_system_anchor = await scope.save_new_reminder(
+            scheduled(system_anchor.message_id, "Anchored to a system message")
+        )
+        on_provider_anchor = await scope.save_new_reminder(
+            scheduled(anchor.message_id, "Anchored to a provider message")
+        )
+
+        published: list[str] = []
+
+        async def publish(agent_id: str, message: Message) -> bool:
+            del agent_id
+            published.append(message.body)
+            return True
+
+        scheduler = ReminderScheduler(
+            storage=storage,
+            timer_wheel=wheel,
+            concurrency=SessionLockRegistry(),
+            publish_wake=publish,
+            clock=lambda: 3_000,
+        )
+        await scheduler.start(timeout=2)
+        await scheduler.stop(timeout=2)
+
+        from_system = await scope.get_reminder(
+            bcn_session.id, on_system_anchor.reminder_id
+        )
+        from_provider = await scope.get_reminder(
+            bcn_session.id, on_provider_anchor.reminder_id
+        )
+        assert from_system is not None
+        assert from_provider is not None
+        assert from_system.state is ReminderState.FIRED
+        assert from_provider.state is ReminderState.FIRED
+        assert any("Anchored to a system message" in body for body in published)
+        assert any("Anchored to a provider message" in body for body in published)
+    finally:
+        await wheel.close()
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_scheduler_survives_a_failed_cycle() -> None:
+    """A storage failure inside the scheduler loop retries instead of stopping it."""
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    wheel = TimerWheel()
+    await wheel.start()
+    scheduler = ReminderScheduler(
+        storage=cast(IStorage, database),
+        timer_wheel=wheel,
+        concurrency=SessionLockRegistry(),
+        publish_wake=_never_published,
+        clock=lambda: 1_000,
+    )
+    try:
+        await scheduler.start(timeout=2)
+        await database.stop(timeout=2)
+        scheduler.poke()
+
+        async def until_cycle_failed() -> None:
+            while scheduler._task is not None and not scheduler._task.done():
+                await asyncio.sleep(0)
+                return
+
+        await asyncio.wait_for(until_cycle_failed(), timeout=2)
+        assert scheduler._task is not None
+        assert scheduler._task.done() is False
+    finally:
+        await scheduler.stop(timeout=2)
+        await wheel.close()
+
+
+async def _never_published(agent_id: str, message: Message) -> bool:
+    del agent_id, message
+    return True
