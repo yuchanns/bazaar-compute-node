@@ -64,9 +64,8 @@ class _RoutingRegistry(AdapterRegistry):
         *,
         channel: str,
         runtime: str,
-        storage: str,
     ) -> AgentAdapterFactories:
-        del channel, runtime, storage
+        del channel, runtime
 
         def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
             return self._runtimes[context.agent_id]

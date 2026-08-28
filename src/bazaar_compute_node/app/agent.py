@@ -161,20 +161,10 @@ class AgentApplication:
             concurrency=reminder_concurrency,
             poke=reminder_poke,
         )
-        self._provider_control_handler = (
-            factories.control(self._adapter_context())
-            if factories.control is not None
-            else None
-        )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             reminder_service=self.reminder_service,
             timeout_budget=self.timeout_budget,
-            control_handler=(
-                self._handle_control
-                if self._provider_control_handler is not None
-                else None
-            ),
             session_binding_validator=self._validate_session_binding,
         )
 
@@ -302,37 +292,6 @@ class AgentApplication:
 
     async def _referenced_attachment_paths(self) -> set[str]:
         return set(await self.storage.list_ready_attachment_paths())
-
-    def _adapter_context(self) -> Mapping[str, object]:
-        return {
-            "agent_id": self.agent_id,
-            "agent_name": self.name,
-            "channel": self.channel,
-            "runtime": self.runtime,
-            "storage": self.storage,
-            "audit": self.audit,
-            "command_log": self.command_log,
-            "is_started": lambda: self._started,
-        }
-
-    async def _handle_control(
-        self,
-        request: Mapping[str, object],
-    ) -> Mapping[str, object]:
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise CommandDispatchError(
-                "SESSION_REQUIRED",
-                "session_id must be a non-empty string",
-            )
-        await self._validate_session_binding(session_id, request)
-        handler = self._provider_control_handler
-        if handler is None:
-            raise CommandDispatchError(
-                "INVALID_COMMAND",
-                "control operation is not supported",
-            )
-        return await handler(request)
 
     async def _validate_session_binding(
         self,

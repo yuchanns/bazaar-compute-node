@@ -6,7 +6,6 @@ PROVIDER_GROUPS = frozenset(
     {
         "bazaar_compute_node.audits",
         "bazaar_compute_node.channels",
-        "bazaar_compute_node.controls",
         "bazaar_compute_node.runtimes",
         "bazaar_compute_node.storages",
     }

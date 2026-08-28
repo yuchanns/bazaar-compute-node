@@ -77,9 +77,8 @@ class _StaticRegistry(AdapterRegistry):
         *,
         channel: str,
         runtime: str,
-        storage: str,
     ) -> AgentAdapterFactories:
-        del channel, runtime, storage
+        del channel, runtime
         return AgentAdapterFactories(
             channel=StaticChannelBuilder(self._channel),
             runtime=self._runtime,

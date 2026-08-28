@@ -150,7 +150,6 @@ class NodeApplication:
                     self._registry.load_agent,
                     channel=configuration.channel.kind,
                     runtime=configuration.runtime.kind,
-                    storage=self.configuration.storage,
                 )
                 storage_scope = self.storage.scope(configuration.id, configuration.name)
                 application = AgentApplication(
