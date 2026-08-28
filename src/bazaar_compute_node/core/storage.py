@@ -730,12 +730,18 @@ class _StorageOperations(Protocol):
         limit: int,
     ) -> tuple[OwnedReminder, ...]: ...
 
+    async def save_owned_reminder_transition(
+        self,
+        expected_revision: int,
+        reminder: OwnedReminder,
+    ) -> Reminder | None: ...
+
     async def materialize_owned_reminder_message(
         self,
         expected_revision: int,
         reminder: OwnedReminder,
         system_message: Message[InboundAttachment],
-    ) -> Message[InboundAttachment]: ...
+    ) -> Message[InboundAttachment] | None: ...
 
     async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]: ...
 

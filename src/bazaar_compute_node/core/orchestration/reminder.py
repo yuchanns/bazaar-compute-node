@@ -13,6 +13,7 @@ from ..models import (
     Message,
     MessageDirection,
     OwnedReminder,
+    Reminder,
     ReminderState,
     SenderIdentity,
     SenderKind,
@@ -135,9 +136,9 @@ class ReminderScheduler(IAsyncLifecycle):
                     continue
                 next_fire_at_ms = frontier.reminder.next_fire_at_ms
                 if next_fire_at_ms is None:
-                    raise RuntimeError(
-                        "scheduled reminder frontier has no next fire time"
-                    )
+                    await self._poke.wait()
+                    self._poke.clear()
+                    continue
                 remaining_ms = next_fire_at_ms - self._clock()
                 if remaining_ms <= 0:
                     await asyncio.sleep(0)
@@ -234,7 +235,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 return None
             scheduled_for_ms = current.next_fire_at_ms
             if scheduled_for_ms is None:
-                raise RuntimeError("scheduled reminder has no next fire time")
+                return None
             fired_at_ms = self._clock()
             if fired_at_ms < scheduled_for_ms:
                 return None
@@ -250,21 +251,13 @@ class ReminderScheduler(IAsyncLifecycle):
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                canceled = current.cancel(at_ms=fired_at_ms)
-                await self._storage.save_reminder_transition(
-                    current.revision,
-                    canceled,
-                )
-                self._logger.error(
-                    "reminder recurrence is invalid; reminder canceled",
-                    extra={
-                        "agent_id": owner.agent_id,
-                        "owner_session_id": current.owner_session_id,
-                        "reminder_id": current.reminder_id,
-                        "error_type": type(error).__name__,
-                    },
-                    exc_info=(type(error), error, error.__traceback__),
+            except Exception as error:  # noqa: BLE001
+                await self._cancel_unusable_reminder(
+                    owner.agent_id,
+                    current,
+                    "reminder recurrence is invalid",
+                    at_ms=fired_at_ms,
+                    error=error,
                 )
                 return None
             fired = current.record_fire(
@@ -279,19 +272,11 @@ class ReminderScheduler(IAsyncLifecycle):
                 direction=MessageDirection.INBOUND,
             )
             if anchor is None:
-                canceled = current.cancel(at_ms=fired_at_ms)
-                await self._storage.save_reminder_transition(
-                    current.revision,
-                    canceled,
-                )
-                self._logger.error(
-                    "reminder anchor is missing; reminder canceled",
-                    extra={
-                        "agent_id": owner.agent_id,
-                        "owner_session_id": current.owner_session_id,
-                        "reminder_id": current.reminder_id,
-                        "anchor_message_id": current.anchor_message_id,
-                    },
+                await self._cancel_unusable_reminder(
+                    owner.agent_id,
+                    current,
+                    "reminder anchor is missing",
+                    at_ms=fired_at_ms,
                 )
                 return None
             system_message = Message[InboundAttachment](
@@ -326,7 +311,41 @@ class ReminderScheduler(IAsyncLifecycle):
                 OwnedReminder(owner.agent_id, fired),
                 system_message,
             )
+            if materialized is None:
+                return None
             return owner.agent_id, materialized
+
+    async def _cancel_unusable_reminder(
+        self,
+        agent_id: str,
+        reminder: Reminder,
+        reason: str,
+        *,
+        at_ms: int | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """Retire one Reminder that can never fire, so the frontier keeps moving."""
+
+        canceled = reminder.cancel(at_ms=at_ms if at_ms is not None else self._clock())
+        retired = await self._storage.save_owned_reminder_transition(
+            reminder.revision,
+            OwnedReminder(agent_id, canceled),
+        )
+        if retired is None:
+            return
+        self._logger.error(
+            "%s; reminder canceled",
+            reason,
+            extra={
+                "agent_id": agent_id,
+                "owner_session_id": reminder.owner_session_id,
+                "reminder_id": reminder.reminder_id,
+                "anchor_message_id": reminder.anchor_message_id,
+            },
+            exc_info=(
+                (type(error), error, error.__traceback__) if error is not None else None
+            ),
+        )
 
     async def _publish_message(
         self,
