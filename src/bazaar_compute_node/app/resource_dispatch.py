@@ -257,7 +257,16 @@ class CommandDispatcher(_MessageCommandDispatcher):
                         "version": self._upgrade_service.installed_version,
                     },
                 }
-            request = _parse_command_request(raw_request, _NodeUpgradeRequest)
+            request = _parse_command_request(
+                raw_request,
+                _NodeUpgradeRequest,
+                errors={
+                    "message_id": (
+                        "UPGRADE_ANCHOR_REQUIRED",
+                        "Upgrade requires --message-id.",
+                    )
+                },
+            )
             session_id = request.session_id
             if self._session_binding_validator is not None:
                 await self._session_binding_validator(session_id, raw_request)

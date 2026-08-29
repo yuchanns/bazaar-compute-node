@@ -213,7 +213,7 @@ async def _run_node(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         await node.wait()
     finally:
         await node.stop()
-    return 0
+    return node.exit_code
 
 
 async def async_main(argv: Sequence[str] | None = None) -> int:

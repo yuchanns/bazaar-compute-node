@@ -3,31 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
 from .. import __distribution__
-from ..core.timerwheel import TimerWheel, TimerWheelClosedError
 from ..rendering import TextTemplate
 from .system_service import (
     TEMPLATE_REVISION,
     _powershell_literal,
     installed_template_revision,
     render_windows_wrapper,
-    resolve_bcn_executable,
     windows_live_directory,
     windows_wrapper_path,
 )
 from .version_check import VersionWatcher
 
-# long enough for the command response to reach the waiting bcc process
-_RESTART_DELAY_MS = 1_000
 _STAGING_DIRECTORY = f"{__distribution__}.staging"
 _REPLACE_MANAGED_FILE = TextTemplate.from_resource(
     "system_service/replace_managed_file.ps1"
@@ -211,13 +207,11 @@ class UpgradeService:
         *,
         version_watcher: VersionWatcher,
         installed_version: str,
-        timer_wheel: TimerWheel,
+        request_restart: Callable[[], None],
     ) -> None:
         self._version_watcher = version_watcher
         self._installed_version = installed_version
-        self._timer_wheel = timer_wheel
-        self._restart: asyncio.Task[None] | None = None
-        self._logger = logging.getLogger("bazaar_compute_node.application.upgrade")
+        self._request_restart = request_restart
 
     @property
     def installed_version(self) -> str:
@@ -238,40 +232,18 @@ class UpgradeService:
             await asyncio.to_thread(_install_posix, version)
 
     def restart(self) -> None:
-        """Restart the node once the caller has its answer."""
+        """Ask whatever hosts this node to start it again on the new release.
 
-        if self._restart is not None:
-            return
-        self._restart = asyncio.create_task(self._restart_soon(), name="bcn-upgrade")
+        The node cannot restart itself from the inside: on Windows the stop it
+        would ask for kills the process tree it is asking from. Exiting is the
+        one thing it can do that its host is already watching for.
+        """
 
-    async def _restart_soon(self) -> None:
-        try:
-            await self._timer_wheel.create(_RESTART_DELAY_MS).wait()
-        except TimerWheelClosedError:
-            return
-        try:
-            await asyncio.to_thread(self._spawn_restart)
-        except Exception:
-            self._logger.warning("upgrade restart failed", exc_info=True)
-
-    def _spawn_restart(self) -> None:
-        # the restart kills this process, so it runs detached: a child that
-        # outlives us can still finish stopping and starting the service
-        command = [str(resolve_bcn_executable()), "system-service", "restart"]
-        if os.name == "nt":
-            subprocess.Popen(
-                command,
-                creationflags=(
-                    subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                ),
-                close_fds=True,
-            )
-            return
-        subprocess.Popen(
-            command,
-            start_new_session=True,
-            close_fds=True,
-        )
+        self._request_restart()
 
 
-__all__ = ["UpgradeError", "UpgradeService", "discard_replaced_release"]
+__all__ = [
+    "UpgradeError",
+    "UpgradeService",
+    "discard_replaced_release",
+]

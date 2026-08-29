@@ -56,15 +56,14 @@ def make_configuration() -> NodeConfiguration:
 
 
 def make_upgrade_service(*, installed_version: str = "0.1.0") -> UpgradeService:
-    wheel = TimerWheel()
     return UpgradeService(
         version_watcher=VersionWatcher(
-            timer_wheel=wheel,
+            timer_wheel=TimerWheel(),
             current_version=installed_version,
             request_timeout_seconds=1,
         ),
         installed_version=installed_version,
-        timer_wheel=wheel,
+        request_restart=lambda: None,
     )
 
 
@@ -352,8 +351,10 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
     )
 
     # case: without an anchor there is nothing to wake the Agent after the
-    # restart, so the command cannot be accepted
+    # restart, and the Agent is told which argument it left out
     assert result["ok"] is False
+    assert result["code"] == "UPGRADE_ANCHOR_REQUIRED"
+    assert "--message-id" in cast(str, result["error"])
 
 
 @pytest.mark.asyncio
