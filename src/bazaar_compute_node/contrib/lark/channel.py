@@ -613,7 +613,9 @@ class LarkChannel(IChannel):
             return SenderIdentity(id=open_id)
         return SenderIdentity(
             id=open_id,
-            name=await self._contact_name(tenant_key=tenant_key, open_id=open_id),
+            display_name=await self._contact_name(
+                tenant_key=tenant_key, open_id=open_id
+            ),
         )
 
     async def _contact_name(self, *, tenant_key: str, open_id: str) -> str | None:

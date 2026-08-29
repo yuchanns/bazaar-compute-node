@@ -18,6 +18,8 @@ from bazaar_compute_node.app.config import (
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
+from bazaar_compute_node.app.upgrade import UpgradeService
+from bazaar_compute_node.app.version_check import VersionWatcher
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
@@ -32,12 +34,14 @@ from bazaar_compute_node.core.models import (
     MessageDirection,
     OutboundDeliveryState,
 )
+from bazaar_compute_node.core.timerwheel import TimerWheel
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 
 def make_configuration() -> NodeConfiguration:
     return NodeConfiguration(
+        version_check=False,
         storage="sqlite",
         audit="test",
         agents=(
@@ -48,6 +52,18 @@ def make_configuration() -> NodeConfiguration:
                 runtimes=(RuntimeConfiguration(kind="test"),),
             ),
         ),
+    )
+
+
+def make_upgrade_service(*, installed_version: str = "0.1.0") -> UpgradeService:
+    return UpgradeService(
+        version_watcher=VersionWatcher(
+            timer_wheel=TimerWheel(),
+            current_version=installed_version,
+            request_timeout_seconds=1,
+        ),
+        installed_version=installed_version,
+        request_restart=lambda: None,
     )
 
 
@@ -183,6 +199,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
     request = {
@@ -225,6 +242,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
     request = {
@@ -285,3 +303,80 @@ async def test_message_send_renders_provider_outcomes() -> None:
         else:
             assert response["code"] == code
             assert expected_text in cast(str, response["next_action"])
+
+
+@pytest.mark.asyncio
+async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "upgrade",
+            "session_id": "session-source",
+            "message_id": "0198d4e6-29c5-7465-b74b-88db31f0c118",
+        }
+    )
+
+    # case: an Agent that runs the command on its own gets told there is
+    # nothing to install rather than a surprise restart
+    assert result["ok"] is False
+    assert result["code"] == "UPGRADE_NOT_AVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "upgrade",
+            "session_id": "session-source",
+        }
+    )
+
+    # case: without an anchor there is nothing to wake the Agent after the
+    # restart, and the Agent is told which argument it left out
+    assert result["ok"] is False
+    assert result["code"] == "UPGRADE_ANCHOR_REQUIRED"
+    assert "--message-id" in cast(str, result["error"])
+
+
+@pytest.mark.asyncio
+async def test_version_reports_the_process_and_not_the_disk() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(installed_version="0.1.0"),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "version",
+            "session_id": "session-source",
+        }
+    )
+
+    # case: an Agent confirming an upgrade needs the version it is talking to,
+    # which is the one this process started with
+    assert result["ok"] is True
+    assert cast(Mapping[str, object], result["result"]) == {"version": "0.1.0"}

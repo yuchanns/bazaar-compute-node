@@ -25,9 +25,10 @@ def test_empty_legacy_config_is_upgraded_to_zero_agent_v3(tmp_path: Path) -> Non
     assert configuration.version == "3"
     assert configuration.agents == ()
     assert configuration.lang is None
+    assert configuration.version_check is True
     assert tomllib.loads(config_path.read_text(encoding="utf-8")) == {
         "version": "3",
-        "node": {"storage": "sqlite", "audit": "logging"},
+        "node": {"storage": "sqlite", "audit": "logging", "version_check": True},
     }
     if os.name != "nt":
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
@@ -401,3 +402,48 @@ def test_v3_rejects_invalid_agent_tables() -> None:
         ConfigurationError, match=r"agent #1\.runtime #1\.env must be a TOML table"
     ):
         parse(agent(runtime=[{"kind": "codex", "env": ["CODEX_HOME"]}]))
+
+
+def test_v3_version_check_can_be_turned_off(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "3"
+
+[node]
+storage = "sqlite"
+audit = "logging"
+version_check = false
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration(config_path)
+
+    # case: an operator can stop the node from reaching PyPI at all
+    assert configuration.version_check is False
+
+    # case: the setting survives a serialize and re-read round trip
+    round_trip_path = tmp_path / "round-trip.toml"
+    round_trip_path.write_text(
+        config_module._serialize_configuration(configuration), encoding="utf-8"
+    )
+    assert load_node_configuration(round_trip_path) == configuration
+
+
+def test_v3_version_check_must_be_a_boolean(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "3"
+
+[node]
+storage = "sqlite"
+audit = "logging"
+version_check = "yes"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="node.version_check"):
+        load_node_configuration(config_path)

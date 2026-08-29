@@ -9,12 +9,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import __version__
 from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
 from ..core.observability import IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
+from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
 from ..i18n import create_translator
@@ -22,6 +24,8 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
+from .upgrade import UpgradeService, discard_replaced_release
+from .version_check import VersionWatcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +88,17 @@ class NodeApplication:
             concurrency=self._reminder_concurrency,
             publish_wake=self._publish_inbox_wake,
         )
+        self.version_watcher = VersionWatcher(
+            timer_wheel=self.timer_wheel,
+            current_version=__version__,
+            request_timeout_seconds=self.timeout_budget.command_seconds,
+        )
+        self._restart_requested = False
+        self.upgrade_service = UpgradeService(
+            version_watcher=self.version_watcher,
+            installed_version=__version__,
+            request_restart=self.request_restart,
+        )
         self.command_server = LocalCommandServer(
             self._dispatch,
             endpoint_path=endpoint_path,
@@ -131,11 +146,16 @@ class NodeApplication:
             await self.reminder_scheduler.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
+            if self.configuration.version_check:
+                await self.version_watcher.start(
+                    timeout=self.timeout_budget.startup_seconds,
+                )
         except BaseException:
             await self.stop()
             raise
         self._ready = True
         self._accepting = True
+        await asyncio.to_thread(discard_replaced_release, __version__)
         started_count = len(self.agents)
         failed_count = len(self.configuration.agents) - started_count
         self._log(
@@ -145,6 +165,10 @@ class NodeApplication:
             failed=failed_count,
             endpoint=self.endpoint,
         )
+
+    def _upgrade_notice(self) -> tuple[str, str] | None:
+        available = self.version_watcher.available_version()
+        return None if available is None else (available, __version__)
 
     async def _start_agent(self, configuration: AgentConfiguration) -> None:
         application: AgentApplication | None = None
@@ -167,6 +191,8 @@ class NodeApplication:
                     endpoint=lambda: self.endpoint,
                     timeout_budget=self.timeout_budget,
                     translator=self.translator,
+                    upgrade_notice=self._upgrade_notice,
+                    upgrade_service=self.upgrade_service,
                 )
                 await application.start()
         except asyncio.CancelledError:
@@ -208,6 +234,14 @@ class NodeApplication:
         self._accepting = False
         errors: list[str] = []
         try:
+            await self.version_watcher.stop(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"version_watcher.stop:{type(error).__name__}")
+        try:
             await self.reminder_scheduler.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
@@ -245,6 +279,16 @@ class NodeApplication:
         self._stopped.set()
         if errors:
             self._log("bcn.stop.errors", errors=errors)
+
+    def request_restart(self) -> None:
+        """Stop, and tell whatever hosts this node to start it again."""
+
+        self._restart_requested = True
+        self._stopped.set()
+
+    @property
+    def exit_code(self) -> int:
+        return RESTART_EXIT_CODE if self._restart_requested else 0
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()

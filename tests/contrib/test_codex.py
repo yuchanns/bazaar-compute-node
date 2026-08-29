@@ -976,6 +976,7 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
     audit = RecordingAudit()
     node = NodeApplication(
         configuration=NodeConfiguration(
+            version_check=False,
             storage="sqlite",
             audit="test",
             agents=(
@@ -1110,6 +1111,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
     audit = RecordingAudit()
     node = NodeApplication(
         configuration=NodeConfiguration(
+            version_check=False,
             storage="sqlite",
             audit="test",
             agents=(

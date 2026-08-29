@@ -6,6 +6,7 @@ import getpass
 import locale
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -15,7 +16,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import __distribution__
 from ..core.paths import resolve_data_dir
+from ..core.restart import RESTART_EXIT_CODE
 from ..i18n import Translator, create_translator
 from ..rendering import TextTemplate
 from .config import ConfigurationError, load_control_configuration, resolve_config_path
@@ -25,6 +28,10 @@ SYSTEMD_UNIT_NAME = "bcn.service"
 LAUNCHD_LABEL = "io.github.yuchanns.bazaar-compute-node"
 WINDOWS_TASK_NAME = r"\BazaarComputeNode"
 MANAGED_MARKER = "Managed by bazaar-compute-node."
+# raised whenever a managed file's content changes, so an upgrade can tell that
+# the installed copy predates what this release expects of it
+TEMPLATE_REVISION = 2
+MANAGED_MARKER_LINE = f"{MANAGED_MARKER} template-revision={TEMPLATE_REVISION}"
 WINDOWS_STOP_ATTEMPTS = 100
 WINDOWS_STOP_INTERVAL = 0.05
 
@@ -173,7 +180,7 @@ def _powershell_literal(path: Path | str | None) -> str:
 def _render_systemd_unit(context: SystemServiceContext) -> str:
     return _SYSTEMD_UNIT_TEMPLATE.render(
         {
-            "managed_marker": MANAGED_MARKER,
+            "managed_marker": MANAGED_MARKER_LINE,
             "executable": _systemd_quote(_require_executable(context)),
             "config_path": _systemd_quote(context.config_path),
             "data_dir": _systemd_quote(context.data_dir),
@@ -185,7 +192,7 @@ def _render_systemd_unit(context: SystemServiceContext) -> str:
 
 
 def _render_launchd_wrapper() -> str:
-    return _LAUNCHD_WRAPPER_TEMPLATE.render({"managed_marker": MANAGED_MARKER})
+    return _LAUNCHD_WRAPPER_TEMPLATE.render({"managed_marker": MANAGED_MARKER_LINE})
 
 
 def _render_launchd_plist(
@@ -195,7 +202,7 @@ def _render_launchd_plist(
     return _LAUNCHD_PLIST_TEMPLATE.render(
         {
             "label": LAUNCHD_LABEL,
-            "managed_marker": MANAGED_MARKER,
+            "managed_marker": MANAGED_MARKER_LINE,
             "wrapper_path": str(wrapper_path),
             "data_dir": str(context.data_dir),
             "config_path": str(context.config_path),
@@ -208,16 +215,68 @@ def _render_launchd_plist(
     ).encode("utf-8")
 
 
-def _render_windows_wrapper(context: SystemServiceContext) -> str:
+def render_windows_wrapper(
+    *,
+    executable: str,
+    config_path: str,
+    environment_script: str,
+    log_path: str,
+) -> str:
+    """Render the launcher from PowerShell literals, however they were obtained."""
+
     return _WINDOWS_WRAPPER_TEMPLATE.render(
         {
-            "managed_marker": MANAGED_MARKER,
-            "executable": _powershell_literal(_require_executable(context)),
-            "config_path": _powershell_literal(context.config_path),
-            "environment_script": _powershell_literal(context.env_file),
-            "log_path": _powershell_literal(context.log_path),
+            "managed_marker": MANAGED_MARKER_LINE,
+            "executable": executable,
+            "config_path": config_path,
+            "environment_script": environment_script,
+            "log_path": log_path,
+            "live_directory": _powershell_literal(windows_live_directory()),
+            "restart_exit_code": RESTART_EXIT_CODE,
         }
     )
+
+
+def _render_windows_wrapper(context: SystemServiceContext) -> str:
+    return render_windows_wrapper(
+        executable=_powershell_literal(_require_executable(context)),
+        config_path=_powershell_literal(context.config_path),
+        environment_script=_powershell_literal(context.env_file),
+        log_path=_powershell_literal(context.log_path),
+    )
+
+
+def windows_wrapper_path() -> Path:
+    """Return where the launcher lives, without needing the install arguments."""
+
+    return resolve_data_dir() / "bcn-system-service.ps1"
+
+
+def windows_tool_directory() -> Path | None:
+    """Return the directory uv keeps its installed tools in, where there is one."""
+
+    configured = os.environ.get("UV_TOOL_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    app_data = os.environ.get("APPDATA")
+    return None if not app_data else Path(app_data) / "uv" / "tools"
+
+
+def windows_live_directory() -> Path | None:
+    """Return the installed tool directory an upgrade swaps into place."""
+
+    tools = windows_tool_directory()
+    return None if tools is None else tools / __distribution__
+
+
+def installed_template_revision(content: str) -> int | None:
+    """Read the revision a managed file was written from, if it declares one."""
+
+    first_line = content.splitlines()[0] if content else ""
+    if MANAGED_MARKER not in first_line:
+        return None
+    match = re.search(r"template-revision=(\d+)", first_line)
+    return int(match.group(1)) if match is not None else None
 
 
 def _vbs_literal(value: Path | str) -> str:
@@ -231,7 +290,7 @@ def _render_windows_launcher(wrapper_path: Path) -> str:
     )
     return _WINDOWS_LAUNCHER_TEMPLATE.render(
         {
-            "managed_marker": MANAGED_MARKER,
+            "managed_marker": MANAGED_MARKER_LINE,
             "command": command,
         }
     )
@@ -244,7 +303,7 @@ def _render_windows_task(
     rendered = _WINDOWS_TASK_TEMPLATE.render(
         {
             "user": context.user,
-            "managed_marker": MANAGED_MARKER,
+            "managed_marker": MANAGED_MARKER_LINE,
             "arguments": f'//B //Nologo "{launcher_path}"',
             "data_dir": str(context.data_dir),
         }

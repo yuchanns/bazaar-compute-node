@@ -59,6 +59,47 @@ class _FakeApi:
                 "from": {
                     "id": TEST_USER_ID,
                     "username": TEST_USER_USERNAME,
+                    "first_name": "Hanchin",
+                    "last_name": "Hsieh",
+                    "is_bot": False,
+                }
+            },
+            SenderIdentity(
+                id=str(TEST_USER_ID),
+                name=TEST_USER_USERNAME,
+                display_name="Hanchin Hsieh",
+            ),
+        ),
+        (
+            {
+                "from": {
+                    "id": TEST_USER_ID,
+                    "username": TEST_USER_USERNAME,
+                    "first_name": "Hanchin",
+                    "is_bot": False,
+                }
+            },
+            SenderIdentity(
+                id=str(TEST_USER_ID),
+                name=TEST_USER_USERNAME,
+                display_name="Hanchin",
+            ),
+        ),
+        (
+            {
+                "from": {
+                    "id": TEST_USER_ID,
+                    "first_name": "Hanchin",
+                    "is_bot": False,
+                }
+            },
+            SenderIdentity(id=str(TEST_USER_ID), display_name="Hanchin"),
+        ),
+        (
+            {
+                "from": {
+                    "id": TEST_USER_ID,
+                    "username": TEST_USER_USERNAME,
                     "is_bot": False,
                 }
             },
@@ -86,9 +127,14 @@ class _FakeApi:
                 "sender_chat": {
                     "id": TEST_CHAT_ID,
                     "username": TEST_CHAT_USERNAME,
+                    "title": "Release Channel",
                 }
             },
-            SenderIdentity(id=str(TEST_CHAT_ID), name=TEST_CHAT_USERNAME),
+            SenderIdentity(
+                id=str(TEST_CHAT_ID),
+                name=TEST_CHAT_USERNAME,
+                display_name="Release Channel",
+            ),
         ),
         (
             {"sender_chat": {"id": TEST_CHAT_ID}},
@@ -110,7 +156,7 @@ class _FakeApi:
         ({}, None),
     ),
 )
-def test_telegram_sender_prefers_username_with_id_fallback(
+def test_telegram_sender_keeps_the_handle_and_the_profile_name_apart(
     message: dict[str, Any],
     expected: SenderIdentity | None,
 ) -> None:

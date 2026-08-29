@@ -1,3 +1,4 @@
 from importlib.metadata import version
 
-__version__ = version("bazaar-compute-node")
+__distribution__ = "bazaar-compute-node"
+__version__ = version(__distribution__)

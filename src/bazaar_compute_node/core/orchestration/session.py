@@ -122,6 +122,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         workspace: Callable[[], Path],
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
+        upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -137,6 +138,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
         self._agent_id = agent_id
         self._channel = channel
+        self._upgrade_notice = upgrade_notice
         self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
         self._storage = storage
         self._timeout_budget = timeout_budget
@@ -1173,10 +1175,19 @@ class SessionOrchestrator(IAsyncLifecycle):
         turn_id = f"turn-{client_user_message_id}"
         if await self._storage.get_runtime_attempt(turn_id) is not None:
             return self._runtime_turns.get(turn_id)
+        # a session that does not exist yet is about to be created, and that is
+        # the one turn where the upgrade is worth mentioning
+        upgrade = (
+            self._upgrade_notice()
+            if self.runtime_session(durable_context.bcn_session.id) is None
+            else None
+        )
         input_text = inbox_notice(
             unread,
             total_unread_count=len(unread),
             closing_bracket_on_own_line=True,
+            upgrade_version=upgrade[0] if upgrade is not None else None,
+            installed_version=upgrade[1] if upgrade is not None else None,
         )
         observation_source = (
             SessionRuntimeObservationSource.SESSION
