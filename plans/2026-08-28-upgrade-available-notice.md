@@ -324,15 +324,19 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 - 运行 `ruff format --check .`、`ruff check .`、
   `uv run scripts/pyright_lsp_check.py --outputjson .`、
   `uv run python -m compileall -q src tests`、`uv lock --check`、`git diff --check`；
-- 在 Linux 上跑一次完整升级：`bcc node upgrade` → 就地安装 → 节点退出 → systemd 拉起新版本 →
-  Reminder 唤醒 Agent 回报；
-- 在一台真实 Windows 主机上先跑一次 `bcn system-service install` 拿到带交换段的 wrapper，再跑
-  一次完整升级：`bcc node upgrade` → 装进 `.staging` → 节点退出 → `windows.ps1` 完成交换并重新
-  启动 bcn →
-  新版本启动 → Reminder 唤醒 Agent 回报，并确认 `.old` 在版本对上后被删除；另外手工制造一次
-  「只完成第一次改名」的中断，确认下一次启动能恢复。这是这条链路唯一无法在 Linux 上验证的
-  部分；
+- 在一台真实 Windows 主机上验证交换链路。装一份本分支构建、版本号标低一档的 fixture，
+  执行一次 `bcc node upgrade`，确认目标进入 `.staging`、Reminder 在退出之前落库、`windows.ps1`
+  完成 `live → .old` 与 `.staging → live` 并重新启动 bcn；另外单独构造一次「只完成第一次改名」
+  的中断，确认下一次启动能把 `.staging` 恢复成 live。这是这条链路唯一无法在 Linux 上验证的部分；
 - 汇总结果，停在最终 review。
+
+**升级目标只能是 PyPI 报出的版本。** 版本检查读的是写死的 PyPI 地址，本地索引只影响 uv 从哪里
+下载，不影响选哪个版本。因此在本分支发布之前，Windows 上换进去的目标必然是一个更旧的正式包，
+它起不来是预期结果。这使得两件事只能留到发布之后验证：新进程的 `bcc node version` 等于目标
+版本，以及 `.old` 在版本对上后被删除。发布之后拿那次真实的版本更新补验即可。
+
+节点退出之后托管方是否真的把它拉起来，同样只能在真机上看：Linux 与 macOS 靠各自托管配置，
+Windows 靠 wrapper 循环。
 
 ## 8. 验收标准
 
