@@ -21,6 +21,7 @@ from pydantic import (
 from .app.command import format_check_message, format_message_time, format_read_message
 from .app.transport import LocalCommandClient
 from .core.reminder import format_utc_timestamp
+from .rendering import TextTemplate
 
 
 class BccCommandError(RuntimeError):
@@ -439,74 +440,69 @@ async def _request(
     return response
 
 
+_INBOX_TARGET = TextTemplate.from_resource("bcc/inbox_target.tpl")
+_INBOX_LIST = TextTemplate.from_resource("bcc/inbox_list.tpl")
+_CHECK = TextTemplate.from_resource("bcc/check.tpl")
+_READ = TextTemplate.from_resource("bcc/read.tpl")
+_UNFOLLOW = TextTemplate.from_resource("bcc/unfollow.tpl")
+_REMINDER_SCHEDULE = TextTemplate.from_resource("bcc/reminder_schedule.tpl")
+_REMINDER_LIST = TextTemplate.from_resource("bcc/reminder_list.tpl")
+_REMINDER_MUTATION = TextTemplate.from_resource("bcc/reminder_mutation.tpl")
+_ERROR = TextTemplate.from_resource("bcc/error.tpl")
+
+
 def _result(response: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], response["result"])
 
 
-def _format_inbox_sender(value: object) -> str:
-    if value is None:
-        return "none"
-    sender = cast(Mapping[str, object], value)
-    sender_id = cast(str | None, sender.get("id"))
-    sender_name = cast(str | None, sender.get("name"))
-    return f"@{sender_name or sender_id}"
-
-
 def _format_inbox_target(summary: Mapping[str, object]) -> str:
-    target = cast(str, summary["target"])
-    session_id = cast(str, summary["session_id"])
-    target_kind = cast(str, summary["target_kind"])
-    current = cast(bool, summary["current"])
-    pending_count = cast(int, summary["pending_count"])
     latest_message_id = cast(str | None, summary["latest_message_id"])
-    latest_sender = summary.get("latest_sender")
+    latest_sender = cast(
+        Mapping[str, object] | None,
+        summary.get("latest_sender"),
+    )
     latest_time_ms = cast(int | None, summary["latest_time_ms"])
-    if latest_message_id is None:
-        latest_message_text = "none"
-        latest_sender_text = "none"
-        latest_time_text = "none"
-    else:
-        latest_message_text = latest_message_id
-        latest_sender_text = _format_inbox_sender(latest_sender)
-        latest_time_text = format_message_time(cast(int, latest_time_ms))
-
-    return (
-        f"[target={target} session={session_id} kind={target_kind} "
-        f"current={str(current).lower()} pending={pending_count} "
-        f"latest-msg={latest_message_text} latest-sender={latest_sender_text} "
-        f"latest-time={latest_time_text}]"
+    return _INBOX_TARGET.render(
+        {
+            "target": cast(str, summary["target"]),
+            "session_id": cast(str, summary["session_id"]),
+            "target_kind": cast(str, summary["target_kind"]),
+            "current": str(cast(bool, summary["current"])).lower(),
+            "pending_count": cast(int, summary["pending_count"]),
+            "latest_message_id": latest_message_id,
+            "latest_sender_id": (
+                cast(str | None, latest_sender.get("id"))
+                if latest_sender is not None
+                else None
+            ),
+            "latest_sender_name": (
+                cast(str | None, latest_sender.get("name"))
+                if latest_sender is not None
+                else None
+            ),
+            "latest_time": (
+                format_message_time(latest_time_ms)
+                if latest_time_ms is not None
+                else None
+            ),
+        }
     )
 
 
 def serialize_inbox_list(result: Mapping[str, object]) -> str:
     targets = cast(list[Mapping[str, object]], result["targets"])
-    total = cast(int, result["total"])
     shown = cast(int, result["shown"])
     offset = cast(int, result["offset"])
-    has_more = cast(bool, result["has_more"])
-
-    rendered_targets: list[str] = []
-    for target in targets:
-        rendered_targets.append(_format_inbox_target(target))
-
-    lines = [
-        (
-            f"Inbox targets: {shown} returned, offset {offset}, total {total}, "
-            "ordered by recent activity."
-        )
-    ]
-    lines.extend(rendered_targets)
-    if total == 0:
-        lines.append("No message targets.")
-    elif not targets:
-        lines.append("No more message targets.")
-    elif has_more:
-        lines.append(
-            f"More message targets remain. Run `bcc inbox list --offset {offset + shown}`."
-        )
-    else:
-        lines.append("No more message targets.")
-    return "\n".join(lines)
+    return _INBOX_LIST.render(
+        {
+            "shown": shown,
+            "offset": offset,
+            "total": cast(int, result["total"]),
+            "has_more": cast(bool, result["has_more"]),
+            "next_offset": offset + shown,
+            "target_lines": [_format_inbox_target(target) for target in targets],
+        }
+    )
 
 
 def serialize_check(result: Mapping[str, object]) -> str:
@@ -514,22 +510,19 @@ def serialize_check(result: Mapping[str, object]) -> str:
     referenced_messages = cast(
         list[Mapping[str, object]], result["referenced_messages"]
     )
-    lines: list[str] = []
-    if referenced_messages:
-        lines.append(f"Referenced messages: {len(referenced_messages)}")
-        lines.extend(
-            format_read_message(
-                message,
-                index=index,
-                count=len(referenced_messages),
-            )
-            for index, message in enumerate(referenced_messages, start=1)
-        )
-        lines.append("New messages:")
-    lines.extend(format_check_message(message) for message in messages)
-    if not lines:
-        lines.append("No more new messages.")
-    return "\n".join(lines)
+    return _CHECK.render(
+        {
+            "referenced_lines": [
+                format_read_message(
+                    message,
+                    index=index,
+                    count=len(referenced_messages),
+                )
+                for index, message in enumerate(referenced_messages, start=1)
+            ],
+            "message_lines": [format_check_message(message) for message in messages],
+        }
+    )
 
 
 def serialize_read(result: Mapping[str, object]) -> str:
@@ -537,29 +530,25 @@ def serialize_read(result: Mapping[str, object]) -> str:
     referenced_messages = cast(
         list[Mapping[str, object]], result["referenced_messages"]
     )
-    first_seq = result["first_seq"]
-    last_seq = result["last_seq"]
-    if not messages:
-        bounds = "none-none"
-    else:
-        bounds = f"{cast(int, first_seq)}-{cast(int, last_seq)}"
-    lines = [f"Read window: {len(messages)} returned, seq {bounds}, oldest to newest."]
-    if referenced_messages:
-        lines.append(f"Referenced messages: {len(referenced_messages)}")
-        lines.extend(
-            format_read_message(
-                message,
-                index=index,
-                count=len(referenced_messages),
-            )
-            for index, message in enumerate(referenced_messages, start=1)
-        )
-        lines.append("Window messages:")
-    lines.extend(
-        format_read_message(message, index=index, count=len(messages))
-        for index, message in enumerate(messages, start=1)
+    return _READ.render(
+        {
+            "shown": len(messages),
+            "first_seq": result["first_seq"] if messages else None,
+            "last_seq": result["last_seq"] if messages else None,
+            "referenced_lines": [
+                format_read_message(
+                    message,
+                    index=index,
+                    count=len(referenced_messages),
+                )
+                for index, message in enumerate(referenced_messages, start=1)
+            ],
+            "message_lines": [
+                format_read_message(message, index=index, count=len(messages))
+                for index, message in enumerate(messages, start=1)
+            ],
+        }
     )
-    return "\n".join(lines)
 
 
 class _MessageSendResponse(BaseModel):
@@ -579,21 +568,16 @@ def serialize_send(result: Mapping[str, object]) -> str:
 
 
 def serialize_unfollow(result: Mapping[str, object]) -> str:
-    target = cast(str, result["target"])
-    if cast(bool, result["changed"]):
-        return f"Thread unfollowed: {target}"
-    return f"Thread was already unfollowed: {target}"
+    return _UNFOLLOW.render(
+        {
+            "target": cast(str, result["target"]),
+            "changed": cast(bool, result["changed"]),
+        }
+    )
 
 
 def _reminder(result: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], result["reminder"])
-
-
-def _reminder_label(reminder: Mapping[str, object]) -> str:
-    repeat_rule = reminder["repeat_rule"]
-    if repeat_rule is None:
-        return "one-time"
-    return cast(str, repeat_rule)
 
 
 def _quoted_title(reminder: Mapping[str, object]) -> str:
@@ -602,44 +586,39 @@ def _quoted_title(reminder: Mapping[str, object]) -> str:
 
 def serialize_reminder_schedule(result: Mapping[str, object]) -> str:
     reminder = _reminder(result)
-    reminder_id = cast(str, reminder["reminder_id"])
-    next_fire = cast(int, reminder["next_fire_at_ms"])
-    return (
-        f"Reminder scheduled: #{reminder_id} ({_reminder_label(reminder)}) "
-        f"{_quoted_title(reminder)}\nNext: {format_utc_timestamp(next_fire)}"
+    return _REMINDER_SCHEDULE.render(
+        {
+            "reminder_id": cast(str, reminder["reminder_id"]),
+            "repeat_rule": reminder["repeat_rule"],
+            "title": _quoted_title(reminder),
+            "next_fire": format_utc_timestamp(cast(int, reminder["next_fire_at_ms"])),
+        }
     )
 
 
 def serialize_reminder_list(result: Mapping[str, object]) -> str:
     reminders = cast(list[Mapping[str, object]], result["reminders"])
-    if not reminders:
-        return "No reminders."
-    lines: list[str] = []
+    rendered: list[dict[str, object]] = []
     for reminder in reminders:
-        reminder_id = cast(str, reminder["reminder_id"])
-        anchor = cast(str, reminder["anchor_message_id"])
         state = cast(str, reminder["state"])
-        title = _quoted_title(reminder)
-        label = _reminder_label(reminder)
-        if state == "scheduled":
-            timestamp = cast(int, reminder["next_fire_at_ms"])
-            lines.append(
-                f"#{reminder_id} [scheduled] ({label}) "
-                f"next={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
-            )
-        elif state == "fired":
-            timestamp = cast(int, reminder["last_fired_at_ms"])
-            lines.append(
-                f"#{reminder_id} [fired] (one-time) "
-                f"fired_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
-            )
-        elif state == "canceled":
-            timestamp = cast(int, reminder["canceled_at_ms"])
-            lines.append(
-                f"#{reminder_id} [canceled] ({label}) "
-                f"canceled_at={format_utc_timestamp(timestamp)} {title} anchor={anchor}"
-            )
-    return "\n".join(lines)
+        timestamp_key = {
+            "scheduled": "next_fire_at_ms",
+            "fired": "last_fired_at_ms",
+            "canceled": "canceled_at_ms",
+        }.get(state)
+        if timestamp_key is None:
+            continue
+        rendered.append(
+            {
+                "reminder_id": cast(str, reminder["reminder_id"]),
+                "state": state,
+                "repeat_rule": reminder["repeat_rule"],
+                "timestamp": format_utc_timestamp(cast(int, reminder[timestamp_key])),
+                "title": _quoted_title(reminder),
+                "anchor": cast(str, reminder["anchor_message_id"]),
+            }
+        )
+    return _REMINDER_LIST.render({"reminders": rendered})
 
 
 def _serialize_reminder_mutation(
@@ -649,12 +628,17 @@ def _serialize_reminder_mutation(
     include_next: bool,
 ) -> str:
     reminder = _reminder(result)
-    reminder_id = cast(str, reminder["reminder_id"])
-    line = f"Reminder {verb}: #{reminder_id}"
-    if not include_next:
-        return line
-    next_fire = cast(int, reminder["next_fire_at_ms"])
-    return f"{line}\nNext: {format_utc_timestamp(next_fire)}"
+    return _REMINDER_MUTATION.render(
+        {
+            "verb": verb,
+            "reminder_id": cast(str, reminder["reminder_id"]),
+            "next_fire": (
+                format_utc_timestamp(cast(int, reminder["next_fire_at_ms"]))
+                if include_next
+                else None
+            ),
+        }
+    )
 
 
 def serialize_reminder_snooze(result: Mapping[str, object]) -> str:
@@ -707,12 +691,17 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
 
 
 def _print_error(error: BccCommandError) -> NoReturn:
-    print(f"Error: {error.message}", file=sys.stderr)
-    print(f"Code: {error.code}", file=sys.stderr)
-    if error.draft_saved:
-        print("Draft saved: yes", file=sys.stderr)
-    if error.next_action is not None:
-        print(f"Next action: {error.next_action}", file=sys.stderr)
+    print(
+        _ERROR.render(
+            {
+                "message": error.message,
+                "code": error.code,
+                "draft_saved": error.draft_saved,
+                "next_action": error.next_action,
+            }
+        ),
+        file=sys.stderr,
+    )
     raise SystemExit(1)
 
 

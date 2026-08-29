@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 
+from ...rendering import TextTemplate
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import ChannelApprovalRequest, IChannel
@@ -76,6 +77,9 @@ def _runtime_event_signal(event: RuntimeEvent) -> SessionRuntimeSignal:
     return SessionRuntimeSignal.UNKNOWN
 
 
+_INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
+
+
 def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
     return _is_turn_event(event.event_name) and event.state in {
         RuntimeEventState.COMPLETED,
@@ -90,6 +94,8 @@ def inbox_notice(
     *,
     total_unread_count: int,
     closing_bracket_on_own_line: bool,
+    upgrade_version: str | None = None,
+    installed_version: str | None = None,
 ) -> str:
     if not messages:
         raise ValueError("inbox notice requires at least one changed message")
@@ -100,21 +106,11 @@ def inbox_notice(
     for message in messages:
         buckets.setdefault(message.target, []).append(message)
 
-    rows: list[tuple[int, str, str]] = []
+    rows: list[tuple[int, str, dict[str, object]]] = []
     for target, changed in buckets.items():
         ordered = sorted(changed, key=lambda message: (message.seq, message.message_id))
         first = ordered[0]
         latest = ordered[-1]
-        details = [
-            (
-                f"pending: {len(ordered)} "
-                f"{'message' if len(ordered) == 1 else 'messages'}"
-            ),
-            f"first msg={first.message_id[:8]}",
-        ]
-        if latest.sender is not None:
-            details.append(f"latest sender @{latest.sender.display_name}")
-        details.append(f"latest msg={latest.message_id[:8]}")
         flags: set[str] = set()
         if any(message.target_kind is ChannelTargetKind.DM for message in ordered):
             flags.add("dm")
@@ -122,29 +118,35 @@ def inbox_notice(
             flags.add("mention")
         if any(message.metadata.get("threaded") is True for message in ordered):
             flags.add("thread")
-        details.extend(
-            "you were mentioned" if flag == "mention" else flag
-            for flag in sorted(flags)
+        rows.append(
+            (
+                latest.seq,
+                target,
+                {
+                    "target": target,
+                    "pending_count": len(ordered),
+                    "first_id": first.message_id[:8],
+                    "latest_sender": (
+                        latest.sender.display_name
+                        if latest.sender is not None
+                        else None
+                    ),
+                    "latest_id": latest.message_id[:8],
+                    "flags": sorted(flags),
+                },
+            )
         )
-        rows.append((latest.seq, target, f"{target}  {' · '.join(details)}"))
 
     rows.sort(key=lambda row: (-row[0], row[1]))
-    changed_target_count = len(rows)
-    lines = [
-        "[inbox notice:",
-        (
-            f"Inbox update: {total_unread_count} unread "
-            f"{'message' if total_unread_count == 1 else 'messages'} total; "
-            f"{changed_target_count} changed "
-            f"{'target' if changed_target_count == 1 else 'targets'}"
-        ),
-        *(row[2] for row in rows),
-    ]
-    if closing_bracket_on_own_line:
-        lines.append("]")
-    else:
-        lines[-1] += "]"
-    return "\n".join(lines)
+    return _INBOX_NOTICE.render(
+        {
+            "total_unread_count": total_unread_count,
+            "rows": [row[2] for row in rows],
+            "upgrade_version": upgrade_version,
+            "installed_version": installed_version,
+            "closing_bracket_on_own_line": closing_bracket_on_own_line,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)

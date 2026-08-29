@@ -1,0 +1,1 @@
+{% if sender_id is not none and sender_name is not none %}@{{ sender_id }}({{ sender_name }}){% elif sender_name is not none %}@{{ sender_name }}{% elif sender_id is not none %}@{{ sender_id }}{% endif %}{{ "" -}}

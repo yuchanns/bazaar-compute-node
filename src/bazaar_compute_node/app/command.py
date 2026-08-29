@@ -34,6 +34,7 @@ from ..core.models import (
     OutboundAttachment,
     OutboundDeliveryState,
 )
+from ..rendering import TextTemplate
 
 
 def _serialize_attachment(
@@ -525,14 +526,16 @@ class CommandDispatcher:
             delivery_state = message.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
-            if delivery_state is OutboundDeliveryState.SENT:
-                text = (
-                    f"Message sent to {result.target}. Message ID: {message.message_id}"
-                )
-            elif delivery_state is OutboundDeliveryState.QUEUED:
-                text = (
-                    f"Message queued to {result.target}. "
-                    f"Message ID: {message.message_id}"
+            if delivery_state in {
+                OutboundDeliveryState.SENT,
+                OutboundDeliveryState.QUEUED,
+            }:
+                text = _SEND_RESULT.render(
+                    {
+                        "delivery_state": delivery_state.value,
+                        "target": result.target,
+                        "message_id": message.message_id,
+                    }
                 )
             elif delivery_state is OutboundDeliveryState.PARTIAL:
                 raise CommandDispatchError(
@@ -587,6 +590,14 @@ def format_message_time(timestamp_ms: int) -> str:
     )
 
 
+_ATTACHMENT_SUFFIX = TextTemplate.from_resource("command/attachment_suffix.tpl")
+_SENDER = TextTemplate.from_resource("command/sender.tpl")
+_CHECK_MESSAGE = TextTemplate.from_resource("command/check_message.tpl")
+_READ_MESSAGE = TextTemplate.from_resource("command/read_message.tpl")
+_SEND_RESULT = TextTemplate.from_resource("command/send_result.tpl")
+_FRESHNESS_HOLD = TextTemplate.from_resource("command/freshness_hold.tpl")
+
+
 def _message_timestamp(message: Mapping[str, object]) -> int:
     for field_name in ("provider_time_ms", "received_at_ms", "created_at_ms"):
         timestamp = message.get(field_name)
@@ -605,14 +616,15 @@ def _message_header_fields(
     sender: str | None = None
     if sender_value is not None:
         sender_mapping = cast(Mapping[str, object], sender_value)
-        sender_id = cast(str | None, sender_mapping.get("id"))
-        sender_name = cast(str | None, sender_mapping.get("name"))
-        if sender_id is not None and sender_name is not None:
-            sender = f"@{sender_id}({sender_name})"
-        elif sender_name is not None:
-            sender = f"@{sender_name}"
-        elif sender_id is not None:
-            sender = f"@{sender_id}"
+        sender = (
+            _SENDER.render(
+                {
+                    "sender_id": cast(str | None, sender_mapping.get("id")),
+                    "sender_name": cast(str | None, sender_mapping.get("name")),
+                }
+            )
+            or None
+        )
     return (
         target,
         message_id,
@@ -625,67 +637,53 @@ def _message_header_fields(
 
 def _attachment_suffix(message: Mapping[str, object]) -> str:
     attachments = cast(list[Mapping[str, object]], message["attachments"])
-    if not attachments:
-        return ""
-    rendered: list[str] = []
-    for attachment in attachments:
-        name = cast(str, attachment["name"])
-        attachment_id = cast(str | None, attachment.get("attachment_id"))
-        state = cast(str, attachment["state"])
-        identity = f"id:{attachment_id}, " if attachment_id is not None else ""
-        if state == "ready":
-            path = cast(str, attachment["relative_path"])
-            rendered.append(f"{name} ({identity}path:{path})")
-        else:
-            error = cast(str, attachment["error"])
-            rendered.append(f"{name} ({identity}state:failed, error:{error})")
-    label = "attachment" if len(rendered) == 1 else "attachments"
-    return f" [{len(rendered)} {label}: {', '.join(rendered)}]"
+    return _ATTACHMENT_SUFFIX.render(
+        {
+            "attachments": [
+                {
+                    "name": cast(str, attachment["name"]),
+                    "attachment_id": cast(str | None, attachment.get("attachment_id")),
+                    "state": cast(str, attachment["state"]),
+                    "path": attachment.get("relative_path"),
+                    "error": attachment.get("error"),
+                }
+                for attachment in attachments
+            ]
+        }
+    )
 
 
 def format_check_message(message: Mapping[str, object]) -> str:
     target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
-    line = f"[target={target} msg={message_id} time={timestamp} type={sender_kind}"
-    reply_to_message_id = message["reply_to_message_id"]
-    if reply_to_message_id is not None:
-        line += f" reply_to={cast(str, reply_to_message_id)}"
-    line += "] "
-    if sender is not None:
-        line += f"{sender}: "
-    rendered = line + body + _attachment_suffix(message)
-    if message.get("system_message_kind") == "reminder":
-        operation = (
-            "(to snooze/update/cancel: bcc reminder --help)"
-            if "\nNext iteration: " in body
-            else "(to snooze/cancel: bcc reminder --help)"
-        )
-        rendered += (
-            f"\n{operation}"
-            "\nRespond as appropriate. Complete all your work before stopping."
-            "\nReply in the channel or create/reply in a thread as appropriate; "
-            "use each message's `target` and `msg` fields to choose the exact target."
-        )
-    elif message.get("system_message_kind") == "handoff":
-        source_target = cast(str, message["system_message_source_target"])
-        source_message_id = cast(
-            str,
-            message["system_message_source_message_id"],
-        )
-        rendered += (
-            "\nTo understand why this message was sent, inspect the source context:"
-            "\n  bcc message read --target "
-            f"{json.dumps(source_target)} --around {json.dumps(source_message_id)}"
-            "\nIf you have no objection to why the message was sent, do not announce "
-            "or explain the handoff, and do not repeat or respond to the referenced "
-            "message; it has already been delivered. Continue only work already in "
-            "progress in this conversation that is independent of that message; if "
-            "there is none, stop."
-            "\nMention the handoff only when its reason is unclear, conflicts with "
-            "the current conversation, or requires a decision."
-        )
-    return rendered
+    source_target = message.get("system_message_source_target")
+    source_message_id = message.get("system_message_source_message_id")
+    return _CHECK_MESSAGE.render(
+        {
+            "target": target,
+            "message_id": message_id,
+            "timestamp": timestamp,
+            "sender_kind": sender_kind,
+            "reply_to_message_id": message["reply_to_message_id"],
+            "sender": sender,
+            "body": body,
+            "attachment_suffix": _attachment_suffix(message),
+            "system_message_kind": message.get("system_message_kind"),
+            # a repeating reminder is the only one that can still be updated
+            "repeats": "\nNext iteration: " in body,
+            "source_target": (
+                json.dumps(cast(str, source_target))
+                if source_target is not None
+                else None
+            ),
+            "source_message_id": (
+                json.dumps(cast(str, source_message_id))
+                if source_message_id is not None
+                else None
+            ),
+        }
+    )
 
 
 def format_read_message(
@@ -697,20 +695,21 @@ def format_read_message(
     target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
         message
     )
-    fields = [
-        f"seq={cast(int, message['seq'])}",
-        f"msg={message_id}",
-        f"time={timestamp}",
-        f"type={sender_kind}",
-        f"replyTarget={target}",
-    ]
-    reply_to_message_id = message["reply_to_message_id"]
-    if reply_to_message_id is not None:
-        fields.append(f"replyTo={cast(str, reply_to_message_id)}")
-    line = f"[{index}/{count} {' '.join(fields)}] "
-    if sender is not None:
-        line += f"{sender}: "
-    return line + body + _attachment_suffix(message)
+    return _READ_MESSAGE.render(
+        {
+            "index": index,
+            "count": count,
+            "seq": cast(int, message["seq"]),
+            "message_id": message_id,
+            "timestamp": timestamp,
+            "sender_kind": sender_kind,
+            "target": target,
+            "reply_to_message_id": message["reply_to_message_id"],
+            "sender": sender,
+            "body": body,
+            "attachment_suffix": _attachment_suffix(message),
+        }
+    )
 
 
 def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
@@ -723,54 +722,22 @@ def format_freshness_hold(result: MessageSendFreshnessHold) -> str:
         for message in result.referenced_messages
     ]
     shown = len(messages)
-    total = result.newer_message_total
-    message_label = "message" if total == 1 else "messages"
-    if messages:
-        bounds = f"{messages[0]['seq']}-{messages[-1]['seq']}"
-    else:
-        bounds = "none-none"
-    older_bound = (
-        "Older unreviewed messages are omitted."
-        if total > shown
-        else "No older unreviewed messages."
+    return _FRESHNESS_HOLD.render(
+        {
+            "total": result.newer_message_total,
+            "shown": shown,
+            "first_seq": messages[0]["seq"] if messages else None,
+            "last_seq": messages[-1]["seq"] if messages else None,
+            "target": json.dumps(result.target),
+            "referenced_lines": [
+                format_read_message(
+                    message, index=index, count=len(referenced_messages)
+                )
+                for index, message in enumerate(referenced_messages, start=1)
+            ],
+            "message_lines": [
+                format_read_message(message, index=index, count=shown)
+                for index, message in enumerate(messages, start=1)
+            ],
+        }
     )
-    newer_bound = "No newer unreviewed messages."
-    lines = [
-        f"Unreviewed synced context for this target: {total} {message_label}.",
-        (
-            "Your message has been saved as a draft. Review this target's "
-            "synced context before sending."
-        ),
-        "",
-        (
-            f"Read window: {shown} returned, seq {bounds}, oldest to newest. "
-            f"{older_bound} {newer_bound}"
-        ),
-        "",
-    ]
-    if referenced_messages:
-        lines.append(f"Referenced messages: {len(referenced_messages)}")
-        lines.extend(
-            format_read_message(message, index=index, count=len(referenced_messages))
-            for index, message in enumerate(referenced_messages, start=1)
-        )
-        lines.append("Window messages:")
-    lines.extend(
-        format_read_message(message, index=index, count=shown)
-        for index, message in enumerate(messages, start=1)
-    )
-    lines.extend(
-        (
-            "",
-            f"End of window: {shown}/{total} shown.",
-            "",
-            "To update the draft, send revised content normally:",
-            f"  bcc message send --target {json.dumps(result.target)} <<'BCCMSG'",
-            "  revised message",
-            "  BCCMSG",
-            "To send the current draft unchanged:",
-            f"  bcc message send --send-draft --target {json.dumps(result.target)}",
-            "You can also choose not to send anything.",
-        )
-    )
-    return "\n".join(lines)

@@ -74,6 +74,7 @@ class AgentApplication:
         endpoint: Callable[[], str],
         timeout_budget: TimeoutBudget,
         translator: Translator,
+        upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
     ) -> None:
         self.configuration = configuration
         self.agent_id = configuration.id
@@ -164,6 +165,7 @@ class AgentApplication:
             workspace=self.workspace_path,
             translator=self.translator,
             error_feedback_detail=self._error_feedback_detail,
+            upgrade_notice=upgrade_notice,
             concurrency=self._concurrency,
         )
         self.reminder_service = ReminderCommandService(
