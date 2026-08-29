@@ -611,3 +611,59 @@ async def test_legacy_lifecycle_commands_route_to_system_service(
         result = await cli.async_main([command])
 
     assert result == 0
+
+
+def test_windows_wrapper_swaps_the_staged_release_before_starting(
+    service_context: system_service.SystemServiceContext,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+
+    rendered = system_service._render_windows_wrapper(service_context)
+
+    swap = rendered[
+        rendered.index("$previousDirectory = ") : rendered.index("Add-Type")
+    ]
+
+    # case: the swap happens before bcn is started, while nothing holds the
+    # directory open
+    assert rendered.index("$stagingDirectory") < rendered.index(
+        "[BcnNoWindowProcess]::Run"
+    )
+    assert "Move-Item -LiteralPath $stagingDirectory" in swap
+
+    # case: an interrupted swap is recovered from either side of the two renames
+    assert "-not (Test-Path -LiteralPath $liveDirectory)" in swap
+
+    # case: a rename that fails is logged rather than left to stop the service
+    assert "Add-Content -LiteralPath $logPath" in swap
+    assert "exit" not in swap
+
+
+def test_managed_files_declare_the_revision_they_were_written_from(
+    service_context: system_service.SystemServiceContext,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+
+    wrapper = system_service._render_windows_wrapper(service_context)
+    unit = system_service._render_systemd_unit(service_context)
+
+    # case: every managed file says which template revision produced it
+    for rendered in (wrapper, unit):
+        assert system_service.installed_template_revision(rendered) == (
+            system_service.TEMPLATE_REVISION
+        )
+
+    # case: a file written before revisions existed reports none
+    assert (
+        system_service.installed_template_revision(
+            f"# {system_service.MANAGED_MARKER}\nrest"
+        )
+        is None
+    )
+
+    # case: a file we do not manage reports none either
+    assert system_service.installed_template_revision("# something else") is None
