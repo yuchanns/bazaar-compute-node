@@ -469,6 +469,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert latest_targets[0]["latest_sender"] == {
             "id": None,
             "name": AGENT_NAMES[AGENT_A_ID],
+            "display_name": None,
         }
 
         post_send_check = await LocalCommandClient.request(node.endpoint, request)

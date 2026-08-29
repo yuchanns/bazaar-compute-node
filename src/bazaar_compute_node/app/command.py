@@ -86,7 +86,11 @@ def serialize_message(
         "sender": (
             None
             if message.sender is None
-            else {"id": message.sender.id, "name": message.sender.name}
+            else {
+                "id": message.sender.id,
+                "name": message.sender.name,
+                "display_name": message.sender.display_name,
+            }
         ),
         "sender_kind": message.sender_kind.value,
         "system_message_kind": (
@@ -141,7 +145,13 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
         "last_activity_at_ms": summary.last_activity_at_ms,
         "latest_message_id": summary.latest_message_id,
         "latest_sender": (
-            None if sender is None else {"id": sender.id, "name": sender.name}
+            None
+            if sender is None
+            else {
+                "id": sender.id,
+                "name": sender.name,
+                "display_name": sender.display_name,
+            }
         ),
         "latest_time_ms": latest_time_ms,
     }
@@ -621,6 +631,9 @@ def _message_header_fields(
                 {
                     "sender_id": cast(str | None, sender_mapping.get("id")),
                     "sender_name": cast(str | None, sender_mapping.get("name")),
+                    "sender_display_name": cast(
+                        str | None, sender_mapping.get("display_name")
+                    ),
                 }
             )
             or None

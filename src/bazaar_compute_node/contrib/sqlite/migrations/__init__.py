@@ -31,6 +31,7 @@ from .v17_remove_agent_identity_triggers import STORAGE_ACCESS_MIGRATION
 from .v18_unify_messages import MESSAGE_UNIFICATION_MIGRATION
 from .v19_reminder_system_messages import REMINDER_SYSTEM_MESSAGE_MIGRATION
 from .v23_persist_sender_identity import SENDER_IDENTITY_MIGRATION
+from .v24_persist_sender_display_name import SENDER_DISPLAY_NAME_MIGRATION
 
 __all__ = [
     "AGENT_OWNERSHIP_MIGRATION",
@@ -50,6 +51,7 @@ __all__ = [
     "RUNTIME_EVENTS_REMOVAL_MIGRATION",
     "RUNTIME_SESSION_MAPPING_REMOVAL_MIGRATION",
     "SCHEMA_MIGRATION",
+    "SENDER_DISPLAY_NAME_MIGRATION",
     "SENDER_IDENTITY_MIGRATION",
     "SESSION_MAPPING_INDEX_MIGRATION",
     "STORAGE_ACCESS_MIGRATION",

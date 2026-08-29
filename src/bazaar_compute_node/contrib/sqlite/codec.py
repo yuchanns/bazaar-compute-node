@@ -101,13 +101,20 @@ def message_from_row(
     direction = MessageDirection(_required_text(row["direction"], "direction"))
     sender = _optional_text(row["sender"], "sender")
     sender_id = _optional_text(row["sender_id"], "sender_id")
+    sender_display_name = _optional_text(
+        row["sender_display_name"], "sender_display_name"
+    )
     metadata = _decode_metadata(row["metadata_json"], "metadata_json")
     sender_identity = None
     if sender is not None or sender_id is not None:
         sender_identity = (
             SenderIdentity(id="system", name="system")
             if metadata.get("sender_kind") == SenderKind.SYSTEM.value
-            else SenderIdentity(id=sender_id, name=sender)
+            else SenderIdentity(
+                id=sender_id,
+                name=sender,
+                display_name=sender_display_name,
+            )
         )
     common = {
         "direction": direction,
