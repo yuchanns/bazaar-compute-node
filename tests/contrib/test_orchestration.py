@@ -2017,7 +2017,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert second_body not in steer_input
         second_sender = second.sender
         assert second_sender is not None
-        assert f"latest sender @{second_sender.display_name}" in steer_input
+        assert f"latest sender @{second_sender.handle}" in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()

@@ -127,9 +127,7 @@ def inbox_notice(
                     "pending_count": len(ordered),
                     "first_id": first.message_id[:8],
                     "latest_sender": (
-                        latest.sender.display_name
-                        if latest.sender is not None
-                        else None
+                        latest.sender.handle if latest.sender is not None else None
                     ),
                     "latest_id": latest.message_id[:8],
                     "flags": sorted(flags),

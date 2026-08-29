@@ -41,7 +41,8 @@ from .base import RepositoryBase
 _MESSAGE_COLUMNS = (
     "message_id, seq, direction, agent_id, session_id, channel_session_id, "
     "channel, provider_thread_id, provider_message_id, provider_time_ms, "
-    "received_at_ms, sender, sender_id, message_type, target, target_kind, "
+    "received_at_ms, sender, sender_id, sender_display_name, "
+    "message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
     "provider_payload_ref, command_id, delivery_state, provider_receipt_ref, created_at_ms, "
     "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
@@ -663,10 +664,11 @@ class MessageOperations(RepositoryBase):
             "INSERT INTO messages ("
             "message_id, seq, direction, agent_id, session_id, channel_session_id, "
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender, sender_id, message_type, target, target_kind, "
+            "received_at_ms, sender, sender_id, sender_display_name, "
+            "message_type, target, target_kind, "
             "reply_to_message_id, body, mentions_agent, notifies_runtime, "
             "provider_payload_ref, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical.message_id,
                 canonical.seq,
@@ -681,6 +683,11 @@ class MessageOperations(RepositoryBase):
                 canonical.received_at_ms,
                 canonical.sender.name if canonical.sender is not None else None,
                 canonical.sender.id if canonical.sender is not None else None,
+                (
+                    canonical.sender.display_name
+                    if canonical.sender is not None
+                    else None
+                ),
                 canonical.message_type,
                 canonical.target,
                 canonical.target_kind.value,
@@ -881,11 +888,12 @@ class MessageOperations(RepositoryBase):
                 "INSERT INTO messages ("
                 "message_id, seq, direction, agent_id, session_id, "
                 "channel_session_id, channel, provider_thread_id, "
-                "provider_message_id, sender, sender_id, message_type, target, target_kind, "
+                "provider_message_id, sender, sender_id, sender_display_name, "
+                "message_type, target, target_kind, "
                 "reply_to_message_id, body, command_id, delivery_state, "
                 "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
                 "error_kind, error_message, metadata_json, attachments_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.message_id,
                     canonical.seq,
@@ -898,6 +906,7 @@ class MessageOperations(RepositoryBase):
                     canonical.provider_message_id,
                     sender.name,
                     sender.id,
+                    sender.display_name,
                     canonical.message_type,
                     canonical.target,
                     canonical.target_kind.value,

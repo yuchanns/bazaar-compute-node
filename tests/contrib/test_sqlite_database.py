@@ -617,7 +617,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 23
+        assert schema_version["version"] == 24
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1050,7 +1050,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 23
+        assert schema_version["version"] == 24
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1159,7 +1159,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 23
+        assert schema_version["version"] == 24
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -1775,7 +1775,10 @@ async def test_sqlite_v16_fixture_unifies_message_history() -> None:
     )
     decoded = [
         message_from_row(
-            cast(aiosqlite.Row, {**dict(row), "sender_id": None}),
+            cast(
+                aiosqlite.Row,
+                {**dict(row), "sender_id": None, "sender_display_name": None},
+            ),
             (inbound_attachment,) if row["message_id"] == "inbound-a-2" else (),
         )
         for row in rows

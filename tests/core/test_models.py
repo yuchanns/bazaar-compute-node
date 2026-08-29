@@ -88,12 +88,25 @@ def make_inbox_target() -> InboxTargetSummary:
     )
 
 
-def test_sender_identity_separates_stable_id_from_display_name() -> None:
+def test_sender_identity_separates_stable_id_from_handle() -> None:
     named = SenderIdentity(id="test-user-id", name="test-user")
     unnamed = SenderIdentity(id="test-user-id")
+    full = SenderIdentity(
+        id="test-user-id",
+        name="test-user",
+        display_name="Test User",
+    )
 
-    assert named.display_name == "test-user"
-    assert unnamed.display_name == "test-user-id"
+    # case: the handle is what a sender is addressed by
+    assert named.handle == "test-user"
+    assert full.handle == "test-user"
+
+    # case: a provider that offers no handle falls back to the id
+    assert unnamed.handle == "test-user-id"
+
+    # case: the human name stays separate from both
+    assert full.display_name == "Test User"
+    assert named.display_name is None
 
 
 def test_inbox_list_result_enforces_pagination_invariant() -> None:

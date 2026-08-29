@@ -219,13 +219,16 @@ class OutboundAttachment:
 class SenderIdentity:
     id: str | None = None
     name: str | None = None
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.id is None and self.name is None:
             raise ValueError("sender identity requires an id or name")
 
     @property
-    def display_name(self) -> str:
+    def handle(self) -> str:
+        """Return what this sender is addressed by, falling back to the id."""
+
         if self.name is not None:
             return self.name
         if self.id is None:

@@ -897,21 +897,37 @@ class TelegramChannel(IChannel):
         if isinstance(sender, Mapping):
             sender_id = sender.get("id")
             if isinstance(sender_id, int) and not isinstance(sender_id, bool):
-                username = sender.get("username")
                 return SenderIdentity(
                     id=str(sender_id),
-                    name=username if isinstance(username, str) and username else None,
+                    name=TelegramChannel._username(sender),
+                    display_name=TelegramChannel._profile_name(sender),
                 )
         sender_chat = message.get("sender_chat")
         if isinstance(sender_chat, Mapping):
             sender_chat_id = sender_chat.get("id")
             if isinstance(sender_chat_id, int) and not isinstance(sender_chat_id, bool):
-                username = sender_chat.get("username")
                 return SenderIdentity(
                     id=str(sender_chat_id),
-                    name=username if isinstance(username, str) and username else None,
+                    name=TelegramChannel._username(sender_chat),
+                    display_name=TelegramChannel._safe_display_name(
+                        sender_chat.get("title")
+                    ),
                 )
         return None
+
+    @staticmethod
+    def _username(sender: Mapping[str, object]) -> str | None:
+        username = sender.get("username")
+        return username if isinstance(username, str) and username else None
+
+    @staticmethod
+    def _profile_name(sender: Mapping[str, object]) -> str | None:
+        parts = [
+            part
+            for key in ("first_name", "last_name")
+            if (part := TelegramChannel._safe_display_name(sender.get(key))) is not None
+        ]
+        return " ".join(parts) if parts else None
 
     @staticmethod
     def _sender_kind(message: Mapping[str, object]) -> SenderKind:
