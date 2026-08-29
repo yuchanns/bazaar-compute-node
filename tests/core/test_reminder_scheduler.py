@@ -260,6 +260,7 @@ async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> N
     agent_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
     node = NodeApplication(
         configuration=NodeConfiguration(
+            version_check=False,
             storage="test",
             audit="test",
             agents=(
@@ -290,7 +291,12 @@ async def test_scheduler_runs_when_all_agents_fail_to_start(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_node_exits_when_shared_timer_driver_stops(tmp_path: Path) -> None:
     node = NodeApplication(
-        configuration=NodeConfiguration(storage="test", audit="test", agents=()),
+        configuration=NodeConfiguration(
+            storage="test",
+            audit="test",
+            agents=(),
+            version_check=False,
+        ),
         shared_factories=AdapterRegistry().load_shared(storage="test", audit="test"),
         endpoint_path=tmp_path / "bcn.sock",
     )

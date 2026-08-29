@@ -24,6 +24,7 @@ def make_configuration(
     lang: str | None = None,
 ) -> NodeConfiguration:
     return NodeConfiguration(
+        version_check=False,
         storage=storage,
         audit="test",
         lang=lang,
@@ -109,3 +110,25 @@ async def test_command_dispatcher_rejects_requests_before_and_after_lifecycle(
     after_result = after_stop["result"]
     assert isinstance(after_result, dict)
     assert after_result["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_node_skips_the_version_watcher_when_the_operator_turns_it_off(
+    tmp_path: Path,
+) -> None:
+    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
+    node = NodeApplication(
+        configuration=make_configuration(),
+        shared_factories=shared_factories,
+        endpoint_path=tmp_path / "bcn.sock",
+        timeout_budget=make_budget(),
+    )
+
+    assert node.configuration.version_check is False
+    await node.start()
+    try:
+        # case: an air-gapped node never reaches out for release information
+        assert node.version_watcher._task is None
+        assert node.version_watcher.available_version() is None
+    finally:
+        await node.stop()
