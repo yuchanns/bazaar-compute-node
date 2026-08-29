@@ -8,10 +8,11 @@ import logging
 import aiohttp
 from packaging.version import Version
 
+from .. import __distribution__
 from ..core.timerwheel import TimerWheel, TimerWheelClosedError
 
 _CHECK_INTERVAL_MS = 3_600_000
-_RELEASE_URL = "https://pypi.org/pypi/bazaar-compute-node/json"
+_RELEASE_URL = f"https://pypi.org/pypi/{__distribution__}/json"
 
 
 class VersionWatcher:

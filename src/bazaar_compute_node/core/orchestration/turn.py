@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 
+from ... import __distribution__
 from ...rendering import TextTemplate
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
@@ -138,6 +139,7 @@ def inbox_notice(
     rows.sort(key=lambda row: (-row[0], row[1]))
     return _INBOX_NOTICE.render(
         {
+            "distribution": __distribution__,
             "total_unread_count": total_unread_count,
             "rows": [row[2] for row in rows],
             "upgrade_version": upgrade_version,
