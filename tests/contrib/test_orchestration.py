@@ -251,7 +251,7 @@ def test_inbox_notice_carries_the_upgrade_line_inside_the_bracket() -> None:
     assert lines[-2].startswith(
         "Upgrade available: bazaar-compute-node 0.2.0 (installed 0.1.31)."
     )
-    assert "`bcc upgrade`" in lines[-2]
+    assert "`bcc node upgrade`" in lines[-2]
 
     # case: half an answer is not an offer
     assert "Upgrade available" not in inbox_notice(

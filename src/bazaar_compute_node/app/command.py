@@ -359,6 +359,10 @@ class CommandDispatcher:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
+    def _command_timeout(self, request: Mapping[str, object]) -> float | None:
+        del request
+        return self._timeout_budget.command_seconds
+
     async def __call__(self, request: Mapping[str, object]) -> Mapping[str, object]:
         if not self._accepting:
             return {
@@ -373,7 +377,7 @@ class CommandDispatcher:
         try:
             kind = request.get("kind")
             if kind == "command":
-                async with asyncio.timeout(self._timeout_budget.command_seconds):
+                async with asyncio.timeout(self._command_timeout(request)):
                     return await self._dispatch_command(request)
             raise CommandDispatchError(
                 "INVALID_COMMAND", "request kind is not supported"

@@ -24,6 +24,7 @@ from .command import (
     _CommandRequest,
     _parse_command_request,
 )
+from .upgrade import UpgradeError, UpgradeService
 
 
 def serialize_reminder(reminder: Reminder) -> dict[str, object]:
@@ -46,7 +47,15 @@ def serialize_reminder(reminder: Reminder) -> dict[str, object]:
 
 
 NonEmptyText = Annotated[StrictStr, Field(min_length=1)]
+# long enough for the node to be back before the Agent is asked to report
+_UPGRADE_FOLLOW_UP_SECONDS = 60
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
+
+
+class _NodeUpgradeRequest(_CommandRequest):
+    resource: Literal["node"]
+    command: Literal["upgrade"]
+    message_id: NonEmptyText
 
 
 class _ReminderScheduleRequest(_CommandRequest):
@@ -185,6 +194,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         reminder_service: IReminderService,
         timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
+        upgrade_service: UpgradeService,
     ) -> None:
         super().__init__(
             service,
@@ -192,6 +202,14 @@ class CommandDispatcher(_MessageCommandDispatcher):
             session_binding_validator=session_binding_validator,
         )
         self._reminder_service = reminder_service
+        self._upgrade_service = upgrade_service
+
+    def _command_timeout(self, request: Mapping[str, object]) -> float | None:
+        # installing a release takes as long as it takes; nothing is served by
+        # giving up on a command whose work would carry on regardless
+        if request.get("resource") == "node":
+            return None
+        return super()._command_timeout(request)
 
     async def _dispatch_command(
         self,
@@ -226,6 +244,27 @@ class CommandDispatcher(_MessageCommandDispatcher):
             return await super()._dispatch_command(raw_request)
         if resource == "inbox":
             return await super()._dispatch_command(raw_request)
+        if resource == "node":
+            if command not in {"upgrade", "version"}:
+                raise CommandDispatchError(
+                    "UNKNOWN_COMMAND",
+                    f"unsupported node command: {command}",
+                )
+            if command == "version":
+                return {
+                    "ok": True,
+                    "result": {
+                        "version": self._upgrade_service.installed_version,
+                    },
+                }
+            request = _parse_command_request(raw_request, _NodeUpgradeRequest)
+            session_id = request.session_id
+            if self._session_binding_validator is not None:
+                await self._session_binding_validator(session_id, raw_request)
+            return await self._dispatch_upgrade(
+                session_id,
+                cast(_NodeUpgradeRequest, request),
+            )
         if resource != "reminder":
             raise CommandDispatchError(
                 "UNKNOWN_RESOURCE",
@@ -256,6 +295,56 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 error.message,
                 next_action=error.next_action,
             ) from error
+
+    async def _dispatch_upgrade(
+        self,
+        session_id: str,
+        request: _NodeUpgradeRequest,
+    ) -> Mapping[str, object]:
+        upgrade_version = self._upgrade_service.available_version()
+        if upgrade_version is None:
+            raise CommandDispatchError(
+                "UPGRADE_NOT_AVAILABLE",
+                "No newer release has been announced for this node.",
+                next_action="Wait for the inbox notice to name one.",
+            )
+        try:
+            await self._upgrade_service.install(upgrade_version)
+        except UpgradeError as error:
+            raise CommandDispatchError(
+                "UPGRADE_INSTALL_FAILED",
+                str(error),
+                next_action=(
+                    "Tell the user the node keeps running on the installed version."
+                ),
+            ) from error
+        # the reminder is the only way back into this conversation once the
+        # restart has cut the caller off, so it is durable before that happens
+        try:
+            result = await self._reminder_service.schedule(
+                session_id,
+                ReminderScheduleRequest.from_options(
+                    title=(f"Report the outcome of upgrading to {upgrade_version}"),
+                    message_id=request.message_id,
+                    evaluated_at_ms=time_ns() // 1_000_000,
+                    delay_seconds=_UPGRADE_FOLLOW_UP_SECONDS,
+                ),
+            )
+        except ReminderCommandFailure as error:
+            raise CommandDispatchError(
+                error.code,
+                error.message,
+                next_action=error.next_action,
+            ) from error
+        self._upgrade_service.restart()
+        return {
+            "ok": True,
+            "result": {
+                "installed_version": self._upgrade_service.installed_version,
+                "upgrade_version": upgrade_version,
+                "reminder_id": result.reminder.reminder_id,
+            },
+        }
 
     async def _dispatch_reminder(
         self,

@@ -18,6 +18,7 @@ from pydantic import (
     ValidationError,
 )
 
+from . import __distribution__
 from .app.command import format_check_message, format_message_time, format_read_message
 from .app.transport import LocalCommandClient
 from .core.reminder import format_utc_timestamp
@@ -46,8 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Session-scoped collaboration commands for a Bazaar Compute Node. "
             "Use these commands from the current agent session to inspect messages, "
-            "send replies, manage thread attention, and schedule "
-            "persistent reminders."
+            "send replies, manage thread attention, schedule "
+            "persistent reminders, and upgrade this node."
         ),
         epilog=(
             "Run `bcc <resource> --help` or "
@@ -57,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="resource",
         required=True,
-        metavar="{message,inbox,thread,reminder}",
+        metavar="{message,inbox,thread,reminder,node}",
         title="resources",
     )
 
@@ -328,6 +329,44 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="<id>",
         help="Reminder id (full uuid)",
     )
+
+    node_parser = subparsers.add_parser(
+        "node",
+        help="Operations on the node this session runs on",
+        description="Operations on the node this session runs on",
+    )
+    node_subparsers = node_parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{upgrade,version}",
+        title="node commands",
+    )
+    upgrade_parser = node_subparsers.add_parser(
+        "upgrade",
+        help="Install the newer bcn release and restart this node",
+        description=(
+            "Install the newer bcn release announced in the inbox notice, schedule a "
+            "reminder so you can report the outcome once the node is back, and "
+            "restart the node. Run it only after the user agrees to upgrade."
+        ),
+    )
+    upgrade_parser.add_argument(
+        "--message-id",
+        dest="message_id",
+        metavar="<id>",
+        help=(
+            "Required full uuid for the local inbound message the follow-up reminder "
+            "anchors to."
+        ),
+    )
+    node_subparsers.add_parser(
+        "version",
+        help="Report the version this node is running",
+        description=(
+            "Report the bcn version of the running node process, which is what "
+            "an upgrade has to change to have taken effect."
+        ),
+    )
     return parser
 
 
@@ -369,7 +408,10 @@ async def _request(
         "session_capability": session_capability,
         "command": args.command,
     }
-    if args.resource == "message":
+    if args.resource == "node":
+        if args.command == "upgrade":
+            request["message_id"] = args.message_id
+    elif args.resource == "message":
         if args.command == "read":
             request["target"] = args.target
             request["around_message_id"] = args.around
@@ -425,7 +467,12 @@ async def _request(
         elif args.command == "cancel":
             request["reminder_id"] = args.reminder_id
 
-    response = await LocalCommandClient.request(endpoint, request)
+    if args.resource == "node" and args.command == "upgrade":
+        # the node installs the release before it answers, and neither side
+        # gives up on work the other would carry on doing
+        response = await LocalCommandClient.request(endpoint, request, timeout=None)
+    else:
+        response = await LocalCommandClient.request(endpoint, request)
     if response.get("ok") is not True:
         raise BccCommandError(
             str(response.get("error", "command failed")),
@@ -448,9 +495,13 @@ _UNFOLLOW = TextTemplate.from_resource("bcc/unfollow.tpl")
 _REMINDER_SCHEDULE = TextTemplate.from_resource("bcc/reminder_schedule.tpl")
 _REMINDER_LIST = TextTemplate.from_resource("bcc/reminder_list.tpl")
 _REMINDER_MUTATION = TextTemplate.from_resource("bcc/reminder_mutation.tpl")
+_UPGRADE = TextTemplate.from_resource("bcc/upgrade.tpl")
+_VERSION = TextTemplate.from_resource("bcc/version.tpl")
 _ERROR = TextTemplate.from_resource("bcc/error.tpl")
 
 
+# `bcc upgrade` reads better than `bcc node upgrade`, so the command line name
+# and the resource it addresses differ here
 def _result(response: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], response["result"])
 
@@ -565,6 +616,26 @@ def serialize_send(result: Mapping[str, object]) -> str:
             "Message send returned an invalid response.",
             code="SEND_RESPONSE_INVALID",
         ) from error
+
+
+def serialize_version(result: Mapping[str, object]) -> str:
+    return _VERSION.render(
+        {
+            "distribution": __distribution__,
+            "version": cast(str, result["version"]),
+        }
+    )
+
+
+def serialize_upgrade(result: Mapping[str, object]) -> str:
+    return _UPGRADE.render(
+        {
+            "distribution": __distribution__,
+            "installed_version": cast(str, result["installed_version"]),
+            "upgrade_version": cast(str, result["upgrade_version"]),
+            "reminder_id": cast(str, result["reminder_id"]),
+        }
+    )
 
 
 def serialize_unfollow(result: Mapping[str, object]) -> str:
@@ -687,6 +758,11 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
         print(serializer(result))
     elif args.resource == "thread" and args.command == "unfollow":
         print(serialize_unfollow(result))
+    elif args.resource == "node":
+        if args.command == "upgrade":
+            print(serialize_upgrade(result))
+        elif args.command == "version":
+            print(serialize_version(result))
     return 0
 
 

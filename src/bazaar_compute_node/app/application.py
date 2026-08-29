@@ -23,6 +23,7 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
+from .upgrade import UpgradeService
 from .version_check import VersionWatcher
 
 
@@ -90,6 +91,11 @@ class NodeApplication:
             timer_wheel=self.timer_wheel,
             current_version=__version__,
             request_timeout_seconds=self.timeout_budget.command_seconds,
+        )
+        self.upgrade_service = UpgradeService(
+            version_watcher=self.version_watcher,
+            installed_version=__version__,
+            timer_wheel=self.timer_wheel,
         )
         self.command_server = LocalCommandServer(
             self._dispatch,
@@ -183,6 +189,7 @@ class NodeApplication:
                     timeout_budget=self.timeout_budget,
                     translator=self.translator,
                     upgrade_notice=self._upgrade_notice,
+                    upgrade_service=self.upgrade_service,
                 )
                 await application.start()
         except asyncio.CancelledError:
