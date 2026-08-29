@@ -97,7 +97,7 @@ def build_system_service_parser(
     return parser
 
 
-def _resolve_executable() -> Path:
+def resolve_bcn_executable() -> Path:
     executable = shutil.which("bcn")
     if executable is None:
         candidate = Path(sys.argv[0])
@@ -126,7 +126,7 @@ def _build_context(
         parser.error(
             "bcn system-service commands only accept the node-level --config option"
         )
-    executable = _resolve_executable() if require_executable else None
+    executable = resolve_bcn_executable() if require_executable else None
     config_path = (args.config or resolve_config_path()).expanduser().resolve()
     env_file = getattr(args, "env_file", None)
     if env_file is not None:
