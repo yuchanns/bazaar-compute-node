@@ -23,7 +23,7 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
-from .upgrade import UpgradeService
+from .upgrade import UpgradeService, discard_replaced_release
 from .version_check import VersionWatcher
 
 
@@ -153,6 +153,7 @@ class NodeApplication:
             raise
         self._ready = True
         self._accepting = True
+        await asyncio.to_thread(discard_replaced_release, __version__)
         started_count = len(self.agents)
         failed_count = len(self.configuration.agents) - started_count
         self._log(

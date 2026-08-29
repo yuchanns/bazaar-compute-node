@@ -286,12 +286,21 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/`、`ruff format --c
 `.staging`；`MANAGED_MARKER` 加上 `template-revision` 并由 `bcc node upgrade` 比对与重写；节点启动后
 在版本对上时删除 `.old`。
 
-测试：`tests/test_cli.py` 覆盖渲染出的 `windows.ps1` 含恢复段与交换段且带 `try/catch`、渲染出的
-托管文件首行带当前修订号；`tests/app/test_upgrade_state.py` 用临时目录覆盖「修订号偏低则重写 wrapper」「修订号相同则
-不动」「版本对上则删除 `.old`」。改名与 `schtasks` 属于 Windows 平台行为，进程内不模拟，
-放到 Task 5 的真实回归。
+重写 wrapper 时不能凭当前进程重新推导安装参数：被替换的那份是旧版本装的，`--env-file` 之类的
+入参没有任何别处的记录，而节点的密钥正是从那个环境脚本来的，推导错会让节点起不来。因此重写
+读取已安装 wrapper 里的四个变量原样复用，只换模板本身。
 
-checks：`tests/app/`、`tests/test_cli.py`、`ruff format --check .`、`ruff check .`、
+`.old` 的删除需要知道目标版本，而它同样没有别处的记录，所以安装成功时在 `<tools>` 下写一个
+`<发行包名>.upgrade-target` 记下目标版本；节点启动时读它，只有当前进程的 `__version__` 与之
+相等才删除 `.old` 与这个记录文件。版本对不上说明交换没有生效，`.old` 就是回退路径，必须留着。
+
+测试：`tests/app/test_system_service.py` 覆盖渲染出的 `windows.ps1` 里交换段在启动 bcn 之前、
+含恢复分支、失败只记日志不退出，以及托管文件首行带当前修订号；`tests/app/test_upgrade_state.py`
+用临时目录覆盖「修订号相同则不动」「没有 wrapper 则跳过」「wrapper 读不出变量则中止升级」
+「版本对不上则保留 `.old`」「版本对上则删除」。改名、`Set-Acl` 与 `schtasks` 属于 Windows 平台
+行为，进程内不模拟，放到 Task 5 的真实回归。
+
+checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 `uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
 
 ### Task 5：最终验收
