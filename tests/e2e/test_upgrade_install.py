@@ -35,7 +35,7 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     SenderIdentity,
 )
-from bazaar_compute_node.core.runtime import IRuntime
+from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
 pytestmark = pytest.mark.e2e
@@ -55,9 +55,14 @@ class _StaticRegistry(AdapterRegistry):
         runtimes: tuple[str, ...] | list[str],
     ) -> AgentAdapterFactories:
         del channel
+
+        def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
+            del context
+            return self._runtime
+
         return AgentAdapterFactories(
             channel=_StaticChannel(self._channel),
-            runtimes={kind: lambda context: self._runtime for kind in runtimes},
+            runtimes={kind: runtime_factory for kind in runtimes},
         )
 
 
