@@ -157,6 +157,10 @@ class NodeApplication:
             endpoint=self.endpoint,
         )
 
+    def _upgrade_notice(self) -> tuple[str, str] | None:
+        available = self.version_watcher.available_version()
+        return None if available is None else (available, __version__)
+
     async def _start_agent(self, configuration: AgentConfiguration) -> None:
         application: AgentApplication | None = None
         try:
@@ -178,6 +182,7 @@ class NodeApplication:
                     endpoint=lambda: self.endpoint,
                     timeout_budget=self.timeout_budget,
                     translator=self.translator,
+                    upgrade_notice=self._upgrade_notice,
                 )
                 await application.start()
         except asyncio.CancelledError:

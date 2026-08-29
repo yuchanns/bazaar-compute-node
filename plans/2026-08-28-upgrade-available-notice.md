@@ -107,6 +107,29 @@ Agent 在用户不想升级时直接继续，不追问、也不需要记录任�
 `inbox_notice` 只负责渲染，不读取全局状态。该文本与 notice 其余内容一样是给 Agent 看的，
 不进 locale。
 
+notice 的正文本身此前是 f-string 拼接，没有跟上模板渲染的迁移。本次一并迁移：新增
+`resources/inbox_notice.tpl`，由 `TextTemplate.from_resource` 加载，`inbox_notice` 只负责整理
+每个 target 的行数据，措辞、单复数、标志位的写法与闭合括号的位置都由模板决定。
+
+同一批漏网的还有另外两处，也在本任务内迁移：
+
+- `app/command.py`：发送回执、附件后缀、进入 turn 的消息头（含 reminder 与 handoff 两种系统
+  消息的附加说明）、`bcc message read` 的单条渲染、草稿被拦截时的整块回复，分别对应
+  `resources/command/` 下的 `send_result.tpl`、`attachment_suffix.tpl`、`check_message.tpl`、
+  `read_message.tpl`、`freshness_hold.tpl`。
+- `bcc.py`：`inbox list` 的表头与每行、`message check`、`message read`、`thread unfollow`、
+  reminder 的五个输出、以及出错时的 `Error:`/`Code:`/`Draft saved:`/`Next action:`，分别对应
+  `resources/bcc/` 下的九个模板。
+
+`bcc.py` 中 argparse 的 help 与 description 不迁移：它们是逐个选项的元数据而不是成块文案。
+各处 `raise` 的错误文案同样不迁移，它们是诊断信息。
+
+措辞的选择一律由模板承担：单复数、标志位的写法、`none` 占位、reminder 的 one-time 与重复
+规则、系统消息的两种附加说明、发送回执的两种状态、`Draft saved:` 与 `Next action:` 是否出现，
+都是模板里的条件分支。Python 侧只整理数据。
+
+迁移不改变任何一个字节的输出，现有的精确断言即是验证。
+
 `SessionOrchestrator.__init__` 增加 `upgrade_notice: Callable[[], tuple[str, str] | None]`，
 由 `NodeApplication` 接上 `VersionWatcher`，返回 `(available_version, installed_version)` 或
 `None`，缺省 `lambda: None`。它是纯读的。
@@ -114,8 +137,7 @@ Agent 在用户不想升级时直接继续，不追问、也不需要记录任�
 **只在新建 runtime session 的那一次带上提示行。** `_run_notification`（`session.py:1176` 附近）
 里，`self.runtime_session(...)` 返回 `None` 就说明这次要新建会话；把这个布尔量一路带到
 `inbox_notice` 的调用点，只有它为真时才传版本参数。`session.py:810` 的 steer 路径是往一个正在
-跑的 turn 里追加通知，必然是复用会话，因此那里永远不带提示行。两个调用点
-（`session.py:810` 的 steer 路径与 `session.py:1176` 的 turn 路径）都把结果转成两个参数。
+跑的 turn 里追加通知，必然是复用会话，因此那里永远不带提示行，调用形式保持不变。
 `AgentApplication` 增加同名构造参数并原样传给 `SessionOrchestrator`；`NodeApplication` 在
 `app/application.py:159-170` 处传入自己持有的 watcher。
 
@@ -205,11 +227,14 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 
 ### Task 2：inbox notice 追加提示
 
-按第 4 节实现 `inbox_notice` 的两个新参数与 `upgrade_notice` 的传递链。
+按第 4 节实现 `inbox_notice` 的两个新参数与 `upgrade_notice` 的传递链，并完成第 4 节列出的
+三处模板迁移。
 
 测试：扩展 `tests/contrib/test_orchestration.py` 的 `inbox_notice` 契约测试，覆盖无更新时输出
 不变、有更新时提示行出现在闭合括号之前；再加一个 orchestrator 级用例，确认**新建 runtime
-session 的那一次** turn 输入里带提示行，而同一会话的后续 turn 不带。
+session 的那一次** turn 输入里带提示行，而同一会话的后续 turn 不带。模板迁移由现有的精确
+断言验证；`bcc` 的草稿保存提示、`thread unfollow` 的两个分支与空 reminder 列表此前没有覆盖，
+补上用例。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`、
 `ruff format --check .`、`ruff check .`、
@@ -276,4 +301,6 @@ checks：`tests/app/`、`tests/test_cli.py`、`ruff format --check .`、`ruff ch
 11. 目标版本使用前经过 `Version` 校验，传给 uv 时是独立参数而不是拼接的 shell 字符串。
 12. `packaging` 出现在 `[project] dependencies` 且 `uv lock --check` 通过。
 13. `[node] version_check = false` 时节点不发起任何 PyPI 请求，inbox notice 与现在完全一致。
-14. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。
+14. inbox notice、`app/command.py` 与 `bcc.py` 的成块文案全部由 `resources/` 下的模板渲染，
+    输出与迁移前逐字节一致，且模板随 wheel 一起分发。
+15. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。

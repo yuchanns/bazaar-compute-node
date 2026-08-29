@@ -99,3 +99,8 @@ def test_reminder_mutation_serializers_match_text() -> None:
         f"Reminder updated: #{REMINDER_ID}\nNext: "
     )
     assert serialize_reminder_cancel(result) == f"Reminder canceled: #{REMINDER_ID}"
+
+
+def test_reminder_list_says_so_when_there_is_nothing_scheduled() -> None:
+    # case: an agent with no follow-ups gets a sentence, not an empty line
+    assert serialize_reminder_list({"reminders": []}) == "No reminders."

@@ -12,6 +12,7 @@ from bazaar_compute_node.bcc import (
     serialize_inbox_list,
     serialize_read,
     serialize_send,
+    serialize_unfollow,
 )
 
 
@@ -574,3 +575,51 @@ def test_error_contract_is_stderr_only(capsys: pytest.CaptureFixture[str]) -> No
         "Code: INVALID_TARGET\n"
         "Next action: Run `bcc message read` with a valid target.\n"
     )
+
+
+def test_error_contract_reports_a_saved_draft(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        _print_error(
+            BccCommandError(
+                "the channel rejected the message",
+                code="SEND_FAILED",
+                draft_saved=True,
+                next_action="Revise the draft and send it again.",
+            )
+        )
+
+    captured = capsys.readouterr()
+    # case: a failed send tells the agent its text was not lost
+    assert captured.err == (
+        "Error: the channel rejected the message\n"
+        "Code: SEND_FAILED\n"
+        "Draft saved: yes\n"
+        "Next action: Revise the draft and send it again.\n"
+    )
+
+
+def test_unfollow_distinguishes_a_change_from_a_repeat() -> None:
+    target = "#work:parent123"
+
+    # case: the agent learns whether its command actually changed anything
+    assert (
+        serialize_unfollow({"target": target, "changed": True})
+        == f"Thread unfollowed: {target}"
+    )
+    assert (
+        serialize_unfollow({"target": target, "changed": False})
+        == f"Thread was already unfollowed: {target}"
+    )
+
+
+def test_check_keeps_referenced_context_when_nothing_is_new() -> None:
+    referenced = message_payload()
+
+    output = serialize_check({"messages": [], "referenced_messages": [referenced]})
+
+    # case: the referenced block still announces where new messages would go,
+    # and the output does not trail off with a blank line
+    assert output.endswith("New messages:")
+    assert "Referenced messages: 1" in output
