@@ -88,6 +88,7 @@ def _make_node(
     channels = {AGENT_A_ID: TestChannel(), AGENT_B_ID: TestChannel()}
     runtimes = {AGENT_A_ID: TestRuntime(), AGENT_B_ID: TestRuntime()}
     configuration = NodeConfiguration(
+        version_check=False,
         storage="sqlite",
         audit="test",
         agents=tuple(

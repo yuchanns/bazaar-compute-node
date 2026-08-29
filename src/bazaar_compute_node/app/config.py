@@ -97,6 +97,7 @@ class NodeConfiguration:
     lang: str | None = None
     endpoint: str | None = None
     database_name: str | None = None
+    version_check: bool = True
     version: str = CONFIG_VERSION
 
     def __post_init__(self) -> None:
@@ -104,6 +105,8 @@ class NodeConfiguration:
             raise ConfigurationError(
                 f"configuration version must be {CONFIG_VERSION!r}"
             )
+        if not isinstance(self.version_check, bool):
+            raise ConfigurationError("node.version_check must be a boolean")
         _required_text(self.storage, "node.storage")
         _required_text(self.audit, "node.audit")
         _optional_text(self.lang, "node.lang")
@@ -269,6 +272,9 @@ def _parse_v3_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
         _parse_v3_agent(item, index=index)
         for index, item in enumerate(raw_agents, start=1)
     )
+    version_check = node.get("version_check", True)
+    if not isinstance(version_check, bool):
+        raise ConfigurationError("node.version_check must be a boolean")
     return NodeConfiguration(
         version=CONFIG_VERSION,
         agents=agents,
@@ -277,6 +283,7 @@ def _parse_v3_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
         lang=_optional_text(node.get("lang"), "node.lang"),
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         database_name=_optional_text(node.get("database_name"), "node.database_name"),
+        version_check=version_check,
     )
 
 
@@ -585,6 +592,7 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
         lines.append(f"database_name = {_toml_value(configuration.database_name)}")
     if configuration.endpoint is not None:
         lines.append(f"endpoint = {_toml_value(configuration.endpoint)}")
+    lines.append(f"version_check = {_toml_value(configuration.version_check)}")
 
     for agent in configuration.agents:
         lines.extend(

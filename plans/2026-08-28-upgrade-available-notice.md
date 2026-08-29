@@ -83,6 +83,10 @@ class VersionWatcher(IAsyncLifecycle):
 current_version=__version__, request_timeout_seconds=timeout_budget.command_seconds)`，在启动
 `timer_wheel` 与 `reminder_scheduler` 的同一处 `start()`，在 `stop()` 中一并停止。
 
+`NodeConfiguration` 增加 `version_check: bool = True`，对应 `[node] version_check`，非布尔值报
+`ConfigurationError`，序列化时无条件写出。为 `false` 时 `NodeApplication.start()` 不启动
+`VersionWatcher`，`available_version()` 恒为 `None`，节点因此不会访问 PyPI。
+
 ## 4. 提示的传递
 
 `inbox_notice` 增加关键字参数 `upgrade_version: str | None = None` 与
@@ -188,8 +192,11 @@ Managed by bazaar-compute-node. template-revision=2
 按第 3 节实现 `VersionWatcher`、`packaging` 依赖与 `NodeApplication` 的构造/启动/停止接线。
 
 测试：`tests/app/test_version_check.py` 覆盖未检查前 `available_version()` 为 `None`、`stop()`
-后任务结束，以及 `available_version()` 在没有更新时返回 `None`。
-真实 PyPI 查询属于外部依赖，按第 16 条写成 e2e：`tests/e2e/test_version_check.py`
+后任务结束，以及 `available_version()` 在没有更新时返回 `None`。`tests/app/test_config.py` 覆盖
+`version_check` 的默认值、`false` 的解析与序列化往返、非布尔值报错；`tests/app/test_composition.py`
+覆盖关闭时节点不启动 watcher。其余非 e2e 测试构造 `NodeConfiguration` 时一律传
+`version_check=False`，避免测试访问 PyPI。
+真实 PyPI 查询属于外部依赖，按第 16 条写成 e2e：`tests/e2e/test_pypi_version.py`
 标记 `e2e`，真实请求一次 `_RELEASE_URL`，断言 `info.version` 能被 `Version` 解析，且用一个明显
 更旧的当前版本能判出有更新。
 
@@ -268,4 +275,5 @@ checks：`tests/app/`、`tests/test_cli.py`、`ruff format --check .`、`ruff ch
 10. `.old` 保留到新进程的 `__version__` 等于目标版本时才删除。
 11. 目标版本使用前经过 `Version` 校验，传给 uv 时是独立参数而不是拼接的 shell 字符串。
 12. `packaging` 出现在 `[project] dependencies` 且 `uv lock --check` 通过。
-13. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。
+13. `[node] version_check = false` 时节点不发起任何 PyPI 请求，inbox notice 与现在完全一致。
+14. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。

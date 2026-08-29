@@ -38,6 +38,7 @@ AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 def make_configuration() -> NodeConfiguration:
     return NodeConfiguration(
+        version_check=False,
         storage="sqlite",
         audit="test",
         agents=(

@@ -512,6 +512,7 @@ async def run_natural_conversation_contract(
         storage_scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
         node = NodeApplication(
             configuration=NodeConfiguration(
+                version_check=False,
                 storage="sqlite",
                 audit="test",
                 agents=(
@@ -3474,6 +3475,7 @@ async def test_multi_runtime_agents(
     )
     node = NodeApplication(
         configuration=NodeConfiguration(
+            version_check=False,
             storage="sqlite",
             audit="test",
             agents=(

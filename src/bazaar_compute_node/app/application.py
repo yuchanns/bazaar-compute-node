@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import __version__
 from ..core.concurrency import SessionLockRegistry
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
@@ -22,6 +23,7 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
+from .version_check import VersionWatcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,11 @@ class NodeApplication:
             concurrency=self._reminder_concurrency,
             publish_wake=self._publish_inbox_wake,
         )
+        self.version_watcher = VersionWatcher(
+            timer_wheel=self.timer_wheel,
+            current_version=__version__,
+            request_timeout_seconds=self.timeout_budget.command_seconds,
+        )
         self.command_server = LocalCommandServer(
             self._dispatch,
             endpoint_path=endpoint_path,
@@ -131,6 +138,10 @@ class NodeApplication:
             await self.reminder_scheduler.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
+            if self.configuration.version_check:
+                await self.version_watcher.start(
+                    timeout=self.timeout_budget.startup_seconds,
+                )
         except BaseException:
             await self.stop()
             raise
@@ -207,6 +218,14 @@ class NodeApplication:
         self._ready = False
         self._accepting = False
         errors: list[str] = []
+        try:
+            await self.version_watcher.stop(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"version_watcher.stop:{type(error).__name__}")
         try:
             await self.reminder_scheduler.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
