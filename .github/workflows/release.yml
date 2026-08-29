@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable version without the v prefix, for example 0.1.3
+        description: >-
+          Version without the v prefix, either X.Y.Z or a pre-release such as
+          0.1.34rc1
         required: true
         type: string
 
@@ -56,25 +58,23 @@ jobs:
           set -euo pipefail
 
           version="$RELEASE_VERSION"
-          stable_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          if [[ ! "$version" =~ $stable_version ]]; then
-            echo "version must match X.Y.Z without a v prefix" >&2
+          release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)((a|b|rc)(0|[1-9][0-9]*))?$'
+          if [[ ! "$version" =~ $release_version ]]; then
+            echo "version must match X.Y.Z or a pre-release such as 0.1.34rc1, without a v prefix" >&2
             exit 1
           fi
 
           current_version="$(uv version --short)"
-          if [[ ! "$current_version" =~ $stable_version ]]; then
-            echo "current project version is not a stable X.Y.Z version" >&2
+          if [[ ! "$current_version" =~ $release_version ]]; then
+            echo "current project version is neither X.Y.Z nor a pre-release" >&2
             exit 1
           fi
 
-          IFS=. read -r current_major current_minor current_patch <<<"$current_version"
-          IFS=. read -r release_major release_minor release_patch <<<"$version"
-          if ((
-            10#$release_major < 10#$current_major ||
-            (10#$release_major == 10#$current_major && 10#$release_minor < 10#$current_minor) ||
-            (10#$release_major == 10#$current_major && 10#$release_minor == 10#$current_minor && 10#$release_patch < 10#$current_patch)
-          )); then
+          # a pre-release sorts before the release it leads to, which comparing
+          # the three numbers cannot express, so the order comes from PEP 440
+          compare='import sys; from packaging.version import Version; sys.exit(0 if Version(sys.argv[2]) >= Version(sys.argv[1]) else 1)'
+          if ! uv run --no-project --with packaging python -c "$compare" \
+            "$current_version" "$version"; then
             echo "version $version is older than current version $current_version" >&2
             exit 1
           fi
