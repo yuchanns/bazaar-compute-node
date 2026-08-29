@@ -16,6 +16,7 @@ from ..core.models import InboundAttachment, Message
 from ..core.observability import IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
+from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
 from ..i18n import create_translator
@@ -92,10 +93,11 @@ class NodeApplication:
             current_version=__version__,
             request_timeout_seconds=self.timeout_budget.command_seconds,
         )
+        self._restart_requested = False
         self.upgrade_service = UpgradeService(
             version_watcher=self.version_watcher,
             installed_version=__version__,
-            timer_wheel=self.timer_wheel,
+            request_restart=self.request_restart,
         )
         self.command_server = LocalCommandServer(
             self._dispatch,
@@ -277,6 +279,16 @@ class NodeApplication:
         self._stopped.set()
         if errors:
             self._log("bcn.stop.errors", errors=errors)
+
+    def request_restart(self) -> None:
+        """Stop, and tell whatever hosts this node to start it again."""
+
+        self._restart_requested = True
+        self._stopped.set()
+
+    @property
+    def exit_code(self) -> int:
+        return RESTART_EXIT_CODE if self._restart_requested else 0
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()

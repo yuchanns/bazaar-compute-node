@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .. import __distribution__
 from ..core.paths import resolve_data_dir
+from ..core.restart import RESTART_EXIT_CODE
 from ..i18n import Translator, create_translator
 from ..rendering import TextTemplate
 from .config import ConfigurationError, load_control_configuration, resolve_config_path
@@ -29,7 +30,7 @@ WINDOWS_TASK_NAME = r"\BazaarComputeNode"
 MANAGED_MARKER = "Managed by bazaar-compute-node."
 # raised whenever a managed file's content changes, so an upgrade can tell that
 # the installed copy predates what this release expects of it
-TEMPLATE_REVISION = 1
+TEMPLATE_REVISION = 2
 MANAGED_MARKER_LINE = f"{MANAGED_MARKER} template-revision={TEMPLATE_REVISION}"
 WINDOWS_STOP_ATTEMPTS = 100
 WINDOWS_STOP_INTERVAL = 0.05
@@ -103,7 +104,7 @@ def build_system_service_parser(
     return parser
 
 
-def resolve_bcn_executable() -> Path:
+def _resolve_executable() -> Path:
     executable = shutil.which("bcn")
     if executable is None:
         candidate = Path(sys.argv[0])
@@ -132,7 +133,7 @@ def _build_context(
         parser.error(
             "bcn system-service commands only accept the node-level --config option"
         )
-    executable = resolve_bcn_executable() if require_executable else None
+    executable = _resolve_executable() if require_executable else None
     config_path = (args.config or resolve_config_path()).expanduser().resolve()
     env_file = getattr(args, "env_file", None)
     if env_file is not None:
@@ -231,6 +232,7 @@ def render_windows_wrapper(
             "environment_script": environment_script,
             "log_path": log_path,
             "live_directory": _powershell_literal(windows_live_directory()),
+            "restart_exit_code": RESTART_EXIT_CODE,
         }
     )
 

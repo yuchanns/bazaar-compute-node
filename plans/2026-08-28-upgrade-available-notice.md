@@ -34,7 +34,7 @@ POSIX 上覆盖正在使用的文件是允许的，运行中的进程持有旧 i
   **提示只在为这次入站消息新建 runtime session 时带上**，复用既有会话时不带，因此频率由会话
   生命周期天然控制，不需要任何抑制状态；
 - 新增 `bcc node upgrade`：按平台执行安装，装成功后才挂一个升级后唤醒的 Reminder，最后触发
-  `system-service restart`；任一步失败都把错误返回给 Agent，不重启；
+  `RESTART_EXIT_CODE` 退出交给托管方拉起；任一步失败都把错误返回给 Agent，不退出；
 - POSIX 直接就地安装，`systemd.service` 与 `launchd.sh` 不做改动；
 - Windows 装到 `.staging`，由 `windows.ps1` 在拉起 bcn 之前完成交换与中断恢复，旧目录留作
   回滚点；
@@ -163,10 +163,23 @@ notice 的正文本身此前是 f-string 拼接，没有跟上模板渲染的迁
 4. 安装成功：用 `reminder_service` 挂一个 Reminder，锚定当前会话的入站消息，60 秒后触发，标题
    写明目标版本。重启会掐断这条阻塞的连接，Agent 拿不到成功的回执，只能靠它唤醒回来，再用
    `bcc node version` 确认；
-5. 调用 `system-service restart`。
+5. 节点以 `RESTART_EXIT_CODE` 退出，由托管方把它拉起来。
 
-Reminder 挂在安装之后、重启之前：安装失败时不会留下一个空转的 Reminder，而重启会中断本进程，
-所以它也不能挪到重启之后。
+**节点不自己发起重启。** 它做不到：Windows 上 `system-service restart` 的第一步是对 bcn 的进程号
+执行 `taskkill /T`，而发起这条命令的进程正是 bcn 的子进程，会连同整棵树一起被杀，第二步的
+`schtasks /Run` 永远轮不到。这一点在真机上实测过：终止之后没有任何启动事件。
+
+因此重启统一交给本来就负责拉起节点的一方：Linux 的 `systemd.service` 已经是
+`Restart=on-failure`，macOS 的 `launchd.plist` 已经是 `KeepAlive=true`，两者对非零退出本来就会
+重新拉起，托管文件不需要任何改动；Windows 的 `windows.ps1` 把交换与启动包进一个 `do/while`，
+看到这个退出码就再转一圈——交换正好在每圈开头，而计划任务与 wrapper 进程全程存活，没有任何
+进程需要活过一次针对自己的清理。
+
+`bcc node upgrade` 因此只在节点由托管方式拉起时完整可用。前台手工 `bcn run` 的节点会退出而没有
+人拉回来，命令的回执文案对此写明。
+
+Reminder 挂在安装之后、退出之前：安装失败时不会留下一个空转的 Reminder，而退出会中断本进程，
+所以它也不能挪到之后。
 
 安装不设期限。没有第二个期限能起作用——uv 自己对不响应的请求会放弃，再加一层只会在
 「连得上但很慢」时把一次本可以成功的升级打断。`CommandDispatcher` 因此对 resource `node`
@@ -257,25 +270,27 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`
 阻塞到安装结束，成功则挂 Reminder 并重启，失败则把错误返回给调用方。Windows 的 wrapper 自检与
 重写属于 Task 4：它读的修订号由那一步引入，两者是同一件事的两半。
 
-重启不能在响应返回之前发生，否则 `bcc` 拿不到回复，因此它是一个 1 秒后触发的 TimerWheel
-定时任务；重启本身由 detach 出去的子进程执行 `bcn system-service restart`，因为 Windows 的
-重启是先 stop 再 start，本进程若在 stop 之后被结束，就没有进程负责 start。
+节点在响应写回之后才退出，因此不需要为「先回话再重启」安排任何等待。
 
 测试：`uv` 是外部依赖，按第 16 条走 e2e，`tests/e2e/test_upgrade_install.py` 三个用例。
 
 两个走完整链路：真实节点、sqlite 库、真实会话与锚点消息，`UV_TOOL_DIR` 与 `UV_TOOL_BIN_DIR`
 指到临时目录真实执行 `uv tool install`，`PATH` 换成只包含一份 `uv` 与一个记录 argv 的 `bcn`
-的目录——`resolve_bcn_executable` 走的是 `PATH`，因此把已安装的 bcn 从 `PATH` 上移除，测试就
-无法重启这台机器上真正运行的节点。成功一侧断言命令返回时目标版本已经在隔离目录里、Reminder
-已经落进临时库、随后节点才用 `system-service restart` 请求重启；失败一侧把索引地址指向无人
-监听的端口，断言错误当场返回、什么都没装、没有 Reminder 落库、没有触发重启，且可以再试。
+的目录——把已安装的 bcn 从 `PATH` 上移除，测试就碰不到这台机器上真正运行的节点，而那个记录器
+同时证明了节点没有 spawn 任何东西。成功一侧断言命令返回时目标版本已经在隔离目录里、Reminder
+已经落进临时库、节点请求了一次重启、记录器没有被调用过；失败一侧把索引地址指向无人监听的
+端口，断言错误当场返回、什么都没装、没有 Reminder 落库、没有请求重启，且可以再试。
+
+`windows.ps1` 的循环由 `tests/app/test_system_service.py` 覆盖：渲染出的脚本认这个退出码、
+交换在每圈开头、脚本里不出现 `schtasks`。
 
 第三个覆盖另一类失败：`PATH` 上没有 `uv`，也就是这个节点不是用 uv 装的。
 
 单独测安装本身是多余的：完整链路里那次安装就是真的。
 
-`systemctl` 之后服务是否真的起来不在测试范围内：systemd 的 unit 名是单一常量，装一个隔离的
-unit 需要把它参数化。这一条在 Task 5 的真机运行里验证。
+托管方在节点退出之后是否真的把它拉起来，不在测试范围内：那要么需要一个隔离的 systemd unit
+（unit 名是单一常量，得先参数化），要么需要真实的 Windows 计划任务。这一条在 Task 5 的真机
+运行里验证。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/app/`、`ruff format --check .`、
 `ruff check .`、`uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
@@ -309,10 +324,11 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 - 运行 `ruff format --check .`、`ruff check .`、
   `uv run scripts/pyright_lsp_check.py --outputjson .`、
   `uv run python -m compileall -q src tests`、`uv lock --check`、`git diff --check`；
-- 在 Linux 上跑一次完整升级：`bcc node upgrade` → 就地安装 → `system-service restart` →
-  新版本启动 → Reminder 唤醒 Agent 回报；
+- 在 Linux 上跑一次完整升级：`bcc node upgrade` → 就地安装 → 节点退出 → systemd 拉起新版本 →
+  Reminder 唤醒 Agent 回报；
 - 在一台真实 Windows 主机上先跑一次 `bcn system-service install` 拿到带交换段的 wrapper，再跑
-  一次完整升级：`bcc node upgrade` → 装进 `.staging` → 计划任务重启 → `windows.ps1` 完成交换 →
+  一次完整升级：`bcc node upgrade` → 装进 `.staging` → 节点退出 → `windows.ps1` 完成交换并重新
+  启动 bcn →
   新版本启动 → Reminder 唤醒 Agent 回报，并确认 `.old` 在版本对上后被删除；另外手工制造一次
   「只完成第一次改名」的中断，确认下一次启动能恢复。这是这条链路唯一无法在 Linux 上验证的
   部分；
@@ -325,8 +341,8 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 3. 存在更新且这次入站消息新建了 runtime session 时，提示行出现在 inbox notice 的闭合括号
    之前；复用既有会话、或不存在更新时，输出与现在完全一致。节点不保存任何抑制状态。
 4. 提示行在所有平台一致，不含任何平台特有内容。
-5. `bcc node upgrade` 的顺序是安装、挂 Reminder、重启；Reminder 在重启之前就已经落库。命令两端都
-   不设超时。
+5. `bcc node upgrade` 的顺序是安装、挂 Reminder、以 `RESTART_EXIT_CODE` 退出；Reminder 在退出
+   之前就已经落库。命令两端都不设超时。节点不 spawn 任何进程去重启自己。
 6. 安装失败时既不挂 Reminder 也不触发重启，错误当场返回给 Agent，节点继续以旧版本运行，之后
    允许再试。
 7. `bcc node version` 返回的是当前进程的版本，而不是磁盘上安装了什么。

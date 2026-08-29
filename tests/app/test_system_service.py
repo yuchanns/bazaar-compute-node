@@ -10,6 +10,7 @@ import pytest
 
 from bazaar_compute_node import cli
 from bazaar_compute_node.app import system_service
+from bazaar_compute_node.core.restart import RESTART_EXIT_CODE
 
 
 @pytest.fixture
@@ -667,3 +668,26 @@ def test_managed_files_declare_the_revision_they_were_written_from(
 
     # case: a file we do not manage reports none either
     assert system_service.installed_template_revision("# something else") is None
+
+
+def test_windows_wrapper_starts_bcn_again_when_it_asks_to_come_back(
+    service_context: system_service.SystemServiceContext,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+
+    rendered = system_service._render_windows_wrapper(service_context)
+
+    # case: an upgrade cannot restart the node from inside, so the launcher
+    # loops on the exit code the node leaves behind
+    assert f"$restartExitCode = {RESTART_EXIT_CODE}" in rendered
+    assert "while ($exitCode -eq $restartExitCode)" in rendered
+
+    # case: the swap runs at the top of every loop, so the staged release is in
+    # place before bcn starts again
+    body = rendered[rendered.index("do {") :]
+    assert body.index("Invoke-BcnSwap") < body.index("[BcnNoWindowProcess]::Run")
+
+    # case: nothing here ends the scheduled task that owns this process
+    assert "schtasks" not in rendered

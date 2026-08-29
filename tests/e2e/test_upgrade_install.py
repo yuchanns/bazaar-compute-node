@@ -125,6 +125,10 @@ async def _started_session(runtime: TestRuntime) -> RuntimeSession:
     return runtime.started_sessions[0]
 
 
+def _unexpected_restart() -> None:
+    raise AssertionError("an upgrade that failed must not ask for a restart")
+
+
 def _isolated_uv(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
     """Point uv at directories of our own so the real install stays contained."""
 
@@ -167,7 +171,7 @@ async def test_upgrade_needs_uv_to_install_anything(
             request_timeout_seconds=30,
         ),
         installed_version="0.0.1",
-        timer_wheel=wheel,
+        request_restart=_unexpected_restart,
     )
 
     with pytest.raises(UpgradeError) as failure:
@@ -181,9 +185,8 @@ async def test_upgrade_needs_uv_to_install_anything(
 def _sealed_path(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
     """Replace PATH with a directory the installed bcn cannot be reached through.
 
-    ``resolve_bcn_executable`` resolves through PATH, so an upgrade run by a test
-    would otherwise restart the node this machine actually runs. Only a recorder
-    and a copy of uv are reachable here.
+    An upgrade must never reach the bcn this machine actually runs, and the
+    recorder left in its place also shows that nothing was spawned at all.
     """
 
     real_uv = shutil.which("uv")
@@ -216,10 +219,11 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
     tool_dir = _isolated_uv(monkeypatch, tmp_path)
     record = _sealed_path(monkeypatch, tmp_path)
     watcher, wheel = await _announced_upgrade("0.0.1")
+    restarts: list[None] = []
     upgrade = UpgradeService(
         version_watcher=watcher,
         installed_version="0.0.1",
-        timer_wheel=wheel,
+        request_restart=lambda: restarts.append(None),
     )
     node, channel, runtime = _upgrade_node(tmp_path)
     await node.start()
@@ -273,14 +277,11 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
         ]
         assert str(watcher.available_version()) in reminders[0].title
 
-        # case: only then does the node ask the installed CLI to restart it
-        async with asyncio.timeout(30):
-            while not record.exists():
-                await asyncio.sleep(0.05)
-        assert record.read_text(encoding="utf-8").split() == [
-            "system-service",
-            "restart",
-        ]
+        # case: only then does the node ask its host to bring it back
+        assert restarts == [None]
+
+        # case: and it does so by exiting, not by starting anything itself
+        assert not record.exists()
     finally:
         await node.stop()
         await watcher.stop(timeout=5)
@@ -298,13 +299,14 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
         lambda agent_id: tmp_path / "workspaces" / agent_id,
     )
     tool_dir = _isolated_uv(monkeypatch, tmp_path)
-    record = _sealed_path(monkeypatch, tmp_path)
+    _sealed_path(monkeypatch, tmp_path)
     monkeypatch.setenv("UV_INDEX_URL", "http://127.0.0.1:1/simple")
     watcher, wheel = await _announced_upgrade("0.0.1")
+    restarts: list[None] = []
     upgrade = UpgradeService(
         version_watcher=watcher,
         installed_version="0.0.1",
-        timer_wheel=wheel,
+        request_restart=lambda: restarts.append(None),
     )
     node, channel, runtime = _upgrade_node(tmp_path)
     await node.start()
@@ -345,7 +347,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
         # case: nothing was installed, promised or restarted
         repository = cast(SqliteDatabase, node.storage).scope(AGENT_ID, "Test Agent")
         assert not (tool_dir / "bazaar-compute-node").exists()
-        assert not record.exists()
+        assert restarts == []
         assert (
             await repository.list_reminders(
                 session.bcn_session_id,
