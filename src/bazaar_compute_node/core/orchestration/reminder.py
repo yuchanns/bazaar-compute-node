@@ -317,6 +317,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 metadata={
                     "sender_kind": SenderKind.SYSTEM.value,
                     "system_message_kind": SystemMessageKind.REMINDER.value,
+                    "reminder_id": current.reminder_id,
                 },
             )
             materialized = await self._storage.materialize_owned_reminder_message(

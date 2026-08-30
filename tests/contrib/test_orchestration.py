@@ -66,6 +66,8 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    Reminder,
+    ReminderState,
     RuntimeAttempt,
     RuntimeEvent,
     RuntimeEventState,
@@ -155,6 +157,12 @@ def make_message(
 ) -> Message:
     channel_session_id = f"channel-{session_id}"
     metadata = {"sender_kind": sender_kind}
+    provider_message_id = f"provider-{session_id}-{seq}"
+    sender = SenderIdentity(id="sender-id", name="Sender")
+    if sender_kind == SenderKind.SYSTEM.value:
+        metadata["system_message_kind"] = SystemMessageKind.HANDOFF.value
+        provider_message_id = None
+        sender = SenderIdentity(name="system")
     return Message(
         direction=MessageDirection.INBOUND,
         seq=seq,
@@ -163,9 +171,9 @@ def make_message(
         channel_session_id=channel_session_id,
         channel="test",
         provider_thread_id=f"thread-{session_id}",
-        provider_message_id=f"provider-{session_id}-{seq}",
+        provider_message_id=provider_message_id,
         received_at_ms=seq,
-        sender=SenderIdentity(id="sender-id", name="Sender"),
+        sender=sender,
         message_type="text",
         target=f"dm:{channel_session_id}",
         body=body if body is not None else f"inbound-{seq}",
@@ -1037,21 +1045,102 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
         await storage.stop(timeout=2)
 
 
+@pytest.mark.asyncio
+async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
+    orchestrator, channel, runtime, storage, _ = await make_node()
+    anchor = make_message(seq=1, message_id=str(uuid7()))
+    try:
+        context, anchor, created = await orchestrator._record_inbound(anchor)
+        assert context is not None
+        assert created
+        first_turn = await orchestrator._run_notification(
+            _RuntimeNotification(message=anchor, context=context)
+        )
+        assert first_turn is not None
+        reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
+            Reminder(
+                reminder_id="pending",
+                owner_session_id=anchor.session_id,
+                anchor_message_id=anchor.message_id,
+                title="Review",
+                state=ReminderState.SCHEDULED,
+                next_fire_at_ms=10,
+                repeat_rule=None,
+                timezone="UTC",
+                revision=1,
+                last_occurrence_no=0,
+                created_at_ms=2,
+                updated_at_ms=2,
+            )
+        )
+        message = Message(
+            direction=MessageDirection.INBOUND,
+            seq=0,
+            message_id=str(uuid7()),
+            session_id=anchor.session_id,
+            channel_session_id=anchor.channel_session_id,
+            channel=anchor.channel,
+            provider_thread_id=anchor.provider_thread_id,
+            provider_message_id=None,
+            received_at_ms=3,
+            sender=SenderIdentity(name="system"),
+            target=anchor.target,
+            target_kind=anchor.target_kind,
+            body='🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+            metadata={
+                "sender_kind": SenderKind.SYSTEM.value,
+                "system_message_kind": SystemMessageKind.REMINDER.value,
+                "reminder_id": reminder.reminder_id,
+            },
+        )
+        runtime_session = orchestrator.runtime_session(anchor.session_id)
+        assert runtime_session is not None
+        message = await cast(IStorage, storage).save_message(message)
+        runtime.queue_turn_plan(
+            TestTurnPlan(
+                approval_request=ApprovalRequest(
+                    request_id="approval-reminder-anchor",
+                    session_id=anchor.session_id,
+                    runtime_session_id=runtime_session.id,
+                    action="test-action",
+                    created_at_ms=3,
+                    turn_id=f"turn-{message.message_id}",
+                )
+            )
+        )
+
+        turn = await orchestrator._run_notification(
+            _RuntimeNotification(message=message, context=context)
+        )
+
+        assert turn is not None
+        assert anchor.sender is not None
+        channel_request = channel.channel_approval_requests[-1]
+        assert channel_request.provider_sender_id == anchor.sender.id
+        assert channel_request.provider_reply_to_message_id is None
+        assert runtime.approval_results[-1].decision is ApprovalDecision.APPROVED
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
 @pytest.mark.parametrize(
-    ("sender_kind", "reason"),
-    [
-        ("agent", "agent_cannot_approve"),
-        ("unknown", "unknown_sender_cannot_approve"),
-    ],
+    "sender_kind",
+    ["agent", "unknown", "system"],
 )
 @pytest.mark.asyncio
 async def test_non_human_approval_is_rejected_before_channel_call(
     sender_kind: str,
-    reason: str,
 ) -> None:
-    orchestrator, channel, runtime, _, audit = await make_node()
+    orchestrator, channel, runtime, storage, audit = await make_node()
     try:
-        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
+        context, first_message, created = await orchestrator._record_inbound(
+            make_message(seq=1)
+        )
+        assert context is not None
+        assert created
+        first_turn = await orchestrator._run_notification(
+            _RuntimeNotification(message=first_message, context=context)
+        )
         assert first_turn is not None
         runtime_session = orchestrator.runtime_session("bcn-1")
         assert runtime_session is not None
@@ -1064,14 +1153,22 @@ async def test_non_human_approval_is_rejected_before_channel_call(
             turn_id="turn-message-bcn-1-2",
         )
         runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
-        await channel.inject(make_message(seq=2, sender_kind=sender_kind))
-        await wait_until(
-            lambda: any(
-                event.event_name == "runtime.turn.completed"
-                and event.correlation.turn_id == "turn-message-bcn-1-2"
-                for event in audit.events
+        message = make_message(seq=2, sender_kind=sender_kind)
+        if sender_kind == SenderKind.SYSTEM.value:
+            message = await cast(IStorage, storage).save_message(message)
+            turn = await orchestrator._run_notification(
+                _RuntimeNotification(message=message, context=context)
             )
-        )
+            assert turn is not None
+        else:
+            await channel.inject(message)
+            await wait_until(
+                lambda: any(
+                    event.event_name == "runtime.turn.completed"
+                    and event.correlation.turn_id == "turn-message-bcn-1-2"
+                    for event in audit.events
+                )
+            )
 
         assert channel.approval_requests == []
         assert channel.channel_approval_requests == []
@@ -1079,7 +1176,9 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         result = runtime.approval_results[0]
         assert result.request_id == request.request_id
         assert result.decision is ApprovalDecision.REJECTED
-        assert result.reason == reason
+        assert result.reason is not None
+        assert "No person can approve tool use" in result.reason
+        assert "Explain in your reply" in result.reason
         requested = next(
             event for event in audit.events if event.event_name == "approval.requested"
         )
@@ -1087,7 +1186,7 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         decided = next(
             event for event in audit.events if event.event_name == "approval.decided"
         )
-        assert decided.metadata["reason"] == reason
+        assert decided.metadata["reason"] == result.reason
     finally:
         await orchestrator.stop(timeout=1)
 
