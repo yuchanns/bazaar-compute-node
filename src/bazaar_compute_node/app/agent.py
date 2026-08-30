@@ -79,7 +79,7 @@ class AgentApplication:
         endpoint: Callable[[], str],
         timeout_budget: TimeoutBudget,
         translator: Translator,
-        upgrade_service: UpgradeService,
+        upgrade_service: UpgradeService | None,
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
     ) -> None:
         self.configuration = configuration

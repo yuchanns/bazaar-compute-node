@@ -3,35 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Awaitable, Callable, Mapping
-from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
 from .. import __distribution__
-from ..rendering import TextTemplate
-from .system_service import (
-    TEMPLATE_REVISION,
-    _powershell_literal,
-    installed_template_revision,
-    render_windows_wrapper,
-    windows_live_directory,
-    windows_wrapper_path,
-)
 
-_STAGING_DIRECTORY = f"{__distribution__}.staging"
-# uv writes UTF-8 whatever the console is set to, so a Windows node in a
-# non-UTF-8 locale would otherwise report its diagnostics as mojibake. Left
-# unset for PowerShell, which writes in the console's own encoding.
+# uv writes UTF-8 whatever the console is set to, so a node in a non-UTF-8
+# locale would otherwise report its diagnostics as mojibake
 _UV_OUTPUT_ENCODING = "utf-8"
-_REPLACE_MANAGED_FILE = TextTemplate.from_resource(
-    "system_service/replace_managed_file.ps1"
-)
 
 
 class UpgradeError(RuntimeError):
@@ -81,170 +64,22 @@ def _run(
         )
 
 
-def _install_command(version: str) -> list[str]:
-    return [
-        _uv_executable(),
-        "tool",
-        "install",
-        "--force",
-        # the release was announced by PyPI's own API minutes ago, while uv
-        # resolves against a separately cached index that can still predate it
-        # and would then report the version as one that does not exist
-        "--refresh-package",
-        __distribution__,
-        f"{__distribution__}=={version}",
-    ]
-
-
-def _install_posix(version: str) -> None:
-    _run(_install_command(version), encoding=_UV_OUTPUT_ENCODING)
-
-
-def _refresh_windows_wrapper() -> None:
-    """Bring the installed launcher up to what this release expects of it.
-
-    The swap happens in the launcher, so a node whose launcher predates it would
-    install a release that never gets swapped in. Rewriting is a precondition of
-    the upgrade rather than part of it.
-    """
-
-    wrapper = windows_wrapper_path()
-    if not wrapper.exists():
-        # the launcher is the only thing that can swap the staged release into
-        # place, so without one the install would succeed and change nothing
-        raise UpgradeError(
-            "this node is not installed as a system service, so nothing can put "
-            "the new release in place; run `bcn system-service install` first"
-        )
-    content = wrapper.read_text(encoding="utf-8")
-    revision = installed_template_revision(content)
-    if revision is not None and revision >= TEMPLATE_REVISION:
-        return
-    literals = _wrapper_literals(content)
-    rendered = render_windows_wrapper(**literals)
+def _install(version: str) -> None:
     _run(
         [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            _REPLACE_MANAGED_FILE.render(
-                {
-                    "target": _powershell_literal(wrapper),
-                    "content": _powershell_literal(rendered),
-                }
-            ),
-        ]
+            _uv_executable(),
+            "tool",
+            "install",
+            "--force",
+            # the release was announced by PyPI's own API minutes ago, while uv
+            # resolves against a separately cached index that can still predate
+            # it and would then report the version as one that does not exist
+            "--refresh-package",
+            __distribution__,
+            f"{__distribution__}=={version}",
+        ],
+        encoding=_UV_OUTPUT_ENCODING,
     )
-
-
-def _wrapper_literals(content: str) -> dict[str, str]:
-    """Recover the values the installed launcher was rendered with.
-
-    The launcher being replaced was written by an older release, so there is no
-    record of the arguments it was installed with other than the launcher
-    itself. Its own `$environment_script` in particular is where a node's
-    secrets come from, and re-rendering without it would leave the node unable
-    to start.
-    """
-
-    wanted = {
-        "executable": "$executable",
-        "config_path": "$configPath",
-        "environment_script": "$environmentScript",
-        "log_path": "$logPath",
-    }
-    literals: dict[str, str] = {}
-    for line in content.splitlines():
-        for name, variable in wanted.items():
-            prefix = f"{variable} = "
-            if line.startswith(prefix):
-                literals[name] = line[len(prefix) :].strip()
-    missing = sorted(set(wanted) - set(literals))
-    if missing:
-        raise UpgradeError(
-            f"the installed launcher cannot be read; it is missing {', '.join(missing)}"
-        )
-    return literals
-
-
-def _install_windows(version: str) -> None:
-    # the running node holds its own files open, so the new release is installed
-    # beside them and the launcher swaps the two before bcn starts again. It is
-    # the same `uv tool install` a user would run, pointed at a directory of our
-    # own, so uv chooses the interpreter and lays the tool out as it always does
-    tool_directory = _upgrade_target_path().parent
-    tool_directory.mkdir(parents=True, exist_ok=True)
-    staging = tool_directory / _STAGING_DIRECTORY
-    if staging.exists():
-        shutil.rmtree(staging)
-    build = Path(tempfile.mkdtemp(prefix=f"{__distribution__}-", dir=tool_directory))
-    try:
-        _run(
-            _install_command(version),
-            encoding=_UV_OUTPUT_ENCODING,
-            env={
-                "UV_TOOL_DIR": str(build),
-                # the entry points belong to the live installation, whose
-                # trampoline already points at the directory this replaces
-                "UV_TOOL_BIN_DIR": str(build / "bin"),
-            },
-        )
-        (build / __distribution__).rename(staging)
-    except BaseException:
-        shutil.rmtree(build, ignore_errors=True)
-        raise
-    shutil.rmtree(build, ignore_errors=True)
-    # the swap keeps the replaced release as a rollback point, and only a node
-    # that came up as this version proves it is no longer needed
-    try:
-        _upgrade_target_path().write_text(version, encoding="utf-8")
-    except OSError:
-        # a staged release with no marker would be swapped in by some later
-        # restart nobody connected to this upgrade, and nothing would then know
-        # to clean up after it
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-
-
-def _upgrade_target_path() -> Path:
-    live = windows_live_directory()
-    if live is None:
-        raise UpgradeError("cannot resolve the uv tool directory; APPDATA is not set")
-    return live.with_name(f"{__distribution__}.upgrade-target")
-
-
-def discard_replaced_release(installed_version: str) -> None:
-    """Drop the rollback copy once this process proves the swap worked.
-
-    A copy that cannot be read or removed — a file another process still holds,
-    say — is not a reason to refuse to start. The next start tries again.
-    """
-
-    try:
-        target = _upgrade_target_path()
-    except UpgradeError:
-        # nowhere a swap could have been staged, so nothing to drop
-        return
-    try:
-        if not target.exists():
-            return
-        if target.read_text(encoding="utf-8").strip() != installed_version:
-            # the swap did not happen, so the replaced release is the way back
-            return
-        previous = target.with_name(f"{__distribution__}.old")
-        shutil.rmtree(previous, ignore_errors=True)
-        if previous.exists():
-            # something still holds part of it; the marker is what brings a
-            # later start back here to try again
-            return
-        target.unlink(missing_ok=True)
-    except OSError:
-        logging.getLogger("bazaar_compute_node.application.upgrade").warning(
-            "the replaced release could not be discarded", exc_info=True
-        )
 
 
 class UpgradeService:
@@ -306,16 +141,11 @@ class UpgradeService:
             return version, reminder_id
 
     async def install(self, version: str) -> None:
-        if os.name == "nt":
-            await asyncio.to_thread(_refresh_windows_wrapper)
-            await asyncio.to_thread(_install_windows, version)
-        else:
-            await asyncio.to_thread(_install_posix, version)
+        await asyncio.to_thread(_install, version)
 
 
 __all__ = [
     "UpgradeError",
     "UpgradeService",
     "UpgradeUnavailable",
-    "discard_replaced_release",
 ]
