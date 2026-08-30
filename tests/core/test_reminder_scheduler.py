@@ -205,6 +205,7 @@ async def test_global_scheduler_materializes_system_messages_and_routes_wakes() 
             message.sender_kind is SenderKind.SYSTEM
             and message.system_message_kind is SystemMessageKind.REMINDER
             and message.notifies_runtime
+            and message.metadata.get("reminder_id") in storage.reminders
             for message in system_messages
         )
         assert all("(one-time)" in message.body for message in system_messages)

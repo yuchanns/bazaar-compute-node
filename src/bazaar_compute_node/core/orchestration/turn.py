@@ -22,6 +22,7 @@ from ..models import (
     ChannelSession,
     ChannelTargetKind,
     Message,
+    MessageDirection,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
@@ -32,6 +33,7 @@ from ..models import (
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
     StreamEvent,
+    SystemMessageKind,
 )
 from ..runtime import IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorageScope
@@ -80,6 +82,7 @@ def _runtime_event_signal(event: RuntimeEvent) -> SessionRuntimeSignal:
 
 
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
+_NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
 
 
 def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
@@ -236,6 +239,35 @@ class SessionTurnCoordinator:
                 inbound_seq=message.seq,
             )
             sender_kind = message.sender_kind
+            approval_target = message
+            reminder_approval = (
+                message.system_message_kind is SystemMessageKind.REMINDER
+            )
+            if reminder_approval:
+                approval_target = None
+                reminder_id = message.metadata.get("reminder_id")
+                if isinstance(reminder_id, str):
+                    try:
+                        reminder = await self._storage.get_reminder(
+                            message.session_id,
+                            reminder_id,
+                        )
+                    except ValueError:
+                        reminder = None
+                    if reminder is not None:
+                        anchor = await self._storage.get_owned_message(
+                            self._agent_id,
+                            reminder.owner_session_id,
+                            reminder.anchor_message_id,
+                            direction=MessageDirection.INBOUND,
+                        )
+                        if anchor is not None:
+                            approval_target = anchor
+            approval_target_kind = (
+                approval_target.sender_kind.value
+                if approval_target is not None
+                else "unavailable"
+            )
             await self._audit.append(
                 event_name="approval.requested",
                 state=RuntimeEventState.STARTED,
@@ -243,19 +275,19 @@ class SessionTurnCoordinator:
                 metadata={
                     "action": request.action,
                     "sender_kind": sender_kind.value,
+                    "approval_target_kind": approval_target_kind,
                 },
             )
-            if sender_kind is not SenderKind.HUMAN:
-                rejection_reason = (
-                    "agent_cannot_approve"
-                    if sender_kind is SenderKind.AGENT
-                    else "unknown_sender_cannot_approve"
-                )
+            if approval_target is None or (
+                approval_target.sender_kind is not SenderKind.HUMAN
+                or approval_target.sender is None
+                or approval_target.sender.id is None
+            ):
                 result = ApprovalResult(
                     request_id=request_id,
                     decision=ApprovalDecision.REJECTED,
                     decided_at_ms=self._clock(),
-                    reason=rejection_reason,
+                    reason=_NO_PERSON_TO_APPROVE,
                 )
             else:
                 try:
@@ -265,7 +297,9 @@ class SessionTurnCoordinator:
                         provider_thread_id=context.channel_session.provider_thread_id,
                         provider_reply_to_message_id=message.provider_message_id,
                         provider_sender_id=(
-                            message.sender.id if message.sender is not None else None
+                            approval_target.sender.id
+                            if approval_target.sender is not None
+                            else None
                         ),
                     )
                     result = await self._channel.request_approval(
@@ -284,6 +318,7 @@ class SessionTurnCoordinator:
                         metadata={
                             "action": request.action,
                             "sender_kind": sender_kind.value,
+                            "approval_target_kind": approval_target_kind,
                         },
                     )
                     raise
@@ -295,6 +330,7 @@ class SessionTurnCoordinator:
                     "action": request.action,
                     "decision": result.decision.value,
                     "sender_kind": sender_kind.value,
+                    "approval_target_kind": approval_target_kind,
                     **({"reason": result.reason} if result.reason is not None else {}),
                 },
             )
