@@ -10,4 +10,7 @@ $temporary = "$target.new"
 # a fresh file carries inherited permissions, which are not necessarily the ones
 # the installed file was given, so the replacement takes the target's own ACL
 Set-Acl -LiteralPath $temporary -AclObject (Get-Acl -LiteralPath $target)
-[System.IO.File]::Replace($temporary, $target, $null)
+# PowerShell turns $null into an empty string when it binds to a String
+# parameter, and Replace validates a backup path it was given one for, so
+# $null here asks it to resolve "" and it refuses the whole call
+[System.IO.File]::Replace($temporary, $target, [NullString]::Value)
