@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.34rc2 - 2026-08-30
+
+## What's Changed
+* feat: run one agent on several runtimes by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/52
+* feat: tell the user when a newer bcn is available by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/55
+* feat: release a candidate before the version it precedes by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/56
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.33...v0.1.34rc2
+
 ## 0.1.33 - 2026-08-28
 
 ## What's Changed
