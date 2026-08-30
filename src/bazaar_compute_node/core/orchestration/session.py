@@ -58,6 +58,7 @@ from .turn import (
     SessionTurnCoordinator,
     inbox_notice,
 )
+from .upgrade_notice import UpgradeAnnounced, UpgradeNotice
 
 
 def _current_time_ms() -> int:
@@ -122,6 +123,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         workspace: Callable[[], Path],
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
+        upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -137,6 +139,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
         self._agent_id = agent_id
         self._channel = channel
+        self._upgrade_notice = upgrade_notice
         self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
         self._storage = storage
         self._timeout_budget = timeout_budget
@@ -148,6 +151,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._session_runtime_indices: dict[str, int] = {}
         self._runtime_turns: dict[str, RuntimeTurn] = {}
         self._session_runtime_states: dict[str, SessionRuntimeState] = {}
+        # what each conversation has been told about the release on offer, so a
+        # session hears of one once and of the next one again
+        self._session_upgrades: dict[str, UpgradeNotice] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.session")
         if not self._logger.handlers:
             self._logger.addHandler(logging.StreamHandler())
@@ -522,6 +528,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 )
         self._started = False
         self._session_runtime_states.clear()
+        self._session_upgrades.clear()
         self._runtime_sessions.clear()
         self._session_runtime_indices.clear()
         self._runtime_turns.clear()
@@ -807,10 +814,15 @@ class SessionOrchestrator(IAsyncLifecycle):
         if not unread:
             return
         message = notification.message
+        # a message arriving mid-turn is consumed here, and the turn path that
+        # would otherwise carry the offer then finds nothing unread to run for
+        upgrade = self._upgrade_for(session_id)
         input_text = inbox_notice(
             (message,),
             total_unread_count=len(unread),
             closing_bracket_on_own_line=False,
+            upgrade_version=upgrade[0] if upgrade is not None else None,
+            installed_version=upgrade[1] if upgrade is not None else None,
         )
         active_turn = next(
             (
@@ -1151,6 +1163,20 @@ class SessionOrchestrator(IAsyncLifecycle):
             )
         return context, message, recorded.message_created
 
+    def _upgrade_for(self, session_id: str) -> tuple[str, str] | None:
+        """Return the offer this conversation has not been told about yet."""
+
+        offer = self._upgrade_notice()
+        if offer is None:
+            self._session_upgrades.pop(session_id, None)
+            return None
+        version = offer[0]
+        match self._session_upgrades.get(session_id):
+            case UpgradeAnnounced(announced) if announced == version:
+                return None
+        self._session_upgrades[session_id] = UpgradeAnnounced(version)
+        return offer
+
     async def _run_notification(
         self,
         notification: _RuntimeNotification,
@@ -1173,10 +1199,13 @@ class SessionOrchestrator(IAsyncLifecycle):
         turn_id = f"turn-{client_user_message_id}"
         if await self._storage.get_runtime_attempt(turn_id) is not None:
             return self._runtime_turns.get(turn_id)
+        upgrade = self._upgrade_for(durable_context.bcn_session.id)
         input_text = inbox_notice(
             unread,
             total_unread_count=len(unread),
             closing_bracket_on_own_line=True,
+            upgrade_version=upgrade[0] if upgrade is not None else None,
+            installed_version=upgrade[1] if upgrade is not None else None,
         )
         observation_source = (
             SessionRuntimeObservationSource.SESSION

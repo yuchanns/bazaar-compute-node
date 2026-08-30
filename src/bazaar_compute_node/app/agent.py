@@ -15,7 +15,11 @@ from pathlib import Path
 from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
 from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
-from ..core.models import InboundAttachment, Message, RuntimeSession
+from ..core.models import (
+    InboundAttachment,
+    Message,
+    RuntimeSession,
+)
 from ..core.observability import IAudit
 from ..core.orchestration import SessionOrchestrator
 from ..core.orchestration.reminder_command import ReminderCommandService
@@ -29,6 +33,7 @@ from .command import CommandDispatchError
 from .config import AgentConfiguration
 from .registry import AgentAdapterFactories
 from .resource_dispatch import CommandDispatcher
+from .upgrade import UpgradeService
 from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 
 CommandRecord = tuple[str, tuple[str, ...]]
@@ -74,6 +79,8 @@ class AgentApplication:
         endpoint: Callable[[], str],
         timeout_budget: TimeoutBudget,
         translator: Translator,
+        upgrade_service: UpgradeService,
+        upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
     ) -> None:
         self.configuration = configuration
         self.agent_id = configuration.id
@@ -164,6 +171,7 @@ class AgentApplication:
             workspace=self.workspace_path,
             translator=self.translator,
             error_feedback_detail=self._error_feedback_detail,
+            upgrade_notice=upgrade_notice,
             concurrency=self._concurrency,
         )
         self.reminder_service = ReminderCommandService(
@@ -176,6 +184,7 @@ class AgentApplication:
             reminder_service=self.reminder_service,
             timeout_budget=self.timeout_budget,
             session_binding_validator=self._validate_session_binding,
+            upgrade_service=upgrade_service,
         )
 
     @property

@@ -12,6 +12,7 @@ from bazaar_compute_node.bcc import (
     serialize_inbox_list,
     serialize_read,
     serialize_send,
+    serialize_unfollow,
 )
 
 
@@ -25,6 +26,7 @@ def message_payload(
     provider_thread_id: str | None = "provider-thread-1",
     sender_id: str | None = "sender-id",
     sender_name: str | None = "sender",
+    sender_display_name: str | None = None,
     sender_kind: str = "human",
     message_type: str = "text",
     reply_to_message_id: str | None = None,
@@ -41,7 +43,11 @@ def message_payload(
         "sender": (
             None
             if sender_id is None and sender_name is None
-            else {"id": sender_id, "name": sender_name}
+            else {
+                "id": sender_id,
+                "name": sender_name,
+                "display_name": sender_display_name,
+            }
         ),
         "body": "message body",
         "provider_thread_id": provider_thread_id,
@@ -205,7 +211,7 @@ def test_check_serializer_matches_text() -> None:
     assert serialize_check(result) == (
         "[target=#work:parent123 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
-        "type=human] @sender-id(sender): message body"
+        "type=human] @sender: message body"
     )
 
 
@@ -325,7 +331,19 @@ def test_only_message_check_appends_system_message_suffixes() -> None:
 
 
 def test_check_serializer_renders_sender_and_time_fallbacks() -> None:
-    # a provider username is preferred for the sender
+    # the handle is what an Agent addresses the sender by
+    result = {
+        "messages": [
+            message_payload(sender_name="test-user", sender_display_name="Test User")
+        ],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@test-user(Test User): message body" in serialize_check(result)
+
+    # a sender the provider gives no human name for is still addressable
     result = {
         "messages": [message_payload(sender_name="test-user")],
         "referenced_messages": [],
@@ -333,9 +351,20 @@ def test_check_serializer_renders_sender_and_time_fallbacks() -> None:
         "delivered_through_seq": 7,
     }
 
-    assert "@sender-id(test-user): message body" in serialize_check(result)
+    assert "@test-user: message body" in serialize_check(result)
 
-    # the sender id is used when no username is known
+    # the sender id is only a fallback for a missing handle
+    result = {
+        "messages": [
+            message_payload(sender_name=None, sender_display_name="Test User")
+        ],
+        "referenced_messages": [],
+        "snapshot_seq": 7,
+        "delivered_through_seq": 7,
+    }
+
+    assert "@sender-id(Test User): message body" in serialize_check(result)
+
     result = {
         "messages": [message_payload(sender_name=None)],
         "referenced_messages": [],
@@ -509,7 +538,7 @@ def test_read_serializer() -> None:
         "Read window: 1 returned, seq 7-7, oldest to newest.\n"
         "[1/1 seq=7 msg=0123456789abcdef0123456789abcdef "
         f"time={local_time(1_700_000_000_000)} "
-        "type=human replyTarget=#work:parent123] @sender-id(sender): message body"
+        "type=human replyTarget=#work:parent123] @sender: message body"
     )
 
     # absent thread metadata renders as empty
@@ -574,3 +603,79 @@ def test_error_contract_is_stderr_only(capsys: pytest.CaptureFixture[str]) -> No
         "Code: INVALID_TARGET\n"
         "Next action: Run `bcc message read` with a valid target.\n"
     )
+
+
+def test_error_contract_reports_a_saved_draft(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        _print_error(
+            BccCommandError(
+                "the channel rejected the message",
+                code="SEND_FAILED",
+                draft_saved=True,
+                next_action="Revise the draft and send it again.",
+            )
+        )
+
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+
+    # case: a failed send tells the agent its text was not lost, and what to do
+    assert any(line.startswith("Draft saved:") for line in lines)
+    assert any("Revise the draft" in line for line in lines)
+    assert captured.out == ""
+
+
+def test_unfollow_distinguishes_a_change_from_a_repeat() -> None:
+    target = "#work:parent123"
+
+    # case: the agent learns whether its command actually changed anything
+    assert (
+        serialize_unfollow({"target": target, "changed": True})
+        == f"Thread unfollowed: {target}"
+    )
+    assert (
+        serialize_unfollow({"target": target, "changed": False})
+        == f"Thread was already unfollowed: {target}"
+    )
+
+
+def test_check_keeps_referenced_context_when_nothing_is_new() -> None:
+    referenced = message_payload()
+
+    output = serialize_check({"messages": [], "referenced_messages": [referenced]})
+
+    # case: the referenced block still announces where new messages would go,
+    # and the output does not trail off with a blank line
+    assert output.endswith("New messages:")
+    assert "Referenced messages: 1" in output
+
+
+def test_inbox_list_names_a_sender_the_provider_gave_no_handle_for() -> None:
+    result = {
+        "targets": [
+            {
+                "target": "lark:ou_contact",
+                "session_id": "session-1",
+                "target_kind": "dm",
+                "current": True,
+                "pending_count": 1,
+                "latest_message_id": "latest-message",
+                "latest_sender": {
+                    "id": "ou_contact",
+                    "name": None,
+                    "display_name": "张三",
+                },
+                "latest_time_ms": 1_700_000_000_000,
+            }
+        ],
+        "total": 1,
+        "shown": 1,
+        "offset": 0,
+        "has_more": False,
+    }
+
+    # case: Lark has no handle to offer, so the contact name is what an Agent
+    # can recognise -- the open id says nothing to anyone
+    assert "latest-sender=@张三" in serialize_inbox_list(result)

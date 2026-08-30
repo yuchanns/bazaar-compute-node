@@ -5,6 +5,59 @@ $executable = {{ executable }}
 $configPath = {{ config_path }}
 $environmentScript = {{ environment_script }}
 $logPath = {{ log_path }}
+$distribution = {{ distribution }}
+$restartExitCode = {{ restart_exit_code }}
+
+function Get-BcnLiveDirectory {
+    # resolved on every turn rather than baked in at install time: the tool
+    # directory can come from the environment script, which is sourced after
+    # this file was written, and bcn itself resolves it the same way
+    $toolDirectory = if ($env:UV_TOOL_DIR) {
+        $env:UV_TOOL_DIR
+    } else {
+        Join-Path $env:APPDATA 'uv\tools'
+    }
+    return Join-Path $toolDirectory $distribution
+}
+
+function Invoke-BcnSwap {
+    $liveDirectory = Get-BcnLiveDirectory
+    $stagingDirectory = "$liveDirectory.staging"
+    $previousDirectory = "$liveDirectory.old"
+    # bcn holds its own files open while it runs, so an upgrade installs beside
+    # them and the swap happens here, between two runs, where no bcn process
+    # owns the directory. It only logs on failure: a rename that does not work
+    # is not a reason to leave the machine without a node.
+    try {
+        if (-not (Test-Path -LiteralPath $liveDirectory)) {
+            # a previous swap was interrupted between the two renames
+            if (Test-Path -LiteralPath $stagingDirectory) {
+                Move-Item -LiteralPath $stagingDirectory -Destination $liveDirectory
+            } elseif (Test-Path -LiteralPath $previousDirectory) {
+                Move-Item -LiteralPath $previousDirectory -Destination $liveDirectory
+            }
+        } elseif (Test-Path -LiteralPath $stagingDirectory) {
+            if (Test-Path -LiteralPath $previousDirectory) {
+                Remove-Item -LiteralPath $previousDirectory -Recurse -Force
+            }
+            Move-Item -LiteralPath $liveDirectory -Destination $previousDirectory
+            Move-Item -LiteralPath $stagingDirectory -Destination $liveDirectory
+        }
+    } catch {
+        $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+        # the second rename can fail with the first already done, and starting
+        # bcn without a live directory would only waste this turn
+        if (-not (Test-Path -LiteralPath $liveDirectory)) {
+            try {
+                if (Test-Path -LiteralPath $previousDirectory) {
+                    Move-Item -LiteralPath $previousDirectory -Destination $liveDirectory
+                }
+            } catch {
+                $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+            }
+        }
+    }
+}
 
 try {
     Add-Type -TypeDefinition @'
@@ -89,10 +142,16 @@ if ($environmentScript -and (Test-Path -LiteralPath $environmentScript)) {
     }
 }
 
-try {
-    $exitCode = [BcnNoWindowProcess]::Run($executable, $configPath, $logPath)
-} catch {
-    $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
-    exit 1
-}
+# an upgrade cannot restart bcn from the inside, so it exits with a code this
+# launcher watches for: the swap it staged happens here and bcn starts again,
+# without ever ending the scheduled task that owns this process
+do {
+    Invoke-BcnSwap
+    try {
+        $exitCode = [BcnNoWindowProcess]::Run($executable, $configPath, $logPath)
+    } catch {
+        $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+        exit 1
+    }
+} while ($exitCode -eq $restartExitCode)
 exit $exitCode

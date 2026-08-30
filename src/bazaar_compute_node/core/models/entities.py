@@ -219,15 +219,34 @@ class OutboundAttachment:
 class SenderIdentity:
     id: str | None = None
     name: str | None = None
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.id is None and self.name is None:
             raise ValueError("sender identity requires an id or name")
 
     @property
-    def display_name(self) -> str:
+    def handle(self) -> str:
+        """Return what this sender is addressed by, falling back to the id."""
+
         if self.name is not None:
             return self.name
+        if self.id is None:
+            raise RuntimeError("sender identity has no display value")
+        return self.id
+
+    @property
+    def label(self) -> str:
+        """Return the shortest thing a reader would recognise this sender by.
+
+        A provider that offers no handle can still offer a human name, and a
+        name says more than the opaque id it would otherwise fall back to.
+        """
+
+        if self.name is not None:
+            return self.name
+        if self.display_name is not None:
+            return self.display_name
         if self.id is None:
             raise RuntimeError("sender identity has no display value")
         return self.id

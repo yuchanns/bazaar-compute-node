@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import bazaar_compute_node.app.upgrade as upgrade_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.command import serialize_inbox_target
 from bazaar_compute_node.app.config import (
@@ -18,6 +21,7 @@ from bazaar_compute_node.app.config import (
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
+from bazaar_compute_node.app.upgrade import UpgradeService
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
@@ -38,6 +42,7 @@ AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 def make_configuration() -> NodeConfiguration:
     return NodeConfiguration(
+        version_check=False,
         storage="sqlite",
         audit="test",
         agents=(
@@ -48,6 +53,19 @@ def make_configuration() -> NodeConfiguration:
                 runtimes=(RuntimeConfiguration(kind="test"),),
             ),
         ),
+    )
+
+
+def make_upgrade_service(
+    *,
+    installed_version: str = "0.1.0",
+    available_version: str | None = None,
+    request_restart: Callable[[], None] = lambda: None,
+) -> UpgradeService:
+    return UpgradeService(
+        available_version=lambda: available_version,
+        installed_version=installed_version,
+        request_restart=request_restart,
     )
 
 
@@ -183,6 +201,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
     request = {
@@ -225,6 +244,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
         cast(ICommandService, service),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
     request = {
@@ -285,3 +305,123 @@ async def test_message_send_renders_provider_outcomes() -> None:
         else:
             assert response["code"] == code
             assert expected_text in cast(str, response["next_action"])
+
+
+@pytest.mark.asyncio
+async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "upgrade",
+            "session_id": "session-source",
+            "message_id": "0198d4e6-29c5-7465-b74b-88db31f0c118",
+        }
+    )
+
+    # case: an Agent that runs the command on its own gets told there is
+    # nothing to install rather than a surprise restart
+    assert result["ok"] is False
+    assert result["code"] == "UPGRADE_NOT_AVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "upgrade",
+            "session_id": "session-source",
+        }
+    )
+
+    # case: without an anchor there is nothing to wake the Agent after the
+    # restart, and the Agent is told which argument it left out
+    assert result["ok"] is False
+    assert result["code"] == "UPGRADE_ANCHOR_REQUIRED"
+    assert "--message-id" in cast(str, result["error"])
+
+
+@pytest.mark.asyncio
+async def test_version_reports_the_process_and_not_the_disk() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(installed_version="0.1.0"),
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "version",
+            "session_id": "session-source",
+        }
+    )
+
+    # case: an Agent confirming an upgrade needs the version it is talking to,
+    # which is the one this process started with
+    assert result["ok"] is True
+    assert cast(Mapping[str, object], result["result"]) == {"version": "0.1.0"}
+
+
+@pytest.mark.asyncio
+async def test_one_upgrade_transaction_runs_at_a_time() -> None:
+    restarts: list[None] = []
+    service = make_upgrade_service(
+        available_version="9.9.9",
+        request_restart=lambda: restarts.append(None),
+    )
+    inside = 0
+    overlapped = False
+
+    def install(version: str) -> None:
+        del version
+        nonlocal inside, overlapped
+        inside += 1
+        overlapped = overlapped or inside > 1
+        time.sleep(0.05)
+        inside -= 1
+
+    async def wake_after(version: str) -> str | None:
+        del version
+        nonlocal inside, overlapped
+        inside += 1
+        overlapped = overlapped or inside > 1
+        await asyncio.sleep(0.05)
+        inside -= 1
+        return "reminder-1"
+
+    # uv itself is covered by the e2e; what is under test here is whether two
+    # sessions can be inside the transaction at the same time
+    with patch.object(upgrade_module, "_install_posix", install):
+        results = await asyncio.gather(
+            service.upgrade(wake_after=wake_after),
+            service.upgrade(wake_after=wake_after),
+        )
+
+    # case: two Agents accepting offers at the same time must not overlap
+    # anywhere between installing and asking to restart -- the second would
+    # otherwise install a release the first has already answered for
+    assert not overlapped
+    assert [version for version, _ in results] == ["9.9.9", "9.9.9"]
+    assert len(restarts) == 2

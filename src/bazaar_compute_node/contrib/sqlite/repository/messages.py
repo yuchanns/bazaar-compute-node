@@ -41,7 +41,8 @@ from .base import RepositoryBase
 _MESSAGE_COLUMNS = (
     "message_id, seq, direction, agent_id, session_id, channel_session_id, "
     "channel, provider_thread_id, provider_message_id, provider_time_ms, "
-    "received_at_ms, sender, sender_id, message_type, target, target_kind, "
+    "received_at_ms, sender, sender_id, sender_display_name, "
+    "message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
     "provider_payload_ref, command_id, delivery_state, provider_receipt_ref, created_at_ms, "
     "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
@@ -56,6 +57,7 @@ WITH latest_message_ranked AS (
         target,
         sender,
         sender_id,
+        sender_display_name,
         provider_time_ms,
         COALESCE(received_at_ms, created_at_ms) AS activity_at_ms,
         ROW_NUMBER() OVER (
@@ -79,6 +81,7 @@ latest_message AS (
         target,
         sender,
         sender_id,
+        sender_display_name,
         provider_time_ms,
         activity_at_ms
     FROM latest_message_ranked
@@ -117,6 +120,7 @@ target_catalog AS (
         latest.message_id AS latest_message_id,
         latest.sender AS latest_sender,
         latest.sender_id AS latest_sender_id,
+        latest.sender_display_name AS latest_sender_display_name,
         latest.provider_time_ms AS latest_provider_time_ms,
         latest.activity_at_ms AS latest_received_at_ms
     FROM bcn_sessions AS bcn
@@ -166,6 +170,7 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
     latest_message_id = cast(str | None, row["latest_message_id"])
     latest_sender_name = cast(str | None, row["latest_sender"])
     latest_sender_id = cast(str | None, row["latest_sender_id"])
+    latest_sender_display_name = cast(str | None, row["latest_sender_display_name"])
     return InboxTargetSummary(
         target=cast(str, row["target"]),
         session_id=cast(str, row["session_id"]),
@@ -175,7 +180,11 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
         last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
         latest_message_id=latest_message_id,
         latest_sender=(
-            SenderIdentity(id=latest_sender_id, name=latest_sender_name)
+            SenderIdentity(
+                id=latest_sender_id,
+                name=latest_sender_name,
+                display_name=latest_sender_display_name,
+            )
             if latest_sender_name is not None or latest_sender_id is not None
             else None
         ),
@@ -271,6 +280,7 @@ class MessageOperations(RepositoryBase):
             _INBOX_TARGET_CATALOG_CTE
             + "SELECT target, session_id, target_kind, pending_count, "
             "last_activity_at_ms, latest_message_id, latest_sender, latest_sender_id, "
+            "latest_sender_display_name, "
             "latest_provider_time_ms, latest_received_at_ms "
             "FROM target_catalog "
             "ORDER BY last_activity_at_ms DESC, session_id "
@@ -663,10 +673,11 @@ class MessageOperations(RepositoryBase):
             "INSERT INTO messages ("
             "message_id, seq, direction, agent_id, session_id, channel_session_id, "
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
-            "received_at_ms, sender, sender_id, message_type, target, target_kind, "
+            "received_at_ms, sender, sender_id, sender_display_name, "
+            "message_type, target, target_kind, "
             "reply_to_message_id, body, mentions_agent, notifies_runtime, "
             "provider_payload_ref, metadata_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical.message_id,
                 canonical.seq,
@@ -681,6 +692,11 @@ class MessageOperations(RepositoryBase):
                 canonical.received_at_ms,
                 canonical.sender.name if canonical.sender is not None else None,
                 canonical.sender.id if canonical.sender is not None else None,
+                (
+                    canonical.sender.display_name
+                    if canonical.sender is not None
+                    else None
+                ),
                 canonical.message_type,
                 canonical.target,
                 canonical.target_kind.value,
@@ -881,11 +897,12 @@ class MessageOperations(RepositoryBase):
                 "INSERT INTO messages ("
                 "message_id, seq, direction, agent_id, session_id, "
                 "channel_session_id, channel, provider_thread_id, "
-                "provider_message_id, sender, sender_id, message_type, target, target_kind, "
+                "provider_message_id, sender, sender_id, sender_display_name, "
+                "message_type, target, target_kind, "
                 "reply_to_message_id, body, command_id, delivery_state, "
                 "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
                 "error_kind, error_message, metadata_json, attachments_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     canonical.message_id,
                     canonical.seq,
@@ -898,6 +915,7 @@ class MessageOperations(RepositoryBase):
                     canonical.provider_message_id,
                     sender.name,
                     sender.id,
+                    sender.display_name,
                     canonical.message_type,
                     canonical.target,
                     canonical.target_kind.value,

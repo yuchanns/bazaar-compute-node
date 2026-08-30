@@ -225,12 +225,65 @@ def test_inbox_notice_matches_target_delta_contract() -> None:
     )
 
 
+def test_inbox_notice_carries_the_upgrade_line_inside_the_bracket() -> None:
+    message = make_message(seq=1, message_id="11111111-1111-4111-8111-111111111111")
+
+    without_upgrade = inbox_notice(
+        (message,),
+        total_unread_count=1,
+        closing_bracket_on_own_line=True,
+    )
+    with_upgrade = inbox_notice(
+        (message,),
+        total_unread_count=1,
+        closing_bracket_on_own_line=True,
+        upgrade_version="0.2.0",
+        installed_version="0.1.31",
+    )
+
+    # case: a node with nothing to offer renders exactly what it renders today
+    assert "Upgrade available" not in without_upgrade
+    assert without_upgrade.splitlines()[:-1] == with_upgrade.splitlines()[:-2]
+
+    # case: the offer is the last thing before the notice closes
+    lines = with_upgrade.splitlines()
+    assert lines[-1] == "]"
+    assert lines[-2].startswith(
+        "Upgrade available: bazaar-compute-node 0.2.0 (installed 0.1.31)."
+    )
+    assert "`bcc node upgrade`" in lines[-2]
+
+    # case: half an answer is not an offer
+    assert "Upgrade available" not in inbox_notice(
+        (message,),
+        total_unread_count=1,
+        closing_bracket_on_own_line=True,
+        upgrade_version="0.2.0",
+    )
+
+
+def test_inbox_notice_keeps_the_upgrade_line_inside_an_inline_bracket() -> None:
+    message = make_message(seq=1, message_id="11111111-1111-4111-8111-111111111111")
+
+    notice = inbox_notice(
+        (message,),
+        total_unread_count=1,
+        closing_bracket_on_own_line=False,
+        upgrade_version="0.2.0",
+        installed_version="0.1.31",
+    )
+
+    # case: the steer form closes on the offer rather than after it
+    assert notice.endswith("just carry on.]")
+
+
 async def make_node(
     *,
     workspace: Callable[[], Path] = Path.cwd,
     translator: Translator = _ENGLISH_TRANSLATOR,
     error_feedback_detail: Callable[[str, str], str] = unchanged_error_feedback_detail,
     channel: TestChannel | None = None,
+    upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
 ) -> tuple[
     SessionOrchestrator,
     TestChannel,
@@ -254,6 +307,7 @@ async def make_node(
         workspace=workspace,
         translator=translator,
         error_feedback_detail=error_feedback_detail,
+        upgrade_notice=upgrade_notice,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -512,6 +566,7 @@ async def run_natural_conversation_contract(
         storage_scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
         node = NodeApplication(
             configuration=NodeConfiguration(
+                version_check=False,
                 storage="sqlite",
                 audit="test",
                 agents=(
@@ -1962,7 +2017,7 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         assert second_body not in steer_input
         second_sender = second.sender
         assert second_sender is not None
-        assert f"latest sender @{second_sender.display_name}" in steer_input
+        assert f"latest sender @{second_sender.handle}" in steer_input
 
         runtime.queue_turn_plan(TestTurnPlan())
         next(iter(runtime.active_streams)).release()
@@ -3474,6 +3529,7 @@ async def test_multi_runtime_agents(
     )
     node = NodeApplication(
         configuration=NodeConfiguration(
+            version_check=False,
             storage="sqlite",
             audit="test",
             agents=(
@@ -3835,3 +3891,80 @@ async def test_multi_runtime_reports_once_every_runtime_has_failed() -> None:
     finally:
         await orchestrator.stop(timeout=1)
         await wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_is_offered_once_per_release() -> None:
+    offer = ["0.2.0"]
+    orchestrator, channel, runtime, _, audit = await make_node(
+        upgrade_notice=lambda: (offer[0], "0.1.31"),
+    )
+    try:
+        first = make_message(seq=1)
+        await channel.inject(first)
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
+            )
+        )
+        second = make_message(seq=2)
+        await channel.inject(second)
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-2"
+                for event in audit.events
+            )
+        )
+
+        assert len(runtime.started_turns) == 2
+
+        # case: the conversation hears of a release once
+        assert (
+            "Upgrade available: bazaar-compute-node 0.2.0"
+            in (runtime.started_turns[0][2])
+        )
+
+        # case: and is not told the same thing again on its next turn
+        assert "Upgrade available" not in runtime.started_turns[1][2]
+
+        offer[0] = "0.3.0"
+        third = make_message(seq=3)
+        await channel.inject(third)
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-3"
+                for event in audit.events
+            )
+        )
+
+        # case: a release it has not heard of is worth saying, however long the
+        # conversation has been going
+        assert (
+            "Upgrade available: bazaar-compute-node 0.3.0"
+            in (runtime.started_turns[2][2])
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_no_upgrade_leaves_the_opening_turn_untouched() -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-1"
+                for event in audit.events
+            )
+        )
+
+        # case: a node that knows of no newer release says nothing about upgrades
+        assert "Upgrade available" not in runtime.started_turns[0][2]
+    finally:
+        await orchestrator.stop(timeout=1)

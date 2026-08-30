@@ -1,0 +1,2 @@
+Upgrade started: {{ distribution }} {{ upgrade_version }} replaces {{ installed_version }}.
+The node exits now so whatever hosts it starts it again on the new release, which ends this session.{% if reminder_id is not none %} Reminder #{{ reminder_id }} wakes you afterwards.{% else %} No follow-up reminder could be scheduled, so nothing will wake you.{% endif %} Confirm with `bcc node version`, then tell the user.{{ "" -}}

@@ -212,9 +212,9 @@ class LocalCommandClient:
         endpoint: str,
         payload: Mapping[str, object],
         *,
-        timeout: float = 10,
+        timeout: float | None = 10,
     ) -> Mapping[str, object]:
-        if timeout <= 0:
+        if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be positive")
         request = dict(payload)
         agent_id = os.environ.get("BCN_AGENT_ID")
