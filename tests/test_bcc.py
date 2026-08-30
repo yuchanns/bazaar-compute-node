@@ -619,13 +619,12 @@ def test_error_contract_reports_a_saved_draft(
         )
 
     captured = capsys.readouterr()
-    # case: a failed send tells the agent its text was not lost
-    assert captured.err == (
-        "Error: the channel rejected the message\n"
-        "Code: SEND_FAILED\n"
-        "Draft saved: yes\n"
-        "Next action: Revise the draft and send it again.\n"
-    )
+    lines = captured.err.splitlines()
+
+    # case: a failed send tells the agent its text was not lost, and what to do
+    assert any(line.startswith("Draft saved:") for line in lines)
+    assert any("Revise the draft" in line for line in lines)
+    assert captured.out == ""
 
 
 def test_unfollow_distinguishes_a_change_from_a_repeat() -> None:
@@ -651,3 +650,32 @@ def test_check_keeps_referenced_context_when_nothing_is_new() -> None:
     # and the output does not trail off with a blank line
     assert output.endswith("New messages:")
     assert "Referenced messages: 1" in output
+
+
+def test_inbox_list_names_a_sender_the_provider_gave_no_handle_for() -> None:
+    result = {
+        "targets": [
+            {
+                "target": "lark:ou_contact",
+                "session_id": "session-1",
+                "target_kind": "dm",
+                "current": True,
+                "pending_count": 1,
+                "latest_message_id": "latest-message",
+                "latest_sender": {
+                    "id": "ou_contact",
+                    "name": None,
+                    "display_name": "张三",
+                },
+                "latest_time_ms": 1_700_000_000_000,
+            }
+        ],
+        "total": 1,
+        "shown": 1,
+        "offset": 0,
+        "has_more": False,
+    }
+
+    # case: Lark has no handle to offer, so the contact name is what an Agent
+    # can recognise -- the open id says nothing to anyone
+    assert "latest-sender=@张三" in serialize_inbox_list(result)

@@ -170,11 +170,11 @@ async def test_upgrade_needs_uv_to_install_anything(
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     wheel = TimerWheel()
     service = UpgradeService(
-        version_watcher=VersionWatcher(
+        available_version=VersionWatcher(
             timer_wheel=wheel,
             current_version="0.0.1",
             request_timeout_seconds=30,
-        ),
+        ).available_version,
         installed_version="0.0.1",
         request_restart=_unexpected_restart,
     )
@@ -182,8 +182,9 @@ async def test_upgrade_needs_uv_to_install_anything(
     with pytest.raises(UpgradeError) as failure:
         await service.install("0.1.0")
 
-    # case: a node installed some other way says so instead of half-upgrading
-    assert "uv" in str(failure.value)
+    # case: the node says what to do about it, since a service manager's PATH
+    # not having uv says nothing about whether the machine has it
+    assert "PATH" in str(failure.value)
     assert os.environ["PATH"] == str(tmp_path / "empty")
 
 
@@ -226,7 +227,7 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
     watcher, wheel = await _announced_upgrade("0.0.1")
     restarts: list[None] = []
     upgrade = UpgradeService(
-        version_watcher=watcher,
+        available_version=watcher.available_version,
         installed_version="0.0.1",
         request_restart=lambda: restarts.append(None),
     )
@@ -309,7 +310,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
     watcher, wheel = await _announced_upgrade("0.0.1")
     restarts: list[None] = []
     upgrade = UpgradeService(
-        version_watcher=watcher,
+        available_version=watcher.available_version,
         installed_version="0.0.1",
         request_restart=lambda: restarts.append(None),
     )

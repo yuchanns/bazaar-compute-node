@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
@@ -22,7 +23,6 @@ from .system_service import (
     windows_live_directory,
     windows_wrapper_path,
 )
-from .version_check import VersionWatcher
 
 _STAGING_DIRECTORY = f"{__distribution__}.staging"
 _REPLACE_MANAGED_FILE = TextTemplate.from_resource(
@@ -34,24 +34,34 @@ class UpgradeError(RuntimeError):
     """Raised when the node cannot install or hand over to the new release."""
 
 
+class UpgradeUnavailable(UpgradeError):
+    """Raised when no newer release has been announced."""
+
+
 def _uv_executable() -> str:
     executable = shutil.which("uv")
     if executable is None:
+        # a node started by a service manager inherits that manager's PATH,
+        # which often does not include wherever uv was installed, so this says
+        # nothing about whether uv exists on the machine
         raise UpgradeError(
-            "cannot resolve the uv executable; bcn was not installed through uv"
+            "uv is not on this node's PATH, so the release cannot be "
+            "installed; add the directory holding uv to the PATH the node "
+            "runs with, then try again"
         )
     return executable
 
 
-def _run(command: list[str]) -> None:
-    # no deadline: the install runs in the background with nobody waiting on it,
-    # and uv already gives up on a request that never answers
+def _run(command: list[str], *, env: Mapping[str, str] | None = None) -> None:
+    # no deadline: uv already gives up on a request that never answers, and a
+    # second limit would only cut short an install that was merely slow
     result = subprocess.run(
         command,
         capture_output=True,
         check=False,
         text=True,
         errors="replace",
+        env=None if env is None else {**os.environ, **env},
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -83,8 +93,12 @@ def _refresh_windows_wrapper() -> None:
 
     wrapper = windows_wrapper_path()
     if not wrapper.exists():
-        # nothing hosts this node, so nothing has to be swapped for it either
-        return
+        # the launcher is the only thing that can swap the staged release into
+        # place, so without one the install would succeed and change nothing
+        raise UpgradeError(
+            "this node is not installed as a system service, so nothing can put "
+            "the new release in place; run `bcn system-service install` first"
+        )
     content = wrapper.read_text(encoding="utf-8")
     revision = installed_template_revision(content)
     if revision is not None and revision >= TEMPLATE_REVISION:
@@ -141,35 +155,46 @@ def _wrapper_literals(content: str) -> dict[str, str]:
 
 def _install_windows(version: str) -> None:
     # the running node holds its own files open, so the new release is installed
-    # beside them and the launcher swaps the two before bcn starts again
+    # beside them and the launcher swaps the two before bcn starts again. It is
+    # the same `uv tool install` a user would run, pointed at a directory of our
+    # own, so uv chooses the interpreter and lays the tool out as it always does
     tool_directory = _upgrade_target_path().parent
     tool_directory.mkdir(parents=True, exist_ok=True)
     staging = tool_directory / _STAGING_DIRECTORY
     if staging.exists():
         shutil.rmtree(staging)
-    uv = _uv_executable()
     build = Path(tempfile.mkdtemp(prefix=f"{__distribution__}-", dir=tool_directory))
-    environment = build / "environment"
     try:
-        _run([uv, "venv", str(environment)])
         _run(
             [
-                uv,
-                "pip",
+                _uv_executable(),
+                "tool",
                 "install",
-                "--python",
-                str(environment),
+                "--force",
                 f"{__distribution__}=={version}",
-            ]
+            ],
+            env={
+                "UV_TOOL_DIR": str(build),
+                # the entry points belong to the live installation, whose
+                # trampoline already points at the directory this replaces
+                "UV_TOOL_BIN_DIR": str(build / "bin"),
+            },
         )
-        environment.rename(staging)
+        (build / __distribution__).rename(staging)
     except BaseException:
         shutil.rmtree(build, ignore_errors=True)
         raise
     shutil.rmtree(build, ignore_errors=True)
     # the swap keeps the replaced release as a rollback point, and only a node
     # that came up as this version proves it is no longer needed
-    _upgrade_target_path().write_text(version, encoding="utf-8")
+    try:
+        _upgrade_target_path().write_text(version, encoding="utf-8")
+    except OSError:
+        # a staged release with no marker would be swapped in by some later
+        # restart nobody connected to this upgrade, and nothing would then know
+        # to clean up after it
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def _upgrade_target_path() -> Path:
@@ -180,23 +205,34 @@ def _upgrade_target_path() -> Path:
 
 
 def discard_replaced_release(installed_version: str) -> None:
-    """Drop the rollback copy once this process proves the swap worked."""
+    """Drop the rollback copy once this process proves the swap worked.
+
+    A copy that cannot be read or removed — a file another process still holds,
+    say — is not a reason to refuse to start. The next start tries again.
+    """
 
     try:
         target = _upgrade_target_path()
     except UpgradeError:
         # nowhere a swap could have been staged, so nothing to drop
         return
-    if not target.exists():
-        return
-    if target.read_text(encoding="utf-8").strip() != installed_version:
-        # the swap did not happen, so the release it replaced is still the way back
-        return
-    shutil.rmtree(
-        target.with_name(f"{__distribution__}.old"),
-        ignore_errors=True,
-    )
-    target.unlink(missing_ok=True)
+    try:
+        if not target.exists():
+            return
+        if target.read_text(encoding="utf-8").strip() != installed_version:
+            # the swap did not happen, so the replaced release is the way back
+            return
+        previous = target.with_name(f"{__distribution__}.old")
+        shutil.rmtree(previous, ignore_errors=True)
+        if previous.exists():
+            # something still holds part of it; the marker is what brings a
+            # later start back here to try again
+            return
+        target.unlink(missing_ok=True)
+    except OSError:
+        logging.getLogger("bazaar_compute_node.application.upgrade").warning(
+            "the replaced release could not be discarded", exc_info=True
+        )
 
 
 class UpgradeService:
@@ -205,45 +241,69 @@ class UpgradeService:
     def __init__(
         self,
         *,
-        version_watcher: VersionWatcher,
+        available_version: Callable[[], str | None],
         installed_version: str,
         request_restart: Callable[[], None],
     ) -> None:
-        self._version_watcher = version_watcher
+        self._available_version = available_version
         self._installed_version = installed_version
         self._request_restart = request_restart
+        self._lock = asyncio.Lock()
 
     @property
     def installed_version(self) -> str:
         return self._installed_version
 
     def available_version(self) -> str | None:
-        return self._version_watcher.available_version()
+        return self._available_version()
+
+    async def upgrade(
+        self,
+        *,
+        wake_after: Callable[[str], Awaitable[str | None]],
+    ) -> tuple[str, str | None]:
+        """Install the release on offer and hand the node over to it.
+
+        The whole thing is one transaction. Two sessions can accept an offer at
+        the same time, and by then the offers need not even name the same
+        release; letting the second in before the first has asked to restart
+        would boot a version nobody was told about, and an install cannot be
+        called back once its thread is running.
+
+        ``wake_after`` records how the Agent is prompted to check the node over
+        afterwards, and returns the reminder it left, or None if it could not
+        leave one.
+        """
+
+        async with self._lock:
+            version = self.available_version()
+            if version is None:
+                raise UpgradeUnavailable(
+                    "No newer release has been announced for this node."
+                )
+            try:
+                Version(version)
+            except InvalidVersion as error:
+                raise UpgradeError(f"{version!r} is not a release version") from error
+            await self.install(version)
+            reminder_id = await wake_after(version)
+            # the node cannot restart itself from the inside: on Windows the
+            # stop it would ask for kills the process tree it is asking from.
+            # Exiting is the one thing it can do that its host watches for.
+            self._request_restart()
+            return version, reminder_id
 
     async def install(self, version: str) -> None:
-        try:
-            Version(version)
-        except InvalidVersion as error:
-            raise UpgradeError(f"{version!r} is not a release version") from error
         if os.name == "nt":
             await asyncio.to_thread(_refresh_windows_wrapper)
             await asyncio.to_thread(_install_windows, version)
         else:
             await asyncio.to_thread(_install_posix, version)
 
-    def restart(self) -> None:
-        """Ask whatever hosts this node to start it again on the new release.
-
-        The node cannot restart itself from the inside: on Windows the stop it
-        would ask for kills the process tree it is asking from. Exiting is the
-        one thing it can do that its host is already watching for.
-        """
-
-        self._request_restart()
-
 
 __all__ = [
     "UpgradeError",
     "UpgradeService",
+    "UpgradeUnavailable",
     "discard_replaced_release",
 ]

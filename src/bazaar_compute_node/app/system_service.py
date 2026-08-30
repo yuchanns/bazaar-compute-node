@@ -30,7 +30,7 @@ WINDOWS_TASK_NAME = r"\BazaarComputeNode"
 MANAGED_MARKER = "Managed by bazaar-compute-node."
 # raised whenever a managed file's content changes, so an upgrade can tell that
 # the installed copy predates what this release expects of it
-TEMPLATE_REVISION = 2
+TEMPLATE_REVISION = 1
 MANAGED_MARKER_LINE = f"{MANAGED_MARKER} template-revision={TEMPLATE_REVISION}"
 WINDOWS_STOP_ATTEMPTS = 100
 WINDOWS_STOP_INTERVAL = 0.05
@@ -231,7 +231,7 @@ def render_windows_wrapper(
             "config_path": config_path,
             "environment_script": environment_script,
             "log_path": log_path,
-            "live_directory": _powershell_literal(windows_live_directory()),
+            "distribution": _powershell_literal(__distribution__),
             "restart_exit_code": RESTART_EXIT_CODE,
         }
     )

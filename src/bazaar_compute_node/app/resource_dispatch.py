@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from time import time_ns
 from typing import Annotated, Literal, cast
@@ -24,7 +25,7 @@ from .command import (
     _CommandRequest,
     _parse_command_request,
 )
-from .upgrade import UpgradeError, UpgradeService
+from .upgrade import UpgradeError, UpgradeService, UpgradeUnavailable
 
 
 def serialize_reminder(reminder: Reminder) -> dict[str, object]:
@@ -203,6 +204,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         )
         self._reminder_service = reminder_service
         self._upgrade_service = upgrade_service
+        self._logger = logging.getLogger("bazaar_compute_node.application.upgrade")
 
     def _command_timeout(self, request: Mapping[str, object]) -> float | None:
         # installing a release takes as long as it takes; nothing is served by
@@ -310,15 +312,38 @@ class CommandDispatcher(_MessageCommandDispatcher):
         session_id: str,
         request: _NodeUpgradeRequest,
     ) -> Mapping[str, object]:
-        upgrade_version = self._upgrade_service.available_version()
-        if upgrade_version is None:
+        async def wake_after(upgrade_version: str) -> str | None:
+            # the reminder is how the Agent is prompted to check the node over
+            # once it is back; the release is already installed by now, so
+            # failing to schedule one is a worse reason to leave the node
+            # un-restarted than to go on without it
+            try:
+                result = await self._reminder_service.schedule(
+                    session_id,
+                    ReminderScheduleRequest.from_options(
+                        title=(f"Report the outcome of upgrading to {upgrade_version}"),
+                        message_id=request.message_id,
+                        evaluated_at_ms=time_ns() // 1_000_000,
+                        delay_seconds=_UPGRADE_FOLLOW_UP_SECONDS,
+                    ),
+                )
+            except ReminderCommandFailure:
+                self._logger.warning(
+                    "the upgrade follow-up could not be scheduled", exc_info=True
+                )
+                return None
+            return result.reminder.reminder_id
+
+        try:
+            upgrade_version, reminder_id = await self._upgrade_service.upgrade(
+                wake_after=wake_after,
+            )
+        except UpgradeUnavailable as error:
             raise CommandDispatchError(
                 "UPGRADE_NOT_AVAILABLE",
-                "No newer release has been announced for this node.",
+                str(error),
                 next_action="Wait for the inbox notice to name one.",
-            )
-        try:
-            await self._upgrade_service.install(upgrade_version)
+            ) from error
         except UpgradeError as error:
             raise CommandDispatchError(
                 "UPGRADE_INSTALL_FAILED",
@@ -327,31 +352,12 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     "Tell the user the node keeps running on the installed version."
                 ),
             ) from error
-        # the reminder is the only way back into this conversation once the
-        # restart has cut the caller off, so it is durable before that happens
-        try:
-            result = await self._reminder_service.schedule(
-                session_id,
-                ReminderScheduleRequest.from_options(
-                    title=(f"Report the outcome of upgrading to {upgrade_version}"),
-                    message_id=request.message_id,
-                    evaluated_at_ms=time_ns() // 1_000_000,
-                    delay_seconds=_UPGRADE_FOLLOW_UP_SECONDS,
-                ),
-            )
-        except ReminderCommandFailure as error:
-            raise CommandDispatchError(
-                error.code,
-                error.message,
-                next_action=error.next_action,
-            ) from error
-        self._upgrade_service.restart()
         return {
             "ok": True,
             "result": {
                 "installed_version": self._upgrade_service.installed_version,
                 "upgrade_version": upgrade_version,
-                "reminder_id": result.reminder.reminder_id,
+                "reminder_id": reminder_id,
             },
         }
 

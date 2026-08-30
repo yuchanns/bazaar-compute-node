@@ -3894,9 +3894,10 @@ async def test_multi_runtime_reports_once_every_runtime_has_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_upgrade_is_offered_once_when_the_conversation_opens() -> None:
+async def test_upgrade_is_offered_once_per_release() -> None:
+    offer = ["0.2.0"]
     orchestrator, channel, runtime, _, audit = await make_node(
-        upgrade_notice=lambda: ("0.2.0", "0.1.31"),
+        upgrade_notice=lambda: (offer[0], "0.1.31"),
     )
     try:
         first = make_message(seq=1)
@@ -3919,14 +3920,33 @@ async def test_upgrade_is_offered_once_when_the_conversation_opens() -> None:
         )
 
         assert len(runtime.started_turns) == 2
-        opening_input = runtime.started_turns[0][2]
-        follow_up_input = runtime.started_turns[1][2]
 
-        # case: the turn that opens the runtime session mentions the upgrade
-        assert "Upgrade available: bazaar-compute-node 0.2.0" in opening_input
+        # case: the conversation hears of a release once
+        assert (
+            "Upgrade available: bazaar-compute-node 0.2.0"
+            in (runtime.started_turns[0][2])
+        )
 
-        # case: a later turn on the same session does not repeat it
-        assert "Upgrade available" not in follow_up_input
+        # case: and is not told the same thing again on its next turn
+        assert "Upgrade available" not in runtime.started_turns[1][2]
+
+        offer[0] = "0.3.0"
+        third = make_message(seq=3)
+        await channel.inject(third)
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-1-3"
+                for event in audit.events
+            )
+        )
+
+        # case: a release it has not heard of is worth saying, however long the
+        # conversation has been going
+        assert (
+            "Upgrade available: bazaar-compute-node 0.3.0"
+            in (runtime.started_turns[2][2])
+        )
     finally:
         await orchestrator.stop(timeout=1)
 

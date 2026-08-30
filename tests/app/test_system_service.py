@@ -634,12 +634,22 @@ def test_windows_wrapper_swaps_the_staged_release_before_starting(
     )
     assert "Move-Item -LiteralPath $stagingDirectory" in swap
 
+    # case: the tool directory is read from the environment on every turn, not
+    # baked in when the launcher was written
+    assert "$env:UV_TOOL_DIR" in rendered
+    assert str(tmp_path / "tools") not in rendered
+
     # case: an interrupted swap is recovered from either side of the two renames
     assert "-not (Test-Path -LiteralPath $liveDirectory)" in swap
 
     # case: a rename that fails is logged rather than left to stop the service
     assert "Add-Content -LiteralPath $logPath" in swap
     assert "exit" not in swap
+
+    # case: a swap that fails halfway puts the live directory back, so bcn is
+    # not started against a name that no longer exists
+    recovery = swap[swap.index("} catch {") :]
+    assert "Move-Item -LiteralPath $previousDirectory" in recovery
 
 
 def test_managed_files_declare_the_revision_they_were_written_from(

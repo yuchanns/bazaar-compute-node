@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import bazaar_compute_node.app.upgrade as upgrade_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.command import serialize_inbox_target
 from bazaar_compute_node.app.config import (
@@ -19,7 +22,6 @@ from bazaar_compute_node.app.config import (
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
 from bazaar_compute_node.app.upgrade import UpgradeService
-from bazaar_compute_node.app.version_check import VersionWatcher
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
@@ -34,7 +36,6 @@ from bazaar_compute_node.core.models import (
     MessageDirection,
     OutboundDeliveryState,
 )
-from bazaar_compute_node.core.timerwheel import TimerWheel
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
@@ -55,15 +56,16 @@ def make_configuration() -> NodeConfiguration:
     )
 
 
-def make_upgrade_service(*, installed_version: str = "0.1.0") -> UpgradeService:
+def make_upgrade_service(
+    *,
+    installed_version: str = "0.1.0",
+    available_version: str | None = None,
+    request_restart: Callable[[], None] = lambda: None,
+) -> UpgradeService:
     return UpgradeService(
-        version_watcher=VersionWatcher(
-            timer_wheel=TimerWheel(),
-            current_version=installed_version,
-            request_timeout_seconds=1,
-        ),
+        available_version=lambda: available_version,
         installed_version=installed_version,
-        request_restart=lambda: None,
+        request_restart=request_restart,
     )
 
 
@@ -380,3 +382,46 @@ async def test_version_reports_the_process_and_not_the_disk() -> None:
     # which is the one this process started with
     assert result["ok"] is True
     assert cast(Mapping[str, object], result["result"]) == {"version": "0.1.0"}
+
+
+@pytest.mark.asyncio
+async def test_one_upgrade_transaction_runs_at_a_time() -> None:
+    restarts: list[None] = []
+    service = make_upgrade_service(
+        available_version="9.9.9",
+        request_restart=lambda: restarts.append(None),
+    )
+    inside = 0
+    overlapped = False
+
+    def install(version: str) -> None:
+        del version
+        nonlocal inside, overlapped
+        inside += 1
+        overlapped = overlapped or inside > 1
+        time.sleep(0.05)
+        inside -= 1
+
+    async def wake_after(version: str) -> str | None:
+        del version
+        nonlocal inside, overlapped
+        inside += 1
+        overlapped = overlapped or inside > 1
+        await asyncio.sleep(0.05)
+        inside -= 1
+        return "reminder-1"
+
+    # uv itself is covered by the e2e; what is under test here is whether two
+    # sessions can be inside the transaction at the same time
+    with patch.object(upgrade_module, "_install_posix", install):
+        results = await asyncio.gather(
+            service.upgrade(wake_after=wake_after),
+            service.upgrade(wake_after=wake_after),
+        )
+
+    # case: two Agents accepting offers at the same time must not overlap
+    # anywhere between installing and asking to restart -- the second would
+    # otherwise install a release the first has already answered for
+    assert not overlapped
+    assert [version for version, _ in results] == ["9.9.9", "9.9.9"]
+    assert len(restarts) == 2

@@ -22,29 +22,19 @@ def _installed_wrapper(
     return wrapper
 
 
-def test_a_launcher_from_this_release_is_left_alone(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current = f"# {system_service.MANAGED_MARKER_LINE}\n$executable = 'bcn'\n"
-    wrapper = _installed_wrapper(tmp_path, monkeypatch, content=current)
-
-    upgrade._refresh_windows_wrapper()
-
-    # case: a launcher that already knows how to swap is not rewritten, so the
-    # rewrite never runs on the machines that do not need it
-    assert wrapper.read_text(encoding="utf-8") == current
-
-
-def test_a_node_without_a_launcher_has_nothing_to_refresh(
+def test_a_node_without_a_launcher_refuses_to_upgrade(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing = tmp_path / "absent.ps1"
     monkeypatch.setattr(upgrade, "windows_wrapper_path", lambda: missing)
 
-    # case: a node nobody installed as a service still upgrades
-    upgrade._refresh_windows_wrapper()
+    with pytest.raises(upgrade.UpgradeError) as failure:
+        upgrade._refresh_windows_wrapper()
+
+    # case: the launcher is what puts the staged release in place, so without
+    # one the install would succeed and leave the node on the old version
+    assert "system-service install" in str(failure.value)
 
 
 def test_an_unreadable_launcher_stops_the_upgrade(

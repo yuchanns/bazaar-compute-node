@@ -531,6 +531,11 @@ def _format_inbox_target(summary: Mapping[str, object]) -> str:
                 if latest_sender is not None
                 else None
             ),
+            "latest_sender_display_name": (
+                cast(str | None, latest_sender.get("display_name"))
+                if latest_sender is not None
+                else None
+            ),
             "latest_time": (
                 format_message_time(latest_time_ms)
                 if latest_time_ms is not None
@@ -633,7 +638,7 @@ def serialize_upgrade(result: Mapping[str, object]) -> str:
             "distribution": __distribution__,
             "installed_version": cast(str, result["installed_version"]),
             "upgrade_version": cast(str, result["upgrade_version"]),
-            "reminder_id": cast(str, result["reminder_id"]),
+            "reminder_id": cast(str | None, result["reminder_id"]),
         }
     )
 

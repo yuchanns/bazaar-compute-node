@@ -95,7 +95,7 @@ class NodeApplication:
         )
         self._restart_requested = False
         self.upgrade_service = UpgradeService(
-            version_watcher=self.version_watcher,
+            available_version=self.version_watcher.available_version,
             installed_version=__version__,
             request_restart=self.request_restart,
         )

@@ -235,6 +235,22 @@ class SenderIdentity:
             raise RuntimeError("sender identity has no display value")
         return self.id
 
+    @property
+    def label(self) -> str:
+        """Return the shortest thing a reader would recognise this sender by.
+
+        A provider that offers no handle can still offer a human name, and a
+        name says more than the opaque id it would otherwise fall back to.
+        """
+
+        if self.name is not None:
+            return self.name
+        if self.display_name is not None:
+            return self.display_name
+        if self.id is None:
+            raise RuntimeError("sender identity has no display value")
+        return self.id
+
 
 @dataclass(frozen=True, slots=True)
 class InboxTargetSummary:

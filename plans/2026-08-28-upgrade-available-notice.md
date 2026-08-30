@@ -13,7 +13,6 @@
 `command_server`、`storage` 当作致命源，任一失败即退出进程。
 
 `inbox_notice`（`core/orchestration/turn.py:88`）拼出的文本就是 runtime 每个 turn 的输入。
-`_run_notification` 里 `self.runtime_session(...)` 返回 `None` 即表示这次要新建 runtime session。
 
 Python 标准库没有 PEP 440 版本比较；`packaging` 已作为传递依赖出现在 `uv.lock`。
 
@@ -31,8 +30,7 @@ POSIX 上覆盖正在使用的文件是允许的，运行中的进程持有旧 i
 
 - 节点内置版本检查任务，启动后立即查一次，之后每小时一次；
 - 查到更新时，`inbox_notice` 追加一行提示，让 Agent 在对话中主动询问用户是否升级；
-  **提示只在为这次入站消息新建 runtime session 时带上**，复用既有会话时不带，因此频率由会话
-  生命周期天然控制，不需要任何抑制状态；
+  **每个 bcn session 对每个版本听到一次**，版本更新了就再提示一次；
 - 新增 `bcc node upgrade`：按平台执行安装，装成功后才挂一个升级后唤醒的 Reminder，最后触发
   `RESTART_EXIT_CODE` 退出交给托管方拉起；任一步失败都把错误返回给 Agent，不退出；
 - POSIX 直接就地安装，`systemd.service` 与 `launchd.sh` 不做改动；
@@ -71,9 +69,12 @@ class VersionWatcher(IAsyncLifecycle):
 - `stop()` 取消任务并等待，与 `ReminderScheduler.stop()` 一致；
 - 不实现 `ITaskFailureSource`，不加入 `NodeApplication.wait()` 的 sources。
 
-**提示的频率由 runtime session 的生命周期控制**：只有在为这次入站消息新建了 runtime session
-时才带上提示行，复用既有会话（resume）时不带。一个 runtime session 对应一段连续的对话，空闲
-过期或失败之后才会重建，因此提示是「每开一段新对话最多一次」。
+**每个 bcn session 对每个版本听到一次。** 提示的频率由会话自己记住的状态控制：会话没听说过
+当前这个版本就带上提示行，带过就不再带，直到出现更新的版本为止。
+
+早先按「只在新建 runtime session 的那一次带」实现过，那样一个不过期的会话可能永远等不到提示：
+节点刚启动、版本检查还没回来时进来的第一条消息就会建出这样的会话。按会话记版本没有这个洞——
+检查什么时候回来，提示就跟着之后的第一个 turn 走。
 
 `available_version()` 是纯读的 getter，`VersionWatcher` 不保存任何提示相关的状态。
 
@@ -134,10 +135,12 @@ notice 的正文本身此前是 f-string 拼接，没有跟上模板渲染的迁
 由 `NodeApplication` 接上 `VersionWatcher`，返回 `(available_version, installed_version)` 或
 `None`，缺省 `lambda: None`。它是纯读的。
 
-**只在新建 runtime session 的那一次带上提示行。** `_run_notification`（`session.py:1176` 附近）
-里，`self.runtime_session(...)` 返回 `None` 就说明这次要新建会话；把这个布尔量一路带到
-`inbox_notice` 的调用点，只有它为真时才传版本参数。`session.py:810` 的 steer 路径是往一个正在
-跑的 turn 里追加通知，必然是复用会话，因此那里永远不带提示行，调用形式保持不变。
+`SessionOrchestrator` 为每个 bcn session 记一个 `UpgradeNotice`
+（`core/orchestration/upgrade_notice.py`，`UpgradePending | UpgradeAnnounced`，没听说过任何版本
+的会话没有条目）。`_run_notification` 构造 `input_text` 前先问 `_upgrade_for(session_id)`：当前
+有可用版本、且这个会话记的不是同一个版本时，返回它并把会话标成已告知。`session.py:810` 的 steer 路径是往一个正在跑的
+turn 里追加通知；那条消息会被这次 steer 消费掉，之后的 turn 路径就找不到未读可跑，因此 steer
+也要问一次 `_upgrade_for`，否则提示要等下一条入站消息才有机会送出。
 `AgentApplication` 增加同名构造参数并原样传给 `SessionOrchestrator`；`NodeApplication` 在
 `app/application.py:159-170` 处传入自己持有的 watcher。
 
@@ -153,11 +156,15 @@ notice 的正文本身此前是 f-string 拼接，没有跟上模板渲染的迁
 后台，因此阻塞不会卡住 Agent 的这一轮；而两端都不放弃，也就不会出现「调用方已经走了、uv 还在
 装」的半途状态。
 
+0. 整段升级是一个事务，由 `UpgradeService` 的一把锁串起来：查可用版本、安装、挂 Reminder、
+   请求退出都在锁内。锁只包住安装是不够的——放开之后第一个请求还在挂 Reminder，第二个就能开始
+   装，而这期间 PyPI 可能已经前进一版，于是回执与 Reminder 说的是一个版本、机器上起来的是另一
+   个，且已经跑起来的 uv 线程取消不掉；
 1. 没有可用版本就返回错误，不做任何事；
-2. 安装。POSIX 执行 `<uv> tool install --force <发行包名>==<目标版本>`；Windows 把目标版本装进
-   `<tools>\<发行包名>.staging`（`uv venv` 建环境，
-   `uv pip install --python <staging> <发行包名>==<目标版本>` 装包，装成功之后才改名成
-   `.staging`）；
+2. 安装。两个平台都执行 `uv tool install --force <发行包名>==<目标版本>`：POSIX 就地装；
+   Windows 把 `UV_TOOL_DIR` 指到一个临时目录,装完再把里面那份改名成
+   `<tools>\<发行包名>.staging`。不自己建 venv、也不指定解释器——那本来就是 uv 的事,它按
+   `requires-python` 挑,挑不到还能自己下一个；
 3. 安装失败：把错误返回给命令调用方并结束。不挂 Reminder、不重启，节点继续以旧版本运行，
    Agent 当场就能告诉用户装不上；
 4. 安装成功：用 `reminder_service` 挂一个 Reminder，锚定当前会话的入站消息，60 秒后触发，标题
@@ -225,8 +232,10 @@ Managed by bazaar-compute-node. template-revision=2
 
 任一步失败就把错误返回给命令调用方，由 Agent 告诉用户。
 
-**安装完成后才改名成 `.staging`。** 安装期间用一个临时目录名，`uv pip install` 成功返回之后才
-改名成 `.staging`，避免一次装到一半的失败留下一个看起来可用、实际残缺的目录。
+**安装完成后才改名成 `.staging`。** 安装期间 `UV_TOOL_DIR` 指向一个临时目录，`uv tool install`
+成功返回之后才改名成 `.staging`，避免一次装到一半的失败留下一个看起来可用、实际残缺的目录。
+入口脚本一并落在那个临时目录里丢弃：正式安装的 trampoline 指向的是被替换的那个目录本身，交换
+之后自然指到新的一份。
 
 **目标版本的处理。** 版本字符串在 bcn 侧使用前用 `packaging.version.Version` 校验；传给 uv 时
 作为独立参数，不拼进 shell 字符串。
@@ -256,8 +265,8 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 
 测试：扩展 `tests/contrib/test_orchestration.py` 的 `inbox_notice` 契约测试，覆盖无更新时输出
 不变、有更新时提示行出现在闭合括号之前；再加一个 orchestrator 级用例，确认**新建 runtime
-session 的那一次** turn 输入里带提示行，而同一会话的后续 turn 不带。模板迁移由现有的精确
-断言验证；`bcc` 的草稿保存提示、`thread unfollow` 的两个分支与空 reminder 列表此前没有覆盖，
+turn 输入里带提示行、同一会话的下一个 turn 不带、出现更新版本时再次带上**。模板迁移由现有的
+精确断言验证；`bcc` 的草稿保存提示、`thread unfollow` 的两个分支与空 reminder 列表此前没有覆盖，
 补上用例。
 
 checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`、
@@ -342,8 +351,8 @@ Windows 靠 wrapper 循环。
 
 1. 节点启动后立即完成一次版本检查，之后每小时一次。
 2. PyPI 不可达或返回异常时，检查静默跳过并在下一个周期重试，节点不退出、健康状态不变。
-3. 存在更新且这次入站消息新建了 runtime session 时，提示行出现在 inbox notice 的闭合括号
-   之前；复用既有会话、或不存在更新时，输出与现在完全一致。节点不保存任何抑制状态。
+3. 存在更新时，提示行出现在该 bcn session 之后第一个 turn 的 inbox notice 闭合括号之前，
+   同一个版本不再重复；出现更新的版本时再提示一次。不存在更新时，输出与现在完全一致。
 4. 提示行在所有平台一致，不含任何平台特有内容。
 5. `bcc node upgrade` 的顺序是安装、挂 Reminder、以 `RESTART_EXIT_CODE` 退出；Reminder 在退出
    之前就已经落库。命令两端都不设超时。节点不 spawn 任何进程去重启自己。
