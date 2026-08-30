@@ -20,6 +20,8 @@ Python 标准库没有 PEP 440 版本比较；`packaging` 已作为传递依赖�
 是 `message` / `inbox` / `thread` / `reminder`。`bcn system-service restart` 走各平台原生命令：
 `systemctl --user restart`、`launchctl kickstart -k`、`schtasks /End` + `/Run`。
 
+Windows 上节点退出之后没有东西会把它拉起来。
+
 POSIX 上覆盖正在使用的文件是允许的，运行中的进程持有旧 inode。Windows 上
 `.local\bin\bcn.exe` 与 live venv 的 `python.exe` 被运行中的进程占着，无法覆盖；
 `windows.ps1` 启动的是外层 `.local\bin\bcn.exe`，它是内嵌解释器绝对路径
@@ -31,13 +33,12 @@ POSIX 上覆盖正在使用的文件是允许的，运行中的进程持有旧 i
 - 节点内置版本检查任务，启动后立即查一次，之后每小时一次；
 - 查到更新时，`inbox_notice` 追加一行提示，让 Agent 在对话中主动询问用户是否升级；
   **每个 bcn session 对每个版本听到一次**，版本更新了就再提示一次；
-- 新增 `bcc node upgrade`：按平台执行安装，装成功后才挂一个升级后唤醒的 Reminder，最后触发
-  `RESTART_EXIT_CODE` 退出交给托管方拉起；任一步失败都把错误返回给 Agent，不退出；
-- POSIX 直接就地安装，`systemd.service` 与 `launchd.sh` 不做改动；
-- Windows 装到 `.staging`，由 `windows.ps1` 在拉起 bcn 之前完成交换与中断恢复，旧目录留作
-  回滚点；
-- 托管文件带修订号，`bcc node upgrade` 在 Windows 上先自检并按需重写 wrapper 脚本，再进入安装；
-  这一步不碰服务注册，也不需要用户参与。
+- POSIX 新增 `bcc node upgrade` 与 `bcc node version`：就地安装，装成功后才挂一个升级后唤醒的
+  Reminder，最后触发 `RESTART_EXIT_CODE` 退出交给托管方拉起；任一步失败都把错误返回给 Agent，
+  不退出；`systemd.service` 与 `launchd.sh` 不做改动；
+- Windows 不提供 `node` 这个 resource，Agent 手上没有任何升级动作。提示行改为把三条手动命令
+  交给 Agent 转述给用户，由用户自己执行（见第 6 节）；
+- Windows 上不产生暂存目录、回滚点与托管文件修订号，`windows.ps1` 不含交换段与退出码循环。
 
 ## 3. 版本检查任务
 
@@ -102,8 +103,9 @@ do not want it, just carry on.
 `Mention it in passing when you reply` 让提示跟着回复带出来而不是变成话题主线；最后一句让
 Agent 在用户不想升级时直接继续，不追问、也不需要记录任何状态。
 
-**提示行在所有平台上完全一致**，不区分 Windows 的托管文件是否陈旧——那是 `bcc node upgrade` 自己
-要处理的事，不该泄漏到提示里。
+**提示行分两种，按节点所在平台选。** POSIX 让 Agent 在用户同意后执行 `bcc node upgrade`；
+Windows 没有这个命令，提示行改为让 Agent 把第 6 节那三条命令原样交给用户。两者的前半句一致，
+只有"接下来怎么做"这一段不同。除此之外提示行不含任何平台特有内容。
 
 `inbox_notice` 只负责渲染，不读取全局状态。该文本与 notice 其余内容一样是给 Agent 看的，
 不进 locale。
@@ -149,6 +151,11 @@ turn 里追加通知；那条消息会被这次 steer 消费掉，之后的 turn
 `bcc` 增加 resource `node` 与两个 command：`upgrade` 与 `version`，`app/resource_dispatch.py`
 增加对应请求模型与分发分支。用户同意就升级，不同意就什么都不做。
 
+**这个 resource 只在 POSIX 上存在。** `bcc` 的参数解析在 Windows 上不注册 `node` 子命令，
+`CommandDispatcher` 在 Windows 上对 `resource == "node"` 返回 `UNKNOWN_RESOURCE`，
+`UpgradeService` 也只在 POSIX 上构造。拒绝写在节点侧才是权威的那一份，命令行的裁剪只是让
+`--help` 不出现一个用不了的命令。`VersionWatcher` 两个平台都照常运行——提示仍然要靠它。
+
 `bcc node version` 返回当前进程的 `__version__`。它读的是运行中的节点自己，而不是磁盘上装了什么，
 因此升级后 Agent 用它就能确认运行时确实换了版本。
 
@@ -161,10 +168,10 @@ turn 里追加通知；那条消息会被这次 steer 消费掉，之后的 turn
    装，而这期间 PyPI 可能已经前进一版，于是回执与 Reminder 说的是一个版本、机器上起来的是另一
    个，且已经跑起来的 uv 线程取消不掉；
 1. 没有可用版本就返回错误，不做任何事；
-2. 安装。两个平台都执行 `uv tool install --force <发行包名>==<目标版本>`：POSIX 就地装；
-   Windows 把 `UV_TOOL_DIR` 指到一个临时目录,装完再把里面那份改名成
-   `<tools>\<发行包名>.staging`。不自己建 venv、也不指定解释器——那本来就是 uv 的事,它按
-   `requires-python` 挑,挑不到还能自己下一个；
+2. 安装。执行 `uv tool install --force <发行包名>==<目标版本>` 就地装。不自己建 venv、也不
+   指定解释器——那本来就是 uv 的事，它按 `requires-python` 挑，挑不到还能自己下一个。同时带上
+   `--refresh-package <发行包名>`：版本是 PyPI 的 JSON 接口报出来的，而 uv 解析用的是另一份
+   缓存的 simple 索引，刚发布的版本正是两者最容易对不上的时候；
 3. 安装失败：把错误返回给命令调用方并结束。不挂 Reminder、不重启，节点继续以旧版本运行，
    Agent 当场就能告诉用户装不上；
 4. 安装成功：用 `reminder_service` 挂一个 Reminder，锚定当前会话的入站消息，60 秒后触发，标题
@@ -178,9 +185,7 @@ turn 里追加通知；那条消息会被这次 steer 消费掉，之后的 turn
 
 因此重启统一交给本来就负责拉起节点的一方：Linux 的 `systemd.service` 已经是
 `Restart=on-failure`，macOS 的 `launchd.plist` 已经是 `KeepAlive=true`，两者对非零退出本来就会
-重新拉起，托管文件不需要任何改动；Windows 的 `windows.ps1` 把交换与启动包进一个 `do/while`，
-看到这个退出码就再转一圈——交换正好在每圈开头，而计划任务与 wrapper 进程全程存活，没有任何
-进程需要活过一次针对自己的清理。
+重新拉起，托管文件不需要任何改动。Windows 上没有这样的一方。
 
 `bcc node upgrade` 因此只在节点由托管方式拉起时完整可用。前台手工 `bcn run` 的节点会退出而没有
 人拉回来，命令的回执文案对此写明。
@@ -192,53 +197,27 @@ Reminder 挂在安装之后、退出之前：安装失败时不会留下一个�
 「连得上但很慢」时把一次本可以成功的升级打断。`CommandDispatcher` 因此对 resource `node`
 不施加命令窗口，`bcc` 客户端同样不设等待上限。
 
-Windows 在安装之前多一步 wrapper 自检：读已安装 `windows.ps1` 首行的 `template-revision`，偏低
-或缺失就按当前模板重写它（见第 6 节）。失败就直接返回错误，不进入安装。
+## 6. Windows 的手动升级
 
-## 6. Windows 的交换
-
-交换由 `windows.ps1` 在 `[BcnNoWindowProcess]::Run` 之前完成，此时旧 bcn 已经退出，没有任何
-进程持有目标目录：
-
-1. `<tools>\bazaar-compute-node` 不存在（上一次交换在两次改名之间被打断）：有
-   `bazaar-compute-node.staging` 就把它改回 live 完成升级，否则把 `.old` 改回 live 完成回滚；
-2. `.staging` 与 live 都在：`bazaar-compute-node -> bazaar-compute-node.old`、
-   `bazaar-compute-node.staging -> bazaar-compute-node`；
-3. 照常启动。
-
-整段包在 `try { } catch { }` 里，失败只记日志并继续启动当前 live 版本——文件开头是
-`$ErrorActionPreference = 'Stop'`，不包的话一次改名失败就会让服务起不来。
-
-`.old` 不在交换时删除，留作回滚点。新节点启动、`NodeApplication.ready` 为真且 `__version__`
-等于目标版本时删除它。
-
-**托管文件的版本识别。** `MANAGED_MARKER`（`system_service.py:27`）扩成带修订号的形式：
+Windows 上 `bcc node upgrade` 不存在，提示行给出三条命令，由用户在自己的终端里依次执行：
 
 ```text
-Managed by bazaar-compute-node. template-revision=2
+bcn system-service stop
+uv tool install --force bazaar-compute-node==<目标版本>
+bcn system-service start
 ```
 
-模板内容每次变化就把 `TEMPLATE_REVISION` 加一。`bcc node upgrade` 在 Windows 上的第一步是读已安装
-`windows.ps1` 的首行、解析修订号：偏低或缺失就先按当前模板重写它，再走安装与重启。这是命令
-自己的前置条件，提示行不提，用户与 Agent 都不需要知道。
+顺序不能换。第二条执行时不能有任何 bcn 进程存活，包括 `bcn` 这个命令自己——它与节点解析到
+同一份 live 目录，跑着就会占住要被覆盖的文件。先停服务正是为此；停掉之后没有任何东西持有那些
+文件，直接装进 live 即可。
 
-重写只动 wrapper 脚本，不碰服务注册（`windows.xml` + `schtasks /Create`）：注册项指向的路径
-没有变，因此不需要权限、也不改动系统里的任何登记。
+`<发行包名>.staging`、`<发行包名>.old`、`<发行包名>.upgrade-target` 与 `MANAGED_MARKER` 上的
+`template-revision=` 后缀都不存在。`windows.ps1` 渲染四个字面量、`Add-Type` 一次、跑 bcn、
+以它的退出码结束。`windows.xml` 不动。
 
-**重写要保住目标文件的 ACL**：普通临时文件带的是继承来的权限，直接替换会改掉文件的 SDDL。
-因此这一步交给 PowerShell 而不是在 Python 里写文件——`Get-Acl` 取到目标文件的 ACL，写好临时
-文件后 `Set-Acl` 应用同一份 ACL，再 `[System.IO.File]::Replace`。节点侧本来就要 shell out 调
-`uv` 与 `schtasks`，多这一次调用是同一类操作。
-
-任一步失败就把错误返回给命令调用方，由 Agent 告诉用户。
-
-**安装完成后才改名成 `.staging`。** 安装期间 `UV_TOOL_DIR` 指向一个临时目录，`uv tool install`
-成功返回之后才改名成 `.staging`，避免一次装到一半的失败留下一个看起来可用、实际残缺的目录。
-入口脚本一并落在那个临时目录里丢弃：正式安装的 trampoline 指向的是被替换的那个目录本身，交换
-之后自然指到新的一份。
-
-**目标版本的处理。** 版本字符串在 bcn 侧使用前用 `packaging.version.Version` 校验；传给 uv 时
-作为独立参数，不拼进 shell 字符串。
+用户执行这三条时节点是停着的，`bcc` 也就连不上——命令的结果由用户自己看到，Agent 不参与，
+也不需要为此挂 Reminder。Agent 之后想确认升到没有，等节点起来重新提示即可：版本没变的话
+下一轮 notice 还会带出同一行。
 
 ## 7. 任务拆分
 
@@ -276,8 +255,8 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`
 ### Task 3：`bcc node upgrade` 与 `bcc node version`
 
 按第 5 节实现 resource `node` 与两个 command：`bcc node version` 返回进程内版本；`bcc node upgrade`
-阻塞到安装结束，成功则挂 Reminder 并重启，失败则把错误返回给调用方。Windows 的 wrapper 自检与
-重写属于 Task 4：它读的修订号由那一步引入，两者是同一件事的两半。
+阻塞到安装结束，成功则挂 Reminder 并重启，失败则把错误返回给调用方。两者只在 POSIX 上注册与
+接受，Windows 的裁剪属于 Task 4。
 
 节点在响应写回之后才退出，因此不需要为「先回话再重启」安排任何等待。
 
@@ -290,9 +269,6 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`
 已经落进临时库、节点请求了一次重启、记录器没有被调用过；失败一侧把索引地址指向无人监听的
 端口，断言错误当场返回、什么都没装、没有 Reminder 落库、没有请求重启，且可以再试。
 
-`windows.ps1` 的循环由 `tests/app/test_system_service.py` 覆盖：渲染出的脚本认这个退出码、
-交换在每圈开头、脚本里不出现 `schtasks`。
-
 第三个覆盖另一类失败：`PATH` 上没有 `uv`，也就是这个节点不是用 uv 装的。
 
 单独测安装本身是多余的：完整链路里那次安装就是真的。
@@ -304,25 +280,38 @@ checks：`tests/contrib/test_orchestration.py`、`tests/app/test_composition.py`
 checks：`tests/contrib/test_orchestration.py`、`tests/app/`、`ruff format --check .`、
 `ruff check .`、`uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
 
-### Task 4：Windows 的交换、托管文件刷新与 wrapper 自检
+### Task 4：Windows 上撤掉升级路径
 
-按第 6 节改 `windows.ps1`：加入恢复与交换两段并包在 `try/catch` 里；实现安装完成后才改名成
-`.staging`；`MANAGED_MARKER` 加上 `template-revision` 并由 `bcc node upgrade` 比对与重写；节点启动后
-在版本对上时删除 `.old`。
+按第 6 节把 Windows 变回没有升级命令的形态。
 
-重写 wrapper 时不能凭当前进程重新推导安装参数：被替换的那份是旧版本装的，`--env-file` 之类的
-入参没有任何别处的记录，而节点的密钥正是从那个环境脚本来的，推导错会让节点起不来。因此重写
-读取已安装 wrapper 里的四个变量原样复用，只换模板本身。
+命令面：`bcc` 的参数解析在 `os.name == "nt"` 时不注册 `node` 子命令；`CommandDispatcher` 在
+Windows 上对 resource `node` 返回 `UNKNOWN_RESOURCE`；`UpgradeService` 只在 POSIX 上构造。
 
-`.old` 的删除需要知道目标版本，而它同样没有别处的记录，所以安装成功时在 `<tools>` 下写一个
-`<发行包名>.upgrade-target` 记下目标版本；节点启动时读它，只有当前进程的 `__version__` 与之
-相等才删除 `.old` 与这个记录文件。版本对不上说明交换没有生效，`.old` 就是回退路径，必须留着。
+提示行：`inbox_notice` 的升级行按平台分两支，Windows 给出三条命令。
 
-测试：`tests/app/test_system_service.py` 覆盖渲染出的 `windows.ps1` 里交换段在启动 bcn 之前、
-含恢复分支、失败只记日志不退出，以及托管文件首行带当前修订号；`tests/app/test_upgrade_state.py`
-用临时目录覆盖「修订号相同则不动」「没有 wrapper 则跳过」「wrapper 读不出变量则中止升级」
-「版本对不上则保留 `.old`」「版本对上则删除」。改名、`Set-Acl` 与 `schtasks` 属于 Windows 平台
-行为，进程内不模拟，放到 Task 5 的真实回归。
+托管文件：`windows.ps1` 回到不含交换与退出码循环的形态，`MANAGED_MARKER` 去掉
+`template-revision=` 后缀，删除 `replace_managed_file.ps1`。这一行是三个平台共用的，因此
+`systemd.service`、`launchd.sh`、`launchd.plist`、`windows.vbs`、`windows.xml` 的首行都会跟着
+变回去——修订号只有升级路径读过，没有别的判断依赖它。
+
+删除只为 Windows 升级存在的代码：`app/upgrade.py` 的 `_refresh_windows_wrapper`、
+`_wrapper_literals`、`_install_windows`、`_upgrade_target_path`、`discard_replaced_release`、
+`_STAGING_DIRECTORY` 与 `install()` 的 Windows 分支；`app/system_service.py` 的
+`TEMPLATE_REVISION`、`installed_template_revision`、`render_windows_wrapper`、
+`windows_wrapper_path`、`windows_tool_directory`、`windows_live_directory`；
+`app/application.py` 启动时调用 `discard_replaced_release` 的那一步。`_render_windows_wrapper`
+留着，安装时仍然要用它渲染 launcher。
+
+随之消失的还有一个已知缺陷：节点起来后 `.old` 没被删掉而 `.upgrade-target` 已经消失，两者本该
+同进同退。这段代码删掉之后不需要单独修它。
+
+已经装上带修订号 launcher 的节点不做迁移：`bcn system-service install` 会写回现在这一版，
+遗留的 `.old` 由使用者自行删除。这个状态只在开发验证期间出现过。
+
+测试：`tests/app/test_system_service.py` 覆盖渲染出的 `windows.ps1` 不含交换段与退出码循环、
+托管文件首行是裸标记；`tests/app/test_composition.py` 或分发测试覆盖 Windows 上 resource `node`
+被拒绝。平台分支用 `monkeypatch` 改 `os.name` 之类的方式在 Linux 上验证，不引入只为测试存在的
+注入点。
 
 checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 `uv run scripts/pyright_lsp_check.py --outputjson .`、`git diff --check`。
@@ -333,19 +322,15 @@ checks：`tests/app/`、`ruff format --check .`、`ruff check .`、
 - 运行 `ruff format --check .`、`ruff check .`、
   `uv run scripts/pyright_lsp_check.py --outputjson .`、
   `uv run python -m compileall -q src tests`、`uv lock --check`、`git diff --check`；
-- 在一台真实 Windows 主机上验证交换链路。装一份本分支构建、版本号标低一档的 fixture，
-  执行一次 `bcc node upgrade`，确认目标进入 `.staging`、Reminder 在退出之前落库、`windows.ps1`
-  完成 `live → .old` 与 `.staging → live` 并重新启动 bcn；另外单独构造一次「只完成第一次改名」
-  的中断，确认下一次启动能把 `.staging` 恢复成 live。这是这条链路唯一无法在 Linux 上验证的部分；
+- 在一台真实 Windows 主机上确认三件事：`bcc --help` 不出现 `node`、`bcc node version` 被拒；
+  `bcn system-service install` 写出的 `windows.ps1` 不含交换段；按提示行给出的三条命令能把节点
+  升上去并重新起来。这是无法在 Linux 上验证的部分；
 - 汇总结果，停在最终 review。
 
 **升级目标只能是 PyPI 报出的版本。** 版本检查读的是写死的 PyPI 地址，本地索引只影响 uv 从哪里
-下载，不影响选哪个版本。因此在本分支发布之前，Windows 上换进去的目标必然是一个更旧的正式包，
-它起不来是预期结果。这使得两件事只能留到发布之后验证：新进程的 `bcc node version` 等于目标
-版本，以及 `.old` 在版本对上后被删除。发布之后拿那次真实的版本更新补验即可。
+下载，不影响选哪个版本。因此在本分支发布之前，真机上换进去的目标必然是一个更旧的正式包。
 
-节点退出之后托管方是否真的把它拉起来，同样只能在真机上看：Linux 与 macOS 靠各自托管配置，
-Windows 靠 wrapper 循环。
+节点退出之后托管方是否真的把它拉起来只能在真机上看，而这件事现在只涉及 Linux 与 macOS。
 
 ## 8. 验收标准
 
@@ -353,19 +338,20 @@ Windows 靠 wrapper 循环。
 2. PyPI 不可达或返回异常时，检查静默跳过并在下一个周期重试，节点不退出、健康状态不变。
 3. 存在更新时，提示行出现在该 bcn session 之后第一个 turn 的 inbox notice 闭合括号之前，
    同一个版本不再重复；出现更新的版本时再提示一次。不存在更新时，输出与现在完全一致。
-4. 提示行在所有平台一致，不含任何平台特有内容。
-5. `bcc node upgrade` 的顺序是安装、挂 Reminder、以 `RESTART_EXIT_CODE` 退出；Reminder 在退出
-   之前就已经落库。命令两端都不设超时。节点不 spawn 任何进程去重启自己。
+4. 提示行前半句在所有平台一致；接下来怎么做这一段按平台分两支，POSIX 指向 `bcc node upgrade`，
+   Windows 给出第 6 节那三条命令。除此之外不含平台特有内容。
+5. POSIX 上 `bcc node upgrade` 的顺序是安装、挂 Reminder、以 `RESTART_EXIT_CODE` 退出；Reminder
+   在退出之前就已经落库。命令两端都不设超时。节点不 spawn 任何进程去重启自己。
 6. 安装失败时既不挂 Reminder 也不触发重启，错误当场返回给 Agent，节点继续以旧版本运行，之后
    允许再试。
-7. `bcc node version` 返回的是当前进程的版本，而不是磁盘上安装了什么。
+7. POSIX 上 `bcc node version` 返回的是当前进程的版本，而不是磁盘上安装了什么。
 8. POSIX 上升级就是就地安装加重启，`systemd.service` 与 `launchd.sh` 没有任何改动。
-9. Windows 上安装写进 `.staging`，且只有安装成功后才使用这个名字；交换由 `windows.ps1` 在拉起
-   bcn 之前完成，此时没有任何 bcn 进程持有目标目录；交换失败或被打断时下一次启动能恢复。
-10. Windows 的 wrapper 自检与重写由 `bcc node upgrade` 自己完成，重写只动 wrapper 脚本、不碰服务
-   注册，失败时命令返回错误而不是继续一个注定不生效的升级。
-11. `.old` 保留到新进程的 `__version__` 等于目标版本时才删除。
-12. 目标版本使用前经过 `Version` 校验，传给 uv 时是独立参数而不是拼接的 shell 字符串。
+9. Windows 上 `bcc --help` 不出现 `node`，节点对 resource `node` 返回 `UNKNOWN_RESOURCE`。
+10. Windows 上 `bcn system-service install` 写出的 `windows.ps1` 不含交换段与退出码循环，
+   托管文件首行是不带修订号的裸标记；`windows.xml` 与改动前一致。
+11. Windows 上不产生 `.staging`、`.old` 或 `.upgrade-target`。
+12. 目标版本使用前经过 `Version` 校验，传给 uv 时是独立参数而不是拼接的 shell 字符串，
+   并带 `--refresh-package` 让 uv 重新取一次索引。
 13. `packaging` 出现在 `[project] dependencies` 且 `uv lock --check` 通过。
 14. `[node] version_check = false` 时节点不发起任何 PyPI 请求，inbox notice 与现在完全一致。
 15. inbox notice、`app/command.py` 与 `bcc.py` 的成块文案全部由 `resources/` 下的模板渲染，
