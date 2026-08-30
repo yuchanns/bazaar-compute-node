@@ -308,6 +308,31 @@ async def test_message_send_renders_provider_outcomes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> None:
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, SimpleNamespace()),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=None,
+    )
+    dispatcher.start_accepting()
+
+    result = await dispatcher(
+        {
+            "kind": "command",
+            "resource": "node",
+            "command": "version",
+            "session_id": "session-source",
+        }
+    )
+
+    # case: on a platform where nothing would bring the node back, the resource
+    # is not there at all rather than there and refusing
+    assert result["ok"] is False
+    assert result["code"] == "UNKNOWN_RESOURCE"
+
+
+@pytest.mark.asyncio
 async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
@@ -413,7 +438,7 @@ async def test_one_upgrade_transaction_runs_at_a_time() -> None:
 
     # uv itself is covered by the e2e; what is under test here is whether two
     # sessions can be inside the transaction at the same time
-    with patch.object(upgrade_module, "_install_posix", install):
+    with patch.object(upgrade_module, "_install", install):
         results = await asyncio.gather(
             service.upgrade(wake_after=wake_after),
             service.upgrade(wake_after=wake_after),

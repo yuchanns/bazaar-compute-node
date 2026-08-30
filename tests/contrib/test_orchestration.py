@@ -21,6 +21,7 @@ from bcn_test_support import (
     wait_for_turn_terminal,
 )
 
+import bazaar_compute_node.core.orchestration.turn as turn_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.app.command import (
@@ -260,6 +261,40 @@ def test_inbox_notice_carries_the_upgrade_line_inside_the_bracket() -> None:
         closing_bracket_on_own_line=True,
         upgrade_version="0.2.0",
     )
+
+
+def test_inbox_notice_hands_the_upgrade_over_where_the_node_cannot_run_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(turn_module.os, "name", "nt")
+    message = make_message(seq=1, message_id="11111111-1111-4111-8111-111111111111")
+
+    rendered = inbox_notice(
+        (message,),
+        total_unread_count=1,
+        closing_bracket_on_own_line=True,
+        upgrade_version="0.2.0",
+        installed_version="0.1.31",
+    )
+
+    # case: the offer still names the release, and what follows is what the
+    # user runs rather than what the Agent runs
+    line = rendered.splitlines()[-2]
+    assert line.startswith(
+        "Upgrade available: bazaar-compute-node 0.2.0 (installed 0.1.31)."
+    )
+    for command in (
+        "bcn system-service stop",
+        (
+            "uv tool install --force --refresh-package bazaar-compute-node "
+            "bazaar-compute-node==0.2.0"
+        ),
+        "bcn system-service start",
+    ):
+        assert command in line
+
+    # case: and the command the Agent has on other platforms is not offered
+    assert "bcc node upgrade" not in line
 
 
 def test_inbox_notice_keeps_the_upgrade_line_inside_an_inline_bracket() -> None:

@@ -24,7 +24,7 @@ from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
-from .upgrade import UpgradeService, discard_replaced_release
+from .upgrade import UpgradeService
 from .version_check import VersionWatcher
 
 
@@ -94,10 +94,16 @@ class NodeApplication:
             request_timeout_seconds=self.timeout_budget.command_seconds,
         )
         self._restart_requested = False
-        self.upgrade_service = UpgradeService(
-            available_version=self.version_watcher.available_version,
-            installed_version=__version__,
-            request_restart=self.request_restart,
+        # Windows has nothing that brings the node back after it exits, so
+        # there it offers no upgrade command at all
+        self.upgrade_service = (
+            None
+            if os.name == "nt"
+            else UpgradeService(
+                available_version=self.version_watcher.available_version,
+                installed_version=__version__,
+                request_restart=self.request_restart,
+            )
         )
         self.command_server = LocalCommandServer(
             self._dispatch,
@@ -155,7 +161,6 @@ class NodeApplication:
             raise
         self._ready = True
         self._accepting = True
-        await asyncio.to_thread(discard_replaced_release, __version__)
         started_count = len(self.agents)
         failed_count = len(self.configuration.agents) - started_count
         self._log(

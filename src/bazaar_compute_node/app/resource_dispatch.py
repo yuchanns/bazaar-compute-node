@@ -195,7 +195,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         reminder_service: IReminderService,
         timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
-        upgrade_service: UpgradeService,
+        upgrade_service: UpgradeService | None,
     ) -> None:
         super().__init__(
             service,
@@ -247,6 +247,14 @@ class CommandDispatcher(_MessageCommandDispatcher):
         if resource == "inbox":
             return await super()._dispatch_command(raw_request)
         if resource == "node":
+            upgrade_service = self._upgrade_service
+            if upgrade_service is None:
+                # nothing on this platform would bring the node back after an
+                # upgrade exits it, so the Agent is given no upgrade to run
+                raise CommandDispatchError(
+                    "UNKNOWN_RESOURCE",
+                    f"unsupported command resource: {resource}",
+                )
             if command not in {"upgrade", "version"}:
                 raise CommandDispatchError(
                     "UNKNOWN_COMMAND",
@@ -256,7 +264,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 return {
                     "ok": True,
                     "result": {
-                        "version": self._upgrade_service.installed_version,
+                        "version": upgrade_service.installed_version,
                     },
                 }
             request = _parse_command_request(
@@ -275,6 +283,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             return await self._dispatch_upgrade(
                 session_id,
                 cast(_NodeUpgradeRequest, request),
+                upgrade_service,
             )
         if resource != "reminder":
             raise CommandDispatchError(
@@ -311,6 +320,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         self,
         session_id: str,
         request: _NodeUpgradeRequest,
+        upgrade_service: UpgradeService,
     ) -> Mapping[str, object]:
         async def wake_after(upgrade_version: str) -> str | None:
             # the reminder is how the Agent is prompted to check the node over
@@ -335,7 +345,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             return result.reminder.reminder_id
 
         try:
-            upgrade_version, reminder_id = await self._upgrade_service.upgrade(
+            upgrade_version, reminder_id = await upgrade_service.upgrade(
                 wake_after=wake_after,
             )
         except UpgradeUnavailable as error:
@@ -355,7 +365,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         return {
             "ok": True,
             "result": {
-                "installed_version": self._upgrade_service.installed_version,
+                "installed_version": upgrade_service.installed_version,
                 "upgrade_version": upgrade_version,
                 "reminder_id": reminder_id,
             },

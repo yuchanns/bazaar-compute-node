@@ -24,6 +24,10 @@ from .app.transport import LocalCommandClient
 from .core.reminder import format_utc_timestamp
 from .rendering import TextTemplate
 
+# Windows has nothing that brings the node back after an upgrade exits it, so
+# there the node offers no upgrade and the commands would only ever be refused
+_NODE_COMMANDS_HIDDEN = os.name == "nt"
+
 
 class BccCommandError(RuntimeError):
     def __init__(
@@ -47,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Session-scoped collaboration commands for a Bazaar Compute Node. "
             "Use these commands from the current agent session to inspect messages, "
-            "send replies, manage thread attention, schedule "
-            "persistent reminders, and upgrade this node."
+            "send replies, manage thread attention, and schedule "
+            "persistent reminders."
         ),
         epilog=(
             "Run `bcc <resource> --help` or "
@@ -58,7 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="resource",
         required=True,
-        metavar="{message,inbox,thread,reminder,node}",
+        metavar=(
+            "{message,inbox,thread,reminder}"
+            if _NODE_COMMANDS_HIDDEN
+            else "{message,inbox,thread,reminder,node}"
+        ),
         title="resources",
     )
 
@@ -329,6 +337,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="<id>",
         help="Reminder id (full uuid)",
     )
+
+    if _NODE_COMMANDS_HIDDEN:
+        return parser
 
     node_parser = subparsers.add_parser(
         "node",
