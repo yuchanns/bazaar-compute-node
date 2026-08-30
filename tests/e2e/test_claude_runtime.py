@@ -43,13 +43,17 @@ from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
+    ContentDelta,
+    ContentDeltaKind,
     Message,
     MessageDirection,
-    RuntimeEvent,
-    RuntimeEventState,
     RuntimeSession,
     SenderIdentity,
-    StreamEventKind,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnUnknown,
 )
 from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.runtime import (
@@ -318,9 +322,8 @@ async def test_real_claude_turn_stream_and_running_steer(
         await channel.inject(first)
         async with asyncio.timeout(120):
             while not any(
-                event.kind is StreamEventKind.TOOL_PROGRESS
-                and event.content is not None
-                and "thirty common animals" in event.content
+                isinstance(event.payload, ToolCallTextDelta)
+                and "thirty common animals" in event.payload.text
                 for event in channel.stream_events
             ):
                 await asyncio.sleep(0.05)
@@ -364,7 +367,8 @@ async def test_real_claude_active_child_exit_is_terminal_unknown(
         await channel.inject(message)
         async with asyncio.timeout(120):
             while not any(
-                event.kind is StreamEventKind.AGENT_MESSAGE_DELTA
+                isinstance(event.payload, ContentDelta)
+                and event.payload.kind is ContentDeltaKind.AGENT_MESSAGE
                 for event in channel.stream_events
             ):
                 await asyncio.sleep(0.05)
@@ -697,9 +701,8 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
 
                             connection.client.set_message_observer(observe)
                 if any(
-                    isinstance(event, RuntimeEvent)
-                    and event.turn_id == first_turn_id
-                    and event.state is RuntimeEventState.COMPLETED
+                    isinstance(event.payload, TurnCompleted)
+                    and event.envelope.turn_id == first_turn_id
                     for event in channel.events
                 ):
                     break
@@ -830,6 +833,7 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
     stream = TurnEventStream(
         inbox,
         session_id="bcn-provider-limit",
+        runtime_session_id="runtime-provider-limit",
         turn_id=str(uuid4()),
         provider_thread_id=session_id,
         claude_version=(
@@ -844,17 +848,15 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
     terminal = None
     async with asyncio.timeout(90):
         async for item in stream:
-            if isinstance(item, RuntimeEvent) and item.state in {
-                RuntimeEventState.COMPLETED,
-                RuntimeEventState.FAILED,
-                RuntimeEventState.CANCELLED,
-                RuntimeEventState.UNKNOWN,
-            }:
+            if isinstance(
+                item.payload,
+                TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown,
+            ):
                 terminal = item
 
     assert terminal is not None
-    assert terminal.state is RuntimeEventState.FAILED
-    assert terminal.error_kind == "provider_failed"
+    assert isinstance(terminal.payload, TurnFailed)
+    assert terminal.payload.error_kind == "provider_failed"
     await client.close_turn(inbox)
     await supervisor.stop(timeout=10)
     await client.close()

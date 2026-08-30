@@ -321,6 +321,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         stream = TurnEventStream(
             inbox,
             session_id=session.bcn_session_id,
+            runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             claude_version=connection.claude_version,

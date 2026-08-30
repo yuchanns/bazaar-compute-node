@@ -12,9 +12,6 @@ class SessionRuntimeState(StrEnum):
     STARTING = "starting"
     IDLE = "idle"
     WORKING = "working"
-    COMPACTION_STARTING = "compaction_starting"
-    COMPACTING = "compacting"
-    COMPACTION_COMPLETED = "compaction_completed"
     STOPPING = "stopping"
     FAILED = "failed"
     UNKNOWN = "unknown"
@@ -50,9 +47,6 @@ class SessionRuntimeSignal(StrEnum):
     TURN_FAILED = "turn_failed"
     TURN_CANCELLED = "turn_cancelled"
     WORKING_OBSERVED = "working_observed"
-    COMPACTION_STARTED = "compaction_started"
-    COMPACTION_IN_PROGRESS = "compaction_in_progress"
-    COMPACTION_COMPLETED = "compaction_completed"
     STOP_REQUESTED = "stop_requested"
     FAILED = "failed"
     UNKNOWN = "unknown"
@@ -96,9 +90,6 @@ SESSION_RUNTIME_OBSERVATION_TRANSITIONS: Mapping[
         SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
         SessionRuntimeSignal.TURN_FAILED: SessionRuntimeState.IDLE,
         SessionRuntimeSignal.TURN_CANCELLED: SessionRuntimeState.IDLE,
-        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
-        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
         SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
         SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
         SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
@@ -110,42 +101,6 @@ SESSION_RUNTIME_OBSERVATION_TRANSITIONS: Mapping[
         SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
         SessionRuntimeSignal.TURN_FAILED: SessionRuntimeState.IDLE,
         SessionRuntimeSignal.TURN_CANCELLED: SessionRuntimeState.IDLE,
-        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
-        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
-        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
-        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
-        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
-    },
-    SessionRuntimeState.COMPACTION_STARTING: {
-        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
-        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
-        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
-        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
-        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
-        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
-    },
-    SessionRuntimeState.COMPACTING: {
-        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
-        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
-        SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
-        SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
-        SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
-    },
-    SessionRuntimeState.COMPACTION_COMPLETED: {
-        SessionRuntimeSignal.WORKING_OBSERVED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.COMPACTION_STARTED: SessionRuntimeState.COMPACTION_STARTING,
-        SessionRuntimeSignal.COMPACTION_IN_PROGRESS: SessionRuntimeState.COMPACTING,
-        SessionRuntimeSignal.COMPACTION_COMPLETED: SessionRuntimeState.COMPACTION_COMPLETED,
-        SessionRuntimeSignal.TURN_STARTED: SessionRuntimeState.WORKING,
-        SessionRuntimeSignal.TURN_COMPLETED: SessionRuntimeState.IDLE,
         SessionRuntimeSignal.STOP_REQUESTED: SessionRuntimeState.STOPPING,
         SessionRuntimeSignal.FAILED: SessionRuntimeState.FAILED,
         SessionRuntimeSignal.UNKNOWN: SessionRuntimeState.UNKNOWN,
@@ -235,19 +190,6 @@ class RuntimeEventState(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
-
-
-class StreamEventKind(StrEnum):
-    AGENT_MESSAGE_DELTA = "agent-message-delta"
-    PLAN_DELTA = "plan-delta"
-    REASONING_SUMMARY_DELTA = "reasoning-summary-delta"
-    REASONING_TEXT_DELTA = "reasoning-text-delta"
-    COMMAND_OUTPUT_DELTA = "command-output-delta"
-    COMMAND_INTERACTION = "command-interaction"
-    FILE_CHANGE_UPDATE = "file-change-update"
-    TOOL_PROGRESS = "tool-progress"
-    ITEM_PROGRESS = "item-progress"
-    TURN_PROGRESS = "turn-progress"
 
 
 class ApprovalDecision(StrEnum):

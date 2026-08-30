@@ -134,8 +134,7 @@ slot，且公共基类会把消费方引向 `isinstance` 判断，绕开模式�
 
 ```python
 type JsonValue = (
-    str | int | float | bool | None
-    | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
+    str | int | float | bool | None | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 )
 
 
@@ -290,7 +289,11 @@ class UsageUpdated:
 
 
 RuntimeEventPayload = (
-    TurnStarted | TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown
+    TurnStarted
+    | TurnCompleted
+    | TurnFailed
+    | TurnCancelled
+    | TurnUnknown
     | ContentDelta
     | ContextCompactionStarted
     | ContextCompactionCompleted

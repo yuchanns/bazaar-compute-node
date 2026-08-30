@@ -67,13 +67,14 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
-    RuntimeEvent,
+    ContentDelta,
+    ContentDeltaKind,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
     SessionRuntimeState,
-    StreamEvent,
-    StreamEventKind,
+    TurnCompleted,
+    TurnStarted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_workspace_dir
@@ -155,14 +156,12 @@ def test_codex_turn_stream_normalizes_transient_updates() -> None:
             },
         }
     )
-    assert isinstance(reasoning, StreamEvent)
-    assert reasoning == StreamEvent(
-        kind=StreamEventKind.REASONING_SUMMARY_DELTA,
-        created_at_ms=reasoning.created_at_ms,
-        session_id="bcn-1",
-        stream_id="reasoning-1",
-        content="",
+    assert reasoning is not None
+    assert reasoning.payload == ContentDelta(
+        kind=ContentDeltaKind.REASONING_SUMMARY,
+        text="",
     )
+    assert reasoning.envelope.session_id == "bcn-1"
 
     summary_boundary = stream._map_message(
         {
@@ -187,21 +186,6 @@ def test_codex_turn_stream_normalizes_transient_updates() -> None:
         }
     )
     assert lifecycle is None
-
-    future_progress = stream._map_message(
-        {
-            "method": "item/future/progress",
-            "params": {
-                "threadId": "thread-1",
-                "turnId": "provider-turn-1",
-                "itemId": "future-1",
-                "delta": "working",
-            },
-        }
-    )
-    assert isinstance(future_progress, StreamEvent)
-    assert future_progress.kind is StreamEventKind.ITEM_PROGRESS
-    assert future_progress.content == "working"
 
 
 def test_build_thread_start_params_maps_thread_options() -> None:
@@ -945,10 +929,14 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
         async with asyncio.timeout(120):
             async for event in stream:
                 events.append(event)
-        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
-        assert durable_events[0].state.value == "started"
-        assert durable_events[-1].state.value == "completed"
-        assert durable_events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
+        durable_events = [
+            event
+            for event in events
+            if isinstance(event.payload, TurnStarted | TurnCompleted)
+        ]
+        assert isinstance(durable_events[0].payload, TurnStarted)
+        assert isinstance(durable_events[-1].payload, TurnCompleted)
+        assert durable_events[-1].envelope.provider_turn_id == provider_turn.turn_id
     finally:
         await supervisor.stop(timeout=10)
 
@@ -1318,12 +1306,16 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         async with asyncio.timeout(120):
             async for event in stream:
                 events.append(event)
-        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
-        assert durable_events[-1].state.value == "completed"
+        durable_events = [
+            event
+            for event in events
+            if isinstance(event.payload, TurnStarted | TurnCompleted)
+        ]
+        assert isinstance(durable_events[-1].payload, TurnCompleted)
         provider_turn_ids = {
-            str(event.metadata["provider_turn_id"])
+            event.envelope.provider_turn_id
             for event in durable_events
-            if event.metadata.get("provider_turn_id") is not None
+            if event.envelope.provider_turn_id is not None
         }
         assert len(provider_turn_ids) == 1
         provider_thread_id = session.provider_thread_id
@@ -1331,7 +1323,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         return (
             provider_thread_id,
             provider_turn_ids.pop(),
-            tuple(event.event_name for event in durable_events),
+            tuple(event.payload.event_name for event in durable_events),
         )
 
     agent_id = str(uuid7())
@@ -1426,8 +1418,8 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 timeout=30,
             )
             started_event = await anext(active_stream)
-            assert isinstance(started_event, RuntimeEvent)
-            active_provider_turn_id = started_event.metadata.get("provider_turn_id")
+            assert isinstance(started_event.payload, TurnStarted)
+            active_provider_turn_id = started_event.envelope.provider_turn_id
             assert isinstance(active_provider_turn_id, str)
             await active_stream.aclose()
             active_turn = replace(
@@ -1451,9 +1443,11 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 async for event in recovered_stream:
                     recovered_events.append(event)
             recovered_runtime_events = [
-                event for event in recovered_events if isinstance(event, RuntimeEvent)
+                event
+                for event in recovered_events
+                if isinstance(event.payload, TurnStarted | TurnCompleted)
             ]
-            assert recovered_runtime_events[-1].state.value == "completed"
+            assert isinstance(recovered_runtime_events[-1].payload, TurnCompleted)
 
             await first_runtime.stop(timeout=20)
             resumed_runtime = Runtime(

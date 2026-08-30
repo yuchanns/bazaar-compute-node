@@ -32,11 +32,11 @@ from ...core.models import (
     InboundAttachment,
     Message,
     MessageDirection,
+    RuntimeOutputEvent,
     SenderIdentity,
     SenderKind,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from ...core.runtime import RuntimeStreamItem
 from ...core.timerwheel import TimerWheel
 from .markdown import split_markdown
 from .outbound import (
@@ -196,7 +196,7 @@ class WeComChannel(IChannel):
 
     def accept_turn_event(
         self,
-        item: RuntimeStreamItem,
+        item: RuntimeOutputEvent,
         *,
         session_id: str,
     ) -> None:

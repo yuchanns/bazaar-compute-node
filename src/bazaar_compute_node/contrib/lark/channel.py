@@ -24,17 +24,29 @@ from ...core.models import (
     ApprovalResult,
     ChannelTargetKind,
     ChannelTargetPresentation,
+    ContentDelta,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
     InboundAttachment,
     Message,
     MessageDirection,
-    RuntimeEvent,
-    RuntimeEventState,
+    RuntimeOutputEvent,
     SenderIdentity,
     SenderKind,
-    StreamEvent,
+    ToolCallCompleted,
+    ToolCallFailed,
+    ToolCallInteraction,
+    ToolCallPatchUpdated,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
+    UsageUpdated,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from ...core.runtime import RuntimeStreamItem
 from ...core.timerwheel import TimerWheel
 from .api import LarkApi
 from .attachments import (
@@ -853,17 +865,14 @@ class LarkChannel(IChannel):
 
     def accept_turn_event(
         self,
-        item: RuntimeStreamItem,
+        item: RuntimeOutputEvent,
         *,
         session_id: str,
     ) -> None:
-        if isinstance(item, RuntimeEvent):
-            if item.state in {
-                RuntimeEventState.COMPLETED,
-                RuntimeEventState.FAILED,
-                RuntimeEventState.CANCELLED,
-                RuntimeEventState.UNKNOWN,
-            }:
+        match item.payload:
+            case TurnStarted():
+                return
+            case TurnCompleted() | TurnFailed() | TurnCancelled() | TurnUnknown():
                 self._stream_routes.pop(session_id, None)
                 state = self._typing_states.get(session_id)
                 if state is not None:
@@ -872,21 +881,34 @@ class LarkChannel(IChannel):
                     # ends local tracking and never removes the provider marker.
                     if state.reaction_id is not None:
                         self._typing_states.pop(session_id, None)
+                return
+            case (
+                ContentDelta()
+                | ContextCompactionStarted()
+                | ContextCompactionCompleted()
+                | ToolCallStarted()
+                | ToolCallCompleted()
+                | ToolCallFailed()
+                | ToolCallTextDelta()
+                | ToolCallPatchUpdated()
+                | ToolCallInteraction()
+                | UsageUpdated()
+            ):
+                pass
+        if self._typing_stopping:
             return
-        if not isinstance(item, StreamEvent) or self._typing_stopping:
-            return
-        provider_message_id = self._stream_routes.get(item.session_id)
+        provider_message_id = self._stream_routes.get(item.envelope.session_id)
         if provider_message_id is None or self._typing_runner is None:
             return
-        state = self._typing_states.get(item.session_id)
+        state = self._typing_states.get(item.envelope.session_id)
         if state is None:
             state = _TypingState(message_id=provider_message_id)
-            self._typing_states[item.session_id] = state
+            self._typing_states[item.envelope.session_id] = state
         if not state.add_queued and not state.attempted:
             state.add_queued = True
             self._typing_queue.put_nowait(
                 _TypingCommand(
-                    session_id=item.session_id,
+                    session_id=item.envelope.session_id,
                     message_id=provider_message_id,
                 )
             )

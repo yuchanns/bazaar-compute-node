@@ -7,12 +7,23 @@ from typing import Self, cast
 
 from ...core.approval import IApprovalHandler
 from ...core.models import (
-    RuntimeEvent,
+    ContentDelta,
+    ContentDeltaKind,
+    JsonValue,
+    RuntimeEventEnvelope,
+    RuntimeEventPayload,
     RuntimeEventState,
-    StreamEvent,
-    StreamEventKind,
+    RuntimeOutputEvent,
+    ToolCallDeltaKind,
+    ToolCallInteraction,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
 )
-from ...core.runtime import IRuntimeTurnStream, RuntimeStreamItem
+from ...core.runtime import IRuntimeTurnStream
 from .approval import (
     approval_error,
     build_approval_response,
@@ -20,16 +31,11 @@ from .approval import (
     parse_approval_request,
 )
 
-_STREAM_EVENT_KINDS = {
-    "item/agentMessage/delta": StreamEventKind.AGENT_MESSAGE_DELTA,
-    "item/plan/delta": StreamEventKind.PLAN_DELTA,
-    "item/reasoning/summaryTextDelta": StreamEventKind.REASONING_SUMMARY_DELTA,
-    "item/reasoning/textDelta": StreamEventKind.REASONING_TEXT_DELTA,
-    "item/commandExecution/outputDelta": StreamEventKind.COMMAND_OUTPUT_DELTA,
-    "item/commandExecution/terminalInteraction": StreamEventKind.COMMAND_INTERACTION,
-    "item/fileChange/outputDelta": StreamEventKind.FILE_CHANGE_UPDATE,
-    "item/fileChange/patchUpdated": StreamEventKind.FILE_CHANGE_UPDATE,
-    "item/mcpToolCall/progress": StreamEventKind.TOOL_PROGRESS,
+_CONTENT_DELTA_KINDS = {
+    "item/agentMessage/delta": ContentDeltaKind.AGENT_MESSAGE,
+    "item/plan/delta": ContentDeltaKind.PLAN,
+    "item/reasoning/summaryTextDelta": ContentDeltaKind.REASONING_SUMMARY,
+    "item/reasoning/textDelta": ContentDeltaKind.REASONING_TEXT,
 }
 from .client import parse_error_notification, parse_turn_notification
 from .process import JsonlProcessSupervisor
@@ -82,7 +88,7 @@ class TurnEventStream(IRuntimeTurnStream):
     def __aiter__(self) -> Self:
         return self
 
-    async def __anext__(self) -> RuntimeStreamItem:
+    async def __anext__(self) -> RuntimeOutputEvent:
         if self._closed or self._terminal_emitted:
             raise StopAsyncIteration
         if not self._initial_emitted:
@@ -101,7 +107,6 @@ class TurnEventStream(IRuntimeTurnStream):
                 metadata={
                     "provider_method": "turn/start",
                     "provider_thread_id": self._provider_thread_id,
-                    "provider_turn_id": self._provider_turn_id,
                 },
             )
 
@@ -144,7 +149,7 @@ class TurnEventStream(IRuntimeTurnStream):
         self._closed = True
         self._call_closed_callback()
 
-    def _map_message(self, message: JsonlMessage) -> RuntimeStreamItem | None:
+    def _map_message(self, message: JsonlMessage) -> RuntimeOutputEvent | None:
         method = message.get("method")
         params = message.get("params")
         if not isinstance(method, str) or not method:
@@ -218,28 +223,50 @@ class TurnEventStream(IRuntimeTurnStream):
             "item/autoApprovalReview/completed",
         }:
             return None
-        if method == "turn/progress" or method.startswith("item/"):
-            stream_id = params.get("itemId")
-            if not isinstance(stream_id, str) or not stream_id:
-                stream_id = None
+        if method in _CONTENT_DELTA_KINDS:
             content = params.get("delta")
-            if method == "item/mcpToolCall/progress":
-                content = params.get("message")
-            elif method == "item/commandExecution/terminalInteraction":
-                content = params.get("stdin")
             if not isinstance(content, str):
-                content = None
-            return StreamEvent(
-                kind=(
-                    StreamEventKind.TURN_PROGRESS
-                    if method == "turn/progress"
-                    else _STREAM_EVENT_KINDS.get(method, StreamEventKind.ITEM_PROGRESS)
-                ),
-                created_at_ms=time_ns() // 1_000_000,
-                session_id=self._session_id,
-                stream_id=stream_id,
-                content=content,
+                return None
+            return self._output_event(
+                ContentDelta(kind=_CONTENT_DELTA_KINDS[method], text=content)
             )
+        stream_id = params.get("itemId")
+        if not isinstance(stream_id, str) or not stream_id:
+            return None
+        if method in {
+            "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        }:
+            content = params.get("delta")
+            if isinstance(content, str):
+                return self._output_event(
+                    ToolCallTextDelta(
+                        call_id=stream_id,
+                        kind=ToolCallDeltaKind.OUTPUT,
+                        text=content,
+                    )
+                )
+        if method == "item/mcpToolCall/progress":
+            content = params.get("message")
+            if isinstance(content, str):
+                return self._output_event(
+                    ToolCallTextDelta(
+                        call_id=stream_id,
+                        kind=ToolCallDeltaKind.PROGRESS,
+                        text=content,
+                    )
+                )
+        if method == "item/commandExecution/terminalInteraction":
+            stdin = params.get("stdin")
+            if isinstance(stdin, str):
+                process_id = params.get("processId")
+                return self._output_event(
+                    ToolCallInteraction(
+                        call_id=stream_id,
+                        stdin=stdin,
+                        process_id=process_id if isinstance(process_id, str) else None,
+                    )
+                )
         return None
 
     def _event(
@@ -249,16 +276,40 @@ class TurnEventStream(IRuntimeTurnStream):
         state: RuntimeEventState,
         error_kind: str | None = None,
         error_message: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-    ) -> RuntimeEvent:
-        return RuntimeEvent(
-            created_at_ms=time_ns() // 1_000_000,
-            event_name=event_name,
-            state=state,
-            turn_id=self._turn_id,
-            error_kind=error_kind,
-            error_message=error_message,
-            metadata=dict(metadata or {}),
+        metadata: Mapping[str, JsonValue] | None = None,
+    ) -> RuntimeOutputEvent:
+        if state is RuntimeEventState.STARTED:
+            payload = TurnStarted(event_name=event_name, metadata=metadata or {})
+        elif state is RuntimeEventState.COMPLETED:
+            payload = TurnCompleted(event_name=event_name, metadata=metadata or {})
+        elif state is RuntimeEventState.FAILED:
+            payload = TurnFailed(
+                event_name=event_name,
+                error_kind=error_kind or "provider_failed",
+                error_message=error_message,
+                metadata=metadata or {},
+            )
+        elif state is RuntimeEventState.CANCELLED:
+            payload = TurnCancelled(event_name=event_name, metadata=metadata or {})
+        else:
+            payload = TurnUnknown(
+                event_name=event_name,
+                error_kind=error_kind,
+                error_message=error_message,
+                metadata=metadata or {},
+            )
+        return self._output_event(payload)
+
+    def _output_event(self, payload: RuntimeEventPayload) -> RuntimeOutputEvent:
+        return RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=self._session_id,
+                runtime_session_id=self._runtime_session_id,
+                turn_id=self._turn_id,
+                provider_turn_id=self._provider_turn_id,
+                occurred_at_ms=time_ns() // 1_000_000,
+            ),
+            payload=payload,
         )
 
     def _terminal_event(
@@ -268,8 +319,8 @@ class TurnEventStream(IRuntimeTurnStream):
         event_name: str,
         error_kind: str | None = None,
         error_message: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-    ) -> RuntimeEvent:
+        metadata: Mapping[str, JsonValue] | None = None,
+    ) -> RuntimeOutputEvent:
         self._terminal_emitted = True
         self._call_closed_callback()
         return self._event(
@@ -284,13 +335,11 @@ class TurnEventStream(IRuntimeTurnStream):
         self,
         method: str,
         params: Mapping[str, object],
-    ) -> dict[str, object]:
-        metadata: dict[str, object] = {
+    ) -> dict[str, JsonValue]:
+        metadata: dict[str, JsonValue] = {
             "provider_method": method,
             "provider_thread_id": self._provider_thread_id,
         }
-        if self._provider_turn_id is not None:
-            metadata["provider_turn_id"] = self._provider_turn_id
         request_id = params.get("requestId")
         if isinstance(request_id, (int, str)) and not isinstance(request_id, bool):
             metadata["provider_request_id"] = str(request_id)

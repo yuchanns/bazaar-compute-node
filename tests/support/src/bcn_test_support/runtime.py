@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from time import time_ns
 from typing import ClassVar
@@ -11,13 +11,20 @@ from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
-    RuntimeEvent,
+    ContentDelta,
+    ContentDeltaKind,
+    JsonValue,
+    RuntimeEventEnvelope,
     RuntimeEventState,
+    RuntimeOutputEvent,
     RuntimeSession,
     RuntimeTurn,
     SessionRuntimeState,
-    StreamEvent,
-    StreamEventKind,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
@@ -51,6 +58,7 @@ class TestTurnPlan:
     pre_start_unavailable: bool = False
     update_count: int = 0
     stream_session_id: str | None = None
+    terminal_metadata: Mapping[str, JsonValue] | None = None
 
 
 class TestRuntime(IRuntime):
@@ -251,26 +259,47 @@ class TestRuntime(IRuntime):
 
     def _next_event(
         self,
+        session: RuntimeSession,
         turn: RuntimeTurn,
         state: RuntimeEventState,
-    ) -> RuntimeEvent:
-        error_kind = None
+        terminal_metadata: Mapping[str, JsonValue] | None,
+    ) -> RuntimeOutputEvent:
+        event_name = f"runtime.turn.{state.value}"
         if state is RuntimeEventState.FAILED:
-            error_kind = "provider_failed"
+            payload = TurnFailed(
+                event_name=event_name,
+                error_kind="provider_failed",
+                error_message="test provider failure",
+                metadata=terminal_metadata or {},
+            )
         elif state is RuntimeEventState.UNKNOWN:
-            error_kind = "provider_unknown"
-        return RuntimeEvent(
-            created_at_ms=time_ns() // 1_000_000,
-            event_name=f"runtime.turn.{state.value}",
-            state=state,
-            turn_id=turn.turn_id,
-            error_kind=error_kind,
-            error_message="test provider failure" if error_kind else None,
-            metadata=(
-                {"provider_turn_id": f"test-provider-{turn.turn_id}"}
-                if state is RuntimeEventState.STARTED
-                else {}
+            payload = TurnUnknown(
+                event_name=event_name,
+                error_kind="provider_unknown",
+                error_message="test provider failure",
+                metadata=terminal_metadata or {},
+            )
+        elif state is RuntimeEventState.COMPLETED:
+            payload = TurnCompleted(
+                event_name=event_name,
+                metadata=terminal_metadata or {},
+            )
+        elif state is RuntimeEventState.CANCELLED:
+            payload = TurnCancelled(
+                event_name=event_name,
+                metadata=terminal_metadata or {},
+            )
+        else:
+            payload = TurnStarted(event_name=event_name)
+        return RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=session.bcn_session_id,
+                runtime_session_id=session.id,
+                turn_id=turn.turn_id,
+                provider_turn_id=f"test-provider-{turn.turn_id}",
+                occurred_at_ms=time_ns() // 1_000_000,
             ),
+            payload=payload,
         )
 
     def _next_update(
@@ -278,14 +307,20 @@ class TestRuntime(IRuntime):
         session: RuntimeSession,
         turn: RuntimeTurn,
         session_id: str | None,
-    ) -> StreamEvent:
+    ) -> RuntimeOutputEvent:
         self._update_seq += 1
-        return StreamEvent(
-            kind=StreamEventKind.REASONING_SUMMARY_DELTA,
-            created_at_ms=time_ns() // 1_000_000,
-            session_id=session_id or session.bcn_session_id,
-            stream_id=f"reasoning-{turn.turn_id}",
-            content=f"delta-{self._update_seq}",
+        return RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=session_id or session.bcn_session_id,
+                runtime_session_id=session.id,
+                turn_id=turn.turn_id,
+                provider_turn_id=f"test-provider-{turn.turn_id}",
+                occurred_at_ms=time_ns() // 1_000_000,
+            ),
+            payload=ContentDelta(
+                kind=ContentDeltaKind.REASONING_SUMMARY,
+                text=f"delta-{self._update_seq}",
+            ),
         )
 
 
@@ -319,7 +354,7 @@ class _TestTurnStream(IRuntimeTurnStream):
     def __aiter__(self) -> _TestTurnStream:
         return self
 
-    async def __anext__(self) -> RuntimeEvent | StreamEvent:
+    async def __anext__(self) -> RuntimeOutputEvent:
         if self.closed:
             raise StopAsyncIteration
         if not self.approval_done and self.plan.approval_request is not None:
@@ -375,7 +410,12 @@ class _TestTurnStream(IRuntimeTurnStream):
             if self.closed:
                 raise StopAsyncIteration
         self.index += 1
-        return self.runtime._next_event(self.turn, state)
+        return self.runtime._next_event(
+            self.session,
+            self.turn,
+            state,
+            self.plan.terminal_metadata,
+        )
 
     async def aclose(self) -> None:
         if self.closed:

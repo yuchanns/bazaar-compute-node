@@ -73,9 +73,10 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     OutboundAttachment,
-    RuntimeEvent,
-    RuntimeEventState,
+    RuntimeEventEnvelope,
+    RuntimeOutputEvent,
     SenderKind,
+    TurnCompleted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -677,10 +678,15 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     )
 
     channel.accept_turn_event(
-        RuntimeEvent(
-            created_at_ms=1,
-            event_name="turn.completed",
-            state=RuntimeEventState.COMPLETED,
+        RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=session_id,
+                runtime_session_id="runtime-session-1",
+                turn_id="turn-1",
+                provider_turn_id=None,
+                occurred_at_ms=1,
+            ),
+            payload=TurnCompleted(event_name="turn.completed"),
         ),
         session_id=session_id,
     )

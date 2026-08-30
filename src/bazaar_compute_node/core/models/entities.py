@@ -13,10 +13,8 @@ from .states import (
     ChannelTargetKind,
     MessageDirection,
     OutboundDeliveryState,
-    RuntimeEventState,
     RuntimeTurnState,
     SenderKind,
-    StreamEventKind,
     SystemMessageKind,
     ensure_transition,
 )
@@ -467,23 +465,3 @@ class ApprovalResult:
     decision: ApprovalDecision
     decided_at_ms: int
     reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StreamEvent:
-    kind: StreamEventKind
-    created_at_ms: int
-    session_id: str
-    stream_id: str | None = None
-    content: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeEvent:
-    created_at_ms: int
-    event_name: str
-    state: RuntimeEventState
-    turn_id: str | None = None
-    error_kind: str | None = None
-    error_message: str | None = None
-    metadata: Metadata = field(default_factory=dict)

@@ -21,8 +21,11 @@ from ..models import (
     BcnSession,
     ChannelSession,
     ChannelTargetKind,
+    ContentDelta,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
     Message,
-    RuntimeEvent,
+    RuntimeEventEnvelope,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
@@ -31,7 +34,18 @@ from ..models import (
     SessionRuntimeObservation,
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
-    StreamEvent,
+    ToolCallCompleted,
+    ToolCallFailed,
+    ToolCallInteraction,
+    ToolCallPatchUpdated,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
+    UsageUpdated,
 )
 from ..runtime import IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorageScope
@@ -40,42 +54,42 @@ from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 
 
-def _is_compaction_event(event_name: str) -> bool:
-    return "compaction" in event_name.casefold()
-
-
 def _is_turn_event(event_name: str) -> bool:
     return "turn" in event_name.casefold()
 
 
-def _runtime_event_signal(event: RuntimeEvent) -> SessionRuntimeSignal:
-    if _is_compaction_event(event.event_name):
-        normalized = event.event_name.casefold()
-        if any(token in normalized for token in ("start", "begin")):
-            return SessionRuntimeSignal.COMPACTION_STARTED
-        if any(token in normalized for token in ("complete", "finish", "end")):
-            return SessionRuntimeSignal.COMPACTION_COMPLETED
-        if event.state is RuntimeEventState.COMPLETED:
-            return SessionRuntimeSignal.COMPACTION_COMPLETED
-        return SessionRuntimeSignal.COMPACTION_IN_PROGRESS
+type TurnPayload = (
+    TurnStarted | TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown
+)
 
-    if not _is_turn_event(event.event_name):
-        if event.state is RuntimeEventState.UNKNOWN:
+
+def _runtime_event_signal(payload: TurnPayload) -> SessionRuntimeSignal:
+    match payload:
+        case TurnStarted(event_name=event_name):
+            state = RuntimeEventState.STARTED
+        case TurnCompleted(event_name=event_name):
+            state = RuntimeEventState.COMPLETED
+        case TurnFailed(event_name=event_name):
+            state = RuntimeEventState.FAILED
+        case TurnCancelled(event_name=event_name):
+            state = RuntimeEventState.CANCELLED
+        case TurnUnknown(event_name=event_name):
+            state = RuntimeEventState.UNKNOWN
+
+    if not _is_turn_event(event_name):
+        if state is RuntimeEventState.UNKNOWN:
             return SessionRuntimeSignal.UNKNOWN
-        if (
-            event.state is RuntimeEventState.FAILED
-            or "error" in event.event_name.casefold()
-        ):
+        if state is RuntimeEventState.FAILED or "error" in event_name.casefold():
             return SessionRuntimeSignal.FAILED
         return SessionRuntimeSignal.WORKING_OBSERVED
 
-    if event.state is RuntimeEventState.STARTED:
+    if state is RuntimeEventState.STARTED:
         return SessionRuntimeSignal.TURN_STARTED
-    if event.state is RuntimeEventState.COMPLETED:
+    if state is RuntimeEventState.COMPLETED:
         return SessionRuntimeSignal.TURN_COMPLETED
-    if event.state is RuntimeEventState.FAILED:
+    if state is RuntimeEventState.FAILED:
         return SessionRuntimeSignal.TURN_FAILED
-    if event.state is RuntimeEventState.CANCELLED:
+    if state is RuntimeEventState.CANCELLED:
         return SessionRuntimeSignal.TURN_CANCELLED
     return SessionRuntimeSignal.UNKNOWN
 
@@ -84,13 +98,17 @@ _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
 
 
-def _is_terminal_turn_event(event: RuntimeEvent) -> bool:
-    return _is_turn_event(event.event_name) and event.state in {
-        RuntimeEventState.COMPLETED,
-        RuntimeEventState.FAILED,
-        RuntimeEventState.CANCELLED,
-        RuntimeEventState.UNKNOWN,
-    }
+def _is_terminal_turn_event(payload: TurnPayload) -> bool:
+    match payload:
+        case TurnStarted():
+            return False
+        case (
+            TurnCompleted(event_name=event_name)
+            | TurnFailed(event_name=event_name)
+            | TurnCancelled(event_name=event_name)
+            | TurnUnknown(event_name=event_name)
+        ):
+            return _is_turn_event(event_name)
 
 
 def inbox_notice(
@@ -421,35 +439,59 @@ class SessionTurnCoordinator:
         observed_terminal = False
         try:
             async for event in stream:
-                if isinstance(event, StreamEvent):
-                    if event.session_id != context.bcn_session.id:
-                        self._logger.error(
-                            "runtime emitted stream event for another session",
-                            extra={
-                                "expected_session_id": context.bcn_session.id,
-                                "actual_session_id": event.session_id,
-                            },
-                        )
-                        continue
-                    try:
-                        self._channel.accept_turn_event(
-                            event,
-                            session_id=context.bcn_session.id,
-                        )
-                    except Exception:
-                        self._logger.exception("channel rejected turn event")
-                    continue
-                turn = await self._apply_runtime_event(message, context, turn, event)
-                try:
-                    self._channel.accept_turn_event(
-                        event,
-                        session_id=context.bcn_session.id,
+                if event.envelope.session_id != context.bcn_session.id:
+                    self._logger.error(
+                        "runtime emitted event for another session",
+                        extra={
+                            "expected_session_id": context.bcn_session.id,
+                            "actual_session_id": event.envelope.session_id,
+                        },
                     )
-                except Exception:
-                    self._logger.exception("channel rejected runtime event")
-                if _is_terminal_turn_event(event):
-                    observed_terminal = True
-                    break
+                    continue
+                match event.payload:
+                    case (
+                        TurnStarted()
+                        | TurnCompleted()
+                        | TurnFailed()
+                        | TurnCancelled()
+                        | TurnUnknown()
+                    ) as payload:
+                        turn = await self._apply_runtime_event(
+                            message,
+                            context,
+                            turn,
+                            event.envelope,
+                            payload,
+                        )
+                        try:
+                            self._channel.accept_turn_event(
+                                event,
+                                session_id=context.bcn_session.id,
+                            )
+                        except Exception:
+                            self._logger.exception("channel rejected runtime event")
+                        if _is_terminal_turn_event(payload):
+                            observed_terminal = True
+                            break
+                    case (
+                        ContentDelta()
+                        | ToolCallStarted()
+                        | ToolCallCompleted()
+                        | ToolCallFailed()
+                        | ToolCallTextDelta()
+                        | ToolCallPatchUpdated()
+                        | ToolCallInteraction()
+                        | UsageUpdated()
+                        | ContextCompactionStarted()
+                        | ContextCompactionCompleted()
+                    ):
+                        try:
+                            self._channel.accept_turn_event(
+                                event,
+                                session_id=context.bcn_session.id,
+                            )
+                        except Exception:
+                            self._logger.exception("channel rejected turn event")
             if not observed_terminal:
                 return await self.finish_turn(
                     turn,
@@ -596,25 +638,53 @@ class SessionTurnCoordinator:
         message: Message,
         context: SessionContext,
         turn: RuntimeTurn,
-        event: RuntimeEvent,
+        envelope: RuntimeEventEnvelope,
+        payload: TurnPayload,
     ) -> RuntimeTurn:
-        if event.turn_id is not None and event.turn_id != turn.turn_id:
+        if envelope.turn_id is not None and envelope.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
+        match payload:
+            case TurnStarted(event_name=event_name, metadata=metadata):
+                state = RuntimeEventState.STARTED
+                error_kind = None
+                error_message = None
+            case TurnCompleted(event_name=event_name, metadata=metadata):
+                state = RuntimeEventState.COMPLETED
+                error_kind = None
+                error_message = None
+            case TurnFailed(
+                event_name=event_name,
+                error_kind=error_kind,
+                error_message=error_message,
+                metadata=metadata,
+            ):
+                state = RuntimeEventState.FAILED
+            case TurnCancelled(event_name=event_name, metadata=metadata):
+                state = RuntimeEventState.CANCELLED
+                error_kind = None
+                error_message = None
+            case TurnUnknown(
+                event_name=event_name,
+                error_kind=error_kind,
+                error_message=error_message,
+                metadata=metadata,
+            ):
+                state = RuntimeEventState.UNKNOWN
         async with self._concurrency.for_session(message.session_id):
-            signal = _runtime_event_signal(event)
-            if not _is_turn_event(event.event_name):
+            signal = _runtime_event_signal(payload)
+            if not _is_turn_event(event_name):
                 target_state = turn.state
-            elif event.state is RuntimeEventState.STARTED:
+            elif state is RuntimeEventState.STARTED:
                 target_state = RuntimeTurnState.RUNNING
-            elif event.state is RuntimeEventState.COMPLETED:
+            elif state is RuntimeEventState.COMPLETED:
                 target_state = RuntimeTurnState.COMPLETED
-            elif event.state is RuntimeEventState.FAILED:
+            elif state is RuntimeEventState.FAILED:
                 target_state = RuntimeTurnState.FAILED
-            elif event.state is RuntimeEventState.CANCELLED:
+            elif state is RuntimeEventState.CANCELLED:
                 target_state = RuntimeTurnState.CANCELLED
             else:
                 target_state = RuntimeTurnState.UNKNOWN
-            provider_turn_id = event.metadata.get("provider_turn_id")
+            provider_turn_id = envelope.provider_turn_id
             if provider_turn_id is not None and (
                 not isinstance(provider_turn_id, str) or not provider_turn_id
             ):
@@ -625,19 +695,16 @@ class SessionTurnCoordinator:
                 and turn.provider_turn_id != provider_turn_id
             ):
                 raise ValueError("runtime event provider turn correlation mismatch")
-            error_kind = event.error_kind
-            if event.state is RuntimeEventState.FAILED and error_kind is None:
-                error_kind = ErrorKind.PROVIDER_FAILED.value
-            if event.state is RuntimeEventState.UNKNOWN and error_kind is None:
+            if state is RuntimeEventState.UNKNOWN and error_kind is None:
                 error_kind = ErrorKind.PROVIDER_UNKNOWN.value
-            if event.state is RuntimeEventState.CANCELLED and error_kind is None:
+            if state is RuntimeEventState.CANCELLED and error_kind is None:
                 error_kind = ErrorKind.CANCELLED.value
             updated_turn = turn.transition_to(
                 target_state,
-                at_ms=event.created_at_ms,
+                at_ms=envelope.occurred_at_ms,
                 error_kind=error_kind,
-                error_message=event.error_message,
-                latest_event_name=event.event_name,
+                error_message=error_message,
+                latest_event_name=event_name,
             )
             if provider_turn_id is not None:
                 updated_turn = replace(
@@ -649,9 +716,9 @@ class SessionTurnCoordinator:
                 signal=signal,
                 observed_at_ms=self._clock(),
                 error_kind=error_kind,
-                error_message=event.error_message,
+                error_message=error_message,
             )
-            if _is_terminal_turn_event(event):
+            if _is_terminal_turn_event(payload):
                 self._turns.pop(turn.turn_id, None)
             else:
                 self._turns[turn.turn_id] = updated_turn
@@ -660,16 +727,17 @@ class SessionTurnCoordinator:
                 observation,
             )
         try:
-            audit_kind = ErrorKind(event.error_kind) if event.error_kind else None
+            audit_kind = ErrorKind(error_kind) if error_kind else None
         except ValueError:
             audit_kind = ErrorKind.INTERNAL
-        audit_error_message = event.error_message if audit_kind else None
+        audit_error_message = error_message if audit_kind else None
         await self._audit.append(
-            event_name=event.event_name,
-            state=event.state,
+            event_name=event_name,
+            state=state,
             correlation=self.turn_correlation(message, context, updated_turn),
             error_kind=audit_kind,
             error_message=audit_error_message,
+            metadata=metadata,
         )
         return updated_turn
 

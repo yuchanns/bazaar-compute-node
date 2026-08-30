@@ -30,9 +30,9 @@ from bazaar_compute_node.contrib.claude.protocol import (
 )
 from bazaar_compute_node.contrib.claude.runtime import _Connection, _observe_background
 from bazaar_compute_node.core.models import (
-    RuntimeEvent,
-    RuntimeEventState,
     RuntimeSession,
+    TurnCompleted,
+    TurnStarted,
 )
 from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeSandboxMode
 
@@ -260,6 +260,7 @@ async def test_claude_task_notification_adoption() -> None:
     stream = TurnEventStream(
         inbox,
         session_id="bcn-session-1",
+        runtime_session_id="runtime-session-1",
         turn_id="turn-1",
         provider_thread_id="provider-session-1",
         claude_version=(2, 1, 247),
@@ -282,10 +283,8 @@ async def test_claude_task_notification_adoption() -> None:
     )
     completed = await anext(stream)
 
-    assert isinstance(started, RuntimeEvent)
-    assert started.state is RuntimeEventState.STARTED
-    assert isinstance(completed, RuntimeEvent)
-    assert completed.state is RuntimeEventState.COMPLETED
+    assert isinstance(started.payload, TurnStarted)
+    assert isinstance(completed.payload, TurnCompleted)
     assert closed
 
 

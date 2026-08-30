@@ -63,13 +63,13 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     ChannelTargetPresentation,
+    ContentDelta,
     Message,
     MessageDirection,
     OutboundDeliveryState,
     Reminder,
     ReminderState,
     RuntimeAttempt,
-    RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
@@ -81,6 +81,8 @@ from bazaar_compute_node.core.models import (
     SessionRuntimeSignal,
     SessionRuntimeState,
     SystemMessageKind,
+    TurnCompleted,
+    TurnStarted,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.runtime_pool import RuntimePool
@@ -804,15 +806,23 @@ async def test_stream_events() -> None:
 
         assert len(channel.stream_events) == 20_000
         runtime_events = [
-            item for item in channel.events if isinstance(item, RuntimeEvent)
+            item
+            for item in channel.events
+            if isinstance(item.payload, TurnStarted | TurnCompleted)
         ]
-        assert [event.state for event in runtime_events] == [
-            RuntimeEventState.STARTED,
-            RuntimeEventState.COMPLETED,
+        assert [type(event.payload) for event in runtime_events] == [
+            TurnStarted,
+            TurnCompleted,
         ]
-        assert {event.session_id for event in channel.stream_events} == {"bcn-1"}
-        assert channel.stream_events[0].content == "delta-1"
-        assert channel.stream_events[-1].content == "delta-20000"
+        assert {event.envelope.session_id for event in channel.stream_events} == {
+            "bcn-1"
+        }
+        first_delta = channel.stream_events[0].payload
+        last_delta = channel.stream_events[-1].payload
+        assert isinstance(first_delta, ContentDelta)
+        assert isinstance(last_delta, ContentDelta)
+        assert first_delta.text == "delta-1"
+        assert last_delta.text == "delta-20000"
         assert not any(
             event.event_name == "reasoning-summary-delta" for event in audit.events
         )
@@ -2248,31 +2258,16 @@ async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_
         )
         assert set(completed) == {SessionRuntimeState.IDLE}
 
-        for signal, expected in (
-            (
-                SessionRuntimeSignal.COMPACTION_STARTED,
-                SessionRuntimeState.COMPACTION_STARTING,
+        current = storage.bcn_sessions["bcn-1"]
+        updated = await orchestrator.observe_runtime(
+            "bcn-1",
+            SessionRuntimeObservation(
+                source=SessionRuntimeObservationSource.RUNTIME,
+                signal=SessionRuntimeSignal.WORKING_OBSERVED,
+                observed_at_ms=current.updated_at_ms,
             ),
-            (
-                SessionRuntimeSignal.COMPACTION_IN_PROGRESS,
-                SessionRuntimeState.COMPACTING,
-            ),
-            (
-                SessionRuntimeSignal.COMPACTION_COMPLETED,
-                SessionRuntimeState.COMPACTION_COMPLETED,
-            ),
-            (SessionRuntimeSignal.WORKING_OBSERVED, SessionRuntimeState.WORKING),
-        ):
-            current = storage.bcn_sessions["bcn-1"]
-            updated = await orchestrator.observe_runtime(
-                "bcn-1",
-                SessionRuntimeObservation(
-                    source=SessionRuntimeObservationSource.RUNTIME,
-                    signal=signal,
-                    observed_at_ms=current.updated_at_ms,
-                ),
-            )
-            assert updated is expected
+        )
+        assert updated is SessionRuntimeState.WORKING
     finally:
         await orchestrator.stop(timeout=1)
 

@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from bcn_test_support import (
+    MemoryStorage,
+    RecordingAudit,
+    TestChannel,
+    TestRuntime,
+    TestTurnPlan,
+)
+
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
+from bazaar_compute_node.core.models import (
+    Message,
+    MessageDirection,
+    RuntimeEventState,
+    RuntimeTurnState,
+    SenderIdentity,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
+)
+from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import ENGLISH, create_translator
+
+
+def _message() -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
+        seq=1,
+        message_id="message-1",
+        session_id="session-1",
+        channel_session_id="channel-session-1",
+        channel="test",
+        provider_thread_id="provider-thread-1",
+        provider_message_id="provider-message-1",
+        received_at_ms=1,
+        sender=SenderIdentity(id="sender-1", name="Sender"),
+        message_type="text",
+        target="dm:channel-session-1",
+        body="run the task",
+        metadata={"sender_kind": "human"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_state", "terminal_type", "turn_state"),
+    (
+        (RuntimeEventState.COMPLETED, TurnCompleted, RuntimeTurnState.COMPLETED),
+        (RuntimeEventState.FAILED, TurnFailed, RuntimeTurnState.FAILED),
+        (RuntimeEventState.CANCELLED, TurnCancelled, RuntimeTurnState.CANCELLED),
+        (RuntimeEventState.UNKNOWN, TurnUnknown, RuntimeTurnState.UNKNOWN),
+    ),
+)
+async def test_turn_payloads_are_audited_forwarded_and_correlated(
+    terminal_state: RuntimeEventState,
+    terminal_type: type[TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown],
+    turn_state: RuntimeTurnState,
+) -> None:
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = MemoryStorage()
+    audit = RecordingAudit()
+    await storage.start(timeout=1)
+    orchestrator = SessionOrchestrator(
+        agent_id="agent-1",
+        channel=channel,
+        runtimes=(runtime,),
+        storage=storage.scope("agent-1", "Test Agent"),
+        audit=audit,
+        timeout_budget=TimeoutBudget(
+            startup_seconds=1,
+            provider_call_seconds=1,
+            command_seconds=1,
+            shutdown_seconds=1,
+        ),
+        timer_wheel=TimerWheel(),
+        workspace=Path.cwd,
+        translator=create_translator(ENGLISH),
+        error_feedback_detail=lambda _, message: message,
+    )
+    runtime.queue_turn_plan(
+        TestTurnPlan(
+            states=(RuntimeEventState.STARTED, terminal_state),
+            terminal_metadata={
+                "usage": {"input_tokens": 3, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            },
+        )
+    )
+    await orchestrator.start(timeout=1)
+    try:
+        turn = await orchestrator.handle_inbound(_message())
+
+        assert turn is not None
+        assert turn.state is turn_state
+        assert turn.provider_turn_id == f"test-provider-{turn.turn_id}"
+        assert isinstance(channel.events[0].payload, TurnStarted)
+        assert isinstance(channel.events[-1].payload, terminal_type)
+        runtime_audit = next(
+            event
+            for event in audit.events
+            if event.event_name == f"runtime.turn.{terminal_state.value}"
+            and event.correlation.turn_id == turn.turn_id
+            and event.metadata
+        )
+        assert runtime_audit.state is terminal_state
+        assert runtime_audit.metadata == {
+            "usage": {"input_tokens": 3, "output_tokens": 5},
+            "stop_reason": "end_turn",
+        }
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=1)
