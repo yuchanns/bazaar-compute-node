@@ -25,6 +25,10 @@ from .system_service import (
 )
 
 _STAGING_DIRECTORY = f"{__distribution__}.staging"
+# uv writes UTF-8 whatever the console is set to, so a Windows node in a
+# non-UTF-8 locale would otherwise report its diagnostics as mojibake. Left
+# unset for PowerShell, which writes in the console's own encoding.
+_UV_OUTPUT_ENCODING = "utf-8"
 _REPLACE_MANAGED_FILE = TextTemplate.from_resource(
     "system_service/replace_managed_file.ps1"
 )
@@ -52,7 +56,12 @@ def _uv_executable() -> str:
     return executable
 
 
-def _run(command: list[str], *, env: Mapping[str, str] | None = None) -> None:
+def _run(
+    command: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    encoding: str | None = None,
+) -> None:
     # no deadline: uv already gives up on a request that never answers, and a
     # second limit would only cut short an install that was merely slow
     result = subprocess.run(
@@ -60,6 +69,7 @@ def _run(command: list[str], *, env: Mapping[str, str] | None = None) -> None:
         capture_output=True,
         check=False,
         text=True,
+        encoding=encoding,
         errors="replace",
         env=None if env is None else {**os.environ, **env},
     )
@@ -71,16 +81,23 @@ def _run(command: list[str], *, env: Mapping[str, str] | None = None) -> None:
         )
 
 
+def _install_command(version: str) -> list[str]:
+    return [
+        _uv_executable(),
+        "tool",
+        "install",
+        "--force",
+        # the release was announced by PyPI's own API minutes ago, while uv
+        # resolves against a separately cached index that can still predate it
+        # and would then report the version as one that does not exist
+        "--refresh-package",
+        __distribution__,
+        f"{__distribution__}=={version}",
+    ]
+
+
 def _install_posix(version: str) -> None:
-    _run(
-        [
-            _uv_executable(),
-            "tool",
-            "install",
-            "--force",
-            f"{__distribution__}=={version}",
-        ]
-    )
+    _run(_install_command(version), encoding=_UV_OUTPUT_ENCODING)
 
 
 def _refresh_windows_wrapper() -> None:
@@ -166,13 +183,8 @@ def _install_windows(version: str) -> None:
     build = Path(tempfile.mkdtemp(prefix=f"{__distribution__}-", dir=tool_directory))
     try:
         _run(
-            [
-                _uv_executable(),
-                "tool",
-                "install",
-                "--force",
-                f"{__distribution__}=={version}",
-            ],
+            _install_command(version),
+            encoding=_UV_OUTPUT_ENCODING,
             env={
                 "UV_TOOL_DIR": str(build),
                 # the entry points belong to the live installation, whose
