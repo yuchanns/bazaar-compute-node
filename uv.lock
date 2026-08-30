@@ -110,7 +110,7 @@ wheels = [
 
 [[package]]
 name = "bazaar-compute-node"
-version = "0.1.36rc1"
+version = "0.1.36"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
