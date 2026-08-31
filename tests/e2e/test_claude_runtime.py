@@ -49,7 +49,6 @@ from bazaar_compute_node.core.models import (
     MessageDirection,
     RuntimeSession,
     SenderIdentity,
-    ToolCallTextDelta,
     TurnCancelled,
     TurnCompleted,
     TurnFailed,
@@ -322,8 +321,9 @@ async def test_real_claude_turn_stream_and_running_steer(
         await channel.inject(first)
         async with asyncio.timeout(120):
             while not any(
-                isinstance(event.payload, ToolCallTextDelta)
-                and "thirty common animals" in event.payload.text
+                isinstance(event.payload, ContentDelta)
+                and event.payload.kind is ContentDeltaKind.AGENT_MESSAGE
+                and event.envelope.turn_id == f"turn-{first.message_id}"
                 for event in channel.stream_events
             ):
                 await asyncio.sleep(0.05)
@@ -632,7 +632,10 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
 async def test_real_claude_background_lifecycle_keeps_process_running(
     system_temp_dir: Path,
 ) -> None:
-    node, channel, audit, agent_id = _node(system_temp_dir / "claude-background.sock")
+    node, channel, audit, agent_id = _node(
+        system_temp_dir / "claude-background.sock",
+        sandbox_mode=RuntimeSandboxMode.WORKSPACE_WRITE,
+    )
     session_id = f"claude-background-{uuid4()}"
     scoped_session_id = str(
         uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session_id}")
@@ -646,12 +649,14 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
             "findings."
         ),
     )
+    background_note = resolve_workspace_dir(agent_id) / f"background-{uuid4()}.md"
     second = _message(
         session_id,
         seq=2,
         body=(
-            "While that review is being incorporated, summarize the practical "
-            "difference between prime and composite numbers in two sentences."
+            f"While that review is being incorporated, add a project note named "
+            f"{background_note.name} summarizing the practical difference between "
+            "prime and composite numbers in two sentences, then confirm the update."
         ),
     )
     try:
@@ -768,6 +773,8 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
         assert channel.approval_requests
     finally:
         await node.stop()
+        if background_note.exists():
+            background_note.unlink()
 
 
 @pytest.mark.asyncio
