@@ -1117,7 +1117,9 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         assert anchor.sender is not None
         channel_request = channel.channel_approval_requests[-1]
         assert channel_request.provider_sender_id == anchor.sender.id
-        assert channel_request.provider_reply_to_message_id is None
+        assert (
+            channel_request.provider_reply_to_message_id == anchor.provider_message_id
+        )
         assert runtime.approval_results[-1].decision is ApprovalDecision.APPROVED
     finally:
         await orchestrator.stop(timeout=1)
@@ -2616,7 +2618,7 @@ async def test_runtime_error_feedback() -> None:
     finally:
         await orchestrator.stop(timeout=1)
 
-    # a reminder system message replies to its target without a reply id
+    # a reminder system message replies to the human anchor it speaks for
     orchestrator, channel, runtime, storage, _ = await make_node()
     anchor = make_message(seq=1, message_id=str(uuid7()))
     try:
@@ -2627,6 +2629,22 @@ async def test_runtime_error_feedback() -> None:
             "bcn-1",
             direction=MessageDirection.INBOUND,
         )[0]
+        reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
+            Reminder(
+                reminder_id="pending",
+                owner_session_id=canonical_anchor.session_id,
+                anchor_message_id=canonical_anchor.message_id,
+                title="Review",
+                state=ReminderState.SCHEDULED,
+                next_fire_at_ms=10,
+                repeat_rule=None,
+                timezone="UTC",
+                revision=1,
+                last_occurrence_no=0,
+                created_at_ms=2,
+                updated_at_ms=2,
+            )
+        )
         reminder_message = await cast(IStorage, storage).save_message(
             Message(
                 direction=MessageDirection.INBOUND,
@@ -2645,6 +2663,7 @@ async def test_runtime_error_feedback() -> None:
                 metadata={
                     "sender_kind": SenderKind.SYSTEM.value,
                     "system_message_kind": SystemMessageKind.REMINDER.value,
+                    "reminder_id": reminder.reminder_id,
                 },
             )
         )
@@ -2659,7 +2678,9 @@ async def test_runtime_error_feedback() -> None:
         assert request.session_id == canonical_anchor.session_id
         assert request.target_kind is canonical_anchor.target_kind
         assert request.provider_thread_id == canonical_anchor.provider_thread_id
-        assert request.provider_reply_to_message_id is None
+        assert (
+            request.provider_reply_to_message_id == canonical_anchor.provider_message_id
+        )
     finally:
         await orchestrator.stop(timeout=1)
 
