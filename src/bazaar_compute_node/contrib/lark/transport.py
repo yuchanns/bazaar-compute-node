@@ -7,6 +7,7 @@ import random
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from time import monotonic, time_ns
 from typing import Any
 
@@ -42,6 +43,7 @@ MAX_RAW_EVENTS = 256
 MAX_FRAGMENT_MESSAGES = 128
 MAX_FRAGMENT_COUNT = 64
 MAX_FRAGMENT_AGE_SECONDS = 5.0
+TRANSPORT_HEARTBEAT_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,9 @@ MessageHandler = Callable[
     [str, Mapping[str, object], Frame],
     Awaitable[MessageHandlerResult] | MessageHandlerResult,
 ]
+ConnectionOperation = Callable[[], Awaitable[None]]
+ConnectionTask = asyncio.Task[bool]
+ConnectionTaskScheduler = Callable[[ConnectionOperation, str], ConnectionTask]
 
 
 @dataclass(slots=True)
@@ -95,10 +100,9 @@ class LarkTransport:
         self._runner: asyncio.Task[None] | None = None
         self._connection: Any | None = None
         self._endpoint: LarkEndpoint | None = None
-        self._send_lock = asyncio.Lock()
         self._stopping = asyncio.Event()
         self._ready = asyncio.Event()
-        self._post_ack_tasks: set[asyncio.Task[None]] = set()
+        self._connection_tasks: set[ConnectionTask] = set()
         self._startup_error: BaseException | None = None
         self._startup_deadline = 0.0
         self._state = "stopped"
@@ -129,6 +133,7 @@ class LarkTransport:
             "last_message_disposition": self._last_message_disposition,
             "last_message_filter_reason": self._last_message_filter_reason,
             "fragment_messages": len(self._fragments),
+            "connection_tasks": len(self._connection_tasks),
         }
 
     @property
@@ -162,12 +167,6 @@ class LarkTransport:
     async def stop(self, *, timeout: float) -> None:
         self._state = "stopping"
         self._stopping.set()
-        post_ack_tasks = tuple(self._post_ack_tasks)
-        for task in post_ack_tasks:
-            task.cancel()
-        if post_ack_tasks:
-            await asyncio.gather(*post_ack_tasks, return_exceptions=True)
-        self._post_ack_tasks.clear()
         connection = self._connection
         if connection is not None:
             await _close_connection(connection)
@@ -283,6 +282,7 @@ class LarkTransport:
             endpoint.url,
             autoping=True,
             autoclose=True,
+            heartbeat=TRANSPORT_HEARTBEAT_SECONDS,
             max_msg_size=MAX_FRAME_BYTES,
         )
         connection = await request
@@ -294,9 +294,26 @@ class LarkTransport:
         if not self._ready.is_set():
             self._ready.set()
 
-        heartbeat = asyncio.create_task(
-            self._heartbeat(connection, endpoint),
-            name="bcn-lark-heartbeat",
+        failure: asyncio.Future[Exception] = asyncio.get_running_loop().create_future()
+        connection_tasks: set[ConnectionTask] = set()
+        self._connection_tasks = connection_tasks
+
+        def schedule(operation: ConnectionOperation, name: str) -> ConnectionTask:
+            task = asyncio.create_task(
+                self._run_connection_task(
+                    connection,
+                    operation,
+                    failure,
+                ),
+                name=name,
+            )
+            connection_tasks.add(task)
+            task.add_done_callback(connection_tasks.discard)
+            return task
+
+        schedule(
+            partial(self._heartbeat, connection, endpoint),
+            "bcn-lark-heartbeat",
         )
         try:
             async for message in connection:
@@ -312,10 +329,34 @@ class LarkTransport:
                     raise LarkTransportError("websocket", "receive_error")
                 data = message.data if message_type is not None else message
                 if isinstance(data, bytes):
-                    await self._handle_binary(data)
+                    await self._handle_binary(connection, data, schedule)
         finally:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
+            tasks = tuple(connection_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if self._connection_tasks is connection_tasks:
+                self._connection_tasks = set()
+        if failure.done():
+            raise failure.result()
+
+    async def _run_connection_task(
+        self,
+        connection: Any,
+        operation: ConnectionOperation,
+        failure: asyncio.Future[Exception],
+    ) -> bool:
+        try:
+            await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            if not failure.done():
+                failure.set_result(error)
+            await _close_connection(connection)
+            return False
+        return True
 
     async def _heartbeat(self, connection: Any, endpoint: LarkEndpoint) -> None:
         while not self._stopping.is_set():
@@ -333,32 +374,43 @@ class LarkTransport:
             )
             await self._send_frame(connection, frame)
 
-    async def _handle_binary(self, raw: bytes) -> None:
+    async def _handle_binary(
+        self,
+        connection: Any,
+        raw: bytes,
+        schedule: ConnectionTaskScheduler,
+    ) -> None:
         frame = decode_frame(raw)
         if frame.method == CONTROL_METHOD:
-            await self._handle_control(frame)
+            await self._handle_control(connection, frame, schedule)
         elif frame.method == DATA_METHOD:
-            await self._handle_data(frame)
+            await self._handle_data(connection, frame, schedule)
         else:
             raise FrameDecodeError("frame method is unsupported")
 
-    async def _handle_control(self, frame: Frame) -> None:
+    async def _handle_control(
+        self,
+        connection: Any,
+        frame: Frame,
+        schedule: ConnectionTaskScheduler,
+    ) -> None:
         message_type = _required_header(frame.headers, HEADER_TYPE)
         if message_type == MESSAGE_PING:
-            connection = self._connection
-            if connection is None:
-                raise LarkTransportError("pong", "connection_closed")
-            await self._send_frame(
-                connection,
-                Frame(
-                    SeqID=frame.SeqID,
-                    LogID=frame.LogID,
-                    service=frame.service,
-                    method=CONTROL_METHOD,
-                    headers=[Header(key=HEADER_TYPE, value=MESSAGE_PONG)],
-                    payload=frame.payload,
-                    LogIDNew=frame.LogIDNew,
+            schedule(
+                partial(
+                    self._send_frame,
+                    connection,
+                    Frame(
+                        SeqID=frame.SeqID,
+                        LogID=frame.LogID,
+                        service=frame.service,
+                        method=CONTROL_METHOD,
+                        headers=[Header(key=HEADER_TYPE, value=MESSAGE_PONG)],
+                        payload=frame.payload,
+                        LogIDNew=frame.LogIDNew,
+                    ),
                 ),
+                "bcn-lark-pong",
             )
             return
         if message_type not in {MESSAGE_PING, MESSAGE_PONG}:
@@ -387,7 +439,12 @@ class LarkTransport:
                     client_config=config,
                 )
 
-    async def _handle_data(self, frame: Frame) -> None:
+    async def _handle_data(
+        self,
+        connection: Any,
+        frame: Frame,
+        schedule: ConnectionTaskScheduler,
+    ) -> None:
         message_type = _required_header(frame.headers, HEADER_TYPE)
         if message_type not in {MESSAGE_EVENT, MESSAGE_CARD}:
             raise FrameDecodeError("data frame type is unsupported")
@@ -409,32 +466,56 @@ class LarkTransport:
             decoded = json.loads(payload.decode("utf-8"))
         except ValueError:
             self._message_mapping_failures += 1
-            await self._send_ack(frame, code=500, started_at=monotonic())
+            self._schedule_ack(
+                schedule,
+                connection,
+                frame,
+                code=500,
+                started_at=monotonic(),
+            )
             self._last_message_disposition = "failed"
             return
         if not isinstance(decoded, Mapping):
             self._message_mapping_failures += 1
-            await self._send_ack(frame, code=500, started_at=monotonic())
+            self._schedule_ack(
+                schedule,
+                connection,
+                frame,
+                code=500,
+                started_at=monotonic(),
+            )
             self._last_message_disposition = "failed"
             return
 
         started_at = monotonic()
         self._events_received += 1
         self._last_event_at_ms = time_ns() // 1_000_000
-        ack_sent = False
+        ack_task: ConnectionTask | None = None
         try:
             handler = self._on_message
             if handler is None:
                 self._messages_filtered += 1
                 self._last_message_disposition = "filtered"
                 self._last_message_filter_reason = "handler_unavailable"
-                await self._send_ack(frame, code=200, started_at=started_at)
+                self._schedule_ack(
+                    schedule,
+                    connection,
+                    frame,
+                    code=200,
+                    started_at=started_at,
+                )
                 return
 
             direct_response = _is_direct_response(message_type, decoded)
             if not direct_response:
-                await self._send_ack(frame, code=200, started_at=started_at)
-                ack_sent = True
+                ack_task = self._schedule_ack(
+                    schedule,
+                    connection,
+                    frame,
+                    code=200,
+                    started_at=started_at,
+                )
+                await asyncio.sleep(0)
             result = handler(message_type, decoded, frame)
             if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
                 result = await result
@@ -456,28 +537,87 @@ class LarkTransport:
                 self._last_message_disposition = "queued"
                 self._last_message_filter_reason = None
             if direct_response:
-                await self._send_ack(
+                self._schedule_ack(
+                    schedule,
+                    connection,
                     frame,
                     code=ack_code,
                     payload=ack_payload,
                     started_at=started_at,
+                    post_ack=result.post_ack if isinstance(result, LarkAck) else None,
                 )
-                ack_sent = True
-            if isinstance(result, LarkAck) and result.post_ack is not None:
-                post_ack_task = asyncio.create_task(
-                    _run_post_ack(result.post_ack),
-                    name="bcn-lark-post-ack",
+            elif isinstance(result, LarkAck) and result.post_ack is not None:
+                assert ack_task is not None
+                schedule(
+                    partial(_run_post_ack_after, ack_task, result.post_ack),
+                    "bcn-lark-post-ack",
                 )
-                self._post_ack_tasks.add(post_ack_task)
-                post_ack_task.add_done_callback(self._post_ack_tasks.discard)
         except Exception:  # noqa: BLE001
             self._message_mapping_failures += 1
             self._last_message_disposition = "failed"
-            if not ack_sent:
-                await self._send_ack(frame, code=500, started_at=started_at)
+            if ack_task is None:
+                self._schedule_ack(
+                    schedule,
+                    connection,
+                    frame,
+                    code=500,
+                    started_at=started_at,
+                )
+
+    def _schedule_ack(
+        self,
+        schedule: ConnectionTaskScheduler,
+        connection: Any,
+        frame: Frame,
+        *,
+        code: int,
+        started_at: float,
+        payload: bytes | None = None,
+        post_ack: Callable[[], Awaitable[None]] | None = None,
+    ) -> ConnectionTask:
+        if post_ack is None:
+            operation = partial(
+                self._send_ack,
+                connection,
+                frame,
+                code=code,
+                payload=payload,
+                started_at=started_at,
+            )
+        else:
+            operation = partial(
+                self._send_ack_and_post,
+                connection,
+                frame,
+                code=code,
+                payload=payload,
+                started_at=started_at,
+                post_ack=post_ack,
+            )
+        return schedule(operation, "bcn-lark-ack")
+
+    async def _send_ack_and_post(
+        self,
+        connection: Any,
+        frame: Frame,
+        *,
+        code: int,
+        payload: bytes | None,
+        started_at: float,
+        post_ack: Callable[[], Awaitable[None]],
+    ) -> None:
+        await self._send_ack(
+            connection,
+            frame,
+            code=code,
+            payload=payload,
+            started_at=started_at,
+        )
+        await _run_post_ack(post_ack)
 
     async def _send_ack(
         self,
+        connection: Any,
         frame: Frame,
         *,
         code: int,
@@ -508,15 +648,11 @@ class LarkTransport:
             ),
             LogIDNew=frame.LogIDNew,
         )
-        connection = self._connection
-        if connection is None:
-            raise LarkTransportError("ack", "connection_closed")
         await self._send_frame(connection, ack)
 
     async def _send_frame(self, connection: Any, frame: Frame) -> None:
         encoded = encode_frame(frame)
-        async with self._send_lock:
-            await connection.send_bytes(encoded)
+        await connection.send_bytes(encoded)
 
     def _add_fragment(
         self,
@@ -649,6 +785,14 @@ async def _run_post_ack(callback: Callable[[], Awaitable[None]]) -> None:
         raise
     except Exception:  # noqa: BLE001
         return
+
+
+async def _run_post_ack_after(
+    ack_task: ConnectionTask,
+    callback: Callable[[], Awaitable[None]],
+) -> None:
+    if await ack_task:
+        await _run_post_ack(callback)
 
 
 async def _close_connection(connection: Any) -> None:

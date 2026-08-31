@@ -4,7 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -127,8 +127,24 @@ async def test_lark_transport_acks_before_mapping() -> None:
         timer_wheel=TimerWheel(),
         on_message=handler,
     )
-    transport._connection = _Connection()
+    connection = _Connection()
+    transport._connection = connection
     transport._state = "connected"
+    connection_tasks: set[asyncio.Task[bool]] = set()
+
+    async def run(operation: Callable[[], Awaitable[None]]) -> bool:
+        await operation()
+        return True
+
+    def schedule(
+        operation: Callable[[], Awaitable[None]],
+        name: str,
+    ) -> asyncio.Task[bool]:
+        task = asyncio.create_task(run(operation), name=name)
+        connection_tasks.add(task)
+        task.add_done_callback(connection_tasks.discard)
+        return task
+
     frame = Frame(
         SeqID=1,
         LogID=2,
@@ -152,13 +168,14 @@ async def test_lark_transport_acks_before_mapping() -> None:
         ).encode("utf-8"),
     )
 
-    task = asyncio.create_task(transport._handle_data(frame))
+    task = asyncio.create_task(transport._handle_data(connection, frame, schedule))
     try:
         await asyncio.wait_for(ack_sent.wait(), timeout=0.1)
         assert handler_started_when_ack_sent == [False]
     finally:
         release_handler.set()
         await asyncio.wait_for(task, timeout=0.1)
+        await asyncio.gather(*connection_tasks)
 
     assert len(frames) == 1
     assert frames[0].payload == b'{"code":200}'
