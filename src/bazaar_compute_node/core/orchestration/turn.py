@@ -27,6 +27,7 @@ from ..models import (
     Message,
     RuntimeEventEnvelope,
     RuntimeEventState,
+    RuntimeOutputEvent,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -94,6 +95,7 @@ def _runtime_event_signal(payload: TurnPayload) -> SessionRuntimeSignal:
     return SessionRuntimeSignal.UNKNOWN
 
 
+_RETRYABLE_STATES = frozenset({RuntimeTurnState.FAILED, RuntimeTurnState.UNKNOWN})
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
 
@@ -347,6 +349,7 @@ class SessionTurnCoordinator:
         turn: RuntimeTurn,
         *,
         input_text: str,
+        retry_available: bool = False,
     ) -> RuntimeTurn:
         if not isinstance(input_text, str) or not input_text:
             raise ValueError("turn input_text must be a non-empty string")
@@ -386,6 +389,7 @@ class SessionTurnCoordinator:
                 turn,
                 stream,
                 turn_correlation=turn_correlation,
+                retry_available=retry_available,
             )
         except RuntimeSessionUnavailable:
             await self._close_stream(stream)
@@ -410,6 +414,7 @@ class SessionTurnCoordinator:
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
                 session_id=context.bcn_session.id,
+                retry_available=retry_available,
             )
 
     async def resume_turn(
@@ -418,6 +423,8 @@ class SessionTurnCoordinator:
         context: SessionContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
+        *,
+        retry_available: bool = False,
     ) -> RuntimeTurn:
         return await self._consume_turn_stream(
             message,
@@ -425,6 +432,7 @@ class SessionTurnCoordinator:
             turn,
             stream,
             turn_correlation=self.turn_correlation(message, context, turn),
+            retry_available=retry_available,
         )
 
     async def _consume_turn_stream(
@@ -435,6 +443,7 @@ class SessionTurnCoordinator:
         stream: IRuntimeTurnStream,
         *,
         turn_correlation: CorrelationContext,
+        retry_available: bool = False,
     ) -> RuntimeTurn:
         observed_terminal = False
         try:
@@ -463,13 +472,17 @@ class SessionTurnCoordinator:
                             event.envelope,
                             payload,
                         )
-                        try:
-                            self._channel.accept_turn_event(
-                                event,
-                                session_id=context.bcn_session.id,
-                            )
-                        except Exception:
-                            self._logger.exception("channel rejected runtime event")
+                        if not (
+                            isinstance(payload, TurnUnknown)
+                            or (retry_available and isinstance(payload, TurnFailed))
+                        ):
+                            try:
+                                self._channel.accept_turn_event(
+                                    event,
+                                    session_id=context.bcn_session.id,
+                                )
+                            except Exception:
+                                self._logger.exception("channel rejected runtime event")
                         if _is_terminal_turn_event(payload):
                             observed_terminal = True
                             break
@@ -500,6 +513,7 @@ class SessionTurnCoordinator:
                     error_message="runtime stream ended without a terminal event",
                     correlation=turn_correlation,
                     session_id=context.bcn_session.id,
+                    retry_available=retry_available,
                 )
             return turn
         except asyncio.CancelledError:
@@ -522,6 +536,7 @@ class SessionTurnCoordinator:
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
                 session_id=context.bcn_session.id,
+                retry_available=retry_available,
             )
         finally:
             await self._close_stream(stream)
@@ -573,6 +588,60 @@ class SessionTurnCoordinator:
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
 
+    def notify_terminal(self, turn: RuntimeTurn, session_id: str) -> None:
+        """Announce a turn whose outcome only the orchestrator can settle."""
+
+        self._notify_channel_terminal(
+            turn,
+            turn.state,
+            ErrorKind(turn.error_kind) if turn.error_kind else None,
+            turn.error_message,
+            session_id,
+        )
+
+    def _notify_channel_terminal(
+        self,
+        turn: RuntimeTurn,
+        state: RuntimeTurnState,
+        error_kind: ErrorKind | None,
+        error_message: str | None,
+        session_id: str,
+    ) -> None:
+        kind = error_kind.value if error_kind else None
+        payload: TurnPayload
+        if state is RuntimeTurnState.COMPLETED:
+            payload = TurnCompleted(event_name="bcn.turn.completed")
+        elif state is RuntimeTurnState.CANCELLED:
+            payload = TurnCancelled(event_name="bcn.turn.cancelled")
+        elif state is RuntimeTurnState.FAILED:
+            payload = TurnFailed(
+                event_name="bcn.turn.failed",
+                error_kind=kind or ErrorKind.PROVIDER_FAILED.value,
+                error_message=error_message,
+            )
+        else:
+            payload = TurnUnknown(
+                event_name="bcn.turn.unknown",
+                error_kind=kind,
+                error_message=error_message,
+            )
+        try:
+            self._channel.accept_turn_event(
+                RuntimeOutputEvent(
+                    envelope=RuntimeEventEnvelope(
+                        session_id=session_id,
+                        runtime_session_id=turn.session_id,
+                        turn_id=turn.turn_id,
+                        provider_turn_id=turn.provider_turn_id,
+                        occurred_at_ms=self._clock(),
+                    ),
+                    payload=payload,
+                ),
+                session_id=session_id,
+            )
+        except Exception:
+            self._logger.exception("channel rejected synthesized terminal event")
+
     async def finish_turn(
         self,
         turn: RuntimeTurn,
@@ -582,6 +651,7 @@ class SessionTurnCoordinator:
         error_message: str | None,
         correlation: CorrelationContext | None,
         session_id: str,
+        retry_available: bool = False,
     ) -> RuntimeTurn:
         async with self._concurrency.for_session(session_id):
             if turn.state in {
@@ -615,6 +685,10 @@ class SessionTurnCoordinator:
                     error_kind=error_kind.value if error_kind else None,
                     error_message=error_message,
                 ),
+            )
+        if not (retry_available and state in _RETRYABLE_STATES):
+            self._notify_channel_terminal(
+                turn, state, error_kind, error_message, session_id
             )
         await self._audit.append(
             event_name=f"runtime.turn.{state.value}",

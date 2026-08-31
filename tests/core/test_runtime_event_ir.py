@@ -26,7 +26,6 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.timerwheel import TimerWheel
-from bazaar_compute_node.i18n import ENGLISH, create_translator
 
 
 def _message() -> Message:
@@ -82,8 +81,6 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
         ),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
-        translator=create_translator(ENGLISH),
-        error_feedback_detail=lambda _, message: message,
     )
     runtime.queue_turn_plan(
         TestTurnPlan(
@@ -115,6 +112,44 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
             "usage": {"input_tokens": 3, "output_tokens": 5},
             "stop_reason": "end_turn",
         }
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_synthesized_terminal_reaches_the_channel() -> None:
+    channel = TestChannel()
+    runtime = TestRuntime()
+    storage = MemoryStorage()
+    audit = RecordingAudit()
+    await storage.start(timeout=1)
+    orchestrator = SessionOrchestrator(
+        agent_id="agent-1",
+        channel=channel,
+        runtimes=(runtime,),
+        storage=storage.scope("agent-1", "Test Agent"),
+        audit=audit,
+        timeout_budget=TimeoutBudget(
+            startup_seconds=1,
+            provider_call_seconds=1,
+            command_seconds=1,
+            shutdown_seconds=1,
+        ),
+        timer_wheel=TimerWheel(),
+        workspace=Path.cwd,
+    )
+    runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED,)))
+    await orchestrator.start(timeout=1)
+    try:
+        turn = await orchestrator.handle_inbound(_message())
+
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.UNKNOWN
+        terminal = channel.events[-1].payload
+        assert isinstance(terminal, TurnUnknown)
+        assert "turn" in terminal.event_name.casefold()
+        assert channel.events[-1].envelope.turn_id == turn.turn_id
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=1)

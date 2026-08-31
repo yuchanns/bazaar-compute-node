@@ -458,7 +458,7 @@ def test_codex_delta_and_usage_notifications_are_structured() -> None:
     assert usage is not None
     assert usage.payload == UsageUpdated(
         total=TokenUsage(
-            input_tokens=100,
+            input_tokens=60,
             cached_input_tokens=40,
             cache_write_input_tokens=10,
             output_tokens=25,
@@ -466,7 +466,7 @@ def test_codex_delta_and_usage_notifications_are_structured() -> None:
             total_tokens=125,
         ),
         last=TokenUsage(
-            input_tokens=20,
+            input_tokens=12,
             cached_input_tokens=8,
             cache_write_input_tokens=2,
             output_tokens=7,

@@ -39,20 +39,10 @@ def test_translator_preserves_interpolation_values_and_requires_exact_keys() -> 
     english = create_translator(ENGLISH)
     schinese = create_translator(SIMPLIFIED_CHINESE)
 
-    assert english.text("runtime.error.failed", {"error": detail}) == (
-        f"Execution failed: {detail}"
-    )
-    assert schinese.text("runtime.error.failed", {"error": detail}) == (
-        f"执行失败：{detail}"
-    )
-    assert english.text("runtime.error.unknown", {"error": detail}) == (
-        f"Execution status is unknown: {detail}"
-    )
-    assert schinese.text("runtime.error.unknown", {"error": detail}) == (
-        f"执行状态未知：{detail}"
-    )
+    assert english.text("activity.error", {"error": detail}) == f"⚠️ {detail}"
+    assert schinese.text("activity.error", {"error": detail}) == f"⚠️ {detail}"
     with pytest.raises(ValueError, match="missing: error"):
-        english.text("runtime.error.failed")
+        english.text("activity.error")
     with pytest.raises(ValueError, match="unexpected: extra"):
         english.text("cli.agent.add", {"extra": "value"})
     assert english.text("missing.message.key", {"extra": "value"}) == (

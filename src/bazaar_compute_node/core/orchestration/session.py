@@ -9,7 +9,6 @@ from pathlib import Path
 from time import time_ns
 from uuid import uuid7
 
-from ...i18n import Translator
 from ..approval import IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import IChannel
@@ -50,7 +49,6 @@ from ..timerwheel import (
 )
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
-from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
 from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 from .turn import (
@@ -59,6 +57,8 @@ from .turn import (
     inbox_notice,
 )
 from .upgrade_notice import UpgradeAnnounced, UpgradeNotice, UpgradePending
+
+_FAILURE_STATES = frozenset({RuntimeTurnState.FAILED, RuntimeTurnState.UNKNOWN})
 
 
 def _current_time_ms() -> int:
@@ -121,8 +121,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         timer_wheel: TimerWheel,
         runtime_idle_timeout_ms: int = 0,
         workspace: Callable[[], Path],
-        translator: Translator,
-        error_feedback_detail: Callable[[str, str], str],
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
@@ -172,14 +170,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._delivery = OutboundDeliveryService(
             channel,
             timeout=timeout_budget.provider_call_seconds,
-        )
-        self._error_reporter = RuntimeErrorReporter(
-            agent_id=agent_id,
-            delivery=self._delivery,
-            storage=storage,
-            audit=self._audit,
-            translator=translator,
-            detail=error_feedback_detail,
         )
         self._command_service = SessionCommandService(
             delivery=self._delivery,
@@ -728,12 +718,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                 await self._start_runtime_timer_if_idle(
                     batch[0].context.bcn_session.id,
                 )
-                try:
-                    await self._error_reporter.report(batch[0].message, result)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    self._logger.exception("runtime error feedback failed")
                 await self._record_runtime_outcome(batch[0].message, result)
                 for notification in batch:
                     if (
@@ -954,7 +938,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> bool:
         """Ban the runtime that just failed and say whether another can try."""
 
-        if turn.state not in MESSAGE_KEYS:
+        if turn.state not in _FAILURE_STATES:
             return False
         if len(attempted) >= len(self._runtimes.all()):
             return False
@@ -972,7 +956,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         index = self._session_runtime_indices.get(message.session_id)
         if index is None:
             return
-        if turn.state in MESSAGE_KEYS:
+        if turn.state in _FAILURE_STATES:
             event_name = "runtime.pool.banned"
             ban_until_ms = self._runtimes.record_failure(index)
         elif turn.state is RuntimeTurnState.COMPLETED:
@@ -1232,6 +1216,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 )
             )
             attempted.add(context.runtime_session.runtime_index)
+            retry_available = len(attempted) < len(self._runtimes.all())
             for establishment_attempt in range(2):
                 (
                     context,
@@ -1305,6 +1290,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                             message, context, turn
                         ),
                         session_id=context.bcn_session.id,
+                        retry_available=retry_available,
                     )
                     if runtime_state is SessionRuntimeState.UNKNOWN:
                         self._abandon_runtime_session(context.runtime_session)
@@ -1332,6 +1318,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                         context,
                         turn,
                         input_text=input_text,
+                        retry_available=retry_available,
                     )
                     runtime_state = self._state_machine.get(context.bcn_session.id)
                     while runtime_state is SessionRuntimeState.UNKNOWN:
@@ -1378,6 +1365,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                             context,
                             recovered_turn,
                             recovered_stream,
+                            retry_available=retry_available,
                         )
                         runtime_state = self._state_machine.get(context.bcn_session.id)
                     if (
@@ -1403,6 +1391,8 @@ class SessionOrchestrator(IAsyncLifecycle):
                     ):
                         handed_over = True
                         break
+                    if result.state is RuntimeTurnState.UNKNOWN:
+                        self._turns.notify_terminal(result, context.bcn_session.id)
                     return result
                 except RuntimeSessionUnavailable as error:
                     self._state_machine.apply_observation(
@@ -1441,6 +1431,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                             turn,
                         ),
                         session_id=context.bcn_session.id,
+                        retry_available=retry_available,
                     )
                     await self._discard_runtime_session(context.runtime_session)
                     if await self._hand_turn_to_another_runtime(

@@ -5,9 +5,23 @@ import asyncio
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
 
-from bazaar_compute_node.core.channel import AgentScopedChannel, ChannelIdentity
+from bazaar_compute_node.core.channel import (
+    Channel,
+    ChannelIdentity,
+    ChannelSendRequest,
+)
 from bazaar_compute_node.core.concurrency import SessionLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
+from bazaar_compute_node.core.models import (
+    ChannelTargetKind,
+    Message,
+    MessageDirection,
+    RuntimeEventEnvelope,
+    RuntimeOutputEvent,
+    SenderIdentity,
+    TurnCompleted,
+    TurnFailed,
+)
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
     RuntimeExpire,
@@ -27,9 +41,9 @@ def test_channel_identity_requires_one_safe_provider_field() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> None:
+async def test_channel_delegates_identity_during_lifecycle() -> None:
     provider = TestChannel()
-    channel = AgentScopedChannel("agent-test", provider)
+    channel = Channel("agent-test", provider)
     provider.identity = ChannelIdentity(id="provider-id", name="Provider Name")
 
     assert channel.get_identity() is None
@@ -39,6 +53,101 @@ async def test_agent_scoped_channel_delegates_identity_during_lifecycle() -> Non
     finally:
         await channel.stop(timeout=1)
     assert channel.get_identity() is None
+
+
+def test_channel_redacts_terminal_error_secrets() -> None:
+    provider = TestChannel()
+    channel = Channel(
+        "agent-test",
+        provider,
+        redact=lambda session_id, text: text.replace(f"token-{session_id}", "<hidden>"),
+    )
+    envelope = RuntimeEventEnvelope(
+        session_id="bcn-1",
+        runtime_session_id="runtime-1",
+        turn_id="turn-1",
+        provider_turn_id=None,
+        occurred_at_ms=1,
+    )
+
+    channel.accept_turn_event(
+        RuntimeOutputEvent(
+            envelope=envelope,
+            payload=TurnFailed(
+                event_name="bcn.turn.failed",
+                error_kind="provider_failed",
+                error_message="auth failed for token-bcn-1",
+            ),
+        ),
+        session_id="bcn-1",
+    )
+    channel.accept_turn_event(
+        RuntimeOutputEvent(
+            envelope=envelope,
+            payload=TurnCompleted(event_name="bcn.turn.completed"),
+        ),
+        session_id="bcn-1",
+    )
+
+    failed = provider.events[0].payload
+    assert isinstance(failed, TurnFailed)
+    assert failed.error_message == "auth failed for <hidden>"
+    assert isinstance(provider.events[1].payload, TurnCompleted)
+
+
+@pytest.mark.asyncio
+async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
+    provider = TestChannel()
+    channel = Channel("agent-test", provider)
+    await channel.start(timeout=1)
+    await provider.inject(
+        Message(
+            direction=MessageDirection.INBOUND,
+            seq=1,
+            message_id="00000000-0000-4000-8000-000000000001",
+            session_id="oc_abc",
+            channel_session_id="oc_abc",
+            channel="test",
+            provider_thread_id="user-id",
+            provider_message_id="provider-1",
+            received_at_ms=1,
+            sender=SenderIdentity(id="sender-id", name="Sender"),
+            target="dm:oc_abc",
+            target_kind=ChannelTargetKind.DM,
+            body="hello",
+        )
+    )
+
+    received = await anext(channel.receive())
+    local_session_id = received.session_id
+    assert local_session_id != "oc_abc"
+
+    channel.accept_turn_event(
+        RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=local_session_id,
+                runtime_session_id="runtime-1",
+                turn_id="turn-1",
+                provider_turn_id=None,
+                occurred_at_ms=1,
+            ),
+            payload=TurnCompleted(event_name="bcn.turn.completed"),
+        ),
+        session_id=local_session_id,
+    )
+    await channel.send(
+        ChannelSendRequest(
+            session_id=local_session_id,
+            body="done",
+            attachments=(),
+            target_kind=ChannelTargetKind.DM,
+            provider_thread_id="user-id",
+        ),
+        timeout=1,
+    )
+
+    assert provider.events[0].envelope.session_id == "oc_abc"
+    assert provider.send_attempts[0].session_id == "oc_abc"
 
 
 def test_timeout_budget_requires_finite_positive_boundaries() -> None:
