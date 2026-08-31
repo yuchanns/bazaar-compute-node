@@ -176,6 +176,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._error_reporter = RuntimeErrorReporter(
             agent_id=agent_id,
             delivery=self._delivery,
+            storage=storage,
             audit=self._audit,
             translator=translator,
             detail=error_feedback_detail,

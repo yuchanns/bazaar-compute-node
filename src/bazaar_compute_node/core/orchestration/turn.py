@@ -22,7 +22,6 @@ from ..models import (
     ChannelSession,
     ChannelTargetKind,
     Message,
-    MessageDirection,
     RuntimeEvent,
     RuntimeEventState,
     RuntimeSession,
@@ -33,10 +32,10 @@ from ..models import (
     SessionRuntimeObservationSource,
     SessionRuntimeSignal,
     StreamEvent,
-    SystemMessageKind,
 )
 from ..runtime import IRuntimeTurnStream, RuntimeSessionUnavailable
 from ..storage import IStorageScope
+from .reminder import resolve_reminder_anchor
 from .runtime_pool import RuntimePool
 from .services import SessionAuditRecorder, SessionRuntimeStateMachine
 
@@ -239,30 +238,11 @@ class SessionTurnCoordinator:
                 inbound_seq=message.seq,
             )
             sender_kind = message.sender_kind
-            approval_target = message
-            reminder_approval = (
-                message.system_message_kind is SystemMessageKind.REMINDER
+            approval_target = await resolve_reminder_anchor(
+                self._storage,
+                self._agent_id,
+                message,
             )
-            if reminder_approval:
-                approval_target = None
-                reminder_id = message.metadata.get("reminder_id")
-                if isinstance(reminder_id, str):
-                    try:
-                        reminder = await self._storage.get_reminder(
-                            message.session_id,
-                            reminder_id,
-                        )
-                    except ValueError:
-                        reminder = None
-                    if reminder is not None:
-                        anchor = await self._storage.get_owned_message(
-                            self._agent_id,
-                            reminder.owner_session_id,
-                            reminder.anchor_message_id,
-                            direction=MessageDirection.INBOUND,
-                        )
-                        if anchor is not None:
-                            approval_target = anchor
             approval_target_kind = (
                 approval_target.sender_kind.value
                 if approval_target is not None
@@ -295,7 +275,9 @@ class SessionTurnCoordinator:
                         approval=request,
                         target_kind=context.channel_session.target_kind,
                         provider_thread_id=context.channel_session.provider_thread_id,
-                        provider_reply_to_message_id=message.provider_message_id,
+                        provider_reply_to_message_id=(
+                            approval_target.provider_message_id
+                        ),
                         provider_sender_id=(
                             approval_target.sender.id
                             if approval_target.sender is not None

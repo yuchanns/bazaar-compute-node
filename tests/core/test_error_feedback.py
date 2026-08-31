@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from bcn_test_support import RecordingAudit, TestChannel
+from bcn_test_support import MemoryStorage, RecordingAudit, TestChannel
 
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
@@ -64,6 +64,7 @@ def make_reporter(
     *,
     language: str = ENGLISH,
     detail: Callable[[str, str], str] = lambda _, text: text,
+    storage: MemoryStorage | None = None,
 ) -> RuntimeErrorReporter:
     budget = TimeoutBudget(
         startup_seconds=1,
@@ -74,6 +75,7 @@ def make_reporter(
     return RuntimeErrorReporter(
         agent_id="agent-1",
         delivery=OutboundDeliveryService(channel, timeout=1),
+        storage=(storage or MemoryStorage()).scope("workspace-1", "Test Agent"),
         audit=SessionAuditRecorder(sink=audit, timeout_budget=budget, clock=lambda: 3),
         translator=create_translator(language),
         detail=detail,

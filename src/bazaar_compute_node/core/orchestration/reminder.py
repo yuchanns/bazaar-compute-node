@@ -20,7 +20,7 @@ from ..models import (
     SystemMessageKind,
 )
 from ..reminder import next_recurrence_ms, render_reminder_fire_body
-from ..storage import IStorage
+from ..storage import IStorage, IStorageScope
 from ..timerwheel import (
     Timer,
     TimerCancelledError,
@@ -35,6 +35,37 @@ _DUE_BATCH_SIZE = 100
 
 def _current_time_ms() -> int:
     return time_ns() // 1_000_000
+
+
+async def resolve_reminder_anchor(
+    storage: IStorageScope,
+    agent_id: str,
+    message: Message,
+) -> Message | None:
+    """Return the inbound message a fired Reminder speaks for.
+
+    A Reminder system message carries no provider identity of its own, so
+    everything the runtime addresses back to the Channel — approval prompts,
+    error feedback — has to resolve the human anchor the Reminder was
+    scheduled against. Non-Reminder messages speak for themselves.
+    """
+    if message.system_message_kind is not SystemMessageKind.REMINDER:
+        return message
+    reminder_id = message.metadata.get("reminder_id")
+    if not isinstance(reminder_id, str):
+        return None
+    try:
+        reminder = await storage.get_reminder(message.session_id, reminder_id)
+    except ValueError:
+        return None
+    if reminder is None:
+        return None
+    return await storage.get_owned_message(
+        agent_id,
+        reminder.owner_session_id,
+        reminder.anchor_message_id,
+        direction=MessageDirection.INBOUND,
+    )
 
 
 class ReminderScheduler(IAsyncLifecycle):
@@ -380,4 +411,4 @@ class ReminderScheduler(IAsyncLifecycle):
             )
 
 
-__all__ = ["ReminderScheduler"]
+__all__ = ["ReminderScheduler", "resolve_reminder_anchor"]

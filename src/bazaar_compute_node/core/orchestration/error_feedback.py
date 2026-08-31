@@ -16,7 +16,9 @@ from ..models import (
     RuntimeTurn,
     RuntimeTurnState,
 )
+from ..storage import IStorageScope
 from .delivery import OutboundDeliveryService
+from .reminder import resolve_reminder_anchor
 from .services import SessionAuditRecorder
 
 MESSAGE_KEYS: Mapping[RuntimeTurnState, str] = MappingProxyType(
@@ -41,6 +43,7 @@ class RuntimeErrorReporter:
         *,
         agent_id: str,
         delivery: OutboundDeliveryService,
+        storage: IStorageScope,
         audit: SessionAuditRecorder,
         translator: Translator,
         detail: Callable[[str, str], str],
@@ -49,6 +52,7 @@ class RuntimeErrorReporter:
             raise ValueError("agent_id must be a non-empty string")
         self._agent_id = agent_id
         self._delivery = delivery
+        self._storage = storage
         self._audit = audit
         self._translator = translator
         self._detail = detail
@@ -85,6 +89,11 @@ class RuntimeErrorReporter:
         provider_thread_id = message.provider_thread_id
         if provider_thread_id is None:
             raise RuntimeError("runtime error feedback has no provider thread")
+        anchor = await resolve_reminder_anchor(
+            self._storage,
+            self._agent_id,
+            message,
+        )
         result = await self._delivery.deliver(
             ChannelSendRequest(
                 session_id=message.session_id,
@@ -92,7 +101,9 @@ class RuntimeErrorReporter:
                 attachments=(),
                 target_kind=message.target_kind,
                 provider_thread_id=provider_thread_id,
-                provider_reply_to_message_id=message.provider_message_id,
+                provider_reply_to_message_id=(
+                    anchor.provider_message_id if anchor is not None else None
+                ),
             )
         )
         metadata: dict[str, object] = {
