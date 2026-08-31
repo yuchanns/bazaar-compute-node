@@ -81,10 +81,6 @@ def build_approval_response(
     }
 
 
-def deny_approval(message: str) -> JsonObject:
-    return {"behavior": "deny", "message": message}
-
-
 def _description(
     request: Mapping[str, object], tool_input: Mapping[str, object]
 ) -> str:
@@ -112,6 +108,5 @@ def _description(
 __all__ = [
     "ApprovalEnvelope",
     "build_approval_response",
-    "deny_approval",
     "parse_approval_request",
 ]

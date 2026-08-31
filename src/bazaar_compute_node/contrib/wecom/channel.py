@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ...core.approval import approval_action_text
 from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -38,6 +39,7 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
+from ...i18n import ENGLISH, Translator, create_translator
 from .markdown import split_markdown
 from .outbound import (
     AttachmentReader,
@@ -51,6 +53,10 @@ from .outbound import (
 _STOP = object()
 _MAX_MEDIA_BYTES = 25 * 1024 * 1024
 _MAX_MARKDOWN_BYTES = 20_480
+_CARD_UPDATE_TIMEOUT_SECONDS = 5.0
+_APPROVE_KEY = "bcn_approve"
+_REJECT_KEY = "bcn_reject"
+_RESOLVED_KEY = "bcn_resolved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +73,13 @@ class _InboundContent:
     body: str
     attachments: tuple[InboundAttachment, ...]
     fingerprint: str
+
+
+@dataclass(slots=True)
+class _PendingApproval:
+    request: ChannelApprovalRequest
+    task_id: str
+    future: asyncio.Future[ApprovalResult]
 
 
 class WeComChannel(IChannel):
@@ -92,6 +105,10 @@ class WeComChannel(IChannel):
         self._connection: aiohttp.ClientWebSocketResponse | None = None
         self._send_lock = asyncio.Lock()
         self._pending_acks: dict[str, asyncio.Future[Mapping[str, object]]] = {}
+        self._pending_approvals: dict[str, _PendingApproval] = {}
+        self._approval_task_ids_by_request: dict[str, str] = {}
+        self._approval_card_update_tasks: set[asyncio.Task[None]] = set()
+        self._translator: Translator = context.translator or create_translator(ENGLISH)
         self._degraded = False
         self._heartbeat_ack = ""
         self._state = "stopped"
@@ -109,6 +126,10 @@ class WeComChannel(IChannel):
         self._last_message_disposition: str | None = None
         self._last_message_filter_reason: str | None = None
         self._last_event_type: str | None = None
+        self._approval_card_update_attempts = 0
+        self._approval_card_update_unknown = 0
+        self._approval_card_update_failures = 0
+        self._last_approval_card_update_disposition: str | None = None
         self._logger = logging.getLogger("bazaar_compute_node.channel.wecom")
         if not self._logger.handlers:
             self._logger.addHandler(logging.StreamHandler())
@@ -138,6 +159,13 @@ class WeComChannel(IChannel):
             "last_message_disposition": self._last_message_disposition,
             "last_message_filter_reason": self._last_message_filter_reason,
             "last_event_type": self._last_event_type,
+            "approval_card_updates_pending": len(self._approval_card_update_tasks),
+            "approval_card_update_attempts": self._approval_card_update_attempts,
+            "approval_card_update_unknown": self._approval_card_update_unknown,
+            "approval_card_update_failures": self._approval_card_update_failures,
+            "last_approval_card_update_disposition": (
+                self._last_approval_card_update_disposition
+            ),
         }
 
     def get_identity(self) -> ChannelIdentity | None:
@@ -165,6 +193,20 @@ class WeComChannel(IChannel):
 
     async def stop(self, *, timeout: float) -> None:
         self._stopping.set()
+        decided_at_ms = time_ns() // 1_000_000
+        for pending in tuple(self._pending_approvals.values()):
+            if not pending.future.done():
+                pending.future.set_result(
+                    ApprovalResult(
+                        request_id=pending.request.approval.request_id,
+                        decision=ApprovalDecision.REJECTED,
+                        decided_at_ms=decided_at_ms,
+                        reason="channel_stopped",
+                    )
+                )
+        self._pending_approvals.clear()
+        self._approval_task_ids_by_request.clear()
+        await self._cancel_approval_card_updates()
         try:
             await asyncio.wait_for(self._send_lock.acquire(), timeout=timeout)
         except TimeoutError:
@@ -780,12 +822,61 @@ class WeComChannel(IChannel):
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
-        del timeout
-        return ApprovalResult(
-            request_id=request.approval.request_id,
-            decision=ApprovalDecision.APPROVED,
-            decided_at_ms=time_ns() // 1_000_000,
+        request_id = request.approval.request_id
+        if timeout <= 0:
+            raise TimeoutError("WeCom approval card delivery timed out")
+        if request_id in self._approval_task_ids_by_request:
+            raise ValueError("WeCom approval request is already pending")
+        connection = self._connection
+        if connection is None or connection.closed or not self._ready.is_set():
+            raise RuntimeError("WeCom channel is not ready for approvals")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        pending = _PendingApproval(
+            request=request,
+            task_id=uuid4().hex,
+            future=loop.create_future(),
         )
+        self._pending_approvals[pending.task_id] = pending
+        self._approval_task_ids_by_request[request_id] = pending.task_id
+        try:
+            try:
+                await asyncio.wait_for(
+                    self._send_lock.acquire(),
+                    timeout=max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError as error:
+                raise TimeoutError(
+                    "WeCom approval card delivery timed out waiting for the send lock"
+                ) from error
+            try:
+                result = await self._request(
+                    connection,
+                    command="aibot_send_msg",
+                    body=visible_message_body(
+                        target_id=request.provider_thread_id,
+                        target_kind=request.target_kind,
+                        message_type="template_card",
+                        content=self._approval_card(pending),
+                    ),
+                    deadline=deadline,
+                    rejection_kind="provider_rejected_approval",
+                    rejection_message="WeCom rejected the approval card",
+                    unknown_kind="approval_outcome_unknown",
+                    unknown_message="WeCom approval card outcome is unknown",
+                )
+            finally:
+                self._send_lock.release()
+            if result.status is not ProviderCallStatus.CONFIRMED:
+                raise RuntimeError(
+                    result.error_message or "WeCom approval card delivery failed"
+                )
+            return await pending.future
+        finally:
+            self._pending_approvals.pop(pending.task_id, None)
+            if self._approval_task_ids_by_request.get(request_id) == pending.task_id:
+                self._approval_task_ids_by_request.pop(request_id, None)
 
     async def _run(self) -> None:
         network_attempt = 0
@@ -900,6 +991,7 @@ class WeComChannel(IChannel):
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+                await self._cancel_approval_card_updates()
                 for pending in self._pending_acks.values():
                     if not pending.done():
                         pending.set_exception(
@@ -935,7 +1027,6 @@ class WeComChannel(IChannel):
         command = frame.get("cmd")
         body = frame.get("body")
         if command == "aibot_event_callback":
-            self._ignored_event_frames += 1
             event = body.get("event") if isinstance(body, dict) else None
             event_type = event.get("eventtype") if isinstance(event, dict) else None
             self._last_event_type = (
@@ -945,6 +1036,68 @@ class WeComChannel(IChannel):
                 "wecom.event.received",
                 event_type=self._last_event_type,
             )
+            if self._last_event_type == "template_card_event" and isinstance(
+                event, dict
+            ):
+                task_id = event.get("task_id")
+                event_key = event.get("event_key")
+                pending = (
+                    self._pending_approvals.get(task_id)
+                    if isinstance(task_id, str)
+                    else None
+                )
+                if (
+                    pending is not None
+                    and not pending.future.done()
+                    and event_key in {_APPROVE_KEY, _REJECT_KEY}
+                ):
+                    decision = (
+                        ApprovalDecision.APPROVED
+                        if event_key == _APPROVE_KEY
+                        else ApprovalDecision.REJECTED
+                    )
+                    request_id = self._request_id(frame)
+                    connection = self._connection
+                    pending.future.set_result(
+                        ApprovalResult(
+                            request_id=pending.request.approval.request_id,
+                            decision=decision,
+                            decided_at_ms=time_ns() // 1_000_000,
+                        )
+                    )
+                    if connection is None or connection.closed or not request_id:
+                        self._approval_card_update_failures += 1
+                        self._last_approval_card_update_disposition = (
+                            "connection_unavailable"
+                        )
+                        self._observe(
+                            "wecom.approval.card_update_failed",
+                            error_type="ConnectionError",
+                            outcome="transport_failed",
+                            task_id=pending.task_id,
+                        )
+                        return
+                    task = asyncio.create_task(
+                        self._send_approval_card_update(
+                            connection,
+                            encode_request(
+                                "aibot_respond_update_msg",
+                                request_id,
+                                {
+                                    "response_type": "update_template_card",
+                                    "template_card": self._approval_card(
+                                        pending, decision=decision
+                                    ),
+                                },
+                            ),
+                            task_id=pending.task_id,
+                        ),
+                        name=f"bcn-wecom-approval-card-update-{pending.task_id}",
+                    )
+                    self._approval_card_update_tasks.add(task)
+                    task.add_done_callback(self._approval_card_update_tasks.discard)
+                    return
+            self._ignored_event_frames += 1
             return
         now_ms = time_ns() // 1_000_000
         self._message_frames_received += 1
@@ -1093,6 +1246,50 @@ class WeComChannel(IChannel):
             referenced=reply_to_message_id is not None,
         )
 
+    async def _send_approval_card_update(
+        self,
+        connection: aiohttp.ClientWebSocketResponse,
+        payload: str,
+        *,
+        task_id: str,
+    ) -> None:
+        self._approval_card_update_attempts += 1
+        try:
+            await asyncio.wait_for(
+                connection.send_str(payload),
+                timeout=_CARD_UPDATE_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            self._approval_card_update_failures += 1
+            self._approval_card_update_unknown += 1
+            self._last_approval_card_update_disposition = (
+                "transport_error_outcome_unknown"
+            )
+            self._observe(
+                "wecom.approval.card_update_failed",
+                error_type=type(error).__name__,
+                outcome="unknown",
+                task_id=task_id,
+            )
+            return
+        self._approval_card_update_unknown += 1
+        self._last_approval_card_update_disposition = "sent_outcome_unknown"
+        self._observe(
+            "wecom.approval.card_update_sent",
+            outcome="unknown",
+            task_id=task_id,
+        )
+
+    async def _cancel_approval_card_updates(self) -> None:
+        tasks = tuple(self._approval_card_update_tasks)
+        self._approval_card_update_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     def _filter_message(
         self,
         reason: str,
@@ -1126,6 +1323,47 @@ class WeComChannel(IChannel):
                 default=str,
             ),
         )
+
+    def _approval_card(
+        self,
+        pending: _PendingApproval,
+        *,
+        decision: ApprovalDecision | None = None,
+    ) -> Mapping[str, object]:
+        action = approval_action_text(self._translator, pending.request.approval.action)
+        title = self._translator.text("approval.prompt.title").lstrip("#").strip()
+        if decision is None:
+            buttons = [
+                {
+                    "text": self._translator.text("approval.button.approve"),
+                    "key": _APPROVE_KEY,
+                },
+                {
+                    "text": self._translator.text("approval.button.reject"),
+                    "key": _REJECT_KEY,
+                },
+            ]
+        else:
+            status_key = (
+                "approval.card.status.approved"
+                if decision is ApprovalDecision.APPROVED
+                else "approval.card.status.rejected"
+            )
+            buttons = [
+                {
+                    "text": self._translator.text(status_key),
+                    "key": _RESOLVED_KEY,
+                }
+            ]
+        card: dict[str, object] = {
+            "card_type": "button_interaction",
+            "main_title": {"title": title, "desc": action},
+            "button_list": buttons,
+            "task_id": pending.task_id,
+        }
+        if pending.request.approval.description:
+            card["sub_title_text"] = pending.request.approval.description
+        return card
 
     async def _content(
         self, body: Mapping[str, object], message_type: str

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import time_ns
 
+from ...core.approval import approval_action_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...i18n import ENGLISH, Translator, create_translator
@@ -16,11 +17,6 @@ from .identity import parse_provider_thread_id
 _CALLBACK_PREFIX = "bcn"
 _CALLBACK_ANSWER_TIMEOUT_SECONDS = 10.0
 _RESOLVED_TOKEN_LIMIT = 256
-_ACTION_MESSAGE_KEYS = {
-    "command_execution": "approval.action.command_execution",
-    "file_change": "approval.action.file_change",
-    "permissions": "approval.action.permissions",
-}
 
 
 @dataclass(slots=True)
@@ -406,12 +402,7 @@ class TelegramApprovalChannel(TelegramChannel):
         return None
 
     def _approval_markdown(self, request: ChannelApprovalRequest) -> str:
-        action_key = _ACTION_MESSAGE_KEYS.get(request.approval.action)
-        action = (
-            self._translator.text(action_key)
-            if action_key is not None
-            else request.approval.action.replace("_", " ")
-        )
+        action = approval_action_text(self._translator, request.approval.action)
         description = request.approval.description
         return self._translator.text(
             "approval.prompt.telegram",

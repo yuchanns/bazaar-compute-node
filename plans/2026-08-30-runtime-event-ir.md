@@ -593,8 +593,9 @@ Telegram 没有元素级补丁，编辑是整条替换，因此投影层在内�
 与拒绝，`task_id` 由投影层生成并与该次审批请求关联。
 
 收决定：`_receive_message` 对 `aibot_event_callback` 的模板卡片事件不再丢弃，按 `task_id` 找到对应
-的审批请求，由按钮 key 得出同意或拒绝，唤醒等待中的 `request_approval`；超出调用方给定的
-`timeout` 仍未收到时按既有的超时语义处理。
+的审批请求，由按钮 key 得出同意或拒绝，唤醒等待中的 `request_approval`。调用方给定的 `timeout`
+只约束发卡的发送锁与 WebSocket ACK。WeCom 协议没有人工审批时限，因此发卡成功后 channel 永不
+超时，等待用户决定或 channel 生命周期结束。
 
 回终态：事件处理路径先以决定唤醒审批 Future，再立即创建由当前 WebSocket connection 持有的受管
 task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续接收其它会话的帧。应答透传
@@ -656,7 +657,12 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 - 测试覆盖发卡帧的构造、模板卡片事件唤醒等待中的 `request_approval`、同意与拒绝各自的终态卡片、
   应答帧透传事件的 `req_id` 且 `task_id` 一致、挂住会话 A 的终态卡回写时会话 B 的入站帧仍被
   reader 接收、5 秒窗口失败的 unknown 观测、上游取消以及连接/channel stop 清理等待状态与回写 task；
-- checks：`tests/contrib/wecom/` 与 Task 1 相同的 gates。
+- 移除 Claude permission bridge 使用通用 `provider_call_seconds` 包裹人工审批等待的
+  `asyncio.timeout`，等待只由用户决定、显式取消或 session 生命周期结束；
+- 删除只服务于该 timeout deny 的死代码，同步修订 Claude runtime 原计划中的 approval contract；
+- 真实 Claude E2E 将原自动超时场景改为审批挂起时停止 node，验证 lifecycle cancellation 清理；
+- checks：`tests/contrib/wecom/`、`tests/contrib/claude/` 与 Task 1 相同的 gates；真实 Claude E2E
+  留在 Task 9 最终验收。
 
 ### Task 5：Telegram 编辑能力与审批就地更新
 

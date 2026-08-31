@@ -469,7 +469,7 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
     workspace = resolve_workspace_dir(agent_id)
     approved_note = workspace / f"approved-{uuid4()}.md"
     rejected_note = workspace / f"rejected-{uuid4()}.md"
-    timed_out_note = workspace / f"timed-out-{uuid4()}.md"
+    interrupted_note = workspace / f"interrupted-{uuid4()}.md"
     try:
         await node.start()
         approved = _message(
@@ -511,29 +511,24 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
 
         approval_count = len(channel.approval_requests)
         channel.block_approvals()
-        timed_out = _message(
+        interrupted = _message(
             session_id,
             seq=3,
             body=(
-                f"Add a project note named {timed_out_note.name} summarizing the "
+                f"Add a project note named {interrupted_note.name} summarizing the "
                 "pending release risks, then report the outcome."
             ),
         )
-        await channel.inject(timed_out)
+        await channel.inject(interrupted)
         async with asyncio.timeout(90):
-            while not channel.cancelled_approval_requests:
+            while len(channel.approval_requests) == approval_count:
                 await asyncio.sleep(0.05)
-        channel.release_approvals()
-        await _wait_for_turn_completion(
-            audit,
-            session_id=scoped_session_id,
-            turn_id=f"turn-{timed_out.message_id}",
-        )
-        assert len(channel.approval_requests) > approval_count
+        await node.stop()
+        assert channel.cancelled_approval_requests
     finally:
         channel.release_approvals()
         await node.stop()
-        for note in (approved_note, rejected_note, timed_out_note):
+        for note in (approved_note, rejected_note, interrupted_note):
             if note.exists():
                 note.unlink()
 

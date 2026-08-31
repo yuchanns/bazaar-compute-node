@@ -3,7 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..i18n import Translator
 from .models import ApprovalRequest, ApprovalResult
+
+_ACTION_MESSAGE_KEYS = {
+    "command_execution": "approval.action.command_execution",
+    "file_change": "approval.action.file_change",
+    "permissions": "approval.action.permissions",
+}
+
+
+def approval_action_text(translator: Translator, action: str) -> str:
+    message_key = _ACTION_MESSAGE_KEYS.get(action)
+    return (
+        translator.text(message_key)
+        if message_key is not None
+        else action.replace("_", " ")
+    )
 
 
 class IApprovalHandler(Protocol):

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from time import time_ns
 from uuid import uuid4
 
+from ...core.approval import approval_action_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...core.timerwheel import TimerWheel
@@ -23,11 +24,6 @@ _FEEDBACK_TIMEOUT_SECONDS = 5.0
 _CARD_UPDATE_TIMEOUT_SECONDS = 5.0
 _RESOLVED_TOKEN_LIMIT = 256
 _CARD_ACTION_EVENT_TYPES = frozenset({"card.action.trigger", "p2.card.action.trigger"})
-_ACTION_MESSAGE_KEYS = {
-    "command_execution": "approval.action.command_execution",
-    "file_change": "approval.action.file_change",
-    "permissions": "approval.action.permissions",
-}
 
 
 @dataclass(slots=True)
@@ -436,12 +432,7 @@ def _approval_card_content(
     translator: Translator,
     decision: ApprovalDecision | None = None,
 ) -> str:
-    action_key = _ACTION_MESSAGE_KEYS.get(request.approval.action)
-    action = (
-        translator.text(action_key)
-        if action_key is not None
-        else request.approval.action.replace("_", " ")
-    )
+    action = approval_action_text(translator, request.approval.action)
     markdown = translator.text(
         "approval.prompt.lark",
         {

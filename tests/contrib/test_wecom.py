@@ -1,9 +1,13 @@
 import asyncio
 import hashlib
 import json
+import socket
 from pathlib import Path
+from typing import cast
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.wecom.channel import WeComChannel
@@ -25,6 +29,7 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ApprovalResult,
     ChannelTargetKind,
     Message,
     OutboundAttachment,
@@ -32,6 +37,7 @@ from bazaar_compute_node.core.models import (
     SenderKind,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
+from bazaar_compute_node.core.timerwheel import TimerWheel
 
 
 def test_wecom_exposes_provider_id_without_display_name(tmp_path: Path) -> None:
@@ -89,7 +95,60 @@ def test_wecom_filename_decodes_provider_content_disposition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wecom_approval_uses_nested_request_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("event_key", "decision", "status"),
+    (
+        ("bcn_approve", ApprovalDecision.APPROVED, "Approved"),
+        ("bcn_reject", ApprovalDecision.REJECTED, "Rejected"),
+    ),
+)
+async def test_wecom_approval_card_event_updates_card_and_wakes_request(
+    tmp_path: Path,
+    event_key: str,
+    decision: ApprovalDecision,
+    status: str,
+) -> None:
+    loop = asyncio.get_running_loop()
+    sent_card: asyncio.Future[dict[str, object]] = loop.create_future()
+    updated_card: asyncio.Future[dict[str, object]] = loop.create_future()
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        connection = web.WebSocketResponse()
+        await connection.prepare(request)
+        subscribe = await connection.receive_json()
+        await connection.send_json(
+            {"headers": subscribe["headers"], "errcode": 0, "errmsg": "ok"}
+        )
+        frame = await connection.receive_json()
+        sent_card.set_result(frame)
+        await connection.send_json(
+            {"headers": frame["headers"], "errcode": 0, "errmsg": "ok"}
+        )
+        task_id = frame["body"]["template_card"]["task_id"]
+        await connection.send_json(
+            {
+                "cmd": "aibot_event_callback",
+                "headers": {"req_id": "card-event-request"},
+                "body": {
+                    "event": {
+                        "eventtype": "template_card_event",
+                        "event_key": event_key,
+                        "task_id": task_id,
+                    }
+                },
+            }
+        )
+        updated_card.set_result(await connection.receive_json())
+        await connection.receive()
+        return connection
+
+    application = web.Application()
+    application.router.add_get("/ws", websocket)
+    server = TestServer(application)
+    timer_wheel = TimerWheel()
+    await server.start_server()
+    await timer_wheel.start()
+
     async def referenced_paths_2() -> set[str]:
         return set()
 
@@ -99,30 +158,360 @@ async def test_wecom_approval_uses_nested_request_identity(tmp_path: Path) -> No
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_2),
             options={},
             workspace=lambda: tmp_path,
+            timer_wheel=timer_wheel,
         ),
         bot_id="bot-id",
         secret="secret",
-        websocket_url="wss://example.invalid",
+        websocket_url=str(server.make_url("/ws")),
     )
-    approval = ApprovalRequest(
-        request_id="approval-1",
-        session_id="session-1",
-        runtime_session_id="runtime-1",
-        action="command_execution",
-        created_at_ms=1,
-    )
+    try:
+        await channel.start(timeout=1)
+        approval = ApprovalRequest(
+            request_id="approval-1",
+            session_id="session-1",
+            runtime_session_id="runtime-1",
+            action="command_execution",
+            created_at_ms=1,
+            description="Run the requested command.",
+        )
+        result = await channel.request_approval(
+            ChannelApprovalRequest(
+                approval=approval,
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="user-id",
+            ),
+            timeout=1,
+        )
+        sent = await asyncio.wait_for(sent_card, timeout=1)
+        updated = await asyncio.wait_for(updated_card, timeout=1)
+    finally:
+        await channel.stop(timeout=1)
+        await timer_wheel.close()
+        await server.close()
 
-    result = await channel.request_approval(
-        ChannelApprovalRequest(
-            approval=approval,
-            target_kind=ChannelTargetKind.DM,
-            provider_thread_id="thread-1",
-        ),
-        timeout=1,
-    )
-
+    body = cast(dict[str, object], sent["body"])
+    card = cast(dict[str, object], body["template_card"])
+    main_title = cast(dict[str, object], card["main_title"])
+    buttons = cast(list[dict[str, object]], card["button_list"])
+    assert sent["cmd"] == "aibot_send_msg"
+    assert body["chatid"] == "user-id"
+    assert body["chat_type"] == 1
+    assert card["card_type"] == "button_interaction"
+    assert main_title["desc"] == "command execution"
+    assert card["sub_title_text"] == "Run the requested command."
+    assert [button["key"] for button in buttons] == [
+        "bcn_approve",
+        "bcn_reject",
+    ]
     assert result.request_id == approval.request_id
+    assert result.decision is decision
+    body = cast(dict[str, object], updated["body"])
+    terminal = cast(dict[str, object], body["template_card"])
+    buttons = cast(list[dict[str, object]], terminal["button_list"])
+    assert updated["cmd"] == "aibot_respond_update_msg"
+    assert cast(dict[str, object], updated["headers"])["req_id"] == (
+        "card-event-request"
+    )
+    assert body["response_type"] == "update_template_card"
+    assert terminal["task_id"] == card["task_id"]
+    assert buttons[0]["text"] == status
+    assert channel.health["approval_card_update_unknown"] == 1
+    assert channel.health["last_approval_card_update_disposition"] == (
+        "sent_outcome_unknown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_wecom_slow_card_update_does_not_block_another_session(
+    tmp_path: Path,
+) -> None:
+    loop = asyncio.get_running_loop()
+    callback_sent: asyncio.Future[None] = loop.create_future()
+    disconnect = asyncio.Event()
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        connection = web.WebSocketResponse(max_msg_size=32 * 1024 * 1024)
+        await connection.prepare(request)
+        subscribe = await connection.receive_json()
+        await connection.send_json({"headers": subscribe["headers"], "errcode": 0})
+        card = await connection.receive_json()
+        await connection.send_json({"headers": card["headers"], "errcode": 0})
+        task_id = card["body"]["template_card"]["task_id"]
+        transport = request.transport
+        assert transport is not None
+        server_socket = transport.get_extra_info("socket")
+        assert server_socket is not None
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        await connection.send_json(
+            {
+                "cmd": "aibot_event_callback",
+                "headers": {"req_id": "slow-card-update"},
+                "body": {
+                    "event": {
+                        "eventtype": "template_card_event",
+                        "event_key": "bcn_approve",
+                        "task_id": task_id,
+                    }
+                },
+            }
+        )
+        await connection.send_json(
+            {
+                "cmd": "aibot_msg_callback",
+                "headers": {"req_id": "other-session-message"},
+                "body": {
+                    "msgid": "message-from-another-session",
+                    "create_time": 123,
+                    "aibotid": "bot-id",
+                    "from": {"userid": "other-user"},
+                    "chattype": "single",
+                    "msgtype": "text",
+                    "text": {"content": "Can this session still get through?"},
+                },
+            }
+        )
+        transport.pause_reading()
+        callback_sent.set_result(None)
+        await disconnect.wait()
+        transport.close()
+        return connection
+
+    application = web.Application()
+    application.router.add_get("/ws", websocket)
+    server = TestServer(application)
+    timer_wheel = TimerWheel()
+    await server.start_server()
+    await timer_wheel.start()
+
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+            timer_wheel=timer_wheel,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url=str(server.make_url("/ws")),
+    )
+    approval_task: asyncio.Task[ApprovalResult] | None = None
+    inbound = channel.receive()
+    try:
+        await channel.start(timeout=1)
+        approval_task = asyncio.create_task(
+            channel.request_approval(
+                ChannelApprovalRequest(
+                    approval=ApprovalRequest(
+                        request_id="approval-with-slow-update",
+                        session_id="session-1",
+                        runtime_session_id="runtime-1",
+                        action="command_execution",
+                        created_at_ms=1,
+                        description="x" * (16 * 1024 * 1024),
+                    ),
+                    target_kind=ChannelTargetKind.DM,
+                    provider_thread_id="user-id",
+                ),
+                timeout=5,
+            )
+        )
+        await asyncio.wait_for(callback_sent, timeout=5)
+        result = await asyncio.wait_for(approval_task, timeout=1)
+        approval_task = None
+        message = await asyncio.wait_for(anext(inbound), timeout=1)
+        assert result.decision is ApprovalDecision.APPROVED
+        assert message.provider_message_id == "message-from-another-session"
+        pending_updates = channel.health["approval_card_updates_pending"]
+        assert isinstance(pending_updates, int)
+        assert pending_updates > 0
+        async with asyncio.timeout(6):
+            while channel.health["approval_card_updates_pending"]:
+                await asyncio.sleep(0.05)
+    finally:
+        disconnect.set()
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
+            await asyncio.gather(approval_task, return_exceptions=True)
+        await channel.stop(timeout=5)
+        await timer_wheel.close()
+        await server.close()
+
+    assert channel.health["approval_card_updates_pending"] == 0
+    assert channel.health["approval_card_update_failures"] == 1
+    assert channel.health["approval_card_update_unknown"] == 1
+    assert channel.health["last_approval_card_update_disposition"] == (
+        "transport_error_outcome_unknown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_wecom_approval_cancellation_cleans_pending_request(
+    tmp_path: Path,
+) -> None:
+    loop = asyncio.get_running_loop()
+    first_card_sent: asyncio.Future[None] = loop.create_future()
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        connection = web.WebSocketResponse()
+        await connection.prepare(request)
+        subscribe = await connection.receive_json()
+        await connection.send_json({"headers": subscribe["headers"], "errcode": 0})
+        frame = await connection.receive_json()
+        await connection.send_json({"headers": frame["headers"], "errcode": 0})
+        first_card_sent.set_result(None)
+        frame = await connection.receive_json()
+        await connection.send_json({"headers": frame["headers"], "errcode": 0})
+        task_id = frame["body"]["template_card"]["task_id"]
+        await connection.send_json(
+            {
+                "cmd": "aibot_event_callback",
+                "headers": {"req_id": "retry-card-event"},
+                "body": {
+                    "event": {
+                        "eventtype": "template_card_event",
+                        "event_key": "bcn_approve",
+                        "task_id": task_id,
+                    }
+                },
+            }
+        )
+        await connection.receive_json()
+        await connection.receive()
+        return connection
+
+    application = web.Application()
+    application.router.add_get("/ws", websocket)
+    server = TestServer(application)
+    timer_wheel = TimerWheel()
+    await server.start_server()
+    await timer_wheel.start()
+
+    async def referenced_paths_3() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_3),
+            options={},
+            workspace=lambda: tmp_path,
+            timer_wheel=timer_wheel,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url=str(server.make_url("/ws")),
+    )
+    approval = ChannelApprovalRequest(
+        approval=ApprovalRequest(
+            request_id="approval-cancelled",
+            session_id="session-1",
+            runtime_session_id="runtime-1",
+            action="permissions",
+            created_at_ms=1,
+        ),
+        target_kind=ChannelTargetKind.GROUP,
+        provider_thread_id="group-id",
+    )
+    approval_task: asyncio.Task[ApprovalResult] | None = None
+    try:
+        await channel.start(timeout=1)
+        approval_task = asyncio.create_task(
+            channel.request_approval(approval, timeout=1)
+        )
+        await asyncio.wait_for(first_card_sent, timeout=1)
+        approval_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await approval_task
+        approval_task = None
+        result = await channel.request_approval(approval, timeout=1)
+    finally:
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
+            await asyncio.gather(approval_task, return_exceptions=True)
+        await channel.stop(timeout=1)
+        await timer_wheel.close()
+        await server.close()
+
+    assert result.request_id == "approval-cancelled"
     assert result.decision is ApprovalDecision.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_wecom_stop_rejects_pending_approval(tmp_path: Path) -> None:
+    loop = asyncio.get_running_loop()
+    sent_card: asyncio.Future[None] = loop.create_future()
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        connection = web.WebSocketResponse()
+        await connection.prepare(request)
+        subscribe = await connection.receive_json()
+        await connection.send_json({"headers": subscribe["headers"], "errcode": 0})
+        frame = await connection.receive_json()
+        await connection.send_json({"headers": frame["headers"], "errcode": 0})
+        sent_card.set_result(None)
+        await connection.receive()
+        return connection
+
+    application = web.Application()
+    application.router.add_get("/ws", websocket)
+    server = TestServer(application)
+    timer_wheel = TimerWheel()
+    await server.start_server()
+    await timer_wheel.start()
+
+    async def referenced_paths_4() -> set[str]:
+        return set()
+
+    channel = WeComChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths_4),
+            options={},
+            workspace=lambda: tmp_path,
+            timer_wheel=timer_wheel,
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url=str(server.make_url("/ws")),
+    )
+    approval_task: asyncio.Task[ApprovalResult] | None = None
+    try:
+        await channel.start(timeout=1)
+        approval_task = asyncio.create_task(
+            channel.request_approval(
+                ChannelApprovalRequest(
+                    approval=ApprovalRequest(
+                        request_id="approval-stopped",
+                        session_id="session-1",
+                        runtime_session_id="runtime-1",
+                        action="file_change",
+                        created_at_ms=1,
+                    ),
+                    target_kind=ChannelTargetKind.DM,
+                    provider_thread_id="user-id",
+                ),
+                timeout=1,
+            )
+        )
+        await asyncio.wait_for(sent_card, timeout=1)
+        await channel.stop(timeout=1)
+        result = await asyncio.wait_for(approval_task, timeout=1)
+    finally:
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
+            await asyncio.gather(approval_task, return_exceptions=True)
+        if channel.health["state"] != "stopped":
+            await channel.stop(timeout=1)
+        await timer_wheel.close()
+        await server.close()
+
+    assert result.request_id == "approval-stopped"
+    assert result.decision is ApprovalDecision.REJECTED
+    assert result.reason == "channel_stopped"
 
 
 def test_wecom_outbound_request_codec_uses_explicit_chat_type() -> None:
