@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -15,7 +14,6 @@ from ...core.models import (
     ContextCompactionStarted,
     RuntimeOutputEvent,
     ToolCallCompleted,
-    ToolCallDeltaKind,
     ToolCallFailed,
     ToolCallInteraction,
     ToolCallPatchUpdated,
@@ -28,7 +26,6 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
-from ...core.sanitization import redact_sensitive_text, redact_sensitive_value
 from ...core.timerwheel import TimerWheel
 from ...i18n import Translator
 from .api import LarkApi, LarkApiError
@@ -37,15 +34,12 @@ _REQUEST_TIMEOUT_SECONDS = 10.0
 _MAX_RATE_LIMIT_RETRIES = 3
 _MAX_PENDING_EVENTS = 1024
 _MAX_TOOL_NAME_BYTES = 64
-_MAX_INPUT_BYTES = 192
-_MAX_OUTPUT_BYTES = 192
-_MAX_SUMMARY_SOURCE_BYTES = 2048
-_MAX_ROW_BYTES = 512
+_MAX_ROW_BYTES = 128
 _FIXED_CARD_BYTES = 4096
 _FIXED_CARD_ELEMENTS = 20
 _MAX_CARD_BYTES = 30 * 1024
 _MAX_CARD_ELEMENTS = 200
-_MAX_ROWS_PER_CARD = 51
+_MAX_ROWS_PER_CARD = 180
 _CARD_REQUEST_INTERVAL_SECONDS = 0.1
 _LOGGER = logging.getLogger(__name__)
 _CARD_STOP = object()
@@ -77,10 +71,9 @@ class CardState:
 class _ActivityRow:
     card: CardState
     element_id: str
+    kind: str
     name: str
     status: str = "running"
-    input_text: str = ""
-    output_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,16 +109,10 @@ class LarkActivityProjector:
         self._timer_wheel = timer_wheel
         self._report_degraded = report_degraded
         self._title = translator.text("activity.title")
-        self._context_compaction = translator.text("activity.context_compaction")
-        self._input_label = translator.text("activity.label.input")
-        self._output_label = translator.text("activity.label.output")
+        self._tool_call = translator.text("activity.kind.tool_call")
+        self._context_compaction = translator.text("activity.kind.context_compaction")
         self._incomplete = translator.text("activity.incomplete")
         self._continued = translator.text("activity.continued")
-        self._statuses = {
-            "running": translator.text("activity.status.running"),
-            "completed": translator.text("activity.status.completed"),
-            "failed": translator.text("activity.status.failed"),
-        }
         self._turns: dict[tuple[str, str], _ActivityTurn] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._rate_lock = asyncio.Lock()
@@ -251,15 +238,12 @@ class LarkActivityProjector:
                     row = await self._new_row(
                         turn,
                         f"tool:{call.call_id}",
+                        self._tool_call,
                         call.name,
-                        input_text=_summary_source(call.input),
                     )
                 else:
                     row.name = call.name
                     row.status = "running"
-                    if call.input is not None:
-                        row.input_text = _summary_source(call.input)
-                    row.output_text = ""
                     self._queue_update(row)
             case ToolCallCompleted(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
@@ -268,57 +252,27 @@ class LarkActivityProjector:
                         turn,
                         call.call_id,
                         call.name,
-                        call.input,
                         status="completed",
-                        output_text=_summary_source(call.output),
                     )
                 else:
                     row.name = call.name
                     row.status = "completed"
-                    if call.output is not None:
-                        row.output_text = _summary_source(call.output)
                     self._queue_update(row)
-            case ToolCallFailed(call=call, error_message=error_message):
-                output = call.output if call.output is not None else error_message
+            case ToolCallFailed(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
                 if row is None:
                     await self._tool_row(
                         turn,
                         call.call_id,
                         call.name,
-                        call.input,
                         status="failed",
-                        output_text=_summary_source(output),
                     )
                 else:
                     row.name = call.name
                     row.status = "failed"
-                    if output is not None:
-                        row.output_text = _summary_source(output)
                     self._queue_update(row)
-            case ToolCallTextDelta(call_id=call_id, kind=kind, text=text):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    if kind is ToolCallDeltaKind.INPUT:
-                        row.input_text = _append_source(row.input_text, text)
-                    else:
-                        row.output_text = _append_source(row.output_text, text)
-                    self._queue_update(row)
-            case ToolCallPatchUpdated(call_id=call_id, changes=changes):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    row.output_text = _summary_source(
-                        [
-                            {"path": change.path, "kind": change.kind}
-                            for change in changes
-                        ]
-                    )
-                    self._queue_update(row)
-            case ToolCallInteraction(call_id=call_id, stdin=stdin):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    row.input_text = _append_source(row.input_text, stdin)
-                    self._queue_update(row)
+            case ToolCallTextDelta() | ToolCallPatchUpdated() | ToolCallInteraction():
+                pass
             case ContextCompactionStarted() | ContextCompactionCompleted():
                 if turn.cards:
                     await self._project_compaction(turn, item)
@@ -340,10 +294,8 @@ class LarkActivityProjector:
         turn: _ActivityTurn,
         call_id: str,
         name: str,
-        input_value: object,
         *,
         status: str,
-        output_text: str,
     ) -> _ActivityRow | None:
         row = turn.rows.get(f"tool:{call_id}")
         if row is not None:
@@ -354,10 +306,9 @@ class LarkActivityProjector:
         return await self._new_row(
             turn,
             f"tool:{call_id}",
+            self._tool_call,
             name,
             status=status,
-            input_text=_summary_source(input_value),
-            output_text=output_text,
         )
 
     async def _project_buffered_compactions(self, turn: _ActivityTurn) -> None:
@@ -380,6 +331,7 @@ class LarkActivityProjector:
                     turn,
                     row_id,
                     self._context_compaction,
+                    "",
                     status=(
                         "running"
                         if isinstance(payload, ContextCompactionStarted)
@@ -398,11 +350,10 @@ class LarkActivityProjector:
         self,
         turn: _ActivityTurn,
         row_id: str,
+        kind: str,
         name: str,
         *,
         status: str = "running",
-        input_text: str = "",
-        output_text: str = "",
     ) -> _ActivityRow | None:
         card = turn.cards[-1]
         if (
@@ -425,10 +376,9 @@ class LarkActivityProjector:
         row = _ActivityRow(
             card=card,
             element_id=element_id,
+            kind=kind,
             name=name,
             status=status,
-            input_text=input_text,
-            output_text=output_text,
         )
         turn.rows[row_id] = row
         card.used_elements += 1
@@ -643,26 +593,16 @@ class LarkActivityProjector:
 
     def _row_element(self, row: _ActivityRow) -> dict[str, object]:
         icon = {
-            "running": "⏳",
+            "running": "⌛️",
             "completed": "✅",
             "failed": "❌",
         }[row.status]
         name = _truncate_utf8(row.name, _MAX_TOOL_NAME_BYTES)
-        parts = [f"{icon} **{name}** · {self._statuses[row.status]}"]
-        input_text = _truncate_utf8(
-            redact_sensitive_text(row.input_text), _MAX_INPUT_BYTES
-        )
-        output_text = _truncate_utf8(
-            redact_sensitive_text(row.output_text), _MAX_OUTPUT_BYTES
-        )
-        if input_text:
-            parts.append(f"**{self._input_label}:** `{input_text}`")
-        if output_text:
-            parts.append(f"**{self._output_label}:** `{output_text}`")
+        suffix = f" · **{name}**" if name else ""
         return {
             "tag": "markdown",
             "element_id": row.element_id,
-            "content": "\n".join(parts),
+            "content": f"{icon} {row.kind}{suffix}",
         }
 
     @staticmethod
@@ -682,21 +622,6 @@ class LarkActivityProjector:
             )
             and "turn" in payload.event_name.casefold()
         )
-
-
-def _summary_source(value: object) -> str:
-    if value is None:
-        return ""
-    value = redact_sensitive_value(value)
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return _truncate_utf8(text, _MAX_SUMMARY_SOURCE_BYTES)
-
-
-def _append_source(current: str, text: str) -> str:
-    return _truncate_utf8(current + text, _MAX_SUMMARY_SOURCE_BYTES)
 
 
 def _truncate_utf8(value: str, limit: int) -> str:

@@ -169,7 +169,8 @@ async def test_lark_activity_is_lazy_and_consumes_unpaired_compaction() -> None:
             if method == "POST" and path.endswith("/elements")
         ]
         assert "Context compaction" in additions[0]["content"]
-        assert "In progress" in additions[0]["content"]
+        assert "⌛️" in additions[0]["content"]
+        assert "Tool call" in additions[1]["content"]
         assert "shell" in additions[1]["content"]
 
         _accept(
@@ -190,34 +191,29 @@ async def test_lark_activity_is_lazy_and_consumes_unpaired_compaction() -> None:
             )
         )[0]
         assert "reader" in last_addition["content"]
-        assert "Completed" in last_addition["content"]
+        assert "Tool call" in last_addition["content"]
         assert projector.active_turns == 0
 
 
 @pytest.mark.asyncio
-async def test_lark_activity_serializes_updates_reuses_retry_identity_and_redacts() -> (
-    None
-):
+async def test_lark_activity_serializes_updates_and_reuses_retry_identity() -> None:
     state = _OpenApiState(rate_limit_adds=2)
     async with _open_api(state) as (api, timer_wheel, _):
         projector = _projector(timer_wheel, set())
-        secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
         _accept(
             projector,
             api,
-            ToolCallStarted(
-                ToolCall("call-1", "shell", input={"token": secret, "query": "one"})
-            ),
+            ToolCallStarted(ToolCall("call-1", "shell")),
         )
         _accept(
             projector,
             api,
-            ToolCallStarted(ToolCall("call-1", "shell", input={"query": "two"})),
+            ToolCallStarted(ToolCall("call-1", "shell")),
         )
         _accept(
             projector,
             api,
-            ToolCallCompleted(ToolCall("call-1", "shell", output=secret)),
+            ToolCallCompleted(ToolCall("call-1", "shell")),
         )
         _accept(projector, api, TurnCompleted("turn.completed"))
         await projector.wait_terminal(TEST_SESSION_ID, timeout=4)
@@ -236,8 +232,8 @@ async def test_lark_activity_serializes_updates_reuses_retry_identity_and_redact
             str(payload.get("elements", payload.get("element", "")))
             for payload in operations
         )
-        assert secret not in rendered
-        assert "<redacted>" in rendered
+        assert "shell" in rendered
+        assert "Tool call" in rendered
         assert projector.rate_limit_retries == 2
 
 
@@ -288,7 +284,7 @@ async def test_lark_activity_continues_and_updates_the_original_card() -> None:
     state = _OpenApiState()
     async with _open_api(state) as (api, timer_wheel, _):
         projector = _projector(timer_wheel, set())
-        for index in range(52):
+        for index in range(181):
             _accept(
                 projector,
                 api,
@@ -300,7 +296,7 @@ async def test_lark_activity_continues_and_updates_the_original_card() -> None:
             ToolCallCompleted(ToolCall("call-0", "tool-0", output="done")),
         )
         _accept(projector, api, TurnCompleted("turn.completed"))
-        await projector.wait_terminal(TEST_SESSION_ID, timeout=8)
+        await projector.wait_terminal(TEST_SESSION_ID, timeout=25)
 
         assert state.card_count == 2
         old_card_update = next(
@@ -308,7 +304,7 @@ async def test_lark_activity_continues_and_updates_the_original_card() -> None:
             for method, path, payload in state.requests
             if method == "PUT" and "/cards/card-1/elements/i000001" in path
         )
-        assert "Completed" in json.loads(str(old_card_update["element"]))["content"]
+        assert "Tool call" in json.loads(str(old_card_update["element"]))["content"]
         second_card_add = next(
             payload
             for method, path, payload in state.requests

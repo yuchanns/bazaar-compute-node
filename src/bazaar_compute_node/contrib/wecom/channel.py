@@ -1039,8 +1039,15 @@ class WeComChannel(IChannel):
             if self._last_event_type == "template_card_event" and isinstance(
                 event, dict
             ):
-                task_id = event.get("task_id")
-                event_key = event.get("event_key")
+                card_event = event.get("template_card_event")
+                task_id = (
+                    card_event.get("task_id") if isinstance(card_event, dict) else None
+                )
+                event_key = (
+                    card_event.get("event_key")
+                    if isinstance(card_event, dict)
+                    else None
+                )
                 pending = (
                     self._pending_approvals.get(task_id)
                     if isinstance(task_id, str)
@@ -1097,6 +1104,27 @@ class WeComChannel(IChannel):
                     self._approval_card_update_tasks.add(task)
                     task.add_done_callback(self._approval_card_update_tasks.discard)
                     return
+                reason = (
+                    "invalid_template_card_event"
+                    if not isinstance(card_event, dict)
+                    else "missing_task_id"
+                    if not isinstance(task_id, str) or not task_id
+                    else "unknown_task_id"
+                    if pending is None
+                    else "already_resolved"
+                    if pending.future.done()
+                    else "invalid_event_key"
+                )
+                self._observe(
+                    "wecom.approval.event_ignored",
+                    reason=reason,
+                    event_keys=sorted(str(key) for key in event),
+                    card_event_keys=(
+                        sorted(str(key) for key in card_event)
+                        if isinstance(card_event, dict)
+                        else None
+                    ),
+                )
             self._ignored_event_frames += 1
             return
         now_ms = time_ns() // 1_000_000

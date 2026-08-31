@@ -78,9 +78,8 @@ WeCom channel 的 `request_approval`（`contrib/wecom/channel.py:780-786`）不�
 收到的一致，且**收到事件回调后需在 5 秒内发送回复，超时将无法更新**。模板卡片有五种，交互型的是
 `button_interaction`、`vote_interaction` 与 `multiple_interaction`。
 
-仓库中没有可复用的出站脱敏实现；`core/audit.py` 与 `core/orchestration/services.py` 已各自复制同一
-套敏感键名，provider 错误消息里另有基于已知 secret 的精确替换，后者与启发式 token 识别不是同一
-机制。
+`core/audit.py` 与 `core/orchestration/services.py` 已各自复制同一套敏感键名；该词汇应收敛到 Core
+共享模块。provider 错误消息里另有基于已知 secret 的精确替换，保持其既有边界。
 
 飞书卡片侧的既有约束：单张卡片最多 200 个元素或组件，体积上限 30KB；卡片级与组件级 OpenAPI 对
 单个卡片实体的操作频率上限为 10 次/秒，`POST /open-apis/cardkit/v1/cards/:card_id/elements` 的
@@ -481,7 +480,7 @@ interactive 类型按 `card_id` 引用发送，回复目标是触发该 turn 的
   Claude 的 `tool_use_id` 形如 `toolu_01...` 已经超过，因此该映射是必需的；
 - `ToolCallStarted` 命中已存在的 `call_id` 时更新该行；
 - `ToolCallCompleted` 与 `ToolCallFailed` 在未见过对应 `ToolCallStarted` 时用完成事件补建一行；
-- 各类 delta 只用于刷新该行的摘要，不新增行。
+- 工具 delta、patch 与 interaction 不进入活动展示，也不触发卡片更新。
 
 ### 5.3 幂等与时序
 
@@ -496,11 +495,10 @@ interactive 类型按 `card_id` 引用发送，回复目标是触发该 turn 的
 ### 5.4 容量与续卡
 
 固定组件预算为 20 个元素与 4KB，用于表头、计数与续卡标注。单行按完成态的最大尺寸预留：
-`_MAX_ROW_BYTES = 512`，其中工具名上限 64 字节、输入摘要上限 192 字节、输出摘要上限 192 字节，
-其余为状态标记与结构开销。行在完成时会变大，因此预留发生在追加行时而非更新时，更新不会把卡片推过
-上限。
+`_MAX_ROW_BYTES = 128`，其中 runtime 原样提供的工具名上限 64 字节，其余为状态图标、事件类型与 Markdown
+结构开销。预留发生在追加行时，状态更新不会把卡片推过上限。
 
-据此单张卡承载的行数上限为 `(30 * 1024 - 4096) // 512 = 51`，组件数上限为 `200 - 20 = 180`，
+据此单张卡的字节容量为 `(30 * 1024 - 4096) // 128 = 208` 行，组件数上限为 `200 - 20 = 180`，
 取两者较小值。追加行前若剩余预算不足以再容纳一行，先创建续卡：前一张卡标注后续内容位于下一张，
 新卡延续计数。前一张卡的 `CardState` 与行引用保留至该 turn 终态，使在第一张卡上开始、第二张卡
 打开之后才结束的长跑工具，其完成状态回写到第一张卡。
@@ -518,18 +516,14 @@ turn 终态由 turn coordinator 作为一条队列命令投递，而非在事件
 turn coordinator 上报一个降级标记，coordinator 在该 turn 的最终回复文本末尾附加一行提示，走既有
 出站发送路径。
 
-### 5.6 行的内容与脱敏
+### 5.6 行的内容
 
-每行包含状态标记、工具名与一段短摘要，长度上限如 5.4 节所列，超出部分截断并以省略号标记。
+每行以状态图标表达进行中、已完成或失败，图标后显示本地化的封闭事件类型。工具调用行再以分隔符附加
+runtime 原样提供的开放工具名，超过 64 字节时截断并以省略号标记；上下文压缩行不附加工具名。投影不
+读取或展示 `input`、`output`、错误消息、delta、patch 与 interaction 内容。
 
-新增 `core/sanitization.py` 统一敏感键词汇与可复用的展示脱敏能力：audit 继续对敏感键执行禁止策略，
-活动投影在出站边界执行替换策略，两者不改变 `RuntimeOutputEvent` 原值。对将要进入摘要的输入与输出，
-按正则替换形如 `sk-`、`ghp_`、`xoxb-` 开头的令牌串，以及长度不小于 32 的连续 base64 或十六进制串，
-替换为固定占位符；键名命中共享敏感键集合时整体替换。脱敏在截断之前进行。provider 错误消息中基于
-已知 secret 的精确替换保持独立。
-
-摘要只读取 `ToolCall.name` 与可选的 `input` / `output`。按工具名选择图标属于展示层启发式，实现
-留在 Lark 内部。
+`core/sanitization.py` 只统一 audit 与 orchestration 共用的敏感键词汇。活动行没有工具细节，因此不再
+需要展示脱敏函数；provider 错误消息中基于已知 secret 的精确替换保持独立。
 
 ### 5.7 过程卡取代的两处行为
 
@@ -567,10 +561,10 @@ Telegram 表达同一批语义，载体是可编辑的持久 Rich Message。`Tel
 
 Telegram 没有元素级补丁，编辑是整条替换，因此投影层在内存中维护该 turn 过程消息的完整文档：每次
 `ToolCallStarted` 追加一行，`ToolCallCompleted` 与 `ToolCallFailed` 翻转对应行的状态，各类 delta
-刷新该行摘要；压缩 started 显示进行中，completed 显示已完成，孤立 completed 直接补建已完成行。
-随后经 `edit_message_text` 重绘整条消息。标题、状态、输入输出标签与压缩名称都从 i18n catalog
-读取，完整消息由 `resources/telegram_activity.tpl` 渲染，不在 Python 中拼接展示文案。行的内容、
-长度上限与脱敏沿用 5.6 节。
+不进入展示；压缩 started 显示进行中，completed 显示已完成，孤立 completed 直接补建已完成行。
+随后经 `edit_message_text` 重绘整条消息。标题与事件类型都从 i18n catalog 读取，完整消息由
+`resources/telegram_activity.tpl` 渲染，不在 Python 中拼接展示文案。行内容沿用 5.6 节，按 Markdown
+转义后的最大长度以 `_MAX_RENDERED_ROW_BYTES = 256` 预留。
 
 每个 turn 一个 single-writer 队列。因为每次编辑重写整条消息，短时间内的多个事件先合并再发一次
 编辑，合并窗口 `_EDIT_DEBOUNCE_MS = 1000`；turn 终态到达时立即 flush 一次，不等窗口。429 按既有
@@ -592,8 +586,10 @@ Telegram 没有元素级补丁，编辑是整条替换，因此投影层在内�
 发卡：以 `aibot_send_msg` 发送 `card_type` 为 `button_interaction` 的模板卡片，两个按钮对应同意
 与拒绝，`task_id` 由投影层生成并与该次审批请求关联。
 
-收决定：`_receive_message` 对 `aibot_event_callback` 的模板卡片事件不再丢弃，按 `task_id` 找到对应
-的审批请求，由按钮 key 得出同意或拒绝，唤醒等待中的 `request_approval`。调用方给定的 `timeout`
+收决定：`_receive_message` 对 `aibot_event_callback` 的模板卡片事件不再丢弃，从
+`body.event.template_card_event` 读取 `task_id` 与 `event_key`，按 `task_id` 找到对应的审批请求，由
+按钮 key 得出同意或拒绝，唤醒等待中的 `request_approval`。无法匹配时只记录事件两层的键集合与原因，
+不记录完整 payload 或用户内容。调用方给定的 `timeout`
 只约束发卡的发送锁与 WebSocket ACK。WeCom 协议没有人工审批时限，因此发卡成功后 channel 永不
 超时，等待用户决定或 channel 生命周期结束。
 
@@ -615,8 +611,7 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 - `entities.py` 与 `states.py` 中被取代的模型随之移除，`RuntimeEventState` 保留；
 - 删除未被 adapter 驱动的 session-runtime 压缩状态、信号、转移与字符串识别入口；压缩活动事件只
   透传给 channel；
-- 新增共享 sanitization 模块，统一 audit 与 channel 使用的敏感键词汇，并提供不改写 Core 事件的
-  展示脱敏函数；
+- 新增共享 sanitization 模块，统一 audit 与 orchestration 使用的敏感键词汇；
 - `pyrightconfig.json` 增加 `"reportMatchNotExhaustive": "error"`；
 - `core/runtime.py` 的 `RuntimeStreamItem` 与 `IRuntimeStream` 改为产出 `RuntimeOutputEvent`；
 - `core/channel.py:179` 与 `:240` 的 `accept_turn_event` 签名随之调整；
@@ -685,7 +680,8 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 - 内存文档、single-writer 队列、`_EDIT_DEBOUNCE_MS` 合并窗口与终态立即 flush；
 - 超出 `_MAX_RICH_MARKDOWN_BYTES` 时发送续消息，旧消息的行引用保留至该 turn 终态；
 - 测试覆盖：首条 started 触发创建、无工具调用的 turn 不产生消息、合并窗口内多个事件只发一次编辑、
-  终态立即 flush、超限触发续消息后旧消息仍可回写、行内容沿用脱敏与截断；
+  终态立即 flush、超限触发续消息后旧消息仍可回写、行内容只含状态图标、本地化事件类型与截断后的
+  工具名；
 - checks：`tests/contrib/telegram/` 与 Task 1 相同的 gates。
 
 ### Task 7：Lark CardKit 客户端
@@ -709,11 +705,17 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
   `ToolCallStarted` 走更新、只见完成事件时补建行、按最大完成态行尺寸预留触发续卡、续卡后旧卡仍可
   回写、串行队列在乱序输入下的发送顺序、重试复用同一组 `uuid` 与 `sequence` 且不同更新得到不同
   `uuid`、终态经队列命令 drain 后才释放状态、重试耗尽后标注不完整、卡片不可写时降级标记随最终
-  回复附加、脱敏函数对各类令牌串的替换；
+  回复附加、活动行只含状态图标、本地化事件类型与截断后的工具名；
 - checks：`tests/contrib/lark/` 与 Task 1 相同的 gates。
 
 ### Task 9：最终验收
 
+- 根据真实 Telegram 验收反馈，将 Lark 与 Telegram 活动行统一收敛为“状态图标 + 本地化事件类型 +
+  可选的 runtime 工具名”，移除重复的状态文案、输入、输出、进度摘要、展示脱敏及其死代码，并按精简
+  后的最大行尺寸重算续卡预留；
+- 根据真实 WeCom 验收反馈，将模板卡片回调从错误的扁平 `body.event.task_id/event_key` 修正为协议实际
+  的 `body.event.template_card_event.task_id/event_key`；忽略事件只记录结构键与原因，测试使用真实
+  嵌套帧；
 - 运行完整非 e2e pytest suite 与 `-m e2e`；
 - 运行 `ruff format --check .`、`ruff check .`、
   `uv run scripts/pyright_lsp_check.py --outputjson .`、
@@ -722,6 +724,19 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
   正确翻转、最终回复照常送达，并确认审批卡片通过后不再出现额外回复；在企业微信里触发一次审批，
   确认卡片按钮可点、决定后原卡就地变为终态。这是无法在单元测试中验证的部分；
 - 汇总结果，停在最终 review。
+
+### Task 10：保留 Telegram bot 的 sender display name
+
+- 修复真实验收中发现的既有身份展示问题：Telegram 已在 `from.first_name` / `last_name` 提供 bot 的
+  profile name，但 bot 名中的模型标签含 `]`，被当前复用于 target 的 `_safe_display_name` 丢弃；
+- 拆分 sender 与 target 的文本边界：sender profile name 允许 `]`，仍拒绝控制字符与换行；群名、
+  话题名等会进入结构化头部 `target=` 的 display name 继续拒绝 `]`；
+- 不改变 Telegram username 作为 handle、profile name 作为 display name 的既有模型，bcc check/read
+  应显示为 `@username(profile name)`；
+- 测试覆盖带模型方括号的 bot profile name 完整进入 `SenderIdentity.display_name` 并经 bcc check/read
+  原样显示，以及带 `]` 的 target display name 仍不会进入结构化头部；
+- checks：`tests/contrib/test_telegram_channel.py`、`tests/test_bcc.py` 与 Task 1 相同的 gates；Task 9
+  review 通过后才开始实现。
 
 ## 9. 验收标准
 
@@ -759,7 +774,8 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 20. turn 终态经队列命令处理，drain 完成后才释放该 turn 的状态。
 21. 本地队列溢出或重试耗尽且卡片仍可写时，过程卡被标注为可能不完整；卡片不可写时降级提示随最终
     回复送达。
-22. 进入摘要的输入与输出先脱敏后截断。
+22. Lark 与 Telegram 活动行只展示状态图标、本地化事件类型与可选的截断后 runtime 工具名，不读取或
+    展示工具输入、输出、错误消息、delta、patch 与 interaction 内容。
 23. Lark 不再发送 Typing reaction，审批通过或拒绝后不再发送额外回复，审批卡片自身状态更新照常。
 24. Telegram 审批决定后在原消息正文追加结果并清空 inline keyboard，不再发送额外消息，
     `answer_callback_query` 照常调用。

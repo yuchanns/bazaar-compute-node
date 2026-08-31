@@ -30,9 +30,7 @@ from bazaar_compute_node.core.models import (
     RuntimeOutputEvent,
     ToolCall,
     ToolCallCompleted,
-    ToolCallDeltaKind,
     ToolCallStarted,
-    ToolCallTextDelta,
     TurnCompleted,
 )
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -72,7 +70,7 @@ async def _wait_for_requests(
 
 
 @pytest.mark.asyncio
-async def test_telegram_activity_is_lazy_debounced_and_redacted(
+async def test_telegram_activity_is_lazy_debounced_and_updates_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,21 +156,10 @@ async def test_telegram_activity_is_lazy_debounced_and_redacted(
             assert method == "sendRichMessage"
             assert payload["message_thread_id"] == TEST_TOPIC_ID
             assert isinstance(markdown, str)
-            assert markdown.count("<redacted\\>") == 2
-            assert "plain-secret" not in markdown
-            assert "sk-secretvalue" not in markdown
-            assert "…" in markdown
+            assert "Activity" in markdown
+            assert "Tool call" in markdown
+            assert "shell" in markdown
 
-            channel.accept_turn_event(
-                _event(
-                    ToolCallTextDelta(
-                        call_id="call-1",
-                        kind=ToolCallDeltaKind.PROGRESS,
-                        text="halfway",
-                    )
-                ),
-                session_id=TEST_SESSION_ID,
-            )
             channel.accept_turn_event(
                 _event(
                     ToolCallCompleted(
@@ -190,7 +177,8 @@ async def test_telegram_activity_is_lazy_debounced_and_redacted(
             final_markdown = requests[-1][1]["rich_message"]["markdown"]
             assert isinstance(final_markdown, str)
             assert "✅" in final_markdown
-            assert "done" in final_markdown
+            assert "Tool call" in final_markdown
+            assert "shell" in final_markdown
             await channel.stop(timeout=1)
             assert projector.active_turns == 0
             assert projector.tasks_pending == 0
@@ -239,7 +227,6 @@ async def test_telegram_activity_localizes_compaction_events_without_pairing(
             await _wait_for_requests(requests, 1)
             markdown = requests[-1][1]["rich_message"]["markdown"]
             assert "活动" in markdown
-            assert "进行中" in markdown
             assert "上下文压缩" in markdown
 
             projector.accept(
@@ -254,7 +241,7 @@ async def test_telegram_activity_localizes_compaction_events_without_pairing(
             )
             await _wait_for_requests(requests, 2, timeout=0.5)
             markdown = requests[-1][1]["rich_message"]["markdown"]
-            assert "已完成" in markdown
+            assert "✅" in markdown
             assert "上下文压缩" in markdown
 
             projector.accept(
@@ -264,7 +251,7 @@ async def test_telegram_activity_localizes_compaction_events_without_pairing(
             )
             await _wait_for_requests(requests, 3)
             markdown = requests[-1][1]["rich_message"]["markdown"]
-            assert "已完成" in markdown
+            assert "✅" in markdown
             assert "上下文压缩" in markdown
     finally:
         await projector.close()
@@ -310,13 +297,10 @@ async def test_telegram_activity_terminal_flushes_without_debounce_delay(
             )
             await _wait_for_requests(requests, 1)
             projector.accept(
-                _event(
-                    ToolCallTextDelta("call-1", ToolCallDeltaKind.OUTPUT, "finished")
-                ),
+                _event(ToolCallCompleted(ToolCall("call-1", "shell"))),
                 identity=identity,
                 api=api,
             )
-            await asyncio.sleep(0)
             projector.accept(
                 _event(TurnCompleted("turn.completed")),
                 identity=identity,
@@ -370,23 +354,15 @@ async def test_telegram_activity_continues_and_updates_an_older_message(
         async with aiohttp.ClientSession() as session:
             api = TelegramBotApi(session, token="token")
             projector.accept(
-                _event(ToolCallStarted(ToolCall("call-0", "shell", input="x" * 192))),
+                _event(ToolCallStarted(ToolCall("call-0", "shell"))),
                 identity=identity,
                 api=api,
             )
             await _wait_for_requests(requests, 1)
             first_message_id = requests[0][1].get("message_id", 301)
-            for index in range(1, 32):
+            for index in range(1, 128):
                 projector.accept(
-                    _event(
-                        ToolCallStarted(
-                            ToolCall(
-                                f"call-{index}",
-                                "shell",
-                                input="x" * 192,
-                            )
-                        )
-                    ),
+                    _event(ToolCallStarted(ToolCall(f"call-{index}", "shell"))),
                     identity=identity,
                     api=api,
                 )
@@ -402,11 +378,7 @@ async def test_telegram_activity_continues_and_updates_an_older_message(
             )
 
             projector.accept(
-                _event(
-                    ToolCallCompleted(
-                        ToolCall("call-0", "shell", output="old page complete")
-                    )
-                ),
+                _event(ToolCallCompleted(ToolCall("call-0", "shell"))),
                 identity=identity,
                 api=api,
             )
@@ -414,7 +386,7 @@ async def test_telegram_activity_continues_and_updates_an_older_message(
             method, payload = requests[-1]
             assert method == "editMessageText"
             assert payload["message_id"] == first_message_id
-            assert "old page complete" in payload["rich_message"]["markdown"]
+            assert "Tool call" in payload["rich_message"]["markdown"]
     finally:
         await projector.close()
         await server.close()

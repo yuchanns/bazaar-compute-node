@@ -132,8 +132,11 @@ async def test_wecom_approval_card_event_updates_card_and_wakes_request(
                 "body": {
                     "event": {
                         "eventtype": "template_card_event",
-                        "event_key": event_key,
-                        "task_id": task_id,
+                        "template_card_event": {
+                            "card_type": "button_interaction",
+                            "event_key": event_key,
+                            "task_id": task_id,
+                        },
                     }
                 },
             }
@@ -249,8 +252,11 @@ async def test_wecom_slow_card_update_does_not_block_another_session(
                 "body": {
                     "event": {
                         "eventtype": "template_card_event",
-                        "event_key": "bcn_approve",
-                        "task_id": task_id,
+                        "template_card_event": {
+                            "card_type": "button_interaction",
+                            "event_key": "bcn_approve",
+                            "task_id": task_id,
+                        },
                     }
                 },
             }
@@ -373,8 +379,11 @@ async def test_wecom_approval_cancellation_cleans_pending_request(
                 "body": {
                     "event": {
                         "eventtype": "template_card_event",
-                        "event_key": "bcn_approve",
-                        "task_id": task_id,
+                        "template_card_event": {
+                            "card_type": "button_interaction",
+                            "event_key": "bcn_approve",
+                            "task_id": task_id,
+                        },
                     }
                 },
             }

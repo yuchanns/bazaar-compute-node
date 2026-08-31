@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import re
@@ -13,7 +12,6 @@ from ...core.models import (
     ContextCompactionStarted,
     RuntimeOutputEvent,
     ToolCallCompleted,
-    ToolCallDeltaKind,
     ToolCallFailed,
     ToolCallInteraction,
     ToolCallPatchUpdated,
@@ -24,7 +22,6 @@ from ...core.models import (
     TurnFailed,
     TurnUnknown,
 )
-from ...core.sanitization import redact_sensitive_text, redact_sensitive_value
 from ...core.timerwheel import TimerWheel
 from ...i18n import Translator
 from ...rendering import TextTemplate
@@ -36,10 +33,7 @@ _EDIT_DEBOUNCE_MS = 1000
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _MAX_RATE_LIMIT_RETRIES = 3
 _MAX_TOOL_NAME_BYTES = 64
-_MAX_INPUT_BYTES = 192
-_MAX_OUTPUT_BYTES = 192
-_MAX_SUMMARY_SOURCE_BYTES = 2048
-_MAX_RENDERED_ROW_BYTES = 1024
+_MAX_RENDERED_ROW_BYTES = 256
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+.!|>~-])")
 _LOGGER = logging.getLogger(__name__)
 _ACTIVITY_TEMPLATE = TextTemplate.from_resource("telegram_activity.tpl")
@@ -47,11 +41,10 @@ _ACTIVITY_TEMPLATE = TextTemplate.from_resource("telegram_activity.tpl")
 
 @dataclass(slots=True)
 class _ActivityRow:
+    kind: str
     name: str
     page_index: int
     status: str = "running"
-    input_text: str = ""
-    output_text: str = ""
 
 
 @dataclass(slots=True)
@@ -78,14 +71,8 @@ class TelegramActivityProjector:
     ) -> None:
         self._timer_wheel = timer_wheel
         self._title = translator.text("activity.title")
-        self._context_compaction = translator.text("activity.context_compaction")
-        self._input_label = translator.text("activity.label.input")
-        self._output_label = translator.text("activity.label.output")
-        self._statuses = {
-            "running": translator.text("activity.status.running"),
-            "completed": translator.text("activity.status.completed"),
-            "failed": translator.text("activity.status.failed"),
-        }
+        self._tool_call = translator.text("activity.kind.tool_call")
+        self._context_compaction = translator.text("activity.kind.context_compaction")
         self._turns: dict[tuple[str, str], _ActivityTurn] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self.messages_sent = 0
@@ -187,58 +174,29 @@ class TelegramActivityProjector:
                 row = turn.rows.get(row_id)
                 if row is None:
                     row = _ActivityRow(
+                        kind=self._tool_call,
                         name=call.name,
                         page_index=self._page_for_new_row(turn, row_id),
-                        input_text=_summary_source(call.input),
                     )
                     turn.rows[row_id] = row
                 else:
                     row.name = call.name
                     row.status = "running"
-                    if call.input is not None:
-                        row.input_text = _summary_source(call.input)
-                    row.output_text = ""
                 turn.dirty_pages.add(row.page_index)
             case ToolCallCompleted(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
                 if row is not None:
                     row.name = call.name
                     row.status = "completed"
-                    if call.output is not None:
-                        row.output_text = _summary_source(call.output)
                     turn.dirty_pages.add(row.page_index)
-            case ToolCallFailed(call=call, error_message=error_message):
+            case ToolCallFailed(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
                 if row is not None:
                     row.name = call.name
                     row.status = "failed"
-                    output = call.output if call.output is not None else error_message
-                    if output is not None:
-                        row.output_text = _summary_source(output)
                     turn.dirty_pages.add(row.page_index)
-            case ToolCallTextDelta(call_id=call_id, kind=kind, text=text):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    if kind is ToolCallDeltaKind.INPUT:
-                        row.input_text = _append_source(row.input_text, text)
-                    else:
-                        row.output_text = _append_source(row.output_text, text)
-                    turn.dirty_pages.add(row.page_index)
-            case ToolCallPatchUpdated(call_id=call_id, changes=changes):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    row.output_text = _summary_source(
-                        [
-                            {"path": change.path, "kind": change.kind}
-                            for change in changes
-                        ]
-                    )
-                    turn.dirty_pages.add(row.page_index)
-            case ToolCallInteraction(call_id=call_id, stdin=stdin):
-                row = turn.rows.get(f"tool:{call_id}")
-                if row is not None:
-                    row.input_text = _append_source(row.input_text, stdin)
-                    turn.dirty_pages.add(row.page_index)
+            case ToolCallTextDelta() | ToolCallPatchUpdated() | ToolCallInteraction():
+                pass
             case (
                 ContextCompactionStarted(compaction_id=compaction_id)
                 | ContextCompactionCompleted(compaction_id=compaction_id)
@@ -247,7 +205,8 @@ class TelegramActivityProjector:
                 row = turn.rows.get(row_id)
                 if row is None:
                     row = _ActivityRow(
-                        name=self._context_compaction,
+                        kind=self._context_compaction,
+                        name="",
                         page_index=self._page_for_new_row(turn, row_id),
                     )
                     turn.rows[row_id] = row
@@ -372,23 +331,13 @@ class TelegramActivityProjector:
             rows.append(
                 {
                     "icon": {
-                        "running": "⏳",
+                        "running": "⌛️",
                         "completed": "✅",
                         "failed": "❌",
                     }[row.status],
-                    "status": _escape_markdown(self._statuses[row.status]),
+                    "kind": _escape_markdown(row.kind),
                     "name": _escape_markdown(
                         _truncate_utf8(row.name, _MAX_TOOL_NAME_BYTES)
-                    ),
-                    "input": _escape_markdown(
-                        _truncate_utf8(
-                            redact_sensitive_text(row.input_text), _MAX_INPUT_BYTES
-                        )
-                    ),
-                    "output": _escape_markdown(
-                        _truncate_utf8(
-                            redact_sensitive_text(row.output_text), _MAX_OUTPUT_BYTES
-                        )
                     ),
                 }
             )
@@ -396,8 +345,6 @@ class TelegramActivityProjector:
             {
                 "title": _escape_markdown(self._title),
                 "rows": rows,
-                "input_label": _escape_markdown(self._input_label),
-                "output_label": _escape_markdown(self._output_label),
             }
         )
 
@@ -407,21 +354,6 @@ class TelegramActivityProjector:
         if turn_id is None:
             return None
         return item.envelope.session_id, turn_id
-
-
-def _summary_source(value: object) -> str:
-    if value is None:
-        return ""
-    value = redact_sensitive_value(value)
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return _truncate_utf8(text, _MAX_SUMMARY_SOURCE_BYTES)
-
-
-def _append_source(current: str, text: str) -> str:
-    return _truncate_utf8(current + text, _MAX_SUMMARY_SOURCE_BYTES)
 
 
 def _truncate_utf8(value: str, limit: int) -> str:
