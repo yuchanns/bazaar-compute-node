@@ -24,6 +24,12 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     OutboundAttachment,
+    RuntimeEventEnvelope,
+    RuntimeEventPayload,
+    RuntimeOutputEvent,
+    ToolCall,
+    ToolCallCompleted,
+    TurnCompleted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
@@ -46,7 +52,11 @@ def _required_int(name: str) -> int:
         raise AssertionError(f"{name} must be an integer") from error
 
 
-def _channel(tmp_path: Path) -> TelegramOutboundChannel:
+def _channel(
+    tmp_path: Path,
+    *,
+    activity: bool = False,
+) -> TelegramOutboundChannel:
     if not os.environ.get("BCN_TELEGRAM_BOT_TOKEN"):
         pytest.skip(
             "BCN_TELEGRAM_BOT_TOKEN is required for Telegram provider verification"
@@ -55,7 +65,7 @@ def _channel(tmp_path: Path) -> TelegramOutboundChannel:
         ChannelContext(
             agent_id="agent-telegram-e2e",
             attachments=AttachmentMaterializer(lambda: tmp_path, _referenced_paths),
-            options={},
+            options={"activity": True} if activity else {},
             workspace=lambda: tmp_path,
         )
     )
@@ -73,6 +83,22 @@ def _attachment(tmp_path: Path, name: str) -> OutboundAttachment:
         media_type="text/plain",
         size_bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+def _activity_event(
+    session_id: str,
+    payload: RuntimeEventPayload,
+) -> RuntimeOutputEvent:
+    return RuntimeOutputEvent(
+        envelope=RuntimeEventEnvelope(
+            session_id=session_id,
+            runtime_session_id=f"runtime-{uuid4()}",
+            turn_id=f"turn-{uuid4()}",
+            provider_turn_id=None,
+            occurred_at_ms=time_ns() // 1_000_000,
+        ),
+        payload=payload,
     )
 
 
@@ -179,6 +205,45 @@ async def test_telegram_real_provider_group_topic_reply_and_attachment(
         assert result.status is ProviderCallStatus.CONFIRMED
         assert result.receipt["total_parts"] == 2
         assert result.receipt["confirmed_parts"] == 2
+    finally:
+        await channel.stop(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_telegram_real_provider_projects_a_tool_result_without_a_start(
+    tmp_path: Path,
+) -> None:
+    chat_id = _required_int("BCN_TELEGRAM_E2E_DM_CHAT_ID")
+    channel = _channel(tmp_path, activity=True)
+    await channel.start(timeout=_TELEGRAM_STARTUP_TIMEOUT_SECONDS)
+    try:
+        bot_id = channel.health["bot_id"]
+        assert isinstance(bot_id, int)
+        session_id = f"session-{uuid4()}"
+        channel._stream_routes[session_id] = TelegramThreadIdentity(
+            bot_id=bot_id,
+            chat_id=chat_id,
+            topic_id=0,
+        )
+        event = _activity_event(
+            session_id,
+            ToolCallCompleted(ToolCall(f"call-{uuid4()}", "provider-check")),
+        )
+        channel.accept_turn_event(event, session_id=session_id)
+        async with asyncio.timeout(30):
+            while channel.health["activity_messages_sent"] == 0:
+                await asyncio.sleep(0.05)
+
+        channel.accept_turn_event(
+            RuntimeOutputEvent(
+                envelope=event.envelope,
+                payload=TurnCompleted("turn.completed"),
+            ),
+            session_id=session_id,
+        )
+        async with asyncio.timeout(10):
+            while channel.health["activity_turns"]:
+                await asyncio.sleep(0.05)
     finally:
         await channel.stop(timeout=5)
 

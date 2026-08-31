@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from typing import cast
 
 from ..audit import AuditEvent, ErrorKind
 from ..command import SessionNotFoundError
@@ -16,7 +17,7 @@ from ..models import (
     reduce_session_runtime_state,
 )
 from ..observability import IAudit, LogLevel
-from ..sanitization import is_sensitive_field
+from ..sanitization import omit_sensitive_fields
 from ..storage import IStorageScope
 
 
@@ -53,7 +54,7 @@ class SessionAuditRecorder:
             level=LogLevel.ERROR if error_kind else LogLevel.INFO,
             error_kind=error_kind,
             error_message=error_message,
-            metadata=metadata or {},
+            metadata=cast(Mapping[str, object], omit_sensitive_fields(metadata or {})),
         )
         try:
             await self._sink.append(
@@ -79,11 +80,7 @@ class SessionAuditRecorder:
         error_kind: ErrorKind | None = None,
         error_message: str | None = None,
     ) -> None:
-        safe_arguments = {
-            key: value
-            for key, value in arguments.items()
-            if not is_sensitive_field(key)
-        }
+        safe_arguments = cast(Mapping[str, object], omit_sensitive_fields(arguments))
         await self.append(
             event_name=f"tool.{operation}.{status}",
             state=state,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from bcn_test_support import RecordingAudit
 
 from bazaar_compute_node.core.approval import ApprovalBinding
 from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
@@ -84,6 +85,52 @@ def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
             correlation=event.correlation,
             metadata={"token": "secret"},
         )
+    with pytest.raises(ValueError, match="sensitive field"):
+        AuditEvent(
+            event_name="runtime.turn.failed",
+            state=RuntimeEventState.FAILED,
+            created_at_ms=2,
+            correlation=event.correlation,
+            metadata={
+                "provider": {
+                    "permission_denials": [{"tool_input": {"token": "nested-secret"}}]
+                }
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_session_audit_recursively_omits_sensitive_provider_metadata() -> None:
+    audit = RecordingAudit()
+    recorder = SessionAuditRecorder(
+        sink=audit,
+        timeout_budget=TimeoutBudget(1, 1, 1, 1),
+        clock=lambda: 1,
+    )
+
+    await recorder.append(
+        event_name="claudecode.turn.completed",
+        state=RuntimeEventState.COMPLETED,
+        correlation=CorrelationContext(bcn_session_id="session-1"),
+        metadata={
+            "provider_subtype": "success",
+            "permission_denial_count": 1,
+            "permission_denials": [
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": "deploy",
+                        "token": "nested-secret",
+                    },
+                }
+            ],
+        },
+    )
+
+    metadata = audit.events[0].metadata
+    assert metadata["provider_subtype"] == "success"
+    assert metadata["permission_denial_count"] == 1
+    assert "permission_denials" not in metadata
 
 
 @pytest.mark.asyncio

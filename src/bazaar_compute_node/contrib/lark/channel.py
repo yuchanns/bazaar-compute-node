@@ -132,12 +132,18 @@ class LarkChannel(IChannel):
         self._stream_routes: dict[str, str] = {}
         self._stream_route_threads: dict[str, bool] = {}
         self._activity_enabled = activity
-        self._degraded_activity_sessions: set[str] = set()
+        self._activity_turns: dict[str, str] = {}
+        self._terminal_activity_turns: set[tuple[str, str]] = set()
+        self._degraded_activity_turns: set[tuple[str, str]] = set()
         self._translator = context.translator or create_translator(ENGLISH)
         self._activity = LarkActivityProjector(
             timer_wheel=timer_wheel,
             translator=self._translator,
-            report_degraded=self._degraded_activity_sessions.add,
+            report_degraded=lambda session_id, turn_id: (
+                self._degraded_activity_turns.add((session_id, turn_id))
+                if self._activity_turns.get(session_id) == turn_id
+                else None
+            ),
         )
 
     @property
@@ -217,7 +223,9 @@ class LarkChannel(IChannel):
             self._inbound = asyncio.Queue()
             self._stream_routes.clear()
             self._stream_route_threads.clear()
-            self._degraded_activity_sessions.clear()
+            self._activity_turns.clear()
+            self._terminal_activity_turns.clear()
+            self._degraded_activity_turns.clear()
             try:
                 session = aiohttp.ClientSession()
                 api = LarkApi(
@@ -286,7 +294,9 @@ class LarkChannel(IChannel):
             self._identity = None
             self._stream_routes.clear()
             self._stream_route_threads.clear()
-            self._degraded_activity_sessions.clear()
+            self._activity_turns.clear()
+            self._terminal_activity_turns.clear()
+            self._degraded_activity_turns.clear()
             self._state = "stopped"
             if not self._stop_sent:
                 self._inbound.put_nowait(_STOP)
@@ -870,8 +880,38 @@ class LarkChannel(IChannel):
             )
         match item.payload:
             case TurnStarted():
+                if not self._activity_enabled:
+                    return
+                turn_id = item.envelope.turn_id
+                if turn_id is not None:
+                    previous_turn_id = self._activity_turns.get(session_id)
+                    if previous_turn_id is not None:
+                        self._terminal_activity_turns.discard(
+                            (session_id, previous_turn_id)
+                        )
+                        self._degraded_activity_turns.discard(
+                            (session_id, previous_turn_id)
+                        )
+                    self._activity_turns[session_id] = turn_id
                 return
-            case TurnCompleted() | TurnFailed() | TurnCancelled() | TurnUnknown():
+            case TurnCompleted():
+                turn_id = item.envelope.turn_id
+                if (
+                    turn_id is not None
+                    and self._activity_turns.get(session_id) == turn_id
+                ):
+                    self._activity_turns.pop(session_id)
+                    self._degraded_activity_turns.discard((session_id, turn_id))
+                self._stream_routes.pop(session_id, None)
+                self._stream_route_threads.pop(session_id, None)
+                return
+            case TurnFailed() | TurnCancelled() | TurnUnknown():
+                turn_id = item.envelope.turn_id
+                if (
+                    turn_id is not None
+                    and self._activity_turns.get(session_id) == turn_id
+                ):
+                    self._terminal_activity_turns.add((session_id, turn_id))
                 self._stream_routes.pop(session_id, None)
                 self._stream_route_threads.pop(session_id, None)
                 return
@@ -895,7 +935,10 @@ class LarkChannel(IChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        turn_id = self._activity_turns.get(request.session_id)
+        activity_key = (request.session_id, turn_id) if turn_id is not None else None
         if timeout <= 0:
+            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="delivery_timeout",
@@ -911,6 +954,7 @@ class LarkChannel(IChannel):
             or self._state not in {"connected", "ready"}
             or transport.state != "connected"
         ):
+            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="channel_unavailable",
@@ -919,7 +963,19 @@ class LarkChannel(IChannel):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        if request.session_id in self._degraded_activity_sessions:
+        if self._activity_enabled and turn_id is not None:
+            try:
+                await self._activity.drain(
+                    request.session_id,
+                    turn_id,
+                    timeout=max(0.0, (deadline - loop.time()) / 2),
+                )
+            except asyncio.CancelledError:
+                self._retire_terminal_activity(activity_key)
+                raise
+            except TimeoutError:
+                self._degraded_activity_turns.add((request.session_id, turn_id))
+        if activity_key in self._degraded_activity_turns:
             request = replace(
                 request,
                 body=(
@@ -932,7 +988,11 @@ class LarkChannel(IChannel):
                 self._send_lock.acquire(),
                 timeout=max(0.0, deadline - loop.time()),
             )
+        except asyncio.CancelledError:
+            self._retire_terminal_activity(activity_key)
+            raise
         except TimeoutError:
+            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="delivery_timeout",
@@ -958,11 +1018,15 @@ class LarkChannel(IChannel):
                 request=request,
                 timeout=max(0.0, deadline - loop.time()),
             )
-            if result.status in {
-                ProviderCallStatus.CONFIRMED,
-                ProviderCallStatus.PARTIAL,
-            }:
-                self._degraded_activity_sessions.discard(request.session_id)
+            if (
+                result.status
+                in {
+                    ProviderCallStatus.CONFIRMED,
+                    ProviderCallStatus.PARTIAL,
+                }
+                and activity_key is not None
+            ):
+                self._degraded_activity_turns.discard(activity_key)
             return result
         except asyncio.CancelledError:
             raise
@@ -974,6 +1038,19 @@ class LarkChannel(IChannel):
             )
         finally:
             self._send_lock.release()
+            self._retire_terminal_activity(activity_key)
+
+    def _retire_terminal_activity(
+        self,
+        activity_key: tuple[str, str] | None,
+    ) -> None:
+        if activity_key is None or activity_key not in self._terminal_activity_turns:
+            return
+        self._terminal_activity_turns.discard(activity_key)
+        self._degraded_activity_turns.discard(activity_key)
+        session_id, turn_id = activity_key
+        if self._activity_turns.get(session_id) == turn_id:
+            self._activity_turns.pop(session_id)
 
     async def request_approval(
         self,

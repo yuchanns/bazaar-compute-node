@@ -340,6 +340,37 @@ async def test_telegram_activity_localizes_compaction_events_without_pairing(
 
 
 @pytest.mark.asyncio
+async def test_telegram_activity_filters_events_without_limiting_queue() -> None:
+    projector = TelegramActivityProjector(
+        timer_wheel=None,
+        translator=create_translator(ENGLISH),
+    )
+    identity = TelegramThreadIdentity(TEST_BOT_ID, TEST_CHAT_ID, 0)
+    session = aiohttp.ClientSession()
+    try:
+        api = TelegramBotApi(session, token="token")
+        for _ in range(2048):
+            projector.accept(
+                _event(ContentDelta(ContentDeltaKind.AGENT_MESSAGE, "working")),
+                identity=identity,
+                api=api,
+            )
+        assert projector.active_turns == 0
+
+        for index in range(1100):
+            projector.accept(
+                _event(ToolCallStarted(ToolCall(f"call-{index}", "shell"))),
+                identity=identity,
+                api=api,
+            )
+        turn = next(iter(projector._turns.values()))
+        assert turn.queue.qsize() > 1024
+    finally:
+        await projector.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_telegram_activity_terminal_flushes_without_debounce_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

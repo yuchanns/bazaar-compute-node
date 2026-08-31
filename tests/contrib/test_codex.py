@@ -71,6 +71,7 @@ from bazaar_compute_node.core.models import (
     ContentDeltaKind,
     ContextCompactionCompleted,
     ContextCompactionStarted,
+    FileChangeEntry,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
@@ -79,6 +80,8 @@ from bazaar_compute_node.core.models import (
     ToolCallCompleted,
     ToolCallDeltaKind,
     ToolCallFailed,
+    ToolCallInteraction,
+    ToolCallPatchUpdated,
     ToolCallStarted,
     ToolCallTextDelta,
     TurnCompleted,
@@ -366,6 +369,47 @@ def test_codex_delta_and_usage_notifications_are_structured() -> None:
                 call_id="mcp-1",
                 kind=ToolCallDeltaKind.PROGRESS,
                 text="searching",
+            ),
+        ),
+        (
+            "item/commandExecution/terminalInteraction",
+            {
+                "itemId": "command-1",
+                "processId": "process-1",
+                "stdin": "confirm\n",
+            },
+            ToolCallInteraction(
+                call_id="command-1",
+                stdin="confirm\n",
+                process_id="process-1",
+            ),
+        ),
+        (
+            "item/fileChange/patchUpdated",
+            {
+                "itemId": "files-1",
+                "providerExtension": "notification-metadata",
+                "changes": [
+                    {
+                        "path": "src/app.py",
+                        "kind": {
+                            "type": "update",
+                            "providerExtension": "change-metadata",
+                        },
+                        "diff": "@@ -1 +1 @@\n-old\n+new",
+                        "providerExtension": "file-metadata",
+                    }
+                ],
+            },
+            ToolCallPatchUpdated(
+                call_id="files-1",
+                changes=(
+                    FileChangeEntry(
+                        path="src/app.py",
+                        kind="update",
+                        patch="@@ -1 +1 @@\n-old\n+new",
+                    ),
+                ),
             ),
         ),
     )
