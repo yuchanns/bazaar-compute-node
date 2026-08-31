@@ -245,56 +245,6 @@ def test_session_runtime_unknown_state_requires_reconciliation() -> None:
     assert state is SessionRuntimeState.IDLE
 
 
-def test_session_runtime_compaction_has_explicit_start_progress_and_completion_states() -> (
-    None
-):
-    state = reduce_session_runtime_state(
-        SessionRuntimeState.CREATED,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.SESSION,
-            signal=SessionRuntimeSignal.WORKING_OBSERVED,
-            observed_at_ms=2,
-        ),
-    )
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.COMPACTION_STARTED,
-            observed_at_ms=3,
-        ),
-    )
-    assert state is SessionRuntimeState.COMPACTION_STARTING
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.COMPACTION_IN_PROGRESS,
-            observed_at_ms=4,
-        ),
-    )
-    assert state is SessionRuntimeState.COMPACTING
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.COMPACTION_COMPLETED,
-            observed_at_ms=5,
-        ),
-    )
-    assert state is SessionRuntimeState.COMPACTION_COMPLETED
-
-    fallback = reduce_session_runtime_state(
-        SessionRuntimeState.CREATED,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.CHANNEL,
-            signal=SessionRuntimeSignal.WORKING_OBSERVED,
-            observed_at_ms=2,
-        ),
-    )
-    assert fallback is SessionRuntimeState.WORKING
-
-
 def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:
     outbound = make_outbound_message()
     assert outbound.sender_kind is SenderKind.AGENT

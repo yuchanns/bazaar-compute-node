@@ -9,11 +9,10 @@ from .approval import IApprovalHandler
 from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
 from .models import (
-    RuntimeEvent,
+    RuntimeOutputEvent,
     RuntimeSession,
     RuntimeTurn,
     SessionRuntimeState,
-    StreamEvent,
 )
 from .outcomes import ProviderCallResult
 
@@ -27,9 +26,6 @@ class RuntimeSandboxMode(StrEnum):
 
     WORKSPACE_WRITE = "workspace-write"
     DANGER_FULL_ACCESS = "danger-full-access"
-
-
-type RuntimeStreamItem = RuntimeEvent | StreamEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,9 +84,9 @@ class RuntimeCommandContext:
 class IRuntimeTurnStream(Protocol):
     """Cancellable stream of provider-neutral runtime events."""
 
-    def __aiter__(self) -> AsyncIterator[RuntimeStreamItem]: ...
+    def __aiter__(self) -> AsyncIterator[RuntimeOutputEvent]: ...
 
-    async def __anext__(self) -> RuntimeStreamItem: ...
+    async def __anext__(self) -> RuntimeOutputEvent: ...
 
     async def aclose(self) -> None: ...
 

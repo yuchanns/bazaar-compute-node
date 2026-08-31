@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
@@ -214,6 +215,9 @@ async def test_telegram_real_provider_inline_approval(tmp_path: Path) -> None:
             ApprovalDecision.APPROVED,
             ApprovalDecision.REJECTED,
         )
-        assert channel.health["approval_feedback_failures"] == 0
+        async with asyncio.timeout(25):
+            while channel.health["approval_callback_tasks_pending"]:
+                await asyncio.sleep(0.05)
+        assert channel.health["approval_message_edit_failures"] == 0
     finally:
         await channel.stop(timeout=5)

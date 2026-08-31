@@ -7,13 +7,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ...core.channel import ChannelContext, ChannelDeliveryReceipt, ChannelSendRequest
+from ...core.models import RuntimeOutputEvent
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from .activity import MAX_RICH_MARKDOWN_BYTES, TelegramActivityProjector
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .approval import TelegramApprovalChannel
 from .attachments import PreparedTelegramAttachment, prepare_outbound_attachments
 from .identity import parse_provider_thread_id
 
-_MAX_RICH_MARKDOWN_BYTES = 32_768
 _MAX_RATE_LIMIT_RETRIES = 3
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
@@ -29,8 +30,15 @@ class RichMarkdownPart:
 
 
 class TelegramOutboundChannel(TelegramApprovalChannel):
-    def __init__(self, context: ChannelContext, *, token: str) -> None:
+    def __init__(
+        self,
+        context: ChannelContext,
+        *,
+        token: str,
+        activity: bool = False,
+    ) -> None:
         super().__init__(context, token=token)
+        self._activity_enabled = activity
         self._outbound_requests = 0
         self._outbound_confirmed_requests = 0
         self._outbound_partial_requests = 0
@@ -40,6 +48,10 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         self._outbound_documents_confirmed = 0
         self._outbound_markdown_fallbacks = 0
         self._outbound_rate_limit_retries = 0
+        self._activity = TelegramActivityProjector(
+            timer_wheel=self._timer_wheel,
+            translator=self._translator,
+        )
 
     @property
     def health(self) -> Mapping[str, object]:
@@ -55,9 +67,34 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "outbound_documents_confirmed": self._outbound_documents_confirmed,
                 "outbound_markdown_fallbacks": self._outbound_markdown_fallbacks,
                 "outbound_rate_limit_retries": self._outbound_rate_limit_retries,
+                "activity_enabled": self._activity_enabled,
+                "activity_turns": self._activity.active_turns,
+                "activity_tasks_pending": self._activity.tasks_pending,
+                "activity_messages_sent": self._activity.messages_sent,
+                "activity_messages_edited": self._activity.messages_edited,
+                "activity_failures": self._activity.failures,
+                "activity_rate_limit_retries": self._activity.rate_limit_retries,
             }
         )
         return health
+
+    async def stop(self, *, timeout: float) -> None:
+        await self._activity.close()
+        await super().stop(timeout=timeout)
+
+    def accept_turn_event(
+        self,
+        item: RuntimeOutputEvent,
+        *,
+        session_id: str,
+    ) -> None:
+        super().accept_turn_event(item, session_id=session_id)
+        if self._activity_enabled:
+            self._activity.accept(
+                item,
+                identity=self._stream_routes.get(item.envelope.session_id),
+                api=self._api,
+            )
 
     async def send(
         self,
@@ -631,7 +668,7 @@ def split_rich_markdown(markdown: object) -> tuple[RichMarkdownPart, ...]:
 
     pieces: list[str] = []
     for block in _markdown_blocks(markdown):
-        if len(block.encode("utf-8")) <= _MAX_RICH_MARKDOWN_BYTES:
+        if len(block.encode("utf-8")) <= MAX_RICH_MARKDOWN_BYTES:
             pieces.append(block)
             continue
         pieces.extend(_split_oversized_block(block))
@@ -640,7 +677,7 @@ def split_rich_markdown(markdown: object) -> tuple[RichMarkdownPart, ...]:
     current = ""
     for piece in pieces:
         candidate = piece if not current else f"{current}\n\n{piece}"
-        if len(candidate.encode("utf-8")) <= _MAX_RICH_MARKDOWN_BYTES:
+        if len(candidate.encode("utf-8")) <= MAX_RICH_MARKDOWN_BYTES:
             current = candidate
             continue
         if current:
@@ -652,7 +689,7 @@ def split_rich_markdown(markdown: object) -> tuple[RichMarkdownPart, ...]:
     if not parts:
         raise ValueError("Telegram outbound markdown produced no visible part")
     for part in parts:
-        if not part or len(part.encode("utf-8")) > _MAX_RICH_MARKDOWN_BYTES:
+        if not part or len(part.encode("utf-8")) > MAX_RICH_MARKDOWN_BYTES:
             raise ValueError("Telegram outbound markdown part exceeds provider limit")
     return tuple(
         RichMarkdownPart(ordinal=index, markdown=part)
@@ -739,7 +776,7 @@ def _split_oversized_block(block: str) -> tuple[str, ...]:
                 prefix = lines[0] + "\n"
                 suffix = "\n" + lines[-1]
                 budget = (
-                    _MAX_RICH_MARKDOWN_BYTES
+                    MAX_RICH_MARKDOWN_BYTES
                     - len(prefix.encode("utf-8"))
                     - len(suffix.encode("utf-8"))
                 )
@@ -755,16 +792,16 @@ def _split_oversized_block(block: str) -> tuple[str, ...]:
     current = ""
     for line in lines:
         candidate = line if not current else f"{current}\n{line}"
-        if len(candidate.encode("utf-8")) <= _MAX_RICH_MARKDOWN_BYTES:
+        if len(candidate.encode("utf-8")) <= MAX_RICH_MARKDOWN_BYTES:
             current = candidate
             continue
         if current:
             pieces.append(current)
             current = ""
-        if len(line.encode("utf-8")) <= _MAX_RICH_MARKDOWN_BYTES:
+        if len(line.encode("utf-8")) <= MAX_RICH_MARKDOWN_BYTES:
             current = line
             continue
-        pieces.extend(_split_utf8_text(line, _MAX_RICH_MARKDOWN_BYTES))
+        pieces.extend(_split_utf8_text(line, MAX_RICH_MARKDOWN_BYTES))
     if current:
         pieces.append(current)
     return tuple(piece for piece in pieces if piece)

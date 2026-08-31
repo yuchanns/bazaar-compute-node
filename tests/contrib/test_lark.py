@@ -4,7 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -30,7 +30,6 @@ from bazaar_compute_node.contrib.lark.attachments import (
 from bazaar_compute_node.contrib.lark.channel import (
     LarkChannel,
     _normalize_parent_message,
-    _TypingState,
 )
 from bazaar_compute_node.contrib.lark.frame import (
     Frame,
@@ -73,16 +72,22 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     OutboundAttachment,
-    RuntimeEvent,
-    RuntimeEventState,
+    RuntimeEventEnvelope,
+    RuntimeOutputEvent,
     SenderKind,
+    TurnCompleted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
 
-def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
+def _context(
+    tmp_path: Path,
+    options: dict[str, object],
+    *,
+    timer_wheel: TimerWheel | None = None,
+) -> ChannelContext:
     async def referenced_paths() -> set[str]:
         return set()
 
@@ -91,6 +96,7 @@ def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
         attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
         options=options,
         workspace=lambda: tmp_path,
+        timer_wheel=timer_wheel,
     )
 
 
@@ -126,8 +132,24 @@ async def test_lark_transport_acks_before_mapping() -> None:
         timer_wheel=TimerWheel(),
         on_message=handler,
     )
-    transport._connection = _Connection()
+    connection = _Connection()
+    transport._connection = connection
     transport._state = "connected"
+    connection_tasks: set[asyncio.Task[bool]] = set()
+
+    async def run(operation: Callable[[], Awaitable[None]]) -> bool:
+        await operation()
+        return True
+
+    def schedule(
+        operation: Callable[[], Awaitable[None]],
+        name: str,
+    ) -> asyncio.Task[bool]:
+        task = asyncio.create_task(run(operation), name=name)
+        connection_tasks.add(task)
+        task.add_done_callback(connection_tasks.discard)
+        return task
+
     frame = Frame(
         SeqID=1,
         LogID=2,
@@ -151,13 +173,14 @@ async def test_lark_transport_acks_before_mapping() -> None:
         ).encode("utf-8"),
     )
 
-    task = asyncio.create_task(transport._handle_data(frame))
+    task = asyncio.create_task(transport._handle_data(connection, frame, schedule))
     try:
         await asyncio.wait_for(ack_sent.wait(), timeout=0.1)
         assert handler_started_when_ack_sent == [False]
     finally:
         release_handler.set()
         await asyncio.wait_for(task, timeout=0.1)
+        await asyncio.gather(*connection_tasks)
 
     assert len(frames) == 1
     assert frames[0].payload == b'{"code":200}'
@@ -451,6 +474,42 @@ def test_lark_builder_rejects_missing_or_invalid_configuration(
             )
         )
 
+    monkeypatch.setenv("BCN_TEST_LARK_SECRET", "secret")
+    timer_wheel = TimerWheel()
+    default_channel = LarkBuilder().build(
+        _context(
+            tmp_path,
+            {"app_id": "cli_app", "app_secret_env": "BCN_TEST_LARK_SECRET"},
+            timer_wheel=timer_wheel,
+        )
+    )
+    enabled_channel = LarkBuilder().build(
+        _context(
+            tmp_path,
+            {
+                "app_id": "cli_app",
+                "app_secret_env": "BCN_TEST_LARK_SECRET",
+                "activity": True,
+            },
+            timer_wheel=timer_wheel,
+        )
+    )
+
+    assert default_channel.health["activity_enabled"] is False
+    assert enabled_channel.health["activity_enabled"] is True
+    with pytest.raises(TypeError, match="activity must be a boolean"):
+        LarkBuilder().build(
+            _context(
+                tmp_path,
+                {
+                    "app_id": "cli_app",
+                    "app_secret_env": "BCN_TEST_LARK_SECRET",
+                    "activity": "yes",
+                },
+                timer_wheel=timer_wheel,
+            )
+        )
+
 
 @pytest.mark.asyncio
 async def test_lark_api_redacts_credentials_from_provider_errors() -> None:
@@ -660,7 +719,7 @@ def test_lark_outbound_attachment_preflight_checks_size_and_digest(
         prepare_attachments(tmp_path, (descriptor,))
 
 
-def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
+def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     channel = LarkChannel(
         _context(tmp_path, {}),
         app_id="cli_app",
@@ -671,23 +730,24 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     )
     session_id = "session-1"
     channel._stream_routes[session_id] = "om_message"
-    channel._typing_states[session_id] = _TypingState(
-        message_id="om_message",
-        reaction_id="reaction-1",
-    )
+    channel._stream_route_threads[session_id] = True
 
     channel.accept_turn_event(
-        RuntimeEvent(
-            created_at_ms=1,
-            event_name="turn.completed",
-            state=RuntimeEventState.COMPLETED,
+        RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=session_id,
+                runtime_session_id="runtime-session-1",
+                turn_id="turn-1",
+                provider_turn_id=None,
+                occurred_at_ms=1,
+            ),
+            payload=TurnCompleted(event_name="turn.completed"),
         ),
         session_id=session_id,
     )
 
     assert session_id not in channel._stream_routes
-    assert session_id not in channel._typing_states
-    assert channel._typing_queue.empty()
+    assert session_id not in channel._stream_route_threads
 
 
 def test_lark_approval_card_contract() -> None:

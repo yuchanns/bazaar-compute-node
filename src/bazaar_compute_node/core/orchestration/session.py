@@ -58,7 +58,7 @@ from .turn import (
     SessionTurnCoordinator,
     inbox_notice,
 )
-from .upgrade_notice import UpgradeAnnounced, UpgradeNotice
+from .upgrade_notice import UpgradeAnnounced, UpgradeNotice, UpgradePending
 
 
 def _current_time_ms() -> int:
@@ -1175,6 +1175,8 @@ class SessionOrchestrator(IAsyncLifecycle):
         match self._session_upgrades.get(session_id):
             case UpgradeAnnounced(announced) if announced == version:
                 return None
+            case UpgradeAnnounced() | UpgradePending() | None:
+                pass
         self._session_upgrades[session_id] = UpgradeAnnounced(version)
         return offer
 
@@ -1348,9 +1350,6 @@ class SessionOrchestrator(IAsyncLifecycle):
                         runtime_state = self._state_machine.get(context.bcn_session.id)
                         recoverable_active_states = {
                             SessionRuntimeState.WORKING,
-                            SessionRuntimeState.COMPACTION_STARTING,
-                            SessionRuntimeState.COMPACTING,
-                            SessionRuntimeState.COMPACTION_COMPLETED,
                         }
                         if recovered_stream is None or runtime_state not in (
                             recoverable_active_states
@@ -1469,9 +1468,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         if runtime_state in {
             SessionRuntimeState.IDLE,
             SessionRuntimeState.WORKING,
-            SessionRuntimeState.COMPACTION_STARTING,
-            SessionRuntimeState.COMPACTING,
-            SessionRuntimeState.COMPACTION_COMPLETED,
             SessionRuntimeState.STOPPING,
         }:
             return context, None

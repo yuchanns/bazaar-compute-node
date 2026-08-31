@@ -5,15 +5,21 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
+import bazaar_compute_node.contrib.telegram.api as telegram_api_module
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
+from bazaar_compute_node.contrib.telegram.api import TelegramBotApi
 from bazaar_compute_node.contrib.telegram.approval import TelegramApprovalChannel
 from bazaar_compute_node.contrib.telegram.identity import TelegramThreadIdentity
 from bazaar_compute_node.core.channel import ChannelApprovalRequest, ChannelContext
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ApprovalResult,
     ChannelTargetKind,
 )
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
@@ -27,6 +33,7 @@ TEST_OTHER_SENDER_ID = 1_000_000_004
 class _FakeApprovalApi:
     def __init__(self) -> None:
         self.sent: list[Mapping[str, object]] = []
+        self.edits: list[Mapping[str, object]] = []
         self.answers: list[tuple[str, str | None]] = []
 
     async def send_rich_message(
@@ -50,6 +57,16 @@ class _FakeApprovalApi:
         assert not show_alert
         assert timeout > 0
         self.answers.append((callback_query_id, text))
+
+    async def edit_message_text(
+        self,
+        payload: Mapping[str, object],
+        *,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        assert timeout > 0
+        self.edits.append(payload)
+        return {"message_id": 42}
 
 
 def _request(
@@ -157,6 +174,8 @@ async def test_telegram_approval_uses_original_sender_id_not_display_name(
             sender_id=TEST_OTHER_SENDER_ID,
         )
     )
+    while channel._approval_callback_tasks:
+        await asyncio.sleep(0)
     assert not task.done()
     assert channel._last_update_disposition == "approval_callback_sender_mismatch"
 
@@ -168,6 +187,8 @@ async def test_telegram_approval_uses_original_sender_id_not_display_name(
         )
     )
     result = await task
+    while channel._approval_callback_tasks:
+        await asyncio.sleep(0)
 
     assert result.decision is ApprovalDecision.APPROVED
     assert api.answers == [
@@ -256,11 +277,22 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
         )
     )
     result = await task
+    while channel._approval_callback_tasks:
+        await asyncio.sleep(0)
 
     assert result.decision is ApprovalDecision.APPROVED
-    feedback = api.sent[1]["rich_message"]
-    assert isinstance(feedback, Mapping)
-    assert feedback["markdown"] == "操作已批准"
+    assert len(api.sent) == 1
+    assert api.edits == [
+        {
+            "chat_id": TEST_CHAT_ID,
+            "message_id": 42,
+            "rich_message": {
+                "markdown": "## 需要审批\n\n**操作：** 命令执行\n\n操作已批准",
+                "skip_entity_detection": True,
+            },
+            "reply_markup": {"inline_keyboard": []},
+        }
+    ]
     assert api.answers == [("original-user", "已批准")]
 
     await channel._handle_callback_query(
@@ -270,4 +302,179 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
             sender_id=TEST_ORIGINAL_SENDER_ID,
         )
     )
+    while channel._approval_callback_tasks:
+        await asyncio.sleep(0)
     assert api.answers[-1] == ("duplicate", "已批准")
+
+
+@pytest.mark.asyncio
+async def test_telegram_edit_message_text_sends_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, Mapping[str, object]]] = []
+
+    async def telegram(request: web.Request) -> web.Response:
+        method = request.match_info["method"]
+        payload = await request.json()
+        assert isinstance(payload, Mapping)
+        requests.append((method, payload))
+        return web.json_response(
+            {"ok": True, "result": {"message_id": payload["message_id"]}}
+        )
+
+    application = web.Application()
+    application.router.add_post("/bottoken/{method}", telegram)
+    server = TestServer(application)
+    await server.start_server()
+    monkeypatch.setattr(
+        telegram_api_module,
+        "_API_BASE_URL",
+        str(server.make_url("/")).rstrip("/"),
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            api = TelegramBotApi(session, token="token")
+            await api.edit_message_text(
+                {"chat_id": TEST_CHAT_ID, "message_id": 41, "text": "Updated"},
+                timeout=1,
+            )
+    finally:
+        await server.close()
+
+    assert requests == [
+        (
+            "editMessageText",
+            {"chat_id": TEST_CHAT_ID, "message_id": 41, "text": "Updated"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_slow_callback_does_not_block_another_session_and_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates_ready = asyncio.Event()
+    callback_started = asyncio.Event()
+    disconnect = asyncio.Event()
+    updates_delivered = False
+    edit_requests = 0
+
+    async def telegram(request: web.Request) -> web.Response:
+        nonlocal updates_delivered, edit_requests
+        method = request.match_info["method"]
+        if method == "getMe":
+            return web.json_response(
+                {
+                    "ok": True,
+                    "result": {
+                        "id": TEST_BOT_ID,
+                        "is_bot": True,
+                        "username": "test-bot",
+                        "first_name": "Test Bot",
+                    },
+                }
+            )
+        if method == "sendRichMessage":
+            updates_ready.set()
+            return web.json_response({"ok": True, "result": {"message_id": 42}})
+        if method == "getUpdates":
+            if updates_delivered:
+                await disconnect.wait()
+                return web.json_response({"ok": True, "result": []})
+            await updates_ready.wait()
+            updates_delivered = True
+            token = next(iter(channel._pending_approvals))
+            return web.json_response(
+                {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 1,
+                            "callback_query": _callback(
+                                query_id="slow-answer",
+                                token=token,
+                                sender_id=TEST_ORIGINAL_SENDER_ID,
+                            ),
+                        },
+                        {
+                            "update_id": 2,
+                            "message": {
+                                "message_id": 43,
+                                "date": channel._started_at_s,
+                                "chat": {
+                                    "id": TEST_OTHER_SENDER_ID,
+                                    "type": "private",
+                                },
+                                "from": {
+                                    "id": TEST_OTHER_SENDER_ID,
+                                    "is_bot": False,
+                                },
+                                "text": "Can this session still get through?",
+                            },
+                        },
+                    ],
+                }
+            )
+        if method == "answerCallbackQuery":
+            callback_started.set()
+            await disconnect.wait()
+            return web.json_response({"ok": True, "result": True})
+        if method == "editMessageText":
+            edit_requests += 1
+            return web.json_response({"ok": True, "result": {"message_id": 42}})
+        raise AssertionError(f"unexpected Telegram method: {method}")
+
+    application = web.Application()
+    application.router.add_post("/bottoken/{method}", telegram)
+    server = TestServer(application)
+    await server.start_server()
+    monkeypatch.setattr(
+        telegram_api_module,
+        "_API_BASE_URL",
+        str(server.make_url("/")).rstrip("/"),
+    )
+
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = TelegramApprovalChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        token="token",
+    )
+    approval_task: asyncio.Task[ApprovalResult] | None = None
+    inbound = channel.receive()
+    try:
+        await channel.start(timeout=1)
+        approval_task = asyncio.create_task(
+            channel.request_approval(
+                _request(str(TEST_ORIGINAL_SENDER_ID)),
+                timeout=1,
+            )
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+        result = await asyncio.wait_for(approval_task, timeout=1)
+        approval_task = None
+        message = await asyncio.wait_for(anext(inbound), timeout=1)
+        assert result.decision is ApprovalDecision.APPROVED
+        assert message.provider_message_id == "43"
+        pending_tasks = channel.health["approval_callback_tasks_pending"]
+        assert isinstance(pending_tasks, int)
+        assert pending_tasks > 0
+        await channel.stop(timeout=1)
+    finally:
+        disconnect.set()
+        if approval_task is not None and not approval_task.done():
+            approval_task.cancel()
+            await asyncio.gather(approval_task, return_exceptions=True)
+        if channel.health["state"] != "stopped":
+            await channel.stop(timeout=1)
+        await server.close()
+
+    assert channel.health["approval_callback_tasks_pending"] == 0
+    assert edit_requests == 0

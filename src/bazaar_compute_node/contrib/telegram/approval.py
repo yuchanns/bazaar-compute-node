@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import time_ns
 
+from ...core.approval import approval_action_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...i18n import ENGLISH, Translator, create_translator
@@ -16,11 +17,6 @@ from .identity import parse_provider_thread_id
 _CALLBACK_PREFIX = "bcn"
 _CALLBACK_ANSWER_TIMEOUT_SECONDS = 10.0
 _RESOLVED_TOKEN_LIMIT = 256
-_ACTION_MESSAGE_KEYS = {
-    "command_execution": "approval.action.command_execution",
-    "file_change": "approval.action.file_change",
-    "permissions": "approval.action.permissions",
-}
 
 
 @dataclass(slots=True)
@@ -29,6 +25,7 @@ class _PendingApproval:
     token: str
     chat_id: int
     topic_id: int
+    markdown: str
     prompt_message_id: int | None
     expected_sender_id: str
     future: asyncio.Future[ApprovalResult]
@@ -41,11 +38,12 @@ class TelegramApprovalChannel(TelegramChannel):
         self._pending_approvals: dict[str, _PendingApproval] = {}
         self._approval_tokens_by_request: dict[str, str] = {}
         self._resolved_approval_tokens: dict[str, str] = {}
+        self._approval_callback_tasks: set[asyncio.Task[None]] = set()
         self._approval_requests = 0
         self._approval_callbacks = 0
         self._approval_callback_rejections = 0
         self._approval_callback_answer_failures = 0
-        self._approval_feedback_failures = 0
+        self._approval_message_edit_failures = 0
         self._approval_decisions = 0
 
     @property
@@ -60,13 +58,19 @@ class TelegramApprovalChannel(TelegramChannel):
                 "approval_callback_answer_failures": (
                     self._approval_callback_answer_failures
                 ),
-                "approval_feedback_failures": self._approval_feedback_failures,
+                "approval_message_edit_failures": (
+                    self._approval_message_edit_failures
+                ),
+                "approval_callback_tasks_pending": len(self._approval_callback_tasks),
                 "approval_decisions": self._approval_decisions,
             }
         )
         return health
 
     async def stop(self, *, timeout: float) -> None:
+        self._stopping.set()
+        if self._runner is not None:
+            self._runner.cancel()
         decided_at_ms = time_ns() // 1_000_000
         for pending in tuple(self._pending_approvals.values()):
             self._remember_resolved(pending.token, "stopped")
@@ -81,6 +85,12 @@ class TelegramApprovalChannel(TelegramChannel):
                 )
         self._pending_approvals.clear()
         self._approval_tokens_by_request.clear()
+        tasks = tuple(self._approval_callback_tasks)
+        self._approval_callback_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await super().stop(timeout=timeout)
 
     async def request_approval(
@@ -109,11 +119,13 @@ class TelegramApprovalChannel(TelegramChannel):
         loop = asyncio.get_running_loop()
         token = secrets.token_urlsafe(12)
         future: asyncio.Future[ApprovalResult] = loop.create_future()
+        markdown = self._approval_markdown(request)
         pending = _PendingApproval(
             request_id=request_id,
             token=token,
             chat_id=identity.chat_id,
             topic_id=identity.topic_id,
+            markdown=markdown,
             prompt_message_id=None,
             expected_sender_id=request.provider_sender_id,
             future=future,
@@ -125,7 +137,7 @@ class TelegramApprovalChannel(TelegramChannel):
         payload: dict[str, object] = {
             "chat_id": identity.chat_id,
             "rich_message": {
-                "markdown": self._approval_markdown(request),
+                "markdown": markdown,
                 "skip_entity_detection": True,
             },
             "reply_markup": {
@@ -203,7 +215,7 @@ class TelegramApprovalChannel(TelegramChannel):
         if parsed is None:
             self._approval_callback_rejections += 1
             self._last_update_disposition = "unsupported_callback_query"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._translator.text("approval.callback.unknown_action"),
             )
@@ -214,7 +226,7 @@ class TelegramApprovalChannel(TelegramChannel):
             self._approval_callback_rejections += 1
             state = self._resolved_approval_tokens.get(token)
             self._last_update_disposition = "resolved_approval_callback"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._resolved_callback_text(state),
             )
@@ -225,7 +237,7 @@ class TelegramApprovalChannel(TelegramChannel):
         if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "invalid_approval_callback"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._translator.text("approval.callback.invalid"),
             )
@@ -247,7 +259,7 @@ class TelegramApprovalChannel(TelegramChannel):
         ):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "approval_callback_route_mismatch"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._translator.text("approval.callback.invalid"),
             )
@@ -258,7 +270,7 @@ class TelegramApprovalChannel(TelegramChannel):
         ):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "approval_callback_message_mismatch"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._translator.text("approval.callback.invalid"),
             )
@@ -270,7 +282,7 @@ class TelegramApprovalChannel(TelegramChannel):
         ):
             self._approval_callback_rejections += 1
             self._last_update_disposition = "approval_callback_sender_mismatch"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._translator.text("approval.callback.sender_mismatch"),
             )
@@ -280,7 +292,7 @@ class TelegramApprovalChannel(TelegramChannel):
         if pending.future.done():
             self._approval_callback_rejections += 1
             self._last_update_disposition = "duplicate_approval_callback"
-            await self._answer_callback(
+            self._schedule_callback_answer(
                 query_id,
                 self._resolved_callback_text(self._resolved_approval_tokens.get(token)),
             )
@@ -296,47 +308,85 @@ class TelegramApprovalChannel(TelegramChannel):
         self._approval_decisions += 1
         pending.future.set_result(result)
         self._last_update_disposition = f"approval_{state}"
-        await self._send_approval_feedback(
+        self._schedule_approval_resolution(
             pending,
+            query_id=query_id,
             message_id=message_id,
             decision=decision,
         )
+
+    def _schedule_approval_resolution(
+        self,
+        pending: _PendingApproval,
+        *,
+        query_id: str,
+        message_id: int,
+        decision: ApprovalDecision,
+    ) -> None:
+        task = asyncio.create_task(
+            self._complete_approval_resolution(
+                pending,
+                query_id=query_id,
+                message_id=message_id,
+                decision=decision,
+            ),
+            name=f"bcn-telegram-approval-callback-{pending.token}",
+        )
+        self._approval_callback_tasks.add(task)
+        task.add_done_callback(self._approval_callback_tasks.discard)
+
+    async def _complete_approval_resolution(
+        self,
+        pending: _PendingApproval,
+        *,
+        query_id: str,
+        message_id: int,
+        decision: ApprovalDecision,
+    ) -> None:
+        approved = decision is ApprovalDecision.APPROVED
         await self._answer_callback(
             query_id,
             self._translator.text(
                 "approval.callback.approved"
-                if decision is ApprovalDecision.APPROVED
+                if approved
                 else "approval.callback.rejected"
             ),
         )
+        await self._edit_approval_message(
+            pending,
+            message_id=message_id,
+            approved=approved,
+        )
 
-    async def _send_approval_feedback(
+    async def _edit_approval_message(
         self,
         pending: _PendingApproval,
         *,
         message_id: int,
-        decision: ApprovalDecision,
+        approved: bool,
     ) -> None:
         api = self._api
         if api is None:
-            self._approval_feedback_failures += 1
+            self._approval_message_edit_failures += 1
             return
         payload: dict[str, object] = {
             "chat_id": pending.chat_id,
+            "message_id": message_id,
             "rich_message": {
-                "markdown": self._translator.text(
-                    "approval.feedback.approved"
-                    if decision is ApprovalDecision.APPROVED
-                    else "approval.feedback.rejected"
+                "markdown": (
+                    f"{pending.markdown}\n\n"
+                    + self._translator.text(
+                        "approval.feedback.approved"
+                        if approved
+                        else "approval.feedback.rejected"
+                    )
                 ),
                 "skip_entity_detection": True,
             },
-            "reply_parameters": {"message_id": message_id},
+            "reply_markup": {"inline_keyboard": []},
         }
-        if pending.topic_id:
-            payload["message_thread_id"] = pending.topic_id
         try:
-            await api.send_rich_message(
+            await api.edit_message_text(
                 payload,
                 timeout=_CALLBACK_ANSWER_TIMEOUT_SECONDS,
             )
@@ -348,7 +398,15 @@ class TelegramApprovalChannel(TelegramChannel):
             TimeoutError,
             ValueError,
         ):
-            self._approval_feedback_failures += 1
+            self._approval_message_edit_failures += 1
+
+    def _schedule_callback_answer(self, query_id: str, text: str) -> None:
+        task = asyncio.create_task(
+            self._answer_callback(query_id, text),
+            name="bcn-telegram-callback-answer",
+        )
+        self._approval_callback_tasks.add(task)
+        task.add_done_callback(self._approval_callback_tasks.discard)
 
     async def _answer_callback(self, query_id: str, text: str) -> None:
         api = self._api
@@ -406,12 +464,7 @@ class TelegramApprovalChannel(TelegramChannel):
         return None
 
     def _approval_markdown(self, request: ChannelApprovalRequest) -> str:
-        action_key = _ACTION_MESSAGE_KEYS.get(request.approval.action)
-        action = (
-            self._translator.text(action_key)
-            if action_key is not None
-            else request.approval.action.replace("_", " ")
-        )
+        action = approval_action_text(self._translator, request.approval.action)
         description = request.approval.description
         return self._translator.text(
             "approval.prompt.telegram",

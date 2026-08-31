@@ -22,16 +22,29 @@ from ...core.models import (
     ApprovalResult,
     ChannelTargetKind,
     ChannelTargetPresentation,
+    ContentDelta,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
     InboundAttachment,
     Message,
     MessageDirection,
-    RuntimeEvent,
-    RuntimeEventState,
+    RuntimeOutputEvent,
     SenderIdentity,
     SenderKind,
+    ToolCallCompleted,
+    ToolCallFailed,
+    ToolCallInteraction,
+    ToolCallPatchUpdated,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
+    UsageUpdated,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from ...core.runtime import RuntimeStreamItem
 from ...core.timerwheel import TimerWheel
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .attachments import attachment_sources, materialize_attachments
@@ -272,25 +285,42 @@ class TelegramChannel(IChannel):
 
     def accept_turn_event(
         self,
-        item: RuntimeStreamItem,
+        item: RuntimeOutputEvent,
         *,
         session_id: str,
     ) -> None:
-        if isinstance(item, RuntimeEvent):
-            if "turn" in item.event_name.casefold() and item.state in {
-                RuntimeEventState.COMPLETED,
-                RuntimeEventState.FAILED,
-                RuntimeEventState.CANCELLED,
-                RuntimeEventState.UNKNOWN,
-            }:
+        match item.payload:
+            case TurnStarted():
+                return
+            case (
+                TurnCompleted(event_name=event_name)
+                | TurnFailed(event_name=event_name)
+                | TurnCancelled(event_name=event_name)
+                | TurnUnknown(event_name=event_name)
+            ):
+                if "turn" not in event_name.casefold():
+                    return
                 self._typing_leases.pop(session_id, None)
                 self._typing_wakeup.set()
-            return
-        identity = self._stream_routes.get(item.session_id)
+                return
+            case (
+                ContentDelta()
+                | ContextCompactionStarted()
+                | ContextCompactionCompleted()
+                | ToolCallStarted()
+                | ToolCallCompleted()
+                | ToolCallFailed()
+                | ToolCallTextDelta()
+                | ToolCallPatchUpdated()
+                | ToolCallInteraction()
+                | UsageUpdated()
+            ):
+                pass
+        identity = self._stream_routes.get(item.envelope.session_id)
         if identity is None or self._typing_runner is None:
             return
-        if item.session_id not in self._typing_leases:
-            self._typing_leases[item.session_id] = _TypingLease(
+        if item.envelope.session_id not in self._typing_leases:
+            self._typing_leases[item.envelope.session_id] = _TypingLease(
                 identity=identity,
                 next_due_at=0.0,
             )

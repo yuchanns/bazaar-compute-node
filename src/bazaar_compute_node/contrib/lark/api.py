@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -449,6 +450,96 @@ class LarkApi:
         )
         return _response_id(body, "message_reply", "message_id")
 
+    async def reply_card(
+        self,
+        *,
+        message_id: str,
+        card_id: str,
+        reply_in_thread: bool,
+        uuid: str,
+        timeout: float,
+    ) -> str:
+        return await self.reply_message(
+            message_id=message_id,
+            message_type="interactive",
+            content=json.dumps(
+                {"type": "card", "data": {"card_id": card_id}},
+                separators=(",", ":"),
+            ),
+            reply_in_thread=reply_in_thread,
+            uuid=uuid,
+            timeout=timeout,
+        )
+
+    async def create_card(
+        self,
+        card: dict[str, object],
+        *,
+        timeout: float,
+    ) -> str:
+        body = await self._post_json(
+            "cardkit_card_create",
+            "/open-apis/cardkit/v1/cards",
+            timeout=timeout,
+            json_body={
+                "type": "card_json",
+                "data": json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+        return _response_id(body, "cardkit_card_create", "card_id")
+
+    async def add_card_elements(
+        self,
+        card_id: str,
+        elements: list[dict[str, object]],
+        *,
+        uuid: str,
+        sequence: int,
+        timeout: float,
+    ) -> None:
+        await self._post_json(
+            "cardkit_element_create",
+            f"/open-apis/cardkit/v1/cards/{quote(card_id, safe='')}/elements",
+            timeout=timeout,
+            json_body={
+                "type": "append",
+                "uuid": uuid,
+                "sequence": sequence,
+                "elements": json.dumps(
+                    elements,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+
+    async def update_card_element(
+        self,
+        card_id: str,
+        element_id: str,
+        element: dict[str, object],
+        *,
+        uuid: str,
+        sequence: int,
+        timeout: float,
+    ) -> None:
+        await self._post_json(
+            "cardkit_element_update",
+            f"/open-apis/cardkit/v1/cards/{quote(card_id, safe='')}/elements/"
+            f"{quote(element_id, safe='')}",
+            http_method="PUT",
+            timeout=timeout,
+            json_body={
+                "uuid": uuid,
+                "sequence": sequence,
+                "element": json.dumps(
+                    element,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+
     async def update_card(
         self,
         token: str,
@@ -514,43 +605,6 @@ class LarkApi:
             timeout=timeout,
         )
         return _response_id(body, "file_upload", "file_key")
-
-    async def create_reaction(
-        self,
-        message_id: str,
-        *,
-        emoji_type: str,
-        timeout: float,
-    ) -> str:
-        body = await self._post_json(
-            "message_reaction_create",
-            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions",
-            timeout=timeout,
-            json_body={"reaction_type": {"emoji_type": emoji_type}},
-        )
-        return _response_id(body, "message_reaction_create", "reaction_id")
-
-    async def delete_reaction(
-        self,
-        message_id: str,
-        reaction_id: str,
-        *,
-        timeout: float,
-    ) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
-        body = await self._request_json(
-            "message_reaction_delete",
-            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions/"
-            f"{quote(reaction_id, safe='')}",
-            timeout=max(0.0, deadline - loop.time()),
-            headers={"Authorization": f"Bearer {token}"},
-            http_method="DELETE",
-        )
-        self._check_provider_result(body, "message_reaction_delete")
 
     @asynccontextmanager
     async def open_message_resource(
@@ -635,6 +689,7 @@ class LarkApi:
         timeout: float,
         json_body: dict[str, object],
         params: Mapping[str, str] | None = None,
+        http_method: str = "POST",
     ) -> Mapping[str, object]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -648,7 +703,7 @@ class LarkApi:
             params=params,
             headers={"Authorization": f"Bearer {token}"},
             json_body=json_body,
-            http_method="POST",
+            http_method=http_method,
         )
         self._check_provider_result(body, method)
         return body
@@ -683,6 +738,14 @@ class LarkApi:
                 )
             elif request_method == "POST":
                 request = self._session.post(
+                    url,
+                    json=json_body,
+                    params=params,
+                    headers=headers,
+                    timeout=client_timeout,
+                )
+            elif request_method == "PUT":
+                request = self._session.put(
                     url,
                     json=json_body,
                     params=params,

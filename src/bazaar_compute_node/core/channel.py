@@ -15,10 +15,9 @@ from .models import (
     InboundAttachment,
     Message,
     OutboundAttachment,
-    StreamEvent,
+    RuntimeOutputEvent,
 )
 from .outcomes import ProviderCallResult
-from .runtime import RuntimeStreamItem
 from .timerwheel import TimerWheel
 
 
@@ -178,7 +177,7 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
 
     def accept_turn_event(
         self,
-        item: RuntimeStreamItem,
+        item: RuntimeOutputEvent,
         *,
         session_id: str,
     ) -> None: ...
@@ -239,13 +238,19 @@ class AgentScopedChannel(IChannel):
 
     def accept_turn_event(
         self,
-        item: RuntimeStreamItem,
+        item: RuntimeOutputEvent,
         *,
         session_id: str,
     ) -> None:
         provider_session_id = self._provider_session_ids.get(session_id, session_id)
-        if isinstance(item, StreamEvent) and item.session_id == session_id:
-            item = replace(item, session_id=provider_session_id)
+        if item.envelope.session_id == session_id:
+            item = replace(
+                item,
+                envelope=replace(
+                    item.envelope,
+                    session_id=provider_session_id,
+                ),
+            )
         self._channel.accept_turn_event(
             item,
             session_id=provider_session_id,

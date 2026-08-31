@@ -16,26 +16,12 @@ from ..models import (
     reduce_session_runtime_state,
 )
 from ..observability import IAudit, LogLevel
+from ..sanitization import is_sensitive_field
 from ..storage import IStorageScope
 
 
 class SessionAuditRecorder:
     """Write sanitized session audit events with one shared policy."""
-
-    _FORBIDDEN_TOOL_ARGUMENTS = frozenset(
-        {
-            "access_token",
-            "api_key",
-            "authorization",
-            "body",
-            "cookie",
-            "credential",
-            "payload",
-            "raw_payload",
-            "secret",
-            "token",
-        }
-    )
 
     def __init__(
         self,
@@ -96,7 +82,7 @@ class SessionAuditRecorder:
         safe_arguments = {
             key: value
             for key, value in arguments.items()
-            if key.casefold() not in self._FORBIDDEN_TOOL_ARGUMENTS
+            if not is_sensitive_field(key)
         }
         await self.append(
             event_name=f"tool.{operation}.{status}",

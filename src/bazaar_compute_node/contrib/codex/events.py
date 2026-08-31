@@ -5,14 +5,34 @@ from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import Self, cast
 
+from pydantic import TypeAdapter
+
 from ...core.approval import IApprovalHandler
 from ...core.models import (
-    RuntimeEvent,
+    ContentDelta,
+    ContentDeltaKind,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
+    JsonValue,
+    RuntimeEventEnvelope,
+    RuntimeEventPayload,
     RuntimeEventState,
-    StreamEvent,
-    StreamEventKind,
+    RuntimeOutputEvent,
+    TokenUsage,
+    ToolCall,
+    ToolCallCompleted,
+    ToolCallDeltaKind,
+    ToolCallFailed,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
+    TurnUnknown,
+    UsageUpdated,
 )
-from ...core.runtime import IRuntimeTurnStream, RuntimeStreamItem
+from ...core.runtime import IRuntimeTurnStream
 from .approval import (
     approval_error,
     build_approval_response,
@@ -20,17 +40,30 @@ from .approval import (
     parse_approval_request,
 )
 
-_STREAM_EVENT_KINDS = {
-    "item/agentMessage/delta": StreamEventKind.AGENT_MESSAGE_DELTA,
-    "item/plan/delta": StreamEventKind.PLAN_DELTA,
-    "item/reasoning/summaryTextDelta": StreamEventKind.REASONING_SUMMARY_DELTA,
-    "item/reasoning/textDelta": StreamEventKind.REASONING_TEXT_DELTA,
-    "item/commandExecution/outputDelta": StreamEventKind.COMMAND_OUTPUT_DELTA,
-    "item/commandExecution/terminalInteraction": StreamEventKind.COMMAND_INTERACTION,
-    "item/fileChange/outputDelta": StreamEventKind.FILE_CHANGE_UPDATE,
-    "item/fileChange/patchUpdated": StreamEventKind.FILE_CHANGE_UPDATE,
-    "item/mcpToolCall/progress": StreamEventKind.TOOL_PROGRESS,
+_CONTENT_DELTA_KINDS = {
+    "item/agentMessage/delta": ContentDeltaKind.AGENT_MESSAGE,
+    "item/plan/delta": ContentDeltaKind.PLAN,
+    "item/reasoning/summaryTextDelta": ContentDeltaKind.REASONING_SUMMARY,
+    "item/reasoning/textDelta": ContentDeltaKind.REASONING_TEXT,
 }
+_CONTENT_ITEM_TYPES = frozenset(
+    {"userMessage", "hookPrompt", "agentMessage", "plan", "reasoning"}
+)
+_THREAD_STATE_ITEM_TYPES = frozenset({"enteredReviewMode", "exitedReviewMode"})
+_TOOL_TYPE_NAMES = {
+    "commandExecution": "command",
+    "fileChange": "file_change",
+    "mcpToolCall": "mcp_tool",
+    "dynamicToolCall": "dynamic_tool",
+    "collabAgentToolCall": "agent",
+    "subAgentActivity": "agent",
+    "webSearch": "web_search",
+    "imageView": "image_view",
+    "imageGeneration": "image_generation",
+    "sleep": "sleep",
+    "functionCallOutput": "function",
+}
+_JSON_VALUE_ADAPTER = TypeAdapter(JsonValue)
 from .client import parse_error_notification, parse_turn_notification
 from .process import JsonlProcessSupervisor
 from .protocol import (
@@ -82,7 +115,7 @@ class TurnEventStream(IRuntimeTurnStream):
     def __aiter__(self) -> Self:
         return self
 
-    async def __anext__(self) -> RuntimeStreamItem:
+    async def __anext__(self) -> RuntimeOutputEvent:
         if self._closed or self._terminal_emitted:
             raise StopAsyncIteration
         if not self._initial_emitted:
@@ -101,7 +134,6 @@ class TurnEventStream(IRuntimeTurnStream):
                 metadata={
                     "provider_method": "turn/start",
                     "provider_thread_id": self._provider_thread_id,
-                    "provider_turn_id": self._provider_turn_id,
                 },
             )
 
@@ -144,7 +176,7 @@ class TurnEventStream(IRuntimeTurnStream):
         self._closed = True
         self._call_closed_callback()
 
-    def _map_message(self, message: JsonlMessage) -> RuntimeStreamItem | None:
+    def _map_message(self, message: JsonlMessage) -> RuntimeOutputEvent | None:
         method = message.get("method")
         params = message.get("params")
         if not isinstance(method, str) or not method:
@@ -212,34 +244,179 @@ class TurnEventStream(IRuntimeTurnStream):
         if method == "item/reasoning/summaryPartAdded":
             return None
         if method in {
-            "item/started",
-            "item/completed",
             "item/autoApprovalReview/started",
             "item/autoApprovalReview/completed",
         }:
             return None
-        if method == "turn/progress" or method.startswith("item/"):
-            stream_id = params.get("itemId")
-            if not isinstance(stream_id, str) or not stream_id:
-                stream_id = None
-            content = params.get("delta")
-            if method == "item/mcpToolCall/progress":
-                content = params.get("message")
-            elif method == "item/commandExecution/terminalInteraction":
-                content = params.get("stdin")
-            if not isinstance(content, str):
-                content = None
-            return StreamEvent(
-                kind=(
-                    StreamEventKind.TURN_PROGRESS
-                    if method == "turn/progress"
-                    else _STREAM_EVENT_KINDS.get(method, StreamEventKind.ITEM_PROGRESS)
-                ),
-                created_at_ms=time_ns() // 1_000_000,
-                session_id=self._session_id,
-                stream_id=stream_id,
-                content=content,
+        if method in {"item/started", "item/completed"}:
+            item = params.get("item")
+            if not isinstance(item, Mapping):
+                raise AppServerProtocolError("item lifecycle requires an item object")
+            item_type = item.get("type")
+            if not isinstance(item_type, str) or not item_type:
+                raise AppServerProtocolError("item lifecycle requires an item type")
+            if (
+                item_type in _CONTENT_ITEM_TYPES
+                or item_type in _THREAD_STATE_ITEM_TYPES
+            ):
+                return None
+            call_id = item.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                return None
+            timestamp_field = (
+                "startedAtMs" if method == "item/started" else "completedAtMs"
             )
+            occurred_at_ms = params.get(timestamp_field)
+            if not isinstance(occurred_at_ms, int) or isinstance(occurred_at_ms, bool):
+                raise AppServerProtocolError(
+                    f"item lifecycle requires {timestamp_field}"
+                )
+            if item_type == "contextCompaction":
+                payload: RuntimeEventPayload = (
+                    ContextCompactionStarted(compaction_id=call_id)
+                    if method == "item/started"
+                    else ContextCompactionCompleted(compaction_id=call_id)
+                )
+                return self._output_event(
+                    payload,
+                    occurred_at_ms=occurred_at_ms,
+                    provider_turn_id=provider_turn_id,
+                )
+            server = item.get("server")
+            tool = item.get("tool")
+            name = None
+            if isinstance(server, str) and server and isinstance(tool, str) and tool:
+                name = f"{server}/{tool}"
+            elif isinstance(tool, str) and tool:
+                name = tool
+            else:
+                value = item.get("name")
+                if isinstance(value, str) and value:
+                    name = value
+            if name is None:
+                command = item.get("command")
+                if isinstance(command, str):
+                    parts = command.strip().split(maxsplit=1)
+                    if parts:
+                        name = parts[0]
+            if name is None:
+                name = _TOOL_TYPE_NAMES.get(item_type, "tool")
+
+            input: JsonValue = None
+            output: JsonValue = None
+            fields = (
+                ("arguments", "input", "command")
+                if method == "item/started"
+                else ("result", "output", "contentItems")
+            )
+            for field in fields:
+                if field not in item:
+                    continue
+                try:
+                    value = _JSON_VALUE_ADAPTER.validate_python(
+                        item[field], strict=True
+                    )
+                except ValueError as error:
+                    raise AppServerProtocolError(
+                        f"item lifecycle {field} must be a JSON value"
+                    ) from error
+                if method == "item/started":
+                    input = value
+                else:
+                    output = value
+                break
+
+            status = item.get("status")
+            error = item.get("error")
+            failed = (
+                isinstance(status, str) and status in {"failed", "declined", "errored"}
+            ) or error is not None
+            call = ToolCall(
+                call_id=call_id,
+                name=name,
+                input=input,
+                output=output,
+            )
+            if method == "item/started":
+                payload = ToolCallStarted(call=call)
+            elif failed:
+                error_message = None
+                if isinstance(error, str):
+                    error_message = error
+                elif isinstance(error, Mapping):
+                    provider_message = error.get("message")
+                    if isinstance(provider_message, str):
+                        error_message = provider_message
+                payload = ToolCallFailed(call=call, error_message=error_message)
+            else:
+                payload = ToolCallCompleted(call=call)
+            return self._output_event(
+                payload,
+                occurred_at_ms=occurred_at_ms,
+                provider_turn_id=provider_turn_id,
+            )
+        if method == "thread/tokenUsage/updated":
+            raw_usage = params.get("tokenUsage")
+            if not isinstance(raw_usage, Mapping):
+                raise AppServerProtocolError(
+                    "token usage notification requires tokenUsage"
+                )
+            raw_total = raw_usage.get("total")
+            raw_last = raw_usage.get("last")
+            if not isinstance(raw_total, Mapping) or not isinstance(raw_last, Mapping):
+                raise AppServerProtocolError("token usage requires total and last")
+            model_context_window = raw_usage.get("modelContextWindow")
+            if model_context_window is not None and (
+                not isinstance(model_context_window, int)
+                or isinstance(model_context_window, bool)
+            ):
+                raise AppServerProtocolError("model context window must be an integer")
+            return self._output_event(
+                UsageUpdated(
+                    total=_token_usage(raw_total),
+                    last=_token_usage(raw_last),
+                    model_context_window=model_context_window,
+                )
+            )
+        if method in _CONTENT_DELTA_KINDS:
+            content = params.get("delta")
+            if not isinstance(content, str):
+                return None
+            index = None
+            if method == "item/reasoning/summaryTextDelta":
+                index = params.get("summaryIndex")
+            elif method == "item/reasoning/textDelta":
+                index = params.get("contentIndex")
+            return self._output_event(
+                ContentDelta(
+                    kind=_CONTENT_DELTA_KINDS[method],
+                    text=content,
+                    index=(
+                        index
+                        if isinstance(index, int) and not isinstance(index, bool)
+                        else None
+                    ),
+                )
+            )
+        stream_id = params.get("itemId")
+        if not isinstance(stream_id, str) or not stream_id:
+            return None
+        notification = method.rsplit("/", maxsplit=1)[-1]
+        if method.startswith("item/") and notification in {"outputDelta", "progress"}:
+            content = (
+                params.get("delta")
+                if notification == "outputDelta"
+                else params.get("message")
+            )
+            if isinstance(content, str):
+                kind = (
+                    ToolCallDeltaKind.OUTPUT
+                    if notification == "outputDelta"
+                    else ToolCallDeltaKind.PROGRESS
+                )
+                return self._output_event(
+                    ToolCallTextDelta(call_id=stream_id, kind=kind, text=content)
+                )
         return None
 
     def _event(
@@ -249,16 +426,50 @@ class TurnEventStream(IRuntimeTurnStream):
         state: RuntimeEventState,
         error_kind: str | None = None,
         error_message: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-    ) -> RuntimeEvent:
-        return RuntimeEvent(
-            created_at_ms=time_ns() // 1_000_000,
-            event_name=event_name,
-            state=state,
-            turn_id=self._turn_id,
-            error_kind=error_kind,
-            error_message=error_message,
-            metadata=dict(metadata or {}),
+        metadata: Mapping[str, JsonValue] | None = None,
+    ) -> RuntimeOutputEvent:
+        if state is RuntimeEventState.STARTED:
+            payload = TurnStarted(event_name=event_name, metadata=metadata or {})
+        elif state is RuntimeEventState.COMPLETED:
+            payload = TurnCompleted(event_name=event_name, metadata=metadata or {})
+        elif state is RuntimeEventState.FAILED:
+            payload = TurnFailed(
+                event_name=event_name,
+                error_kind=error_kind or "provider_failed",
+                error_message=error_message,
+                metadata=metadata or {},
+            )
+        elif state is RuntimeEventState.CANCELLED:
+            payload = TurnCancelled(event_name=event_name, metadata=metadata or {})
+        else:
+            payload = TurnUnknown(
+                event_name=event_name,
+                error_kind=error_kind,
+                error_message=error_message,
+                metadata=metadata or {},
+            )
+        return self._output_event(payload)
+
+    def _output_event(
+        self,
+        payload: RuntimeEventPayload,
+        *,
+        occurred_at_ms: int | None = None,
+        provider_turn_id: str | None = None,
+    ) -> RuntimeOutputEvent:
+        return RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=self._session_id,
+                runtime_session_id=self._runtime_session_id,
+                turn_id=self._turn_id,
+                provider_turn_id=provider_turn_id or self._provider_turn_id,
+                occurred_at_ms=(
+                    occurred_at_ms
+                    if occurred_at_ms is not None
+                    else time_ns() // 1_000_000
+                ),
+            ),
+            payload=payload,
         )
 
     def _terminal_event(
@@ -268,8 +479,8 @@ class TurnEventStream(IRuntimeTurnStream):
         event_name: str,
         error_kind: str | None = None,
         error_message: str | None = None,
-        metadata: Mapping[str, object] | None = None,
-    ) -> RuntimeEvent:
+        metadata: Mapping[str, JsonValue] | None = None,
+    ) -> RuntimeOutputEvent:
         self._terminal_emitted = True
         self._call_closed_callback()
         return self._event(
@@ -284,13 +495,11 @@ class TurnEventStream(IRuntimeTurnStream):
         self,
         method: str,
         params: Mapping[str, object],
-    ) -> dict[str, object]:
-        metadata: dict[str, object] = {
+    ) -> dict[str, JsonValue]:
+        metadata: dict[str, JsonValue] = {
             "provider_method": method,
             "provider_thread_id": self._provider_thread_id,
         }
-        if self._provider_turn_id is not None:
-            metadata["provider_turn_id"] = self._provider_turn_id
         request_id = params.get("requestId")
         if isinstance(request_id, (int, str)) and not isinstance(request_id, bool):
             metadata["provider_request_id"] = str(request_id)
@@ -388,6 +597,24 @@ def _provider_turn_id(params: Mapping[str, object]) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _token_usage(value: Mapping[str, object]) -> TokenUsage:
+    fields = {
+        "input_tokens": value.get("inputTokens"),
+        "cached_input_tokens": value.get("cachedInputTokens"),
+        "cache_write_input_tokens": value.get("cacheWriteInputTokens"),
+        "output_tokens": value.get("outputTokens"),
+        "reasoning_output_tokens": value.get("reasoningOutputTokens"),
+        "total_tokens": value.get("totalTokens"),
+    }
+    if any(
+        token_count is not None
+        and (not isinstance(token_count, int) or isinstance(token_count, bool))
+        for token_count in fields.values()
+    ):
+        raise AppServerProtocolError("token usage values must be integers")
+    return TokenUsage(**cast(dict[str, int | None], fields))
 
 
 def _safe_error_message(error: BaseException) -> str:

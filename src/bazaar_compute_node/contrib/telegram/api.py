@@ -147,6 +147,22 @@ class TelegramBotApi:
             )
         return result
 
+    async def edit_message_text(
+        self,
+        payload: Mapping[str, object],
+        *,
+        timeout: float,
+    ) -> Mapping[str, object]:
+        result = await self._request("editMessageText", payload, timeout=timeout)
+        if not isinstance(result, Mapping):
+            raise TelegramApiError(
+                "editMessageText",
+                http_status=200,
+                error_code=None,
+                description="provider result is not a message object",
+            )
+        return result
+
     async def send_document(
         self,
         payload: Mapping[str, object],

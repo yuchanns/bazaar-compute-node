@@ -7,6 +7,7 @@ from enum import StrEnum
 from .correlation import CorrelationContext
 from .models import RuntimeEventState
 from .observability import LogLevel
+from .sanitization import is_sensitive_field
 
 
 class ErrorKind(StrEnum):
@@ -25,22 +26,6 @@ class ErrorKind(StrEnum):
     STORAGE = "storage"
     SHUTDOWN_TIMEOUT = "shutdown_timeout"
     INTERNAL = "internal"
-
-
-_FORBIDDEN_METADATA_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "authorization",
-        "body",
-        "cookie",
-        "credential",
-        "payload",
-        "raw_payload",
-        "secret",
-        "token",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +68,7 @@ class AuditEvent:
         for key in self.metadata:
             if not isinstance(key, str):
                 raise TypeError("audit metadata keys must be strings")
-            if key.casefold() in _FORBIDDEN_METADATA_KEYS:
+            if is_sensitive_field(key):
                 raise ValueError(
                     f"audit metadata cannot contain sensitive field: {key}"
                 )

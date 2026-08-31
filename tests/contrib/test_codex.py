@@ -67,13 +67,23 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ApprovalResult,
-    RuntimeEvent,
+    ContentDelta,
+    ContentDeltaKind,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
     SessionRuntimeState,
-    StreamEvent,
-    StreamEventKind,
+    TokenUsage,
+    ToolCallCompleted,
+    ToolCallDeltaKind,
+    ToolCallFailed,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCompleted,
+    TurnStarted,
+    UsageUpdated,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.paths import resolve_workspace_dir
@@ -133,8 +143,8 @@ class _NoopApprovalHandler(IApprovalHandler):
         raise AssertionError(f"unexpected approval request: {request.request_id}")
 
 
-def test_codex_turn_stream_normalizes_transient_updates() -> None:
-    stream = TurnEventStream(
+def _turn_event_stream() -> TurnEventStream:
+    return TurnEventStream(
         JsonlProcessSupervisor(JsonlProcessSpec(executable="unused")),
         session_id="bcn-1",
         runtime_session_id="runtime-1",
@@ -143,65 +153,284 @@ def test_codex_turn_stream_normalizes_transient_updates() -> None:
         provider_turn_id="provider-turn-1",
     )
 
-    reasoning = stream._map_message(
+
+def test_codex_item_lifecycle_maps_tools_generically() -> None:
+    stream = _turn_event_stream()
+    started_item = {
+        "id": "command-1",
+        "type": "commandExecution",
+        "command": "python -m pytest",
+        "cwd": "/workspace",
+        "status": "inProgress",
+    }
+    started = stream._map_message(
         {
-            "method": "item/reasoning/summaryTextDelta",
+            "method": "item/started",
             "params": {
                 "threadId": "thread-1",
                 "turnId": "provider-turn-1",
-                "itemId": "reasoning-1",
-                "delta": "",
-                "summaryIndex": 2,
+                "startedAtMs": 100,
+                "item": started_item,
             },
         }
     )
-    assert isinstance(reasoning, StreamEvent)
-    assert reasoning == StreamEvent(
-        kind=StreamEventKind.REASONING_SUMMARY_DELTA,
-        created_at_ms=reasoning.created_at_ms,
-        session_id="bcn-1",
-        stream_id="reasoning-1",
-        content="",
-    )
+    assert started is not None
+    assert isinstance(started.payload, ToolCallStarted)
+    assert started.payload.call.call_id == "command-1"
+    assert started.payload.call.name == "python"
+    assert started.payload.call.input == "python -m pytest"
+    assert started.envelope.occurred_at_ms == 100
+    assert started.envelope.provider_turn_id == "provider-turn-1"
 
-    summary_boundary = stream._map_message(
+    mcp_input = stream._map_message(
         {
-            "method": "item/reasoning/summaryPartAdded",
+            "method": "item/started",
             "params": {
                 "threadId": "thread-1",
                 "turnId": "provider-turn-1",
-                "itemId": "reasoning-1",
+                "startedAtMs": 150,
+                "item": {
+                    "id": "mcp-1",
+                    "type": "mcpToolCall",
+                    "server": "github",
+                    "tool": "search_code",
+                    "arguments": {"query": "RuntimeOutputEvent"},
+                    "status": "inProgress",
+                },
             },
         }
     )
-    assert summary_boundary is None
+    assert mcp_input is not None
+    assert isinstance(mcp_input.payload, ToolCallStarted)
+    assert mcp_input.payload.call.name == "github/search_code"
+    assert mcp_input.payload.call.input == {"query": "RuntimeOutputEvent"}
 
-    lifecycle = stream._map_message(
+    completed_item = {
+        "id": "mcp-1",
+        "type": "mcpToolCall",
+        "server": "github",
+        "tool": "search_code",
+        "arguments": {"query": "RuntimeOutputEvent"},
+        "result": {"content": [{"type": "text", "text": "ok"}]},
+        "status": "completed",
+    }
+    completed = stream._map_message(
         {
             "method": "item/completed",
             "params": {
                 "threadId": "thread-1",
                 "turnId": "provider-turn-1",
-                "item": {"id": "reasoning-1", "type": "reasoning"},
+                "completedAtMs": 200,
+                "item": completed_item,
             },
         }
     )
-    assert lifecycle is None
+    assert completed is not None
+    assert isinstance(completed.payload, ToolCallCompleted)
+    assert completed.payload.call.call_id == "mcp-1"
+    assert completed.payload.call.name == "github/search_code"
+    assert completed.payload.call.output == {
+        "content": [{"type": "text", "text": "ok"}]
+    }
+    assert completed.envelope.occurred_at_ms == 200
 
-    future_progress = stream._map_message(
+    failed_item = {
+        "id": "dynamic-1",
+        "type": "dynamicToolCall",
+        "tool": "render",
+        "status": "failed",
+        "error": {"message": "request failed"},
+        "contentItems": [{"type": "inputText", "text": "partial output"}],
+    }
+    failed = stream._map_message(
         {
-            "method": "item/future/progress",
+            "method": "item/completed",
             "params": {
                 "threadId": "thread-1",
                 "turnId": "provider-turn-1",
-                "itemId": "future-1",
-                "delta": "working",
+                "completedAtMs": 300,
+                "item": failed_item,
             },
         }
     )
-    assert isinstance(future_progress, StreamEvent)
-    assert future_progress.kind is StreamEventKind.ITEM_PROGRESS
-    assert future_progress.content == "working"
+    assert failed is not None
+    assert isinstance(failed.payload, ToolCallFailed)
+    assert failed.payload.call.name == "render"
+    assert failed.payload.call.output == [
+        {"type": "inputText", "text": "partial output"}
+    ]
+    assert failed.payload.error_message == "request failed"
+
+    file_change = stream._map_message(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "completedAtMs": 400,
+                "item": {
+                    "id": "files-1",
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": [],
+                },
+            },
+        }
+    )
+    assert file_change is not None
+    assert isinstance(file_change.payload, ToolCallCompleted)
+    assert file_change.payload.call.name == "file_change"
+
+
+def test_codex_context_compaction_items_are_neutral_activity_events() -> None:
+    stream = _turn_event_stream()
+    item = {"id": "compaction-1", "type": "contextCompaction"}
+
+    started = stream._map_message(
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "startedAtMs": 500,
+                "item": item,
+            },
+        }
+    )
+    completed = stream._map_message(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "completedAtMs": 600,
+                "item": item,
+            },
+        }
+    )
+
+    assert started is not None
+    assert started.payload == ContextCompactionStarted("compaction-1")
+    assert started.envelope.occurred_at_ms == 500
+    assert started.envelope.provider_turn_id == "provider-turn-1"
+    assert completed is not None
+    assert completed.payload == ContextCompactionCompleted("compaction-1")
+    assert completed.envelope.occurred_at_ms == 600
+    assert completed.envelope.provider_turn_id == "provider-turn-1"
+
+
+def test_codex_delta_and_usage_notifications_are_structured() -> None:
+    stream = _turn_event_stream()
+    samples = (
+        (
+            "item/agentMessage/delta",
+            {"itemId": "message-1", "delta": "hello"},
+            ContentDelta(kind=ContentDeltaKind.AGENT_MESSAGE, text="hello"),
+        ),
+        (
+            "item/plan/delta",
+            {"itemId": "plan-1", "delta": "step"},
+            ContentDelta(kind=ContentDeltaKind.PLAN, text="step"),
+        ),
+        (
+            "item/reasoning/textDelta",
+            {"itemId": "reasoning-1", "delta": "thought", "contentIndex": 3},
+            ContentDelta(
+                kind=ContentDeltaKind.REASONING_TEXT,
+                text="thought",
+                index=3,
+            ),
+        ),
+        (
+            "item/reasoning/summaryTextDelta",
+            {"itemId": "reasoning-1", "delta": "summary", "summaryIndex": 2},
+            ContentDelta(
+                kind=ContentDeltaKind.REASONING_SUMMARY,
+                text="summary",
+                index=2,
+            ),
+        ),
+        (
+            "item/commandExecution/outputDelta",
+            {"itemId": "command-1", "delta": "stdout"},
+            ToolCallTextDelta(
+                call_id="command-1",
+                kind=ToolCallDeltaKind.OUTPUT,
+                text="stdout",
+            ),
+        ),
+        (
+            "item/mcpToolCall/progress",
+            {"itemId": "mcp-1", "message": "searching"},
+            ToolCallTextDelta(
+                call_id="mcp-1",
+                kind=ToolCallDeltaKind.PROGRESS,
+                text="searching",
+            ),
+        ),
+    )
+    for method, provider_params, expected_payload in samples:
+        event = stream._map_message(
+            {
+                "method": method,
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "provider-turn-1",
+                    **provider_params,
+                },
+            }
+        )
+        assert event is not None
+        assert event.payload == expected_payload
+
+    usage = stream._map_message(
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "provider-turn-1",
+                "tokenUsage": {
+                    "total": {
+                        "inputTokens": 100,
+                        "cachedInputTokens": 40,
+                        "cacheWriteInputTokens": 10,
+                        "outputTokens": 25,
+                        "reasoningOutputTokens": 5,
+                        "totalTokens": 125,
+                    },
+                    "last": {
+                        "inputTokens": 20,
+                        "cachedInputTokens": 8,
+                        "cacheWriteInputTokens": 2,
+                        "outputTokens": 7,
+                        "reasoningOutputTokens": 1,
+                        "totalTokens": 27,
+                    },
+                    "modelContextWindow": 258_400,
+                },
+            },
+        }
+    )
+    assert usage is not None
+    assert usage.payload == UsageUpdated(
+        total=TokenUsage(
+            input_tokens=100,
+            cached_input_tokens=40,
+            cache_write_input_tokens=10,
+            output_tokens=25,
+            reasoning_output_tokens=5,
+            total_tokens=125,
+        ),
+        last=TokenUsage(
+            input_tokens=20,
+            cached_input_tokens=8,
+            cache_write_input_tokens=2,
+            output_tokens=7,
+            reasoning_output_tokens=1,
+            total_tokens=27,
+        ),
+        model_context_window=258_400,
+    )
 
 
 def test_build_thread_start_params_maps_thread_options() -> None:
@@ -945,10 +1174,14 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
         async with asyncio.timeout(120):
             async for event in stream:
                 events.append(event)
-        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
-        assert durable_events[0].state.value == "started"
-        assert durable_events[-1].state.value == "completed"
-        assert durable_events[-1].metadata["provider_turn_id"] == provider_turn.turn_id
+        durable_events = [
+            event
+            for event in events
+            if isinstance(event.payload, TurnStarted | TurnCompleted)
+        ]
+        assert isinstance(durable_events[0].payload, TurnStarted)
+        assert isinstance(durable_events[-1].payload, TurnCompleted)
+        assert durable_events[-1].envelope.provider_turn_id == provider_turn.turn_id
     finally:
         await supervisor.stop(timeout=10)
 
@@ -1318,12 +1551,16 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         async with asyncio.timeout(120):
             async for event in stream:
                 events.append(event)
-        durable_events = [event for event in events if isinstance(event, RuntimeEvent)]
-        assert durable_events[-1].state.value == "completed"
+        durable_events = [
+            event
+            for event in events
+            if isinstance(event.payload, TurnStarted | TurnCompleted)
+        ]
+        assert isinstance(durable_events[-1].payload, TurnCompleted)
         provider_turn_ids = {
-            str(event.metadata["provider_turn_id"])
+            event.envelope.provider_turn_id
             for event in durable_events
-            if event.metadata.get("provider_turn_id") is not None
+            if event.envelope.provider_turn_id is not None
         }
         assert len(provider_turn_ids) == 1
         provider_thread_id = session.provider_thread_id
@@ -1331,7 +1568,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         return (
             provider_thread_id,
             provider_turn_ids.pop(),
-            tuple(event.event_name for event in durable_events),
+            tuple(event.payload.event_name for event in durable_events),
         )
 
     agent_id = str(uuid7())
@@ -1426,8 +1663,8 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 timeout=30,
             )
             started_event = await anext(active_stream)
-            assert isinstance(started_event, RuntimeEvent)
-            active_provider_turn_id = started_event.metadata.get("provider_turn_id")
+            assert isinstance(started_event.payload, TurnStarted)
+            active_provider_turn_id = started_event.envelope.provider_turn_id
             assert isinstance(active_provider_turn_id, str)
             await active_stream.aclose()
             active_turn = replace(
@@ -1451,9 +1688,11 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 async for event in recovered_stream:
                     recovered_events.append(event)
             recovered_runtime_events = [
-                event for event in recovered_events if isinstance(event, RuntimeEvent)
+                event
+                for event in recovered_events
+                if isinstance(event.payload, TurnStarted | TurnCompleted)
             ]
-            assert recovered_runtime_events[-1].state.value == "completed"
+            assert isinstance(recovered_runtime_events[-1].payload, TurnCompleted)
 
             await first_runtime.stop(timeout=20)
             resumed_runtime = Runtime(

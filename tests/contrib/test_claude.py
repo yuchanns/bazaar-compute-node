@@ -30,9 +30,16 @@ from bazaar_compute_node.contrib.claude.protocol import (
 )
 from bazaar_compute_node.contrib.claude.runtime import _Connection, _observe_background
 from bazaar_compute_node.core.models import (
-    RuntimeEvent,
-    RuntimeEventState,
+    ContextCompactionCompleted,
     RuntimeSession,
+    ToolCallCompleted,
+    ToolCallDeltaKind,
+    ToolCallFailed,
+    ToolCallStarted,
+    ToolCallTextDelta,
+    TurnCompleted,
+    TurnStarted,
+    UsageUpdated,
 )
 from bazaar_compute_node.core.runtime import RuntimeCommandContext, RuntimeSandboxMode
 
@@ -203,6 +210,247 @@ def test_claude_provider_cycle_rejects_second_foreground() -> None:
         machine.foreground_opened()
 
 
+def _turn_event_stream() -> tuple[TurnEventStream, TurnInbox]:
+    inbox = TurnInbox(1)
+
+    async def claim_result(message: dict[str, object]) -> bool:
+        del message
+        return True
+
+    async def close_turn() -> None:
+        pass
+
+    async def mark_unusable(error: BaseException) -> None:
+        del error
+
+    return (
+        TurnEventStream(
+            inbox,
+            session_id="bcn-session-1",
+            runtime_session_id="runtime-session-1",
+            turn_id="turn-1",
+            provider_thread_id="provider-session-1",
+            claude_version=(2, 1, 247),
+            claim_result=claim_result,
+            on_closed=close_turn,
+            on_unusable=mark_unusable,
+        ),
+        inbox,
+    )
+
+
+@pytest.mark.asyncio
+async def test_claude_tool_lifecycle_maps_every_block_in_an_envelope() -> None:
+    stream, inbox = _turn_event_stream()
+    await anext(stream)
+    inbox._messages.put_nowait(
+        {
+            "type": "assistant",
+            "session_id": "provider-session-1",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu-bash",
+                        "name": "Bash",
+                        "input": {"command": "pwd"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu-read",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    },
+                ],
+            },
+        }
+    )
+
+    bash_started = await anext(stream)
+    read_started = await anext(stream)
+
+    assert isinstance(bash_started.payload, ToolCallStarted)
+    assert bash_started.payload.call.call_id == "toolu-bash"
+    assert bash_started.payload.call.name == "Bash"
+    assert bash_started.payload.call.input == {"command": "pwd"}
+    assert isinstance(read_started.payload, ToolCallStarted)
+    assert read_started.payload.call.call_id == "toolu-read"
+    assert read_started.payload.call.name == "Read"
+
+    inbox._messages.put_nowait(
+        {
+            "type": "user",
+            "session_id": "provider-session-1",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu-bash",
+                        "content": "workspace",
+                        "is_error": False,
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu-read",
+                        "content": "file not found",
+                        "is_error": True,
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu-provider",
+                        "content": "provider result",
+                    },
+                ],
+            },
+        }
+    )
+
+    bash_completed = await anext(stream)
+    read_failed = await anext(stream)
+    provider_completed = await anext(stream)
+
+    assert isinstance(bash_completed.payload, ToolCallCompleted)
+    assert bash_completed.payload.call.name == "Bash"
+    assert bash_completed.payload.call.output == "workspace"
+    assert isinstance(read_failed.payload, ToolCallFailed)
+    assert read_failed.payload.call.name == "Read"
+    assert read_failed.payload.error_message == "file not found"
+    assert isinstance(provider_completed.payload, ToolCallCompleted)
+    assert provider_completed.payload.call.name == "toolu-provider"
+
+
+@pytest.mark.asyncio
+async def test_claude_tool_input_and_task_progress_are_structured() -> None:
+    stream, inbox = _turn_event_stream()
+    await anext(stream)
+    inbox._messages.put_nowait(
+        {
+            "type": "stream_event",
+            "session_id": "provider-session-1",
+            "event": {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu-bash",
+                    "name": "Bash",
+                    "input": {},
+                },
+            },
+        }
+    )
+    inbox._messages.put_nowait(
+        {
+            "type": "stream_event",
+            "session_id": "provider-session-1",
+            "event": {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": '{"com'},
+            },
+        }
+    )
+    input_delta = await anext(stream)
+
+    assert isinstance(input_delta.payload, ToolCallTextDelta)
+    assert input_delta.payload.call_id == "toolu-bash"
+    assert input_delta.payload.kind is ToolCallDeltaKind.INPUT
+    assert input_delta.payload.text == '{"com'
+
+    inbox._messages.put_nowait(
+        {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "provider-session-1",
+            "task_id": "task-1",
+            "summary": "Inspect the repository",
+        }
+    )
+    task_started = await anext(stream)
+
+    assert isinstance(task_started.payload, ToolCallStarted)
+    assert task_started.payload.call.call_id == "task-1"
+    assert task_started.payload.call.name == "task"
+    assert task_started.payload.call.input == "Inspect the repository"
+
+    inbox._messages.put_nowait(
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": "provider-session-1",
+            "task_id": "task-1",
+            "summary": "Reading source files",
+        }
+    )
+    task_progress = await anext(stream)
+
+    assert isinstance(task_progress.payload, ToolCallTextDelta)
+    assert task_progress.payload.call_id == "task-1"
+    assert task_progress.payload.kind is ToolCallDeltaKind.PROGRESS
+    assert task_progress.payload.text == "Reading source files"
+
+
+@pytest.mark.asyncio
+async def test_claude_compact_boundary_emits_standalone_completion() -> None:
+    stream, inbox = _turn_event_stream()
+    await anext(stream)
+    inbox._messages.put_nowait(
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "session_id": "provider-session-1",
+            "uuid": "compaction-1",
+            "compact_metadata": {"trigger": "auto"},
+        }
+    )
+
+    completed = await anext(stream)
+
+    assert completed.payload == ContextCompactionCompleted("compaction-1")
+
+
+@pytest.mark.asyncio
+async def test_claude_result_emits_usage_before_terminal() -> None:
+    stream, inbox = _turn_event_stream()
+    await anext(stream)
+    usage = {
+        "input_tokens": 12,
+        "cache_creation_input_tokens": 3,
+        "cache_read_input_tokens": 4,
+        "output_tokens": 5,
+    }
+    inbox._messages.put_nowait(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 100,
+            "duration_api_ms": 80,
+            "num_turns": 1,
+            "session_id": "provider-session-1",
+            "usage": usage,
+            "total_cost_usd": 0.004,
+            "stop_reason": "end_turn",
+        }
+    )
+
+    usage_event = await anext(stream)
+    completed = await anext(stream)
+
+    assert isinstance(usage_event.payload, UsageUpdated)
+    assert usage_event.payload.total.input_tokens == 12
+    assert usage_event.payload.total.cached_input_tokens == 4
+    assert usage_event.payload.total.cache_write_input_tokens == 3
+    assert usage_event.payload.total.output_tokens == 5
+    assert usage_event.payload.cost_usd == 0.004
+    assert isinstance(completed.payload, TurnCompleted)
+    assert completed.payload.metadata["usage"] == usage
+    assert completed.payload.metadata["total_cost_usd"] == 0.004
+    assert completed.payload.metadata["stop_reason"] == "end_turn"
+
+
 @pytest.mark.asyncio
 async def test_claude_task_notification_adoption() -> None:
     # a task notification adopts the foreground turn
@@ -260,6 +508,7 @@ async def test_claude_task_notification_adoption() -> None:
     stream = TurnEventStream(
         inbox,
         session_id="bcn-session-1",
+        runtime_session_id="runtime-session-1",
         turn_id="turn-1",
         provider_thread_id="provider-session-1",
         claude_version=(2, 1, 247),
@@ -282,10 +531,8 @@ async def test_claude_task_notification_adoption() -> None:
     )
     completed = await anext(stream)
 
-    assert isinstance(started, RuntimeEvent)
-    assert started.state is RuntimeEventState.STARTED
-    assert isinstance(completed, RuntimeEvent)
-    assert completed.state is RuntimeEventState.COMPLETED
+    assert isinstance(started.payload, TurnStarted)
+    assert isinstance(completed.payload, TurnCompleted)
     assert closed
 
 

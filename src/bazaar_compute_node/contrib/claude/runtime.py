@@ -34,7 +34,6 @@ from ...core.runtime import (
 )
 from .approval import (
     build_approval_response,
-    deny_approval,
     parse_approval_request,
 )
 from .client import Client
@@ -256,13 +255,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     runtime_session_id=session.id,
                     turn_id=turn.turn_id,
                 )
-                try:
-                    async with asyncio.timeout(timeout):
-                        result = await approval_handler.request_approval(
-                            approval.request, timeout=timeout
-                        )
-                except TimeoutError:
-                    return deny_approval("Permission request timed out.")
+                result = await approval_handler.request_approval(
+                    approval.request, timeout=timeout
+                )
                 return build_approval_response(approval, result)
 
             connection.client.set_control_request_handler(handle_permission)
@@ -321,6 +316,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         stream = TurnEventStream(
             inbox,
             session_id=session.bcn_session_id,
+            runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             claude_version=connection.claude_version,

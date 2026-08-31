@@ -194,7 +194,7 @@ BCN approved response 保留原 tool input，不持久化 CLI permission updates
 }
 ```
 
-BCN rejected/timeout response：
+BCN rejected response：
 
 ```json
 {
@@ -293,7 +293,7 @@ BCN rejected/timeout response：
 - stdio `can_use_tool` control request 转发给 `_Connection` 当前 turn 的 BCN approval handler。
 - foreground human result 后不立即移除该 handler：它作为该 connection 的 latest human approval context 保留，供随后由其 background subagent completion 触发的 injected turn 继续完成 stdio control；下一 BCN turn 原子替换 handler，session stop/connection retirement 取消全部 inflight request。这样 background 跨 turn 不会因 `no active turn handler` 被 provider-side 中断。
 - 每个 tool request 使用 Claude `tool_use_id` 作为 provider request correlation，映射 tool name、input 和可读说明；BCN allow/deny 映射为 Claude permission control response。
-- approval 等待遵守 BCN timeout、turn cancellation 和 session shutdown；结束后清理 pending state，避免 callback 悬挂。
+- Claude Code 协议没有已确认的人工审批期限，adapter 不使用通用 provider call timeout 限制用户决定；approval 一直等待到用户决定、caller cancellation 或 session shutdown，结束后清理 pending state，避免 callback 悬挂。
 - `AskUserQuestion` 由 process argv 显式禁用，不进入 approval bridge，adapter 不实现该工具的 deny 或回退分支。
 - deferred tool result 映射为明确的非成功 terminal/provider status，不把尚未执行的 tool 当作完成。
 
@@ -321,7 +321,7 @@ BCN rejected/timeout response：
 | `IRuntimeTurnStream.aclose()` | 停止该 consumer、解绑 approval handler 并清理 stream-local state，不直接关闭可复用的 session process。 | process lifecycle 仍由 stop_session/Runtime stop 管理；重复 close 幂等。 |
 | `steer_turn(session, turn, input_text, timeout)` | active turn 匹配时向同一 stdin 写新的 stream-json user envelope。 | write confirmed 返回 `True`；没有 matching active turn、process 已退出或无法安全写入时返回 `False`，现有 orchestrator 把 inbound 留给下一 turn。 |
 | `has_background_job(session, timeout)` | 读取 connection 中由 `local_agent` / `local_workflow` task start/notification/update envelopes 维护的 active task ID set。 | 纯内存查询；connection 不存在返回 `False`；timeout/cancellation 遵守 core call boundary。 |
-| `IApprovalHandler.request_approval()` bridge | Claude `can_use_tool` control request 转成 `ApprovalRequest`，以 `tool_use_id` 作为 core `request_id`；decision 转成 matching stdio control response。 | approved -> allow，rejected/timeout -> deny；turn/session cancellation 终止等待并清理 correlation。`AskUserQuestion` 已由 argv 禁用，不进入 bridge。 |
+| `IApprovalHandler.request_approval()` bridge | Claude `can_use_tool` control request 转成 `ApprovalRequest`，以 `tool_use_id` 作为 core `request_id`；decision 转成 matching stdio control response。 | approved -> allow，rejected -> deny；不另设人工审批期限，turn/session cancellation 终止等待并清理 correlation。`AskUserQuestion` 已由 argv 禁用，不进入 bridge。 |
 
 ### Provider-neutral event mapping
 
@@ -447,7 +447,7 @@ git diff --check
 实现内容：
 
 1. 实现 per-turn stdio permission request bridge 和 tool-use correlation。
-2. 按固定 wire shape 映射 allow/deny、timeout、`control_cancel_request` 和 session shutdown cleanup；allow 必须回传原始 `updatedInput`，deny 必须携带 provider-visible message。
+2. 按固定 wire shape 映射 allow/deny、`control_cancel_request` 和 session shutdown cleanup；allow 必须回传原始 `updatedInput`，deny 必须携带 provider-visible message，等待用户决定时不使用通用 provider call timeout。
 3. 完成 deferred tool result 分类，以及 permission/control envelope 不兼容时的 provider-unknown boundary。
 4. 覆盖批准后继续、拒绝后继续、approval 中断，以及 resumed session 的下一 turn approval。
 
@@ -534,7 +534,7 @@ uv lock --check
 git diff --check
 ```
 
-自动化 approval 验收通过真实 orchestration + `TestChannel` 控制面批准、拒绝并让一条等待中的审批超时，确认 Claude tool request、BCN approval request、human decision、provider-visible allow/deny 与 turn terminal 全链路；不得直接向 runtime 注入测试 approval handler。完成 Task 5 后停止，提交 Plan 与代码 diff、自动门禁和 live E2E 结果给 Hanchin review；未获指令不 commit/push。
+自动化 approval 验收通过真实 orchestration + `TestChannel` 控制面批准、拒绝，并在一条审批等待中停止 node 以确认 lifecycle cancellation；验证 Claude tool request、BCN approval request、human decision、provider-visible allow/deny 与 turn terminal 全链路；不得直接向 runtime 注入测试 approval handler。完成 Task 5 后停止，提交 Plan 与代码 diff、自动门禁和 live E2E 结果给 Hanchin review；未获指令不 commit/push。
 
 ### Task 6：background-idle lifecycle event
 
@@ -584,7 +584,7 @@ git diff --check
 - fresh 与 resumed RuntimeSession 均可连接外部 Claude Code，Claude session ID 稳定保存于 `provider_thread_id`。
 - start、stream、steer、approval、background task、stop 和 reconcile 均满足现有 `IRuntime` contract。
 - Claude child 只收到 BCN 正向白名单环境，sandbox/network/system prompt 映射有测试覆盖。
-- Claude protocol error、process exit、permission deny/timeout、deferred result 和 crashed active turn 均有确定的 provider-neutral result。
+- Claude protocol error、process exit、permission deny/cancellation、deferred result 和 crashed active turn 均有确定的 provider-neutral result。
 - protocol failure 后 owning connection 不再复用；connection router 可保留或由新 BCN turn adopt 跨-turn injected provider lane，且 non-human result 不误终止 foreground；`provider_turn_id=None` 的 RUNNING turn 仍可从 Channel 路径 steer；每次 stdin operation 的单一 deadline 覆盖 write lock 与完整 I/O。
 - 全量 pytest、Ruff、Pyright、compileall、lock 和 diff check 通过。
 - README 的 Runtime 支持情况包含 Claude。
