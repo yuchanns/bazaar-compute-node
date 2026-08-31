@@ -595,13 +595,15 @@ def _result_metadata(message: Mapping[str, object]) -> dict[str, JsonValue]:
         "total_cost_usd",
         "usage",
         "modelUsage",
-        "permission_denials",
         "terminal_reason",
         "origin",
     ):
         value = message.get(field_name)
         if value is not None:
             metadata[field_name] = cast(JsonValue, value)
+    permission_denials = message.get("permission_denials")
+    if isinstance(permission_denials, list):
+        metadata["permission_denial_count"] = len(permission_denials)
     return metadata
 
 

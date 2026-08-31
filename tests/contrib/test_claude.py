@@ -433,6 +433,12 @@ async def test_claude_result_emits_usage_before_terminal() -> None:
             "usage": usage,
             "total_cost_usd": 0.004,
             "stop_reason": "end_turn",
+            "permission_denials": [
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "deploy with a private credential"},
+                }
+            ],
         }
     )
 
@@ -449,6 +455,8 @@ async def test_claude_result_emits_usage_before_terminal() -> None:
     assert completed.payload.metadata["usage"] == usage
     assert completed.payload.metadata["total_cost_usd"] == 0.004
     assert completed.payload.metadata["stop_reason"] == "end_turn"
+    assert completed.payload.metadata["permission_denial_count"] == 1
+    assert "permission_denials" not in completed.payload.metadata
 
 
 @pytest.mark.asyncio

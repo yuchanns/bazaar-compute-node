@@ -65,10 +65,17 @@ class AuditEvent:
                 raise ValueError(
                     f"{field_name} must be a non-empty string when present"
                 )
-        for key in self.metadata:
-            if not isinstance(key, str):
-                raise TypeError("audit metadata keys must be strings")
-            if is_sensitive_field(key):
-                raise ValueError(
-                    f"audit metadata cannot contain sensitive field: {key}"
-                )
+        pending: list[object] = [self.metadata]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise TypeError("audit metadata keys must be strings")
+                    if is_sensitive_field(key):
+                        raise ValueError(
+                            f"audit metadata cannot contain sensitive field: {key}"
+                        )
+                    pending.append(item)
+            elif isinstance(value, list | tuple):
+                pending.extend(value)

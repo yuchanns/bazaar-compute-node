@@ -95,6 +95,19 @@ class TelegramActivityProjector:
         identity: TelegramThreadIdentity | None,
         api: TelegramBotApi | None,
     ) -> None:
+        if not isinstance(
+            item.payload,
+            ToolCallStarted
+            | ToolCallCompleted
+            | ToolCallFailed
+            | ContextCompactionStarted
+            | ContextCompactionCompleted
+            | TurnCompleted
+            | TurnFailed
+            | TurnCancelled
+            | TurnUnknown,
+        ):
+            return
         key = self._turn_key(item)
         if key is None:
             return
@@ -102,7 +115,11 @@ class TelegramActivityProjector:
         if turn is None:
             if not isinstance(
                 item.payload,
-                ToolCallStarted | ContextCompactionStarted | ContextCompactionCompleted,
+                ToolCallStarted
+                | ToolCallCompleted
+                | ToolCallFailed
+                | ContextCompactionStarted
+                | ContextCompactionCompleted,
             ):
                 return
             if identity is None or api is None:
@@ -185,13 +202,33 @@ class TelegramActivityProjector:
                 turn.dirty_pages.add(row.page_index)
             case ToolCallCompleted(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
-                if row is not None:
+                if row is None:
+                    row_id = f"tool:{call.call_id}"
+                    row = _ActivityRow(
+                        kind=self._tool_call,
+                        name=call.name,
+                        page_index=self._page_for_new_row(turn, row_id),
+                        status="completed",
+                    )
+                    turn.rows[row_id] = row
+                    turn.dirty_pages.add(row.page_index)
+                else:
                     row.name = call.name
                     row.status = "completed"
                     turn.dirty_pages.add(row.page_index)
             case ToolCallFailed(call=call):
                 row = turn.rows.get(f"tool:{call.call_id}")
-                if row is not None:
+                if row is None:
+                    row_id = f"tool:{call.call_id}"
+                    row = _ActivityRow(
+                        kind=self._tool_call,
+                        name=call.name,
+                        page_index=self._page_for_new_row(turn, row_id),
+                        status="failed",
+                    )
+                    turn.rows[row_id] = row
+                    turn.dirty_pages.add(row.page_index)
+                else:
                     row.name = call.name
                     row.status = "failed"
                     turn.dirty_pages.add(row.page_index)

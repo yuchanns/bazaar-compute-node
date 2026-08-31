@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from time import time_ns
-from typing import Self, cast
+from typing import Annotated, Literal, Self, cast
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from ...core.approval import IApprovalHandler
 from ...core.models import (
@@ -13,6 +13,7 @@ from ...core.models import (
     ContentDeltaKind,
     ContextCompactionCompleted,
     ContextCompactionStarted,
+    FileChangeEntry,
     JsonValue,
     RuntimeEventEnvelope,
     RuntimeEventPayload,
@@ -23,6 +24,8 @@ from ...core.models import (
     ToolCallCompleted,
     ToolCallDeltaKind,
     ToolCallFailed,
+    ToolCallInteraction,
+    ToolCallPatchUpdated,
     ToolCallStarted,
     ToolCallTextDelta,
     TurnCancelled,
@@ -38,6 +41,15 @@ from .approval import (
     build_approval_response,
     is_approval_method,
     parse_approval_request,
+)
+from .client import parse_error_notification, parse_turn_notification
+from .process import JsonlProcessSupervisor
+from .protocol import (
+    AppServerProtocolError,
+    JsonlMessage,
+    JsonlRequestId,
+    JsonlTransportError,
+    is_request_id,
 )
 
 _CONTENT_DELTA_KINDS = {
@@ -64,15 +76,51 @@ _TOOL_TYPE_NAMES = {
     "functionCallOutput": "function",
 }
 _JSON_VALUE_ADAPTER = TypeAdapter(JsonValue)
-from .client import parse_error_notification, parse_turn_notification
-from .process import JsonlProcessSupervisor
-from .protocol import (
-    AppServerProtocolError,
-    JsonlMessage,
-    JsonlRequestId,
-    JsonlTransportError,
-    is_request_id,
-)
+
+
+class _AddPatchChange(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    type: Literal["add"]
+
+
+class _DeletePatchChange(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    type: Literal["delete"]
+
+
+class _UpdatePatchChange(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    type: Literal["update"]
+    move_path: str | None = None
+
+
+type _PatchChangeKind = Annotated[
+    _AddPatchChange | _DeletePatchChange | _UpdatePatchChange,
+    Field(discriminator="type"),
+]
+
+
+class _FileUpdateChange(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    path: str = Field(min_length=1)
+    kind: _PatchChangeKind
+    diff: str
+
+
+class _FileChangePatchUpdatedNotification(BaseModel):
+    model_config = ConfigDict(strict=True, extra="ignore")
+
+    thread_id: str = Field(alias="threadId", min_length=1)
+    turn_id: str = Field(alias="turnId", min_length=1)
+    item_id: str = Field(alias="itemId", min_length=1)
+    changes: list[_FileUpdateChange]
+
+
+_FILE_CHANGE_PATCH_UPDATED_ADAPTER = TypeAdapter(_FileChangePatchUpdatedNotification)
 
 
 class TurnEventStream(IRuntimeTurnStream):
@@ -398,9 +446,43 @@ class TurnEventStream(IRuntimeTurnStream):
                     ),
                 )
             )
+        if method == "item/fileChange/patchUpdated":
+            try:
+                notification = _FILE_CHANGE_PATCH_UPDATED_ADAPTER.validate_python(
+                    params, strict=True
+                )
+            except ValidationError as error:
+                raise AppServerProtocolError(
+                    "file change patch update notification is invalid"
+                ) from error
+            return self._output_event(
+                ToolCallPatchUpdated(
+                    call_id=notification.item_id,
+                    changes=tuple(
+                        FileChangeEntry(
+                            path=change.path,
+                            kind=change.kind.type,
+                            patch=change.diff,
+                        )
+                        for change in notification.changes
+                    ),
+                )
+            )
         stream_id = params.get("itemId")
         if not isinstance(stream_id, str) or not stream_id:
             return None
+        if method == "item/commandExecution/terminalInteraction":
+            stdin = params.get("stdin")
+            if not isinstance(stdin, str):
+                return None
+            process_id = params.get("processId")
+            return self._output_event(
+                ToolCallInteraction(
+                    call_id=stream_id,
+                    stdin=stdin,
+                    process_id=process_id if isinstance(process_id, str) else None,
+                )
+            )
         notification = method.rsplit("/", maxsplit=1)[-1]
         if method.startswith("item/") and notification in {"outputDelta", "progress"}:
             content = (

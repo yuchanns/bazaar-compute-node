@@ -32,7 +32,6 @@ from .api import LarkApi, LarkApiError
 
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _MAX_RATE_LIMIT_RETRIES = 3
-_MAX_PENDING_EVENTS = 1024
 _MAX_TOOL_NAME_BYTES = 64
 _MAX_ROW_BYTES = 128
 _FIXED_CARD_BYTES = 4096
@@ -84,11 +83,17 @@ class _CardOperation:
 
 
 @dataclass(slots=True)
+class _DrainActivity:
+    complete: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass(slots=True)
 class _ActivityTurn:
     session_id: str
+    turn_id: str
     route: LarkActivityRoute
     api: LarkApi
-    pending: deque[RuntimeOutputEvent] = field(default_factory=deque)
+    pending: deque[RuntimeOutputEvent | _DrainActivity] = field(default_factory=deque)
     wakeup: asyncio.Event = field(default_factory=asyncio.Event)
     rows: dict[str, _ActivityRow] = field(default_factory=dict)
     cards: list[CardState] = field(default_factory=list)
@@ -104,7 +109,7 @@ class LarkActivityProjector:
         *,
         timer_wheel: TimerWheel,
         translator: Translator,
-        report_degraded: Callable[[str], None],
+        report_degraded: Callable[[str, str], None],
     ) -> None:
         self._timer_wheel = timer_wheel
         self._report_degraded = report_degraded
@@ -139,6 +144,19 @@ class LarkActivityProjector:
         route: LarkActivityRoute | None,
         api: LarkApi | None,
     ) -> None:
+        if not isinstance(
+            item.payload,
+            ToolCallStarted
+            | ToolCallCompleted
+            | ToolCallFailed
+            | ContextCompactionStarted
+            | ContextCompactionCompleted
+            | TurnCompleted
+            | TurnFailed
+            | TurnCancelled
+            | TurnUnknown,
+        ):
+            return
         key = self._turn_key(item)
         if key is None:
             return
@@ -157,6 +175,7 @@ class LarkActivityProjector:
                 return
             turn = _ActivityTurn(
                 session_id=item.envelope.session_id,
+                turn_id=key[1],
                 route=route,
                 api=api,
             )
@@ -167,13 +186,6 @@ class LarkActivityProjector:
             )
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-        if len(turn.pending) >= _MAX_PENDING_EVENTS:
-            self.failures += 1
-            turn.incomplete = True
-            if self._is_terminal(item):
-                turn.pending.popleft()
-            else:
-                return
         turn.pending.append(item)
         turn.wakeup.set()
 
@@ -183,6 +195,24 @@ class LarkActivityProjector:
             for key, turn in self._turns.items()
             if key[0] == session_id
         ]
+        if waits:
+            await asyncio.wait_for(asyncio.gather(*waits), timeout=max(0.0, timeout))
+
+    async def drain(
+        self,
+        session_id: str,
+        turn_id: str,
+        *,
+        timeout: float,
+    ) -> None:
+        waits = []
+        for key, turn in self._turns.items():
+            if key != (session_id, turn_id):
+                continue
+            drain = _DrainActivity()
+            turn.pending.append(drain)
+            turn.wakeup.set()
+            waits.append(drain.complete.wait())
         if waits:
             await asyncio.wait_for(asyncio.gather(*waits), timeout=max(0.0, timeout))
 
@@ -208,6 +238,10 @@ class LarkActivityProjector:
                         break
                     await turn.wakeup.wait()
                 item = turn.pending.popleft()
+                if isinstance(item, _DrainActivity):
+                    await asyncio.gather(*(card.queue.join() for card in turn.cards))
+                    item.complete.set()
+                    continue
                 if await self._apply(turn, item):
                     await self._finish_turn(turn)
                     return
@@ -215,10 +249,13 @@ class LarkActivityProjector:
             raise
         except Exception:
             self.failures += 1
-            self._report_degraded(turn.session_id)
+            self._report_degraded(turn.session_id, turn.turn_id)
             _LOGGER.exception("Lark activity projector failed")
         finally:
             await self._stop_card_writers(turn)
+            for item in turn.pending:
+                if isinstance(item, _DrainActivity):
+                    item.complete.set()
             if self._turns.get(key) is turn:
                 self._turns.pop(key, None)
             turn.terminal.set()
@@ -417,7 +454,7 @@ class LarkActivityProjector:
         except Exception:
             self.failures += 1
             turn.incomplete = True
-            self._report_degraded(turn.session_id)
+            self._report_degraded(turn.session_id, turn.turn_id)
             _LOGGER.exception("Lark activity card creation failed")
             return False
         state = CardState(
@@ -524,14 +561,14 @@ class LarkActivityProjector:
                 turn.incomplete = True
                 if error.http_status != 429:
                     card.writable = False
-                    self._report_degraded(turn.session_id)
+                    self._report_degraded(turn.session_id, turn.turn_id)
                 return
             except Exception:
                 self.failures += 1
                 card.incomplete = True
                 card.writable = False
                 turn.incomplete = True
-                self._report_degraded(turn.session_id)
+                self._report_degraded(turn.session_id, turn.turn_id)
                 _LOGGER.exception("Lark activity card update failed")
                 return
 
@@ -565,7 +602,7 @@ class LarkActivityProjector:
         await asyncio.gather(*(card.queue.join() for card in turn.cards))
         if turn.incomplete:
             if not turn.cards:
-                self._report_degraded(turn.session_id)
+                self._report_degraded(turn.session_id, turn.turn_id)
                 return
             for card in turn.cards:
                 if card.writable:
@@ -611,17 +648,6 @@ class LarkActivityProjector:
         if turn_id is None:
             return None
         return item.envelope.session_id, turn_id
-
-    @staticmethod
-    def _is_terminal(item: RuntimeOutputEvent) -> bool:
-        payload = item.payload
-        return (
-            isinstance(
-                payload,
-                TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown,
-            )
-            and "turn" in payload.event_name.casefold()
-        )
 
 
 def _truncate_utf8(value: str, limit: int) -> str:

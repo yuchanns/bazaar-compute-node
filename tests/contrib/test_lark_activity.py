@@ -27,6 +27,8 @@ from bazaar_compute_node.contrib.lark.transport import LarkTransport
 from bazaar_compute_node.core.channel import ChannelContext, ChannelSendRequest
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
+    ContentDelta,
+    ContentDeltaKind,
     ContextCompactionCompleted,
     ContextCompactionStarted,
     RuntimeEventEnvelope,
@@ -36,6 +38,8 @@ from bazaar_compute_node.core.models import (
     ToolCallCompleted,
     ToolCallStarted,
     TurnCompleted,
+    TurnFailed,
+    TurnStarted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -171,7 +175,7 @@ def _projector(
     return LarkActivityProjector(
         timer_wheel=timer_wheel,
         translator=create_translator(ENGLISH),
-        report_degraded=degraded.add,
+        report_degraded=lambda session_id, _: degraded.add(session_id),
     )
 
 
@@ -301,22 +305,30 @@ async def test_lark_activity_marks_retry_exhaustion_on_the_card() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lark_activity_reports_a_queue_overflow_without_a_writable_card() -> None:
+async def test_lark_activity_filters_non_display_events_without_limiting_activity() -> (
+    None
+):
     state = _OpenApiState()
     degraded: set[str] = set()
     async with _open_api(state) as (api, timer_wheel, _):
         projector = _projector(timer_wheel, degraded)
-        for index in range(1025):
+        for index in range(2048):
             _accept(
                 projector,
                 api,
-                ContextCompactionStarted(f"compact-{index}"),
+                ContentDelta(ContentDeltaKind.AGENT_MESSAGE, "working"),
             )
-        _accept(projector, api, TurnCompleted("turn.completed"))
-        await projector.wait_terminal(TEST_SESSION_ID, timeout=2)
+        assert projector.active_turns == 0
 
-        assert state.requests == []
-        assert degraded == {TEST_SESSION_ID}
+        for index in range(1100):
+            _accept(
+                projector,
+                api,
+                ToolCallStarted(ToolCall(f"call-{index}", "shell")),
+            )
+        turn = next(iter(projector._turns.values()))
+        assert len(turn.pending) > 1024
+        await projector.close()
 
 
 @pytest.mark.asyncio
@@ -390,14 +402,17 @@ async def test_lark_activity_failure_marks_the_final_reply(tmp_path: Path) -> No
         channel._stream_routes[TEST_SESSION_ID] = "trigger-1"
 
         channel.accept_turn_event(
+            _event(TurnStarted("turn.started")),
+            session_id=TEST_SESSION_ID,
+        )
+        channel.accept_turn_event(
             _event(ToolCallStarted(ToolCall("call-1", "shell"))),
             session_id=TEST_SESSION_ID,
         )
         channel.accept_turn_event(
-            _event(TurnCompleted("turn.completed")),
+            _event(TurnFailed("turn.failed", "provider_failed")),
             session_id=TEST_SESSION_ID,
         )
-        await channel._activity.wait_terminal(TEST_SESSION_ID, timeout=2)
         result = await channel.send(
             ChannelSendRequest(
                 session_id=TEST_SESSION_ID,
@@ -418,4 +433,5 @@ async def test_lark_activity_failure_marks_the_final_reply(tmp_path: Path) -> No
             if method == "POST" and path == "/open-apis/im/v1/messages"
         )
         assert "Some activity details could not be displayed" in str(final["content"])
+        assert TEST_SESSION_ID not in channel._activity_turns
         await channel._activity.close()
