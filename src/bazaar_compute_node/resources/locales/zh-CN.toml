@@ -53,5 +53,8 @@
 "activity.status.running" = "进行中"
 "activity.status.completed" = "已完成"
 "activity.status.failed" = "失败"
+"activity.incomplete" = "⚠️ 活动记录可能不完整。"
+"activity.continued" = "后续内容见下一张活动卡片。"
+"activity.final_incomplete" = "⚠️ 部分活动详情未能展示。"
 "runtime.error.failed" = "执行失败：{{ error }}"
 "runtime.error.unknown" = "执行状态未知：{{ error }}"

@@ -17,10 +17,8 @@ from ...core.timerwheel import TimerWheel
 from ...i18n import ENGLISH, Translator, create_translator
 from .channel import LarkChannel
 from .identity import LarkThreadIdentity, parse_provider_thread_id
-from .outbound import markdown_post_content
 from .transport import MESSAGE_CARD, LarkAck
 
-_FEEDBACK_TIMEOUT_SECONDS = 5.0
 _CARD_UPDATE_TIMEOUT_SECONDS = 5.0
 _RESOLVED_TOKEN_LIMIT = 256
 _CARD_ACTION_EVENT_TYPES = frozenset({"card.action.trigger", "p2.card.action.trigger"})
@@ -62,11 +60,9 @@ class LarkApprovalChannel(LarkChannel):
         self._resolved_approval_tokens: OrderedDict[str, str] = OrderedDict()
         self._resolved_card_events: OrderedDict[str, str] = OrderedDict()
         self._approval_lock = asyncio.Lock()
-        self._approval_feedback_tasks: set[asyncio.Task[None]] = set()
         self._approval_requests = 0
         self._approval_callbacks = 0
         self._approval_callback_rejections = 0
-        self._approval_feedback_failures = 0
         self._approval_card_update_failures = 0
         self._approval_decisions = 0
 
@@ -79,7 +75,6 @@ class LarkApprovalChannel(LarkChannel):
                 "approval_requests": self._approval_requests,
                 "approval_callbacks": self._approval_callbacks,
                 "approval_callback_rejections": self._approval_callback_rejections,
-                "approval_feedback_failures": self._approval_feedback_failures,
                 "approval_card_update_failures": self._approval_card_update_failures,
                 "approval_decisions": self._approval_decisions,
             }
@@ -102,11 +97,6 @@ class LarkApprovalChannel(LarkChannel):
                     )
             self._pending_approvals.clear()
             self._approval_tokens_by_request.clear()
-        feedback_tasks = tuple(self._approval_feedback_tasks)
-        for task in feedback_tasks:
-            task.cancel()
-        if feedback_tasks:
-            await asyncio.gather(*feedback_tasks, return_exceptions=True)
         await super().stop(timeout=timeout)
 
     async def request_approval(
@@ -280,7 +270,6 @@ class LarkApprovalChannel(LarkChannel):
             self._approval_decisions += 1
             pending.future.set_result(result)
 
-        self._schedule_feedback(pending, decision)
         return self._card_ack(
             self._translator.text(
                 "approval.callback.approved"
@@ -293,47 +282,6 @@ class LarkApprovalChannel(LarkChannel):
                 card_update_token,
             ),
         )
-
-    def _schedule_feedback(
-        self,
-        pending: _PendingApproval,
-        decision: ApprovalDecision,
-    ) -> None:
-        task = asyncio.create_task(
-            self._send_approval_feedback(pending, decision),
-            name="bcn-lark-approval-feedback",
-        )
-        self._approval_feedback_tasks.add(task)
-        task.add_done_callback(self._approval_feedback_tasks.discard)
-
-    async def _send_approval_feedback(
-        self,
-        pending: _PendingApproval,
-        decision: ApprovalDecision,
-    ) -> None:
-        api = self._api
-        message_id = pending.prompt_message_id
-        if api is None or message_id is None:
-            self._approval_feedback_failures += 1
-            return
-        text = self._translator.text(
-            "approval.feedback.approved"
-            if decision is ApprovalDecision.APPROVED
-            else "approval.feedback.rejected"
-        )
-        try:
-            await api.reply_message(
-                message_id=message_id,
-                message_type="post",
-                content=markdown_post_content(text),
-                reply_in_thread=pending.thread.thread_id != "0",
-                uuid=uuid4().hex,
-                timeout=_FEEDBACK_TIMEOUT_SECONDS,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            self._approval_feedback_failures += 1
 
     async def _update_approval_card(
         self,

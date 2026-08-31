@@ -30,7 +30,6 @@ from bazaar_compute_node.contrib.lark.attachments import (
 from bazaar_compute_node.contrib.lark.channel import (
     LarkChannel,
     _normalize_parent_message,
-    _TypingState,
 )
 from bazaar_compute_node.contrib.lark.frame import (
     Frame,
@@ -678,7 +677,7 @@ def test_lark_outbound_attachment_preflight_checks_size_and_digest(
         prepare_attachments(tmp_path, (descriptor,))
 
 
-def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
+def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     channel = LarkChannel(
         _context(tmp_path, {}),
         app_id="cli_app",
@@ -689,10 +688,7 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     )
     session_id = "session-1"
     channel._stream_routes[session_id] = "om_message"
-    channel._typing_states[session_id] = _TypingState(
-        message_id="om_message",
-        reaction_id="reaction-1",
-    )
+    channel._stream_route_threads[session_id] = True
 
     channel.accept_turn_event(
         RuntimeOutputEvent(
@@ -709,8 +705,7 @@ def test_lark_terminal_does_not_queue_reaction_removal(tmp_path: Path) -> None:
     )
 
     assert session_id not in channel._stream_routes
-    assert session_id not in channel._typing_states
-    assert channel._typing_queue.empty()
+    assert session_id not in channel._stream_route_threads
 
 
 def test_lark_approval_card_contract() -> None:

@@ -5,7 +5,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import replace
 from time import monotonic, time_ns
 from unicodedata import category
 
@@ -48,6 +48,8 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
+from ...i18n import ENGLISH, create_translator
+from .activity import LarkActivityProjector, LarkActivityRoute
 from .api import LarkApi
 from .attachments import (
     LarkMention,
@@ -71,26 +73,7 @@ _CHAT_CACHE_MAX_ENTRIES = 256
 _CHAT_TIMEOUT_SECONDS = 5.0
 _PARENT_TIMEOUT_SECONDS = 10.0
 _RESOURCE_TIMEOUT_SECONDS = 60.0
-_TYPING_TIMEOUT_SECONDS = 3.0
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class _TypingState:
-    message_id: str
-    add_queued: bool = False
-    attempted: bool = False
-    reaction_id: str | None = None
-    terminal: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _TypingCommand:
-    session_id: str
-    message_id: str
-
-
-_TYPING_STOP = object()
 
 
 class LarkChannel(IChannel):
@@ -146,12 +129,14 @@ class LarkChannel(IChannel):
         self._last_resource_disposition: str | None = None
         self._send_lock = asyncio.Lock()
         self._stream_routes: dict[str, str] = {}
-        self._typing_queue: asyncio.Queue[_TypingCommand | object] = asyncio.Queue()
-        self._typing_runner: asyncio.Task[None] | None = None
-        self._typing_states: dict[str, _TypingState] = {}
-        self._typing_stopping = False
-        self._typing_requests = 0
-        self._typing_failures = 0
+        self._stream_route_threads: dict[str, bool] = {}
+        self._degraded_activity_sessions: set[str] = set()
+        self._translator = context.translator or create_translator(ENGLISH)
+        self._activity = LarkActivityProjector(
+            timer_wheel=timer_wheel,
+            translator=self._translator,
+            report_degraded=self._degraded_activity_sessions.add,
+        )
 
     @property
     def name(self) -> str:
@@ -195,11 +180,13 @@ class LarkChannel(IChannel):
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
-            "typing_requests": self._typing_requests,
-            "typing_failures": self._typing_failures,
-            "typing_sessions": sum(
-                not state.terminal for state in self._typing_states.values()
-            ),
+            "activity_turns": self._activity.active_turns,
+            "activity_tasks_pending": self._activity.tasks_pending,
+            "activity_cards_created": self._activity.cards_created,
+            "activity_elements_added": self._activity.elements_added,
+            "activity_elements_updated": self._activity.elements_updated,
+            "activity_failures": self._activity.failures,
+            "activity_rate_limit_retries": self._activity.rate_limit_retries,
             "token_refresh_failures": (
                 self._api.token_refresh_failures
                 if self._api is not None
@@ -226,9 +213,8 @@ class LarkChannel(IChannel):
             self._stop_sent = False
             self._inbound = asyncio.Queue()
             self._stream_routes.clear()
-            self._typing_queue = asyncio.Queue()
-            self._typing_states.clear()
-            self._typing_stopping = False
+            self._stream_route_threads.clear()
+            self._degraded_activity_sessions.clear()
             try:
                 session = aiohttp.ClientSession()
                 api = LarkApi(
@@ -250,11 +236,6 @@ class LarkChannel(IChannel):
                 self._api = api
                 self._transport = transport
                 self._identity = identity
-                self._typing_runner = asyncio.create_task(
-                    self._run_typing_dispatcher(),
-                    name="bcn-lark-typing",
-                )
-                self._typing_runner.add_done_callback(self._typing_runner_done)
                 await transport.start(timeout=_remaining(deadline))
                 generation = transport.health.get("connection_generation", 0)
                 self._connection_generation = (
@@ -263,13 +244,7 @@ class LarkChannel(IChannel):
                 self._state = "connected"
             except BaseException:
                 self._state = "stopping"
-                typing_runner = self._typing_runner
-                self._typing_runner = None
-                self._typing_stopping = True
-                if typing_runner is not None:
-                    typing_runner.cancel()
-                    await asyncio.gather(typing_runner, return_exceptions=True)
-                self._typing_states.clear()
+                await self._activity.close()
                 if transport is not None:
                     await transport.stop(timeout=_remaining(deadline))
                 if api is not None:
@@ -293,7 +268,7 @@ class LarkChannel(IChannel):
             self._state = "stopping"
             if transport is not None:
                 await transport.stop(timeout=timeout)
-            await self._stop_typing(timeout=timeout)
+            await self._activity.close()
             await self._resource_cache.close()
             await self._close_contact_cache()
             await self._close_chat_cache()
@@ -307,6 +282,8 @@ class LarkChannel(IChannel):
             self._session = None
             self._identity = None
             self._stream_routes.clear()
+            self._stream_route_threads.clear()
+            self._degraded_activity_sessions.clear()
             self._state = "stopped"
             if not self._stop_sent:
                 self._inbound.put_nowait(_STOP)
@@ -480,6 +457,9 @@ class LarkChannel(IChannel):
             await self._inbound.put(quoted)
         await self._inbound.put(current)
         self._stream_routes[current.session_id] = provider_message_id
+        self._stream_route_threads[current.session_id] = (
+            thread_identity.thread_id != "0"
+        )
         self._last_message_disposition = "queued"
         self._last_message_filter_reason = None
         self._observe(
@@ -869,18 +849,27 @@ class LarkChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
+        provider_message_id = self._stream_routes.get(item.envelope.session_id)
+        self._activity.accept(
+            item,
+            route=(
+                LarkActivityRoute(
+                    message_id=provider_message_id,
+                    reply_in_thread=self._stream_route_threads.get(
+                        item.envelope.session_id, False
+                    ),
+                )
+                if provider_message_id is not None
+                else None
+            ),
+            api=self._api,
+        )
         match item.payload:
             case TurnStarted():
                 return
             case TurnCompleted() | TurnFailed() | TurnCancelled() | TurnUnknown():
                 self._stream_routes.pop(session_id, None)
-                state = self._typing_states.get(session_id)
-                if state is not None:
-                    state.terminal = True
-                    # Reactions are durable stream-start markers; terminal only
-                    # ends local tracking and never removes the provider marker.
-                    if state.reaction_id is not None:
-                        self._typing_states.pop(session_id, None)
+                self._stream_route_threads.pop(session_id, None)
                 return
             case (
                 ContentDelta()
@@ -894,24 +883,7 @@ class LarkChannel(IChannel):
                 | ToolCallInteraction()
                 | UsageUpdated()
             ):
-                pass
-        if self._typing_stopping:
-            return
-        provider_message_id = self._stream_routes.get(item.envelope.session_id)
-        if provider_message_id is None or self._typing_runner is None:
-            return
-        state = self._typing_states.get(item.envelope.session_id)
-        if state is None:
-            state = _TypingState(message_id=provider_message_id)
-            self._typing_states[item.envelope.session_id] = state
-        if not state.add_queued and not state.attempted:
-            state.add_queued = True
-            self._typing_queue.put_nowait(
-                _TypingCommand(
-                    session_id=item.envelope.session_id,
-                    message_id=provider_message_id,
-                )
-            )
+                return
 
     async def send(
         self,
@@ -943,6 +915,14 @@ class LarkChannel(IChannel):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        if request.session_id in self._degraded_activity_sessions:
+            request = replace(
+                request,
+                body=(
+                    f"{request.body}\n\n"
+                    f"{self._translator.text('activity.final_incomplete')}"
+                ),
+            )
         try:
             await asyncio.wait_for(
                 self._send_lock.acquire(),
@@ -967,13 +947,19 @@ class LarkChannel(IChannel):
                     error_kind="channel_unavailable",
                     error_message="Lark channel is not available",
                 )
-            return await send_outbound(
+            result = await send_outbound(
                 api,
                 identity=identity,
                 workspace=self._context.workspace(),
                 request=request,
                 timeout=max(0.0, deadline - loop.time()),
             )
+            if result.status in {
+                ProviderCallStatus.CONFIRMED,
+                ProviderCallStatus.PARTIAL,
+            }:
+                self._degraded_activity_sessions.discard(request.session_id)
+            return result
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -984,80 +970,6 @@ class LarkChannel(IChannel):
             )
         finally:
             self._send_lock.release()
-
-    async def _run_typing_dispatcher(self) -> None:
-        while True:
-            command = await self._typing_queue.get()
-            if command is _TYPING_STOP:
-                return
-            if not isinstance(command, _TypingCommand):
-                continue
-            await self._add_typing_reaction(command)
-
-    async def _add_typing_reaction(self, command: _TypingCommand) -> None:
-        state = self._typing_states.get(command.session_id)
-        if state is None or state.attempted or self._typing_stopping:
-            return
-        state.attempted = True
-        api = self._api
-        if api is None:
-            self._typing_states.pop(command.session_id, None)
-            return
-        self._typing_requests += 1
-        try:
-            reaction_id = await api.create_reaction(
-                command.message_id,
-                emoji_type="Typing",
-                timeout=_TYPING_TIMEOUT_SECONDS,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            self._typing_failures += 1
-            self._typing_states.pop(command.session_id, None)
-            return
-        state = self._typing_states.get(command.session_id)
-        if state is None:
-            return
-        state.add_queued = False
-        state.reaction_id = reaction_id
-        if state.terminal or self._typing_stopping:
-            self._typing_states.pop(command.session_id, None)
-
-    def _typing_runner_done(self, task: asyncio.Task[None]) -> None:
-        if self._typing_stopping:
-            return
-        error = (
-            RuntimeError("Lark typing dispatcher was canceled unexpectedly")
-            if task.cancelled()
-            else task.exception()
-            or RuntimeError("Lark typing dispatcher stopped unexpectedly")
-        )
-        self._typing_failures += 1
-        _LOGGER.error(
-            "Lark typing dispatcher failed: %s",
-            error,
-            exc_info=(type(error), error, error.__traceback__),
-        )
-
-    async def _stop_typing(self, *, timeout: float) -> None:
-        self._typing_stopping = True
-        runner = self._typing_runner
-        self._typing_runner = None
-        if runner is None:
-            self._typing_states.clear()
-            return
-        # Keep provider reactions when the local dispatcher shuts down.
-        self._typing_queue.put_nowait(_TYPING_STOP)
-        try:
-            await asyncio.wait_for(
-                runner,
-                timeout=max(0.0, timeout),
-            )
-        except TimeoutError:
-            runner.cancel()
-            await asyncio.gather(runner, return_exceptions=True)
-        self._typing_states.clear()
 
     async def request_approval(
         self,
