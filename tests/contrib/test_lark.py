@@ -82,7 +82,12 @@ from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
 
-def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
+def _context(
+    tmp_path: Path,
+    options: dict[str, object],
+    *,
+    timer_wheel: TimerWheel | None = None,
+) -> ChannelContext:
     async def referenced_paths() -> set[str]:
         return set()
 
@@ -91,6 +96,7 @@ def _context(tmp_path: Path, options: dict[str, object]) -> ChannelContext:
         attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
         options=options,
         workspace=lambda: tmp_path,
+        timer_wheel=timer_wheel,
     )
 
 
@@ -465,6 +471,42 @@ def test_lark_builder_rejects_missing_or_invalid_configuration(
                     "app_secret_env": "BCN_TEST_LARK_SECRET",
                     "region": "unknown",
                 },
+            )
+        )
+
+    monkeypatch.setenv("BCN_TEST_LARK_SECRET", "secret")
+    timer_wheel = TimerWheel()
+    default_channel = LarkBuilder().build(
+        _context(
+            tmp_path,
+            {"app_id": "cli_app", "app_secret_env": "BCN_TEST_LARK_SECRET"},
+            timer_wheel=timer_wheel,
+        )
+    )
+    enabled_channel = LarkBuilder().build(
+        _context(
+            tmp_path,
+            {
+                "app_id": "cli_app",
+                "app_secret_env": "BCN_TEST_LARK_SECRET",
+                "activity": True,
+            },
+            timer_wheel=timer_wheel,
+        )
+    )
+
+    assert default_channel.health["activity_enabled"] is False
+    assert enabled_channel.health["activity_enabled"] is True
+    with pytest.raises(TypeError, match="activity must be a boolean"):
+        LarkBuilder().build(
+            _context(
+                tmp_path,
+                {
+                    "app_id": "cli_app",
+                    "app_secret_env": "BCN_TEST_LARK_SECRET",
+                    "activity": "yes",
+                },
+                timer_wheel=timer_wheel,
             )
         )
 

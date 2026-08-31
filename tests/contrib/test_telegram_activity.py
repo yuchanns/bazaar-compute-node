@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 import pytest
@@ -19,6 +19,7 @@ from bazaar_compute_node.contrib.telegram.activity import (
 from bazaar_compute_node.contrib.telegram.api import TelegramBotApi
 from bazaar_compute_node.contrib.telegram.identity import TelegramThreadIdentity
 from bazaar_compute_node.contrib.telegram.outbound import TelegramOutboundChannel
+from bazaar_compute_node.contrib.telegram.plugin import TelegramBuilder
 from bazaar_compute_node.core.channel import ChannelContext
 from bazaar_compute_node.core.models import (
     ContentDelta,
@@ -69,6 +70,85 @@ async def _wait_for_requests(
     await asyncio.sleep(0.01)
 
 
+def test_telegram_activity_configuration_defaults_off_and_requires_a_boolean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BCN_TEST_TELEGRAM_TOKEN", "token")
+
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    default_channel = TelegramBuilder().build(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={"token_env": "BCN_TEST_TELEGRAM_TOKEN"},
+            workspace=lambda: tmp_path,
+        )
+    )
+    enabled_channel = TelegramBuilder().build(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={
+                "token_env": "BCN_TEST_TELEGRAM_TOKEN",
+                "activity": True,
+            },
+            workspace=lambda: tmp_path,
+        )
+    )
+
+    assert default_channel.health["activity_enabled"] is False
+    assert enabled_channel.health["activity_enabled"] is True
+    with pytest.raises(TypeError, match="activity must be a boolean"):
+        TelegramBuilder().build(
+            ChannelContext(
+                agent_id="agent-test",
+                attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+                options={
+                    "token_env": "BCN_TEST_TELEGRAM_TOKEN",
+                    "activity": "yes",
+                },
+                workspace=lambda: tmp_path,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_telegram_activity_disabled_does_not_project_turn_events(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = TelegramOutboundChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        token="token",
+    )
+    channel._api = cast(TelegramBotApi, object())
+    channel._stream_routes[TEST_SESSION_ID] = TelegramThreadIdentity(
+        bot_id=TEST_BOT_ID,
+        chat_id=TEST_CHAT_ID,
+        topic_id=TEST_TOPIC_ID,
+    )
+
+    channel.accept_turn_event(
+        _event(ToolCallStarted(ToolCall("call-1", "shell"))),
+        session_id=TEST_SESSION_ID,
+    )
+    await asyncio.sleep(0)
+
+    assert channel.health["activity_enabled"] is False
+    assert channel.health["activity_turns"] == 0
+    assert channel.health["activity_tasks_pending"] == 0
+
+
 @pytest.mark.asyncio
 async def test_telegram_activity_is_lazy_debounced_and_updates_status(
     tmp_path: Path,
@@ -111,6 +191,7 @@ async def test_telegram_activity_is_lazy_debounced_and_updates_status(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        activity=True,
     )
     projector = channel._activity
     try:

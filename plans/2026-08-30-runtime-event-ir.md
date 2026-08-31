@@ -738,6 +738,19 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 - checks：`tests/contrib/test_telegram_channel.py`、`tests/test_bcc.py` 与 Task 1 相同的 gates；Task 9
   review 通过后才开始实现。
 
+### Task 11：活动投影显式开关
+
+- Lark 与 Telegram 共用 `[agent.channel] activity = true` 的显式开启语义；字段缺失或
+  `false` 时默认关闭，非布尔值在 channel builder 边界拒绝；
+- 关闭时仍消费 turn 事件以维持路由与生命周期，但不把事件交给活动投影层，因此不产生
+  Lark 活动卡或 Telegram 活动消息；开启后保持 Task 6/8/9 的全部投影语义；
+- 该开关只控制活动展示；Lark、Telegram 和 WeCom 的审批是独立语义，继续由 runtime
+  sandbox 模式与审批请求决定，不受活动开关影响；
+- health 显式上报 `activity_enabled`，便于区分“未开启”与“已开启但尚无活动”；
+- 测试覆盖两个 builder 的默认关闭、显式开启、非布尔值拒绝，以及两个 channel 在
+  关闭时不产生活动输出、开启时保持现有投影行为；
+- checks：Lark/Telegram focused tests、full non-e2e pytest、Ruff、Pyright、compileall、lock 与 diff。
+
 ## 9. 验收标准
 
 1. 全部消费点使用 `RuntimeOutputEvent`，Core 中只存在这一套运行时事件模型。
@@ -786,3 +799,6 @@ task，以 `aibot_respond_update_msg` 应答；reader 不等待该 task，继续
 27. WeCom 不再无条件批准：`request_approval` 主动发送审核卡，模板卡片事件唤醒等待者并以
     同一 `task_id` 就地更新终态；除此之外的 WeCom 对外行为与迁移前等价。
 28. full pytest、Ruff、Pyright、compileall、lock 与 diff gates 全部通过。
+29. Lark 与 Telegram 只在 `[agent.channel] activity = true` 时产生活动投影；字段缺失或
+    `false` 时不产生活动卡/消息，health 可观察当前开关状态。
+30. 活动开关不改变任何渠道的审批触发、授权、回调或终态更新语义。

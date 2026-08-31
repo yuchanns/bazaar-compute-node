@@ -30,8 +30,15 @@ class RichMarkdownPart:
 
 
 class TelegramOutboundChannel(TelegramApprovalChannel):
-    def __init__(self, context: ChannelContext, *, token: str) -> None:
+    def __init__(
+        self,
+        context: ChannelContext,
+        *,
+        token: str,
+        activity: bool = False,
+    ) -> None:
         super().__init__(context, token=token)
+        self._activity_enabled = activity
         self._outbound_requests = 0
         self._outbound_confirmed_requests = 0
         self._outbound_partial_requests = 0
@@ -60,6 +67,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "outbound_documents_confirmed": self._outbound_documents_confirmed,
                 "outbound_markdown_fallbacks": self._outbound_markdown_fallbacks,
                 "outbound_rate_limit_retries": self._outbound_rate_limit_retries,
+                "activity_enabled": self._activity_enabled,
                 "activity_turns": self._activity.active_turns,
                 "activity_tasks_pending": self._activity.tasks_pending,
                 "activity_messages_sent": self._activity.messages_sent,
@@ -81,11 +89,12 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         session_id: str,
     ) -> None:
         super().accept_turn_event(item, session_id=session_id)
-        self._activity.accept(
-            item,
-            identity=self._stream_routes.get(item.envelope.session_id),
-            api=self._api,
-        )
+        if self._activity_enabled:
+            self._activity.accept(
+                item,
+                identity=self._stream_routes.get(item.envelope.session_id),
+                api=self._api,
+            )
 
     async def send(
         self,

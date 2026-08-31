@@ -86,6 +86,7 @@ class LarkChannel(IChannel):
         region: str,
         base_url: str,
         timer_wheel: TimerWheel,
+        activity: bool = False,
     ) -> None:
         self._context = context
         self._app_id = app_id
@@ -130,6 +131,7 @@ class LarkChannel(IChannel):
         self._send_lock = asyncio.Lock()
         self._stream_routes: dict[str, str] = {}
         self._stream_route_threads: dict[str, bool] = {}
+        self._activity_enabled = activity
         self._degraded_activity_sessions: set[str] = set()
         self._translator = context.translator or create_translator(ENGLISH)
         self._activity = LarkActivityProjector(
@@ -180,6 +182,7 @@ class LarkChannel(IChannel):
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
+            "activity_enabled": self._activity_enabled,
             "activity_turns": self._activity.active_turns,
             "activity_tasks_pending": self._activity.tasks_pending,
             "activity_cards_created": self._activity.cards_created,
@@ -850,20 +853,21 @@ class LarkChannel(IChannel):
         session_id: str,
     ) -> None:
         provider_message_id = self._stream_routes.get(item.envelope.session_id)
-        self._activity.accept(
-            item,
-            route=(
-                LarkActivityRoute(
-                    message_id=provider_message_id,
-                    reply_in_thread=self._stream_route_threads.get(
-                        item.envelope.session_id, False
-                    ),
-                )
-                if provider_message_id is not None
-                else None
-            ),
-            api=self._api,
-        )
+        if self._activity_enabled:
+            self._activity.accept(
+                item,
+                route=(
+                    LarkActivityRoute(
+                        message_id=provider_message_id,
+                        reply_in_thread=self._stream_route_threads.get(
+                            item.envelope.session_id, False
+                        ),
+                    )
+                    if provider_message_id is not None
+                    else None
+                ),
+                api=self._api,
+            )
         match item.payload:
             case TurnStarted():
                 return

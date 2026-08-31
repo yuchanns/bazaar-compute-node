@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -122,6 +123,45 @@ def _event(
         ),
         payload=payload,
     )
+
+
+@pytest.mark.asyncio
+async def test_lark_activity_disabled_does_not_project_turn_events(
+    tmp_path: Path,
+) -> None:
+    state = _OpenApiState()
+    async with _open_api(state) as (api, timer_wheel, base_url):
+
+        async def referenced_paths() -> set[str]:
+            return set()
+
+        channel = LarkChannel(
+            ChannelContext(
+                agent_id="agent-test",
+                attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+                options={},
+                workspace=lambda: tmp_path,
+                translator=create_translator(ENGLISH),
+            ),
+            app_id="app-id",
+            app_secret="app-secret",
+            region="feishu",
+            base_url=base_url,
+            timer_wheel=timer_wheel,
+        )
+        channel._api = api
+        channel._stream_routes[TEST_SESSION_ID] = "trigger-1"
+
+        channel.accept_turn_event(
+            _event(ToolCallStarted(ToolCall("call-1", "shell"))),
+            session_id=TEST_SESSION_ID,
+        )
+        await asyncio.sleep(0)
+
+        assert channel.health["activity_enabled"] is False
+        assert channel.health["activity_turns"] == 0
+        assert channel.health["activity_tasks_pending"] == 0
+        assert state.requests == []
 
 
 def _projector(
@@ -335,6 +375,7 @@ async def test_lark_activity_failure_marks_the_final_reply(tmp_path: Path) -> No
             region="feishu",
             base_url=base_url,
             timer_wheel=timer_wheel,
+            activity=True,
         )
         transport = LarkTransport(
             api,
