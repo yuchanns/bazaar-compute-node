@@ -86,7 +86,6 @@ class LarkChannel(IChannel):
         region: str,
         base_url: str,
         timer_wheel: TimerWheel,
-        activity: bool = False,
     ) -> None:
         self._context = context
         self._app_id = app_id
@@ -131,7 +130,6 @@ class LarkChannel(IChannel):
         self._send_lock = asyncio.Lock()
         self._stream_routes: dict[str, str] = {}
         self._stream_route_threads: dict[str, bool] = {}
-        self._activity_enabled = activity
         self._activity_turns: dict[str, str] = {}
         self._terminal_activity_turns: set[tuple[str, str]] = set()
         self._degraded_activity_turns: set[tuple[str, str]] = set()
@@ -188,11 +186,10 @@ class LarkChannel(IChannel):
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
-            "activity_enabled": self._activity_enabled,
             "activity_turns": self._activity.active_turns,
             "activity_tasks_pending": self._activity.tasks_pending,
             "activity_cards_created": self._activity.cards_created,
-            "activity_elements_added": self._activity.elements_added,
+            "activity_coalesced_updates": self._activity.coalesced_updates,
             "activity_elements_updated": self._activity.elements_updated,
             "activity_failures": self._activity.failures,
             "activity_rate_limit_retries": self._activity.rate_limit_retries,
@@ -863,25 +860,22 @@ class LarkChannel(IChannel):
         session_id: str,
     ) -> None:
         provider_message_id = self._stream_routes.get(item.envelope.session_id)
-        if self._activity_enabled:
-            self._activity.accept(
-                item,
-                route=(
-                    LarkActivityRoute(
-                        message_id=provider_message_id,
-                        reply_in_thread=self._stream_route_threads.get(
-                            item.envelope.session_id, False
-                        ),
-                    )
-                    if provider_message_id is not None
-                    else None
-                ),
-                api=self._api,
-            )
+        self._activity.accept(
+            item,
+            route=(
+                LarkActivityRoute(
+                    message_id=provider_message_id,
+                    reply_in_thread=self._stream_route_threads.get(
+                        item.envelope.session_id, False
+                    ),
+                )
+                if provider_message_id is not None
+                else None
+            ),
+            api=self._api,
+        )
         match item.payload:
             case TurnStarted():
-                if not self._activity_enabled:
-                    return
                 turn_id = item.envelope.turn_id
                 if turn_id is not None:
                     previous_turn_id = self._activity_turns.get(session_id)
@@ -963,7 +957,7 @@ class LarkChannel(IChannel):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        if self._activity_enabled and turn_id is not None:
+        if turn_id is not None:
             try:
                 await self._activity.drain(
                     request.session_id,

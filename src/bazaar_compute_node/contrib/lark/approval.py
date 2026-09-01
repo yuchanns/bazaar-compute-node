@@ -45,7 +45,6 @@ class LarkApprovalChannel(LarkChannel):
         region: str,
         base_url: str,
         timer_wheel: TimerWheel,
-        activity: bool = False,
     ) -> None:
         super().__init__(
             context,
@@ -54,7 +53,6 @@ class LarkApprovalChannel(LarkChannel):
             region=region,
             base_url=base_url,
             timer_wheel=timer_wheel,
-            activity=activity,
         )
         self._translator: Translator = context.translator or create_translator(ENGLISH)
         self._pending_approvals: dict[str, _PendingApproval] = {}
