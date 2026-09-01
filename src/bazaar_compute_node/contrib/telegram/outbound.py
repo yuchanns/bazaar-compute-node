@@ -35,10 +35,8 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         context: ChannelContext,
         *,
         token: str,
-        activity: bool = False,
     ) -> None:
         super().__init__(context, token=token)
-        self._activity_enabled = activity
         self._outbound_requests = 0
         self._outbound_confirmed_requests = 0
         self._outbound_partial_requests = 0
@@ -67,13 +65,13 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "outbound_documents_confirmed": self._outbound_documents_confirmed,
                 "outbound_markdown_fallbacks": self._outbound_markdown_fallbacks,
                 "outbound_rate_limit_retries": self._outbound_rate_limit_retries,
-                "activity_enabled": self._activity_enabled,
                 "activity_turns": self._activity.active_turns,
                 "activity_tasks_pending": self._activity.tasks_pending,
                 "activity_messages_sent": self._activity.messages_sent,
                 "activity_messages_edited": self._activity.messages_edited,
                 "activity_failures": self._activity.failures,
                 "activity_rate_limit_retries": self._activity.rate_limit_retries,
+                "activity_coalesced_updates": self._activity.coalesced_updates,
             }
         )
         return health
@@ -89,12 +87,11 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         session_id: str,
     ) -> None:
         super().accept_turn_event(item, session_id=session_id)
-        if self._activity_enabled:
-            self._activity.accept(
-                item,
-                identity=self._stream_routes.get(item.envelope.session_id),
-                api=self._api,
-            )
+        self._activity.accept(
+            item,
+            identity=self._stream_routes.get(item.envelope.session_id),
+            api=self._api,
+        )
 
     async def send(
         self,

@@ -198,29 +198,27 @@ def test_overview_lines_omit_zero_values() -> None:
     )
 
     assert overview_lines(create_translator(SIMPLIFIED_CHINESE), overview) == (
-        "工具调用 3 次",
-        "上下文压缩 1 次",
-        "输入 12400（缓存 9100）",
-        "输出 860",
+        "工具调用 **3** 次",
+        "上下文压缩 **1** 次",
+        "输入 **12400** · 缓存 **9100** · 输出 **860**",
     )
     assert overview_lines(create_translator(ENGLISH), overview) == (
-        "Tool calls 3",
-        "Context compactions 1",
-        "Input 12400 (+9100 cached)",
-        "Output 860",
+        "Tool calls **3**",
+        "Context compactions **1**",
+        "Input **12400** · Cache **9100** · Output **860**",
     )
 
     assert overview_lines(
         create_translator(SIMPLIFIED_CHINESE), ActivityOverview(input_tokens=120)
-    ) == ("输入 120",)
+    ) == ("输入 **120**",)
     assert overview_lines(
         create_translator(SIMPLIFIED_CHINESE),
         ActivityOverview(cached_input_tokens=9100),
-    ) == ("输入 0（缓存 9100）",)
+    ) == ("缓存 **9100**",)
 
     assert overview_lines(
         create_translator(ENGLISH), ActivityOverview(tool_calls=2)
-    ) == ("Tool calls 2",)
+    ) == ("Tool calls **2**",)
     assert overview_lines(create_translator(ENGLISH), ActivityOverview()) == ()
 
 

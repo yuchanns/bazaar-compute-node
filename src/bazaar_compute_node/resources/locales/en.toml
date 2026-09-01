@@ -49,7 +49,7 @@
 "activity.title" = "Activity"
 "activity.kind.tool_call" = "Tool call"
 "activity.kind.context_compaction" = "Context compaction"
-"activity.overview" = "{% if tool_calls %}Tool calls {{ tool_calls }}\n{% endif %}{% if context_compactions %}Context compactions {{ context_compactions }}\n{% endif %}{% if input_tokens or cached_input_tokens %}Input {{ input_tokens }}{% if cached_input_tokens %} (+{{ cached_input_tokens }} cached){% endif %}\n{% endif %}{% if output_tokens %}Output {{ output_tokens }}\n{% endif %}"
+"activity.overview" = "{% if tool_calls %}Tool calls **{{ tool_calls }}**\n{% endif %}{% if context_compactions %}Context compactions **{{ context_compactions }}**\n{% endif %}{% if input_tokens or cached_input_tokens or output_tokens %}{% if input_tokens %}Input **{{ input_tokens }}**{% endif %}{% if cached_input_tokens %}{% if input_tokens %} · {% endif %}Cache **{{ cached_input_tokens }}**{% endif %}{% if output_tokens %}{% if input_tokens or cached_input_tokens %} · {% endif %}Output **{{ output_tokens }}**{% endif %}\n{% endif %}"
 "activity.incomplete" = "⚠️ The activity record may be incomplete."
 "activity.continued" = "Continued on the next activity card."
 "activity.error" = "⚠️ {{ error }}"
