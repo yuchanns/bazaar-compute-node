@@ -43,6 +43,7 @@
 "approval.card.status.rejected" = "已拒绝"
 "approval.feedback.approved" = "操作已批准"
 "approval.feedback.rejected" = "操作已拒绝"
+"approval.description" = "{% if reason %}{{ reason }}\n{% endif %}{% if command %}命令：{{ command }}\n{% endif %}{% if grant_root %}授权根目录：{{ grant_root }}\n{% endif %}{% if cwd %}工作目录：{{ cwd }}\n{% endif %}{% if tool_name %}工具：{{ tool_name }}\n{% endif %}{% if tool_input %}输入：{{ tool_input }}\n{% endif %}{% if permissions %}权限：{{ permissions }}\n{% endif %}"
 "approval.prompt.lark" = "**操作：** {{ action }}{% if description %}\n\n{{ description }}{% endif %}"
 "approval.prompt.telegram" = "## 需要审批\n\n**操作：** {{ action }}{% if description %}\n\n{{ description_fence }}\n{{ description }}\n{{ description_fence }}{% endif %}"
 "approval.prompt.title" = "## 需要审批"

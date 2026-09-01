@@ -759,7 +759,7 @@ def test_lark_approval_card_contract() -> None:
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
-            description="Run {{ requested }} command.",
+            details={"reason": "Run {{ requested }} command."},
         ),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id=LarkThreadIdentity("ou_bot", "oc_chat").provider_thread_id,

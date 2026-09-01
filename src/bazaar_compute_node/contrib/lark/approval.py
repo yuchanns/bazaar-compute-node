@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from time import time_ns
 from uuid import uuid4
 
-from ...core.approval import approval_action_text
+from ...core.approval import approval_action_text, approval_description_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...core.timerwheel import TimerWheel
@@ -387,7 +387,9 @@ def _approval_card_content(
         "approval.prompt.lark",
         {
             "action": action,
-            "description": request.approval.description,
+            "description": approval_description_text(
+                translator, request.approval.details
+            ),
         },
     )
     elements: list[dict[str, object]] = [{"tag": "markdown", "content": markdown}]

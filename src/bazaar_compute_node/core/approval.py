@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -11,6 +12,16 @@ _ACTION_MESSAGE_KEYS = {
     "file_change": "approval.action.file_change",
     "permissions": "approval.action.permissions",
 }
+_MAX_APPROVAL_DESCRIPTION = 4_000
+APPROVAL_DETAIL_KEYS = (
+    "reason",
+    "command",
+    "grant_root",
+    "cwd",
+    "tool_name",
+    "tool_input",
+    "permissions",
+)
 
 
 def approval_action_text(translator: Translator, action: str) -> str:
@@ -20,6 +31,19 @@ def approval_action_text(translator: Translator, action: str) -> str:
         if message_key is not None
         else action.replace("_", " ")
     )
+
+
+def approval_description_text(
+    translator: Translator,
+    details: Mapping[str, str],
+) -> str:
+    rendered = translator.text(
+        "approval.description",
+        {key: details.get(key, "") for key in APPROVAL_DETAIL_KEYS},
+    ).strip()
+    if len(rendered) > _MAX_APPROVAL_DESCRIPTION:
+        return rendered[: _MAX_APPROVAL_DESCRIPTION - 1] + "…"
+    return rendered
 
 
 class IApprovalHandler(Protocol):

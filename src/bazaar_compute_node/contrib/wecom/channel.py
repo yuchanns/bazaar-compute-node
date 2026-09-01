@@ -17,7 +17,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from ...core.approval import approval_action_text
+from ...core.approval import approval_action_text, approval_description_text
 from ...core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -1389,8 +1389,11 @@ class WeComChannel(IChannel):
             "button_list": buttons,
             "task_id": pending.task_id,
         }
-        if pending.request.approval.description:
-            card["sub_title_text"] = pending.request.approval.description
+        description = approval_description_text(
+            self._translator, pending.request.approval.details
+        )
+        if description:
+            card["sub_title_text"] = description
         return card
 
     async def _content(

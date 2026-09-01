@@ -43,6 +43,7 @@
 "approval.card.status.rejected" = "Rejected"
 "approval.feedback.approved" = "Action approved"
 "approval.feedback.rejected" = "Action rejected"
+"approval.description" = "{% if reason %}{{ reason }}\n{% endif %}{% if command %}Command: {{ command }}\n{% endif %}{% if grant_root %}Grant root: {{ grant_root }}\n{% endif %}{% if cwd %}Working directory: {{ cwd }}\n{% endif %}{% if tool_name %}Tool: {{ tool_name }}\n{% endif %}{% if tool_input %}Input: {{ tool_input }}\n{% endif %}{% if permissions %}Permissions: {{ permissions }}\n{% endif %}"
 "approval.prompt.lark" = "**Action:** {{ action }}{% if description %}\n\n{{ description }}{% endif %}"
 "approval.prompt.telegram" = "## Approval required\n\n**Action:** {{ action }}{% if description %}\n\n{{ description_fence }}\n{{ description }}\n{{ description_fence }}{% endif %}"
 "approval.prompt.title" = "## Approval required"
