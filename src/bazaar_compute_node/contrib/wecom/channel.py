@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from ...core.activity import ActivityOverview, ActivityReducer
 from ...core.approval import approval_action_text, approval_description_text
 from ...core.channel import (
     ChannelApprovalRequest,
@@ -54,6 +55,7 @@ _STOP = object()
 _MAX_MEDIA_BYTES = 25 * 1024 * 1024
 _MAX_MARKDOWN_BYTES = 20_480
 _CARD_UPDATE_TIMEOUT_SECONDS = 5.0
+_ACTIVITY_CARD_TIMEOUT_SECONDS = 10.0
 _APPROVE_KEY = "bcn_approve"
 _REJECT_KEY = "bcn_reject"
 _RESOLVED_KEY = "bcn_resolved"
@@ -92,6 +94,11 @@ class WeComChannel(IChannel):
         websocket_url: str,
     ) -> None:
         self._context = context
+        self._activity_reducers: dict[tuple[str, str], ActivityReducer] = {}
+        self._activity_routes: dict[str, tuple[str, ChannelTargetKind]] = {}
+        self._activity_tasks: set[asyncio.Task[None]] = set()
+        self._activity_cards_sent = 0
+        self._activity_failures = 0
         self._bot_id = bot_id
         self._secret = secret
         self._websocket_url = websocket_url
@@ -163,6 +170,9 @@ class WeComChannel(IChannel):
             "approval_card_update_attempts": self._approval_card_update_attempts,
             "approval_card_update_unknown": self._approval_card_update_unknown,
             "approval_card_update_failures": self._approval_card_update_failures,
+            "activity_cards_sent": self._activity_cards_sent,
+            "activity_failures": self._activity_failures,
+            "activity_tasks_pending": len(self._activity_tasks),
             "last_approval_card_update_disposition": (
                 self._last_approval_card_update_disposition
             ),
@@ -207,6 +217,7 @@ class WeComChannel(IChannel):
         self._pending_approvals.clear()
         self._approval_task_ids_by_request.clear()
         await self._cancel_approval_card_updates()
+        await self._cancel_activity_cards()
         try:
             await asyncio.wait_for(self._send_lock.acquire(), timeout=timeout)
         except TimeoutError:
@@ -242,7 +253,134 @@ class WeComChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
-        del item, session_id
+        turn_id = item.envelope.turn_id or item.envelope.provider_turn_id
+        if turn_id is None:
+            self._observe("wecom.activity.card_skipped", reason="missing_turn_id")
+            return
+        key = (session_id, turn_id)
+        reducer = self._activity_reducers.get(key)
+        if reducer is None:
+            reducer = ActivityReducer()
+            self._activity_reducers[key] = reducer
+        reducer.apply(item.payload)
+        overview = reducer.overview
+        if overview is None:
+            return
+        self._activity_reducers.pop(key, None)
+        route = self._activity_routes.get(session_id)
+        if route is None:
+            self._observe(
+                "wecom.activity.card_skipped",
+                reason="unknown_session_route",
+                session_id=session_id,
+            )
+            return
+        if overview.empty:
+            self._observe(
+                "wecom.activity.card_skipped",
+                reason="empty_overview",
+                session_id=session_id,
+            )
+            return
+        task = asyncio.create_task(
+            self._send_activity_card(route, overview),
+            name=f"bcn-wecom-activity-{turn_id}",
+        )
+        self._activity_tasks.add(task)
+        task.add_done_callback(self._activity_tasks.discard)
+
+    def _activity_markdown(self, overview: ActivityOverview) -> str:
+        translator = self._translator
+        lines = [
+            translator.text(
+                "activity.wecom.title",
+                {
+                    "title": translator.text("activity.title"),
+                    "state": translator.text(
+                        f"activity.state.{overview.outcome.value}"
+                    ),
+                },
+            )
+        ]
+        if overview.error_message:
+            lines.append("")
+            lines.append(
+                translator.text("activity.error", {"error": overview.error_message})
+            )
+        lines.extend(("", "---", "", "|  |  |", "| --- | --- |"))
+        counts = (
+            ("activity.label.tool_calls", overview.tool_calls),
+            ("activity.label.context_compactions", overview.context_compactions),
+        )
+        for key, count in counts:
+            if not count:
+                continue
+            value = translator.text("activity.value.count", {"count": count})
+            lines.append(f"| {translator.text(key)} | {value} |")
+        tokens = (
+            ("activity.label.input", overview.input_tokens),
+            ("activity.label.cached", overview.cached_input_tokens),
+            ("activity.label.output", overview.output_tokens),
+        )
+        for key, value in tokens:
+            if not value:
+                continue
+            lines.append(f"| {translator.text(key)} | {value} |")
+        if overview.input_tokens or overview.cached_input_tokens:
+            note = translator.text("activity.note.tokens")
+            lines.extend(("", "---", "", f"*{note}*"))
+        return "\n".join(lines)
+
+    async def _send_activity_card(
+        self,
+        route: tuple[str, ChannelTargetKind],
+        overview: ActivityOverview,
+    ) -> None:
+        connection = self._connection
+        if connection is None:
+            self._observe("wecom.activity.card_skipped", reason="no_connection")
+            return
+        target_id, target_kind = route
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _ACTIVITY_CARD_TIMEOUT_SECONDS
+        try:
+            await asyncio.wait_for(
+                self._send_lock.acquire(),
+                timeout=_ACTIVITY_CARD_TIMEOUT_SECONDS,
+            )
+            try:
+                result = await self._request(
+                    connection,
+                    command="aibot_send_msg",
+                    body=visible_message_body(
+                        target_id=target_id,
+                        target_kind=target_kind,
+                        message_type="markdown",
+                        content={"content": self._activity_markdown(overview)},
+                    ),
+                    deadline=deadline,
+                    rejection_kind="provider_rejected_activity",
+                    rejection_message="WeCom rejected the activity card",
+                    unknown_kind="activity_outcome_unknown",
+                    unknown_message="WeCom activity card outcome is unknown",
+                )
+            finally:
+                self._send_lock.release()
+            if result.status is not ProviderCallStatus.CONFIRMED:
+                self._activity_failures += 1
+                self._observe(
+                    "wecom.activity.card_sent",
+                    outcome=result.status.value,
+                )
+                return
+            self._activity_cards_sent += 1
+            self._observe("wecom.activity.card_sent", outcome="confirmed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._activity_failures += 1
+            self._observe("wecom.activity.card_sent", outcome="failed")
+            self._logger.exception("WeCom activity card delivery failed")
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
@@ -992,6 +1130,7 @@ class WeComChannel(IChannel):
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
                 await self._cancel_approval_card_updates()
+                await self._cancel_activity_cards()
                 for pending in self._pending_acks.values():
                     if not pending.done():
                         pending.set_exception(
@@ -1185,6 +1324,7 @@ class WeComChannel(IChannel):
         identity = f"wecom:{target_prefix}:{conversation}"
         channel_session_id = str(uuid5(NAMESPACE_URL, identity))
         session_id = str(uuid5(NAMESPACE_URL, f"bcn:{identity}"))
+        self._activity_routes[session_id] = (conversation, target_kind)
         canonical_target = f"{target_prefix}:{channel_session_id}"
         received_at_ms = time_ns() // 1_000_000
         content = await self._content(body, message_type)
@@ -1317,6 +1457,16 @@ class WeComChannel(IChannel):
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _cancel_activity_cards(self) -> None:
+        tasks = tuple(self._activity_tasks)
+        self._activity_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._activity_reducers.clear()
+        self._activity_routes.clear()
 
     def _filter_message(
         self,
