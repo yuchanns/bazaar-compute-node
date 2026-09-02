@@ -280,7 +280,7 @@ async def test_runtime_error_redaction_uses_injected_token_values(
             "runtime-agent-a",
             runtime_index=0,
         )
-        detail = application._error_feedback_detail(
+        detail = application._redact_session_secrets(
             "session-agent-a",
             "failure "
             f"{environment['BCN_COMMAND_CAPABILITY']} "

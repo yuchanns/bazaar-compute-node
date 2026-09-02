@@ -8,8 +8,6 @@ from time import time_ns
 from ...core.models import ApprovalDecision, ApprovalRequest, ApprovalResult
 from .protocol import ClaudeProtocolError, JsonObject
 
-_MAX_APPROVAL_DESCRIPTION = 4_000
-
 
 @dataclass(frozen=True, slots=True)
 class ApprovalEnvelope:
@@ -46,7 +44,7 @@ def parse_approval_request(
     if not isinstance(tool_input, Mapping):
         raise ClaudeProtocolError("permission request input must be an object")
 
-    description = _description(request, tool_input)
+    details = _details(request, tool_input)
     return ApprovalEnvelope(
         control_request_id=control_request_id,
         tool_name=tool_name,
@@ -58,7 +56,7 @@ def parse_approval_request(
             action=tool_name,
             created_at_ms=time_ns() // 1_000_000,
             turn_id=turn_id,
-            description=description,
+            details=details,
             metadata={
                 "provider_control_request_id": control_request_id,
                 "provider_tool_name": tool_name,
@@ -81,14 +79,17 @@ def build_approval_response(
     }
 
 
-def _description(
+_MAX_APPROVAL_DETAIL = 4_000
+
+
+def _details(
     request: Mapping[str, object], tool_input: Mapping[str, object]
-) -> str:
-    parts = []
+) -> dict[str, str]:
+    reasons: list[str] = []
     for field_name in ("description", "title", "display_name", "decision_reason"):
         value = request.get(field_name)
-        if isinstance(value, str) and value.strip() and value.strip() not in parts:
-            parts.append(value.strip())
+        if isinstance(value, str) and value.strip() and value.strip() not in reasons:
+            reasons.append(value.strip())
     try:
         encoded_input = json.dumps(
             dict(tool_input),
@@ -97,12 +98,20 @@ def _description(
             separators=(",", ":"),
         )
     except TypeError, ValueError:
-        encoded_input = "[input unavailable]"
-    parts.append(f"{request['tool_name']} input: {encoded_input}")
-    description = "\n".join(parts)
-    if len(description) > _MAX_APPROVAL_DESCRIPTION:
-        return description[: _MAX_APPROVAL_DESCRIPTION - 1] + "…"
-    return description
+        encoded_input = ""
+    details: dict[str, str] = {}
+    if reasons:
+        details["reason"] = "\n".join(reasons)
+    tool_name = request["tool_name"]
+    if isinstance(tool_name, str) and tool_name:
+        details["tool_name"] = tool_name
+    if encoded_input:
+        details["tool_input"] = (
+            encoded_input[: _MAX_APPROVAL_DETAIL - 1] + "…"
+            if len(encoded_input) > _MAX_APPROVAL_DETAIL
+            else encoded_input
+        )
+    return details
 
 
 __all__ = [

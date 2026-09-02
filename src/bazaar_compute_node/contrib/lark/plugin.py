@@ -20,9 +20,6 @@ class LarkBuilder(IChannelBuilder):
         region = context.options.get("region", "feishu")
         if not isinstance(region, str) or region not in _REGION_BASE_URLS:
             raise ValueError("agent.channel.region must be feishu or lark")
-        activity = context.options.get("activity", False)
-        if not isinstance(activity, bool):
-            raise TypeError("agent.channel.activity must be a boolean for lark")
         app_secret = os.environ.get(app_secret_env)
         if app_secret is None or not app_secret.strip():
             raise ValueError(
@@ -37,7 +34,6 @@ class LarkBuilder(IChannelBuilder):
             region=region,
             base_url=_REGION_BASE_URLS[region],
             timer_wheel=context.timer_wheel,
-            activity=activity,
         )
 
 

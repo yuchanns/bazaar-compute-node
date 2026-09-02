@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from ..core.channel import AgentScopedChannel, ChannelContext, IChannel
+from ..core.channel import Channel, ChannelContext, IChannel
 from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -113,7 +113,11 @@ class AgentApplication:
                 timer_wheel=self.timer_wheel,
             )
         )
-        self.channel: IChannel = AgentScopedChannel(self.agent_id, provider_channel)
+        self.channel: IChannel = Channel(
+            self.agent_id,
+            provider_channel,
+            redact=self._redact_session_secrets,
+        )
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
@@ -169,8 +173,6 @@ class AgentApplication:
                 else 0
             ),
             workspace=self.workspace_path,
-            translator=self.translator,
-            error_feedback_detail=self._error_feedback_detail,
             upgrade_notice=upgrade_notice,
             concurrency=self._concurrency,
         )
@@ -440,21 +442,13 @@ class AgentApplication:
         )
         return environment
 
-    def _error_feedback_detail(
-        self,
-        session_id: object,
-        error_message: object,
-    ) -> str:
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        if not isinstance(error_message, str):
-            raise TypeError("error_message must be text")
+    def _redact_session_secrets(self, session_id: str, text: str) -> str:
         binding = self._session_capabilities.get(session_id)
         if binding is None:
-            return error_message
+            return text
         for token in binding.token_values:
-            error_message = error_message.replace(token, "<redacted>")
-        return error_message
+            text = text.replace(token, "<redacted>")
+        return text
 
     async def _run_runtime_command(
         self,

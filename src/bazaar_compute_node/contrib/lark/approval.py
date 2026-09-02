@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from time import time_ns
 from uuid import uuid4
 
-from ...core.approval import approval_action_text
+from ...core.approval import approval_action_text, approval_description_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...core.timerwheel import TimerWheel
@@ -45,7 +45,6 @@ class LarkApprovalChannel(LarkChannel):
         region: str,
         base_url: str,
         timer_wheel: TimerWheel,
-        activity: bool = False,
     ) -> None:
         super().__init__(
             context,
@@ -54,7 +53,6 @@ class LarkApprovalChannel(LarkChannel):
             region=region,
             base_url=base_url,
             timer_wheel=timer_wheel,
-            activity=activity,
         )
         self._translator: Translator = context.translator or create_translator(ENGLISH)
         self._pending_approvals: dict[str, _PendingApproval] = {}
@@ -387,7 +385,9 @@ def _approval_card_content(
         "approval.prompt.lark",
         {
             "action": action,
-            "description": request.approval.description,
+            "description": approval_description_text(
+                translator, request.approval.details
+            ),
         },
     )
     elements: list[dict[str, object]] = [{"tag": "markdown", "content": markdown}]

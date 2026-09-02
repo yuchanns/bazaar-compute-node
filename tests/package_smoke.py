@@ -44,19 +44,13 @@ def main() -> None:
     ):
         raise SystemExit("developer instruction resource did not render")
     if (
-        create_translator(ENGLISH).text(
-            "runtime.error.failed",
-            {"error": "package smoke"},
-        )
-        != "Execution failed: package smoke"
+        create_translator(ENGLISH).text("approval.action.command_execution")
+        != "command execution"
     ):
         raise SystemExit("English locale resource did not render")
     if (
-        create_translator(SIMPLIFIED_CHINESE).text(
-            "runtime.error.failed",
-            {"error": "package smoke"},
-        )
-        != "执行失败：package smoke"
+        create_translator(SIMPLIFIED_CHINESE).text("approval.action.command_execution")
+        != "命令执行"
     ):
         raise SystemExit("Simplified Chinese locale resource did not render")
 

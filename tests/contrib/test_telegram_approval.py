@@ -86,7 +86,7 @@ def _request(
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
-            description=description,
+            details={"reason": description} if description else {},
         ),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id=identity.provider_thread_id,

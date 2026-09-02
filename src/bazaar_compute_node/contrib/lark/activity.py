@@ -2,46 +2,55 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import monotonic
 from uuid import uuid4
 
+from ...core.activity import (
+    ActivityKind,
+    ActivityOutcome,
+    ActivityOverview,
+    ActivityReducer,
+    snapshot_line,
+)
 from ...core.models import (
-    ContentDelta,
     ContextCompactionCompleted,
     ContextCompactionStarted,
     RuntimeOutputEvent,
     ToolCallCompleted,
     ToolCallFailed,
-    ToolCallInteraction,
-    ToolCallPatchUpdated,
     ToolCallStarted,
-    ToolCallTextDelta,
     TurnCancelled,
     TurnCompleted,
     TurnFailed,
-    TurnStarted,
     TurnUnknown,
     UsageUpdated,
 )
 from ...core.timerwheel import TimerWheel
 from ...i18n import Translator
+from ...rendering import TextTemplate
 from .api import LarkApi, LarkApiError
 
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _MAX_RATE_LIMIT_RETRIES = 3
 _MAX_TOOL_NAME_BYTES = 64
-_MAX_ROW_BYTES = 128
-_FIXED_CARD_BYTES = 4096
-_FIXED_CARD_ELEMENTS = 20
-_MAX_CARD_BYTES = 30 * 1024
-_MAX_CARD_ELEMENTS = 200
-_MAX_ROWS_PER_CARD = 180
-_CARD_REQUEST_INTERVAL_SECONDS = 0.1
+_CARD_REQUEST_INTERVAL_SECONDS = 0.2
+_ACTIVITY_ELEMENT_ID = "activity"
 _LOGGER = logging.getLogger(__name__)
-_CARD_STOP = object()
+_ACTIVITY_TEMPLATE = TextTemplate.from_resource("lark_activity.tpl")
+_ACTIVITY_TITLE_TEMPLATE = TextTemplate.from_resource("lark_activity_title.tpl")
+_KIND_ICONS = {
+    ActivityKind.TOOL_CALL: "setting_outlined",
+    ActivityKind.CONTEXT_COMPACTION: "archive_outlined",
+}
+_OUTCOME_COLORS = {
+    ActivityOutcome.RUNNING: "blue",
+    ActivityOutcome.COMPLETED: "green",
+    ActivityOutcome.FAILED: "red",
+    ActivityOutcome.CANCELLED: "neutral",
+    ActivityOutcome.UNKNOWN: "orange",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,32 +63,9 @@ class LarkActivityRoute:
 class CardState:
     card_id: str
     provider_message_id: str
-    ordinal: int
     next_sequence: int = 1
-    last_success_sequence: int = 0
-    used_elements: int = _FIXED_CARD_ELEMENTS
-    used_bytes: int = _FIXED_CARD_BYTES
-    queue: asyncio.Queue[_CardOperation | object] = field(default_factory=asyncio.Queue)
-    writer: asyncio.Task[None] | None = None
     last_request_at: float = 0.0
     writable: bool = True
-    incomplete: bool = False
-
-
-@dataclass(slots=True)
-class _ActivityRow:
-    card: CardState
-    element_id: str
-    kind: str
-    name: str
-    status: str = "running"
-
-
-@dataclass(frozen=True, slots=True)
-class _CardOperation:
-    uuid: str
-    element_id: str | None
-    element: dict[str, object]
 
 
 @dataclass(slots=True)
@@ -93,12 +79,12 @@ class _ActivityTurn:
     turn_id: str
     route: LarkActivityRoute
     api: LarkApi
-    pending: deque[RuntimeOutputEvent | _DrainActivity] = field(default_factory=deque)
+    reducer: ActivityReducer = field(default_factory=ActivityReducer)
+    pending: list[RuntimeOutputEvent | _DrainActivity] = field(default_factory=list)
     wakeup: asyncio.Event = field(default_factory=asyncio.Event)
-    rows: dict[str, _ActivityRow] = field(default_factory=dict)
-    cards: list[CardState] = field(default_factory=list)
-    buffered_compactions: list[RuntimeOutputEvent] = field(default_factory=list)
-    next_element: int = 1
+    card: CardState | None = None
+    desired: dict[str, object] | None = None
+    written: dict[str, object] | None = None
     incomplete: bool = False
     terminal: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -112,22 +98,19 @@ class LarkActivityProjector:
         report_degraded: Callable[[str, str], None],
     ) -> None:
         self._timer_wheel = timer_wheel
+        self._translator = translator
         self._report_degraded = report_degraded
         self._title = translator.text("activity.title")
-        self._tool_call = translator.text("activity.kind.tool_call")
-        self._context_compaction = translator.text("activity.kind.context_compaction")
-        self._incomplete = translator.text("activity.incomplete")
-        self._continued = translator.text("activity.continued")
         self._turns: dict[tuple[str, str], _ActivityTurn] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._rate_lock = asyncio.Lock()
-        self._requests_second: deque[float] = deque()
-        self._requests_minute: deque[float] = deque()
+        self._requests_second: list[float] = []
+        self._requests_minute: list[float] = []
         self.cards_created = 0
-        self.elements_added = 0
         self.elements_updated = 0
         self.failures = 0
         self.rate_limit_retries = 0
+        self.coalesced_updates = 0
 
     @property
     def active_turns(self) -> int:
@@ -151,6 +134,7 @@ class LarkActivityProjector:
             | ToolCallFailed
             | ContextCompactionStarted
             | ContextCompactionCompleted
+            | UsageUpdated
             | TurnCompleted
             | TurnFailed
             | TurnCancelled
@@ -162,15 +146,6 @@ class LarkActivityProjector:
             return
         turn = self._turns.get(key)
         if turn is None:
-            if not isinstance(
-                item.payload,
-                ToolCallStarted
-                | ToolCallCompleted
-                | ToolCallFailed
-                | ContextCompactionStarted
-                | ContextCompactionCompleted,
-            ):
-                return
             if route is None or api is None:
                 return
             turn = _ActivityTurn(
@@ -237,22 +212,24 @@ class LarkActivityProjector:
                     if turn.pending:
                         break
                     await turn.wakeup.wait()
-                item = turn.pending.popleft()
+                item = turn.pending.pop(0)
                 if isinstance(item, _DrainActivity):
-                    await asyncio.gather(*(card.queue.join() for card in turn.cards))
+                    await self._flush(turn)
                     item.complete.set()
                     continue
-                if await self._apply(turn, item):
-                    await self._finish_turn(turn)
+                self._absorb(turn, item)
+                await self._flush(turn)
+                if turn.reducer.overview is not None:
+                    self._finish_turn(turn)
                     return
         except asyncio.CancelledError:
             raise
         except Exception:
             self.failures += 1
+            turn.incomplete = True
             self._report_degraded(turn.session_id, turn.turn_id)
             _LOGGER.exception("Lark activity projector failed")
         finally:
-            await self._stop_card_writers(turn)
             for item in turn.pending:
                 if isinstance(item, _DrainActivity):
                     item.complete.set()
@@ -260,180 +237,93 @@ class LarkActivityProjector:
                 self._turns.pop(key, None)
             turn.terminal.set()
 
-    async def _apply(
+    def _absorb(self, turn: _ActivityTurn, item: RuntimeOutputEvent) -> None:
+        if turn.reducer.apply(item.payload):
+            turn.desired = self._render(turn)
+
+    async def _flush(self, turn: _ActivityTurn) -> None:
+        while turn.desired is not None and turn.desired != turn.written:
+            await self._wait_for_interval(turn)
+            content = turn.desired
+            if not await self._write(turn, content):
+                return
+            turn.written = content
+
+    async def _wait_for_interval(self, turn: _ActivityTurn) -> None:
+        card = turn.card
+        while card is not None:
+            remaining = card.last_request_at + _CARD_REQUEST_INTERVAL_SECONDS
+            remaining -= monotonic()
+            if remaining <= 0:
+                return
+            await self._wait_ms(max(1, int(remaining * 1000)))
+            while turn.pending:
+                item = turn.pending[0]
+                if isinstance(item, _DrainActivity):
+                    break
+                turn.pending.pop(0)
+                self.coalesced_updates += 1
+                self._absorb(turn, item)
+
+    async def _write(
         self,
         turn: _ActivityTurn,
-        item: RuntimeOutputEvent,
+        content: dict[str, object],
     ) -> bool:
-        match item.payload:
-            case ToolCallStarted(call=call):
-                if not turn.cards and not await self._create_card(turn):
-                    return False
-                await self._project_buffered_compactions(turn)
-                row = turn.rows.get(f"tool:{call.call_id}")
-                if row is None:
-                    row = await self._new_row(
-                        turn,
-                        f"tool:{call.call_id}",
-                        self._tool_call,
-                        call.name,
-                    )
-                else:
-                    row.name = call.name
-                    row.status = "running"
-                    self._queue_update(row)
-            case ToolCallCompleted(call=call):
-                row = turn.rows.get(f"tool:{call.call_id}")
-                if row is None:
-                    await self._tool_row(
-                        turn,
-                        call.call_id,
-                        call.name,
-                        status="completed",
-                    )
-                else:
-                    row.name = call.name
-                    row.status = "completed"
-                    self._queue_update(row)
-            case ToolCallFailed(call=call):
-                row = turn.rows.get(f"tool:{call.call_id}")
-                if row is None:
-                    await self._tool_row(
-                        turn,
-                        call.call_id,
-                        call.name,
-                        status="failed",
-                    )
-                else:
-                    row.name = call.name
-                    row.status = "failed"
-                    self._queue_update(row)
-            case ToolCallTextDelta() | ToolCallPatchUpdated() | ToolCallInteraction():
-                pass
-            case ContextCompactionStarted() | ContextCompactionCompleted():
-                if turn.cards:
-                    await self._project_compaction(turn, item)
-                else:
-                    turn.buffered_compactions.append(item)
-            case (
-                TurnCompleted(event_name=event_name)
-                | TurnFailed(event_name=event_name)
-                | TurnCancelled(event_name=event_name)
-                | TurnUnknown(event_name=event_name)
-            ):
-                return "turn" in event_name.casefold()
-            case TurnStarted() | ContentDelta() | UsageUpdated():
-                pass
-        return False
-
-    async def _tool_row(
-        self,
-        turn: _ActivityTurn,
-        call_id: str,
-        name: str,
-        *,
-        status: str,
-    ) -> _ActivityRow | None:
-        row = turn.rows.get(f"tool:{call_id}")
-        if row is not None:
-            return row
-        if not turn.cards and not await self._create_card(turn):
-            return None
-        await self._project_buffered_compactions(turn)
-        return await self._new_row(
-            turn,
-            f"tool:{call_id}",
-            self._tool_call,
-            name,
-            status=status,
-        )
-
-    async def _project_buffered_compactions(self, turn: _ActivityTurn) -> None:
-        buffered = tuple(turn.buffered_compactions)
-        turn.buffered_compactions.clear()
-        for item in buffered:
-            await self._project_compaction(turn, item)
-
-    async def _project_compaction(
-        self,
-        turn: _ActivityTurn,
-        item: RuntimeOutputEvent,
-    ) -> None:
-        payload = item.payload
-        if isinstance(payload, ContextCompactionStarted | ContextCompactionCompleted):
-            row_id = f"compaction:{payload.compaction_id or 'current'}"
-            row = turn.rows.get(row_id)
-            if row is None:
-                await self._new_row(
-                    turn,
-                    row_id,
-                    self._context_compaction,
-                    "",
-                    status=(
-                        "running"
-                        if isinstance(payload, ContextCompactionStarted)
-                        else "completed"
-                    ),
+        if turn.card is None:
+            return await self._create_card(turn, content)
+        card = turn.card
+        if not card.writable:
+            return False
+        element = content
+        operation_uuid = uuid4().hex
+        sequence = card.next_sequence
+        retries = 0
+        while True:
+            try:
+                await self._rate_limit(card)
+                await turn.api.update_card_element(
+                    card.card_id,
+                    _ACTIVITY_ELEMENT_ID,
+                    element,
+                    uuid=operation_uuid,
+                    sequence=sequence,
+                    timeout=_REQUEST_TIMEOUT_SECONDS,
                 )
-            else:
-                row.status = (
-                    "running"
-                    if isinstance(payload, ContextCompactionStarted)
-                    else "completed"
-                )
-                self._queue_update(row)
+            except asyncio.CancelledError:
+                raise
+            except LarkApiError as error:
+                if error.http_status == 429 and retries < _MAX_RATE_LIMIT_RETRIES:
+                    self.rate_limit_retries += 1
+                    await self._wait_ms(100 * (2**retries))
+                    retries += 1
+                    continue
+                self.failures += 1
+                turn.incomplete = True
+                if error.http_status != 429:
+                    card.writable = False
+                self._report_degraded(turn.session_id, turn.turn_id)
+                return False
+            except Exception:
+                self.failures += 1
+                card.writable = False
+                turn.incomplete = True
+                self._report_degraded(turn.session_id, turn.turn_id)
+                _LOGGER.exception("Lark activity card update failed")
+                return False
+            self.elements_updated += 1
+            card.next_sequence = sequence + 1
+            return True
 
-    async def _new_row(
+    async def _create_card(
         self,
         turn: _ActivityTurn,
-        row_id: str,
-        kind: str,
-        name: str,
-        *,
-        status: str = "running",
-    ) -> _ActivityRow | None:
-        card = turn.cards[-1]
-        if (
-            card.used_elements - _FIXED_CARD_ELEMENTS >= _MAX_ROWS_PER_CARD
-            or card.used_bytes + _MAX_ROW_BYTES > _MAX_CARD_BYTES
-            or card.used_elements + 1 > _MAX_CARD_ELEMENTS
-        ):
-            self._queue_add(
-                card,
-                {
-                    "tag": "markdown",
-                    "content": self._continued,
-                },
-            )
-            if not await self._create_card(turn):
-                return None
-            card = turn.cards[-1]
-        element_id = f"i{turn.next_element:06d}"
-        turn.next_element += 1
-        row = _ActivityRow(
-            card=card,
-            element_id=element_id,
-            kind=kind,
-            name=name,
-            status=status,
-        )
-        turn.rows[row_id] = row
-        card.used_elements += 1
-        card.used_bytes += _MAX_ROW_BYTES
-        self._queue_add(card, self._row_element(row))
-        return row
-
-    async def _create_card(self, turn: _ActivityTurn) -> bool:
-        ordinal = len(turn.cards) + 1
-        title = self._title if ordinal == 1 else f"{self._title} · {ordinal}"
+        content: dict[str, object],
+    ) -> bool:
         card = {
             "schema": "2.0",
             "config": {"update_multi": True},
-            "header": {
-                "template": "blue",
-                "title": {"tag": "plain_text", "content": title},
-            },
-            "body": {"elements": []},
+            "body": {"elements": [content]},
         }
         reply_uuid = uuid4().hex
         try:
@@ -457,18 +347,11 @@ class LarkActivityProjector:
             self._report_degraded(turn.session_id, turn.turn_id)
             _LOGGER.exception("Lark activity card creation failed")
             return False
-        state = CardState(
+        turn.card = CardState(
             card_id=card_id,
             provider_message_id=provider_message_id,
-            ordinal=ordinal,
+            last_request_at=monotonic(),
         )
-        turn.cards.append(state)
-        state.writer = asyncio.create_task(
-            self._run_card_writer(turn, state),
-            name=f"bcn-lark-card-{card_id}",
-        )
-        self._tasks.add(state.writer)
-        state.writer.add_done_callback(self._tasks.discard)
         self.cards_created += 1
         return True
 
@@ -485,101 +368,14 @@ class LarkActivityProjector:
                 await self._wait_ms(100 * (2**retries))
                 retries += 1
 
-    def _queue_add(self, card: CardState, element: dict[str, object]) -> None:
-        card.queue.put_nowait(
-            _CardOperation(uuid=uuid4().hex, element_id=None, element=element)
-        )
-
-    def _queue_update(self, row: _ActivityRow) -> None:
-        row.card.queue.put_nowait(
-            _CardOperation(
-                uuid=uuid4().hex,
-                element_id=row.element_id,
-                element=self._row_element(row),
-            )
-        )
-
-    async def _run_card_writer(
-        self,
-        turn: _ActivityTurn,
-        card: CardState,
-    ) -> None:
-        while True:
-            operation = await card.queue.get()
-            try:
-                if operation is _CARD_STOP:
-                    return
-                if not isinstance(operation, _CardOperation) or not card.writable:
-                    continue
-                await self._write_operation(turn, card, operation)
-            finally:
-                card.queue.task_done()
-
-    async def _write_operation(
-        self,
-        turn: _ActivityTurn,
-        card: CardState,
-        operation: _CardOperation,
-    ) -> None:
-        sequence = card.next_sequence
-        retries = 0
-        while True:
-            try:
-                await self._rate_limit(card)
-                if operation.element_id is None:
-                    await turn.api.add_card_elements(
-                        card.card_id,
-                        [operation.element],
-                        uuid=operation.uuid,
-                        sequence=sequence,
-                        timeout=_REQUEST_TIMEOUT_SECONDS,
-                    )
-                    self.elements_added += 1
-                else:
-                    await turn.api.update_card_element(
-                        card.card_id,
-                        operation.element_id,
-                        operation.element,
-                        uuid=operation.uuid,
-                        sequence=sequence,
-                        timeout=_REQUEST_TIMEOUT_SECONDS,
-                    )
-                    self.elements_updated += 1
-                card.last_success_sequence = sequence
-                card.next_sequence = sequence + 1
-                return
-            except asyncio.CancelledError:
-                raise
-            except LarkApiError as error:
-                if error.http_status == 429 and retries < _MAX_RATE_LIMIT_RETRIES:
-                    self.rate_limit_retries += 1
-                    await self._wait_ms(100 * (2**retries))
-                    retries += 1
-                    continue
-                self.failures += 1
-                card.incomplete = True
-                turn.incomplete = True
-                if error.http_status != 429:
-                    card.writable = False
-                    self._report_degraded(turn.session_id, turn.turn_id)
-                return
-            except Exception:
-                self.failures += 1
-                card.incomplete = True
-                card.writable = False
-                turn.incomplete = True
-                self._report_degraded(turn.session_id, turn.turn_id)
-                _LOGGER.exception("Lark activity card update failed")
-                return
-
     async def _rate_limit(self, card: CardState | None) -> None:
         while True:
             async with self._rate_lock:
                 now = monotonic()
                 while self._requests_second and self._requests_second[0] <= now - 1:
-                    self._requests_second.popleft()
+                    self._requests_second.pop(0)
                 while self._requests_minute and self._requests_minute[0] <= now - 60:
-                    self._requests_minute.popleft()
+                    self._requests_minute.pop(0)
                 wait = 0.0
                 if card is not None:
                     wait = max(
@@ -598,29 +394,9 @@ class LarkActivityProjector:
                     return
             await self._wait_ms(max(1, int(wait * 1000)))
 
-    async def _finish_turn(self, turn: _ActivityTurn) -> None:
-        await asyncio.gather(*(card.queue.join() for card in turn.cards))
+    def _finish_turn(self, turn: _ActivityTurn) -> None:
         if turn.incomplete:
-            if not turn.cards:
-                self._report_degraded(turn.session_id, turn.turn_id)
-                return
-            for card in turn.cards:
-                if card.writable:
-                    self._queue_add(
-                        card,
-                        {"tag": "markdown", "content": self._incomplete},
-                    )
-            await asyncio.gather(*(card.queue.join() for card in turn.cards))
-
-    async def _stop_card_writers(self, turn: _ActivityTurn) -> None:
-        writers = []
-        for card in turn.cards:
-            writer = card.writer
-            if writer is not None and not writer.done():
-                card.queue.put_nowait(_CARD_STOP)
-                writers.append(writer)
-        if writers:
-            await asyncio.gather(*writers, return_exceptions=True)
+            self._report_degraded(turn.session_id, turn.turn_id)
 
     async def _wait_ms(self, delay_ms: int) -> None:
         timer = self._timer_wheel.create(
@@ -628,19 +404,156 @@ class LarkActivityProjector:
         )
         await timer.wait()
 
-    def _row_element(self, row: _ActivityRow) -> dict[str, object]:
-        icon = {
-            "running": "⌛️",
-            "completed": "✅",
-            "failed": "❌",
-        }[row.status]
-        name = _truncate_utf8(row.name, _MAX_TOOL_NAME_BYTES)
-        suffix = f" · **{name}**" if name else ""
+    def _render(self, turn: _ActivityTurn) -> dict[str, object] | None:
+        overview = turn.reducer.overview
+        if overview is not None:
+            if overview.empty:
+                return turn.desired
+            return self._container(
+                [
+                    self._title_element(overview.outcome),
+                    *self._overview_elements(overview),
+                ]
+            )
+        snapshot = turn.reducer.snapshot
+        if snapshot is None:
+            return None
+        line = snapshot_line(self._translator, snapshot)
+        content = _ACTIVITY_TEMPLATE.render(
+            {
+                "label": line.label,
+                "name": _truncate_utf8(line.name, _MAX_TOOL_NAME_BYTES)
+                if line.name
+                else "",
+            }
+        ).strip()
+        return self._container(
+            [
+                self._title_element(ActivityOutcome.RUNNING),
+                self._line_element(content, snapshot.kind),
+            ]
+        )
+
+    @staticmethod
+    def _line_element(content: str, kind: ActivityKind) -> dict[str, object]:
         return {
             "tag": "markdown",
-            "element_id": row.element_id,
-            "content": f"{icon} {row.kind}{suffix}",
+            "text_size": "normal",
+            "content": content,
+            "icon": {"tag": "standard_icon", "token": _KIND_ICONS[kind]},
         }
+
+    def _title_element(self, outcome: ActivityOutcome) -> dict[str, object]:
+        return {
+            "tag": "markdown",
+            "text_size": "normal",
+            "content": _ACTIVITY_TITLE_TEMPLATE.render(
+                {
+                    "title": self._title,
+                    "color": _OUTCOME_COLORS[outcome],
+                    "state": self._translator.text(f"activity.state.{outcome.value}"),
+                }
+            ).strip(),
+        }
+
+    @staticmethod
+    def _container(elements: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "tag": "column_set",
+            "element_id": _ACTIVITY_ELEMENT_ID,
+            "flex_mode": "none",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "direction": "vertical",
+                    "vertical_spacing": "small",
+                    "elements": elements,
+                }
+            ],
+        }
+
+    def _overview_elements(self, overview: ActivityOverview) -> list[dict[str, object]]:
+        elements: list[dict[str, object]] = []
+        if overview.error_message:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "text_size": "normal",
+                    "content": self._translator.text(
+                        "activity.error", {"error": overview.error_message}
+                    ),
+                }
+            )
+        counts = (
+            (
+                ActivityKind.TOOL_CALL,
+                "activity.count.tool_calls",
+                overview.tool_calls,
+            ),
+            (
+                ActivityKind.CONTEXT_COMPACTION,
+                "activity.count.context_compactions",
+                overview.context_compactions,
+            ),
+        )
+        for kind, key, count in counts:
+            if not count:
+                continue
+            elements.append(
+                self._line_element(
+                    self._translator.text(key, {"count": count}),
+                    kind,
+                )
+            )
+        tokens = [
+            ("activity.label.input", overview.input_tokens),
+            ("activity.label.cached", overview.cached_input_tokens),
+            ("activity.label.output", overview.output_tokens),
+        ]
+        if any(value for _, value in tokens):
+            if elements:
+                elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "column_set",
+                    "flex_mode": "trisect",
+                    "horizontal_spacing": "medium",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "direction": "vertical",
+                            "vertical_spacing": "small",
+                            "elements": [
+                                {
+                                    "tag": "markdown",
+                                    "text_size": "notation",
+                                    "content": self._translator.text(key),
+                                },
+                                {
+                                    "tag": "markdown",
+                                    "text_size": "heading",
+                                    "content": f"{value}",
+                                },
+                            ],
+                        }
+                        for key, value in tokens
+                        if value
+                    ],
+                }
+            )
+            elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "text_size": "notation",
+                    "content": self._translator.text("activity.note.tokens"),
+                }
+            )
+        return elements
 
     @staticmethod
     def _turn_key(item: RuntimeOutputEvent) -> tuple[str, str] | None:

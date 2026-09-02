@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import time_ns
 
-from ...core.approval import approval_action_text
+from ...core.approval import approval_action_text, approval_description_text
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...i18n import ENGLISH, Translator, create_translator
@@ -465,7 +465,9 @@ class TelegramApprovalChannel(TelegramChannel):
 
     def _approval_markdown(self, request: ChannelApprovalRequest) -> str:
         action = approval_action_text(self._translator, request.approval.action)
-        description = request.approval.description
+        description = approval_description_text(
+            self._translator, request.approval.details
+        )
         return self._translator.text(
             "approval.prompt.telegram",
             {

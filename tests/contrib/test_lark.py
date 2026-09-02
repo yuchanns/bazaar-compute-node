@@ -476,39 +476,15 @@ def test_lark_builder_rejects_missing_or_invalid_configuration(
 
     monkeypatch.setenv("BCN_TEST_LARK_SECRET", "secret")
     timer_wheel = TimerWheel()
-    default_channel = LarkBuilder().build(
+    channel = LarkBuilder().build(
         _context(
             tmp_path,
             {"app_id": "cli_app", "app_secret_env": "BCN_TEST_LARK_SECRET"},
             timer_wheel=timer_wheel,
         )
     )
-    enabled_channel = LarkBuilder().build(
-        _context(
-            tmp_path,
-            {
-                "app_id": "cli_app",
-                "app_secret_env": "BCN_TEST_LARK_SECRET",
-                "activity": True,
-            },
-            timer_wheel=timer_wheel,
-        )
-    )
 
-    assert default_channel.health["activity_enabled"] is False
-    assert enabled_channel.health["activity_enabled"] is True
-    with pytest.raises(TypeError, match="activity must be a boolean"):
-        LarkBuilder().build(
-            _context(
-                tmp_path,
-                {
-                    "app_id": "cli_app",
-                    "app_secret_env": "BCN_TEST_LARK_SECRET",
-                    "activity": "yes",
-                },
-                timer_wheel=timer_wheel,
-            )
-        )
+    assert channel.health["state"] == "stopped"
 
 
 @pytest.mark.asyncio
@@ -759,7 +735,7 @@ def test_lark_approval_card_contract() -> None:
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
-            description="Run {{ requested }} command.",
+            details={"reason": "Run {{ requested }} command."},
         ),
         target_kind=ChannelTargetKind.DM,
         provider_thread_id=LarkThreadIdentity("ou_bot", "oc_chat").provider_thread_id,

@@ -16,6 +16,8 @@ from .models import (
     Message,
     OutboundAttachment,
     RuntimeOutputEvent,
+    TurnFailed,
+    TurnUnknown,
 )
 from .outcomes import ProviderCallResult
 from .timerwheel import TimerWheel
@@ -190,14 +192,21 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
     ) -> ProviderCallResult[ChannelDeliveryReceipt]: ...
 
 
-class AgentScopedChannel(IChannel):
-    """Namespace provider-normalized conversation IDs by owning Agent."""
+class Channel(IChannel):
+    """Bind a provider channel to one Agent: namespace its IDs, redact its secrets."""
 
-    def __init__(self, agent_id: str, channel: IChannel) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        channel: IChannel,
+        *,
+        redact: Callable[[str, str], str] = lambda _, text: text,
+    ) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
         self._agent_id = agent_id
         self._channel = channel
+        self._redact = redact
         self._provider_session_ids: dict[str, str] = {}
 
     @property
@@ -242,6 +251,19 @@ class AgentScopedChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
+        match item.payload:
+            case (
+                TurnFailed(error_message=str() as text)
+                | TurnUnknown(error_message=str() as text)
+            ):
+                redacted = self._redact(session_id, text)
+                if redacted != text:
+                    item = replace(
+                        item,
+                        payload=replace(item.payload, error_message=redacted),
+                    )
+            case _:
+                pass
         provider_session_id = self._provider_session_ids.get(session_id, session_id)
         if item.envelope.session_id == session_id:
             item = replace(
@@ -262,6 +284,12 @@ class AgentScopedChannel(IChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        provider_session_id = self._provider_session_ids.get(
+            request.session_id,
+            request.session_id,
+        )
+        if provider_session_id != request.session_id:
+            request = replace(request, session_id=provider_session_id)
         return await self._channel.send(request, timeout=timeout)
 
     async def request_approval(

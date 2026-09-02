@@ -6,7 +6,7 @@ from bazaar_compute_node.contrib.codex.approval import parse_approval_request
 
 
 @pytest.mark.parametrize(
-    ("method", "provider_params", "expected_description"),
+    ("method", "provider_params", "expected_details"),
     [
         (
             "item/commandExecution/requestApproval",
@@ -15,11 +15,11 @@ from bazaar_compute_node.contrib.codex.approval import parse_approval_request
                 "command": ["python", "-m", "pytest"],
                 "cwd": "/workspace",
             },
-            (
-                "The command needs confirmation.\n"
-                "Command: python -m pytest\n"
-                "Working directory: /workspace"
-            ),
+            {
+                "reason": "The command needs confirmation.",
+                "command": "python -m pytest",
+                "cwd": "/workspace",
+            },
         ),
         (
             "item/fileChange/requestApproval",
@@ -28,11 +28,11 @@ from bazaar_compute_node.contrib.codex.approval import parse_approval_request
                 "grantRoot": "/workspace",
                 "cwd": "/workspace",
             },
-            (
-                "The file change needs confirmation.\n"
-                "Grant root: /workspace\n"
-                "Working directory: /workspace"
-            ),
+            {
+                "reason": "The file change needs confirmation.",
+                "grant_root": "/workspace",
+                "cwd": "/workspace",
+            },
         ),
         (
             "item/permissions/requestApproval",
@@ -44,18 +44,18 @@ from bazaar_compute_node.contrib.codex.approval import parse_approval_request
                 },
                 "cwd": "/workspace",
             },
-            (
-                "The runtime needs access.\n"
-                "Working directory: /workspace\n"
-                'Permissions: {"network":{"host":"api.example.test"},"read":true}'
-            ),
+            {
+                "reason": "The runtime needs access.",
+                "cwd": "/workspace",
+                "permissions": '{"network":{"host":"api.example.test"},"read":true}',
+            },
         ),
     ],
 )
-def test_parse_approval_request_renders_provider_description(
+def test_parse_approval_request_collects_structured_details(
     method: str,
     provider_params: dict[str, object],
-    expected_description: str,
+    expected_details: dict[str, str],
 ) -> None:
     params: dict[str, object] = {
         "threadId": "thread-1",
@@ -77,4 +77,4 @@ def test_parse_approval_request_renders_provider_description(
         provider_turn_id="turn-1",
     )
 
-    assert envelope.request.description == expected_description
+    assert envelope.request.details == expected_details

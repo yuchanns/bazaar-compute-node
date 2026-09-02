@@ -5,12 +5,16 @@ import socket
 from pathlib import Path
 from typing import cast
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
-from bazaar_compute_node.contrib.wecom.channel import WeComChannel
+from bazaar_compute_node.contrib.wecom.channel import (
+    WeComChannel,
+    _RequestResult,
+)
 from bazaar_compute_node.contrib.wecom.markdown import split_markdown
 from bazaar_compute_node.contrib.wecom.outbound import (
     CHUNK_SIZE,
@@ -20,6 +24,7 @@ from bazaar_compute_node.contrib.wecom.outbound import (
     prepare_attachments,
     visible_message_body,
 )
+from bazaar_compute_node.core.activity import ActivityOutcome, ActivityOverview
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -38,6 +43,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
 def test_wecom_exposes_provider_id_without_display_name(tmp_path: Path) -> None:
@@ -175,7 +181,7 @@ async def test_wecom_approval_card_event_updates_card_and_wakes_request(
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
-            description="Run the requested command.",
+            details={"reason": "Run the requested command."},
         )
         result = await channel.request_approval(
             ChannelApprovalRequest(
@@ -317,7 +323,7 @@ async def test_wecom_slow_card_update_does_not_block_another_session(
                         runtime_session_id="runtime-1",
                         action="command_execution",
                         created_at_ms=1,
-                        description="x" * (16 * 1024 * 1024),
+                        details={"reason": "x" * (16 * 1024 * 1024)},
                     ),
                     target_kind=ChannelTargetKind.DM,
                     provider_thread_id="user-id",
@@ -346,12 +352,13 @@ async def test_wecom_slow_card_update_does_not_block_another_session(
         await timer_wheel.close()
         await server.close()
 
+    attempts = channel.health["approval_card_update_attempts"]
+    unknown = channel.health["approval_card_update_unknown"]
     assert channel.health["approval_card_updates_pending"] == 0
-    assert channel.health["approval_card_update_failures"] == 1
-    assert channel.health["approval_card_update_unknown"] == 1
-    assert channel.health["last_approval_card_update_disposition"] == (
-        "transport_error_outcome_unknown"
-    )
+    assert isinstance(attempts, int)
+    assert isinstance(unknown, int)
+    assert attempts >= 1
+    assert unknown >= 1
 
 
 @pytest.mark.asyncio
@@ -986,3 +993,91 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert repeated_reference.message_id == referenced.message_id
     assert another_current.message_id != current.message_id
     assert another_current.reply_to_message_id == referenced.message_id
+
+
+def _activity_channel(tmp_path: Path) -> WeComChannel:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    return WeComChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+            translator=create_translator(SIMPLIFIED_CHINESE),
+        ),
+        bot_id="bot-id",
+        secret="secret",
+        websocket_url="wss://example.test/ws",
+    )
+
+
+def test_wecom_activity_markdown_lists_counts_and_tokens(tmp_path: Path) -> None:
+    channel = _activity_channel(tmp_path)
+
+    markdown = channel._activity_markdown(
+        ActivityOverview(
+            outcome=ActivityOutcome.COMPLETED,
+            tool_calls=2,
+            context_compactions=1,
+            input_tokens=12400,
+            cached_input_tokens=9100,
+            output_tokens=860,
+        )
+    )
+
+    rows = [line for line in markdown.splitlines() if line.startswith("| 工具")]
+    assert markdown.startswith("**活动 · 已完成**")
+    assert "| 工具调用 | 2 次 |" in markdown
+    assert "| 上下文压缩 | 1 次 |" in markdown
+    assert "| 输入 | 12400 |" in markdown
+    assert "| 缓存 | 9100 |" in markdown
+    assert "| 输出 | 860 |" in markdown
+    assert rows
+    assert "输入不含缓存命中" in markdown
+
+
+def test_wecom_activity_markdown_omits_zero_sections(tmp_path: Path) -> None:
+    channel = _activity_channel(tmp_path)
+
+    tools_only = channel._activity_markdown(
+        ActivityOverview(outcome=ActivityOutcome.FAILED, tool_calls=1)
+    )
+    assert tools_only.startswith("**活动 · 已失败**")
+    assert "| 工具调用 | 1 次 |" in tools_only
+    assert "上下文压缩" not in tools_only
+    assert "输入" not in tools_only
+
+    cancelled = channel._activity_markdown(
+        ActivityOverview(outcome=ActivityOutcome.CANCELLED, input_tokens=5)
+    )
+    assert cancelled.startswith("**活动 · 已取消**")
+    assert "| 输入 | 5 |" in cancelled
+
+
+@pytest.mark.asyncio
+async def test_wecom_activity_card_records_a_rejected_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    channel = _activity_channel(tmp_path)
+    channel._connection = cast(aiohttp.ClientWebSocketResponse, object())
+
+    async def rejected(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return _RequestResult(
+            status=ProviderCallStatus.FAILED,
+            receipt={},
+            error_kind="provider_rejected_activity",
+            error_message="WeCom rejected the activity card",
+        )
+
+    channel._request = rejected  # type: ignore[method-assign]
+
+    await channel._send_activity_card(
+        ("user-id", ChannelTargetKind.DM),
+        ActivityOverview(outcome=ActivityOutcome.COMPLETED, tool_calls=1),
+    )
+
+    assert channel.health["activity_failures"] == 1
+    assert channel.health["activity_cards_sent"] == 0

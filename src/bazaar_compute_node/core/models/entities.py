@@ -455,7 +455,7 @@ class ApprovalRequest:
     action: str
     created_at_ms: int
     turn_id: str | None = None
-    description: str | None = None
+    details: Mapping[str, str] = field(default_factory=dict)
     metadata: Metadata = field(default_factory=dict)
 
 

@@ -696,7 +696,12 @@ def _token_usage(value: Mapping[str, object]) -> TokenUsage:
         for token_count in fields.values()
     ):
         raise AppServerProtocolError("token usage values must be integers")
-    return TokenUsage(**cast(dict[str, int | None], fields))
+    checked = cast(dict[str, int | None], fields)
+    reported_input = checked["input_tokens"]
+    cached_input = checked["cached_input_tokens"]
+    if reported_input is not None and cached_input is not None:
+        checked["input_tokens"] = max(0, reported_input - cached_input)
+    return TokenUsage(**checked)
 
 
 def _safe_error_message(error: BaseException) -> str:
