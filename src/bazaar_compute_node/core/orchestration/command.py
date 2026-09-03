@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -34,7 +34,8 @@ from ..models import (
     OutboundDeliveryState,
     RuntimeEventState,
 )
-from ..storage import IStorage
+from ..outcomes import OutboundDeliveryResult
+from ..storage import IStorage, MaterializeOutboundResult, ResolvedInboxTarget
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -107,6 +108,19 @@ class OutboundAttachmentResolver:
                 )
             )
         return tuple(attachments)
+
+
+_DELIVERY_OUTCOMES: dict[
+    OutboundDeliveryState, tuple[ErrorKind | None, RuntimeEventState]
+] = {
+    OutboundDeliveryState.SENT: (None, RuntimeEventState.COMPLETED),
+    OutboundDeliveryState.QUEUED: (None, RuntimeEventState.STARTED),
+    OutboundDeliveryState.PARTIAL: (
+        ErrorKind.PROVIDER_PARTIAL,
+        RuntimeEventState.FAILED,
+    ),
+    OutboundDeliveryState.FAILED: (ErrorKind.PROVIDER_FAILED, RuntimeEventState.FAILED),
+}
 
 
 class SessionCommandService(ICommandService):
@@ -209,33 +223,23 @@ class SessionCommandService(ICommandService):
         )
         return result
 
-    async def send(
+    async def _stage_draft(
         self,
         *,
         session_id: str,
         command_id: str,
         raw_target: str,
+        target: ResolvedInboxTarget,
         body: str,
         created_at_ms: int,
-        attachment_paths: tuple[str, ...] = (),
-        reply_to_message_id: str | None = None,
-        send_draft: bool = False,
-    ) -> MessageSendResult:
-        target = await self._storage.resolve_inbox_target(raw_target)
+        attachments: tuple[OutboundAttachment, ...],
+        reply_to_message_id: str | None,
+        send_draft: bool,
+    ) -> tuple[MessageDraft, int] | MessageSendFreshnessHold:
+        """Settle what will be sent, and that nothing arrived while it was written."""
+
         target_session = target.bcn_session
         canonical_target = target.canonical_target
-        attachments = (
-            await asyncio.to_thread(self._attachment_resolver, attachment_paths)
-            if attachment_paths and not send_draft
-            else ()
-        )
-        if send_draft and (body or attachment_paths or reply_to_message_id is not None):
-            raise ValueError(
-                "send_draft cannot be combined with body, reply, or attachments"
-            )
-        if not send_draft and not body.strip() and not attachments:
-            raise ValueError("outbound message must not be empty")
-
         async with self._concurrency.for_session(session_id):
             if send_draft:
                 draft = self._drafts.get(session_id)
@@ -276,36 +280,142 @@ class SessionCommandService(ICommandService):
                 draft_replaced=draft_replaced,
             )
             if isinstance(freshness, MessageSendFreshnessHold):
-                self._observe_freshness(session_id, freshness.current_inbound_seq)
-                await self._audit_freshness_hold(
+                return await self._hold(
+                    freshness,
                     session_id=session_id,
                     command_id=command_id,
-                    target=canonical_target,
-                    result=freshness,
+                    target=target,
                 )
-                return replace(freshness, target=target.display_target)
-            expected_source_seq = freshness.current_inbound_seq
+            return payload, freshness.current_inbound_seq
 
-        handoff_message: Message[InboundAttachment] | None = None
-        async with self._concurrency.for_session(target_session.id):
+    async def _hold(
+        self,
+        hold: MessageSendFreshnessHold,
+        *,
+        session_id: str,
+        command_id: str,
+        target: ResolvedInboxTarget,
+    ) -> MessageSendFreshnessHold:
+        """Record that something arrived while the message was being written."""
+
+        self._observe_freshness(session_id, hold.current_inbound_seq)
+        await self._audit_freshness_hold(
+            session_id=session_id,
+            command_id=command_id,
+            target=target.canonical_target,
+            result=hold,
+        )
+        return replace(hold, target=target.display_target)
+
+    async def _transmit(
+        self,
+        outbound: Message[OutboundAttachment],
+        prepared: MaterializeOutboundResult,
+    ) -> tuple[Message[OutboundAttachment], OutboundDeliveryResult]:
+        """Give the message to its channel and fold the answer back into it."""
+
+        channel_session = prepared.channel_session
+        delivery_result = await self._delivery.deliver(
+            ChannelSendRequest(
+                session_id=outbound.session_id,
+                body=outbound.body,
+                attachments=outbound.attachments,
+                target_kind=channel_session.target_kind,
+                provider_thread_id=channel_session.provider_thread_id,
+                provider_reply_to_message_id=prepared.reply_to_provider_message_id,
+            )
+        )
+        outbound = replace(
+            outbound,
+            provider_attempted_at_ms=outbound.provider_attempted_at_ms or self._clock(),
+        )
+        outbound = outbound.transition_to(
+            delivery_result.state,
+            at_ms=self._clock(),
+            provider_message_id=delivery_result.provider_message_id,
+            provider_receipt_ref=delivery_result.provider_receipt_ref,
+            error_kind=delivery_result.error_kind,
+            error_message=delivery_result.error_message,
+        )
+        if delivery_result.receipt:
+            outbound = replace(
+                outbound,
+                metadata={
+                    **outbound.metadata,
+                    "delivery_receipt": dict(delivery_result.receipt),
+                },
+            )
+        return outbound, delivery_result
+
+    async def _record_delivery(
+        self,
+        audit_context: CorrelationContext,
+        *,
+        command_id: str,
+        canonical_target: str,
+        delivery_state: OutboundDeliveryState,
+        error_message: str | None,
+        receipt: Mapping[str, object] | None,
+        terminal_kind: ErrorKind | None,
+        terminal_state: RuntimeEventState,
+    ) -> None:
+        """Write down what the channel did with the message, twice over."""
+
+        await self._audit.append(
+            event_name=f"channel.outbound.{delivery_state.value}",
+            state=terminal_state,
+            correlation=audit_context,
+            error_kind=terminal_kind,
+            error_message=error_message,
+            metadata=receipt,
+        )
+        await self._audit.append_tool(
+            operation="bcc.message.send",
+            status=delivery_state.value,
+            state=terminal_state,
+            correlation=audit_context,
+            arguments={
+                "command_id": command_id,
+                "target": canonical_target,
+                "delivery_state": delivery_state.value,
+            },
+            error_kind=terminal_kind,
+            error_message=error_message,
+        )
+
+    async def _deliver(
+        self,
+        *,
+        session_id: str,
+        command_id: str,
+        target: ResolvedInboxTarget,
+        target_session_id: str,
+        expected_source_seq: int,
+        payload: MessageDraft,
+    ) -> (
+        tuple[Message[OutboundAttachment], Message[InboundAttachment] | None]
+        | MessageSendFreshnessHold
+    ):
+        """Hand the message to its channel and record what the channel made of it."""
+
+        canonical_target = target.canonical_target
+        async with self._concurrency.for_session(target_session_id):
             prepared = await self._storage.materialize_outbound_if_fresh(
                 session_id,
                 expected_source_seq,
-                target_session.id,
+                target_session_id,
                 command_id=command_id,
                 payload=payload,
                 attempted_at_ms=self._clock(),
             )
             result = prepared.outcome
             if isinstance(result, MessageSendFreshnessHold):
-                self._observe_freshness(session_id, result.current_inbound_seq)
-                await self._audit_freshness_hold(
+                return await self._hold(
+                    result,
                     session_id=session_id,
                     command_id=command_id,
-                    target=canonical_target,
-                    result=result,
+                    target=target,
                 )
-                return replace(result, target=target.display_target)
             outbound = result
             channel_session = prepared.channel_session
             audit_context = self._correlation(
@@ -326,53 +436,11 @@ class SessionCommandService(ICommandService):
                 state=RuntimeEventState.STARTED,
                 correlation=audit_context,
             )
-            delivery_result = await self._delivery.deliver(
-                ChannelSendRequest(
-                    session_id=outbound.session_id,
-                    body=outbound.body,
-                    attachments=outbound.attachments,
-                    target_kind=channel_session.target_kind,
-                    provider_thread_id=channel_session.provider_thread_id,
-                    provider_reply_to_message_id=(
-                        prepared.reply_to_provider_message_id
-                    ),
-                )
-            )
-            attempted_at_ms = outbound.provider_attempted_at_ms or self._clock()
-            outbound = replace(outbound, provider_attempted_at_ms=attempted_at_ms)
-            outbound = outbound.transition_to(
+            outbound, delivery_result = await self._transmit(outbound, prepared)
+            terminal_kind, terminal_state = _DELIVERY_OUTCOMES.get(
                 delivery_result.state,
-                at_ms=self._clock(),
-                provider_message_id=delivery_result.provider_message_id,
-                provider_receipt_ref=delivery_result.provider_receipt_ref,
-                error_kind=delivery_result.error_kind,
-                error_message=delivery_result.error_message,
+                (ErrorKind.PROVIDER_UNKNOWN, RuntimeEventState.UNKNOWN),
             )
-            if delivery_result.state is OutboundDeliveryState.SENT:
-                terminal_kind = None
-                terminal_state = RuntimeEventState.COMPLETED
-            elif delivery_result.state is OutboundDeliveryState.QUEUED:
-                terminal_kind = None
-                terminal_state = RuntimeEventState.STARTED
-            elif delivery_result.state is OutboundDeliveryState.PARTIAL:
-                terminal_kind = ErrorKind.PROVIDER_PARTIAL
-                terminal_state = RuntimeEventState.FAILED
-            elif delivery_result.state is OutboundDeliveryState.FAILED:
-                terminal_kind = ErrorKind.PROVIDER_FAILED
-                terminal_state = RuntimeEventState.FAILED
-            else:
-                terminal_kind = ErrorKind.PROVIDER_UNKNOWN
-                terminal_state = RuntimeEventState.UNKNOWN
-
-            if delivery_result.receipt:
-                outbound = replace(
-                    outbound,
-                    metadata={
-                        **outbound.metadata,
-                        "delivery_receipt": dict(delivery_result.receipt),
-                    },
-                )
-
             finalized = await self._storage.finalize_outbound_delivery(outbound)
             outbound = finalized.outbound
             handoff_message = finalized.handoff_message
@@ -388,27 +456,70 @@ class SessionCommandService(ICommandService):
                 and self._drafts.get(session_id) is payload
             ):
                 self._drafts.pop(session_id, None)
-            await self._audit.append(
-                event_name=f"channel.outbound.{delivery_state.value}",
-                state=terminal_state,
-                correlation=audit_context,
-                error_kind=terminal_kind,
+            await self._record_delivery(
+                audit_context,
+                command_id=command_id,
+                canonical_target=canonical_target,
+                delivery_state=delivery_state,
                 error_message=outbound.error_message,
-                metadata=delivery_result.receipt,
+                receipt=delivery_result.receipt,
+                terminal_kind=terminal_kind,
+                terminal_state=terminal_state,
             )
-            await self._audit.append_tool(
-                operation="bcc.message.send",
-                status=delivery_state.value,
-                state=terminal_state,
-                correlation=audit_context,
-                arguments={
-                    "command_id": command_id,
-                    "target": canonical_target,
-                    "delivery_state": delivery_state.value,
-                },
-                error_kind=terminal_kind,
-                error_message=outbound.error_message,
+            return outbound, handoff_message
+
+    async def send(
+        self,
+        *,
+        session_id: str,
+        command_id: str,
+        raw_target: str,
+        body: str,
+        created_at_ms: int,
+        attachment_paths: tuple[str, ...] = (),
+        reply_to_message_id: str | None = None,
+        send_draft: bool = False,
+    ) -> MessageSendResult:
+        target = await self._storage.resolve_inbox_target(raw_target)
+        target_session = target.bcn_session
+        attachments = (
+            await asyncio.to_thread(self._attachment_resolver, attachment_paths)
+            if attachment_paths and not send_draft
+            else ()
+        )
+        if send_draft and (body or attachment_paths or reply_to_message_id is not None):
+            raise ValueError(
+                "send_draft cannot be combined with body, reply, or attachments"
             )
+        if not send_draft and not body.strip() and not attachments:
+            raise ValueError("outbound message must not be empty")
+
+        staged = await self._stage_draft(
+            session_id=session_id,
+            command_id=command_id,
+            raw_target=raw_target,
+            target=target,
+            body=body,
+            created_at_ms=created_at_ms,
+            attachments=attachments,
+            reply_to_message_id=reply_to_message_id,
+            send_draft=send_draft,
+        )
+        if isinstance(staged, MessageSendFreshnessHold):
+            return staged
+        payload, expected_source_seq = staged
+
+        delivered = await self._deliver(
+            session_id=session_id,
+            command_id=command_id,
+            target=target,
+            target_session_id=target_session.id,
+            expected_source_seq=expected_source_seq,
+            payload=payload,
+        )
+        if isinstance(delivered, MessageSendFreshnessHold):
+            return delivered
+        outbound, handoff_message = delivered
         if handoff_message is not None:
             try:
                 await self._publish_wake(handoff_message)

@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from time import time_ns
 from uuid import uuid7
 
+from ..clock import now_ms
 from ..concurrency import ISessionConcurrency
 from ..lifecycle import IAsyncLifecycle, TaskFailureSignal
 from ..models import (
@@ -31,10 +31,6 @@ from ..timerwheel import (
 _WALL_CLOCK_RECHECK_MS = 60_000
 _CYCLE_RETRY_MS = 5_000
 _DUE_BATCH_SIZE = 100
-
-
-def _current_time_ms() -> int:
-    return time_ns() // 1_000_000
 
 
 async def resolve_reminder_anchor(
@@ -84,7 +80,7 @@ class ReminderScheduler(IAsyncLifecycle):
         self._timer_wheel = timer_wheel
         self._concurrency = concurrency
         self._publish_wake = publish_wake
-        self._clock = clock or _current_time_ms
+        self._clock = clock or now_ms
         self._poke = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._failure = TaskFailureSignal()

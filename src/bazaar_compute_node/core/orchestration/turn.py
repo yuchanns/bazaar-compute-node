@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from ... import __distribution__
 from ...rendering import TextTemplate
+from ..agent import Agent, State
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import ChannelApprovalRequest, IChannel
@@ -32,9 +33,6 @@ from ..models import (
     RuntimeTurn,
     RuntimeTurnState,
     SenderKind,
-    SessionRuntimeObservation,
-    SessionRuntimeObservationSource,
-    SessionRuntimeSignal,
     ToolCallCompleted,
     ToolCallFailed,
     ToolCallInteraction,
@@ -48,11 +46,10 @@ from ..models import (
     TurnUnknown,
     UsageUpdated,
 )
-from ..runtime import IRuntimeTurnStream, RuntimeSessionUnavailable
+from ..runtime import IRuntimeTurnStream, Runtime, RuntimeSessionUnavailable
 from ..storage import IStorageScope
 from .reminder import resolve_reminder_anchor
-from .runtime_pool import RuntimePool
-from .services import SessionAuditRecorder, SessionRuntimeStateMachine
+from .services import SessionAuditRecorder
 
 
 def _is_turn_event(event_name: str) -> bool:
@@ -64,7 +61,10 @@ type TurnPayload = (
 )
 
 
-def _runtime_event_signal(payload: TurnPayload) -> SessionRuntimeSignal:
+type _Advance = Callable[[Agent, str], State]
+
+
+def _runtime_event_advance(payload: TurnPayload) -> _Advance:
     match payload:
         case TurnStarted(event_name=event_name):
             state = RuntimeEventState.STARTED
@@ -78,24 +78,76 @@ def _runtime_event_signal(payload: TurnPayload) -> SessionRuntimeSignal:
             state = RuntimeEventState.UNKNOWN
 
     if not _is_turn_event(event_name):
-        if state is RuntimeEventState.UNKNOWN:
-            return SessionRuntimeSignal.UNKNOWN
-        if state is RuntimeEventState.FAILED or "error" in event_name.casefold():
-            return SessionRuntimeSignal.FAILED
-        return SessionRuntimeSignal.WORKING_OBSERVED
+        # a provider event outside any turn only tells us whether the runtime
+        # still looks healthy, and an unhealthy one has to be reconciled
+        if state in {RuntimeEventState.UNKNOWN, RuntimeEventState.FAILED} or (
+            "error" in event_name.casefold()
+        ):
+            return Agent.lost_runtime
+        return Agent.started_turn
 
-    if state is RuntimeEventState.STARTED:
-        return SessionRuntimeSignal.TURN_STARTED
-    if state is RuntimeEventState.COMPLETED:
-        return SessionRuntimeSignal.TURN_COMPLETED
-    if state is RuntimeEventState.FAILED:
-        return SessionRuntimeSignal.TURN_FAILED
-    if state is RuntimeEventState.CANCELLED:
-        return SessionRuntimeSignal.TURN_CANCELLED
-    return SessionRuntimeSignal.UNKNOWN
+    return _EVENTS[state].advance
 
 
-_RETRYABLE_STATES = frozenset({RuntimeTurnState.FAILED, RuntimeTurnState.UNKNOWN})
+@dataclass(frozen=True, slots=True)
+class _Event:
+    turn_state: RuntimeTurnState
+    advance: _Advance
+
+
+_EVENTS: Mapping[RuntimeEventState, _Event] = {
+    RuntimeEventState.STARTED: _Event(RuntimeTurnState.RUNNING, Agent.started_turn),
+    RuntimeEventState.COMPLETED: _Event(
+        RuntimeTurnState.COMPLETED, Agent.finished_turn
+    ),
+    RuntimeEventState.FAILED: _Event(RuntimeTurnState.FAILED, Agent.finished_turn),
+    RuntimeEventState.CANCELLED: _Event(
+        RuntimeTurnState.CANCELLED, Agent.finished_turn
+    ),
+    RuntimeEventState.UNKNOWN: _Event(RuntimeTurnState.UNKNOWN, Agent.lost_runtime),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _Terminal:
+    payload: Callable[[str | None, str | None], TurnPayload]
+    advance: _Advance
+    audit_state: RuntimeEventState
+    retryable: bool = False
+
+
+_TERMINALS: Mapping[RuntimeTurnState, _Terminal] = {
+    RuntimeTurnState.COMPLETED: _Terminal(
+        payload=lambda *_: TurnCompleted(event_name="bcn.turn.completed"),
+        advance=Agent.finished_turn,
+        audit_state=RuntimeEventState.COMPLETED,
+    ),
+    RuntimeTurnState.CANCELLED: _Terminal(
+        payload=lambda *_: TurnCancelled(event_name="bcn.turn.cancelled"),
+        advance=Agent.finished_turn,
+        audit_state=RuntimeEventState.CANCELLED,
+    ),
+    RuntimeTurnState.FAILED: _Terminal(
+        payload=lambda kind, message: TurnFailed(
+            event_name="bcn.turn.failed",
+            error_kind=kind or ErrorKind.PROVIDER_FAILED.value,
+            error_message=message,
+        ),
+        advance=Agent.finished_turn,
+        audit_state=RuntimeEventState.FAILED,
+        retryable=True,
+    ),
+    RuntimeTurnState.UNKNOWN: _Terminal(
+        payload=lambda kind, message: TurnUnknown(
+            event_name="bcn.turn.unknown",
+            error_kind=kind,
+            error_message=message,
+        ),
+        advance=Agent.lost_runtime,
+        audit_state=RuntimeEventState.UNKNOWN,
+        retryable=True,
+    ),
+}
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
 
@@ -203,10 +255,10 @@ class SessionTurnCoordinator:
         *,
         agent_id: str,
         channel: IChannel,
-        runtimes: RuntimePool,
+        runtimes: Runtime,
         storage: IStorageScope,
         audit: SessionAuditRecorder,
-        state_machine: SessionRuntimeStateMachine,
+        agent: Agent,
         timeout_budget: TimeoutBudget,
         concurrency: ISessionConcurrency,
         turns: dict[str, RuntimeTurn],
@@ -219,7 +271,7 @@ class SessionTurnCoordinator:
         self._runtimes = runtimes
         self._storage = storage
         self._audit = audit
-        self._state_machine = state_machine
+        self._agent = agent
         self._timeout_budget = timeout_budget
         self._concurrency = concurrency
         self._turns = turns
@@ -232,115 +284,142 @@ class SessionTurnCoordinator:
         context: SessionContext,
         turn: RuntimeTurn,
     ) -> IApprovalHandler:
-        binding = ApprovalBinding(
-            request_id="pending",
+        return _ApprovalHandler(
+            lambda request, timeout: self._request_approval(
+                request,
+                message=message,
+                context=context,
+                turn=turn,
+                timeout=timeout,
+            )
+        )
+
+    async def _ask_channel(
+        self,
+        request: ApprovalRequest,
+        context: SessionContext,
+        approval_target: Message,
+        *,
+        correlation: CorrelationContext,
+        metadata: dict[str, object],
+        timeout: float,
+    ) -> ApprovalResult:
+        """Put the request in front of a person; note a channel that could not."""
+
+        try:
+            channel_request = ChannelApprovalRequest(
+                approval=request,
+                target_kind=context.channel_session.target_kind,
+                provider_thread_id=context.channel_session.provider_thread_id,
+                provider_reply_to_message_id=(approval_target.provider_message_id),
+                provider_sender_id=(
+                    approval_target.sender.id
+                    if approval_target.sender is not None
+                    else None
+                ),
+            )
+            result = await self._channel.request_approval(
+                channel_request,
+                timeout=timeout,
+            )
+            if result.request_id != request.request_id:
+                raise ValueError("channel approval result correlation mismatch")
+        except Exception as error:
+            await self._audit.append(
+                event_name="approval.failed",
+                state=RuntimeEventState.FAILED,
+                correlation=correlation,
+                error_kind=ErrorKind.PROVIDER_FAILED,
+                error_message=f"approval failed: {type(error).__name__}",
+                metadata=metadata,
+            )
+            raise
+        return result
+
+    async def _request_approval(
+        self,
+        request: ApprovalRequest,
+        *,
+        message: Message,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        timeout: float,
+    ) -> ApprovalResult:
+        """Ask whoever sent the message to allow what the runtime wants to do."""
+
+        request_id = request.request_id
+        current_binding = ApprovalBinding(
+            request_id=request_id,
             bcn_session_id=context.bcn_session.id,
             channel_session_id=context.channel_session.id,
             runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
         )
-
-        async def request_approval(
-            request: ApprovalRequest, *, timeout: float
-        ) -> ApprovalResult:
-            request_id = request.request_id
-            current_binding = replace(binding, request_id=request_id)
-            if not current_binding.matches(request):
-                raise ValueError("runtime approval request correlation mismatch")
-            approval_correlation = CorrelationContext(
-                node_id=self._agent_id,
-                channel=context.channel_session.channel,
-                channel_session_id=context.channel_session.id,
-                bcn_session_id=context.bcn_session.id,
-                runtime_session_id=context.runtime_session.id,
-                turn_id=turn.turn_id,
-                request_id=request_id,
-                inbound_seq=message.seq,
-            )
-            sender_kind = message.sender_kind
-            approval_target = await resolve_reminder_anchor(
-                self._storage,
-                self._agent_id,
-                message,
-            )
-            approval_target_kind = (
-                approval_target.sender_kind.value
-                if approval_target is not None
-                else "unavailable"
-            )
-            await self._audit.append(
-                event_name="approval.requested",
-                state=RuntimeEventState.STARTED,
-                correlation=approval_correlation,
-                metadata={
-                    "action": request.action,
-                    "sender_kind": sender_kind.value,
-                    "approval_target_kind": approval_target_kind,
-                },
-            )
-            if approval_target is None or (
-                approval_target.sender_kind is not SenderKind.HUMAN
-                or approval_target.sender is None
-                or approval_target.sender.id is None
-            ):
-                result = ApprovalResult(
-                    request_id=request_id,
-                    decision=ApprovalDecision.REJECTED,
-                    decided_at_ms=self._clock(),
-                    reason=_NO_PERSON_TO_APPROVE,
-                )
-            else:
-                try:
-                    channel_request = ChannelApprovalRequest(
-                        approval=request,
-                        target_kind=context.channel_session.target_kind,
-                        provider_thread_id=context.channel_session.provider_thread_id,
-                        provider_reply_to_message_id=(
-                            approval_target.provider_message_id
-                        ),
-                        provider_sender_id=(
-                            approval_target.sender.id
-                            if approval_target.sender is not None
-                            else None
-                        ),
-                    )
-                    result = await self._channel.request_approval(
-                        channel_request,
-                        timeout=timeout,
-                    )
-                    if result.request_id != request_id:
-                        raise ValueError("channel approval result correlation mismatch")
-                except Exception as error:
-                    await self._audit.append(
-                        event_name="approval.failed",
-                        state=RuntimeEventState.FAILED,
-                        correlation=approval_correlation,
-                        error_kind=ErrorKind.PROVIDER_FAILED,
-                        error_message=f"approval failed: {type(error).__name__}",
-                        metadata={
-                            "action": request.action,
-                            "sender_kind": sender_kind.value,
-                            "approval_target_kind": approval_target_kind,
-                        },
-                    )
-                    raise
-            await self._audit.append(
-                event_name="approval.decided",
-                state=RuntimeEventState.COMPLETED,
-                correlation=approval_correlation,
-                metadata={
-                    "action": request.action,
-                    "decision": result.decision.value,
-                    "sender_kind": sender_kind.value,
-                    "approval_target_kind": approval_target_kind,
-                    **({"reason": result.reason} if result.reason is not None else {}),
-                },
-            )
-            return result
-
-        return _ApprovalHandler(
-            lambda request, timeout: request_approval(request, timeout=timeout)
+        if not current_binding.matches(request):
+            raise ValueError("runtime approval request correlation mismatch")
+        approval_correlation = CorrelationContext(
+            node_id=self._agent_id,
+            channel=context.channel_session.channel,
+            channel_session_id=context.channel_session.id,
+            bcn_session_id=context.bcn_session.id,
+            runtime_session_id=context.runtime_session.id,
+            turn_id=turn.turn_id,
+            request_id=request_id,
+            inbound_seq=message.seq,
         )
+        sender_kind = message.sender_kind
+        approval_target = await resolve_reminder_anchor(
+            self._storage,
+            self._agent_id,
+            message,
+        )
+        approval_target_kind = (
+            approval_target.sender_kind.value
+            if approval_target is not None
+            else "unavailable"
+        )
+        metadata: dict[str, object] = {
+            "action": request.action,
+            "sender_kind": sender_kind.value,
+            "approval_target_kind": approval_target_kind,
+        }
+        await self._audit.append(
+            event_name="approval.requested",
+            state=RuntimeEventState.STARTED,
+            correlation=approval_correlation,
+            metadata=metadata,
+        )
+        if approval_target is None or (
+            approval_target.sender_kind is not SenderKind.HUMAN
+            or approval_target.sender is None
+            or approval_target.sender.id is None
+        ):
+            result = ApprovalResult(
+                request_id=request_id,
+                decision=ApprovalDecision.REJECTED,
+                decided_at_ms=self._clock(),
+                reason=_NO_PERSON_TO_APPROVE,
+            )
+        else:
+            result = await self._ask_channel(
+                request,
+                context,
+                approval_target,
+                correlation=approval_correlation,
+                metadata=metadata,
+                timeout=timeout,
+            )
+        await self._audit.append(
+            event_name="approval.decided",
+            state=RuntimeEventState.COMPLETED,
+            correlation=approval_correlation,
+            metadata=metadata
+            | {
+                "decision": result.decision.value,
+                **({"reason": result.reason} if result.reason is not None else {}),
+            },
+        )
+        return result
 
     async def run_turn(
         self,
@@ -435,6 +514,74 @@ class SessionTurnCoordinator:
             retry_available=retry_available,
         )
 
+    async def _consume_events(
+        self,
+        message: Message,
+        context: SessionContext,
+        turn: RuntimeTurn,
+        stream: IRuntimeTurnStream,
+        *,
+        retry_available: bool,
+    ) -> tuple[RuntimeTurn, bool]:
+        """Read the stream out, saying whether it reached a terminal event."""
+
+        observed_terminal = False
+        async for event in stream:
+            if event.envelope.session_id != context.bcn_session.id:
+                self._logger.error(
+                    "runtime emitted event for another session",
+                    extra={
+                        "expected_session_id": context.bcn_session.id,
+                        "actual_session_id": event.envelope.session_id,
+                    },
+                )
+                continue
+            match event.payload:
+                case (
+                    TurnStarted()
+                    | TurnCompleted()
+                    | TurnFailed()
+                    | TurnCancelled()
+                    | TurnUnknown()
+                ) as payload:
+                    turn = await self._apply_runtime_event(
+                        message,
+                        context,
+                        turn,
+                        event.envelope,
+                        payload,
+                    )
+                    if not (
+                        isinstance(payload, TurnUnknown)
+                        or (retry_available and isinstance(payload, TurnFailed))
+                    ):
+                        self._forward(event, context.bcn_session.id)
+                    if _is_terminal_turn_event(payload):
+                        observed_terminal = True
+                        break
+                case (
+                    ContentDelta()
+                    | ToolCallStarted()
+                    | ToolCallCompleted()
+                    | ToolCallFailed()
+                    | ToolCallTextDelta()
+                    | ToolCallPatchUpdated()
+                    | ToolCallInteraction()
+                    | UsageUpdated()
+                    | ContextCompactionStarted()
+                    | ContextCompactionCompleted()
+                ):
+                    self._forward(event, context.bcn_session.id)
+        return turn, observed_terminal
+
+    def _forward(self, event: RuntimeOutputEvent, session_id: str) -> None:
+        """Show a runtime event on the channel; note a channel that refuses it."""
+
+        try:
+            self._channel.accept_turn_event(event, session_id=session_id)
+        except Exception:
+            self._logger.exception("channel rejected %s", type(event.payload).__name__)
+
     async def _consume_turn_stream(
         self,
         message: Message,
@@ -445,66 +592,10 @@ class SessionTurnCoordinator:
         turn_correlation: CorrelationContext,
         retry_available: bool = False,
     ) -> RuntimeTurn:
-        observed_terminal = False
         try:
-            async for event in stream:
-                if event.envelope.session_id != context.bcn_session.id:
-                    self._logger.error(
-                        "runtime emitted event for another session",
-                        extra={
-                            "expected_session_id": context.bcn_session.id,
-                            "actual_session_id": event.envelope.session_id,
-                        },
-                    )
-                    continue
-                match event.payload:
-                    case (
-                        TurnStarted()
-                        | TurnCompleted()
-                        | TurnFailed()
-                        | TurnCancelled()
-                        | TurnUnknown()
-                    ) as payload:
-                        turn = await self._apply_runtime_event(
-                            message,
-                            context,
-                            turn,
-                            event.envelope,
-                            payload,
-                        )
-                        if not (
-                            isinstance(payload, TurnUnknown)
-                            or (retry_available and isinstance(payload, TurnFailed))
-                        ):
-                            try:
-                                self._channel.accept_turn_event(
-                                    event,
-                                    session_id=context.bcn_session.id,
-                                )
-                            except Exception:
-                                self._logger.exception("channel rejected runtime event")
-                        if _is_terminal_turn_event(payload):
-                            observed_terminal = True
-                            break
-                    case (
-                        ContentDelta()
-                        | ToolCallStarted()
-                        | ToolCallCompleted()
-                        | ToolCallFailed()
-                        | ToolCallTextDelta()
-                        | ToolCallPatchUpdated()
-                        | ToolCallInteraction()
-                        | UsageUpdated()
-                        | ContextCompactionStarted()
-                        | ContextCompactionCompleted()
-                    ):
-                        try:
-                            self._channel.accept_turn_event(
-                                event,
-                                session_id=context.bcn_session.id,
-                            )
-                        except Exception:
-                            self._logger.exception("channel rejected turn event")
+            turn, observed_terminal = await self._consume_events(
+                message, context, turn, stream, retry_available=retry_available
+            )
             if not observed_terminal:
                 return await self.finish_turn(
                     turn,
@@ -607,24 +698,10 @@ class SessionTurnCoordinator:
         error_message: str | None,
         session_id: str,
     ) -> None:
-        kind = error_kind.value if error_kind else None
-        payload: TurnPayload
-        if state is RuntimeTurnState.COMPLETED:
-            payload = TurnCompleted(event_name="bcn.turn.completed")
-        elif state is RuntimeTurnState.CANCELLED:
-            payload = TurnCancelled(event_name="bcn.turn.cancelled")
-        elif state is RuntimeTurnState.FAILED:
-            payload = TurnFailed(
-                event_name="bcn.turn.failed",
-                error_kind=kind or ErrorKind.PROVIDER_FAILED.value,
-                error_message=error_message,
-            )
-        else:
-            payload = TurnUnknown(
-                event_name="bcn.turn.unknown",
-                error_kind=kind,
-                error_message=error_message,
-            )
+        payload = _TERMINALS[state].payload(
+            error_kind.value if error_kind else None,
+            error_message,
+        )
         try:
             self._channel.accept_turn_event(
                 RuntimeOutputEvent(
@@ -668,39 +745,14 @@ class SessionTurnCoordinator:
                 error_message=error_message,
             )
             self._turns.pop(turn.turn_id, None)
-            if state is RuntimeTurnState.COMPLETED:
-                signal = SessionRuntimeSignal.TURN_COMPLETED
-            elif state is RuntimeTurnState.FAILED:
-                signal = SessionRuntimeSignal.TURN_FAILED
-            elif state is RuntimeTurnState.CANCELLED:
-                signal = SessionRuntimeSignal.TURN_CANCELLED
-            else:
-                signal = SessionRuntimeSignal.UNKNOWN
-            self._state_machine.apply_observation(
-                session_id,
-                SessionRuntimeObservation(
-                    source=SessionRuntimeObservationSource.RUNTIME,
-                    signal=signal,
-                    observed_at_ms=self._clock(),
-                    error_kind=error_kind.value if error_kind else None,
-                    error_message=error_message,
-                ),
-            )
-        if not (retry_available and state in _RETRYABLE_STATES):
+            _TERMINALS[state].advance(self._agent, session_id)
+        if not (retry_available and _TERMINALS[state].retryable):
             self._notify_channel_terminal(
                 turn, state, error_kind, error_message, session_id
             )
         await self._audit.append(
             event_name=f"runtime.turn.{state.value}",
-            state=(
-                RuntimeEventState.COMPLETED
-                if state is RuntimeTurnState.COMPLETED
-                else RuntimeEventState.CANCELLED
-                if state is RuntimeTurnState.CANCELLED
-                else RuntimeEventState.FAILED
-                if state is not RuntimeTurnState.UNKNOWN
-                else RuntimeEventState.UNKNOWN
-            ),
+            state=_TERMINALS[state].audit_state,
             correlation=correlation or CorrelationContext(turn_id=turn.turn_id),
             error_kind=error_kind,
             error_message=error_message,
@@ -715,7 +767,7 @@ class SessionTurnCoordinator:
         envelope: RuntimeEventEnvelope,
         payload: TurnPayload,
     ) -> RuntimeTurn:
-        if envelope.turn_id is not None and envelope.turn_id != turn.turn_id:
+        if envelope.turn_id != turn.turn_id:
             raise ValueError("runtime event turn correlation mismatch")
         match payload:
             case TurnStarted(event_name=event_name, metadata=metadata):
@@ -745,19 +797,10 @@ class SessionTurnCoordinator:
             ):
                 state = RuntimeEventState.UNKNOWN
         async with self._concurrency.for_session(message.session_id):
-            signal = _runtime_event_signal(payload)
-            if not _is_turn_event(event_name):
-                target_state = turn.state
-            elif state is RuntimeEventState.STARTED:
-                target_state = RuntimeTurnState.RUNNING
-            elif state is RuntimeEventState.COMPLETED:
-                target_state = RuntimeTurnState.COMPLETED
-            elif state is RuntimeEventState.FAILED:
-                target_state = RuntimeTurnState.FAILED
-            elif state is RuntimeEventState.CANCELLED:
-                target_state = RuntimeTurnState.CANCELLED
-            else:
-                target_state = RuntimeTurnState.UNKNOWN
+            advance = _runtime_event_advance(payload)
+            target_state = (
+                _EVENTS[state].turn_state if _is_turn_event(event_name) else turn.state
+            )
             provider_turn_id = envelope.provider_turn_id
             if provider_turn_id is not None and (
                 not isinstance(provider_turn_id, str) or not provider_turn_id
@@ -785,21 +828,11 @@ class SessionTurnCoordinator:
                     updated_turn,
                     provider_turn_id=provider_turn_id,
                 )
-            observation = SessionRuntimeObservation(
-                source=SessionRuntimeObservationSource.RUNTIME,
-                signal=signal,
-                observed_at_ms=self._clock(),
-                error_kind=error_kind,
-                error_message=error_message,
-            )
             if _is_terminal_turn_event(payload):
                 self._turns.pop(turn.turn_id, None)
             else:
                 self._turns[turn.turn_id] = updated_turn
-            self._state_machine.apply_observation(
-                context.bcn_session.id,
-                observation,
-            )
+            advance(self._agent, context.bcn_session.id)
         try:
             audit_kind = ErrorKind(error_kind) if error_kind else None
         except ValueError:
