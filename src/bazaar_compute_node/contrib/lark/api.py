@@ -12,8 +12,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import aiohttp
 
-from ...core.clock import remaining
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
 
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})

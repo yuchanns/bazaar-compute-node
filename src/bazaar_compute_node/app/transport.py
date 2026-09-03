@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from ..core.text import format_exception
 from ..core.utils import UnlimitedLineReader
+from ..core.utils.text import format_exception
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 StreamPair = tuple[asyncio.StreamReader, asyncio.StreamWriter]

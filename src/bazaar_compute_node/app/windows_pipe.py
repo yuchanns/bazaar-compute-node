@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from bazaar_compute_node.core.lifecycle import TaskFailureSignal
 from bazaar_compute_node.core.paths import resolve_data_dir
 
-from ..core.text import format_exception
+from ..core.utils.text import format_exception
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 

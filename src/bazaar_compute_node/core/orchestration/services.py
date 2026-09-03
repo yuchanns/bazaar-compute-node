@@ -12,7 +12,7 @@ from ..models import (
     RuntimeEventState,
 )
 from ..observability import IAudit, LogLevel
-from ..sanitization import omit_sensitive_fields
+from ..utils.sanitization import omit_sensitive_fields
 
 
 class SessionAuditRecorder:

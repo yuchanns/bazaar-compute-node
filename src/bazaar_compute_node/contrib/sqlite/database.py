@@ -9,8 +9,8 @@ from typing import TypeVar
 
 import aiosqlite
 
-from ...core.clock import now_ms
 from ...core.paths import resolve_data_dir
+from ...core.utils.clock import now_ms
 from .executor import (
     SqliteExecuteResult,
     SqliteExecutor,

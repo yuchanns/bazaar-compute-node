@@ -27,8 +27,6 @@ from ...core.channel import (
     ChannelSendRequest,
     IChannel,
 )
-from ...core.clock import remaining
-from ...core.markdown import split_markdown, utf8_bytes
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -43,6 +41,8 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
+from ...core.utils.markdown import split_markdown, utf8_bytes
 from ...i18n import ENGLISH, Translator, create_translator
 from .outbound import (
     AttachmentReader,

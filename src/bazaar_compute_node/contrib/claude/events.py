@@ -9,7 +9,6 @@ from typing import Self, cast
 
 from pydantic import TypeAdapter
 
-from ...core.clock import now_ms
 from ...core.models import (
     ContentDelta,
     ContentDeltaKind,
@@ -34,7 +33,8 @@ from ...core.models import (
     UsageUpdated,
 )
 from ...core.runtime import IRuntimeTurnStream
-from ...core.text import format_exception
+from ...core.utils.clock import now_ms
+from ...core.utils.text import format_exception
 from .client import TurnInbox
 from .protocol import ClaudeProtocolError, ClaudeTransportError, JsonObject
 

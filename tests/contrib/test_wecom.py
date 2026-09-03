@@ -31,7 +31,6 @@ from bazaar_compute_node.core.channel import (
     ChannelIdentity,
     ChannelSendRequest,
 )
-from bazaar_compute_node.core.markdown import split_markdown, utf8_bytes
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -44,6 +43,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.core.utils.markdown import split_markdown, utf8_bytes
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 

@@ -28,8 +28,8 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
-from ...core.text import truncate_utf8
 from ...core.timerwheel import TimerWheel
+from ...core.utils.text import truncate_utf8
 from ...i18n import Translator
 from ...rendering import TextTemplate
 from .api import LarkApi, LarkApiError

@@ -18,8 +18,8 @@ from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
 from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
-from ..core.text import format_exception
 from ..core.timerwheel import TimerWheel
+from ..core.utils.text import format_exception
 from ..i18n import create_translator
 from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration

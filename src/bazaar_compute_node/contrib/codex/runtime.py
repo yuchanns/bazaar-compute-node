@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from ...core.approval import IApprovalHandler
-from ...core.clock import now_ms
 from ...core.instruction import DeveloperInstructionContext
 from ...core.lifecycle import IAsyncLifecycle
 from ...core.models import (
@@ -33,7 +32,8 @@ from ...core.runtime import (
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
-from ...core.text import format_exception
+from ...core.utils.clock import now_ms
+from ...core.utils.text import format_exception
 from .client import (
     Client,
     ThreadInfo,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..clock import now_ms
 from ..command import IReminderService, SessionNotFoundError
 from ..concurrency import ISessionConcurrency
 from ..models import Message, MessageDirection, Reminder, ReminderState
@@ -19,6 +18,7 @@ from ..reminder import (
     ReminderUpdateResult,
 )
 from ..storage import IStorage
+from ..utils.clock import now_ms
 
 
 class ReminderCommandFailure(ValueError):

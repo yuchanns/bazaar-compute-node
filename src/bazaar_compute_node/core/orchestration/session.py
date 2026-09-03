@@ -12,7 +12,6 @@ from ..agent import Agent, State
 from ..approval import IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import IChannel
-from ..clock import now_ms
 from ..concurrency import ISessionConcurrency, SessionLockRegistry
 from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
@@ -39,13 +38,14 @@ from ..runtime import (
     RuntimeSessionUnavailable,
 )
 from ..storage import IStorageScope
-from ..text import format_exception
 from ..timerwheel import (
     Timer,
     TimerCancelledError,
     TimerWheel,
     TimerWheelClosedError,
 )
+from ..utils.clock import now_ms
+from ..utils.text import format_exception
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder

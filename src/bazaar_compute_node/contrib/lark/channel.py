@@ -19,7 +19,6 @@ from ...core.channel import (
     ChannelSendRequest,
     IChannel,
 )
-from ...core.clock import remaining
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -49,6 +48,7 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
 from ...i18n import ENGLISH, create_translator
 from .activity import LarkActivityProjector, LarkActivityRoute
 from .api import LarkApi

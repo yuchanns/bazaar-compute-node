@@ -5,7 +5,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from uuid import uuid7
 
-from ..clock import now_ms
 from ..concurrency import ISessionConcurrency
 from ..lifecycle import IAsyncLifecycle, TaskFailureSignal
 from ..models import (
@@ -27,6 +26,7 @@ from ..timerwheel import (
     TimerWheel,
     TimerWheelClosedError,
 )
+from ..utils.clock import now_ms
 
 _WALL_CLOCK_RECHECK_MS = 60_000
 _CYCLE_RETRY_MS = 5_000

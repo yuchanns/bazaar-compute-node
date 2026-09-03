@@ -7,7 +7,7 @@ from enum import StrEnum
 from .correlation import CorrelationContext
 from .models import RuntimeEventState
 from .observability import LogLevel
-from .sanitization import is_sensitive_field
+from .utils.sanitization import is_sensitive_field
 
 
 class ErrorKind(StrEnum):

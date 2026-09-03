@@ -11,10 +11,10 @@ from typing import BinaryIO
 from uuid import uuid4
 
 from ...core.channel import ChannelDeliveryReceipt, ChannelSendRequest
-from ...core.clock import remaining
-from ...core.markdown import split_markdown
 from ...core.models import OutboundAttachment
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from ...core.utils.clock import remaining
+from ...core.utils.markdown import split_markdown
 from .api import LarkApi, LarkApiError, LarkTransportError
 from .identity import LarkBotIdentity, LarkThreadIdentity, parse_provider_thread_id
 

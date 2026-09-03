@@ -16,9 +16,9 @@ from ...core.approval import (
     resolved_callback_text,
 )
 from ...core.channel import ChannelApprovalRequest, ChannelContext
-from ...core.clock import remaining
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
 from ...i18n import ENGLISH, Translator, create_translator
 from .channel import LarkChannel
 from .identity import LarkThreadIdentity, parse_provider_thread_id

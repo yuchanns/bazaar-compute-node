@@ -38,7 +38,7 @@ from .v24_persist_sender_display_name import SENDER_DISPLAY_NAME_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
-from ....core.clock import now_ms
+from ....core.utils.clock import now_ms
 
 
 class MigrationError(RuntimeError):

@@ -36,7 +36,7 @@ from ...core.models import (
     UsageUpdated,
 )
 from ...core.runtime import IRuntimeTurnStream
-from ...core.text import format_exception
+from ...core.utils.text import format_exception
 from .approval import (
     approval_error,
     build_approval_response,
