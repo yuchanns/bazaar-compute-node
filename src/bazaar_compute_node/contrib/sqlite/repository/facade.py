@@ -24,6 +24,83 @@ class SqliteRepository(
     MessageOperations,
     ReminderOperations,
 ):
+    async def _inbound_channel_session(
+        self,
+        message: Message[InboundAttachment],
+        *,
+        channel: str,
+        provider_thread_id: str,
+        now_ms: int,
+        new_message: bool,
+    ) -> tuple[ChannelSession, bool]:
+        """Find or open the channel session an inbound message belongs to."""
+
+        channel_session = await self.find_channel_session(
+            channel=channel,
+            provider_thread_id=provider_thread_id,
+        )
+        if channel_session is None:
+            channel_session = ChannelSession(
+                id=message.channel_session_id,
+                channel=channel,
+                provider_thread_id=provider_thread_id,
+                created_at_ms=now_ms,
+                updated_at_ms=now_ms,
+                target_kind=message.target_kind,
+                following=(
+                    message.target_kind is ChannelTargetKind.DM
+                    or message.mentions_agent
+                ),
+            )
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
+            await self.save_channel_session(channel_session)
+            return channel_session, True
+        if new_message:
+            if message.target_presentation is not None:
+                channel_session = channel_session.with_target_presentation(
+                    message.target_presentation,
+                    updated_at_ms=now_ms,
+                )
+            if message.mentions_agent and not channel_session.following:
+                channel_session = replace(
+                    channel_session,
+                    following=True,
+                    updated_at_ms=now_ms,
+                )
+        return channel_session, False
+
+    async def _save_new_inbound(
+        self,
+        message: Message[InboundAttachment],
+        channel_session: ChannelSession,
+        bcn_session: BcnSession,
+        *,
+        now_ms: int,
+    ) -> tuple[Message[InboundAttachment], ChannelSession, BcnSession]:
+        """Write down a message never seen before, and when its sessions last moved."""
+
+        message = cast(
+            Message[InboundAttachment],
+            await self.save_message(message),
+        )
+        channel_session = replace(
+            channel_session,
+            last_inbound_at_ms=message.received_at_ms,
+            updated_at_ms=now_ms,
+        )
+        bcn_session = replace(
+            bcn_session,
+            last_activity_at_ms=message.received_at_ms,
+            updated_at_ms=now_ms,
+        )
+        await self.save_channel_session(channel_session)
+        await self.save_bcn_session(bcn_session)
+        return message, channel_session, bcn_session
+
     async def record_inbound(
         self,
         message: Message[InboundAttachment],
@@ -45,42 +122,13 @@ class SqliteRepository(
         )
         if existing_message is not None:
             message = cast(Message[InboundAttachment], existing_message)
-        channel_session = await self.find_channel_session(
+        channel_session, channel_session_created = await self._inbound_channel_session(
+            message,
             channel=channel,
             provider_thread_id=provider_thread_id,
+            now_ms=now_ms,
+            new_message=existing_message is None,
         )
-        channel_session_created = channel_session is None
-        if channel_session is None:
-            channel_session = ChannelSession(
-                id=message.channel_session_id,
-                channel=channel,
-                provider_thread_id=provider_thread_id,
-                created_at_ms=now_ms,
-                updated_at_ms=now_ms,
-                target_kind=message.target_kind,
-                following=(
-                    message.target_kind is ChannelTargetKind.DM
-                    or message.mentions_agent
-                ),
-            )
-            if message.target_presentation is not None:
-                channel_session = channel_session.with_target_presentation(
-                    message.target_presentation,
-                    updated_at_ms=now_ms,
-                )
-            await self.save_channel_session(channel_session)
-        elif existing_message is None:
-            if message.target_presentation is not None:
-                channel_session = channel_session.with_target_presentation(
-                    message.target_presentation,
-                    updated_at_ms=now_ms,
-                )
-            if message.mentions_agent and not channel_session.following:
-                channel_session = replace(
-                    channel_session,
-                    following=True,
-                    updated_at_ms=now_ms,
-                )
 
         bcn_session = await self.find_bcn_session(channel_session.id)
         bcn_session_created = bcn_session is None
@@ -116,22 +164,9 @@ class SqliteRepository(
             await self.save_consumer_cursor(ConsumerCursor(session_id=bcn_session.id))
 
         if existing_message is None:
-            message = cast(
-                Message[InboundAttachment],
-                await self.save_message(message),
+            message, channel_session, bcn_session = await self._save_new_inbound(
+                message, channel_session, bcn_session, now_ms=now_ms
             )
-            channel_session = replace(
-                channel_session,
-                last_inbound_at_ms=message.received_at_ms,
-                updated_at_ms=now_ms,
-            )
-            bcn_session = replace(
-                bcn_session,
-                last_activity_at_ms=message.received_at_ms,
-                updated_at_ms=now_ms,
-            )
-            await self.save_channel_session(channel_session)
-            await self.save_bcn_session(bcn_session)
 
         return RecordInboundResult(
             channel_session=channel_session,
