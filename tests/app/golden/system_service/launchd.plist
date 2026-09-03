@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.yuchanns.bazaar-compute-node</string>
+    <key>Comment</key>
+    <string>Managed by bazaar-compute-node.</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/home/test-user/.bcn/bcn-run.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/home/test-user/.bcn</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BCN_CONFIG</key>
+        <string>/home/test-user/.bcn/config.toml</string>
+        <key>BCN_ENV_FILE</key>
+        <string>/home/test-user/.bcn/runtime.env</string>
+        <key>BCN_EXECUTABLE</key>
+        <string>/usr/local/bin/bcn</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>/home/test-user/.bcn/system-service.log</string>
+    <key>StandardErrorPath</key>
+    <string>/home/test-user/.bcn/system-service.log</string>
+</dict>
+</plist>

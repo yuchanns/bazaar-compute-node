@@ -15,7 +15,9 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
+    RuntimeEventEnvelope,
     RuntimeEventState,
+    RuntimeOutputEvent,
     RuntimeTurnState,
     SenderIdentity,
     TurnCancelled,
@@ -25,6 +27,7 @@ from bazaar_compute_node.core.models import (
     TurnUnknown,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration.turn import _with_a_reason
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
 
@@ -153,3 +156,44 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=1)
+
+
+def test_core_names_a_failure_the_runtime_left_unexplained() -> None:
+    # a provider can end a turn as failed without an error object; which runtime
+    # it was is ours to know, so the reason comes from core, not the adapter
+    envelope = RuntimeEventEnvelope(
+        session_id="bcn-1",
+        runtime_session_id="runtime-1",
+        turn_id="turn-1",
+        occurred_at_ms=1,
+        provider_turn_id=None,
+    )
+
+    def reason(error_message: str | None) -> str | None:
+        payload = _with_a_reason(
+            RuntimeOutputEvent(
+                envelope=envelope,
+                payload=TurnFailed(
+                    event_name="bcn.turn.failed",
+                    error_kind="provider_failed",
+                    error_message=error_message,
+                ),
+            )
+        ).payload
+        assert isinstance(payload, TurnFailed)
+        return payload.error_message
+
+    assert reason(None) == "Turn failed"
+    assert reason("disk is full") == "disk is full"
+
+    # an unknown ending is not a failure: the provider may yet have finished
+    unknown = _with_a_reason(
+        RuntimeOutputEvent(
+            envelope=envelope,
+            payload=TurnUnknown(
+                event_name="bcn.turn.unknown", error_kind="provider_unknown"
+            ),
+        )
+    ).payload
+    assert isinstance(unknown, TurnUnknown)
+    assert unknown.error_message == "Turn outcome is unknown"

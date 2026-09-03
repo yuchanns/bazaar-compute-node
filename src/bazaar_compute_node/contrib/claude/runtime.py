@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from time import time_ns
 from typing import Any
@@ -18,7 +19,6 @@ from ...core.models import (
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
-    SessionRuntimeState,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.paths import resolve_workspace_dir
@@ -36,7 +36,7 @@ from .approval import (
     build_approval_response,
     parse_approval_request,
 )
-from .client import Client
+from .client import Client, TurnInbox
 from .events import TurnEventStream
 from .process import ProcessSpec, ProcessSupervisor, build_arguments
 from .protocol import ClaudeControlError, ClaudeProtocolError, ClaudeTransportError
@@ -198,7 +198,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 status=ProviderCallStatus.CONFIRMED,
                 value=RuntimeSessionReconciliation(
                     session=session,
-                    state=SessionRuntimeState.IDLE,
                 ),
                 receipt={"provider_thread_id": provider_thread_id},
             )
@@ -219,23 +218,18 @@ class Runtime(IRuntime, IAsyncLifecycle):
             await self._stop_connection(connection, timeout=timeout)
         return ProviderCallResult(status=ProviderCallStatus.CONFIRMED, value=session)
 
-    async def start_turn(
+    async def _open_turn(
         self,
+        connection: _Connection,
         session: RuntimeSession,
         turn: RuntimeTurn,
         input_text: str,
         approval_handler: IApprovalHandler,
         *,
         timeout: float,
-    ) -> IRuntimeTurnStream:
-        self._ensure_started()
-        connection = self._connections.get(session.id)
-        if connection is None or not connection.supervisor.is_running:
-            raise RuntimeSessionUnavailable("Claude Code process is not running")
-        initial_error: BaseException | None = None
-        initial_error_state = RuntimeEventState.UNKNOWN
-        initial_error_kind = "provider_unknown"
-        inbox = None
+    ) -> tuple[TurnInbox, BaseException | None]:
+        """Claim the connection for this turn and ask the provider to start it."""
+
         async with connection.state_lock:
             if connection.active_turn_id is not None:
                 raise RuntimeError(
@@ -273,33 +267,72 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 raise
             if initial_error is not None:
                 await connection.client.clear_control_request_handler(handle_permission)
-                if isinstance(initial_error, ClaudeControlError):
-                    initial_error_state = RuntimeEventState.FAILED
-                    initial_error_kind = "provider_failed"
-                elif isinstance(initial_error, ClaudeProtocolError):
-                    initial_error_state = RuntimeEventState.FAILED
-                    initial_error_kind = "protocol"
-        assert inbox is not None
+        return inbox, initial_error
 
-        async def claim_result(message: dict[str, object]) -> bool:
-            del message
-            async with connection.state_lock:
-                if connection.active_turn_id != turn.turn_id:
-                    return False
-                if connection.pending_human_results > 1:
-                    try:
-                        # Claude may coalesce a queued inbox notice into the current
-                        # provider cycle. A new init proves another result will follow.
-                        async with asyncio.timeout(_STEER_RESULT_GRACE_SECONDS):
-                            await connection.queued_human_cycle_started.wait()
-                    except TimeoutError:
-                        connection.pending_human_results = 0
-                        return True
-                    connection.queued_human_cycle_started.clear()
-                    connection.pending_human_results -= 1
-                    return False
-                connection.pending_human_results = 0
-                return True
+    async def _claim_result(
+        self,
+        message: dict[str, object],
+        *,
+        connection: _Connection,
+        turn_id: str,
+    ) -> bool:
+        """Decide whether a result envelope ends this turn or a queued one."""
+
+        del message
+        async with connection.state_lock:
+            if connection.active_turn_id != turn_id:
+                return False
+            if connection.pending_human_results > 1:
+                try:
+                    # Claude may coalesce a queued inbox notice into the current
+                    # provider cycle. A new init proves another result will follow.
+                    async with asyncio.timeout(_STEER_RESULT_GRACE_SECONDS):
+                        await connection.queued_human_cycle_started.wait()
+                except TimeoutError:
+                    connection.pending_human_results = 0
+                    return True
+                connection.queued_human_cycle_started.clear()
+                connection.pending_human_results -= 1
+                return False
+            connection.pending_human_results = 0
+            return True
+
+    async def start_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        input_text: str,
+        approval_handler: IApprovalHandler,
+        *,
+        timeout: float,
+    ) -> IRuntimeTurnStream:
+        self._ensure_started()
+        connection = self._connections.get(session.id)
+        if connection is None or not connection.supervisor.is_running:
+            raise RuntimeSessionUnavailable("Claude Code process is not running")
+        inbox, initial_error = await self._open_turn(
+            connection,
+            session,
+            turn,
+            input_text,
+            approval_handler,
+            timeout=timeout,
+        )
+        if isinstance(initial_error, ClaudeControlError):
+            initial_error_state, initial_error_kind = (
+                RuntimeEventState.FAILED,
+                "provider_failed",
+            )
+        elif isinstance(initial_error, ClaudeProtocolError):
+            initial_error_state, initial_error_kind = (
+                RuntimeEventState.FAILED,
+                "protocol",
+            )
+        else:
+            initial_error_state, initial_error_kind = (
+                RuntimeEventState.UNKNOWN,
+                "provider_unknown",
+            )
 
         async def close_turn() -> None:
             await connection.client.close_turn(inbox)
@@ -320,7 +353,9 @@ class Runtime(IRuntime, IAsyncLifecycle):
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
             claude_version=connection.claude_version,
-            claim_result=claim_result,
+            claim_result=partial(
+                self._claim_result, connection=connection, turn_id=turn.turn_id
+            ),
             on_closed=close_turn,
             on_unusable=retire_connection,
             initial_error=initial_error,

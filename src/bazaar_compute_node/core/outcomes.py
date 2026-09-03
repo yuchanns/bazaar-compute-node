@@ -78,17 +78,6 @@ class OutboundDeliveryResult:
             or self.state not in terminal_states
         ):
             raise ValueError("outbound delivery result requires a provider outcome")
-        if not isinstance(self.receipt, Mapping):
-            raise TypeError("receipt must be a mapping")
-        for value, field_name in (
-            (self.provider_message_id, "provider_message_id"),
-            (self.provider_receipt_ref, "provider_receipt_ref"),
-            (self.error_kind, "error_kind"),
-            (self.error_message, "error_message"),
-            (self.next_action, "next_action"),
-        ):
-            if value is not None and (not isinstance(value, str) or not value):
-                raise ValueError(f"{field_name} must be non-empty text when present")
         if self.state in {
             OutboundDeliveryState.SENT,
             OutboundDeliveryState.QUEUED,

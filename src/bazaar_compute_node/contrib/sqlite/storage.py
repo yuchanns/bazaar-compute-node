@@ -59,12 +59,6 @@ class SqliteStorageScope:
     agent_id: str
     agent_name: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.agent_id, str) or not self.agent_id:
-            raise ValueError("agent_id must be a non-empty string")
-        if not isinstance(self.agent_name, str) or not self.agent_name:
-            raise ValueError("agent_name must be a non-empty string")
-
     @property
     def name(self) -> str:
         return self.database.name

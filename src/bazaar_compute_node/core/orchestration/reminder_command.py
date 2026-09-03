@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from time import time_ns
 
 from ..command import IReminderService, SessionNotFoundError
 from ..concurrency import ISessionConcurrency
@@ -19,10 +18,7 @@ from ..reminder import (
     ReminderUpdateResult,
 )
 from ..storage import IStorage
-
-
-def _current_time_ms() -> int:
-    return time_ns() // 1_000_000
+from ..utils.clock import now_ms
 
 
 class ReminderCommandFailure(ValueError):
@@ -53,7 +49,7 @@ class ReminderCommandService(IReminderService):
         self._storage = storage
         self._concurrency = concurrency
         self._poke = poke
-        self._clock = clock or _current_time_ms
+        self._clock = clock or now_ms
 
     async def schedule(
         self,

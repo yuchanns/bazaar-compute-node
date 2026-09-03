@@ -17,6 +17,12 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_RICH_BLOCKS = 500
 _MAX_RICH_DEPTH = 16
+_RICH_MEDIA = {
+    "video": ("mp4", "video/mp4"),
+    "animation": ("mp4", "video/mp4"),
+    "audio": ("mp3", "audio/mpeg"),
+    "voice_note": ("ogg", "audio/ogg"),
+}
 _READ_CHUNK_BYTES = 1024 * 1024
 
 
@@ -271,52 +277,10 @@ def _collect_rich_media(
         if not isinstance(block, Mapping):
             continue
         remaining[0] -= 1
-        block_type = block.get("type")
-        if block_type == "photo":
-            selected = _largest_photo(block.get("photo"))
-            if selected is not None:
-                source = _source_from_file(
-                    selected,
-                    kind="photo",
-                    fallback_name=f"photo-{message_label}.jpg",
-                    default_media_type="image/jpeg",
-                )
-                if source is not None:
-                    sources.append(source)
-        elif block_type in {"video", "animation", "audio", "voice_note"}:
-            field_name = "voice_note" if block_type == "voice_note" else str(block_type)
-            value = block.get(field_name)
-            if isinstance(value, Mapping):
-                suffix, media_type = {
-                    "video": ("mp4", "video/mp4"),
-                    "animation": ("mp4", "video/mp4"),
-                    "audio": ("mp3", "audio/mpeg"),
-                    "voice_note": ("ogg", "audio/ogg"),
-                }[str(block_type)]
-                source = _source_from_file(
-                    value,
-                    kind=str(block_type),
-                    fallback_name=f"{block_type}-{message_label}.{suffix}",
-                    default_media_type=media_type,
-                )
-                if source is not None:
-                    sources.append(source)
-
-        nested_blocks: list[object] = []
-        raw_blocks = block.get("blocks")
-        if isinstance(raw_blocks, list):
-            nested_blocks.extend(raw_blocks)
-        items = block.get("items")
-        if isinstance(items, list):
-            for item in items:
-                if remaining[0] <= 0:
-                    break
-                if not isinstance(item, Mapping):
-                    continue
-                remaining[0] -= 1
-                item_blocks = item.get("blocks")
-                if isinstance(item_blocks, list):
-                    nested_blocks.extend(item_blocks)
+        source = _media_source(block, message_label)
+        if source is not None:
+            sources.append(source)
+        nested_blocks = _nested_blocks(block, remaining)
         if nested_blocks:
             _collect_rich_media(
                 nested_blocks,
@@ -325,6 +289,59 @@ def _collect_rich_media(
                 depth=depth + 1,
                 remaining=remaining,
             )
+
+
+def _media_source(
+    block: Mapping[str, object], message_label: str
+) -> TelegramAttachmentSource | None:
+    """Read whatever file a rich block carries, if it carries one."""
+
+    block_type = block.get("type")
+    if block_type == "photo":
+        selected = _largest_photo(block.get("photo"))
+        if selected is None:
+            return None
+        return _source_from_file(
+            selected,
+            kind="photo",
+            fallback_name=f"photo-{message_label}.jpg",
+            default_media_type="image/jpeg",
+        )
+    media = _RICH_MEDIA.get(str(block_type))
+    if media is None:
+        return None
+    value = block.get(str(block_type))
+    if not isinstance(value, Mapping):
+        return None
+    suffix, media_type = media
+    return _source_from_file(
+        value,
+        kind=str(block_type),
+        fallback_name=f"{block_type}-{message_label}.{suffix}",
+        default_media_type=media_type,
+    )
+
+
+def _nested_blocks(block: Mapping[str, object], remaining: list[int]) -> list[object]:
+    """Gather the blocks nested under this one, spending the budget on its items."""
+
+    nested: list[object] = []
+    raw_blocks = block.get("blocks")
+    if isinstance(raw_blocks, list):
+        nested.extend(raw_blocks)
+    items = block.get("items")
+    if not isinstance(items, list):
+        return nested
+    for item in items:
+        if remaining[0] <= 0:
+            break
+        if not isinstance(item, Mapping):
+            continue
+        remaining[0] -= 1
+        item_blocks = item.get("blocks")
+        if isinstance(item_blocks, list):
+            nested.extend(item_blocks)
+    return nested
 
 
 def _largest_photo(value: object) -> Mapping[str, object] | None:

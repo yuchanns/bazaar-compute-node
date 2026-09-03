@@ -5,7 +5,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from time import monotonic, time_ns
 from unicodedata import category
 
@@ -48,6 +48,7 @@ from ...core.models import (
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
 from ...i18n import ENGLISH, create_translator
 from .activity import LarkActivityProjector, LarkActivityRoute
 from .api import LarkApi
@@ -233,7 +234,7 @@ class LarkChannel(IChannel):
                     timer_wheel=self._timer_wheel,
                 )
                 await api.start()
-                bot_info = await api.get_bot_info(timeout=_remaining(deadline))
+                bot_info = await api.get_bot_info(timeout=remaining(deadline))
                 identity = parse_bot_info(bot_info)
                 transport = LarkTransport(
                     api,
@@ -244,7 +245,7 @@ class LarkChannel(IChannel):
                 self._api = api
                 self._transport = transport
                 self._identity = identity
-                await transport.start(timeout=_remaining(deadline))
+                await transport.start(timeout=remaining(deadline))
                 generation = transport.health.get("connection_generation", 0)
                 self._connection_generation = (
                     generation if isinstance(generation, int) else 0
@@ -254,7 +255,7 @@ class LarkChannel(IChannel):
                 self._state = "stopping"
                 await self._activity.close()
                 if transport is not None:
-                    await transport.stop(timeout=_remaining(deadline))
+                    await transport.stop(timeout=remaining(deadline))
                 if api is not None:
                     await api.stop()
                 if session is not None:
@@ -309,167 +310,62 @@ class LarkChannel(IChannel):
                 raise TypeError("Lark inbound queue contained an invalid message")
             yield item
 
-    async def _handle_event(
+    async def _quoted_message(
         self,
-        message_type: str,
-        payload: Mapping[str, object],
-        frame: object,
-    ) -> bool:
-        del message_type, frame
-        schema = payload.get("schema")
-        header = payload.get("header")
-        event = payload.get("event")
-        if (
-            schema != "2.0"
-            or not isinstance(header, Mapping)
-            or not isinstance(event, Mapping)
-        ):
-            return self._filter_event("invalid_envelope")
-        if header.get("event_type") != _EVENT_TYPE:
-            return self._filter_event("unsupported_event_type")
+        parent_id: str,
+        *,
+        chat_id: str,
+        chat_type: str,
+        thread_identity: LarkThreadIdentity,
+        target_kind: ChannelTargetKind,
+        presentation: ChannelTargetPresentation | None,
+        tenant_key: str,
+        received_at_ms: int,
+    ) -> tuple[Message | None, str | None]:
+        """Fetch and map the message a reply quotes, or say why it could not be."""
 
-        message = event.get("message")
-        sender = event.get("sender")
-        if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
-            return self._filter_event("invalid_message_event")
-        identity = self._identity
-        if identity is None:
-            return self._filter_event("identity_unavailable")
-
-        provider_message_id = _provider_text(message.get("message_id"))
-        chat_id = _provider_text(message.get("chat_id"))
-        chat_type = _provider_text(message.get("chat_type"))
-        raw_message_type = _provider_text(message.get("message_type"))
-        sender_id = sender.get("sender_id")
-        sender_open_id = (
-            _provider_text(sender_id.get("open_id"))
-            if isinstance(sender_id, Mapping)
-            else None
-        )
-        if provider_message_id is None:
-            return self._filter_event("invalid_message_id")
-        if chat_id is None:
-            return self._filter_event("invalid_chat_id")
-        if chat_type not in {"p2p", "group", "topic"}:
-            return self._filter_event("unsupported_chat_type")
-        if raw_message_type is None:
-            return self._filter_event("invalid_message_type")
-        if sender_open_id is None:
-            return self._filter_event("invalid_sender")
-        sender_type = _provider_text(sender.get("sender_type")) or "unknown"
-        if sender_open_id == identity.open_id:
-            return self._filter_event("current_bot_message")
-
-        raw_thread_id = message.get("thread_id")
-        if raw_thread_id is None or raw_thread_id == "":
-            thread_id = "0"
-        else:
-            thread_id = _provider_text(raw_thread_id)
-            if thread_id is None:
-                return self._filter_event("invalid_thread_id")
-        raw_parent_id = message.get("parent_id")
-        if raw_parent_id is None or raw_parent_id == "":
-            parent_id = None
-        else:
-            parent_id = _provider_text(raw_parent_id)
-            if parent_id is None or parent_id == provider_message_id:
-                return self._filter_event("invalid_parent_id")
-        raw_root_id = message.get("root_id")
-        if raw_root_id is None or raw_root_id == "":
-            root_id = None
-        else:
-            root_id = _provider_text(raw_root_id)
-            if root_id is None:
-                return self._filter_event("invalid_root_id")
-
-        tenant_key = (
-            _provider_text(header.get("tenant_key"))
-            or _provider_text(sender.get("tenant_key"))
-            or ""
-        )
-        target_kind = (
-            ChannelTargetKind.DM if chat_type == "p2p" else ChannelTargetKind.GROUP
-        )
-        thread_identity = LarkThreadIdentity(
-            bot_open_id=identity.open_id,
-            chat_id=chat_id,
-            thread_id=thread_id,
-        )
-        presentation = None
-        if target_kind is ChannelTargetKind.GROUP:
-            name = await self._chat_name(
+        parent, failure = await self._fetch_parent(parent_id, chat_id=chat_id)
+        if parent is None:
+            return None, failure
+        try:
+            quoted = await self._build_inbound(
+                parent,
+                thread_identity=thread_identity,
+                target_kind=target_kind,
+                presentation=presentation,
+                sender_payload=_message_sender(parent),
                 tenant_key=tenant_key,
-                chat_id=chat_id,
+                mentions_agent=False,
+                notifies_runtime=False,
+                received_at_ms=received_at_ms,
+                provider_payload_metadata={
+                    "quoted_backfill": True,
+                    "lark_chat_type": chat_type,
+                    "threaded": thread_identity.thread_id != "0",
+                },
             )
-            if name is not None:
-                presentation = ChannelTargetPresentation(display_name=name)
-        received_at_ms = time_ns() // 1_000_000
-        metadata = {
-            "lark_event_type": _EVENT_TYPE,
-            "lark_chat_type": chat_type,
-            "lark_sender_type": sender_type,
-            "lark_threaded": thread_id != "0",
-            "threaded": thread_id != "0",
-        }
-        event_id = _provider_text(header.get("event_id"))
-        if event_id is not None:
-            metadata["lark_event_id"] = event_id
-        if root_id is not None:
-            metadata["lark_root_id"] = root_id
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            return None, f"mapping_failed:{type(error).__name__}"
+        return quoted, failure
 
-        quoted: Message | None = None
-        if parent_id is not None:
-            parent, failure = await self._fetch_parent(
-                parent_id,
-                chat_id=chat_id,
-            )
-            if parent is not None:
-                try:
-                    quoted = await self._build_inbound(
-                        parent,
-                        thread_identity=thread_identity,
-                        target_kind=target_kind,
-                        presentation=presentation,
-                        sender_payload=_message_sender(parent),
-                        tenant_key=tenant_key,
-                        mentions_agent=False,
-                        notifies_runtime=False,
-                        received_at_ms=received_at_ms,
-                        provider_payload_metadata={
-                            "quoted_backfill": True,
-                            "lark_chat_type": chat_type,
-                            "threaded": thread_identity.thread_id != "0",
-                        },
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:  # noqa: BLE001
-                    failure = f"mapping_failed:{type(error).__name__}"
-            if quoted is None:
-                metadata["reply_fetch_failed"] = True
-                if failure is not None:
-                    metadata["reply_failure_kind"] = failure
+    async def _queue_inbound(
+        self,
+        current: Message,
+        quoted: Message | None,
+        *,
+        provider_message_id: str,
+        threaded: bool,
+        target_kind: ChannelTargetKind,
+    ) -> None:
+        """Hand the message, and whatever it quotes, to the inbound queue."""
 
-        current = await self._build_inbound(
-            message,
-            thread_identity=thread_identity,
-            target_kind=target_kind,
-            presentation=presentation,
-            sender_payload=sender,
-            tenant_key=tenant_key,
-            mentions_agent=target_kind is ChannelTargetKind.GROUP,
-            notifies_runtime=True,
-            received_at_ms=received_at_ms,
-            reply_to_message_id=quoted.message_id if quoted is not None else None,
-            provider_payload_metadata=metadata,
-        )
         if quoted is not None:
             await self._inbound.put(quoted)
         await self._inbound.put(current)
         self._stream_routes[current.session_id] = provider_message_id
-        self._stream_route_threads[current.session_id] = (
-            thread_identity.thread_id != "0"
-        )
+        self._stream_route_threads[current.session_id] = threaded
         self._last_message_disposition = "queued"
         self._last_message_filter_reason = None
         self._observe(
@@ -477,6 +373,91 @@ class LarkChannel(IChannel):
             target_kind=target_kind.value,
             message_type=current.message_type,
             quoted=quoted is not None,
+        )
+
+    async def _handle_event(
+        self,
+        message_type: str,
+        payload: Mapping[str, object],
+        frame: object,
+    ) -> bool:
+        del message_type, frame
+        fields = _read_event(payload, self._identity)
+        if isinstance(fields, str):
+            return self._filter_event(fields)
+        thread_id, readable = _optional_reference(fields.message.get("thread_id"))
+        if not readable:
+            return self._filter_event("invalid_thread_id")
+        thread_id = thread_id or "0"
+        parent_id, readable = _optional_reference(fields.message.get("parent_id"))
+        if not readable or parent_id == fields.provider_message_id:
+            return self._filter_event("invalid_parent_id")
+        root_id, readable = _optional_reference(fields.message.get("root_id"))
+        if not readable:
+            return self._filter_event("invalid_root_id")
+
+        tenant_key = (
+            _provider_text(fields.header.get("tenant_key"))
+            or _provider_text(fields.sender.get("tenant_key"))
+            or ""
+        )
+        target_kind = (
+            ChannelTargetKind.DM
+            if fields.chat_type == "p2p"
+            else ChannelTargetKind.GROUP
+        )
+        thread_identity = LarkThreadIdentity(
+            bot_open_id=fields.identity.open_id,
+            chat_id=fields.chat_id,
+            thread_id=thread_id,
+        )
+        presentation = None
+        if target_kind is ChannelTargetKind.GROUP:
+            name = await self._chat_name(
+                tenant_key=tenant_key,
+                chat_id=fields.chat_id,
+            )
+            if name is not None:
+                presentation = ChannelTargetPresentation(display_name=name)
+        received_at_ms = time_ns() // 1_000_000
+        metadata = _event_metadata(fields, thread_id, root_id)
+
+        quoted: Message | None = None
+        if parent_id is not None:
+            quoted, failure = await self._quoted_message(
+                parent_id,
+                chat_id=fields.chat_id,
+                chat_type=fields.chat_type,
+                thread_identity=thread_identity,
+                target_kind=target_kind,
+                presentation=presentation,
+                tenant_key=tenant_key,
+                received_at_ms=received_at_ms,
+            )
+            if quoted is None:
+                metadata["reply_fetch_failed"] = True
+                if failure is not None:
+                    metadata["reply_failure_kind"] = failure
+
+        current = await self._build_inbound(
+            fields.message,
+            thread_identity=thread_identity,
+            target_kind=target_kind,
+            presentation=presentation,
+            sender_payload=fields.sender,
+            tenant_key=tenant_key,
+            mentions_agent=target_kind is ChannelTargetKind.GROUP,
+            notifies_runtime=True,
+            received_at_ms=received_at_ms,
+            reply_to_message_id=quoted.message_id if quoted is not None else None,
+            provider_payload_metadata=metadata,
+        )
+        await self._queue_inbound(
+            current,
+            quoted,
+            provider_message_id=fields.provider_message_id,
+            threaded=thread_identity.thread_id != "0",
+            target_kind=target_kind,
         )
         return True
 
@@ -853,6 +834,13 @@ class LarkChannel(IChannel):
             ),
         )
 
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        provider_message_id = anchor.provider_message_id
+        if provider_message_id is None:
+            return
+        self._stream_routes[session_id] = provider_message_id
+        self._stream_route_threads[session_id] = anchor.metadata.get("threaded") is True
+
     def accept_turn_event(
         self,
         item: RuntimeOutputEvent,
@@ -877,23 +865,19 @@ class LarkChannel(IChannel):
         match item.payload:
             case TurnStarted():
                 turn_id = item.envelope.turn_id
-                if turn_id is not None:
-                    previous_turn_id = self._activity_turns.get(session_id)
-                    if previous_turn_id is not None:
-                        self._terminal_activity_turns.discard(
-                            (session_id, previous_turn_id)
-                        )
-                        self._degraded_activity_turns.discard(
-                            (session_id, previous_turn_id)
-                        )
-                    self._activity_turns[session_id] = turn_id
+                previous_turn_id = self._activity_turns.get(session_id)
+                if previous_turn_id is not None:
+                    self._terminal_activity_turns.discard(
+                        (session_id, previous_turn_id)
+                    )
+                    self._degraded_activity_turns.discard(
+                        (session_id, previous_turn_id)
+                    )
+                self._activity_turns[session_id] = turn_id
                 return
             case TurnCompleted():
                 turn_id = item.envelope.turn_id
-                if (
-                    turn_id is not None
-                    and self._activity_turns.get(session_id) == turn_id
-                ):
+                if self._activity_turns.get(session_id) == turn_id:
                     self._activity_turns.pop(session_id)
                     self._degraded_activity_turns.discard((session_id, turn_id))
                 self._stream_routes.pop(session_id, None)
@@ -901,10 +885,7 @@ class LarkChannel(IChannel):
                 return
             case TurnFailed() | TurnCancelled() | TurnUnknown():
                 turn_id = item.envelope.turn_id
-                if (
-                    turn_id is not None
-                    and self._activity_turns.get(session_id) == turn_id
-                ):
+                if self._activity_turns.get(session_id) == turn_id:
                     self._terminal_activity_turns.add((session_id, turn_id))
                 self._stream_routes.pop(session_id, None)
                 self._stream_route_threads.pop(session_id, None)
@@ -980,7 +961,7 @@ class LarkChannel(IChannel):
         try:
             await asyncio.wait_for(
                 self._send_lock.acquire(),
-                timeout=max(0.0, deadline - loop.time()),
+                timeout=remaining(deadline),
             )
         except asyncio.CancelledError:
             self._retire_terminal_activity(activity_key)
@@ -1010,7 +991,7 @@ class LarkChannel(IChannel):
                 identity=identity,
                 workspace=self._context.workspace(),
                 request=request,
-                timeout=max(0.0, deadline - loop.time()),
+                timeout=remaining(deadline),
             )
             if (
                 result.status
@@ -1061,10 +1042,6 @@ class LarkChannel(IChannel):
         )
 
 
-def _remaining(deadline: float) -> float:
-    return max(0.0, deadline - asyncio.get_running_loop().time())
-
-
 def _provider_text(value: object) -> str | None:
     if not isinstance(value, str) or not value or "\r" in value or "\n" in value:
         return None
@@ -1102,6 +1079,106 @@ def _parse_mentions(value: object) -> dict[str, LarkMention]:
             display_name=display_name,
         )
     return mentions
+
+
+@dataclass(frozen=True, slots=True)
+class _EventFields:
+    header: Mapping[str, object]
+    message: Mapping[str, object]
+    sender: Mapping[str, object]
+    identity: LarkBotIdentity
+    provider_message_id: str
+    chat_id: str
+    chat_type: str
+    sender_type: str
+
+
+def _read_event(
+    payload: Mapping[str, object], identity: LarkBotIdentity | None
+) -> _EventFields | str:
+    """Read a message event, or name the reason it cannot be taken."""
+
+    schema = payload.get("schema")
+    header = payload.get("header")
+    event = payload.get("event")
+    if (
+        schema != "2.0"
+        or not isinstance(header, Mapping)
+        or not isinstance(event, Mapping)
+    ):
+        return "invalid_envelope"
+    if header.get("event_type") != _EVENT_TYPE:
+        return "unsupported_event_type"
+
+    message = event.get("message")
+    sender = event.get("sender")
+    if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
+        return "invalid_message_event"
+    if identity is None:
+        return "identity_unavailable"
+
+    provider_message_id = _provider_text(message.get("message_id"))
+    chat_id = _provider_text(message.get("chat_id"))
+    chat_type = _provider_text(message.get("chat_type"))
+    raw_message_type = _provider_text(message.get("message_type"))
+    sender_id = sender.get("sender_id")
+    sender_open_id = (
+        _provider_text(sender_id.get("open_id"))
+        if isinstance(sender_id, Mapping)
+        else None
+    )
+    if provider_message_id is None:
+        return "invalid_message_id"
+    if chat_id is None:
+        return "invalid_chat_id"
+    if chat_type not in {"p2p", "group", "topic"}:
+        return "unsupported_chat_type"
+    if raw_message_type is None:
+        return "invalid_message_type"
+    if sender_open_id is None:
+        return "invalid_sender"
+    sender_type = _provider_text(sender.get("sender_type")) or "unknown"
+    if sender_open_id == identity.open_id:
+        return "current_bot_message"
+    return _EventFields(
+        header=header,
+        message=message,
+        sender=sender,
+        identity=identity,
+        provider_message_id=provider_message_id,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        sender_type=sender_type,
+    )
+
+
+def _event_metadata(
+    fields: _EventFields, thread_id: str, root_id: str | None
+) -> dict[str, object]:
+    """Carry the provider's own view of an event alongside the message."""
+
+    metadata: dict[str, object] = {
+        "lark_event_type": _EVENT_TYPE,
+        "lark_chat_type": fields.chat_type,
+        "lark_sender_type": fields.sender_type,
+        "lark_threaded": thread_id != "0",
+        "threaded": thread_id != "0",
+    }
+    event_id = _provider_text(fields.header.get("event_id"))
+    if event_id is not None:
+        metadata["lark_event_id"] = event_id
+    if root_id is not None:
+        metadata["lark_root_id"] = root_id
+    return metadata
+
+
+def _optional_reference(value: object) -> tuple[str | None, bool]:
+    """Read an id the provider may omit; the flag says whether it was readable."""
+
+    if value is None or value == "":
+        return None, True
+    text = _provider_text(value)
+    return text, text is not None
 
 
 def _message_sender(message: Mapping[str, object]) -> Mapping[str, object] | None:

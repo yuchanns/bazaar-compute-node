@@ -7,8 +7,6 @@ from string import hexdigits
 from typing import Self, cast
 
 from .states import (
-    OUTBOUND_DELIVERY_TRANSITIONS,
-    RUNTIME_TURN_TRANSITIONS,
     ApprovalDecision,
     ChannelTargetKind,
     MessageDirection,
@@ -16,7 +14,6 @@ from .states import (
     RuntimeTurnState,
     SenderKind,
     SystemMessageKind,
-    ensure_transition,
 )
 
 Metadata = Mapping[str, object]
@@ -142,7 +139,6 @@ class RuntimeTurn:
         error_message: str | None = None,
         latest_event_name: str | None = None,
     ) -> Self:
-        ensure_transition("runtime_turn", self.state, state, RUNTIME_TURN_TRANSITIONS)
         if state is self.state:
             return self
         completed_at_ms = (
@@ -408,12 +404,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
             raise ValueError("only outbound messages have delivery transitions")
         if self.delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
-        ensure_transition(
-            "outbound_delivery",
-            self.delivery_state,
-            state,
-            OUTBOUND_DELIVERY_TRANSITIONS,
-        )
         if state is self.delivery_state:
             return self
         completed_at_ms = (

@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from time import monotonic
 from typing import BinaryIO
@@ -13,8 +13,10 @@ from urllib.parse import parse_qs, quote, urlparse
 import aiohttp
 
 from ...core.timerwheel import TimerWheel
+from ...core.utils.clock import remaining
 
 _CONNECT_TIMEOUT_SECONDS = 10.0
+_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
 _MAX_ERROR_MESSAGE = 256
 _TOKEN_REFRESH_MARGIN_SECONDS = 600.0
 _TOKEN_REFRESH_TIMEOUT_SECONDS = 60.0
@@ -187,13 +189,13 @@ class LarkApi:
             error = self._token_refresh_error
             if error is not None:
                 raise error
-            remaining = deadline - loop.time()
-            if remaining <= 0:
+            budget = deadline - loop.time()
+            if budget <= 0:
                 raise TimeoutError("Lark tenant token deadline expired")
             try:
                 await asyncio.wait_for(
                     self._token_available.wait(),
-                    timeout=remaining,
+                    timeout=budget,
                 )
             except TimeoutError:
                 raise TimeoutError("Lark tenant token deadline expired") from None
@@ -354,13 +356,11 @@ class LarkApi:
     async def get_bot_info(self, *, timeout: float) -> Mapping[str, object]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
         body = await self._request_json(
             "bot_info",
             "/open-apis/bot/v3/info",
-            timeout=max(0.0, deadline - loop.time()),
+            timeout=remaining(deadline),
             headers={"Authorization": f"Bearer {token}"},
         )
         self._check_provider_result(body, "bot_info")
@@ -619,16 +619,14 @@ class LarkApi:
             raise TimeoutError("Lark message resource deadline expired")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
-        remaining = max(0.0, deadline - loop.time())
-        if remaining <= 0:
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
+        budget = remaining(deadline)
+        if budget <= 0:
             raise TimeoutError("Lark message resource deadline expired")
         client_timeout = aiohttp.ClientTimeout(
-            total=remaining,
-            connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
-            sock_connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
+            total=budget,
+            connect=min(budget, _CONNECT_TIMEOUT_SECONDS),
+            sock_connect=min(budget, _CONNECT_TIMEOUT_SECONDS),
         )
         url = (
             f"{self._base_url}/open-apis/im/v1/messages/"
@@ -668,13 +666,11 @@ class LarkApi:
     ) -> Mapping[str, object]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
         body = await self._request_json(
             method,
             path,
-            timeout=max(0.0, deadline - loop.time()),
+            timeout=remaining(deadline),
             params=params,
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -693,13 +689,11 @@ class LarkApi:
     ) -> Mapping[str, object]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
         body = await self._request_json(
             method,
             path,
-            timeout=max(0.0, deadline - loop.time()),
+            timeout=remaining(deadline),
             params=params,
             headers={"Authorization": f"Bearer {token}"},
             json_body=json_body,
@@ -707,6 +701,48 @@ class LarkApi:
         )
         self._check_provider_result(body, method)
         return body
+
+    async def _read_response(
+        self,
+        method: str,
+        request: AbstractAsyncContextManager[aiohttp.ClientResponse],
+    ) -> Mapping[str, object]:
+        """Read what Lark answered, turning any failure into one of our two errors."""
+
+        try:
+            async with request as response:
+                status = response.status
+                try:
+                    raw_body = await response.json(content_type=None)
+                except aiohttp.ClientError, ValueError:
+                    raise LarkApiError(
+                        method,
+                        http_status=status,
+                        provider_code=None,
+                        message="provider returned invalid JSON",
+                    ) from None
+        except LarkApiError:
+            raise
+        except TimeoutError:
+            raise LarkTransportError(method, "TimeoutError") from None
+        except (aiohttp.ClientError, OSError) as error:
+            raise LarkTransportError(method, type(error).__name__) from None
+
+        if not isinstance(raw_body, dict):
+            raise LarkApiError(
+                method,
+                http_status=status,
+                provider_code=None,
+                message="provider response is not an object",
+            )
+        if status < 200 or status >= 300:
+            raise LarkApiError(
+                method,
+                http_status=status,
+                provider_code=_provider_code(raw_body.get("code")),
+                message=self._safe_provider_message(raw_body.get("msg")),
+            )
+        return raw_body
 
     async def _request_json(
         self,
@@ -727,80 +763,20 @@ class LarkApi:
             sock_connect=min(timeout, _CONNECT_TIMEOUT_SECONDS),
         )
         url = f"{self._base_url}{path}"
-        try:
-            request_method = http_method or ("POST" if json_body is not None else "GET")
-            if request_method == "GET":
-                request = self._session.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=client_timeout,
-                )
-            elif request_method == "POST":
-                request = self._session.post(
-                    url,
-                    json=json_body,
-                    params=params,
-                    headers=headers,
-                    timeout=client_timeout,
-                )
-            elif request_method == "PUT":
-                request = self._session.put(
-                    url,
-                    json=json_body,
-                    params=params,
-                    headers=headers,
-                    timeout=client_timeout,
-                )
-            elif request_method == "DELETE":
-                request = self._session.delete(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=client_timeout,
-                )
-            else:
-                raise ValueError(f"unsupported Lark HTTP method: {request_method}")
-            async with request as response:
-                status = response.status
-                try:
-                    raw_body = await response.json(content_type=None)
-                except aiohttp.ClientError:
-                    raise LarkApiError(
-                        method,
-                        http_status=status,
-                        provider_code=None,
-                        message="provider returned invalid JSON",
-                    ) from None
-                except ValueError:
-                    raise LarkApiError(
-                        method,
-                        http_status=status,
-                        provider_code=None,
-                        message="provider returned invalid JSON",
-                    ) from None
-        except LarkApiError:
-            raise
-        except TimeoutError:
-            raise LarkTransportError(method, "TimeoutError") from None
-        except (aiohttp.ClientError, OSError) as error:
-            raise LarkTransportError(method, type(error).__name__) from None
-
-        if not isinstance(raw_body, dict):
-            raise LarkApiError(
-                method,
-                http_status=status,
-                provider_code=None,
-                message="provider response is not an object",
-            )
-        if status < 200 or status >= 300:
-            raise LarkApiError(
-                method,
-                http_status=status,
-                provider_code=_provider_code(raw_body.get("code")),
-                message=self._safe_provider_message(raw_body.get("msg")),
-            )
-        return raw_body
+        request_method = http_method or ("POST" if json_body is not None else "GET")
+        if request_method not in _HTTP_METHODS:
+            raise ValueError(f"unsupported Lark HTTP method: {request_method}")
+        return await self._read_response(
+            method,
+            self._session.request(
+                request_method,
+                url,
+                json=json_body if request_method in {"POST", "PUT"} else None,
+                params=params,
+                headers=headers,
+                timeout=client_timeout,
+            ),
+        )
 
     async def _request_multipart(
         self,
@@ -814,65 +790,25 @@ class LarkApi:
             raise TimeoutError(f"Lark {method} deadline expired")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        token = await self.get_tenant_access_token(
-            timeout=max(0.0, deadline - loop.time())
-        )
-        remaining = max(0.0, deadline - loop.time())
-        if remaining <= 0:
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
+        budget = remaining(deadline)
+        if budget <= 0:
             raise TimeoutError(f"Lark {method} deadline expired")
         client_timeout = aiohttp.ClientTimeout(
-            total=remaining,
-            connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
-            sock_connect=min(remaining, _CONNECT_TIMEOUT_SECONDS),
+            total=budget,
+            connect=min(budget, _CONNECT_TIMEOUT_SECONDS),
+            sock_connect=min(budget, _CONNECT_TIMEOUT_SECONDS),
         )
         url = f"{self._base_url}{path}"
-        try:
-            request = self._session.post(
+        return await self._read_response(
+            method,
+            self._session.post(
                 url,
                 data=form,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=client_timeout,
-            )
-            async with request as response:
-                status = response.status
-                try:
-                    raw_body = await response.json(content_type=None)
-                except aiohttp.ClientError:
-                    raise LarkApiError(
-                        method,
-                        http_status=status,
-                        provider_code=None,
-                        message="provider returned invalid JSON",
-                    ) from None
-                except ValueError:
-                    raise LarkApiError(
-                        method,
-                        http_status=status,
-                        provider_code=None,
-                        message="provider returned invalid JSON",
-                    ) from None
-        except LarkApiError:
-            raise
-        except TimeoutError:
-            raise LarkTransportError(method, "TimeoutError") from None
-        except (aiohttp.ClientError, OSError) as error:
-            raise LarkTransportError(method, type(error).__name__) from None
-
-        if not isinstance(raw_body, dict):
-            raise LarkApiError(
-                method,
-                http_status=status,
-                provider_code=None,
-                message="provider response is not an object",
-            )
-        if status < 200 or status >= 300:
-            raise LarkApiError(
-                method,
-                http_status=status,
-                provider_code=_provider_code(raw_body.get("code")),
-                message=self._safe_provider_message(raw_body.get("msg")),
-            )
-        return raw_body
+            ),
+        )
 
     def _check_provider_result(self, body: Mapping[str, object], method: str) -> None:
         code = _provider_code(body.get("code"))

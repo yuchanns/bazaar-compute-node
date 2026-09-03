@@ -5,10 +5,10 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
-from time import time_ns
 from typing import Any
 
 from ...core.approval import IApprovalHandler
@@ -18,7 +18,6 @@ from ...core.models import (
     RuntimeEventState,
     RuntimeSession,
     RuntimeTurn,
-    SessionRuntimeState,
 )
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.paths import resolve_workspace_dir
@@ -33,8 +32,11 @@ from ...core.runtime import (
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
+from ...core.utils.clock import now_ms
+from ...core.utils.text import format_exception
 from .client import (
     Client,
+    ThreadInfo,
     parse_background_terminals_response,
     parse_fs_changed_notification,
     parse_fs_watch_response,
@@ -184,7 +186,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 value=replace(
                     session,
                     provider_thread_id=thread.thread_id,
-                    updated_at_ms=_now_ms(),
+                    updated_at_ms=now_ms(),
                 ),
                 receipt={"provider_thread_id": thread.thread_id},
             )
@@ -196,6 +198,143 @@ class Runtime(IRuntime, IAsyncLifecycle):
             if connection is not None:
                 await self._stop_connection(connection, timeout=timeout)
             return _provider_result(error)
+
+    @staticmethod
+    def _log(
+        write: Callable[[str, str], None], event_name: str, **metadata: object
+    ) -> None:
+        write(
+            "%s",
+            json.dumps(
+                {"event_name": event_name, "metadata": metadata},
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+    async def _pick_up_active_turn(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn | None,
+        approval_handler: IApprovalHandler | None,
+        connection: _Connection,
+        read_thread: ThreadInfo,
+        *,
+        provider_thread_id: str,
+        timeout: float,
+    ) -> ProviderCallResult[RuntimeSessionReconciliation] | None:
+        """Take back the turn a live thread is still running, if that is what it is."""
+
+        if read_thread.status != "active":
+            return None
+        active_turns = tuple(
+            item for item in read_thread.turns if item.status == "inProgress"
+        )
+        if (
+            turn is None
+            or approval_handler is None
+            or turn.provider_turn_id is None
+            or len(active_turns) != 1
+            or active_turns[0].turn_id != turn.provider_turn_id
+        ):
+            raise AppServerProtocolError("active runtime turn cannot be reconciled")
+        connection.provider_thread_id = provider_thread_id
+        connection.active_turn_id = turn.turn_id
+        self._connections[session.id] = connection
+        stream = TurnEventStream(
+            connection.supervisor,
+            session_id=session.bcn_session_id,
+            runtime_session_id=session.id,
+            turn_id=turn.turn_id,
+            provider_thread_id=provider_thread_id,
+            provider_turn_id=turn.provider_turn_id,
+            approval_handler=approval_handler,
+            approval_timeout=timeout,
+            on_closed=lambda: self._clear_active_turn(
+                session.id,
+                turn.turn_id,
+            ),
+        )
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=RuntimeSessionReconciliation(
+                session=replace(session, updated_at_ms=now_ms()),
+                stream=stream,
+            ),
+            receipt={
+                "provider_thread_id": provider_thread_id,
+                "provider_turn_id": turn.provider_turn_id,
+            },
+        )
+
+    async def _reconcile_once(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn | None,
+        approval_handler: IApprovalHandler | None,
+        connection: _Connection,
+        *,
+        provider_thread_id: str,
+        timeout: float,
+        attempt: int,
+    ) -> ProviderCallResult[RuntimeSessionReconciliation]:
+        """Read the provider thread and either take its turn back or resume it."""
+
+        read_response = await connection.client.read_thread(
+            provider_thread_id,
+            timeout=timeout,
+        )
+        read_thread = parse_thread_response(read_response)
+        if read_thread.thread_id != provider_thread_id:
+            raise AppServerProtocolError(
+                "thread/read returned a different provider thread"
+            )
+        picked_up = await self._pick_up_active_turn(
+            session,
+            turn,
+            approval_handler,
+            connection,
+            read_thread,
+            provider_thread_id=provider_thread_id,
+            timeout=timeout,
+        )
+        if picked_up is not None:
+            return picked_up
+        if read_thread.status not in {"idle", "notLoaded"}:
+            raise AppServerProtocolError(
+                f"unsupported runtime thread status: {read_thread.status}"
+            )
+        response = await connection.client.resume_thread(
+            provider_thread_id,
+            model=self._model,
+            cwd=connection.workspace,
+            timeout=timeout,
+        )
+        thread = parse_thread_response(response)
+        if thread.thread_id != provider_thread_id:
+            raise AppServerProtocolError(
+                "thread/resume returned a different provider thread"
+            )
+        connection.provider_thread_id = thread.thread_id
+        self._connections[session.id] = connection
+        if attempt > 0:
+            self._log(
+                self._logger.info,
+                "runtime.process.reconcile.retry_succeeded",
+                attempt=attempt + 1,
+                session_id=session.bcn_session_id,
+            )
+        return ProviderCallResult(
+            status=ProviderCallStatus.CONFIRMED,
+            value=RuntimeSessionReconciliation(
+                session=replace(
+                    session,
+                    provider_thread_id=thread.thread_id,
+                    updated_at_ms=now_ms(),
+                ),
+            ),
+            receipt={"provider_thread_id": thread.thread_id},
+        )
 
     async def reconcile_session(
         self,
@@ -226,103 +365,14 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 except Exception as error:  # noqa: BLE001
                     return _provider_result(error)
             try:
-                read_response = await connection.client.read_thread(
-                    provider_thread_id,
+                return await self._reconcile_once(
+                    session,
+                    turn,
+                    approval_handler,
+                    connection,
+                    provider_thread_id=provider_thread_id,
                     timeout=timeout,
-                )
-                read_thread = parse_thread_response(read_response)
-                if read_thread.thread_id != provider_thread_id:
-                    raise AppServerProtocolError(
-                        "thread/read returned a different provider thread"
-                    )
-                if read_thread.status == "active":
-                    active_turns = tuple(
-                        item
-                        for item in read_thread.turns
-                        if item.status == "inProgress"
-                    )
-                    if (
-                        turn is None
-                        or approval_handler is None
-                        or turn.provider_turn_id is None
-                        or len(active_turns) != 1
-                        or active_turns[0].turn_id != turn.provider_turn_id
-                    ):
-                        raise AppServerProtocolError(
-                            "active runtime turn cannot be reconciled"
-                        )
-                    connection.provider_thread_id = provider_thread_id
-                    connection.active_turn_id = turn.turn_id
-                    self._connections[session.id] = connection
-                    stream = TurnEventStream(
-                        connection.supervisor,
-                        session_id=session.bcn_session_id,
-                        runtime_session_id=session.id,
-                        turn_id=turn.turn_id,
-                        provider_thread_id=provider_thread_id,
-                        provider_turn_id=turn.provider_turn_id,
-                        approval_handler=approval_handler,
-                        approval_timeout=timeout,
-                        on_closed=lambda: self._clear_active_turn(
-                            session.id,
-                            turn.turn_id,
-                        ),
-                    )
-                    return ProviderCallResult(
-                        status=ProviderCallStatus.CONFIRMED,
-                        value=RuntimeSessionReconciliation(
-                            session=replace(session, updated_at_ms=_now_ms()),
-                            state=SessionRuntimeState.WORKING,
-                            stream=stream,
-                        ),
-                        receipt={
-                            "provider_thread_id": provider_thread_id,
-                            "provider_turn_id": turn.provider_turn_id,
-                        },
-                    )
-                if read_thread.status not in {"idle", "notLoaded"}:
-                    raise AppServerProtocolError(
-                        f"unsupported runtime thread status: {read_thread.status}"
-                    )
-                response = await connection.client.resume_thread(
-                    provider_thread_id,
-                    model=self._model,
-                    cwd=connection.workspace,
-                    timeout=timeout,
-                )
-                thread = parse_thread_response(response)
-                if thread.thread_id != provider_thread_id:
-                    raise AppServerProtocolError(
-                        "thread/resume returned a different provider thread"
-                    )
-                connection.provider_thread_id = thread.thread_id
-                self._connections[session.id] = connection
-                if attempt > 0:
-                    self._logger.info(
-                        "%s",
-                        json.dumps(
-                            {
-                                "event_name": "runtime.process.reconcile.retry_succeeded",
-                                "metadata": {
-                                    "attempt": attempt + 1,
-                                    "session_id": session.bcn_session_id,
-                                },
-                            },
-                            separators=(",", ":"),
-                            sort_keys=True,
-                        ),
-                    )
-                return ProviderCallResult(
-                    status=ProviderCallStatus.CONFIRMED,
-                    value=RuntimeSessionReconciliation(
-                        session=replace(
-                            session,
-                            provider_thread_id=thread.thread_id,
-                            updated_at_ms=_now_ms(),
-                        ),
-                        state=SessionRuntimeState.IDLE,
-                    ),
-                    receipt={"provider_thread_id": thread.thread_id},
+                    attempt=attempt,
                 )
             except asyncio.CancelledError:
                 await self._stop_connection(connection, timeout=timeout)
@@ -335,37 +385,21 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 await self._stop_connection(connection, timeout=timeout)
                 connection = None
                 if attempt + 1 == _RECONCILE_ATTEMPTS:
-                    self._logger.error(
-                        "%s",
-                        json.dumps(
-                            {
-                                "event_name": "runtime.process.reconcile.retry_exhausted",
-                                "metadata": {
-                                    "attempt": attempt + 1,
-                                    "error_type": type(error).__name__,
-                                    "session_id": session.bcn_session_id,
-                                },
-                            },
-                            separators=(",", ":"),
-                            sort_keys=True,
-                        ),
+                    self._log(
+                        self._logger.error,
+                        "runtime.process.reconcile.retry_exhausted",
+                        attempt=attempt + 1,
+                        error_type=type(error).__name__,
+                        session_id=session.bcn_session_id,
                     )
                     return _provider_result(error)
-                self._logger.warning(
-                    "%s",
-                    json.dumps(
-                        {
-                            "event_name": "runtime.process.reconcile.retrying",
-                            "metadata": {
-                                "attempt": attempt + 1,
-                                "error_type": type(error).__name__,
-                                "next_attempt": attempt + 2,
-                                "session_id": session.bcn_session_id,
-                            },
-                        },
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
+                self._log(
+                    self._logger.warning,
+                    "runtime.process.reconcile.retrying",
+                    attempt=attempt + 1,
+                    error_type=type(error).__name__,
+                    next_attempt=attempt + 2,
+                    session_id=session.bcn_session_id,
                 )
             except Exception as error:  # noqa: BLE001
                 await self._stop_connection(connection, timeout=timeout)
@@ -477,19 +511,11 @@ class Runtime(IRuntime, IAsyncLifecycle):
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
-            self._logger.warning(
-                "%s",
-                json.dumps(
-                    {
-                        "event_name": "runtime.turn.steer.not_accepted",
-                        "metadata": {
-                            "error_type": type(error).__name__,
-                            "session_id": session.bcn_session_id,
-                        },
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ),
+            self._log(
+                self._logger.warning,
+                "runtime.turn.steer.not_accepted",
+                error_type=type(error).__name__,
+                session_id=session.bcn_session_id,
             )
             return False
         return True
@@ -538,6 +564,74 @@ class Runtime(IRuntime, IAsyncLifecycle):
             value=session,
         )
 
+    def _route_notification(
+        self,
+        message: dict[str, object],
+        *,
+        targets: dict[str, Path],
+        runtime_session_id: str,
+        origin_holder: list[_Connection],
+    ) -> bool:
+        """Decide what a provider notification means for the session that owns it."""
+
+        method = message.get("method")
+        if method == "skills/changed":
+            parse_skills_changed_notification(message)
+            self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
+            return True
+        if method == "item/completed" and os.name != "nt":
+            params = message.get("params")
+            item = params.get("item") if isinstance(params, Mapping) else None
+            if (
+                isinstance(params, Mapping)
+                and isinstance(params.get("threadId"), str)
+                and isinstance(item, Mapping)
+                and item.get("type") == "commandExecution"
+            ):
+                if not origin_holder:
+                    return False
+                origin = origin_holder[0]
+                task = asyncio.create_task(
+                    self._refresh_background_state(
+                        runtime_session_id,
+                        origin,
+                    ),
+                    name=f"bcn-codex-background-{runtime_session_id}",
+                )
+                self._background_refresh_tasks.add(task)
+                task.add_done_callback(self._background_refresh_tasks.discard)
+        if method != "fs/changed":
+            return False
+        changed = parse_fs_changed_notification(message)
+        target = targets.get(changed.watch_id)
+        if target is None or target not in changed.changed_paths:
+            return False
+        self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
+        return True
+
+    async def _watch_agents_files(
+        self, client: Client, workspace: Path, targets: dict[str, Path]
+    ) -> None:
+        """Start the connection and watch for the AGENTS.md files it should honour."""
+
+        initialize_response = await client.initialize(
+            client_info=self._context.client_info,
+            timeout=self._context.startup_timeout_seconds,
+        )
+        codex_home = parse_initialize_response(initialize_response)
+        for watch_id, target in (
+            (_WORKSPACE_AGENTS_WATCH_ID, workspace / "AGENTS.md"),
+            (_CODEX_HOME_AGENTS_WATCH_ID, codex_home / "AGENTS.md"),
+        ):
+            targets[watch_id] = target
+            watch_response = await client.watch_path(
+                target,
+                watch_id,
+                timeout=self._context.startup_timeout_seconds,
+            )
+            if parse_fs_watch_response(watch_response) != target:
+                raise AppServerProtocolError("fs/watch returned a different path")
+
     async def _open_connection(
         self,
         session: RuntimeSession,
@@ -563,48 +657,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             watch_targets: dict[str, Path] = {}
             connection_holder: list[_Connection] = []
 
-            def route_notification(
-                message: dict[str, object],
-                *,
-                targets: dict[str, Path] = watch_targets,
-                runtime_session_id: str = session.id,
-                origin_holder: list[_Connection] = connection_holder,
-            ) -> bool:
-                method = message.get("method")
-                if method == "skills/changed":
-                    parse_skills_changed_notification(message)
-                    self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
-                    return True
-                if method == "item/completed" and os.name != "nt":
-                    params = message.get("params")
-                    item = params.get("item") if isinstance(params, Mapping) else None
-                    if (
-                        isinstance(params, Mapping)
-                        and isinstance(params.get("threadId"), str)
-                        and isinstance(item, Mapping)
-                        and item.get("type") == "commandExecution"
-                    ):
-                        if not origin_holder:
-                            return False
-                        origin = origin_holder[0]
-                        task = asyncio.create_task(
-                            self._refresh_background_state(
-                                runtime_session_id,
-                                origin,
-                            ),
-                            name=f"bcn-codex-background-{runtime_session_id}",
-                        )
-                        self._background_refresh_tasks.add(task)
-                        task.add_done_callback(self._background_refresh_tasks.discard)
-                if method != "fs/changed":
-                    return False
-                changed = parse_fs_changed_notification(message)
-                target = targets.get(changed.watch_id)
-                if target is None or target not in changed.changed_paths:
-                    return False
-                self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
-                return True
-
             supervisor = JsonlProcessSupervisor(
                 JsonlProcessSpec(
                     executable=executable,
@@ -612,30 +664,17 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     cwd=workspace,
                     environment=environment,
                 ),
-                notification_router=route_notification,
+                notification_router=partial(
+                    self._route_notification,
+                    targets=watch_targets,
+                    runtime_session_id=session.id,
+                    origin_holder=connection_holder,
+                ),
             )
             client = Client(supervisor)
             await supervisor.start(timeout=self._context.startup_timeout_seconds)
             try:
-                initialize_response = await client.initialize(
-                    client_info=self._context.client_info,
-                    timeout=self._context.startup_timeout_seconds,
-                )
-                codex_home = parse_initialize_response(initialize_response)
-                for watch_id, target in (
-                    (_WORKSPACE_AGENTS_WATCH_ID, workspace / "AGENTS.md"),
-                    (_CODEX_HOME_AGENTS_WATCH_ID, codex_home / "AGENTS.md"),
-                ):
-                    watch_targets[watch_id] = target
-                    watch_response = await client.watch_path(
-                        target,
-                        watch_id,
-                        timeout=self._context.startup_timeout_seconds,
-                    )
-                    if parse_fs_watch_response(watch_response) != target:
-                        raise AppServerProtocolError(
-                            "fs/watch returned a different path"
-                        )
+                await self._watch_agents_files(client, workspace, watch_targets)
             except JsonlRequestTimeout:
                 await supervisor.stop(timeout=timeout)
                 if attempt + 1 == _INITIALIZE_ATTEMPTS:
@@ -716,34 +755,25 @@ def _provider_result(error: BaseException) -> ProviderCallResult[Any]:
         return ProviderCallResult(
             status=ProviderCallStatus.UNKNOWN,
             error_kind="provider_unknown",
-            error_message=_safe_error_message(error),
+            error_message=format_exception(error),
         )
     if isinstance(error, (JsonlProtocolError, AppServerProtocolError)):
         return ProviderCallResult(
             status=ProviderCallStatus.FAILED,
             error_kind="protocol",
-            error_message=_safe_error_message(error),
+            error_message=format_exception(error),
         )
     if isinstance(error, JsonlRemoteError):
         return ProviderCallResult(
             status=ProviderCallStatus.FAILED,
             error_kind="provider_failed",
-            error_message=_safe_error_message(error),
+            error_message=format_exception(error),
         )
     return ProviderCallResult(
         status=ProviderCallStatus.FAILED,
         error_kind="provider_failed",
-        error_message=_safe_error_message(error),
+        error_message=format_exception(error),
     )
-
-
-def _safe_error_message(error: BaseException) -> str:
-    message = str(error).strip()
-    return message or type(error).__name__
-
-
-def _now_ms() -> int:
-    return time_ns() // 1_000_000
 
 
 __all__ = ["Runtime"]

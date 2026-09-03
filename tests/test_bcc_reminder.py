@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import pytest
+import click
 
-from bazaar_compute_node.bcc import (
-    build_parser,
+from bazaar_compute_node.cmd.bcc import bcc
+from bazaar_compute_node.cmd.bcc._format import (
     serialize_reminder_cancel,
     serialize_reminder_list,
     serialize_reminder_schedule,
@@ -13,6 +13,14 @@ from bazaar_compute_node.bcc import (
 
 REMINDER_ID = "019c1234-0000-7000-8000-000000000001"
 ANCHOR_ID = "019c5678-0000-7000-8000-000000000001"
+
+
+def subcommand(group: click.Command, *path: str) -> click.Command:
+    resolved = group
+    for name in path:
+        assert isinstance(resolved, click.Group)
+        resolved = resolved.commands[name]
+    return resolved
 
 
 def reminder_payload(
@@ -41,21 +49,22 @@ def reminder_payload(
     }
 
 
-def test_reminder_parser_exposes_only_the_five_supported_commands() -> None:
-    parser = build_parser()
-    for command in ("schedule", "list", "snooze", "update", "cancel"):
-        args = parser.parse_args(("reminder", command))
-        assert args.resource == "reminder"
-        assert args.command == command
+def test_reminder_exposes_only_the_five_supported_commands() -> None:
+    reminder = subcommand(bcc, "reminder")
+    assert isinstance(reminder, click.Group)
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "log"))
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "check"))
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "schedule", "--channel", "dm:alice"))
-    with pytest.raises(SystemExit):
-        parser.parse_args(("reminder", "schedule", "--msg-id", ANCHOR_ID))
+    assert set(reminder.commands) == {
+        "schedule",
+        "list",
+        "snooze",
+        "update",
+        "cancel",
+    }
+    schedule = {
+        parameter.name for parameter in subcommand(bcc, "reminder", "schedule").params
+    }
+    assert "channel" not in schedule
+    assert "msg_id" not in schedule
 
 
 def test_reminder_schedule_serializer_matches_text() -> None:

@@ -74,6 +74,26 @@ class _TypingLease:
     next_due_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _Activation:
+    activates_agent: bool
+    notifies_runtime: bool
+    historical: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _InboundUpdate:
+    chat: Mapping[str, object]
+    chat_type: str
+    chat_id: int
+    provider_message_id: int
+    provider_time_s: int
+    topic_id: int
+    topic_presentation: ChannelTargetPresentation | None
+    content: _InboundContent
+
+
 class TelegramChannel(IChannel):
     def __init__(self, context: ChannelContext, *, token: str) -> None:
         self._context = context
@@ -546,91 +566,37 @@ class TelegramChannel(IChannel):
         self._updates_filtered += 1
         self._last_update_disposition = "unsupported_update"
 
-    async def _handle_message(
+    def _presentation(
         self,
-        message: Mapping[str, object],
+        chat: Mapping[str, object],
         *,
-        update_id: int,
-    ) -> None:
-        bot_id = self._bot_id
-        bot_username = self._bot_username or ""
-        if bot_id is None:
-            raise RuntimeError("Telegram bot identity is not initialized")
+        target_kind: ChannelTargetKind,
+        topic_id: int,
+        topic_presentation: ChannelTargetPresentation | None,
+    ) -> ChannelTargetPresentation | None:
+        """Say how a target should be named, by what kind of chat it is."""
 
-        provider_sender = message.get("from")
-        if isinstance(provider_sender, Mapping) and provider_sender.get("id") == bot_id:
-            self._message_updates_filtered += 1
-            self._last_update_disposition = "current_bot_message"
-            return
-
-        chat = message.get("chat")
-        if not isinstance(chat, Mapping):
-            self._message_updates_filtered += 1
-            self._last_update_disposition = "invalid_chat"
-            return
-        chat_type = chat.get("type")
-        if chat_type not in {"private", "group", "supergroup"}:
-            self._message_updates_filtered += 1
-            self._last_update_disposition = "unsupported_chat_type"
-            return
-        chat_id = chat.get("id")
-        provider_message_id = message.get("message_id")
-        provider_time_s = message.get("date")
-        topic_id = self._message_topic_id(message, fallback=0)
-        if (
-            not isinstance(chat_id, int)
-            or isinstance(chat_id, bool)
-            or chat_id == 0
-            or not isinstance(provider_message_id, int)
-            or isinstance(provider_message_id, bool)
-            or provider_message_id < 0
-            or not isinstance(provider_time_s, int)
-            or isinstance(provider_time_s, bool)
-            or provider_time_s < 0
-            or topic_id is None
-        ):
-            self._message_updates_filtered += 1
-            self._last_update_disposition = "invalid_message_identity"
-            return
-
-        if topic_id == 0 and isinstance(message.get("forum_topic_created"), Mapping):
-            topic_id = provider_message_id
-
-        topic_presentation = self._topic_presentation(
-            message,
-            chat_id=chat_id,
-            topic_id=topic_id,
-        )
-
-        content = await self._content(
-            message,
-            bot_id=bot_id,
-            bot_username=bot_username,
-        )
-        if content is None:
-            self._message_updates_filtered += 1
-            self._last_update_disposition = "unsupported_message_content"
-            return
-
-        identity = TelegramThreadIdentity(
-            bot_id=bot_id,
-            chat_id=chat_id,
-            topic_id=topic_id,
-        )
-        self._stream_routes[identity.session_id] = identity
-        target_kind = (
-            ChannelTargetKind.DM if chat_type == "private" else ChannelTargetKind.GROUP
-        )
         if target_kind is ChannelTargetKind.DM:
             username = chat.get("username")
             handle = username.removeprefix("@") if isinstance(username, str) else None
-            presentation = ChannelTargetPresentation(handle=handle or None)
-        elif topic_id:
-            presentation = topic_presentation
-        else:
-            display_name = self._safe_display_name(chat.get("title"))
-            presentation = ChannelTargetPresentation(display_name=display_name)
-        sender = self._sender(message)
+            return ChannelTargetPresentation(handle=handle or None)
+        if topic_id:
+            return topic_presentation
+        return ChannelTargetPresentation(
+            display_name=self._safe_display_name(chat.get("title"))
+        )
+
+    def _activation(
+        self,
+        message: Mapping[str, object],
+        content: _InboundContent,
+        *,
+        bot_id: int,
+        bot_username: str,
+        provider_time_s: int,
+    ) -> _Activation:
+        """Decide whether a message is addressed to this bot, and whether it is old."""
+
         explicit_mention = (
             content.rich_mentions_agent
             or self._explicitly_mentions_current_bot(
@@ -661,6 +627,122 @@ class TelegramChannel(IChannel):
             if reply_to_current_bot
             else "none"
         )
+        return _Activation(
+            activates_agent=activates_agent,
+            notifies_runtime=notifies_runtime,
+            historical=historical,
+            reason=activation_reason,
+        )
+
+    async def _read_message(
+        self,
+        message: Mapping[str, object],
+        *,
+        bot_id: int,
+        bot_username: str,
+    ) -> _InboundUpdate | str:
+        """Read a message update, or name the reason it was filtered."""
+
+        provider_sender = message.get("from")
+        if isinstance(provider_sender, Mapping) and provider_sender.get("id") == bot_id:
+            return "current_bot_message"
+
+        chat = message.get("chat")
+        if not isinstance(chat, Mapping):
+            return "invalid_chat"
+        chat_type = chat.get("type")
+        if chat_type not in {"private", "group", "supergroup"}:
+            return "unsupported_chat_type"
+        chat_id = chat.get("id")
+        provider_message_id = message.get("message_id")
+        provider_time_s = message.get("date")
+        topic_id = self._message_topic_id(message, fallback=0)
+        if (
+            not isinstance(chat_id, int)
+            or isinstance(chat_id, bool)
+            or chat_id == 0
+            or not isinstance(provider_message_id, int)
+            or isinstance(provider_message_id, bool)
+            or provider_message_id < 0
+            or not isinstance(provider_time_s, int)
+            or isinstance(provider_time_s, bool)
+            or provider_time_s < 0
+            or topic_id is None
+        ):
+            return "invalid_message_identity"
+
+        if topic_id == 0 and isinstance(message.get("forum_topic_created"), Mapping):
+            topic_id = provider_message_id
+
+        topic_presentation = self._topic_presentation(
+            message,
+            chat_id=chat_id,
+            topic_id=topic_id,
+        )
+
+        content = await self._content(
+            message,
+            bot_id=bot_id,
+            bot_username=bot_username,
+        )
+        if content is None:
+            return "unsupported_message_content"
+        return _InboundUpdate(
+            chat=chat,
+            chat_type=str(chat_type),
+            chat_id=chat_id,
+            provider_message_id=provider_message_id,
+            provider_time_s=provider_time_s,
+            topic_id=topic_id,
+            topic_presentation=topic_presentation,
+            content=content,
+        )
+
+    async def _handle_message(
+        self,
+        message: Mapping[str, object],
+        *,
+        update_id: int,
+    ) -> None:
+        bot_id = self._bot_id
+        bot_username = self._bot_username or ""
+        if bot_id is None:
+            raise RuntimeError("Telegram bot identity is not initialized")
+
+        update = await self._read_message(
+            message, bot_id=bot_id, bot_username=bot_username
+        )
+        if isinstance(update, str):
+            self._message_updates_filtered += 1
+            self._last_update_disposition = update
+            return
+
+        identity = TelegramThreadIdentity(
+            bot_id=bot_id,
+            chat_id=update.chat_id,
+            topic_id=update.topic_id,
+        )
+        self._stream_routes[identity.session_id] = identity
+        target_kind = (
+            ChannelTargetKind.DM
+            if update.chat_type == "private"
+            else ChannelTargetKind.GROUP
+        )
+        presentation = self._presentation(
+            update.chat,
+            target_kind=target_kind,
+            topic_id=update.topic_id,
+            topic_presentation=update.topic_presentation,
+        )
+        sender = self._sender(message)
+        activation = self._activation(
+            message,
+            update.content,
+            bot_id=bot_id,
+            bot_username=bot_username,
+            provider_time_s=update.provider_time_s,
+        )
+        reply = message.get("reply_to_message")
 
         received_at_ms = time_ns() // 1_000_000
         reply_to_message_id: str | None = None
@@ -671,7 +753,7 @@ class TelegramChannel(IChannel):
                 identity=identity,
                 target_kind=target_kind,
                 presentation=presentation,
-                chat_type=str(chat_type),
+                chat_type=update.chat_type,
                 received_at_ms=received_at_ms,
             )
 
@@ -680,38 +762,38 @@ class TelegramChannel(IChannel):
             Message(
                 direction=MessageDirection.INBOUND,
                 seq=0,
-                message_id=identity.message_id(provider_message_id),
+                message_id=identity.message_id(update.provider_message_id),
                 session_id=identity.session_id,
                 channel_session_id=channel_session_id,
                 channel="telegram",
                 provider_thread_id=identity.provider_thread_id,
-                provider_message_id=str(provider_message_id),
+                provider_message_id=str(update.provider_message_id),
                 received_at_ms=received_at_ms,
                 sender=sender,
-                message_type=content.message_type,
+                message_type=update.content.message_type,
                 target=(
                     f"dm:{channel_session_id}"
                     if target_kind is ChannelTargetKind.DM
                     else f"group:{channel_session_id}"
                 ),
-                body=content.body,
+                body=update.content.body,
                 target_kind=target_kind,
                 target_presentation=presentation,
-                mentions_agent=activates_agent,
-                notifies_runtime=notifies_runtime,
-                attachments=content.attachments,
-                provider_time_ms=provider_time_s * 1_000,
+                mentions_agent=activation.activates_agent,
+                notifies_runtime=activation.notifies_runtime,
+                attachments=update.content.attachments,
+                provider_time_ms=update.provider_time_s * 1_000,
                 reply_to_message_id=reply_to_message_id,
                 metadata={
                     "telegram_update_id": update_id,
-                    "telegram_chat_id": chat_id,
-                    "telegram_message_thread_id": topic_id,
-                    "threaded": topic_id is not None,
-                    "telegram_chat_type": chat_type,
+                    "telegram_chat_id": update.chat_id,
+                    "telegram_message_thread_id": update.topic_id,
+                    "threaded": update.topic_id is not None,
+                    "telegram_chat_type": update.chat_type,
                     "sender_kind": self._sender_kind(message).value,
-                    "historical": historical,
-                    "activation_reason": activation_reason,
-                    "rich_message": content.rich_message,
+                    "historical": activation.historical,
+                    "activation_reason": activation.reason,
+                    "rich_message": update.content.rich_message,
                 },
             )
         )

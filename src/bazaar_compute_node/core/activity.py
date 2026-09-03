@@ -9,6 +9,7 @@ from .models import (
     ContextCompactionCompleted,
     ContextCompactionStarted,
     RuntimeEventPayload,
+    RuntimeOutputEvent,
     TokenUsage,
     ToolCallCompleted,
     ToolCallFailed,
@@ -141,8 +142,11 @@ class ActivityReducer:
                 )
                 self.snapshot = None
                 return True
-            case TurnStarted():
-                self._settle_attempt_usage()
+            case TurnStarted(event_name=event_name):
+                # a provider notice mid-turn reports as started too, and only a
+                # real start closes off what the previous attempt spent
+                if event_name.casefold().endswith(".started"):
+                    self._settle_attempt_usage()
                 return False
             case (
                 ContentDelta()
@@ -213,6 +217,10 @@ class ActivityReducer:
         self.usage = None
 
 
+def turn_key(item: RuntimeOutputEvent) -> tuple[str, str]:
+    return item.envelope.session_id, item.envelope.turn_id
+
+
 def snapshot_line(translator: Translator, snapshot: ActivitySnapshot) -> ActivityLine:
     return ActivityLine(
         icon=_STATUS_ICONS[snapshot.status],
@@ -254,4 +262,5 @@ __all__ = [
     "ActivityStatus",
     "overview_lines",
     "snapshot_line",
+    "turn_key",
 ]

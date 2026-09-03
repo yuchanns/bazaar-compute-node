@@ -21,10 +21,10 @@ from bazaar_compute_node.contrib.lark.approval import (
     _parse_card_callback,
 )
 from bazaar_compute_node.contrib.lark.attachments import (
+    _RESOURCE_DOWNLOAD_TYPES,
     LarkMention,
     LarkResourceDescriptor,
     _resolve_resource_name,
-    _resource_download_type,
     project_lark_content,
 )
 from bazaar_compute_node.contrib.lark.channel import (
@@ -573,7 +573,7 @@ def test_lark_resource_download_type_matches_provider_api(
     resource_type: str,
     expected: str | None,
 ) -> None:
-    assert _resource_download_type(resource_type) == expected
+    assert _RESOURCE_DOWNLOAD_TYPES.get(resource_type) == expected
 
 
 @pytest.mark.parametrize(
@@ -722,8 +722,8 @@ def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
         session_id=session_id,
     )
 
-    assert session_id not in channel._stream_routes
-    assert session_id not in channel._stream_route_threads
+    assert channel._stream_routes == {}
+    assert channel._stream_route_threads == {}
 
 
 def test_lark_approval_card_contract() -> None:

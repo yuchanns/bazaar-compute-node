@@ -48,10 +48,6 @@ class JsonlProcessSpec:
     def __post_init__(self) -> None:
         if not self.executable:
             raise ValueError("executable must be a non-empty string")
-        if any(not isinstance(argument, str) for argument in self.arguments):
-            raise TypeError("arguments must contain only strings")
-        if self.cwd is not None and not isinstance(self.cwd, Path):
-            raise TypeError("cwd must be a Path or None")
         if self.environment is not None and any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in self.environment.items()

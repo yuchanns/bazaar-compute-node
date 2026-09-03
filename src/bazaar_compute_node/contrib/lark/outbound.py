@@ -5,7 +5,7 @@ import hashlib
 import mimetypes
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from uuid import uuid4
@@ -13,6 +13,8 @@ from uuid import uuid4
 from ...core.channel import ChannelDeliveryReceipt, ChannelSendRequest
 from ...core.models import OutboundAttachment
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
+from ...core.utils.clock import remaining
+from ...core.utils.markdown import split_markdown
 from .api import LarkApi, LarkApiError, LarkTransportError
 from .identity import LarkBotIdentity, LarkThreadIdentity, parse_provider_thread_id
 
@@ -72,77 +74,6 @@ class PreparedAttachment:
                 f"Lark attachment changed after preflight: {self.descriptor.name}"
             )
         return os.fdopen(descriptor, "rb")
-
-
-def split_markdown(
-    content: str,
-    *,
-    limit: int = MAX_MARKDOWN_CODEPOINTS,
-) -> tuple[str, ...]:
-    """Split markdown by Unicode code points while preserving fenced blocks."""
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-    if not content:
-        return (content,)
-
-    chunks: list[str] = []
-    cursor = 0
-    fence: _Fence | None = None
-    while cursor < len(content):
-        prefix = f"{fence.opening}\n" if fence is not None else ""
-        end = cursor
-        size = len(prefix)
-        while end < len(content) and size + 1 <= limit:
-            size += 1
-            end += 1
-        if end == cursor:
-            raise ValueError("markdown fence overhead exceeds the provider limit")
-
-        while True:
-            next_fence = _advance_fence(
-                fence,
-                content[cursor:end],
-                initial_line_boundary=(
-                    fence is not None or cursor == 0 or content[cursor - 1] in "\r\n"
-                ),
-                terminal_line_complete=(end == len(content) or content[end] in "\r\n"),
-            )
-            suffix = _closing_suffix(prefix + content[cursor:end], next_fence)
-            if len(prefix) + (end - cursor) + len(suffix) <= limit:
-                break
-            end -= 1
-            if end == cursor:
-                raise ValueError("markdown fence closure exceeds the provider limit")
-
-        if end < len(content):
-            minimum = cursor + max(1, (end - cursor) // 2)
-            preferred = _preferred_boundary(content, minimum, end)
-            if preferred is not None:
-                preferred_fence = _advance_fence(
-                    fence,
-                    content[cursor:preferred],
-                    initial_line_boundary=(
-                        fence is not None
-                        or cursor == 0
-                        or content[cursor - 1] in "\r\n"
-                    ),
-                    terminal_line_complete=(
-                        preferred == len(content) or content[preferred] in "\r\n"
-                    ),
-                )
-                preferred_suffix = _closing_suffix(
-                    prefix + content[cursor:preferred], preferred_fence
-                )
-                if len(prefix) + (preferred - cursor) + len(preferred_suffix) <= limit:
-                    end = preferred
-                    next_fence = preferred_fence
-                    suffix = preferred_suffix
-
-        chunks.append(prefix + content[cursor:end] + suffix)
-        cursor = end
-        fence = next_fence
-
-    return tuple(chunks)
 
 
 def markdown_post_content(markdown: str) -> str:
@@ -216,6 +147,144 @@ def prepare_attachments(
     return tuple(prepared)
 
 
+@dataclass(slots=True)
+class _Delivery:
+    """What a multi-part Lark send has confirmed so far."""
+
+    total_parts: int
+    reply_anchor: str | None
+    in_thread: bool
+    confirmed: int = 0
+    parts: list[dict[str, object]] = field(default_factory=list)
+    uploads: list[dict[str, object]] = field(default_factory=list)
+
+    def record(
+        self, provider_message_id: str, message_type: str, **extra: object
+    ) -> None:
+        self.confirmed += 1
+        self.parts.append(
+            {
+                "ordinal": len(self.parts) + 1,
+                "message_type": message_type,
+                "provider_message_id": provider_message_id,
+                **extra,
+            }
+        )
+        self.reply_anchor = provider_message_id if self.in_thread else None
+
+    def receipt(self) -> dict[str, object]:
+        return _delivery_receipt(
+            self.total_parts, self.confirmed, self.parts, self.uploads
+        )
+
+    def failed(
+        self, error: Exception | None
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        return _finish_failure(
+            error,
+            total_parts=self.total_parts,
+            confirmed=self.confirmed,
+            parts=self.parts,
+            uploads=self.uploads,
+        )
+
+
+async def _upload(api: LarkApi, attachment: PreparedAttachment, deadline: float) -> str:
+    """Put an attachment's bytes on the provider and get back its key."""
+
+    with attachment.open() as file:
+        if attachment.message_type == "image":
+            return await api.upload_image(
+                file,
+                filename=attachment.descriptor.name,
+                media_type=attachment.media_type,
+                timeout=remaining(deadline),
+            )
+        return await api.upload_file(
+            file,
+            file_type=attachment.file_type,
+            filename=attachment.descriptor.name,
+            media_type=attachment.media_type,
+            timeout=remaining(deadline),
+        )
+
+
+async def _send_body_parts(
+    api: LarkApi,
+    delivery: _Delivery,
+    *,
+    thread: LarkThreadIdentity,
+    body_parts: tuple[str, ...],
+    deadline: float,
+) -> ProviderCallResult[ChannelDeliveryReceipt] | None:
+    """Send the message text, in as many parts as it had to be split into."""
+
+    for body_part in body_parts:
+        provider_message_id, error = await _send_message_part(
+            api,
+            thread=thread,
+            message_type="post",
+            content=markdown_post_content(body_part),
+            reply_anchor=delivery.reply_anchor,
+            reply_in_thread=delivery.in_thread,
+            deadline=deadline,
+        )
+        if provider_message_id is None:
+            return delivery.failed(error)
+        delivery.record(provider_message_id, "post")
+    return None
+
+
+async def _send_attachments(
+    api: LarkApi,
+    delivery: _Delivery,
+    *,
+    thread: LarkThreadIdentity,
+    prepared: tuple[PreparedAttachment, ...],
+    deadline: float,
+) -> ProviderCallResult[ChannelDeliveryReceipt] | None:
+    """Upload each attachment and send the message that carries it."""
+
+    for attachment in prepared:
+        if remaining(deadline) <= 0:
+            return delivery.failed(TimeoutError("Lark delivery deadline expired"))
+        try:
+            provider_key = await _upload(api, attachment, deadline)
+            delivery.uploads.append(
+                {
+                    "ordinal": len(delivery.uploads) + 1,
+                    "name": attachment.descriptor.name,
+                    "message_type": attachment.message_type,
+                    "provider_key": provider_key,
+                }
+            )
+            content_field = (
+                "image_key" if attachment.message_type == "image" else "file_key"
+            )
+            provider_message_id, error = await _send_message_part(
+                api,
+                thread=thread,
+                message_type=attachment.message_type,
+                content=_json_string({content_field: provider_key}),
+                reply_anchor=delivery.reply_anchor,
+                reply_in_thread=delivery.in_thread,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            return delivery.failed(error)
+
+        if provider_message_id is None:
+            return delivery.failed(error)
+        delivery.record(
+            provider_message_id,
+            attachment.message_type,
+            attachment_name=attachment.descriptor.name,
+        )
+    return None
+
+
 async def send_outbound(
     api: LarkApi,
     *,
@@ -239,7 +308,11 @@ async def send_outbound(
         )
 
     try:
-        body_parts = split_markdown(request.body) if request.body.strip() else ()
+        body_parts = (
+            split_markdown(request.body, limit=MAX_MARKDOWN_CODEPOINTS)
+            if request.body.strip()
+            else ()
+        )
     except ValueError as error:
         return _failed("invalid_markdown", str(error))
 
@@ -256,137 +329,34 @@ async def send_outbound(
                 workspace,
                 request.attachments,
             ),
-            timeout=max(0.0, deadline - loop.time()),
+            timeout=remaining(deadline),
         )
     except TimeoutError:
         return _failed("delivery_timeout", "Lark attachment preflight timed out")
     except (OSError, ValueError) as error:
         return _failed("invalid_attachment", str(error))
 
-    parts: list[dict[str, object]] = []
-    uploads: list[dict[str, object]] = []
-    confirmed = 0
-    reply_anchor = request.provider_reply_to_message_id
+    delivery = _Delivery(
+        total_parts=total_parts,
+        reply_anchor=request.provider_reply_to_message_id,
+        in_thread=thread.thread_id != "0",
+    )
 
-    for body_part in body_parts:
-        result = await _send_message_part(
-            api,
-            thread=thread,
-            message_type="post",
-            content=markdown_post_content(body_part),
-            reply_anchor=reply_anchor,
-            reply_in_thread=thread.thread_id != "0",
-            deadline=deadline,
+    failure = await _send_body_parts(
+        api, delivery, thread=thread, body_parts=body_parts, deadline=deadline
+    )
+    if failure is None:
+        failure = await _send_attachments(
+            api, delivery, thread=thread, prepared=prepared, deadline=deadline
         )
-        if result[0] is not None:
-            provider_message_id = result[0]
-            confirmed += 1
-            parts.append(
-                {
-                    "ordinal": len(parts) + 1,
-                    "message_type": "post",
-                    "provider_message_id": provider_message_id,
-                }
-            )
-            if thread.thread_id != "0":
-                reply_anchor = provider_message_id
-            else:
-                reply_anchor = None
-            continue
-        return _finish_failure(
-            result[1],
-            total_parts=total_parts,
-            confirmed=confirmed,
-            parts=parts,
-            uploads=uploads,
-        )
+    if failure is not None:
+        return failure
 
-    for attachment in prepared:
-        if loop.time() >= deadline:
-            return _finish_failure(
-                TimeoutError("Lark delivery deadline expired"),
-                total_parts=total_parts,
-                confirmed=confirmed,
-                parts=parts,
-                uploads=uploads,
-            )
-        try:
-            with attachment.open() as file:
-                if attachment.message_type == "image":
-                    provider_key = await api.upload_image(
-                        file,
-                        filename=attachment.descriptor.name,
-                        media_type=attachment.media_type,
-                        timeout=max(0.0, deadline - loop.time()),
-                    )
-                else:
-                    provider_key = await api.upload_file(
-                        file,
-                        file_type=attachment.file_type,
-                        filename=attachment.descriptor.name,
-                        media_type=attachment.media_type,
-                        timeout=max(0.0, deadline - loop.time()),
-                    )
-            uploads.append(
-                {
-                    "ordinal": len(uploads) + 1,
-                    "name": attachment.descriptor.name,
-                    "message_type": attachment.message_type,
-                    "provider_key": provider_key,
-                }
-            )
-            content_field = (
-                "image_key" if attachment.message_type == "image" else "file_key"
-            )
-            result = await _send_message_part(
-                api,
-                thread=thread,
-                message_type=attachment.message_type,
-                content=_json_string({content_field: provider_key}),
-                reply_anchor=reply_anchor,
-                reply_in_thread=thread.thread_id != "0",
-                deadline=deadline,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:  # noqa: BLE001
-            return _finish_failure(
-                error,
-                total_parts=total_parts,
-                confirmed=confirmed,
-                parts=parts,
-                uploads=uploads,
-            )
-
-        if result[0] is None:
-            return _finish_failure(
-                result[1],
-                total_parts=total_parts,
-                confirmed=confirmed,
-                parts=parts,
-                uploads=uploads,
-            )
-        provider_message_id = result[0]
-        confirmed += 1
-        parts.append(
-            {
-                "ordinal": len(parts) + 1,
-                "message_type": attachment.message_type,
-                "provider_message_id": provider_message_id,
-                "attachment_name": attachment.descriptor.name,
-            }
-        )
-        if thread.thread_id != "0":
-            reply_anchor = provider_message_id
-        else:
-            reply_anchor = None
-
-    receipt = _delivery_receipt(total_parts, confirmed, parts, uploads)
-    last_message_id = str(parts[-1]["provider_message_id"])
+    last_message_id = str(delivery.parts[-1]["provider_message_id"])
     return ProviderCallResult(
         status=ProviderCallStatus.CONFIRMED,
         value=ChannelDeliveryReceipt(provider_message_id=last_message_id),
-        receipt=receipt,
+        receipt=delivery.receipt(),
     )
 
 
@@ -573,69 +543,6 @@ def _open_regular_file(
         os.close(descriptor)
         raise
     return descriptor, file_stat
-
-
-@dataclass(frozen=True, slots=True)
-class _Fence:
-    marker: str
-    opening: str
-
-
-def _preferred_boundary(content: str, minimum: int, end: int) -> int | None:
-    for separator in ("\n\n", "\n"):
-        index = content.rfind(separator, minimum, end)
-        if index >= minimum:
-            return index + len(separator)
-    for index in range(end - 1, minimum - 1, -1):
-        if content[index].isspace():
-            return index + 1
-    return None
-
-
-def _advance_fence(
-    fence: _Fence | None,
-    segment: str,
-    *,
-    initial_line_boundary: bool,
-    terminal_line_complete: bool,
-) -> _Fence | None:
-    lines = segment.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        complete = (index > 0 or initial_line_boundary) and (
-            line.endswith(("\n", "\r"))
-            or (index == len(lines) - 1 and terminal_line_complete)
-        )
-        if not complete:
-            continue
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if fence is None:
-            marker_char = stripped[0]
-            if marker_char not in {"`", "~"}:
-                continue
-            marker_length = len(stripped) - len(stripped.lstrip(marker_char))
-            if marker_length < 3:
-                continue
-            marker = marker_char * marker_length
-            info = stripped[marker_length:]
-            if marker_char == "`" and "`" in info:
-                continue
-            fence = _Fence(marker=marker, opening=stripped)
-            continue
-        if stripped[0] != fence.marker[0]:
-            continue
-        marker_length = len(stripped) - len(stripped.lstrip(fence.marker[0]))
-        if marker_length >= len(fence.marker) and not stripped[marker_length:].strip():
-            fence = None
-    return fence
-
-
-def _closing_suffix(content: str, fence: _Fence | None) -> str:
-    if fence is None:
-        return ""
-    separator = "" if content.endswith(("\n", "\r")) else "\n"
-    return f"{separator}{fence.marker}"
 
 
 def _json_string(value: object) -> str:

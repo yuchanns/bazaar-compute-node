@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+from bazaar_compute_node.core.agent import State
 from bazaar_compute_node.core.channel import ChannelSendRequest
-from bazaar_compute_node.core.models import SessionRuntimeState
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 
 from .channel import TestChannel
@@ -57,7 +57,7 @@ async def wait_for_turn_terminal(
                 lifecycle_terminal = (
                     state is None and orchestrator.runtime_session(session_id) is None
                     if expect_runtime_discarded
-                    else state is SessionRuntimeState.IDLE
+                    else state is State.IDLE
                 )
                 if outbound and lifecycle_terminal and not active_turn:
                     return outbound

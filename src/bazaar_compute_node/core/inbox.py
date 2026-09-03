@@ -14,10 +14,6 @@ class InboxTargetPage:
     offset: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.targets, tuple):
-            raise TypeError("targets must be a tuple")
-        if any(not isinstance(target, InboxTargetSummary) for target in self.targets):
-            raise TypeError("targets must contain InboxTargetSummary values")
         if len(self.targets) > self.total:
             raise ValueError("shown cannot exceed total")
 

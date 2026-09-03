@@ -45,7 +45,8 @@ from bazaar_compute_node.contrib.lark.channel import LarkChannel
 from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
-from bazaar_compute_node.core.audit import AuditEvent
+from bazaar_compute_node.core.agent import State
+from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
 from bazaar_compute_node.core.channel import (
     ChannelContext,
     ChannelDeliveryReceipt,
@@ -76,10 +77,6 @@ from bazaar_compute_node.core.models import (
     RuntimeTurnState,
     SenderIdentity,
     SenderKind,
-    SessionRuntimeObservation,
-    SessionRuntimeObservationSource,
-    SessionRuntimeSignal,
-    SessionRuntimeState,
     SystemMessageKind,
     TurnCompleted,
     TurnFailed,
@@ -87,7 +84,6 @@ from bazaar_compute_node.core.models import (
     TurnUnknown,
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
-from bazaar_compute_node.core.orchestration.runtime_pool import RuntimePool
 from bazaar_compute_node.core.orchestration.session import (
     _RuntimeNotification,
 )
@@ -95,8 +91,8 @@ from bazaar_compute_node.core.orchestration.turn import inbox_notice
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
     IRuntime,
+    Runtime,
     RuntimeCommandContext,
-    RuntimeSessionReconciliation,
 )
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -740,7 +736,7 @@ async def test_channel_storage_runtime_turn_path() -> None:
             "bcn-1",
             direction=MessageDirection.INBOUND,
         ) == [message]
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
         assert runtime.started_turns
         assert any(
             event.correlation.bcn_session_id == "bcn-1"
@@ -811,7 +807,7 @@ async def test_stream_events() -> None:
         )
 
         assert not channel.stream_events
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1098,6 +1094,11 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
             channel_request.provider_reply_to_message_id == anchor.provider_message_id
         )
         assert runtime.approval_results[-1].decision is ApprovalDecision.APPROVED
+
+        # the turn's own output belongs under the message the Reminder was set from
+        anchored_session_id, anchored = channel.turn_anchors[-1]
+        assert anchored_session_id == anchor.session_id
+        assert anchored.message_id == anchor.message_id
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -2073,7 +2074,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
-    assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.WORKING
+    assert orchestrator.session_runtime_state("bcn-1") is State.WORKING
 
     await orchestrator.stop(timeout=1)
     result = await asyncio.gather(task, return_exceptions=True)
@@ -2185,57 +2186,6 @@ async def test_active_turn_without_provider_id_still_attempts_runtime_steer() ->
     finally:
         if runtime.active_streams:
             next(iter(runtime.active_streams)).release()
-        await orchestrator.stop(timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_session_runtime_observation_api_serializes_duplicate_runtime_and_channel_observations() -> (
-    None
-):
-    orchestrator, channel, _, storage, _ = await make_node()
-    try:
-        await channel.inject(make_message())
-        await wait_until(
-            lambda: (
-                storage.bcn_sessions.get("bcn-1") is not None
-                and orchestrator.session_runtime_state("bcn-1")
-                is SessionRuntimeState.IDLE
-            )
-        )
-
-        started_observation = SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.CHANNEL,
-            signal=SessionRuntimeSignal.TURN_STARTED,
-            observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
-        )
-        started = await asyncio.gather(
-            orchestrator.observe_runtime("bcn-1", started_observation),
-            orchestrator.observe_runtime("bcn-1", started_observation),
-        )
-        assert set(started) == {SessionRuntimeState.WORKING}
-
-        completed_observation = SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.TURN_COMPLETED,
-            observed_at_ms=storage.bcn_sessions["bcn-1"].updated_at_ms,
-        )
-        completed = await asyncio.gather(
-            orchestrator.observe_runtime("bcn-1", completed_observation),
-            orchestrator.observe_runtime("bcn-1", completed_observation),
-        )
-        assert set(completed) == {SessionRuntimeState.IDLE}
-
-        current = storage.bcn_sessions["bcn-1"]
-        updated = await orchestrator.observe_runtime(
-            "bcn-1",
-            SessionRuntimeObservation(
-                source=SessionRuntimeObservationSource.RUNTIME,
-                signal=SessionRuntimeSignal.WORKING_OBSERVED,
-                observed_at_ms=current.updated_at_ms,
-            ),
-        )
-        assert updated is SessionRuntimeState.WORKING
-    finally:
         await orchestrator.stop(timeout=1)
 
 
@@ -2552,10 +2502,10 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
         with pytest.raises(ValueError, match="does not reference a message"):
             await orchestrator.handle_inbound(invalid)
 
-        assert "channel-invalid" not in storage.channel_sessions
-        assert "invalid" not in storage.bcn_sessions
-        assert "invalid" not in storage.cursors
-        assert "invalid" not in storage.messages
+        assert storage.channel_sessions == {}
+        assert storage.bcn_sessions == {}
+        assert storage.cursors == {}
+        assert storage.messages == {}
         assert orchestrator.runtime_session("invalid") is None
     finally:
         await orchestrator.stop(timeout=1)
@@ -2575,7 +2525,7 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
 
         assert result is not None
         assert result.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
         assert len(runtime.started_sessions) == 2
@@ -2617,6 +2567,29 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
         assert orchestrator.runtime_session("bcn-1") is None
     finally:
         release_stop.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_start_is_reported_as_failed_not_unknown() -> None:
+    # a provider that definitively refuses to start says so; only silence is unknown
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        for _ in range(2):
+            runtime.queue_start_result(
+                ProviderCallResult(
+                    status=ProviderCallStatus.FAILED,
+                    error_kind="provider_failed",
+                    error_message="start failed",
+                )
+            )
+
+        result = await orchestrator.dispatch_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_kind == ErrorKind.PROVIDER_FAILED.value
+    finally:
         await orchestrator.stop(timeout=1)
 
 
@@ -2714,38 +2687,8 @@ async def test_runtime_session_reconciliation() -> None:
         assert turn.state is RuntimeTurnState.UNKNOWN
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
-    finally:
-        await orchestrator.stop(timeout=1)
-
-    # a confirmed failed reconciliation stops the live session
-    orchestrator, _, runtime, _, _ = await make_node()
-    try:
-        first_turn = await orchestrator.handle_inbound(make_message(seq=1))
-        assert first_turn is not None
-        current_runtime = orchestrator.runtime_session("bcn-1")
-        assert current_runtime is not None
-        runtime.queue_reconcile_result(
-            ProviderCallResult(
-                status=ProviderCallStatus.CONFIRMED,
-                value=RuntimeSessionReconciliation(
-                    session=current_runtime,
-                    state=SessionRuntimeState.FAILED,
-                ),
-            )
-        )
-        runtime.queue_turn_plan(
-            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.UNKNOWN))
-        )
-
-        second_turn = await orchestrator.handle_inbound(make_message(seq=2))
-
-        assert second_turn is not None
-        assert second_turn.state is RuntimeTurnState.UNKNOWN
-        assert runtime.stopped_sessions[-1] == current_runtime
-        assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.session_runtime_state("bcn-1") is None
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -2768,9 +2711,7 @@ async def test_runtime_session_reconciliation() -> None:
         )
         current_runtime = orchestrator.runtime_session("bcn-1")
         assert current_runtime is not None
-        assert (
-            orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.WORKING
-        )
+        assert orchestrator.session_runtime_state("bcn-1") is State.WORKING
 
         second_task = orchestrator.dispatch_inbound(make_message(seq=2))
         await wait_until(lambda: len(runtime.steered_turns) == 1)
@@ -2787,7 +2728,7 @@ async def test_runtime_session_reconciliation() -> None:
         assert second_turn is not None
         assert second_turn.state is RuntimeTurnState.COMPLETED
         assert orchestrator.runtime_session("bcn-1") == current_runtime
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
         assert channel.send_attempts == []
     finally:
@@ -3322,10 +3263,7 @@ async def test_runtime_idle_timeout() -> None:
         first_runtime = orchestrator.runtime_session("bcn-1")
         first_binding = orchestrator._runtime_timers["bcn-1"]
         assert first_runtime is not None
-        orchestrator._state_machine.apply_reconciliation(
-            "bcn-1",
-            SessionRuntimeState.FAILED,
-        )
+        await orchestrator._discard_runtime_session(first_runtime)
 
         await orchestrator.handle_inbound(make_message(seq=2))
 
@@ -3364,7 +3302,7 @@ async def test_pre_start_failure_reconciles_and_retries_the_current_inbound() ->
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.session_runtime_state("bcn-1") is SessionRuntimeState.IDLE
+        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
         assert len(runtime.reconciled_sessions) == 1
         assert runtime.reconciled_sessions[0].provider_thread_id is not None
         assert len(runtime.started_turns) == 2
@@ -3674,7 +3612,7 @@ async def test_multi_runtime_expiry_is_scoped_to_its_runtime() -> None:
 
 def test_runtime_pool_moves_on_to_the_next_runtime_when_one_is_banned() -> None:
     now_ms = [1_000]
-    pool = RuntimePool(
+    pool = Runtime(
         (
             _NamedTestRuntime("first", ()),
             _NamedTestRuntime("second", ()),
@@ -3714,7 +3652,7 @@ def test_runtime_pool_moves_on_to_the_next_runtime_when_one_is_banned() -> None:
 
 
 def test_single_runtime_pool_always_offers_its_only_runtime() -> None:
-    pool = RuntimePool((_NamedTestRuntime("only", ()),), clock=lambda: 1_000)
+    pool = Runtime((_NamedTestRuntime("only", ()),), clock=lambda: 1_000)
 
     # case: the only runtime stays selectable after it is banned
     assert pool.select() == 0

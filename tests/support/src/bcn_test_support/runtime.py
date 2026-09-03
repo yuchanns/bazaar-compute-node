@@ -19,7 +19,6 @@ from bazaar_compute_node.core.models import (
     RuntimeOutputEvent,
     RuntimeSession,
     RuntimeTurn,
-    SessionRuntimeState,
     TurnCancelled,
     TurnCompleted,
     TurnFailed,
@@ -187,7 +186,6 @@ class TestRuntime(IRuntime):
                 status=ProviderCallStatus.CONFIRMED,
                 value=RuntimeSessionReconciliation(
                     session=session,
-                    state=SessionRuntimeState.WORKING,
                     stream=stream,
                 ),
             )
@@ -195,7 +193,6 @@ class TestRuntime(IRuntime):
             status=ProviderCallStatus.CONFIRMED,
             value=RuntimeSessionReconciliation(
                 session=session,
-                state=SessionRuntimeState.IDLE,
             ),
         )
 

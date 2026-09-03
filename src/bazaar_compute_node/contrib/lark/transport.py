@@ -56,16 +56,8 @@ class LarkAck:
     post_ack: Callable[[], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.code, int) or isinstance(self.code, bool):
-            raise TypeError("Lark ACK code must be an integer")
         if self.code < 100 or self.code > 599:
             raise ValueError("Lark ACK code must be an HTTP-style status code")
-        if self.payload is not None and not isinstance(self.payload, bytes):
-            raise TypeError("Lark ACK payload must be bytes")
-        if not isinstance(self.accepted, bool):
-            raise TypeError("Lark ACK accepted flag must be boolean")
-        if self.post_ack is not None and not callable(self.post_ack):
-            raise TypeError("Lark ACK post-ACK callback must be callable")
 
 
 MessageHandlerResult = bool | LarkAck | None
@@ -219,51 +211,59 @@ class LarkTransport:
                 if self._stopping.is_set():
                     return
                 if first_connection:
-                    if self._startup_should_fail(error):
-                        self._startup_error = error
-                        self._state = "failed"
-                        self._ready.set()
+                    if not await self._await_startup_retry(error):
                         return
-                    if asyncio.get_running_loop().time() >= self._startup_deadline:
-                        self._startup_error = TimeoutError(
-                            "Lark transport startup deadline expired"
-                        )
-                        self._state = "failed"
-                        self._ready.set()
-                        return
-                    await self._wait_for_timer(
-                        _delay_ms(
-                            min(
-                                0.25,
-                                max(
-                                    0.0,
-                                    self._startup_deadline
-                                    - asyncio.get_running_loop().time(),
-                                ),
-                            )
-                        ),
-                    )
                     continue
 
-                self._state = "reconnecting"
-                self._last_disconnect_kind = _error_kind(error)
-                if _is_authentication_error(error):
-                    self._state = "degraded"
-                    return
                 reconnect_attempts += 1
-                config = (
-                    self._endpoint.client_config if self._endpoint else ClientConfig()
-                )
-                if (
-                    config.reconnect_count >= 0
-                    and reconnect_attempts > config.reconnect_count
-                ):
-                    self._state = "degraded"
+                if not await self._await_reconnect(error, reconnect_attempts):
                     return
-                await self._wait_for_timer(
-                    _delay_ms(random.uniform(0.0, config.reconnect_nonce)),
+
+    async def _await_startup_retry(self, error: Exception) -> bool:
+        """Say whether a first-connection failure is worth retrying, and wait."""
+
+        if self._startup_should_fail(error):
+            self._startup_error = error
+            self._state = "failed"
+            self._ready.set()
+            return False
+        if asyncio.get_running_loop().time() >= self._startup_deadline:
+            self._startup_error = TimeoutError(
+                "Lark transport startup deadline expired"
+            )
+            self._state = "failed"
+            self._ready.set()
+            return False
+        await self._wait_for_timer(
+            _delay_ms(
+                min(
+                    0.25,
+                    max(
+                        0.0,
+                        self._startup_deadline - asyncio.get_running_loop().time(),
+                    ),
                 )
-                await self._wait_for_timer(_delay_ms(config.reconnect_interval))
+            ),
+        )
+        return True
+
+    async def _await_reconnect(self, error: Exception, attempts: int) -> bool:
+        """Say whether a dropped connection is worth reconnecting, and wait."""
+
+        self._state = "reconnecting"
+        self._last_disconnect_kind = _error_kind(error)
+        if _is_authentication_error(error):
+            self._state = "degraded"
+            return False
+        config = self._endpoint.client_config if self._endpoint else ClientConfig()
+        if config.reconnect_count >= 0 and attempts > config.reconnect_count:
+            self._state = "degraded"
+            return False
+        await self._wait_for_timer(
+            _delay_ms(random.uniform(0.0, config.reconnect_nonce)),
+        )
+        await self._wait_for_timer(_delay_ms(config.reconnect_interval))
+        return True
 
     async def _get_endpoint(self, first_connection: bool) -> LarkEndpoint:
         if first_connection:
@@ -465,16 +465,7 @@ class LarkTransport:
         try:
             decoded = json.loads(payload.decode("utf-8"))
         except ValueError:
-            self._message_mapping_failures += 1
-            self._schedule_ack(
-                schedule,
-                connection,
-                frame,
-                code=500,
-                started_at=monotonic(),
-            )
-            self._last_message_disposition = "failed"
-            return
+            decoded = None
         if not isinstance(decoded, Mapping):
             self._message_mapping_failures += 1
             self._schedule_ack(
@@ -487,9 +478,24 @@ class LarkTransport:
             self._last_message_disposition = "failed"
             return
 
-        started_at = monotonic()
         self._events_received += 1
         self._last_event_at_ms = time_ns() // 1_000_000
+        await self._dispatch_message(
+            connection, frame, schedule, message_type=message_type, decoded=decoded
+        )
+
+    async def _dispatch_message(
+        self,
+        connection: Any,
+        frame: Frame,
+        schedule: ConnectionTaskScheduler,
+        *,
+        message_type: str,
+        decoded: Mapping[str, object],
+    ) -> None:
+        """Hand a decoded event to the message handler and acknowledge it."""
+
+        started_at = monotonic()
         ack_task: ConnectionTask | None = None
         try:
             handler = self._on_message

@@ -47,6 +47,53 @@ def serialize_reminder(reminder: Reminder) -> dict[str, object]:
     }
 
 
+_SCHEDULE_ERROR_CODES = (
+    ("title", "REMINDER_TITLE_REQUIRED"),
+    ("timezone", "REMINDER_TIMEZONE_INVALID"),
+    ("repeat", "REMINDER_REPEAT_INVALID"),
+    ("weekday", "REMINDER_REPEAT_INVALID"),
+    ("id reference", "REMINDER_ANCHOR_NOT_FOUND"),
+    ("uuid", "REMINDER_ANCHOR_NOT_FOUND"),
+)
+
+
+def _listed_statuses(
+    all_statuses: bool, status_text: str | None
+) -> frozenset[ReminderState]:
+    """Read which Reminder states a list request asked for."""
+
+    if all_statuses and status_text is not None:
+        raise CommandDispatchError(
+            "INVALID_COMMAND",
+            "--all and --status cannot be used together",
+        )
+    if all_statuses:
+        return frozenset(ReminderState)
+    if status_text is None:
+        return ReminderListRequest().statuses
+    try:
+        statuses = frozenset(
+            ReminderState(value.strip())
+            for value in status_text.split(",")
+            if value.strip()
+        )
+    except ValueError as error:
+        raise CommandDispatchError(
+            "INVALID_COMMAND",
+            f"invalid Reminder status list: {status_text}",
+        ) from error
+    if not statuses:
+        raise CommandDispatchError(
+            "INVALID_COMMAND",
+            "--status must contain at least one Reminder status",
+        )
+    return statuses
+
+
+def _reminder_payload(reminder: Reminder) -> Mapping[str, object]:
+    return {"ok": True, "result": {"reminder": serialize_reminder(reminder)}}
+
+
 NonEmptyText = Annotated[StrictStr, Field(min_length=1)]
 # long enough for the node to be back before the Agent is asked to report
 _UPGRADE_FOLLOW_UP_SECONDS = 60
@@ -378,162 +425,155 @@ class CommandDispatcher(_MessageCommandDispatcher):
         parsed_request: _CommandRequest,
     ) -> Mapping[str, object]:
         now_ms = time_ns() // 1_000_000
-        if command == "schedule":
-            request_values = cast(_ReminderScheduleRequest, parsed_request)
-            title = request_values.title
-            message_id = request_values.message_id
-            delay_seconds = request_values.delay_seconds
-            fire_at = request_values.fire_at
-            repeat_rule = request_values.repeat_rule
-            timezone = request_values.timezone
-            if delay_seconds is not None and fire_at is not None:
+        match command:
+            case "schedule":
+                return await self._schedule_reminder(
+                    session_id, cast(_ReminderScheduleRequest, parsed_request), now_ms
+                )
+            case "list":
+                return await self._list_reminders(
+                    session_id, cast(_ReminderListRequest, parsed_request)
+                )
+            case "snooze":
+                return await self._snooze_reminder(
+                    session_id, cast(_ReminderSnoozeRequest, parsed_request), now_ms
+                )
+            case "update":
+                return await self._update_reminder(
+                    session_id, cast(_ReminderUpdateRequest, parsed_request), now_ms
+                )
+            case "cancel":
+                return await self._cancel_reminder(
+                    session_id, cast(_ReminderCancelRequest, parsed_request), now_ms
+                )
+            case _:
                 raise CommandDispatchError(
-                    "REMINDER_TIME_CONFLICT",
-                    "--delay-seconds and --fire-at are mutually exclusive.",
+                    "UNKNOWN_COMMAND",
+                    f"unsupported reminder command: {command}",
                 )
-            if delay_seconds is None and fire_at is None and repeat_rule is None:
-                raise CommandDispatchError(
-                    "REMINDER_TIME_REQUIRED",
-                    "A Reminder requires --delay-seconds, --fire-at, or --repeat.",
-                )
-            try:
-                request = ReminderScheduleRequest.from_options(
-                    title=title,
-                    message_id=message_id,
-                    evaluated_at_ms=now_ms,
-                    delay_seconds=delay_seconds,
-                    fire_at=fire_at,
-                    repeat_rule=repeat_rule,
-                    timezone=timezone,
-                )
-            except ValueError as error:
-                message = str(error)
-                lowered = message.casefold()
-                if "title" in lowered:
-                    code = "REMINDER_TITLE_REQUIRED"
-                elif "timezone" in lowered:
-                    code = "REMINDER_TIMEZONE_INVALID"
-                elif "repeat" in lowered or "weekday" in lowered:
-                    code = "REMINDER_REPEAT_INVALID"
-                elif "id reference" in lowered or "uuid" in lowered:
-                    code = "REMINDER_ANCHOR_NOT_FOUND"
-                else:
-                    code = "REMINDER_TIME_REQUIRED"
-                raise CommandDispatchError(code, message) from error
-            result = await self._reminder_service.schedule(session_id, request)
-            return {
-                "ok": True,
-                "result": {"reminder": serialize_reminder(result.reminder)},
-            }
 
-        if command == "list":
-            request_values = cast(_ReminderListRequest, parsed_request)
-            all_statuses = request_values.all
-            status_text = request_values.status
-            if all_statuses and status_text is not None:
-                raise CommandDispatchError(
-                    "INVALID_COMMAND",
-                    "--all and --status cannot be used together",
-                )
-            if all_statuses:
-                statuses = frozenset(ReminderState)
-            elif status_text is None:
-                statuses = ReminderListRequest().statuses
-            else:
-                try:
-                    statuses = frozenset(
-                        ReminderState(value.strip())
-                        for value in status_text.split(",")
-                        if value.strip()
-                    )
-                except ValueError as error:
-                    raise CommandDispatchError(
-                        "INVALID_COMMAND",
-                        f"invalid Reminder status list: {status_text}",
-                    ) from error
-                if not statuses:
-                    raise CommandDispatchError(
-                        "INVALID_COMMAND",
-                        "--status must contain at least one Reminder status",
-                    )
-            result = await self._reminder_service.list(
-                session_id,
-                ReminderListRequest(statuses=statuses),
+    async def _schedule_reminder(
+        self,
+        session_id: str,
+        request_values: _ReminderScheduleRequest,
+        now_ms: int,
+    ) -> Mapping[str, object]:
+        delay_seconds = request_values.delay_seconds
+        fire_at = request_values.fire_at
+        repeat_rule = request_values.repeat_rule
+        if delay_seconds is not None and fire_at is not None:
+            raise CommandDispatchError(
+                "REMINDER_TIME_CONFLICT",
+                "--delay-seconds and --fire-at are mutually exclusive.",
             )
-            return {
-                "ok": True,
-                "result": {
-                    "reminders": [
-                        serialize_reminder(reminder) for reminder in result.reminders
-                    ]
-                },
-            }
+        if delay_seconds is None and fire_at is None and repeat_rule is None:
+            raise CommandDispatchError(
+                "REMINDER_TIME_REQUIRED",
+                "A Reminder requires --delay-seconds, --fire-at, or --repeat.",
+            )
+        try:
+            request = ReminderScheduleRequest.from_options(
+                title=request_values.title,
+                message_id=request_values.message_id,
+                evaluated_at_ms=now_ms,
+                delay_seconds=delay_seconds,
+                fire_at=fire_at,
+                repeat_rule=repeat_rule,
+                timezone=request_values.timezone,
+            )
+        except ValueError as error:
+            lowered = str(error).casefold()
+            raise CommandDispatchError(
+                next(
+                    (code for token, code in _SCHEDULE_ERROR_CODES if token in lowered),
+                    "REMINDER_TIME_REQUIRED",
+                ),
+                str(error),
+            ) from error
+        result = await self._reminder_service.schedule(session_id, request)
+        return _reminder_payload(result.reminder)
 
-        if command == "snooze":
-            request_values = cast(_ReminderSnoozeRequest, parsed_request)
-            try:
-                request = ReminderSnoozeRequest.from_options(
-                    reminder_id=request_values.reminder_id,
-                    duration=request_values.by,
-                    evaluated_at_ms=now_ms,
-                )
-            except ValueError as error:
-                code = (
-                    "REMINDER_NOT_FOUND"
-                    if self._is_id_error(error)
-                    else "INVALID_COMMAND"
-                )
-                raise CommandDispatchError(code, str(error)) from error
-            result = await self._reminder_service.snooze(session_id, request)
-            return {
-                "ok": True,
-                "result": {"reminder": serialize_reminder(result.reminder)},
-            }
-
-        if command == "update":
-            request_values = cast(_ReminderUpdateRequest, parsed_request)
-            try:
-                request = ReminderUpdateRequest.from_options(
-                    reminder_id=request_values.reminder_id,
-                    evaluated_at_ms=now_ms,
-                    fire_at=request_values.fire_at,
-                    in_duration=request_values.in_duration,
-                    cadence=request_values.cadence,
-                    title=request_values.title,
-                )
-            except ValueError as error:
-                if self._is_id_error(error):
-                    code = "REMINDER_NOT_FOUND"
-                elif request_values.cadence is not None:
-                    code = "REMINDER_REPEAT_INVALID"
-                else:
-                    code = "REMINDER_UPDATE_FAILED"
-                raise CommandDispatchError(code, str(error)) from error
-            result = await self._reminder_service.update(session_id, request)
-            return {
-                "ok": True,
-                "result": {"reminder": serialize_reminder(result.reminder)},
-            }
-
-        if command == "cancel":
-            request_values = cast(_ReminderCancelRequest, parsed_request)
-            try:
-                request = ReminderCancelRequest(
-                    reminder_id=request_values.reminder_id,
-                    evaluated_at_ms=now_ms,
-                )
-            except ValueError as error:
-                raise CommandDispatchError("REMINDER_NOT_FOUND", str(error)) from error
-            result = await self._reminder_service.cancel(session_id, request)
-            return {
-                "ok": True,
-                "result": {"reminder": serialize_reminder(result.reminder)},
-            }
-
-        raise CommandDispatchError(
-            "UNKNOWN_COMMAND",
-            f"unsupported reminder command: {command}",
+    async def _list_reminders(
+        self,
+        session_id: str,
+        request_values: _ReminderListRequest,
+    ) -> Mapping[str, object]:
+        result = await self._reminder_service.list(
+            session_id,
+            ReminderListRequest(
+                statuses=_listed_statuses(request_values.all, request_values.status)
+            ),
         )
+        return {
+            "ok": True,
+            "result": {
+                "reminders": [
+                    serialize_reminder(reminder) for reminder in result.reminders
+                ]
+            },
+        }
+
+    async def _snooze_reminder(
+        self,
+        session_id: str,
+        request_values: _ReminderSnoozeRequest,
+        now_ms: int,
+    ) -> Mapping[str, object]:
+        try:
+            request = ReminderSnoozeRequest.from_options(
+                reminder_id=request_values.reminder_id,
+                duration=request_values.by,
+                evaluated_at_ms=now_ms,
+            )
+        except ValueError as error:
+            code = (
+                "REMINDER_NOT_FOUND" if self._is_id_error(error) else "INVALID_COMMAND"
+            )
+            raise CommandDispatchError(code, str(error)) from error
+        result = await self._reminder_service.snooze(session_id, request)
+        return _reminder_payload(result.reminder)
+
+    async def _update_reminder(
+        self,
+        session_id: str,
+        request_values: _ReminderUpdateRequest,
+        now_ms: int,
+    ) -> Mapping[str, object]:
+        try:
+            request = ReminderUpdateRequest.from_options(
+                reminder_id=request_values.reminder_id,
+                evaluated_at_ms=now_ms,
+                fire_at=request_values.fire_at,
+                in_duration=request_values.in_duration,
+                cadence=request_values.cadence,
+                title=request_values.title,
+            )
+        except ValueError as error:
+            if self._is_id_error(error):
+                code = "REMINDER_NOT_FOUND"
+            elif request_values.cadence is not None:
+                code = "REMINDER_REPEAT_INVALID"
+            else:
+                code = "REMINDER_UPDATE_FAILED"
+            raise CommandDispatchError(code, str(error)) from error
+        result = await self._reminder_service.update(session_id, request)
+        return _reminder_payload(result.reminder)
+
+    async def _cancel_reminder(
+        self,
+        session_id: str,
+        request_values: _ReminderCancelRequest,
+        now_ms: int,
+    ) -> Mapping[str, object]:
+        try:
+            request = ReminderCancelRequest(
+                reminder_id=request_values.reminder_id,
+                evaluated_at_ms=now_ms,
+            )
+        except ValueError as error:
+            raise CommandDispatchError("REMINDER_NOT_FOUND", str(error)) from error
+        result = await self._reminder_service.cancel(session_id, request)
+        return _reminder_payload(result.reminder)
 
     @staticmethod
     def _is_id_error(error: ValueError) -> bool:

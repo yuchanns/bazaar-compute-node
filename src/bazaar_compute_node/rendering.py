@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from jinja2 import Environment, PackageLoader, StrictUndefined, Template, meta
 from jinja2.exceptions import TemplateSyntaxError
 
+from .core.utils.text import compact
+
 _RESOURCE_LOADER = PackageLoader("bazaar_compute_node", "resources")
 _TEXT_ENVIRONMENT = Environment(
     loader=_RESOURCE_LOADER,
@@ -17,6 +19,9 @@ _TEXT_ENVIRONMENT = Environment(
     auto_reload=False,
     enable_async=False,
 )
+
+
+_TEXT_ENVIRONMENT.filters["compact"] = compact
 
 
 @dataclass(frozen=True, slots=True)

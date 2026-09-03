@@ -5,7 +5,6 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from time import time_ns
 from typing import Self, cast
 
 from pydantic import TypeAdapter
@@ -34,6 +33,8 @@ from ...core.models import (
     UsageUpdated,
 )
 from ...core.runtime import IRuntimeTurnStream
+from ...core.utils.clock import now_ms
+from ...core.utils.text import format_exception
 from .client import TurnInbox
 from .protocol import ClaudeProtocolError, ClaudeTransportError, JsonObject
 
@@ -104,7 +105,7 @@ class TurnEventStream(IRuntimeTurnStream):
                     self._initial_error_state,
                     event_name="claudecode.turn.start.unknown",
                     error_kind=self._initial_error_kind,
-                    error_message=_safe_error_message(self._initial_error),
+                    error_message=format_exception(self._initial_error),
                 )
             return self._runtime_event(
                 event_name="claudecode.turn.started",
@@ -123,7 +124,7 @@ class TurnEventStream(IRuntimeTurnStream):
                     RuntimeEventState.UNKNOWN,
                     event_name="claudecode.turn.protocol.unknown",
                     error_kind="provider_unknown",
-                    error_message=_safe_error_message(error),
+                    error_message=format_exception(error),
                 )
             except ClaudeTransportError as error:
                 await self._on_unusable(error)
@@ -131,7 +132,7 @@ class TurnEventStream(IRuntimeTurnStream):
                     RuntimeEventState.UNKNOWN,
                     event_name="claudecode.turn.transport.unknown",
                     error_kind="provider_unknown",
-                    error_message=_safe_error_message(error),
+                    error_message=format_exception(error),
                 )
             self._pending.extend(items)
             if self._pending:
@@ -172,103 +173,10 @@ class TurnEventStream(IRuntimeTurnStream):
         if kind == "assistant":
             return self._map_assistant(message)
         if kind == "user":
-            raw_message = message.get("message")
-            tool_result = message.get("tool_use_result")
-            items: list[RuntimeOutputEvent] = []
-            if isinstance(raw_message, Mapping):
-                content = raw_message.get("content")
-                if isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, Mapping) or block.get("type") != (
-                            "tool_result"
-                        ):
-                            continue
-                        call_id = _text(block.get("tool_use_id"))
-                        if call_id is None:
-                            raise ClaudeProtocolError(
-                                "tool result requires a tool_use_id"
-                            )
-                        is_error = block.get("is_error")
-                        if is_error is not None and not isinstance(is_error, bool):
-                            raise ClaudeProtocolError(
-                                "tool result is_error must be a boolean"
-                            )
-                        try:
-                            output = _JSON_VALUE_ADAPTER.validate_python(
-                                block.get("content"), strict=True
-                            )
-                        except ValueError as error:
-                            raise ClaudeProtocolError(
-                                "tool result content must be a JSON value"
-                            ) from error
-                        call = ToolCall(
-                            call_id=call_id,
-                            name=self._tool_names.pop(call_id, call_id),
-                            parent_call_id=_text(message.get("parent_tool_use_id")),
-                            output=output,
-                        )
-                        if is_error is True:
-                            items.append(
-                                self._output_event(
-                                    ToolCallFailed(
-                                        call=call,
-                                        error_message=_content_text(output),
-                                    )
-                                )
-                            )
-                        else:
-                            items.append(
-                                self._output_event(ToolCallCompleted(call=call))
-                            )
-            if items:
-                return tuple(items)
-            if tool_result is not None:
-                item = self._text_delta(
-                    _stream_id(message),
-                    ToolCallDeltaKind.PROGRESS,
-                    _content_text(tool_result),
-                )
-                return (item,) if item is not None else ()
-            return ()
-        if kind in {"system", "rate_limit_event"}:
-            if kind == "system" and message.get("subtype") == "init":
-                self._validate_cli_version(message)
-            subtype = message.get("subtype")
-            if kind == "system" and subtype == "compact_boundary":
-                return (
-                    self._output_event(
-                        ContextCompactionCompleted(
-                            compaction_id=_stream_id(message),
-                        )
-                    ),
-                )
-            if kind == "system" and subtype == "task_started":
-                call_id = _text(message.get("task_id")) or _stream_id(message)
-                if call_id is None:
-                    return ()
-                return (
-                    self._output_event(
-                        ToolCallStarted(
-                            call=ToolCall(
-                                call_id=call_id,
-                                name="task",
-                                parent_call_id=_text(message.get("parent_tool_use_id")),
-                                input=_text(message.get("summary")),
-                            )
-                        )
-                    ),
-                )
-            if kind == "system" and subtype in {
-                "tool_progress",
-                "task_notification",
-                "task_updated",
-            }:
-                item = self._text_delta(
-                    _text(message.get("task_id")) or _stream_id(message),
-                    ToolCallDeltaKind.PROGRESS,
-                    _text(message.get("summary")),
-                )
-                return (item,) if item is not None else ()
+            return self._map_user(message)
+        if kind == "system":
+            return self._map_system(message)
+        if kind == "rate_limit_event":
             return ()
         if kind == "conversation_reset":
             await self._on_unusable(
@@ -285,6 +193,99 @@ class TurnEventStream(IRuntimeTurnStream):
         _LOGGER.debug(
             "skipping unknown Claude envelope type", extra={"provider_type": kind}
         )
+        return ()
+
+    def _map_user(self, message: JsonObject) -> tuple[RuntimeOutputEvent, ...]:
+        """Read a user envelope as the tool results it carries."""
+
+        raw_message = message.get("message")
+        content = (
+            raw_message.get("content") if isinstance(raw_message, Mapping) else None
+        )
+        items = tuple(
+            self._tool_result_event(block, message)
+            for block in (content if isinstance(content, list) else ())
+            if isinstance(block, Mapping) and block.get("type") == "tool_result"
+        )
+        if items:
+            return items
+        tool_result = message.get("tool_use_result")
+        if tool_result is None:
+            return ()
+        item = self._text_delta(
+            _stream_id(message),
+            ToolCallDeltaKind.PROGRESS,
+            _content_text(tool_result),
+        )
+        return (item,) if item is not None else ()
+
+    def _tool_result_event(
+        self, block: Mapping[str, object], message: JsonObject
+    ) -> RuntimeOutputEvent:
+        """Turn one tool_result block into the call it finishes."""
+
+        call_id = _text(block.get("tool_use_id"))
+        if call_id is None:
+            raise ClaudeProtocolError("tool result requires a tool_use_id")
+        is_error = block.get("is_error")
+        if is_error is not None and not isinstance(is_error, bool):
+            raise ClaudeProtocolError("tool result is_error must be a boolean")
+        try:
+            output = _JSON_VALUE_ADAPTER.validate_python(
+                block.get("content"), strict=True
+            )
+        except ValueError as error:
+            raise ClaudeProtocolError(
+                "tool result content must be a JSON value"
+            ) from error
+        call = ToolCall(
+            call_id=call_id,
+            name=self._tool_names.pop(call_id, call_id),
+            parent_call_id=_text(message.get("parent_tool_use_id")),
+            output=output,
+        )
+        if is_error is True:
+            return self._output_event(
+                ToolCallFailed(call=call, error_message=_content_text(output))
+            )
+        return self._output_event(ToolCallCompleted(call=call))
+
+    def _map_system(self, message: JsonObject) -> tuple[RuntimeOutputEvent, ...]:
+        """Read a system envelope, which mostly narrates rather than reports."""
+
+        subtype = message.get("subtype")
+        if subtype == "init":
+            self._validate_cli_version(message)
+            return ()
+        if subtype == "compact_boundary":
+            return (
+                self._output_event(
+                    ContextCompactionCompleted(compaction_id=_stream_id(message))
+                ),
+            )
+        if subtype == "task_started":
+            call_id = _text(message.get("task_id")) or _stream_id(message)
+            if call_id is None:
+                return ()
+            return (
+                self._output_event(
+                    ToolCallStarted(
+                        call=ToolCall(
+                            call_id=call_id,
+                            name="task",
+                            parent_call_id=_text(message.get("parent_tool_use_id")),
+                            input=_text(message.get("summary")),
+                        )
+                    )
+                ),
+            )
+        if subtype in {"tool_progress", "task_notification", "task_updated"}:
+            item = self._text_delta(
+                _text(message.get("task_id")) or _stream_id(message),
+                ToolCallDeltaKind.PROGRESS,
+                _text(message.get("summary")),
+            )
+            return (item,) if item is not None else ()
         return ()
 
     async def _map_result(self, message: JsonObject) -> tuple[RuntimeOutputEvent, ...]:
@@ -530,7 +531,7 @@ class TurnEventStream(IRuntimeTurnStream):
                 runtime_session_id=self._runtime_session_id,
                 turn_id=self._turn_id,
                 provider_turn_id=None,
-                occurred_at_ms=_now_ms(),
+                occurred_at_ms=now_ms(),
             ),
             payload=payload,
         )
@@ -607,14 +608,14 @@ def _result_metadata(message: Mapping[str, object]) -> dict[str, JsonValue]:
     return metadata
 
 
-def _result_error(message: Mapping[str, object]) -> str:
+def _result_error(message: Mapping[str, object]) -> str | None:
     errors = message.get("errors")
     if isinstance(errors, list) and errors:
         return "; ".join(str(item) for item in errors)
     result = message.get("result")
     if isinstance(result, str) and result:
         return result
-    return "Claude turn failed"
+    return None
 
 
 def _content_text(value: object) -> str | None:
@@ -627,14 +628,6 @@ def _content_text(value: object) -> str | None:
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
-
-
-def _safe_error_message(error: BaseException) -> str:
-    return str(error).strip() or type(error).__name__
-
-
-def _now_ms() -> int:
-    return time_ns() // 1_000_000
 
 
 __all__ = ["TurnEventStream"]

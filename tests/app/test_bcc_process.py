@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from collections.abc import Mapping, Sequence
 from io import StringIO
 from pathlib import Path
@@ -341,8 +342,13 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert len(messages) == 1
         target = messages[0].target
 
-        monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("reply"))
-        assert await bcc_module.async_main(["message", "send", "--target", target]) == 0
+        monkeypatch.setattr(sys, "stdin", StringIO("reply"))
+        assert (
+            await asyncio.to_thread(
+                bcc_module.main, ["message", "send", "--target", target]
+            )
+            == 0
+        )
         held_output = capsys.readouterr()
         assert held_output.err == ""
         assert held_output.out.startswith(
@@ -409,8 +415,8 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert invalid_offset["code"] == "INVALID_OFFSET"
 
         assert (
-            await bcc_module.async_main(
-                ["inbox", "list", "--limit", "10", "--offset", "0"]
+            await asyncio.to_thread(
+                bcc_module.main, ["inbox", "list", "--limit", "10", "--offset", "0"]
             )
             == 0
         )
@@ -419,10 +425,10 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert f"target={target}" in cli_output
         assert "latest-msg=message-agent-a" in cli_output
 
-        monkeypatch.setattr(bcc_module.sys, "stdin", StringIO("must not be read"))
+        monkeypatch.setattr(sys, "stdin", StringIO("must not be read"))
         assert (
-            await bcc_module.async_main(
-                ["message", "send", "--send-draft", "--target", target]
+            await asyncio.to_thread(
+                bcc_module.main, ["message", "send", "--send-draft", "--target", target]
             )
             == 0
         )
@@ -432,7 +438,8 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         outbound_message_id = sent_output.out.split("Message ID: ", 1)[1].strip()
 
         assert (
-            await bcc_module.async_main(
+            await asyncio.to_thread(
+                bcc_module.main,
                 [
                     "message",
                     "read",
@@ -442,7 +449,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
                     outbound_message_id,
                     "--limit",
                     "2",
-                ]
+                ],
             )
             == 0
         )

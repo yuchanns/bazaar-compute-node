@@ -15,12 +15,6 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     SenderIdentity,
     SenderKind,
-    SessionRuntimeObservation,
-    SessionRuntimeObservationSource,
-    SessionRuntimeSignal,
-    SessionRuntimeState,
-    StateTransitionError,
-    reduce_session_runtime_state,
 )
 
 
@@ -165,84 +159,6 @@ def test_outbound_attachment_requires_a_safe_relative_path_and_digest() -> None:
             size_bytes=7,
             sha256="invalid",
         )
-
-
-def test_session_runtime_observations_are_idempotent_and_reject_invalid_order() -> None:
-    state = SessionRuntimeState.CREATED
-    start = SessionRuntimeObservation(
-        source=SessionRuntimeObservationSource.SESSION,
-        signal=SessionRuntimeSignal.START_REQUESTED,
-        observed_at_ms=2,
-    )
-    state = reduce_session_runtime_state(state, start)
-    assert state is SessionRuntimeState.STARTING
-    assert reduce_session_runtime_state(state, start) is state
-
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.START_CONFIRMED,
-            observed_at_ms=3,
-        ),
-    )
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.CHANNEL,
-            signal=SessionRuntimeSignal.TURN_STARTED,
-            observed_at_ms=4,
-        ),
-    )
-    assert state is SessionRuntimeState.WORKING
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.TURN_COMPLETED,
-            observed_at_ms=5,
-        ),
-    )
-    assert state is SessionRuntimeState.IDLE
-
-    with pytest.raises(StateTransitionError):
-        reduce_session_runtime_state(
-            SessionRuntimeState.IDLE,
-            SessionRuntimeObservation(
-                source=SessionRuntimeObservationSource.RUNTIME,
-                signal=SessionRuntimeSignal.START_REQUESTED,
-                observed_at_ms=6,
-            ),
-        )
-
-
-def test_session_runtime_unknown_state_requires_reconciliation() -> None:
-    state = reduce_session_runtime_state(
-        SessionRuntimeState.CREATED,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RUNTIME,
-            signal=SessionRuntimeSignal.UNKNOWN,
-            observed_at_ms=2,
-        ),
-    )
-    assert state is SessionRuntimeState.UNKNOWN
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RECOVERY,
-            signal=SessionRuntimeSignal.RECONCILE_REQUESTED,
-            observed_at_ms=3,
-        ),
-    )
-    state = reduce_session_runtime_state(
-        state,
-        SessionRuntimeObservation(
-            source=SessionRuntimeObservationSource.RECOVERY,
-            signal=SessionRuntimeSignal.RECONCILE_CONFIRMED,
-            observed_at_ms=4,
-        ),
-    )
-    assert state is SessionRuntimeState.IDLE
 
 
 def test_outbound_delivery_tracks_only_provider_attempt_states() -> None:

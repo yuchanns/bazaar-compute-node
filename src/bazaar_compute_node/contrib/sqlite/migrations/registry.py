@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from time import monotonic_ns, time_ns
+from time import monotonic_ns
 from typing import TYPE_CHECKING
 
 from .model import Migration
@@ -38,10 +38,7 @@ from .v24_persist_sender_display_name import SENDER_DISPLAY_NAME_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
-
-
-def _current_time_ms() -> int:
-    return time_ns() // 1_000_000
+from ....core.utils.clock import now_ms
 
 
 class MigrationError(RuntimeError):
@@ -90,7 +87,7 @@ MIGRATIONS = _migration_ledger(
 async def apply_migrations(
     transaction: SqliteSession,
     *,
-    clock: Callable[[], int] = _current_time_ms,
+    clock: Callable[[], int] = now_ms,
 ) -> int:
     """Apply the ordered migration ledger inside the caller's transaction."""
 

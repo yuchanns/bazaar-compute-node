@@ -67,6 +67,7 @@ class TestChannel(IChannel):
         self.approval_requests: list[ApprovalRequest] = []
         self.cancelled_approval_requests: list[ApprovalRequest] = []
         self.channel_approval_requests: list[ChannelApprovalRequest] = []
+        self.turn_anchors: list[tuple[str, Message]] = []
         self.approval_results: list[ApprovalResult] = []
         self.events: list[RuntimeOutputEvent] = []
         self.identity: ChannelIdentity | None = None
@@ -116,6 +117,9 @@ class TestChannel(IChannel):
             if not isinstance(item, Message):
                 raise TypeError("test channel queue contained an invalid message")
             yield item
+
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        self.turn_anchors.append((session_id, anchor))
 
     def accept_turn_event(
         self,

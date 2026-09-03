@@ -4,10 +4,11 @@ import asyncio
 import json
 import mimetypes
 from collections import OrderedDict
-from collections.abc import AsyncIterable, AsyncIterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from email.message import Message
+from functools import partial
 from time import monotonic
 
 from ...core.channel import IAttachmentMaterializer
@@ -228,7 +229,7 @@ class LarkResourceCache:
     ) -> InboundAttachment:
         name = resource.name
         media_type = resource.media_type
-        download_type = _resource_download_type(resource.resource_type)
+        download_type = _RESOURCE_DOWNLOAD_TYPES.get(resource.resource_type)
         if download_type is None:
             return self._materializer.failed(
                 name=name,
@@ -324,6 +325,54 @@ def _select_post_locale(content: object) -> object:
     return content
 
 
+def _render_tag(
+    value: Mapping[str, object],
+    tag: str,
+    render: Callable[[object], str],
+    *,
+    mentions: Mapping[str, LarkMention],
+    bot_open_id: str,
+    resources: list[LarkResourceDescriptor],
+) -> str:
+    """Render one tagged post node, by what the tag says it is."""
+
+    if tag in {"text", "code", "pre", "del", "bold", "underline", "italic"}:
+        return _replace_mentions(
+            _string_value(value.get("text")), mentions, bot_open_id
+        )
+    if tag in {"a", "link"}:
+        label = render(value.get("text") or value.get("content") or "")
+        href = value.get("href") or value.get("url")
+        if isinstance(href, str) and href:
+            return f"{label} ({href})" if label else href
+        return label
+    if tag == "at":
+        return _render_mention_node(value, mentions, bot_open_id)
+    resource_type = _resource_type_for_tag(tag)
+    if resource_type is not None:
+        resource = _resource_from_mapping(value, resource_type)
+        resources.append(resource)
+        return resource.placeholder
+
+    children = value.get("content")
+    if children is None:
+        children = value.get("children")
+    if children is None:
+        children = value.get("text")
+    rendered = render(children)
+    if tag in {
+        "title",
+        "paragraph",
+        "p",
+        "li",
+        "list",
+        "blockquote",
+        "quote",
+    }:
+        return f"{rendered}\n"
+    return rendered
+
+
 def _render_post(
     value: object,
     *,
@@ -334,95 +383,38 @@ def _render_post(
 ) -> str:
     if depth > _MAX_CONTENT_DEPTH:
         return "[nested lark content]"
+    render = partial(
+        _render_post,
+        mentions=mentions,
+        bot_open_id=bot_open_id,
+        resources=resources,
+        depth=depth + 1,
+    )
     if isinstance(value, str):
         return _replace_mentions(value, mentions, bot_open_id)
     if isinstance(value, (list, tuple)):
-        return "".join(
-            _render_post(
-                child,
-                mentions=mentions,
-                bot_open_id=bot_open_id,
-                resources=resources,
-                depth=depth + 1,
-            )
-            for child in value
-        )
+        return "".join(render(child) for child in value)
     if not isinstance(value, Mapping):
         return ""
 
     tag = value.get("tag")
     if isinstance(tag, str):
-        if tag in {"text", "code", "pre", "del", "bold", "underline", "italic"}:
-            return _replace_mentions(
-                _string_value(value.get("text")), mentions, bot_open_id
-            )
-        if tag in {"a", "link"}:
-            label = _render_post(
-                value.get("text") or value.get("content") or "",
-                mentions=mentions,
-                bot_open_id=bot_open_id,
-                resources=resources,
-                depth=depth + 1,
-            )
-            href = value.get("href") or value.get("url")
-            if isinstance(href, str) and href:
-                return f"{label} ({href})" if label else href
-            return label
-        if tag == "at":
-            return _render_mention_node(value, mentions, bot_open_id)
-        resource_type = _resource_type_for_tag(tag)
-        if resource_type is not None:
-            resource = _resource_from_mapping(value, resource_type)
-            resources.append(resource)
-            return resource.placeholder
-
-        children = value.get("content")
-        if children is None:
-            children = value.get("children")
-        if children is None:
-            children = value.get("text")
-        rendered = _render_post(
-            children,
+        return _render_tag(
+            value,
+            tag,
+            render,
             mentions=mentions,
             bot_open_id=bot_open_id,
             resources=resources,
-            depth=depth + 1,
         )
-        if tag in {
-            "title",
-            "paragraph",
-            "p",
-            "li",
-            "list",
-            "blockquote",
-            "quote",
-        }:
-            return f"{rendered}\n"
-        return rendered
 
     parts: list[str] = []
     title = value.get("title")
     if title is not None:
-        parts.append(
-            _render_post(
-                title,
-                mentions=mentions,
-                bot_open_id=bot_open_id,
-                resources=resources,
-                depth=depth + 1,
-            )
-        )
+        parts.append(render(title))
     content = value.get("content")
     if content is not None:
-        parts.append(
-            _render_post(
-                content,
-                mentions=mentions,
-                bot_open_id=bot_open_id,
-                resources=resources,
-                depth=depth + 1,
-            )
-        )
+        parts.append(render(content))
     if parts:
         return "\n".join(parts)
     text = value.get("text")
@@ -500,10 +492,6 @@ def _resource_type_for_tag(tag: str) -> str | None:
     if tag == "video":
         return "media"
     return tag if tag in _RESOURCE_TYPES else None
-
-
-def _resource_download_type(resource_type: str) -> str | None:
-    return _RESOURCE_DOWNLOAD_TYPES.get(resource_type)
 
 
 def _unique_resources(

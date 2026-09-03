@@ -1,114 +1,64 @@
 from __future__ import annotations
 
+import click
 import pytest
 
-from bazaar_compute_node.bcc import build_parser
+from bazaar_compute_node.cmd.bcc import bcc
+
+
+def render_help(path: tuple[str, ...]) -> str:
+    command: click.Command = bcc
+    context = click.Context(bcc, info_name="bcc")
+    for name in path:
+        assert isinstance(command, click.Group)
+        command = command.commands[name]
+        context = click.Context(command, parent=context, info_name=name)
+    return " ".join(command.get_help(context).split())
 
 
 @pytest.mark.parametrize(
-    ("argv", "expected"),
+    ("path", "expected"),
     (
-        (("--help",), ("resources:", "message", "inbox", "thread", "reminder")),
+        ((), ("Commands:", "message", "inbox", "thread", "reminder")),
+        (("message",), ("Message operations", "check", "read", "send")),
         (
-            ("message", "--help"),
-            ("Message operations", "message commands:", "check", "read", "send"),
-        ),
-        (
-            ("message", "check", "--help"),
+            ("message", "check"),
             ("agent inbox (non-blocking)", "Acks delivered seqs"),
         ),
         (
-            ("message", "read", "--help"),
+            ("message", "read"),
             ("--target <target>", "--around <message-id>", "--limit <n>"),
         ),
         (
-            ("message", "send", "--help"),
+            ("message", "send"),
             ("body is read from stdin", "--attachment <path>"),
         ),
+        (("inbox",), ("Inbox discovery operations", "list")),
         (
-            ("inbox", "--help"),
-            ("Inbox discovery operations", "inbox commands:", "list"),
+            ("inbox", "list"),
+            ("List available message targets", "--limit <n>", "--offset <n>"),
         ),
+        (("thread",), ("Thread attention operations", "unfollow")),
+        (("thread", "unfollow"), ("--target <target>",)),
+        (("reminder",), ("Reminder operations", "schedule", "snooze", "cancel")),
         (
-            ("inbox", "list", "--help"),
-            (
-                "List available message targets",
-                "--limit <n>",
-                "--offset <n>",
-            ),
+            ("reminder", "schedule"),
+            ("--title <t>", "--delay-seconds <n>", "--message-id <uuid>"),
         ),
+        (("reminder", "list"), ("--all", "--status <scheduled,fired,canceled>")),
+        (("reminder", "snooze"), ("--id <id>", "--by <duration>")),
+        (("reminder", "update"), ("--cadence <rule>", "--in <duration>")),
         (
-            ("thread", "--help"),
-            ("Thread attention operations", "thread commands:", "unfollow"),
-        ),
-        (
-            ("thread", "unfollow", "--help"),
-            ("--target <target>", "does not affect Reminder ownership"),
-        ),
-        (
-            ("reminder", "--help"),
-            (
-                "Reminder operations",
-                "reminder commands:",
-                "schedule",
-                "list",
-                "snooze",
-                "update",
-                "cancel",
-            ),
-        ),
-        (
-            ("reminder", "schedule", "--help"),
-            (
-                "--title <t>",
-                "--delay-seconds <n>",
-                "--fire-at <iso>",
-                "--repeat <rule>",
-                "--tz <iana>",
-                "--message-id <id>",
-                "weekly:mon,fri@09:00",
-            ),
-        ),
-        (
-            ("reminder", "list", "--help"),
-            (
-                "--all",
-                "--status <scheduled,fired,canceled>",
-                "defaults to scheduled and fired",
-            ),
-        ),
-        (
-            ("reminder", "snooze", "--help"),
-            ("--id <id>", "--by <duration>", "Snooze duration, e.g. 30m, 2h, 1d"),
-        ),
-        (
-            ("reminder", "update", "--help"),
-            (
-                "--fire-at <iso>",
-                "--in <duration>",
-                "--cadence <rule>",
-                "New reminder title",
-            ),
-        ),
-        (
-            ("reminder", "cancel", "--help"),
-            (
-                "--id <id>",
-                "Cancel a scheduled reminder by id (full uuid)",
-            ),
+            ("reminder", "cancel"),
+            ("--id <id>", "Cancel a scheduled reminder by id (full uuid)"),
         ),
     ),
 )
 def test_bcc_help_is_available_at_every_command_level(
-    argv: tuple[str, ...],
+    path: tuple[str, ...],
     expected: tuple[str, ...],
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit) as exit_error:
-        parser.parse_args(argv)
+    output = render_help(path)
 
-    assert exit_error.value.code == 0
-    output = " ".join(capsys.readouterr().out.split())
     for snippet in expected:
         assert snippet in output

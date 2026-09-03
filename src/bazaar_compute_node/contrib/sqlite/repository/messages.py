@@ -513,6 +513,91 @@ class MessageOperations(RepositoryBase):
         )
         return tuple([await self._message_from_row(row) for row in rows])
 
+    async def _available_message_id(self, message_id: str) -> str:
+        """Keep a message id, or scope it to this Agent when another owns it."""
+
+        message_id_row = await self.fetchone(
+            "SELECT agent_id FROM messages WHERE message_id = ?",
+            (message_id,),
+        )
+        if message_id_row is not None:
+            if message_id_row["agent_id"] == self.agent_id:
+                raise ValueError("message id is already bound to another message")
+            message_id = self._agent_local_id("message", message_id)
+            if (
+                await self.fetchone(
+                    "SELECT 1 FROM messages WHERE message_id = ?",
+                    (message_id,),
+                )
+                is not None
+            ):
+                raise ValueError("Agent-scoped message id is already in use")
+        return message_id
+
+    async def _resolve_reply(
+        self, canonical: Message[InboundAttachment]
+    ) -> Message[InboundAttachment]:
+        """Point reply_to_message_id at the message it actually refers to."""
+
+        if canonical.reply_to_message_id is not None:
+            referenced_id = canonical.reply_to_message_id
+            referenced = await self.fetchone(
+                "SELECT message_id, session_id, seq FROM messages "
+                "WHERE agent_id = /*agent_id*/? AND message_id = ?",
+                (referenced_id,),
+            )
+            if referenced is None:
+                referenced_id = self._agent_local_id("message", referenced_id)
+                referenced = await self.fetchone(
+                    "SELECT message_id, session_id, seq FROM messages "
+                    "WHERE agent_id = /*agent_id*/? AND message_id = ?",
+                    (referenced_id,),
+                )
+            if referenced is None:
+                raise ValueError("reply_to_message_id does not reference a message")
+            if referenced["session_id"] != canonical.session_id:
+                raise ValueError("reply_to_message_id must belong to the same session")
+            if cast(int, referenced["seq"]) >= canonical.seq:
+                raise ValueError(
+                    "reply_to_message_id must reference an earlier message"
+                )
+            canonical = replace(
+                canonical,
+                reply_to_message_id=str(referenced["message_id"]),
+            )
+        return canonical
+
+    async def _scoped_attachments(
+        self, canonical: Message[InboundAttachment]
+    ) -> tuple[InboundAttachment, ...]:
+        """Keep each attachment id, or scope it to this Agent when another owns it."""
+
+        canonical_attachments: list[InboundAttachment] = []
+        for attachment in canonical.attachments:
+            attachment_id = attachment.attachment_id
+            attachment_row = await self.fetchone(
+                "SELECT message.agent_id FROM inbound_attachments AS attachment "
+                "JOIN messages AS message ON message.message_id = attachment.message_id "
+                "WHERE attachment.attachment_id = ?",
+                (attachment_id,),
+            )
+            if attachment_row is not None:
+                if attachment_row["agent_id"] == self.agent_id:
+                    raise ValueError("attachment id is already in use by this Agent")
+                attachment_id = self._agent_local_id("attachment", attachment_id)
+                if (
+                    await self.fetchone(
+                        "SELECT 1 FROM inbound_attachments WHERE attachment_id = ?",
+                        (attachment_id,),
+                    )
+                    is not None
+                ):
+                    raise ValueError("Agent-scoped attachment id is already in use")
+            canonical_attachments.append(
+                replace(attachment, attachment_id=attachment_id)
+            )
+        return tuple(canonical_attachments)
+
     async def _save_inbound_message(
         self,
         message: Message[InboundAttachment],
@@ -547,82 +632,16 @@ class MessageOperations(RepositoryBase):
         if existing is not None:
             return cast(Message[InboundAttachment], existing)
 
-        message_id = message.message_id
-        message_id_row = await self.fetchone(
-            "SELECT agent_id FROM messages WHERE message_id = ?",
-            (message_id,),
-        )
-        if message_id_row is not None:
-            if message_id_row["agent_id"] == self.agent_id:
-                raise ValueError("message id is already bound to another message")
-            message_id = self._agent_local_id("message", message_id)
-            if (
-                await self.fetchone(
-                    "SELECT 1 FROM messages WHERE message_id = ?",
-                    (message_id,),
-                )
-                is not None
-            ):
-                raise ValueError("Agent-scoped message id is already in use")
-
+        message_id = await self._available_message_id(message.message_id)
         canonical = replace(
             message,
             message_id=message_id,
             seq=await self._next_message_seq(),
         )
-        if canonical.reply_to_message_id is not None:
-            referenced_id = canonical.reply_to_message_id
-            referenced = await self.fetchone(
-                "SELECT message_id, session_id, seq FROM messages "
-                "WHERE agent_id = /*agent_id*/? AND message_id = ?",
-                (referenced_id,),
-            )
-            if referenced is None:
-                referenced_id = self._agent_local_id("message", referenced_id)
-                referenced = await self.fetchone(
-                    "SELECT message_id, session_id, seq FROM messages "
-                    "WHERE agent_id = /*agent_id*/? AND message_id = ?",
-                    (referenced_id,),
-                )
-            if referenced is None:
-                raise ValueError("reply_to_message_id does not reference a message")
-            if referenced["session_id"] != canonical.session_id:
-                raise ValueError("reply_to_message_id must belong to the same session")
-            if cast(int, referenced["seq"]) >= canonical.seq:
-                raise ValueError(
-                    "reply_to_message_id must reference an earlier message"
-                )
-            canonical = replace(
-                canonical,
-                reply_to_message_id=str(referenced["message_id"]),
-            )
-
-        canonical_attachments: list[InboundAttachment] = []
-        for attachment in canonical.attachments:
-            attachment_id = attachment.attachment_id
-            attachment_row = await self.fetchone(
-                "SELECT message.agent_id FROM inbound_attachments AS attachment "
-                "JOIN messages AS message ON message.message_id = attachment.message_id "
-                "WHERE attachment.attachment_id = ?",
-                (attachment_id,),
-            )
-            if attachment_row is not None:
-                if attachment_row["agent_id"] == self.agent_id:
-                    raise ValueError("attachment id is already in use by this Agent")
-                attachment_id = self._agent_local_id("attachment", attachment_id)
-                if (
-                    await self.fetchone(
-                        "SELECT 1 FROM inbound_attachments WHERE attachment_id = ?",
-                        (attachment_id,),
-                    )
-                    is not None
-                ):
-                    raise ValueError("Agent-scoped attachment id is already in use")
-            canonical_attachments.append(
-                replace(attachment, attachment_id=attachment_id)
-            )
-        canonical = replace(canonical, attachments=tuple(canonical_attachments))
-
+        canonical = await self._resolve_reply(canonical)
+        canonical = replace(
+            canonical, attachments=await self._scoped_attachments(canonical)
+        )
         await self._insert_inbound_message(canonical, self._require_agent_id())
         return canonical
 
@@ -855,97 +874,89 @@ class MessageOperations(RepositoryBase):
             raise RuntimeError("SQLite message sequence query returned no row")
         return cast(int, row["next_seq"])
 
-    async def _save_outbound_message(
+    async def _insert_outbound(
         self,
         message: Message[OutboundAttachment],
+        channel_session: ChannelSession,
     ) -> Message[OutboundAttachment]:
-        validate_outbound_message_input(message)
-        bcn_session = await self.get_bcn_session(message.session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
-        channel_session = await self.get_channel_session(message.channel_session_id)
-        if channel_session is None:
-            raise ValueError(f"unknown channel session: {message.channel_session_id}")
-        if bcn_session.channel_session_id != message.channel_session_id:
-            raise ValueError("outbound message binding does not match bcn session")
+        """Write down an outbound message the first time it is sent."""
 
-        existing = cast(
-            Message[OutboundAttachment] | None,
-            await self.get_message(
-                message.message_id,
-                direction=MessageDirection.OUTBOUND,
+        canonical = replace(
+            message,
+            message_id=str(uuid7()),
+            seq=await self._next_message_seq(),
+            channel=channel_session.channel,
+            provider_thread_id=channel_session.provider_thread_id,
+            sender=SenderIdentity(name=self._require_agent_name()),
+            target_kind=channel_session.target_kind,
+        )
+        validate_outbound_insert(canonical)
+        delivery_state = canonical.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        sender = canonical.sender
+        if sender is None:
+            raise RuntimeError("outbound message has no sender")
+        await self.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, session_id, "
+            "channel_session_id, channel, provider_thread_id, "
+            "provider_message_id, sender, sender_id, sender_display_name, "
+            "message_type, target, target_kind, "
+            "reply_to_message_id, body, command_id, delivery_state, "
+            "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
+            "error_kind, error_message, metadata_json, attachments_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                canonical.message_id,
+                canonical.seq,
+                canonical.direction.value,
+                self._require_agent_id(),
+                canonical.session_id,
+                canonical.channel_session_id,
+                canonical.channel,
+                canonical.provider_thread_id,
+                canonical.provider_message_id,
+                sender.name,
+                sender.id,
+                sender.display_name,
+                canonical.message_type,
+                canonical.target,
+                canonical.target_kind.value,
+                canonical.reply_to_message_id,
+                canonical.body,
+                canonical.command_id,
+                delivery_state.value,
+                canonical.provider_receipt_ref,
+                canonical.created_at_ms,
+                canonical.provider_attempted_at_ms,
+                canonical.completed_at_ms,
+                canonical.error_kind,
+                canonical.error_message,
+                encode_metadata(canonical.metadata),
+                json.dumps(
+                    [
+                        {
+                            "name": attachment.name,
+                            "relative_path": attachment.relative_path,
+                            "media_type": attachment.media_type,
+                            "size_bytes": attachment.size_bytes,
+                            "sha256": attachment.sha256,
+                        }
+                        for attachment in canonical.attachments
+                    ],
+                    separators=(",", ":"),
+                ),
             ),
         )
-        if existing is None:
-            canonical = replace(
-                message,
-                message_id=str(uuid7()),
-                seq=await self._next_message_seq(),
-                channel=channel_session.channel,
-                provider_thread_id=channel_session.provider_thread_id,
-                sender=SenderIdentity(name=self._require_agent_name()),
-                target_kind=channel_session.target_kind,
-            )
-            validate_outbound_insert(canonical)
-            delivery_state = canonical.delivery_state
-            if delivery_state is None:
-                raise RuntimeError("outbound message has no delivery state")
-            sender = canonical.sender
-            if sender is None:
-                raise RuntimeError("outbound message has no sender")
-            await self.execute(
-                "INSERT INTO messages ("
-                "message_id, seq, direction, agent_id, session_id, "
-                "channel_session_id, channel, provider_thread_id, "
-                "provider_message_id, sender, sender_id, sender_display_name, "
-                "message_type, target, target_kind, "
-                "reply_to_message_id, body, command_id, delivery_state, "
-                "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
-                "error_kind, error_message, metadata_json, attachments_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    canonical.message_id,
-                    canonical.seq,
-                    canonical.direction.value,
-                    self._require_agent_id(),
-                    canonical.session_id,
-                    canonical.channel_session_id,
-                    canonical.channel,
-                    canonical.provider_thread_id,
-                    canonical.provider_message_id,
-                    sender.name,
-                    sender.id,
-                    sender.display_name,
-                    canonical.message_type,
-                    canonical.target,
-                    canonical.target_kind.value,
-                    canonical.reply_to_message_id,
-                    canonical.body,
-                    canonical.command_id,
-                    delivery_state.value,
-                    canonical.provider_receipt_ref,
-                    canonical.created_at_ms,
-                    canonical.provider_attempted_at_ms,
-                    canonical.completed_at_ms,
-                    canonical.error_kind,
-                    canonical.error_message,
-                    encode_metadata(canonical.metadata),
-                    json.dumps(
-                        [
-                            {
-                                "name": attachment.name,
-                                "relative_path": attachment.relative_path,
-                                "media_type": attachment.media_type,
-                                "size_bytes": attachment.size_bytes,
-                                "sha256": attachment.sha256,
-                            }
-                            for attachment in canonical.attachments
-                        ],
-                        separators=(",", ":"),
-                    ),
-                ),
-            )
-            return canonical
+        return canonical
+
+    async def _update_outbound(
+        self,
+        existing: Message[OutboundAttachment],
+        message: Message[OutboundAttachment],
+    ) -> Message[OutboundAttachment]:
+        """Record what became of an outbound message already written down."""
 
         if (
             existing.command_id != message.command_id
@@ -981,3 +992,28 @@ class MessageOperations(RepositoryBase):
             ),
         )
         return canonical
+
+    async def _save_outbound_message(
+        self,
+        message: Message[OutboundAttachment],
+    ) -> Message[OutboundAttachment]:
+        validate_outbound_message_input(message)
+        bcn_session = await self.get_bcn_session(message.session_id)
+        if bcn_session is None:
+            raise ValueError(f"unknown bcn session: {message.session_id}")
+        channel_session = await self.get_channel_session(message.channel_session_id)
+        if channel_session is None:
+            raise ValueError(f"unknown channel session: {message.channel_session_id}")
+        if bcn_session.channel_session_id != message.channel_session_id:
+            raise ValueError("outbound message binding does not match bcn session")
+
+        existing = cast(
+            Message[OutboundAttachment] | None,
+            await self.get_message(
+                message.message_id,
+                direction=MessageDirection.OUTBOUND,
+            ),
+        )
+        if existing is None:
+            return await self._insert_outbound(message, channel_session)
+        return await self._update_outbound(existing, message)

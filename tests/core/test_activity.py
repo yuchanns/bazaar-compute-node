@@ -114,6 +114,32 @@ def test_latest_usage_total_replaces_previous_report() -> None:
     )
 
 
+def test_provider_error_mid_turn_does_not_settle_usage_again() -> None:
+    # codex reports a retryable provider error as a started turn; the usage it
+    # goes on to report is still cumulative for the same attempt
+    reducer = ActivityReducer()
+
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=100, output_tokens=50)))
+    reducer.apply(TurnStarted(event_name="codex.turn.error"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=150, output_tokens=80)))
+    reducer.apply(TurnCompleted(event_name="codex.turn.completed"))
+
+    assert reducer.overview == ActivityOverview(input_tokens=150, output_tokens=80)
+
+
+def test_a_second_attempt_adds_to_what_the_first_one_spent() -> None:
+    reducer = ActivityReducer()
+
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=100, output_tokens=50)))
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=30, output_tokens=20)))
+    reducer.apply(TurnCompleted(event_name="codex.turn.completed"))
+
+    assert reducer.overview == ActivityOverview(input_tokens=130, output_tokens=70)
+
+
 def test_usage_only_turn_still_produces_overview() -> None:
     reducer = ActivityReducer()
 
@@ -200,12 +226,12 @@ def test_overview_lines_omit_zero_values() -> None:
     assert overview_lines(create_translator(SIMPLIFIED_CHINESE), overview) == (
         "工具调用 **3** 次",
         "上下文压缩 **1** 次",
-        "输入 **12400** · 缓存 **9100** · 输出 **860**",
+        "输入 **12.4K** · 缓存 **9.1K** · 输出 **860**",
     )
     assert overview_lines(create_translator(ENGLISH), overview) == (
         "Tool calls **3**",
         "Context compactions **1**",
-        "Input **12400** · Cache **9100** · Output **860**",
+        "Input **12.4K** · Cache **9.1K** · Output **860**",
     )
 
     assert overview_lines(
@@ -214,7 +240,7 @@ def test_overview_lines_omit_zero_values() -> None:
     assert overview_lines(
         create_translator(SIMPLIFIED_CHINESE),
         ActivityOverview(cached_input_tokens=9100),
-    ) == ("缓存 **9100**",)
+    ) == ("缓存 **9.1K**",)
 
     assert overview_lines(
         create_translator(ENGLISH), ActivityOverview(tool_calls=2)

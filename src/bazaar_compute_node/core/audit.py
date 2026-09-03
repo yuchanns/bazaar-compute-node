@@ -7,7 +7,7 @@ from enum import StrEnum
 from .correlation import CorrelationContext
 from .models import RuntimeEventState
 from .observability import LogLevel
-from .sanitization import is_sensitive_field
+from .utils.sanitization import is_sensitive_field
 
 
 class ErrorKind(StrEnum):
@@ -45,8 +45,6 @@ class AuditEvent:
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.event_name, str) or not self.event_name:
-            raise ValueError("event_name must be a non-empty string")
         if self.error_kind is None and any(
             value is not None
             for value in (
@@ -56,15 +54,6 @@ class AuditEvent:
             )
         ):
             raise ValueError("error details require an error_kind")
-        for value, field_name in (
-            (self.error_type, "error_type"),
-            (self.error_message, "error_message"),
-            (self.traceback_ref, "traceback_ref"),
-        ):
-            if value is not None and (not isinstance(value, str) or not value):
-                raise ValueError(
-                    f"{field_name} must be a non-empty string when present"
-                )
         pending: list[object] = [self.metadata]
         while pending:
             value = pending.pop()

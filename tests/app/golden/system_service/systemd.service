@@ -1,0 +1,19 @@
+# Managed by bazaar-compute-node.
+[Unit]
+Description=Bazaar Compute Node
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bcn run --config /home/test-user/.bcn/config.toml
+WorkingDirectory=/home/test-user/.bcn
+EnvironmentFile=-/home/test-user/.bcn/runtime.env
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

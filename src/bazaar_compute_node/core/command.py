@@ -81,16 +81,10 @@ class InboxListResult:
     has_more: bool
 
     def __post_init__(self) -> None:
-        if not isinstance(self.targets, tuple):
-            raise TypeError("targets must be a tuple")
-        if any(not isinstance(target, InboxTargetSummary) for target in self.targets):
-            raise TypeError("targets must contain InboxTargetSummary values")
         if self.shown != len(self.targets):
             raise ValueError("shown must equal the number of targets")
         if self.shown > self.total:
             raise ValueError("shown cannot exceed total")
-        if not isinstance(self.has_more, bool):
-            raise TypeError("has_more must be a bool")
         expected_has_more = self.offset + self.shown < self.total
         if self.has_more != expected_has_more:
             raise ValueError("has_more does not match pagination bounds")

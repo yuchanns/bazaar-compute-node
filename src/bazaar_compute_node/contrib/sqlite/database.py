@@ -5,12 +5,12 @@ import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from time import time_ns
 from typing import TypeVar
 
 import aiosqlite
 
 from ...core.paths import resolve_data_dir
+from ...core.utils.clock import now_ms
 from .executor import (
     SqliteExecuteResult,
     SqliteExecutor,
@@ -119,44 +119,7 @@ class SqliteDatabase:
                         self.database_path,
                         0o600,
                     )
-                    writer_session = SqliteSession(writer)
-                    await writer.execute("BEGIN IMMEDIATE")
-                    try:
-                        self._schema_version = await apply_migrations(
-                            writer_session,
-                            clock=_current_time_ms,
-                        )
-                    except BaseException:
-                        await writer.execute("ROLLBACK")
-                        raise
-                    else:
-                        await writer.execute("COMMIT")
-
-                    compaction_row = await writer_session.fetchone(
-                        "SELECT compaction_completed_at_ms "
-                        "FROM schema_migrations WHERE version = ?",
-                        (RUNTIME_EVENTS_REMOVAL_MIGRATION.version,),
-                    )
-                    if compaction_row is None:
-                        raise MigrationError(
-                            "runtime event removal migration is missing from ledger"
-                        )
-                    if compaction_row["compaction_completed_at_ms"] is None:
-                        await writer.execute("VACUUM")
-                        await writer_session.execute(
-                            "UPDATE schema_migrations "
-                            "SET compaction_completed_at_ms = ? WHERE version = ?",
-                            (
-                                _current_time_ms(),
-                                RUNTIME_EVENTS_REMOVAL_MIGRATION.version,
-                            ),
-                        )
-                    checkpoint_row = await writer_session.fetchone(
-                        "PRAGMA wal_checkpoint(TRUNCATE)"
-                    )
-                    if checkpoint_row is None or checkpoint_row[0] != 0:
-                        raise MigrationError("SQLite WAL checkpoint could not complete")
-
+                    self._schema_version = await self._migrate(writer)
                     for _ in range(self._max_idle_readers):
                         readers.append(await self._open_connection(query_only=True))
                     executor = SqliteExecutor(
@@ -180,6 +143,46 @@ class SqliteDatabase:
                     if writer is not None:
                         await writer.close()
                 raise
+
+    async def _migrate(self, writer: aiosqlite.Connection) -> int:
+        """Bring the schema up to date, compacting once the removal lands."""
+
+        session = SqliteSession(writer)
+        await writer.execute("BEGIN IMMEDIATE")
+        try:
+            version = await apply_migrations(
+                session,
+                clock=now_ms,
+            )
+        except BaseException:
+            await writer.execute("ROLLBACK")
+            raise
+        else:
+            await writer.execute("COMMIT")
+
+        compaction_row = await session.fetchone(
+            "SELECT compaction_completed_at_ms "
+            "FROM schema_migrations WHERE version = ?",
+            (RUNTIME_EVENTS_REMOVAL_MIGRATION.version,),
+        )
+        if compaction_row is None:
+            raise MigrationError(
+                "runtime event removal migration is missing from ledger"
+            )
+        if compaction_row["compaction_completed_at_ms"] is None:
+            await writer.execute("VACUUM")
+            await session.execute(
+                "UPDATE schema_migrations "
+                "SET compaction_completed_at_ms = ? WHERE version = ?",
+                (
+                    now_ms(),
+                    RUNTIME_EVENTS_REMOVAL_MIGRATION.version,
+                ),
+            )
+        checkpoint_row = await session.fetchone("PRAGMA wal_checkpoint(TRUNCATE)")
+        if checkpoint_row is None or checkpoint_row[0] != 0:
+            raise MigrationError("SQLite WAL checkpoint could not complete")
+        return version
 
     async def stop(self, *, timeout: float) -> None:
         if timeout <= 0:
@@ -269,10 +272,6 @@ class SqliteDatabase:
         if executor is None:
             raise RuntimeError("SQLite database has not been started")
         return executor
-
-
-def _current_time_ms() -> int:
-    return time_ns() // 1_000_000
 
 
 def _restrict_permissions(path: Path, mode: int) -> None:

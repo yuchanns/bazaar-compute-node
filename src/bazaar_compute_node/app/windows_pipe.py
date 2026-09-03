@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 from bazaar_compute_node.core.lifecycle import TaskFailureSignal
 from bazaar_compute_node.core.paths import resolve_data_dir
 
+from ..core.utils.text import format_exception
+
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 
 _ERROR_ALREADY_EXISTS = 183
@@ -139,13 +141,9 @@ def _pipe_path(pipe_name: str) -> str:
     return rf"\\.\pipe\{pipe_name}"
 
 
-def _mutex_name(pipe_name: str) -> str:
-    return rf"Local\{pipe_name}-mutex"
-
-
 def _create_mutex(pipe_name: str) -> Any:
     _set_last_error(0)
-    handle = _CreateMutexW(None, True, _mutex_name(pipe_name))
+    handle = _CreateMutexW(None, True, rf"Local\{pipe_name}-mutex")
     if _is_invalid_handle(handle):
         _raise_last_error("CreateMutexW failed")
     if _get_last_error() == _ERROR_ALREADY_EXISTS:
@@ -460,7 +458,7 @@ class WindowsNamedPipeServer:
             response = {
                 "ok": False,
                 "code": "COMMAND_FAILED",
-                "error": str(error),
+                "error": format_exception(error),
             }
         encoded_response = (
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()

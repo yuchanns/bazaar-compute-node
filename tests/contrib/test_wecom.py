@@ -13,9 +13,9 @@ from aiohttp.test_utils import TestServer
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.wecom.channel import (
     WeComChannel,
+    _Delivery,
     _RequestResult,
 )
-from bazaar_compute_node.contrib.wecom.markdown import split_markdown
 from bazaar_compute_node.contrib.wecom.outbound import (
     CHUNK_SIZE,
     AttachmentReader,
@@ -43,6 +43,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.core.utils.markdown import split_markdown, utf8_bytes
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
@@ -69,7 +70,7 @@ def test_wecom_markdown_split() -> None:
     # unicode and block boundaries survive a split
     content = ("Heading\n\nParagraph with \u4f60\u597d.\n\n" * 20).rstrip()
 
-    chunks = split_markdown(content, limit=128)
+    chunks = split_markdown(content, limit=128, measure=utf8_bytes)
 
     assert len(chunks) > 1
     assert "".join(chunks) == content
@@ -78,12 +79,23 @@ def test_wecom_markdown_split() -> None:
     # a fenced block is closed and reopened across parts
     content = "```python\n" + ("print('\u4f60\u597d')\n" * 40) + "```"
 
-    chunks = split_markdown(content, limit=96)
+    chunks = split_markdown(content, limit=96, measure=utf8_bytes)
 
     assert len(chunks) > 1
     assert all(len(chunk.encode("utf-8")) <= 96 for chunk in chunks)
     assert all(chunk.startswith("```python\n") for chunk in chunks)
     assert all(chunk.endswith("```") for chunk in chunks)
+
+
+def test_wecom_markdown_closes_a_fence_that_opens_a_continuation() -> None:
+    # a closing fence can land at the start of a continuation part; the reopened
+    # fence has already put it at a line boundary, so it closes the block there
+    content = "```py \n```py~~~```"
+
+    chunks = split_markdown(content, limit=12, measure=utf8_bytes)
+
+    assert chunks[-1] == "```py\n```"
+    assert all(chunk.startswith("```py") for chunk in chunks[1:])
 
 
 def test_wecom_filename_decodes_provider_content_disposition() -> None:
@@ -680,10 +692,10 @@ def test_wecom_prepares_current_attachment_content(tmp_path: Path) -> None:
 
 def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     # a receipt tracks visible parts and upload requests
-    receipt = WeComChannel._delivery_receipt(
-        2,
-        1,
-        [
+    receipt = _Delivery(
+        total=2,
+        confirmed=1,
+        receipts=[
             {
                 "provider_request_id": "send-1",
                 "state": "confirmed",
@@ -691,7 +703,7 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
                 "ordinal": 1,
             }
         ],
-        [
+        uploads=[
             {
                 "provider_request_id": "upload-1",
                 "state": "failed",
@@ -699,7 +711,7 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
                 "attachment_ordinal": 1,
             }
         ],
-    )
+    ).receipt()
 
     assert receipt == {
         "total_parts": 2,
@@ -740,24 +752,26 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     )
 
     result = channel._clear_failure(
-        total=2,
-        receipts=[
-            {
-                "provider_request_id": "send-1",
-                "state": "confirmed",
-                "part_type": "markdown",
-                "ordinal": 1,
-            }
-        ],
-        upload_receipts=[
-            {
-                "provider_request_id": "upload-1",
-                "state": "failed",
-                "stage": "init",
-                "attachment_ordinal": 1,
-            }
-        ],
-        confirmed=1,
+        _Delivery(
+            total=2,
+            confirmed=1,
+            receipts=[
+                {
+                    "provider_request_id": "send-1",
+                    "state": "confirmed",
+                    "part_type": "markdown",
+                    "ordinal": 1,
+                }
+            ],
+            uploads=[
+                {
+                    "provider_request_id": "upload-1",
+                    "state": "failed",
+                    "stage": "init",
+                    "attachment_ordinal": 1,
+                }
+            ],
+        ),
         error_kind="provider_rejected_upload",
         error_message="upload failed",
     )
@@ -783,17 +797,17 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     )
 
     result = channel._clear_failure(
-        total=1,
-        receipts=[],
-        upload_receipts=[
-            {
-                "provider_request_id": "upload-1",
-                "state": "unknown",
-                "stage": "finish",
-                "attachment_ordinal": 1,
-            }
-        ],
-        confirmed=0,
+        _Delivery(
+            total=1,
+            uploads=[
+                {
+                    "provider_request_id": "upload-1",
+                    "state": "unknown",
+                    "stage": "finish",
+                    "attachment_ordinal": 1,
+                }
+            ],
+        ),
         error_kind="upload_unknown",
         error_message="upload outcome is unknown",
     )
@@ -1031,11 +1045,11 @@ def test_wecom_activity_markdown_lists_counts_and_tokens(tmp_path: Path) -> None
     assert markdown.startswith("**活动 · 已完成**")
     assert "| 工具调用 | 2 次 |" in markdown
     assert "| 上下文压缩 | 1 次 |" in markdown
-    assert "| 输入 | 12400 |" in markdown
-    assert "| 缓存 | 9100 |" in markdown
+    assert "| 输入 | 12.4K |" in markdown
+    assert "| 缓存 | 9.1K |" in markdown
     assert "| 输出 | 860 |" in markdown
     assert rows
-    assert "输入不含缓存命中" in markdown
+    assert "> 输入不含缓存命中" in markdown
 
 
 def test_wecom_activity_markdown_omits_zero_sections(tmp_path: Path) -> None:

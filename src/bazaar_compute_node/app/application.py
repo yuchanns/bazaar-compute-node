@@ -19,6 +19,7 @@ from ..core.paths import resolve_data_dir
 from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
+from ..core.utils.text import format_exception
 from ..i18n import create_translator
 from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
@@ -214,7 +215,7 @@ class NodeApplication:
                 runtimes=_runtime_kinds(configuration),
                 status="failed",
                 error_type=type(error).__name__,
-                error=_safe_error(error),
+                error=format_exception(error),
             )
             self.agent_startup_results[configuration.id] = result
             self._log("agent.start.failed", **result.as_health_record())
@@ -265,7 +266,7 @@ class NodeApplication:
                     "agent.stop.failed",
                     agent_id=agent_id,
                     error_type=type(error).__name__,
-                    error=_safe_error(error),
+                    error=format_exception(error),
                 )
         self.agents.clear()
         try:
@@ -349,7 +350,7 @@ class NodeApplication:
                     "bcn.critical.failed",
                     component=component,
                     error_type=type(error).__name__,
-                    error=_safe_error(error),
+                    error=format_exception(error),
                 )
                 raise error
         finally:
@@ -381,7 +382,7 @@ class NodeApplication:
                 agent_id=agent_id,
                 owner_session_id=message.session_id,
                 error_type=type(error).__name__,
-                error=_safe_error(error),
+                error=format_exception(error),
             )
             return False
         return True
@@ -506,11 +507,6 @@ class NodeApplication:
                 default=str,
             ),
         )
-
-
-def _safe_error(error: BaseException) -> str:
-    message = str(error).strip()
-    return message or type(error).__name__
 
 
 __all__ = ["AgentStartupResult", "NodeApplication"]
