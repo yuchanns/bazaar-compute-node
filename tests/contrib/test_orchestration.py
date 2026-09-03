@@ -96,8 +96,22 @@ from bazaar_compute_node.core.runtime import (
 )
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import (
+    ENGLISH,
+    SIMPLIFIED_CHINESE,
+    Translator,
+    create_translator,
+)
 
 ACCEPTANCE_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+_ENGLISH_TRANSLATOR = create_translator(ENGLISH)
+
+
+def unchanged_error_feedback_detail(
+    _: str,
+    error_message: str,
+) -> str:
+    return error_message
 
 
 class _AcceptanceRegistry(AdapterRegistry):
@@ -293,10 +307,25 @@ def test_inbox_notice_keeps_the_upgrade_line_inside_an_inline_bracket() -> None:
     assert notice.endswith("just carry on.]")
 
 
+class _InvalidSendResultChannel(TestChannel):
+    async def send(
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        del timeout
+        self.send_requests.append(request)
+        self.send_attempts.append(request)
+        return cast(ProviderCallResult[ChannelDeliveryReceipt], object())
+
+
 async def make_node(
     *,
     workspace: Callable[[], Path] = Path.cwd,
     channel: TestChannel | None = None,
+    translator: Translator = _ENGLISH_TRANSLATOR,
+    error_feedback_detail: Callable[[str, str], str] = unchanged_error_feedback_detail,
     upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
 ) -> tuple[
     SessionOrchestrator,
@@ -319,6 +348,8 @@ async def make_node(
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=workspace,
+        translator=translator,
+        error_feedback_detail=error_feedback_detail,
         upgrade_notice=upgrade_notice,
     )
     runtime.command_service = orchestrator.command_service
@@ -348,6 +379,8 @@ async def make_sqlite_node() -> tuple[
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=2)
@@ -378,6 +411,8 @@ async def make_idle_timeout_node(
         timer_wheel=wheel,
         runtime_idle_timeout_ms=idle_timeout_ms,
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=1)
@@ -2393,6 +2428,254 @@ async def test_batched_notifications_collapse_into_one_turn() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "language", "expected_body"),
+    (
+        (
+            RuntimeEventState.FAILED,
+            ENGLISH,
+            "Execution failed: test <redacted> failure",
+        ),
+        (
+            RuntimeEventState.UNKNOWN,
+            SIMPLIFIED_CHINESE,
+            "执行状态未知：test <redacted> failure",
+        ),
+    ),
+)
+async def test_terminal_runtime_error_replies_on_original_route(
+    state: RuntimeEventState,
+    language: str,
+    expected_body: str,
+) -> None:
+    orchestrator, channel, runtime, storage, audit = await make_node(
+        translator=create_translator(language),
+        error_feedback_detail=lambda _, text: text.replace("provider", "<redacted>"),
+    )
+    message = replace(
+        make_message(),
+        target_kind=ChannelTargetKind.GROUP,
+        mentions_agent=True,
+        provider_thread_id="provider-thread-7",
+        provider_message_id="provider-message-7",
+    )
+    runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED, state)))
+    try:
+        result = await orchestrator.handle_inbound(message)
+
+        assert result is not None
+        assert result.state.value == state.value
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+        request = channel.send_attempts[0]
+        assert request.body == expected_body
+        assert request.session_id == "bcn-1"
+        assert request.target_kind is ChannelTargetKind.GROUP
+        assert request.provider_thread_id == "provider-thread-7"
+        assert request.provider_reply_to_message_id == "provider-message-7"
+        assert not _stored_message_index(
+            storage,
+            direction=MessageDirection.OUTBOUND,
+        )
+        assert [
+            event.event_name
+            for event in audit.events
+            if event.event_name.startswith("runtime.error_feedback.")
+        ] == [
+            "runtime.error_feedback.started",
+            "runtime.error_feedback.sent",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_result",
+    (
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.FAILED,
+            error_kind="provider_failed",
+            error_message="feedback failed",
+        ),
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.PARTIAL,
+            value=ChannelDeliveryReceipt(provider_receipt_ref="partial-feedback"),
+            error_kind="provider_partial",
+            error_message="feedback was partial",
+        ),
+        ProviderCallResult[ChannelDeliveryReceipt](
+            status=ProviderCallStatus.UNKNOWN,
+            error_kind="provider_unknown",
+            error_message="feedback outcome is unknown",
+        ),
+    ),
+)
+async def test_feedback_delivery_outcome_preserves_original_runtime_turn(
+    provider_result: ProviderCallResult[ChannelDeliveryReceipt],
+) -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    channel.queue_send_result(provider_result)
+    try:
+        result = await orchestrator.handle_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+        feedback_events = [
+            event
+            for event in audit.events
+            if event.event_name.startswith("runtime.error_feedback.")
+        ]
+        assert [event.event_name for event in feedback_events] == [
+            "runtime.error_feedback.started",
+            "runtime.error_feedback.failed",
+        ]
+        assert feedback_events[-1].metadata["delivery_state"] == (
+            provider_result.status.value
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_runtime_error_feedback() -> None:
+    # a reporter exception preserves the original runtime turn
+    invalid_channel = _InvalidSendResultChannel()
+    orchestrator, channel, runtime, _, _ = await make_node(channel=invalid_channel)
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        result = await orchestrator.handle_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_message == "test provider failure"
+        assert len(channel.send_attempts) == 1
+    finally:
+        await orchestrator.stop(timeout=1)
+
+    # batched notifications send one error feedback
+    orchestrator, channel, runtime, _, _ = await make_node()
+    first_context, first_message, first_created = await orchestrator._record_inbound(
+        make_message(seq=1)
+    )
+    second_context, second_message, second_created = await orchestrator._record_inbound(
+        make_message(seq=2)
+    )
+    assert first_context is not None
+    assert second_context is not None
+    assert first_created
+    assert second_created
+    loop = asyncio.get_running_loop()
+    first_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+    second_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    runtime_queue = orchestrator._runtime_queue_for_session("bcn-1")
+    runtime_queue.put_nowait(
+        _RuntimeNotification(
+            first_message,
+            first_context,
+            first_completion,
+        )
+    )
+    runtime_queue.put_nowait(
+        _RuntimeNotification(
+            second_message,
+            second_context,
+            second_completion,
+        )
+    )
+    try:
+        first_result, second_result = await asyncio.gather(
+            first_completion,
+            second_completion,
+        )
+
+        assert first_result == second_result
+        assert len(runtime.started_turns) == 1
+        assert len(channel.send_attempts) == 1
+        assert channel.send_attempts[0].provider_reply_to_message_id == (
+            first_message.provider_message_id
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+    # a reminder system message replies to the human anchor it speaks for
+    orchestrator, channel, runtime, storage, _ = await make_node()
+    anchor = make_message(seq=1, message_id=str(uuid7()))
+    try:
+        initial_turn = await orchestrator.handle_inbound(anchor)
+        assert initial_turn is not None
+        canonical_anchor = _stored_messages(
+            storage,
+            "bcn-1",
+            direction=MessageDirection.INBOUND,
+        )[0]
+        reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
+            Reminder(
+                reminder_id="pending",
+                owner_session_id=canonical_anchor.session_id,
+                anchor_message_id=canonical_anchor.message_id,
+                title="Review",
+                state=ReminderState.SCHEDULED,
+                next_fire_at_ms=10,
+                repeat_rule=None,
+                timezone="UTC",
+                revision=1,
+                last_occurrence_no=0,
+                created_at_ms=2,
+                updated_at_ms=2,
+            )
+        )
+        reminder_message = await cast(IStorage, storage).save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=str(uuid7()),
+                session_id=canonical_anchor.session_id,
+                channel_session_id=canonical_anchor.channel_session_id,
+                channel=canonical_anchor.channel,
+                provider_thread_id=canonical_anchor.provider_thread_id,
+                provider_message_id=None,
+                received_at_ms=2,
+                sender=SenderIdentity(name="system"),
+                target=canonical_anchor.target,
+                target_kind=canonical_anchor.target_kind,
+                body='🔔 Reminder #019c1234 (one-time) — dm:alice — "Review"',
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                    "reminder_id": reminder.reminder_id,
+                },
+            )
+        )
+        runtime.queue_turn_plan(
+            TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+        )
+
+        await orchestrator.publish_inbox_wake(reminder_message)
+        await wait_until(lambda: len(channel.send_attempts) == 1)
+
+        request = channel.send_attempts[0]
+        assert request.session_id == canonical_anchor.session_id
+        assert request.target_kind is canonical_anchor.target_kind
+        assert request.provider_thread_id == canonical_anchor.provider_thread_id
+        assert (
+            request.provider_reply_to_message_id == canonical_anchor.provider_message_id
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates() -> (
     None
 ):
@@ -2922,6 +3205,8 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     runtime.command_service = second.command_service
     await second.start(timeout=1)
@@ -3533,6 +3818,8 @@ async def make_multi_runtime_node() -> tuple[
         timeout_budget=make_budget(),
         timer_wheel=wheel,
         workspace=Path.cwd,
+        translator=_ENGLISH_TRANSLATOR,
+        error_feedback_detail=unchanged_error_feedback_detail,
     )
     for runtime in runtimes:
         runtime.command_service = orchestrator.command_service

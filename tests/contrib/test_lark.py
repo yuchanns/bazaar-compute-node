@@ -706,7 +706,6 @@ def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     )
     session_id = "session-1"
     channel._stream_routes[session_id] = "om_message"
-    channel._stream_route_threads[session_id] = True
 
     channel.accept_turn_event(
         RuntimeOutputEvent(
@@ -723,7 +722,6 @@ def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     )
 
     assert channel._stream_routes == {}
-    assert channel._stream_route_threads == {}
 
 
 def test_lark_approval_card_contract() -> None:

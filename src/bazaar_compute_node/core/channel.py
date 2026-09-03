@@ -16,8 +16,6 @@ from .models import (
     Message,
     OutboundAttachment,
     RuntimeOutputEvent,
-    TurnFailed,
-    TurnUnknown,
 )
 from .outcomes import ProviderCallResult
 from .timerwheel import TimerWheel
@@ -136,7 +134,10 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         item: RuntimeOutputEvent,
         *,
         session_id: str,
-    ) -> None: ...
+    ) -> None:
+        """Follow how a turn is going, for channels that show it."""
+
+        return
 
     def anchor_turn(self, session_id: str, anchor: Message) -> None:
         """Say which message a turn's own output belongs under."""
@@ -152,20 +153,13 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
 
 
 class Channel(IChannel):
-    """Bind a provider channel to one Agent: namespace its IDs, redact its secrets."""
+    """Bind a provider channel to one Agent and namespace the ids it hands out."""
 
-    def __init__(
-        self,
-        agent_id: str,
-        channel: IChannel,
-        *,
-        redact: Callable[[str, str], str] = lambda _, text: text,
-    ) -> None:
+    def __init__(self, agent_id: str, channel: IChannel) -> None:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("agent_id must be a non-empty string")
         self._agent_id = agent_id
         self._channel = channel
-        self._redact = redact
         self._provider_session_ids: dict[str, str] = {}
 
     @property
@@ -210,19 +204,6 @@ class Channel(IChannel):
         *,
         session_id: str,
     ) -> None:
-        match item.payload:
-            case (
-                TurnFailed(error_message=str() as text)
-                | TurnUnknown(error_message=str() as text)
-            ):
-                redacted = self._redact(session_id, text)
-                if redacted != text:
-                    item = replace(
-                        item,
-                        payload=replace(item.payload, error_message=redacted),
-                    )
-            case _:
-                pass
         provider_session_id = self._provider_session_ids.get(session_id, session_id)
         if item.envelope.session_id == session_id:
             item = replace(

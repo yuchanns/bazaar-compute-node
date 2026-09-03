@@ -7,14 +7,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ...core.channel import ChannelContext, ChannelDeliveryReceipt, ChannelSendRequest
-from ...core.models import RuntimeOutputEvent
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
-from .activity import MAX_RICH_MARKDOWN_BYTES, TelegramActivityProjector
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .approval import TelegramApprovalChannel
 from .attachments import PreparedTelegramAttachment, prepare_outbound_attachments
 from .identity import TelegramThreadIdentity, parse_provider_thread_id
 
+MAX_RICH_MARKDOWN_BYTES = 32_768
 _MAX_RATE_LIMIT_RETRIES = 3
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
@@ -76,10 +75,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         self._outbound_documents_confirmed = 0
         self._outbound_markdown_fallbacks = 0
         self._outbound_rate_limit_retries = 0
-        self._activity = TelegramActivityProjector(
-            timer_wheel=self._timer_wheel,
-            translator=self._translator,
-        )
 
     @property
     def health(self) -> Mapping[str, object]:
@@ -95,33 +90,9 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "outbound_documents_confirmed": self._outbound_documents_confirmed,
                 "outbound_markdown_fallbacks": self._outbound_markdown_fallbacks,
                 "outbound_rate_limit_retries": self._outbound_rate_limit_retries,
-                "activity_turns": self._activity.active_turns,
-                "activity_tasks_pending": self._activity.tasks_pending,
-                "activity_messages_sent": self._activity.messages_sent,
-                "activity_messages_edited": self._activity.messages_edited,
-                "activity_failures": self._activity.failures,
-                "activity_rate_limit_retries": self._activity.rate_limit_retries,
-                "activity_coalesced_updates": self._activity.coalesced_updates,
             }
         )
         return health
-
-    async def stop(self, *, timeout: float) -> None:
-        await self._activity.close()
-        await super().stop(timeout=timeout)
-
-    def accept_turn_event(
-        self,
-        item: RuntimeOutputEvent,
-        *,
-        session_id: str,
-    ) -> None:
-        super().accept_turn_event(item, session_id=session_id)
-        self._activity.accept(
-            item,
-            identity=self._stream_routes.get(item.envelope.session_id),
-            api=self._api,
-        )
 
     def _outbound_route(
         self, request: ChannelSendRequest, bot_id: int

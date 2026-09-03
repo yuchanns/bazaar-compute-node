@@ -20,7 +20,6 @@ from bazaar_compute_node.core.models import (
     RuntimeOutputEvent,
     SenderIdentity,
     TurnCompleted,
-    TurnFailed,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.core.runtime import (
@@ -53,46 +52,6 @@ async def test_channel_delegates_identity_during_lifecycle() -> None:
     finally:
         await channel.stop(timeout=1)
     assert channel.get_identity() is None
-
-
-def test_channel_redacts_terminal_error_secrets() -> None:
-    provider = TestChannel()
-    channel = Channel(
-        "agent-test",
-        provider,
-        redact=lambda session_id, text: text.replace(f"token-{session_id}", "<hidden>"),
-    )
-    envelope = RuntimeEventEnvelope(
-        session_id="bcn-1",
-        runtime_session_id="runtime-1",
-        turn_id="turn-1",
-        provider_turn_id=None,
-        occurred_at_ms=1,
-    )
-
-    channel.accept_turn_event(
-        RuntimeOutputEvent(
-            envelope=envelope,
-            payload=TurnFailed(
-                event_name="bcn.turn.failed",
-                error_kind="provider_failed",
-                error_message="auth failed for token-bcn-1",
-            ),
-        ),
-        session_id="bcn-1",
-    )
-    channel.accept_turn_event(
-        RuntimeOutputEvent(
-            envelope=envelope,
-            payload=TurnCompleted(event_name="bcn.turn.completed"),
-        ),
-        session_id="bcn-1",
-    )
-
-    failed = provider.events[0].payload
-    assert isinstance(failed, TurnFailed)
-    assert failed.error_message == "auth failed for <hidden>"
-    assert isinstance(provider.events[1].payload, TurnCompleted)
 
 
 @pytest.mark.asyncio
