@@ -14,6 +14,7 @@ import pytest
 
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.lark import api as lark_api
+from bazaar_compute_node.contrib.lark import channel as lark_channel
 from bazaar_compute_node.contrib.lark.api import ClientConfig, LarkApi
 from bazaar_compute_node.contrib.lark.approval import (
     LarkApprovalChannel,
@@ -75,6 +76,8 @@ from bazaar_compute_node.core.models import (
     RuntimeEventEnvelope,
     RuntimeOutputEvent,
     SenderKind,
+    ToolCall,
+    ToolCallStarted,
     TurnCompleted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -722,6 +725,123 @@ def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     )
 
     assert channel._stream_routes == {}
+
+
+class _ReactionApi:
+    def __init__(self) -> None:
+        self.placed: list[str] = []
+        self.removed: list[str] = []
+
+    async def create_reaction(
+        self,
+        message_id: str,
+        *,
+        emoji_type: str,
+        timeout: float,
+    ) -> str:
+        del timeout
+        self.placed.append(f"{message_id}:{emoji_type}")
+        return f"reaction-{len(self.placed)}"
+
+    async def delete_reaction(
+        self,
+        message_id: str,
+        reaction_id: str,
+        *,
+        timeout: float,
+    ) -> None:
+        del timeout
+        self.removed.append(f"{message_id}:{reaction_id}")
+
+
+def _typing_channel(tmp_path: Path, api: _ReactionApi) -> LarkChannel:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="cli_app",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    channel._api = cast(LarkApi, api)
+    return channel
+
+
+def _tool_call_event(session_id: str) -> RuntimeOutputEvent:
+    return RuntimeOutputEvent(
+        envelope=RuntimeEventEnvelope(
+            session_id=session_id,
+            runtime_session_id="runtime-session-1",
+            turn_id="turn-1",
+            provider_turn_id=None,
+            occurred_at_ms=1,
+        ),
+        payload=ToolCallStarted(call=ToolCall(call_id="call-1", name="bash")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_lark_typing_marker_moves_along_and_leaves_one_showing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lark_channel, "_TYPING_INTERVAL_SECONDS", 0.01)
+    api = _ReactionApi()
+    channel = _typing_channel(tmp_path, api)
+    session_id = "session-1"
+    channel._stream_routes[session_id] = "om_message"
+
+    channel.accept_turn_event(_tool_call_event(session_id), session_id=session_id)
+    channel.accept_turn_event(_tool_call_event(session_id), session_id=session_id)
+    while len(api.placed) < 3:
+        await asyncio.sleep(0)
+
+    assert len(channel._typing_runners) == 1
+    assert api.placed[:3] == [
+        "om_message:Typing",
+        "om_message:THINKING",
+        "om_message:OnIt",
+    ]
+    assert api.removed[:2] == ["om_message:reaction-1", "om_message:reaction-2"]
+    assert len(api.removed) == len(api.placed) - 1
+
+    await channel._stop_typing(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_lark_terminal_takes_the_typing_marker_away(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lark_channel, "_TYPING_INTERVAL_SECONDS", 0.01)
+    api = _ReactionApi()
+    channel = _typing_channel(tmp_path, api)
+    session_id = "session-1"
+    channel._stream_routes[session_id] = "om_message"
+
+    channel.accept_turn_event(_tool_call_event(session_id), session_id=session_id)
+    while not api.placed:
+        await asyncio.sleep(0)
+    runner = channel._typing_runners[session_id]
+
+    channel.accept_turn_event(
+        RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                session_id=session_id,
+                runtime_session_id="runtime-session-1",
+                turn_id="turn-1",
+                provider_turn_id=None,
+                occurred_at_ms=2,
+            ),
+            payload=TurnCompleted(event_name="turn.completed"),
+        ),
+        session_id=session_id,
+    )
+    await runner
+
+    assert channel._typing == {}
+    assert len(api.removed) == len(api.placed)
+    assert api.removed[-1] == f"om_message:reaction-{len(api.placed)}"
 
 
 def test_lark_approval_card_contract() -> None:

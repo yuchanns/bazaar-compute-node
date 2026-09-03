@@ -5,7 +5,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic, time_ns
 from unicodedata import category
 
@@ -50,7 +50,7 @@ from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 from ...i18n import ENGLISH, create_translator
-from .api import LarkApi
+from .api import LarkApi, LarkApiError, LarkTransportError
 from .attachments import (
     LarkMention,
     LarkResourceCache,
@@ -73,7 +73,17 @@ _CHAT_CACHE_MAX_ENTRIES = 256
 _CHAT_TIMEOUT_SECONDS = 5.0
 _PARENT_TIMEOUT_SECONDS = 10.0
 _RESOURCE_TIMEOUT_SECONDS = 60.0
+_TYPING_TIMEOUT_SECONDS = 3.0
+_TYPING_INTERVAL_SECONDS = 3.0
+# one marker at a time, replaced on every beat, so the reader sees it move
+_TYPING_EMOJI = ("Typing", "THINKING", "OnIt", "OneSecond")
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _Typing:
+    message_id: str
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class LarkChannel(IChannel):
@@ -129,6 +139,11 @@ class LarkChannel(IChannel):
         self._last_resource_disposition: str | None = None
         self._send_lock = asyncio.Lock()
         self._stream_routes: dict[str, str] = {}
+        self._typing: dict[str, _Typing] = {}
+        self._typing_runners: dict[str, asyncio.Task[None]] = {}
+        self._typing_stopping = False
+        self._typing_requests = 0
+        self._typing_failures = 0
         self._translator = context.translator or create_translator(ENGLISH)
 
     @property
@@ -173,6 +188,9 @@ class LarkChannel(IChannel):
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
+            "typing_requests": self._typing_requests,
+            "typing_failures": self._typing_failures,
+            "typing_sessions": len(self._typing),
             "token_refresh_failures": (
                 self._api.token_refresh_failures
                 if self._api is not None
@@ -199,6 +217,7 @@ class LarkChannel(IChannel):
             self._stop_sent = False
             self._inbound = asyncio.Queue()
             self._stream_routes.clear()
+            self._typing_stopping = False
             try:
                 session = aiohttp.ClientSession()
                 api = LarkApi(
@@ -228,6 +247,7 @@ class LarkChannel(IChannel):
                 self._state = "connected"
             except BaseException:
                 self._state = "stopping"
+                await self._stop_typing(timeout=remaining(deadline))
                 if transport is not None:
                     await transport.stop(timeout=remaining(deadline))
                 if api is not None:
@@ -251,6 +271,7 @@ class LarkChannel(IChannel):
             self._state = "stopping"
             if transport is not None:
                 await transport.stop(timeout=timeout)
+            await self._stop_typing(timeout=timeout)
             await self._resource_cache.close()
             await self._close_contact_cache()
             await self._close_chat_cache()
@@ -268,6 +289,24 @@ class LarkChannel(IChannel):
             if not self._stop_sent:
                 self._inbound.put_nowait(_STOP)
                 self._stop_sent = True
+
+    async def _stop_typing(self, *, timeout: float) -> None:
+        """Let every marker come off before the API client goes away."""
+
+        self._typing_stopping = True
+        for typing in self._typing.values():
+            typing.stop.set()
+        self._typing.clear()
+        runners = tuple(self._typing_runners.values())
+        self._typing_runners.clear()
+        if not runners:
+            return
+        done, pending = await asyncio.wait(runners, timeout=max(0.0, timeout))
+        del done
+        for runner in pending:
+            runner.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def receive(self) -> AsyncIterator[Message]:
         inbound = self._inbound
@@ -817,6 +856,7 @@ class LarkChannel(IChannel):
                 return
             case TurnCompleted() | TurnFailed() | TurnCancelled() | TurnUnknown():
                 self._stream_routes.pop(session_id, None)
+                self._end_typing(session_id)
                 return
             case (
                 ContentDelta()
@@ -830,7 +870,89 @@ class LarkChannel(IChannel):
                 | ToolCallInteraction()
                 | UsageUpdated()
             ):
+                self._begin_typing(session_id)
                 return
+
+    def _begin_typing(self, session_id: str) -> None:
+        """Mark the message this turn answers, from its first sign of work."""
+
+        if self._typing_stopping or session_id in self._typing:
+            return
+        message_id = self._stream_routes.get(session_id)
+        if message_id is None or self._api is None:
+            return
+        typing = _Typing(message_id=message_id)
+        self._typing[session_id] = typing
+        runner = asyncio.create_task(
+            self._rotate_typing(typing),
+            name=f"bcn-lark-typing-{session_id}",
+        )
+        self._typing_runners[session_id] = runner
+        runner.add_done_callback(
+            lambda task: (
+                self._typing_runners.pop(session_id, None)
+                if self._typing_runners.get(session_id) is task
+                else None
+            )
+        )
+
+    def _end_typing(self, session_id: str) -> None:
+        typing = self._typing.pop(session_id, None)
+        if typing is not None:
+            typing.stop.set()
+
+    async def _rotate_typing(self, typing: _Typing) -> None:
+        """Move the marker along until the turn ends, then take it away."""
+
+        showing: str | None = None
+        beat = 0
+        while not typing.stop.is_set():
+            emoji = _TYPING_EMOJI[beat % len(_TYPING_EMOJI)]
+            beat += 1
+            placed = await self._place_marker(typing.message_id, emoji)
+            if placed is None:
+                break
+            if showing is not None:
+                await self._remove_marker(typing.message_id, showing)
+            showing = placed
+            try:
+                await asyncio.wait_for(
+                    typing.stop.wait(),
+                    timeout=_TYPING_INTERVAL_SECONDS,
+                )
+            except TimeoutError:
+                continue
+        if showing is not None:
+            await self._remove_marker(typing.message_id, showing)
+
+    async def _place_marker(self, message_id: str, emoji: str) -> str | None:
+        api = self._api
+        if api is None:
+            return None
+        self._typing_requests += 1
+        try:
+            return await api.create_reaction(
+                message_id,
+                emoji_type=emoji,
+                timeout=_TYPING_TIMEOUT_SECONDS,
+            )
+        except LarkApiError, LarkTransportError, TimeoutError:
+            self._typing_failures += 1
+            return None
+
+    async def _remove_marker(self, message_id: str, reaction_id: str) -> None:
+        api = self._api
+        if api is None:
+            return
+        self._typing_requests += 1
+        try:
+            await api.delete_reaction(
+                message_id,
+                reaction_id,
+                timeout=_TYPING_TIMEOUT_SECONDS,
+            )
+        except LarkApiError, LarkTransportError, TimeoutError:
+            self._typing_failures += 1
 
     async def send(
         self,
