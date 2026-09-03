@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import locale
+import os
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import call, patch
@@ -11,9 +13,33 @@ import pytest
 
 from bazaar_compute_node import cli
 from bazaar_compute_node.app import system_service
+from bazaar_compute_node.cmd.bcn import build_cli
 from bazaar_compute_node.cmd.bcn import node as node_commands
 from bazaar_compute_node.cmd.bcn import service as service_commands
 from bazaar_compute_node.cmd.bcn._runner import UsageReporter
+from bazaar_compute_node.i18n import create_translator
+
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="systemd")
+macos_only = pytest.mark.skipif(sys.platform != "darwin", reason="launchd")
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows task scheduler")
+
+
+GOLDEN = Path(__file__).parent / "golden" / "system_service"
+
+
+@pytest.fixture
+def golden_context() -> system_service.SystemServiceContext:
+    """Fixed paths, so what the templates render can be compared byte for byte."""
+
+    data_dir = Path("/home/test-user/.bcn")
+    return system_service.SystemServiceContext(
+        executable=Path("/usr/local/bin/bcn"),
+        config_path=data_dir / "config.toml",
+        data_dir=data_dir,
+        env_file=data_dir / "runtime.env",
+        log_path=data_dir / "system-service.log",
+        user="test-user",
+    )
 
 
 @pytest.fixture
@@ -29,30 +55,24 @@ def service_context(tmp_path: Path) -> system_service.SystemServiceContext:
     )
 
 
-def test_system_service_supports_install_start_and_status() -> None:
-    routed: list[Namespace] = []
+def test_system_service_command_tree_carries_install_start_and_status() -> None:
+    service = build_cli(create_translator(None)).commands["system-service"]
+    assert isinstance(service, click.Group)
 
-    async def record(args: Namespace, _: object) -> int:
-        routed.append(args)
-        return 0
-
-    with patch.object(
-        service_commands, "run_system_service_command", side_effect=record
-    ):
-        assert (
-            cli.main(["system-service", "install", "--env-file", "/tmp/bcn.env"]) == 0
-        )
-        for command in ("start", "stop", "restart", "status"):
-            assert cli.main(["system-service", command]) == 0
-
-    assert [args.system_service_command for args in routed] == [
+    assert sorted(service.commands) == [
         "install",
-        "start",
-        "stop",
         "restart",
+        "start",
         "status",
+        "stop",
+        "uninstall",
     ]
-    assert routed[0].env_file == Path("/tmp/bcn.env")
+
+    install = service.commands["install"]
+    context = click.Context(install)
+    install.parse_args(context, ["--env-file", "/tmp/bcn.env"])
+
+    assert context.params["env_file"] == Path("/tmp/bcn.env")
 
 
 def test_native_command_uses_system_encoding_without_decode_failures() -> None:
@@ -82,6 +102,7 @@ def test_native_command_uses_system_encoding_without_decode_failures() -> None:
     )
 
 
+@windows_only
 def test_native_command_hides_windows_console() -> None:
     completed = subprocess.CompletedProcess(
         ["native-service"],
@@ -90,20 +111,11 @@ def test_native_command_hides_windows_console() -> None:
         stderr="",
     )
 
-    with (
-        patch.object(system_service.os, "name", "nt"),
-        patch.object(
-            system_service.subprocess,
-            "CREATE_NO_WINDOW",
-            0x08000000,
-            create=True,
-        ),
-        patch.object(
-            system_service.subprocess,
-            "run",
-            return_value=completed,
-        ) as run,
-    ):
+    with patch.object(
+        system_service.subprocess,
+        "run",
+        return_value=completed,
+    ) as run:
         result = system_service._run_native_command(["native-service"])
 
     assert result is completed
@@ -114,7 +126,7 @@ def test_native_command_hides_windows_console() -> None:
         text=True,
         encoding=locale.getencoding(),
         errors="replace",
-        creationflags=0x08000000,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
 
 
@@ -127,10 +139,10 @@ def test_managed_file_marker_accepts_utf16_content(tmp_path: Path) -> None:
     assert not path.exists()
 
 
+@windows_only
 def test_windows_user_resolution_falls_back_to_whoami() -> None:
     with (
         patch.object(system_service.getpass, "getuser", side_effect=OSError),
-        patch.object(system_service.platform, "system", return_value="Windows"),
         patch.object(
             system_service,
             "_run_native_command",
@@ -148,6 +160,7 @@ def test_windows_user_resolution_falls_back_to_whoami() -> None:
     run_native.assert_called_once_with(["whoami"], check=False)
 
 
+@macos_only
 def test_macos_status_reports_running_launchd_state(tmp_path: Path) -> None:
     plist_path = tmp_path / "bcn.plist"
     plist_path.write_bytes(b"plist")
@@ -158,7 +171,6 @@ def test_macos_status_reports_running_launchd_state(tmp_path: Path) -> None:
             "_launchd_paths",
             return_value=(plist_path, tmp_path / "bcn-run.sh"),
         ),
-        patch.object(system_service.os, "getuid", return_value=501, create=True),
         patch.object(
             system_service,
             "_run_native_command",
@@ -176,6 +188,7 @@ def test_macos_status_reports_running_launchd_state(tmp_path: Path) -> None:
     assert status.detail == "launchd state=running"
 
 
+@windows_only
 def test_windows_status_reports_running_task() -> None:
     with patch.object(
         system_service,
@@ -201,6 +214,7 @@ def test_windows_status_reports_running_task() -> None:
     assert run_native.call_args.kwargs == {"check": False}
 
 
+@windows_only
 def test_windows_process_query_returns_managed_process_ids(
     service_context: system_service.SystemServiceContext,
 ) -> None:
@@ -225,6 +239,7 @@ def test_windows_process_query_returns_managed_process_ids(
     assert "Get-CimInstance -ClassName Win32_Process" in command[-1]
 
 
+@windows_only
 def test_windows_stop_reclaims_orphaned_managed_process(
     service_context: system_service.SystemServiceContext,
 ) -> None:
@@ -267,6 +282,7 @@ def test_windows_stop_reclaims_orphaned_managed_process(
     ]
 
 
+@windows_only
 def test_windows_stop_fails_when_managed_process_survives(
     service_context: system_service.SystemServiceContext,
 ) -> None:
@@ -297,33 +313,35 @@ def test_windows_stop_fails_when_managed_process_survives(
         system_service._stop_windows(service_context)
 
 
-def test_linux_lifecycle_delegates_to_systemd() -> None:
-    # start
-    with patch.object(system_service, "_run_native_command") as run_native:
-        system_service._start_linux()
+@pytest.mark.skipif(os.sep != "/", reason="golden paths are posix")
+def test_rendered_service_files_match_their_golden_copies(
+    golden_context: system_service.SystemServiceContext,
+) -> None:
+    data_dir = golden_context.data_dir
+    rendered: dict[str, str | bytes] = {
+        "systemd.service": system_service._render_systemd_unit(golden_context),
+        "launchd.sh": system_service._render_launchd_wrapper(),
+        "launchd.plist": system_service._render_launchd_plist(
+            golden_context, data_dir / "bcn-run.sh"
+        ),
+        "windows.ps1": system_service._render_windows_wrapper(golden_context),
+        "windows.vbs": system_service._render_windows_launcher(
+            data_dir / "bcn-run.ps1"
+        ),
+        "windows.xml": system_service._render_windows_task(
+            golden_context, data_dir / "bcn-run.vbs"
+        ),
+    }
 
-    run_native.assert_called_once_with(
-        ["systemctl", "--user", "start", system_service.SYSTEMD_UNIT_NAME]
-    )
-
-    # stop
-    with patch.object(system_service, "_run_native_command") as run_native:
-        system_service._stop_linux()
-
-    run_native.assert_called_once_with(
-        ["systemctl", "--user", "stop", system_service.SYSTEMD_UNIT_NAME],
-        check=False,
-    )
-
-    # restart
-    with patch.object(system_service, "_run_native_command") as run_native:
-        system_service._restart_linux()
-
-    run_native.assert_called_once_with(
-        ["systemctl", "--user", "restart", system_service.SYSTEMD_UNIT_NAME]
-    )
+    for name, value in rendered.items():
+        golden = GOLDEN / name
+        if isinstance(value, bytes):
+            assert value == golden.read_bytes(), name
+        else:
+            assert value == golden.read_text(encoding="utf-8"), name
 
 
+@macos_only
 def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
     # a loaded job is kickstarted
     plist_path = tmp_path / "bcn.plist"
@@ -336,7 +354,6 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
             "_launchd_paths",
             return_value=(plist_path, wrapper_path),
         ),
-        patch.object(system_service.os, "getuid", return_value=501, create=True),
         patch.object(
             system_service,
             "_run_native_command",
@@ -347,7 +364,11 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
 
     assert run_native.call_args_list == [
         call(
-            ["launchctl", "print", "gui/501/io.github.yuchanns.bazaar-compute-node"],
+            [
+                "launchctl",
+                "print",
+                f"gui/{os.getuid()}/io.github.yuchanns.bazaar-compute-node",
+            ],
             check=False,
         ),
         call(
@@ -355,7 +376,7 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
                 "launchctl",
                 "kickstart",
                 "-k",
-                "gui/501/io.github.yuchanns.bazaar-compute-node",
+                f"gui/{os.getuid()}/io.github.yuchanns.bazaar-compute-node",
             ]
         ),
     ]
@@ -375,7 +396,6 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
             "_launchd_paths",
             return_value=(plist_path, wrapper_path),
         ),
-        patch.object(system_service.os, "getuid", return_value=501, create=True),
         patch.object(
             system_service,
             "_run_native_command",
@@ -386,10 +406,14 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
 
     assert run_native.call_args_list == [
         call(
-            ["launchctl", "print", "gui/501/io.github.yuchanns.bazaar-compute-node"],
+            [
+                "launchctl",
+                "print",
+                f"gui/{os.getuid()}/io.github.yuchanns.bazaar-compute-node",
+            ],
             check=False,
         ),
-        call(["launchctl", "bootstrap", "gui/501", str(plist_path)]),
+        call(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)]),
     ]
 
     # restart does not bootout before starting
@@ -403,6 +427,7 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
     stop.assert_not_called()
 
 
+@linux_only
 def test_linux_install_registers_without_start(
     service_context: system_service.SystemServiceContext,
     tmp_path: Path,
