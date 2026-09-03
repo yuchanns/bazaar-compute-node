@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.39rc3 - 2026-09-03
+
+## What's Changed
+* fix: address runtime event review findings by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/63
+* feat: show one activity snapshot per turn on every channel by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/64
+* cleanup: core boundaries, the long functions behind them, and the tests around them by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/65
+* fix: restore bcn --version output, and smoke test the dists in CI by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/66
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.39rc1...v0.1.39rc3
+
 ## 0.1.39rc2 - 2026-09-03
 
 ## What's Changed
