@@ -46,7 +46,7 @@ from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.agent import State
-from bazaar_compute_node.core.audit import AuditEvent
+from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
 from bazaar_compute_node.core.channel import (
     ChannelContext,
     ChannelDeliveryReceipt,
@@ -1094,6 +1094,11 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
             channel_request.provider_reply_to_message_id == anchor.provider_message_id
         )
         assert runtime.approval_results[-1].decision is ApprovalDecision.APPROVED
+
+        # the turn's own output belongs under the message the Reminder was set from
+        anchored_session_id, anchored = channel.turn_anchors[-1]
+        assert anchored_session_id == anchor.session_id
+        assert anchored.message_id == anchor.message_id
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -2562,6 +2567,29 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
         assert orchestrator.runtime_session("bcn-1") is None
     finally:
         release_stop.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_start_is_reported_as_failed_not_unknown() -> None:
+    # a provider that definitively refuses to start says so; only silence is unknown
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        for _ in range(2):
+            runtime.queue_start_result(
+                ProviderCallResult(
+                    status=ProviderCallStatus.FAILED,
+                    error_kind="provider_failed",
+                    error_message="start failed",
+                )
+            )
+
+        result = await orchestrator.dispatch_inbound(make_message())
+
+        assert result is not None
+        assert result.state is RuntimeTurnState.FAILED
+        assert result.error_kind == ErrorKind.PROVIDER_FAILED.value
+    finally:
         await orchestrator.stop(timeout=1)
 
 

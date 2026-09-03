@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 from bazaar_compute_node.core.lifecycle import TaskFailureSignal
 from bazaar_compute_node.core.paths import resolve_data_dir
 
+from ..core.text import format_exception
+
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 
 _ERROR_ALREADY_EXISTS = 183
@@ -456,7 +458,7 @@ class WindowsNamedPipeServer:
             response = {
                 "ok": False,
                 "code": "COMMAND_FAILED",
-                "error": str(error),
+                "error": format_exception(error),
             }
         encoded_response = (
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()

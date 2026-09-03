@@ -138,6 +138,11 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         session_id: str,
     ) -> None: ...
 
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        """Say which message a turn's own output belongs under."""
+
+        return
+
     async def send(
         self,
         request: ChannelSendRequest,
@@ -230,6 +235,11 @@ class Channel(IChannel):
         self._channel.accept_turn_event(
             item,
             session_id=provider_session_id,
+        )
+
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        self._channel.anchor_turn(
+            self._provider_session_ids.get(session_id, session_id), anchor
         )
 
     async def send(

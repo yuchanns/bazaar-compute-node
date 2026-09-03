@@ -148,8 +148,32 @@ _TERMINALS: Mapping[RuntimeTurnState, _Terminal] = {
         retryable=True,
     ),
 }
+_TURN_FAILED = "Turn failed"
+_TURN_UNKNOWN = "Turn outcome is unknown"
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
+
+
+def _with_a_reason(event: RuntimeOutputEvent) -> RuntimeOutputEvent:
+    """Give an ending a reason of our own when the runtime supplied none.
+
+    Which runtime it was is ours to know, not the reader's, so adapters do not
+    put their own name in the text. An unknown ending keeps its own words: the
+    provider may yet have finished the work, and calling that a failure invites
+    a retry of something already done.
+    """
+
+    match event.payload:
+        case TurnFailed(error_message=None):
+            return replace(
+                event, payload=replace(event.payload, error_message=_TURN_FAILED)
+            )
+        case TurnUnknown(error_message=None):
+            return replace(
+                event, payload=replace(event.payload, error_message=_TURN_UNKNOWN)
+            )
+        case _:
+            return event
 
 
 def _is_terminal_turn_event(payload: TurnPayload) -> bool:
@@ -435,6 +459,11 @@ class SessionTurnCoordinator:
         turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
         try:
+            anchor = await resolve_reminder_anchor(
+                self._storage, self._agent_id, message
+            )
+            if anchor is not None:
+                self._channel.anchor_turn(context.bcn_session.id, anchor)
             approval_handler = self.approval_handler(message, context, turn)
             await self._audit.append(
                 event_name="runtime.request.turn.started",
@@ -536,6 +565,7 @@ class SessionTurnCoordinator:
                     },
                 )
                 continue
+            event = _with_a_reason(event)
             match event.payload:
                 case (
                     TurnStarted()

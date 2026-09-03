@@ -834,6 +834,13 @@ class LarkChannel(IChannel):
             ),
         )
 
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        provider_message_id = anchor.provider_message_id
+        if provider_message_id is None:
+            return
+        self._stream_routes[session_id] = provider_message_id
+        self._stream_route_threads[session_id] = anchor.metadata.get("threaded") is True
+
     def accept_turn_event(
         self,
         item: RuntimeOutputEvent,

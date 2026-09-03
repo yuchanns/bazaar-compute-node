@@ -14,9 +14,10 @@ class Agent:
     """One Agent's condition, advanced by its runtime and its channel.
 
     The runtime is how an Agent is implemented and the channel is how it faces
-    the outside, so both push it between states. A turn that ran out of
-    runtimes leaves the Agent in FAILED until the channel has carried that
-    outcome out, which is the only edge back to IDLE from there.
+    the outside, so both push it between states. A runtime that refused leaves
+    the Agent FAILED and one that went quiet leaves it RECOVERING: the first
+    says the turn did not run, the second that nobody knows. Either way the
+    next runtime to come up returns the Agent to rest.
     """
 
     def __init__(self, states: dict[str, State]) -> None:
@@ -32,18 +33,13 @@ class Agent:
         return self._enter(session_id, State.WORKING)
 
     def finished_turn(self, session_id: str) -> State:
-        if self.get(session_id) is State.FAILED:
-            return State.FAILED
         return self._enter(session_id, State.IDLE)
 
     def lost_runtime(self, session_id: str) -> State:
         return self._enter(session_id, State.RECOVERING)
 
-    def exhausted_runtimes(self, session_id: str) -> State:
+    def refused_runtime(self, session_id: str) -> State:
         return self._enter(session_id, State.FAILED)
-
-    def reported_failure(self, session_id: str) -> State:
-        return self._enter(session_id, State.IDLE)
 
     def _enter(self, session_id: str, state: State) -> State:
         self._states[session_id] = state

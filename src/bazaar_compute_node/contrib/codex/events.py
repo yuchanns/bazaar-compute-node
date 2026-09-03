@@ -269,7 +269,7 @@ class TurnEventStream(IRuntimeTurnStream):
     def _map_error(
         self, message: JsonlMessage, method: str, params: Mapping[str, object]
     ) -> RuntimeOutputEvent | None:
-        """Surface a provider error without ending the turn."""
+        """Say a provider error happened, without ending the turn it happened in."""
 
         error = parse_error_notification(message)
         if error.thread_id != self._provider_thread_id or (
@@ -284,7 +284,6 @@ class TurnEventStream(IRuntimeTurnStream):
         return self._event(
             event_name="codex.turn.error",
             state=RuntimeEventState.STARTED,
-            error_message=error.message,
             metadata=metadata,
         )
 

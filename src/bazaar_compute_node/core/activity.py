@@ -142,8 +142,11 @@ class ActivityReducer:
                 )
                 self.snapshot = None
                 return True
-            case TurnStarted():
-                self._settle_attempt_usage()
+            case TurnStarted(event_name=event_name):
+                # a provider notice mid-turn reports as started too, and only a
+                # real start closes off what the previous attempt spent
+                if event_name.casefold().endswith(".started"):
+                    self._settle_attempt_usage()
                 return False
             case (
                 ContentDelta()

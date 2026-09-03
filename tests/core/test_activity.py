@@ -114,6 +114,32 @@ def test_latest_usage_total_replaces_previous_report() -> None:
     )
 
 
+def test_provider_error_mid_turn_does_not_settle_usage_again() -> None:
+    # codex reports a retryable provider error as a started turn; the usage it
+    # goes on to report is still cumulative for the same attempt
+    reducer = ActivityReducer()
+
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=100, output_tokens=50)))
+    reducer.apply(TurnStarted(event_name="codex.turn.error"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=150, output_tokens=80)))
+    reducer.apply(TurnCompleted(event_name="codex.turn.completed"))
+
+    assert reducer.overview == ActivityOverview(input_tokens=150, output_tokens=80)
+
+
+def test_a_second_attempt_adds_to_what_the_first_one_spent() -> None:
+    reducer = ActivityReducer()
+
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=100, output_tokens=50)))
+    reducer.apply(TurnStarted(event_name="codex.turn.started"))
+    reducer.apply(UsageUpdated(total=TokenUsage(input_tokens=30, output_tokens=20)))
+    reducer.apply(TurnCompleted(event_name="codex.turn.completed"))
+
+    assert reducer.overview == ActivityOverview(input_tokens=130, output_tokens=70)
+
+
 def test_usage_only_turn_still_produces_overview() -> None:
     reducer = ActivityReducer()
 

@@ -39,6 +39,7 @@ from ..runtime import (
     RuntimeSessionUnavailable,
 )
 from ..storage import IStorageScope
+from ..text import format_exception
 from ..timerwheel import (
     Timer,
     TimerCancelledError,
@@ -1532,9 +1533,12 @@ class SessionOrchestrator(IAsyncLifecycle):
         operation: str,
         correlation: CorrelationContext,
     ) -> None:
-        """Write down that the runtime would not answer, and mark it lost."""
+        """Write down how the runtime failed, and leave the Agent saying which."""
 
-        self._agent.lost_runtime(context.bcn_session.id)
+        if provider_result.status is ProviderCallStatus.FAILED:
+            self._agent.refused_runtime(context.bcn_session.id)
+        else:
+            self._agent.lost_runtime(context.bcn_session.id)
         await self._audit.append(
             event_name=f"runtime.process.{provider_result.status.value}",
             state=(
@@ -1723,9 +1727,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             raise
         except Exception as error:  # noqa: BLE001
             result = None
-            stop_error = error
+            stop_message = format_exception(error)
         else:
-            stop_error = None
+            stop_message = ""
         confirmed = result is not None and result.status is ProviderCallStatus.CONFIRMED
         unknown = result is None or result.status in {
             ProviderCallStatus.UNKNOWN,
@@ -1736,7 +1740,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             if result is not None
             else ErrorKind.PROVIDER_UNKNOWN.value
         )
-        error_message = result.error_message if result is not None else str(stop_error)
+        error_message = result.error_message if result is not None else stop_message
         await self._audit.append(
             event_name=(
                 "runtime.process.stop.completed"

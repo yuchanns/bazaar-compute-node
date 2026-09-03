@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from ..core.text import format_exception
 from ..core.utils import UnlimitedLineReader
 
 RequestHandler = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
@@ -174,7 +175,7 @@ class LocalCommandServer:
             response = {
                 "ok": False,
                 "code": "COMMAND_FAILED",
-                "error": str(error),
+                "error": format_exception(error),
             }
         try:
             writer.write(
