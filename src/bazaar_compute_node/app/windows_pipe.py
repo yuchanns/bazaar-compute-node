@@ -139,13 +139,9 @@ def _pipe_path(pipe_name: str) -> str:
     return rf"\\.\pipe\{pipe_name}"
 
 
-def _mutex_name(pipe_name: str) -> str:
-    return rf"Local\{pipe_name}-mutex"
-
-
 def _create_mutex(pipe_name: str) -> Any:
     _set_last_error(0)
-    handle = _CreateMutexW(None, True, _mutex_name(pipe_name))
+    handle = _CreateMutexW(None, True, rf"Local\{pipe_name}-mutex")
     if _is_invalid_handle(handle):
         _raise_last_error("CreateMutexW failed")
     if _get_last_error() == _ERROR_ALREADY_EXISTS:

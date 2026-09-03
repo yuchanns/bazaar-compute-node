@@ -16,10 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.paths import resolve_data_dir
-from ..i18n import Translator, create_translator
+from ..i18n import create_translator
 from ..rendering import TextTemplate
 from .config import ConfigurationError, load_control_configuration, resolve_config_path
 from .transport import LocalCommandClient, local_endpoint_for_path
+from .usage import Usage
 
 SYSTEMD_UNIT_NAME = "bcn.service"
 LAUNCHD_LABEL = "io.github.yuchanns.bazaar-compute-node"
@@ -56,47 +57,6 @@ class NativeServiceStatus:
     detail: str
 
 
-def build_system_service_parser(
-    translator: Translator | None = None,
-) -> argparse.ArgumentParser:
-    translator = translator or create_translator(None)
-    parser = argparse.ArgumentParser(
-        prog="bcn system-service",
-        description=translator.text("cli.system_service.description"),
-    )
-    commands = parser.add_subparsers(dest="system_service_command", required=True)
-    install = commands.add_parser(
-        "install",
-        help=translator.text("cli.system_service.install"),
-    )
-    install.add_argument(
-        "--env-file",
-        type=Path,
-        help=translator.text("cli.system_service.env_file"),
-    )
-    commands.add_parser(
-        "start",
-        help=translator.text("cli.system_service.start"),
-    )
-    commands.add_parser(
-        "stop",
-        help=translator.text("cli.system_service.stop"),
-    )
-    commands.add_parser(
-        "restart",
-        help=translator.text("cli.system_service.restart"),
-    )
-    commands.add_parser(
-        "uninstall",
-        help=translator.text("cli.system_service.uninstall"),
-    )
-    commands.add_parser(
-        "status",
-        help=translator.text("cli.system_service.status"),
-    )
-    return parser
-
-
 def _resolve_executable() -> Path:
     executable = shutil.which("bcn")
     if executable is None:
@@ -112,7 +72,7 @@ def _resolve_executable() -> Path:
 
 def _build_context(
     args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    parser: Usage,
     *,
     require_executable: bool,
 ) -> SystemServiceContext:
@@ -816,7 +776,7 @@ async def _wait_for_managed_service_health(context: SystemServiceContext) -> str
 
 async def run_system_service_command(
     args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    parser: Usage,
 ) -> int:
     command = args.system_service_command
     try:
@@ -904,6 +864,5 @@ __all__ = [
     "SYSTEMD_UNIT_NAME",
     "WINDOWS_TASK_NAME",
     "SystemServiceContext",
-    "build_system_service_parser",
     "run_system_service_command",
 ]

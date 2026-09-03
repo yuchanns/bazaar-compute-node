@@ -61,6 +61,75 @@ class AttachmentMaterializer:
                 continue
             await asyncio.to_thread(shutil.rmtree, path)
 
+    async def _stage(
+        self,
+        source: bytes | AsyncIterable[bytes],
+        temporary: Path,
+        destination: Path,
+        root: Path,
+    ) -> int:
+        """Write an attachment aside, then move it into place once it is whole."""
+
+        current_size = await asyncio.to_thread(self._stored_size, root)
+        descriptor: int | None = None
+        try:
+            descriptor = await asyncio.to_thread(
+                os.open,
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            try:
+                size = await self._write(descriptor, source, current_size)
+                await asyncio.to_thread(os.fsync, descriptor)
+                stored = await asyncio.to_thread(os.fstat, descriptor)
+                if stored.st_size != size:
+                    raise OSError(
+                        "attachment write size mismatch: "
+                        f"expected {size}, got {stored.st_size}"
+                    )
+            finally:
+                await asyncio.to_thread(os.close, descriptor)
+                descriptor = None
+            await asyncio.to_thread(destination.parent.mkdir, parents=True, mode=0o700)
+            await asyncio.to_thread(os.replace, temporary, destination)
+            if os.name != "nt":
+                await asyncio.to_thread(destination.chmod, 0o600)
+            return size
+        except BaseException:
+            if descriptor is not None:
+                await asyncio.to_thread(os.close, descriptor)
+            if await asyncio.to_thread(temporary.exists):
+                await asyncio.to_thread(temporary.unlink)
+            raise
+
+    async def _write(
+        self,
+        descriptor: int,
+        source: bytes | AsyncIterable[bytes],
+        current_size: int,
+    ) -> int:
+        """Write the source through, refusing it the moment it goes over a limit."""
+
+        if isinstance(source, bytes):
+            self._check_room(len(source), current_size)
+            await asyncio.to_thread(_write_all, descriptor, source)
+            return len(source)
+        size = 0
+        async for chunk in source:
+            if not isinstance(chunk, bytes):
+                raise TypeError("attachment stream must yield bytes")
+            size += len(chunk)
+            self._check_room(size, current_size)
+            await asyncio.to_thread(_write_all, descriptor, chunk)
+        return size
+
+    def _check_room(self, size: int, current_size: int) -> None:
+        if size > self._max_file_bytes:
+            raise ValueError("attachment exceeds the per-file size limit")
+        if current_size + size > self._max_workspace_bytes:
+            raise ValueError("attachment workspace quota exceeded")
+
     async def materialize(
         self,
         source: bytes | AsyncIterable[bytes],
@@ -84,64 +153,7 @@ class AttachmentMaterializer:
             await asyncio.to_thread(
                 staging.mkdir, parents=True, exist_ok=True, mode=0o700
             )
-            current_size = await asyncio.to_thread(self._stored_size, root)
-            size = 0
-            descriptor: int | None = None
-            try:
-                open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                binary_flag = getattr(os, "O_BINARY", None)
-                if binary_flag is not None:
-                    open_flags |= binary_flag
-                descriptor = await asyncio.to_thread(
-                    os.open,
-                    temporary,
-                    open_flags,
-                    0o600,
-                )
-                try:
-                    if isinstance(source, bytes):
-                        size = len(source)
-                        if size > self._max_file_bytes:
-                            raise ValueError(
-                                "attachment exceeds the per-file size limit"
-                            )
-                        if current_size + size > self._max_workspace_bytes:
-                            raise ValueError("attachment workspace quota exceeded")
-                        await asyncio.to_thread(_write_all, descriptor, source)
-                    else:
-                        async for chunk in source:
-                            if not isinstance(chunk, bytes):
-                                raise TypeError("attachment stream must yield bytes")
-                            size += len(chunk)
-                            if size > self._max_file_bytes:
-                                raise ValueError(
-                                    "attachment exceeds the per-file size limit"
-                                )
-                            if current_size + size > self._max_workspace_bytes:
-                                raise ValueError("attachment workspace quota exceeded")
-                            await asyncio.to_thread(_write_all, descriptor, chunk)
-                    await asyncio.to_thread(os.fsync, descriptor)
-                    stored_size = await asyncio.to_thread(os.fstat, descriptor)
-                    if stored_size.st_size != size:
-                        raise OSError(
-                            "attachment write size mismatch: "
-                            f"expected {size}, got {stored_size.st_size}"
-                        )
-                finally:
-                    await asyncio.to_thread(os.close, descriptor)
-                    descriptor = None
-                await asyncio.to_thread(
-                    destination.parent.mkdir, parents=True, mode=0o700
-                )
-                await asyncio.to_thread(os.replace, temporary, destination)
-                if os.name != "nt":
-                    await asyncio.to_thread(destination.chmod, 0o600)
-            except BaseException:
-                if descriptor is not None:
-                    await asyncio.to_thread(os.close, descriptor)
-                if await asyncio.to_thread(temporary.exists):
-                    await asyncio.to_thread(temporary.unlink)
-                raise
+            size = await self._stage(source, temporary, destination, root)
         return InboundAttachment(
             attachment_id=attachment_id,
             name=Path(name).name,
