@@ -5,7 +5,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from time import monotonic, time_ns
 from unicodedata import category
 
@@ -50,8 +50,7 @@ from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 from ...i18n import ENGLISH, create_translator
-from .activity import LarkActivityProjector, LarkActivityRoute
-from .api import LarkApi
+from .api import LarkApi, LarkApiError, LarkTransportError
 from .attachments import (
     LarkMention,
     LarkResourceCache,
@@ -74,7 +73,17 @@ _CHAT_CACHE_MAX_ENTRIES = 256
 _CHAT_TIMEOUT_SECONDS = 5.0
 _PARENT_TIMEOUT_SECONDS = 10.0
 _RESOURCE_TIMEOUT_SECONDS = 60.0
+_TYPING_TIMEOUT_SECONDS = 3.0
+_TYPING_INTERVAL_SECONDS = 3.0
+# one marker at a time, replaced on every beat, so the reader sees it move
+_TYPING_EMOJI = ("Typing", "THINKING", "OnIt", "OneSecond")
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _Typing:
+    message_id: str
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class LarkChannel(IChannel):
@@ -130,20 +139,12 @@ class LarkChannel(IChannel):
         self._last_resource_disposition: str | None = None
         self._send_lock = asyncio.Lock()
         self._stream_routes: dict[str, str] = {}
-        self._stream_route_threads: dict[str, bool] = {}
-        self._activity_turns: dict[str, str] = {}
-        self._terminal_activity_turns: set[tuple[str, str]] = set()
-        self._degraded_activity_turns: set[tuple[str, str]] = set()
+        self._typing: dict[str, _Typing] = {}
+        self._typing_runners: dict[str, asyncio.Task[None]] = {}
+        self._typing_stopping = False
+        self._typing_requests = 0
+        self._typing_failures = 0
         self._translator = context.translator or create_translator(ENGLISH)
-        self._activity = LarkActivityProjector(
-            timer_wheel=timer_wheel,
-            translator=self._translator,
-            report_degraded=lambda session_id, turn_id: (
-                self._degraded_activity_turns.add((session_id, turn_id))
-                if self._activity_turns.get(session_id) == turn_id
-                else None
-            ),
-        )
 
     @property
     def name(self) -> str:
@@ -187,13 +188,9 @@ class LarkChannel(IChannel):
             "resources_materialized": self._resources_materialized,
             "resource_failures": self._resource_failures,
             "last_resource_disposition": self._last_resource_disposition,
-            "activity_turns": self._activity.active_turns,
-            "activity_tasks_pending": self._activity.tasks_pending,
-            "activity_cards_created": self._activity.cards_created,
-            "activity_coalesced_updates": self._activity.coalesced_updates,
-            "activity_elements_updated": self._activity.elements_updated,
-            "activity_failures": self._activity.failures,
-            "activity_rate_limit_retries": self._activity.rate_limit_retries,
+            "typing_requests": self._typing_requests,
+            "typing_failures": self._typing_failures,
+            "typing_sessions": len(self._typing),
             "token_refresh_failures": (
                 self._api.token_refresh_failures
                 if self._api is not None
@@ -220,10 +217,7 @@ class LarkChannel(IChannel):
             self._stop_sent = False
             self._inbound = asyncio.Queue()
             self._stream_routes.clear()
-            self._stream_route_threads.clear()
-            self._activity_turns.clear()
-            self._terminal_activity_turns.clear()
-            self._degraded_activity_turns.clear()
+            self._typing_stopping = False
             try:
                 session = aiohttp.ClientSession()
                 api = LarkApi(
@@ -253,7 +247,7 @@ class LarkChannel(IChannel):
                 self._state = "connected"
             except BaseException:
                 self._state = "stopping"
-                await self._activity.close()
+                await self._stop_typing(timeout=remaining(deadline))
                 if transport is not None:
                     await transport.stop(timeout=remaining(deadline))
                 if api is not None:
@@ -277,7 +271,7 @@ class LarkChannel(IChannel):
             self._state = "stopping"
             if transport is not None:
                 await transport.stop(timeout=timeout)
-            await self._activity.close()
+            await self._stop_typing(timeout=timeout)
             await self._resource_cache.close()
             await self._close_contact_cache()
             await self._close_chat_cache()
@@ -291,14 +285,28 @@ class LarkChannel(IChannel):
             self._session = None
             self._identity = None
             self._stream_routes.clear()
-            self._stream_route_threads.clear()
-            self._activity_turns.clear()
-            self._terminal_activity_turns.clear()
-            self._degraded_activity_turns.clear()
             self._state = "stopped"
             if not self._stop_sent:
                 self._inbound.put_nowait(_STOP)
                 self._stop_sent = True
+
+    async def _stop_typing(self, *, timeout: float) -> None:
+        """Let every marker come off before the API client goes away."""
+
+        self._typing_stopping = True
+        for typing in self._typing.values():
+            typing.stop.set()
+        self._typing.clear()
+        runners = tuple(self._typing_runners.values())
+        self._typing_runners.clear()
+        if not runners:
+            return
+        done, pending = await asyncio.wait(runners, timeout=max(0.0, timeout))
+        del done
+        for runner in pending:
+            runner.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def receive(self) -> AsyncIterator[Message]:
         inbound = self._inbound
@@ -356,7 +364,6 @@ class LarkChannel(IChannel):
         quoted: Message | None,
         *,
         provider_message_id: str,
-        threaded: bool,
         target_kind: ChannelTargetKind,
     ) -> None:
         """Hand the message, and whatever it quotes, to the inbound queue."""
@@ -365,7 +372,6 @@ class LarkChannel(IChannel):
             await self._inbound.put(quoted)
         await self._inbound.put(current)
         self._stream_routes[current.session_id] = provider_message_id
-        self._stream_route_threads[current.session_id] = threaded
         self._last_message_disposition = "queued"
         self._last_message_filter_reason = None
         self._observe(
@@ -456,7 +462,6 @@ class LarkChannel(IChannel):
             current,
             quoted,
             provider_message_id=fields.provider_message_id,
-            threaded=thread_identity.thread_id != "0",
             target_kind=target_kind,
         )
         return True
@@ -839,7 +844,6 @@ class LarkChannel(IChannel):
         if provider_message_id is None:
             return
         self._stream_routes[session_id] = provider_message_id
-        self._stream_route_threads[session_id] = anchor.metadata.get("threaded") is True
 
     def accept_turn_event(
         self,
@@ -847,48 +851,12 @@ class LarkChannel(IChannel):
         *,
         session_id: str,
     ) -> None:
-        provider_message_id = self._stream_routes.get(item.envelope.session_id)
-        self._activity.accept(
-            item,
-            route=(
-                LarkActivityRoute(
-                    message_id=provider_message_id,
-                    reply_in_thread=self._stream_route_threads.get(
-                        item.envelope.session_id, False
-                    ),
-                )
-                if provider_message_id is not None
-                else None
-            ),
-            api=self._api,
-        )
         match item.payload:
             case TurnStarted():
-                turn_id = item.envelope.turn_id
-                previous_turn_id = self._activity_turns.get(session_id)
-                if previous_turn_id is not None:
-                    self._terminal_activity_turns.discard(
-                        (session_id, previous_turn_id)
-                    )
-                    self._degraded_activity_turns.discard(
-                        (session_id, previous_turn_id)
-                    )
-                self._activity_turns[session_id] = turn_id
                 return
-            case TurnCompleted():
-                turn_id = item.envelope.turn_id
-                if self._activity_turns.get(session_id) == turn_id:
-                    self._activity_turns.pop(session_id)
-                    self._degraded_activity_turns.discard((session_id, turn_id))
+            case TurnCompleted() | TurnFailed() | TurnCancelled() | TurnUnknown():
                 self._stream_routes.pop(session_id, None)
-                self._stream_route_threads.pop(session_id, None)
-                return
-            case TurnFailed() | TurnCancelled() | TurnUnknown():
-                turn_id = item.envelope.turn_id
-                if self._activity_turns.get(session_id) == turn_id:
-                    self._terminal_activity_turns.add((session_id, turn_id))
-                self._stream_routes.pop(session_id, None)
-                self._stream_route_threads.pop(session_id, None)
+                self._end_typing(session_id)
                 return
             case (
                 ContentDelta()
@@ -902,7 +870,89 @@ class LarkChannel(IChannel):
                 | ToolCallInteraction()
                 | UsageUpdated()
             ):
+                self._begin_typing(session_id)
                 return
+
+    def _begin_typing(self, session_id: str) -> None:
+        """Mark the message this turn answers, from its first sign of work."""
+
+        if self._typing_stopping or session_id in self._typing:
+            return
+        message_id = self._stream_routes.get(session_id)
+        if message_id is None or self._api is None:
+            return
+        typing = _Typing(message_id=message_id)
+        self._typing[session_id] = typing
+        runner = asyncio.create_task(
+            self._rotate_typing(typing),
+            name=f"bcn-lark-typing-{session_id}",
+        )
+        self._typing_runners[session_id] = runner
+        runner.add_done_callback(
+            lambda task: (
+                self._typing_runners.pop(session_id, None)
+                if self._typing_runners.get(session_id) is task
+                else None
+            )
+        )
+
+    def _end_typing(self, session_id: str) -> None:
+        typing = self._typing.pop(session_id, None)
+        if typing is not None:
+            typing.stop.set()
+
+    async def _rotate_typing(self, typing: _Typing) -> None:
+        """Move the marker along until the turn ends, then take it away."""
+
+        showing: str | None = None
+        beat = 0
+        while not typing.stop.is_set():
+            emoji = _TYPING_EMOJI[beat % len(_TYPING_EMOJI)]
+            beat += 1
+            placed = await self._place_marker(typing.message_id, emoji)
+            if placed is None:
+                break
+            if showing is not None:
+                await self._remove_marker(typing.message_id, showing)
+            showing = placed
+            try:
+                await asyncio.wait_for(
+                    typing.stop.wait(),
+                    timeout=_TYPING_INTERVAL_SECONDS,
+                )
+            except TimeoutError:
+                continue
+        if showing is not None:
+            await self._remove_marker(typing.message_id, showing)
+
+    async def _place_marker(self, message_id: str, emoji: str) -> str | None:
+        api = self._api
+        if api is None:
+            return None
+        self._typing_requests += 1
+        try:
+            return await api.create_reaction(
+                message_id,
+                emoji_type=emoji,
+                timeout=_TYPING_TIMEOUT_SECONDS,
+            )
+        except LarkApiError, LarkTransportError, TimeoutError:
+            self._typing_failures += 1
+            return None
+
+    async def _remove_marker(self, message_id: str, reaction_id: str) -> None:
+        api = self._api
+        if api is None:
+            return
+        self._typing_requests += 1
+        try:
+            await api.delete_reaction(
+                message_id,
+                reaction_id,
+                timeout=_TYPING_TIMEOUT_SECONDS,
+            )
+        except LarkApiError, LarkTransportError, TimeoutError:
+            self._typing_failures += 1
 
     async def send(
         self,
@@ -910,10 +960,7 @@ class LarkChannel(IChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        turn_id = self._activity_turns.get(request.session_id)
-        activity_key = (request.session_id, turn_id) if turn_id is not None else None
         if timeout <= 0:
-            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="delivery_timeout",
@@ -929,7 +976,6 @@ class LarkChannel(IChannel):
             or self._state not in {"connected", "ready"}
             or transport.state != "connected"
         ):
-            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="channel_unavailable",
@@ -938,36 +984,12 @@ class LarkChannel(IChannel):
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        if turn_id is not None:
-            try:
-                await self._activity.drain(
-                    request.session_id,
-                    turn_id,
-                    timeout=max(0.0, (deadline - loop.time()) / 2),
-                )
-            except asyncio.CancelledError:
-                self._retire_terminal_activity(activity_key)
-                raise
-            except TimeoutError:
-                self._degraded_activity_turns.add((request.session_id, turn_id))
-        if activity_key in self._degraded_activity_turns:
-            request = replace(
-                request,
-                body=(
-                    f"{request.body}\n\n"
-                    f"{self._translator.text('activity.final_incomplete')}"
-                ),
-            )
         try:
             await asyncio.wait_for(
                 self._send_lock.acquire(),
                 timeout=remaining(deadline),
             )
-        except asyncio.CancelledError:
-            self._retire_terminal_activity(activity_key)
-            raise
         except TimeoutError:
-            self._retire_terminal_activity(activity_key)
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="delivery_timeout",
@@ -986,23 +1008,13 @@ class LarkChannel(IChannel):
                     error_kind="channel_unavailable",
                     error_message="Lark channel is not available",
                 )
-            result = await send_outbound(
+            return await send_outbound(
                 api,
                 identity=identity,
                 workspace=self._context.workspace(),
                 request=request,
                 timeout=remaining(deadline),
             )
-            if (
-                result.status
-                in {
-                    ProviderCallStatus.CONFIRMED,
-                    ProviderCallStatus.PARTIAL,
-                }
-                and activity_key is not None
-            ):
-                self._degraded_activity_turns.discard(activity_key)
-            return result
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -1013,19 +1025,6 @@ class LarkChannel(IChannel):
             )
         finally:
             self._send_lock.release()
-            self._retire_terminal_activity(activity_key)
-
-    def _retire_terminal_activity(
-        self,
-        activity_key: tuple[str, str] | None,
-    ) -> None:
-        if activity_key is None or activity_key not in self._terminal_activity_turns:
-            return
-        self._terminal_activity_turns.discard(activity_key)
-        self._degraded_activity_turns.discard(activity_key)
-        session_id, turn_id = activity_key
-        if self._activity_turns.get(session_id) == turn_id:
-            self._activity_turns.pop(session_id)
 
     async def request_approval(
         self,

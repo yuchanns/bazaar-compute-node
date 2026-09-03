@@ -29,6 +29,7 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.turn import _with_a_reason
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.i18n import ENGLISH, create_translator
 
 
 def _message() -> Message:
@@ -84,6 +85,8 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
         ),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=create_translator(ENGLISH),
+        error_feedback_detail=lambda _, text: text,
     )
     runtime.queue_turn_plan(
         TestTurnPlan(
@@ -141,6 +144,8 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
         ),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
+        translator=create_translator(ENGLISH),
+        error_feedback_detail=lambda _, text: text,
     )
     runtime.queue_turn_plan(TestTurnPlan(states=(RuntimeEventState.STARTED,)))
     await orchestrator.start(timeout=1)

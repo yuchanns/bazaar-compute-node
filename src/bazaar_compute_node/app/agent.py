@@ -113,11 +113,7 @@ class AgentApplication:
                 timer_wheel=self.timer_wheel,
             )
         )
-        self.channel: IChannel = Channel(
-            self.agent_id,
-            provider_channel,
-            redact=self._redact_session_secrets,
-        )
+        self.channel: IChannel = Channel(self.agent_id, provider_channel)
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
@@ -173,6 +169,8 @@ class AgentApplication:
                 else 0
             ),
             workspace=self.workspace_path,
+            translator=self.translator,
+            error_feedback_detail=self._redact_session_secrets,
             upgrade_notice=upgrade_notice,
             concurrency=self._concurrency,
         )

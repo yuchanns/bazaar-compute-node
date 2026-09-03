@@ -471,6 +471,41 @@ class LarkApi:
             timeout=timeout,
         )
 
+    async def create_reaction(
+        self,
+        message_id: str,
+        *,
+        emoji_type: str,
+        timeout: float,
+    ) -> str:
+        body = await self._post_json(
+            "message_reaction_create",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions",
+            timeout=timeout,
+            json_body={"reaction_type": {"emoji_type": emoji_type}},
+        )
+        return _response_id(body, "message_reaction_create", "reaction_id")
+
+    async def delete_reaction(
+        self,
+        message_id: str,
+        reaction_id: str,
+        *,
+        timeout: float,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        token = await self.get_tenant_access_token(timeout=remaining(deadline))
+        body = await self._request_json(
+            "message_reaction_delete",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reactions/"
+            f"{quote(reaction_id, safe='')}",
+            timeout=remaining(deadline),
+            headers={"Authorization": f"Bearer {token}"},
+            http_method="DELETE",
+        )
+        self._check_provider_result(body, "message_reaction_delete")
+
     async def create_card(
         self,
         card: dict[str, object],

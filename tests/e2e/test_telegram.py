@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 from pathlib import Path
-from time import monotonic, time_ns
+from time import time_ns
 from uuid import uuid4
 
 import pytest
@@ -24,15 +24,6 @@ from bazaar_compute_node.core.models import (
     ApprovalRequest,
     ChannelTargetKind,
     OutboundAttachment,
-    RuntimeEventEnvelope,
-    RuntimeEventPayload,
-    RuntimeOutputEvent,
-    TokenUsage,
-    ToolCall,
-    ToolCallCompleted,
-    ToolCallStarted,
-    TurnCompleted,
-    UsageUpdated,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 
@@ -82,22 +73,6 @@ def _attachment(tmp_path: Path, name: str) -> OutboundAttachment:
         media_type="text/plain",
         size_bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
-    )
-
-
-def _activity_event(
-    session_id: str,
-    payload: RuntimeEventPayload,
-) -> RuntimeOutputEvent:
-    return RuntimeOutputEvent(
-        envelope=RuntimeEventEnvelope(
-            session_id=session_id,
-            runtime_session_id=f"runtime-{uuid4()}",
-            turn_id=f"turn-{uuid4()}",
-            provider_turn_id=None,
-            occurred_at_ms=time_ns() // 1_000_000,
-        ),
-        payload=payload,
     )
 
 
@@ -204,149 +179,6 @@ async def test_telegram_real_provider_group_topic_reply_and_attachment(
         assert result.status is ProviderCallStatus.CONFIRMED
         assert result.receipt["total_parts"] == 2
         assert result.receipt["confirmed_parts"] == 2
-    finally:
-        await channel.stop(timeout=5)
-
-
-@pytest.mark.asyncio
-async def test_telegram_real_provider_keeps_one_activity_message_per_turn(
-    tmp_path: Path,
-) -> None:
-    chat_id = _required_int("BCN_TELEGRAM_E2E_DM_CHAT_ID")
-    channel = _channel(tmp_path)
-    await channel.start(timeout=_TELEGRAM_STARTUP_TIMEOUT_SECONDS)
-    try:
-        bot_id = channel.health["bot_id"]
-        assert isinstance(bot_id, int)
-        session_id = f"session-{uuid4()}"
-        channel._stream_routes[session_id] = TelegramThreadIdentity(
-            bot_id=bot_id,
-            chat_id=chat_id,
-            topic_id=0,
-        )
-        envelope = _activity_event(
-            session_id,
-            ToolCallCompleted(ToolCall("call-unused", "unused")),
-        ).envelope
-
-        def event(payload: RuntimeEventPayload) -> RuntimeOutputEvent:
-            return RuntimeOutputEvent(envelope=envelope, payload=payload)
-
-        channel.accept_turn_event(
-            event(ToolCallStarted(ToolCall(f"call-{uuid4()}", "provider-check"))),
-            session_id=session_id,
-        )
-        async with asyncio.timeout(30):
-            while channel.health["activity_messages_sent"] == 0:
-                await asyncio.sleep(0.05)
-        created_at = monotonic()
-
-        channel.accept_turn_event(
-            event(UsageUpdated(TokenUsage(input_tokens=11, output_tokens=3))),
-            session_id=session_id,
-        )
-        channel.accept_turn_event(
-            event(TurnCompleted("turn.completed")),
-            session_id=session_id,
-        )
-        async with asyncio.timeout(30):
-            while channel.health["activity_turns"]:
-                await asyncio.sleep(0.05)
-
-        assert monotonic() - created_at >= 1.0
-        assert channel.health["activity_messages_sent"] == 1
-        edited = channel.health["activity_messages_edited"]
-        assert isinstance(edited, int)
-        assert edited >= 1
-        assert channel.health["activity_failures"] == 0
-    finally:
-        await channel.stop(timeout=5)
-
-
-@pytest.mark.asyncio
-async def test_telegram_real_provider_sends_a_usage_only_overview(
-    tmp_path: Path,
-) -> None:
-    chat_id = _required_int("BCN_TELEGRAM_E2E_DM_CHAT_ID")
-    channel = _channel(tmp_path)
-    await channel.start(timeout=_TELEGRAM_STARTUP_TIMEOUT_SECONDS)
-    try:
-        bot_id = channel.health["bot_id"]
-        assert isinstance(bot_id, int)
-        session_id = f"session-{uuid4()}"
-        channel._stream_routes[session_id] = TelegramThreadIdentity(
-            bot_id=bot_id,
-            chat_id=chat_id,
-            topic_id=0,
-        )
-        envelope = _activity_event(
-            session_id,
-            ToolCallCompleted(ToolCall("call-unused", "unused")),
-        ).envelope
-
-        channel.accept_turn_event(
-            RuntimeOutputEvent(
-                envelope=envelope,
-                payload=UsageUpdated(TokenUsage(input_tokens=7, output_tokens=2)),
-            ),
-            session_id=session_id,
-        )
-        await asyncio.sleep(0.2)
-        assert channel.health["activity_messages_sent"] == 0
-
-        channel.accept_turn_event(
-            RuntimeOutputEvent(
-                envelope=envelope,
-                payload=TurnCompleted("turn.completed"),
-            ),
-            session_id=session_id,
-        )
-        async with asyncio.timeout(30):
-            while channel.health["activity_turns"]:
-                await asyncio.sleep(0.05)
-
-        assert channel.health["activity_messages_sent"] == 1
-        assert channel.health["activity_messages_edited"] == 0
-        assert channel.health["activity_failures"] == 0
-    finally:
-        await channel.stop(timeout=5)
-
-
-@pytest.mark.asyncio
-async def test_telegram_real_provider_projects_a_tool_result_without_a_start(
-    tmp_path: Path,
-) -> None:
-    chat_id = _required_int("BCN_TELEGRAM_E2E_DM_CHAT_ID")
-    channel = _channel(tmp_path)
-    await channel.start(timeout=_TELEGRAM_STARTUP_TIMEOUT_SECONDS)
-    try:
-        bot_id = channel.health["bot_id"]
-        assert isinstance(bot_id, int)
-        session_id = f"session-{uuid4()}"
-        channel._stream_routes[session_id] = TelegramThreadIdentity(
-            bot_id=bot_id,
-            chat_id=chat_id,
-            topic_id=0,
-        )
-        event = _activity_event(
-            session_id,
-            ToolCallCompleted(ToolCall(f"call-{uuid4()}", "provider-check")),
-        )
-        channel.accept_turn_event(event, session_id=session_id)
-        async with asyncio.timeout(30):
-            while channel.health["activity_messages_sent"] == 0:
-                await asyncio.sleep(0.05)
-
-        channel.accept_turn_event(
-            RuntimeOutputEvent(
-                envelope=event.envelope,
-                payload=TurnCompleted("turn.completed"),
-            ),
-            session_id=session_id,
-        )
-        async with asyncio.timeout(10):
-            while channel.health["activity_turns"]:
-                await asyncio.sleep(0.05)
     finally:
         await channel.stop(timeout=5)
 
