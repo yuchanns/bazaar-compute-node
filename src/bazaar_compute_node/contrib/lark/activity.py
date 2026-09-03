@@ -13,6 +13,7 @@ from ...core.activity import (
     ActivityOverview,
     ActivityReducer,
     snapshot_line,
+    turn_key,
 )
 from ...core.models import (
     ContextCompactionCompleted,
@@ -27,6 +28,7 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
+from ...core.text import truncate_utf8
 from ...core.timerwheel import TimerWheel
 from ...i18n import Translator
 from ...rendering import TextTemplate
@@ -141,7 +143,7 @@ class LarkActivityProjector:
             | TurnUnknown,
         ):
             return
-        key = self._turn_key(item)
+        key = turn_key(item)
         if key is None:
             return
         turn = self._turns.get(key)
@@ -422,7 +424,7 @@ class LarkActivityProjector:
         content = _ACTIVITY_TEMPLATE.render(
             {
                 "label": line.label,
-                "name": _truncate_utf8(line.name, _MAX_TOOL_NAME_BYTES)
+                "name": truncate_utf8(line.name, _MAX_TOOL_NAME_BYTES)
                 if line.name
                 else "",
             }
@@ -554,22 +556,6 @@ class LarkActivityProjector:
                 }
             )
         return elements
-
-    @staticmethod
-    def _turn_key(item: RuntimeOutputEvent) -> tuple[str, str] | None:
-        turn_id = item.envelope.turn_id or item.envelope.provider_turn_id
-        if turn_id is None:
-            return None
-        return item.envelope.session_id, turn_id
-
-
-def _truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    suffix = "…"
-    prefix = encoded[: limit - len(suffix.encode("utf-8"))]
-    return prefix.decode("utf-8", errors="ignore") + suffix
 
 
 __all__ = [

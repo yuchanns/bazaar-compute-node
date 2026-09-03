@@ -10,8 +10,13 @@ from dataclasses import dataclass
 from time import time_ns
 from uuid import uuid4
 
-from ...core.approval import approval_action_text, approval_description_text
+from ...core.approval import (
+    approval_action_text,
+    approval_description_text,
+    resolved_callback_text,
+)
 from ...core.channel import ChannelApprovalRequest, ChannelContext
+from ...core.clock import remaining
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...core.timerwheel import TimerWheel
 from ...i18n import ENGLISH, Translator, create_translator
@@ -147,7 +152,7 @@ class LarkApprovalChannel(LarkChannel):
                 pending.token,
                 translator=self._translator,
             )
-            remaining = _remaining(deadline)
+            budget = remaining(deadline)
             if reply_to_message_id is not None:
                 prompt_message_id = await api.reply_message(
                     message_id=reply_to_message_id,
@@ -155,7 +160,7 @@ class LarkApprovalChannel(LarkChannel):
                     content=content,
                     reply_in_thread=thread.thread_id != "0",
                     uuid=uuid4().hex,
-                    timeout=remaining,
+                    timeout=budget,
                 )
             else:
                 prompt_message_id = await api.send_message(
@@ -163,7 +168,7 @@ class LarkApprovalChannel(LarkChannel):
                     message_type="interactive",
                     content=content,
                     uuid=uuid4().hex,
-                    timeout=remaining,
+                    timeout=budget,
                 )
             prompt_message_id = _provider_text(prompt_message_id)
             if prompt_message_id is None:
@@ -214,7 +219,9 @@ class LarkApprovalChannel(LarkChannel):
         async with self._approval_lock:
             resolved_event = self._resolved_card_events.get(event_id)
             if resolved_event is not None:
-                return self._card_ack(self._resolved_callback_text(resolved_event))
+                return self._card_ack(
+                    resolved_callback_text(self._translator, resolved_event)
+                )
 
             if action not in {"approve", "reject"}:
                 self._approval_callback_rejections += 1
@@ -227,7 +234,7 @@ class LarkApprovalChannel(LarkChannel):
                 self._approval_callback_rejections += 1
                 state = self._resolved_approval_tokens.get(token)
                 return self._card_ack(
-                    self._resolved_callback_text(state),
+                    resolved_callback_text(self._translator, state),
                     toast_type="warning",
                 )
             if chat_id != pending.thread.chat_id or (
@@ -249,7 +256,7 @@ class LarkApprovalChannel(LarkChannel):
                 self._approval_callback_rejections += 1
                 state = self._resolved_approval_tokens.get(token)
                 return self._card_ack(
-                    self._resolved_callback_text(state),
+                    resolved_callback_text(self._translator, state),
                     toast_type="warning",
                 )
             if pending.prompt_message_id is None:
@@ -357,13 +364,6 @@ class LarkApprovalChannel(LarkChannel):
             while len(self._resolved_card_events) > _RESOLVED_TOKEN_LIMIT:
                 self._resolved_card_events.popitem(last=False)
 
-    def _resolved_callback_text(self, state: str | None) -> str:
-        if state == "approved":
-            return self._translator.text("approval.callback.already_approved")
-        if state == "rejected":
-            return self._translator.text("approval.callback.already_rejected")
-        return self._translator.text("approval.callback.invalid")
-
     def _timeout_result(self, request_id: str) -> ApprovalResult:
         return ApprovalResult(
             request_id=request_id,
@@ -423,7 +423,7 @@ def _approval_card_content(
             "template": "blue",
             "title": {
                 "tag": "plain_text",
-                "content": _card_title(translator),
+                "content": translator.text("approval.prompt.title").lstrip("#").strip(),
             },
         },
         "body": {
@@ -431,10 +431,6 @@ def _approval_card_content(
         },
     }
     return json.dumps(card, ensure_ascii=False, separators=(",", ":"))
-
-
-def _card_title(translator: Translator) -> str:
-    return translator.text("approval.prompt.title").lstrip("#").strip()
 
 
 def _card_button(
@@ -504,10 +500,6 @@ def _provider_text(value: object) -> str | None:
     if not isinstance(value, str) or not value or "\r" in value or "\n" in value:
         return None
     return value
-
-
-def _remaining(deadline: float) -> float:
-    return max(0.0, deadline - asyncio.get_running_loop().time())
 
 
 __all__ = ["LarkApprovalChannel"]
