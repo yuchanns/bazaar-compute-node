@@ -4,11 +4,13 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+from bazaar_compute_node.app.config import resolve_config_path
 from bazaar_compute_node.app.transport import (
     LocalCommandClient,
     local_endpoint_for_path,
@@ -203,3 +205,40 @@ async def test_foreground_process_restarts_with_persisted_configuration(
 
     assert not endpoint_path.exists()
     assert not (data_dir / "runtime.lock").exists()
+
+
+def test_a_first_run_writes_the_configuration_it_needs() -> None:
+    # a fresh install has no config file; run is what puts one there, so it has
+    # to prepare one unconditionally or the node has nothing to start from
+    config_path = resolve_config_path()
+    assert not config_path.exists()
+
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).parents[2] / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (source_root, environment.get("PYTHONPATH")) if value
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "bazaar_compute_node.cli", "run"],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not config_path.exists():
+            if process.poll() is not None:
+                _, stderr = process.communicate()
+                raise AssertionError(f"bcn run exited before it started: {stderr}")
+            time.sleep(0.05)
+
+        assert config_path.exists()
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()

@@ -24,6 +24,39 @@ from bazaar_compute_node.core.runtime import RuntimeSandboxMode
 from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
 
 
+def test_a_node_option_is_accepted_wherever_it_is_written(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --config belongs to the whole invocation, so it reads the same before the
+    # group, between the group and its command, or after the command
+    config_path = tmp_path / "config.toml"
+
+    for argv in (
+        ["--config", str(config_path), "agent", "list"],
+        ["agent", "--config", str(config_path), "list"],
+        ["agent", "list", "--config", str(config_path)],
+    ):
+        assert main(argv) == 0
+        assert (
+            create_translator(None).text("cli.agent.empty") in capsys.readouterr().out
+        )
+
+
+def test_a_group_asked_for_nothing_answers_with_its_own_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # naming a group and stopping there is a question about that group
+    assert main(["agent"]) == 0
+    assert capsys.readouterr().out.startswith("Usage: bcn agent")
+
+    assert main(["system-service"]) == 0
+    assert capsys.readouterr().out.startswith("Usage: bcn system-service")
+
+    assert main([]) == 0
+    assert capsys.readouterr().out.startswith("Usage: bcn ")
+
+
 def test_help_and_version_output() -> None:
     # help shows the resolved data dir
     help_text = build_parser().format_help()
