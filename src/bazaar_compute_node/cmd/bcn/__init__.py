@@ -24,7 +24,9 @@ def build_cli(translator: Translator) -> click.Group:
         ),
         context_settings={"help_option_names": ["-h", "--help"]},
     )
-    @click.version_option(__version__, "--version", prog_name="bcn")
+    @click.version_option(
+        __version__, "--version", prog_name="bcn", message="%(prog)s %(version)s"
+    )
     @node_options(translator)
     @click.pass_context
     def bcn(context: click.Context, **values: object) -> None:
