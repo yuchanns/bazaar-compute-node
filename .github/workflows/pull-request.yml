@@ -28,3 +28,20 @@ jobs:
 
       - name: Run checks
         uses: ./.github/actions/checks
+
+      - name: Read the project version
+        id: version
+        run: echo "version=$(uv version --short)" >>"$GITHUB_OUTPUT"
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Smoke test wheel
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: uv run --isolated --no-project --with dist/*.whl tests/package_smoke.py "$PACKAGE_VERSION"
+
+      - name: Smoke test source distribution
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: uv run --isolated --no-project --with dist/*.tar.gz tests/package_smoke.py "$PACKAGE_VERSION"
