@@ -41,10 +41,6 @@ class ReminderDuration:
     milliseconds: int
     canonical: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.canonical, str) or not self.canonical:
-            raise ValueError("canonical must be a non-empty string")
-
 
 @dataclass(frozen=True, slots=True)
 class ReminderRecurrence:
@@ -55,10 +51,6 @@ class ReminderRecurrence:
     weekdays: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.kind, RecurrenceKind):
-            raise TypeError("kind must be a RecurrenceKind")
-        if not isinstance(self.canonical, str) or not self.canonical:
-            raise ValueError("canonical must be a non-empty string")
         if self.kind is RecurrenceKind.EVERY:
             if self.interval_ms is None:
                 raise ValueError("an every recurrence requires interval_ms")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Self
 
-from .states import REMINDER_TRANSITIONS, ReminderState, ensure_transition
+from .states import ReminderState
 
 
 def _validate_transition_time(current_ms: int, incoming_ms: int) -> None:
@@ -77,9 +77,6 @@ class Reminder:
         )
         if base_ms is None:
             raise AssertionError("a scheduled reminder has no next fire time")
-        ensure_transition(
-            "reminder", self.state, ReminderState.SCHEDULED, REMINDER_TRANSITIONS
-        )
         return replace(
             self,
             state=ReminderState.SCHEDULED,
@@ -124,9 +121,6 @@ class Reminder:
     def cancel(self, *, at_ms: int) -> Self:
         self._require_scheduled("canceled")
         _validate_transition_time(self.updated_at_ms, at_ms)
-        ensure_transition(
-            "reminder", self.state, ReminderState.CANCELED, REMINDER_TRANSITIONS
-        )
         return replace(
             self,
             state=ReminderState.CANCELED,
@@ -163,7 +157,6 @@ class Reminder:
                     "a recurring next fire time must follow the current slot"
                 )
             target_state = ReminderState.SCHEDULED
-        ensure_transition("reminder", self.state, target_state, REMINDER_TRANSITIONS)
         return replace(
             self,
             state=target_state,

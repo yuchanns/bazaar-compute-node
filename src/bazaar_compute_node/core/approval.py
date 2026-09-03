@@ -46,6 +46,14 @@ def approval_description_text(
     return rendered
 
 
+def resolved_callback_text(translator: Translator, state: str | None) -> str:
+    if state == "approved":
+        return translator.text("approval.callback.already_approved")
+    if state == "rejected":
+        return translator.text("approval.callback.already_rejected")
+    return translator.text("approval.callback.invalid")
+
+
 class IApprovalHandler(Protocol):
     """Neutral callback used by a runtime adapter for approval requests."""
 
@@ -65,20 +73,6 @@ class ApprovalBinding:
     channel_session_id: str
     runtime_session_id: str
     turn_id: str | None = None
-
-    def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.request_id, "request_id"),
-            (self.bcn_session_id, "bcn_session_id"),
-            (self.channel_session_id, "channel_session_id"),
-            (self.runtime_session_id, "runtime_session_id"),
-        ):
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{field_name} must be a non-empty string")
-        if self.turn_id is not None and (
-            not isinstance(self.turn_id, str) or not self.turn_id
-        ):
-            raise ValueError("turn_id must be a non-empty string when present")
 
     def matches(self, request: ApprovalRequest) -> bool:
         """Ensure a response is returned to the same runtime request context."""

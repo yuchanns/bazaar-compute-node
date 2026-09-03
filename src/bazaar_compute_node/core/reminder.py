@@ -99,12 +99,6 @@ class ReminderListRequest:
         {ReminderState.SCHEDULED, ReminderState.FIRED}
     )
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.statuses, frozenset) or not self.statuses:
-            raise ValueError("statuses must be a non-empty frozenset")
-        if not all(isinstance(status, ReminderState) for status in self.statuses):
-            raise TypeError("statuses must contain ReminderState values")
-
 
 @dataclass(frozen=True, slots=True)
 class ReminderSnoozeRequest:
@@ -217,12 +211,6 @@ class ReminderScheduleResult:
 @dataclass(frozen=True, slots=True)
 class ReminderListResult:
     reminders: tuple[Reminder, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.reminders, tuple) or not all(
-            isinstance(reminder, Reminder) for reminder in self.reminders
-        ):
-            raise TypeError("reminders must be a tuple of Reminder values")
 
 
 @dataclass(frozen=True, slots=True)

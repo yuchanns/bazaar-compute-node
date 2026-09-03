@@ -26,7 +26,7 @@ class ToolCallDeltaKind(StrEnum):
 class RuntimeEventEnvelope:
     session_id: str
     runtime_session_id: str
-    turn_id: str | None
+    turn_id: str
     provider_turn_id: str | None
     occurred_at_ms: int
 
