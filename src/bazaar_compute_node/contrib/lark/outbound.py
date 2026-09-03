@@ -12,12 +12,7 @@ from uuid import uuid4
 
 from ...core.channel import ChannelDeliveryReceipt, ChannelSendRequest
 from ...core.clock import remaining
-from ...core.markdown import (
-    Fence,
-    advance_fence,
-    closing_suffix,
-    preferred_boundary,
-)
+from ...core.markdown import split_markdown
 from ...core.models import OutboundAttachment
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from .api import LarkApi, LarkApiError, LarkTransportError
@@ -79,77 +74,6 @@ class PreparedAttachment:
                 f"Lark attachment changed after preflight: {self.descriptor.name}"
             )
         return os.fdopen(descriptor, "rb")
-
-
-def split_markdown(
-    content: str,
-    *,
-    limit: int = MAX_MARKDOWN_CODEPOINTS,
-) -> tuple[str, ...]:
-    """Split markdown by Unicode code points while preserving fenced blocks."""
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-    if not content:
-        return (content,)
-
-    chunks: list[str] = []
-    cursor = 0
-    fence: Fence | None = None
-    while cursor < len(content):
-        prefix = f"{fence.opening}\n" if fence is not None else ""
-        end = cursor
-        size = len(prefix)
-        while end < len(content) and size + 1 <= limit:
-            size += 1
-            end += 1
-        if end == cursor:
-            raise ValueError("markdown fence overhead exceeds the provider limit")
-
-        while True:
-            next_fence = advance_fence(
-                fence,
-                content[cursor:end],
-                initial_line_boundary=(
-                    fence is not None or cursor == 0 or content[cursor - 1] in "\r\n"
-                ),
-                terminal_line_complete=(end == len(content) or content[end] in "\r\n"),
-            )
-            suffix = closing_suffix(prefix + content[cursor:end], next_fence)
-            if len(prefix) + (end - cursor) + len(suffix) <= limit:
-                break
-            end -= 1
-            if end == cursor:
-                raise ValueError("markdown fence closure exceeds the provider limit")
-
-        if end < len(content):
-            minimum = cursor + max(1, (end - cursor) // 2)
-            preferred = preferred_boundary(content, minimum, end)
-            if preferred is not None:
-                preferred_fence = advance_fence(
-                    fence,
-                    content[cursor:preferred],
-                    initial_line_boundary=(
-                        fence is not None
-                        or cursor == 0
-                        or content[cursor - 1] in "\r\n"
-                    ),
-                    terminal_line_complete=(
-                        preferred == len(content) or content[preferred] in "\r\n"
-                    ),
-                )
-                preferred_suffix = closing_suffix(
-                    prefix + content[cursor:preferred], preferred_fence
-                )
-                if len(prefix) + (preferred - cursor) + len(preferred_suffix) <= limit:
-                    end = preferred
-                    next_fence = preferred_fence
-                    suffix = preferred_suffix
-
-        chunks.append(prefix + content[cursor:end] + suffix)
-        cursor = end
-        fence = next_fence
-
-    return tuple(chunks)
 
 
 def markdown_post_content(markdown: str) -> str:
@@ -384,7 +308,11 @@ async def send_outbound(
         )
 
     try:
-        body_parts = split_markdown(request.body) if request.body.strip() else ()
+        body_parts = (
+            split_markdown(request.body, limit=MAX_MARKDOWN_CODEPOINTS)
+            if request.body.strip()
+            else ()
+        )
     except ValueError as error:
         return _failed("invalid_markdown", str(error))
 

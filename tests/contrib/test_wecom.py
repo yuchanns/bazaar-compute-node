@@ -16,7 +16,6 @@ from bazaar_compute_node.contrib.wecom.channel import (
     _Delivery,
     _RequestResult,
 )
-from bazaar_compute_node.contrib.wecom.markdown import split_markdown
 from bazaar_compute_node.contrib.wecom.outbound import (
     CHUNK_SIZE,
     AttachmentReader,
@@ -32,6 +31,7 @@ from bazaar_compute_node.core.channel import (
     ChannelIdentity,
     ChannelSendRequest,
 )
+from bazaar_compute_node.core.markdown import split_markdown, utf8_bytes
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -70,7 +70,7 @@ def test_wecom_markdown_split() -> None:
     # unicode and block boundaries survive a split
     content = ("Heading\n\nParagraph with \u4f60\u597d.\n\n" * 20).rstrip()
 
-    chunks = split_markdown(content, limit=128)
+    chunks = split_markdown(content, limit=128, measure=utf8_bytes)
 
     assert len(chunks) > 1
     assert "".join(chunks) == content
@@ -79,12 +79,23 @@ def test_wecom_markdown_split() -> None:
     # a fenced block is closed and reopened across parts
     content = "```python\n" + ("print('\u4f60\u597d')\n" * 40) + "```"
 
-    chunks = split_markdown(content, limit=96)
+    chunks = split_markdown(content, limit=96, measure=utf8_bytes)
 
     assert len(chunks) > 1
     assert all(len(chunk.encode("utf-8")) <= 96 for chunk in chunks)
     assert all(chunk.startswith("```python\n") for chunk in chunks)
     assert all(chunk.endswith("```") for chunk in chunks)
+
+
+def test_wecom_markdown_closes_a_fence_that_opens_a_continuation() -> None:
+    # a closing fence can land at the start of a continuation part; the reopened
+    # fence has already put it at a line boundary, so it closes the block there
+    content = "```py \n```py~~~```"
+
+    chunks = split_markdown(content, limit=12, measure=utf8_bytes)
+
+    assert chunks[-1] == "```py\n```"
+    assert all(chunk.startswith("```py") for chunk in chunks[1:])
 
 
 def test_wecom_filename_decodes_provider_content_disposition() -> None:

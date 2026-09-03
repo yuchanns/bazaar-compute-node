@@ -28,6 +28,7 @@ from ...core.channel import (
     IChannel,
 )
 from ...core.clock import remaining
+from ...core.markdown import split_markdown, utf8_bytes
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -43,7 +44,6 @@ from ...core.models import (
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from ...i18n import ENGLISH, Translator, create_translator
-from .markdown import split_markdown
 from .outbound import (
     AttachmentReader,
     PreparedAttachment,
@@ -633,7 +633,9 @@ class WeComChannel(IChannel):
         target_id = request.provider_thread_id
         try:
             batches = (
-                split_markdown(request.body, limit=_MAX_MARKDOWN_BYTES)
+                split_markdown(
+                    request.body, limit=_MAX_MARKDOWN_BYTES, measure=utf8_bytes
+                )
                 if request.body.strip()
                 else ()
             )
