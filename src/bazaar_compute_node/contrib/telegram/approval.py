@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import time_ns
 
-from ...core.approval import approval_action_text, approval_description_text
+from ...core.approval import (
+    approval_action_text,
+    approval_description_text,
+    resolved_callback_text,
+)
 from ...core.channel import ChannelApprovalRequest, ChannelContext
 from ...core.models import ApprovalDecision, ApprovalResult
 from ...i18n import ENGLISH, Translator, create_translator
@@ -200,48 +204,14 @@ class TelegramApprovalChannel(TelegramChannel):
             return
         await super()._dispatch_update(update, update_id=update_id)
 
-    async def _handle_callback_query(
+    def _callback_route(
         self,
-        callback_query: Mapping[str, object],
-    ) -> None:
-        self._approval_callbacks += 1
-        query_id = callback_query.get("id")
-        if not isinstance(query_id, str) or not query_id:
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "invalid_callback_query_id"
-            return
+        pending: _PendingApproval,
+        message: Mapping[str, object],
+        sender: Mapping[str, object],
+    ) -> int | tuple[str, str]:
+        """Confirm a callback came from the message and person it claims."""
 
-        parsed = self._callback_action(callback_query.get("data"))
-        if parsed is None:
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "unsupported_callback_query"
-            self._schedule_callback_answer(
-                query_id,
-                self._translator.text("approval.callback.unknown_action"),
-            )
-            return
-        decision, token = parsed
-        pending = self._pending_approvals.get(token)
-        if pending is None:
-            self._approval_callback_rejections += 1
-            state = self._resolved_approval_tokens.get(token)
-            self._last_update_disposition = "resolved_approval_callback"
-            self._schedule_callback_answer(
-                query_id,
-                self._resolved_callback_text(state),
-            )
-            return
-
-        message = callback_query.get("message")
-        sender = callback_query.get("from")
-        if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "invalid_approval_callback"
-            self._schedule_callback_answer(
-                query_id,
-                self._translator.text("approval.callback.invalid"),
-            )
-            return
         chat = message.get("chat")
         chat_id = chat.get("id") if isinstance(chat, Mapping) else None
         message_id = message.get("message_id")
@@ -257,44 +227,85 @@ class TelegramApprovalChannel(TelegramChannel):
             or topic_id is None
             or topic_id != pending.topic_id
         ):
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "approval_callback_route_mismatch"
-            self._schedule_callback_answer(
-                query_id,
-                self._translator.text("approval.callback.invalid"),
-            )
-            return
+            return "approval_callback_route_mismatch", "approval.callback.invalid"
         if (
             pending.prompt_message_id is not None
             and message_id != pending.prompt_message_id
         ):
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "approval_callback_message_mismatch"
-            self._schedule_callback_answer(
-                query_id,
-                self._translator.text("approval.callback.invalid"),
-            )
-            return
+            return "approval_callback_message_mismatch", "approval.callback.invalid"
         if (
             not isinstance(sender_id, int)
             or isinstance(sender_id, bool)
             or str(sender_id) != pending.expected_sender_id
         ):
+            return (
+                "approval_callback_sender_mismatch",
+                "approval.callback.sender_mismatch",
+            )
+        return message_id
+
+    def _reject_callback(self, query_id: str, reason: str, text: str) -> None:
+        """Turn down a callback, telling the person why."""
+
+        self._approval_callback_rejections += 1
+        self._last_update_disposition = reason
+        self._schedule_callback_answer(query_id, text)
+
+    async def _handle_callback_query(
+        self,
+        callback_query: Mapping[str, object],
+    ) -> None:
+        self._approval_callbacks += 1
+        query_id = callback_query.get("id")
+        if not isinstance(query_id, str) or not query_id:
             self._approval_callback_rejections += 1
-            self._last_update_disposition = "approval_callback_sender_mismatch"
+            self._last_update_disposition = "invalid_callback_query_id"
+            return
+
+        parsed = self._callback_action(callback_query.get("data"))
+        if parsed is None:
+            self._reject_callback(
+                query_id,
+                "unsupported_callback_query",
+                self._translator.text("approval.callback.unknown_action"),
+            )
+            return
+        decision, token = parsed
+        pending = self._pending_approvals.get(token)
+        if pending is None:
+            self._approval_callback_rejections += 1
+            state = self._resolved_approval_tokens.get(token)
+            self._last_update_disposition = "resolved_approval_callback"
             self._schedule_callback_answer(
                 query_id,
-                self._translator.text("approval.callback.sender_mismatch"),
+                resolved_callback_text(self._translator, state),
             )
             return
 
+        message = callback_query.get("message")
+        sender = callback_query.get("from")
+        if not isinstance(message, Mapping) or not isinstance(sender, Mapping):
+            self._reject_callback(
+                query_id,
+                "invalid_approval_callback",
+                self._translator.text("approval.callback.invalid"),
+            )
+            return
+        checked = self._callback_route(pending, message, sender)
+        if isinstance(checked, tuple):
+            reason, text_key = checked
+            self._reject_callback(query_id, reason, self._translator.text(text_key))
+            return
+        message_id = checked
+
         pending.prompt_message_id = message_id
         if pending.future.done():
-            self._approval_callback_rejections += 1
-            self._last_update_disposition = "duplicate_approval_callback"
-            self._schedule_callback_answer(
+            self._reject_callback(
                 query_id,
-                self._resolved_callback_text(self._resolved_approval_tokens.get(token)),
+                "duplicate_approval_callback",
+                resolved_callback_text(
+                    self._translator, self._resolved_approval_tokens.get(token)
+                ),
             )
             return
 
@@ -492,13 +503,6 @@ class TelegramApprovalChannel(TelegramChannel):
             else:
                 current = 0
         return "`" * max(3, longest + 1)
-
-    def _resolved_callback_text(self, state: str | None) -> str:
-        if state == "approved":
-            return self._translator.text("approval.callback.already_approved")
-        if state == "rejected":
-            return self._translator.text("approval.callback.already_rejected")
-        return self._translator.text("approval.callback.invalid")
 
 
 __all__ = ["TelegramApprovalChannel"]

@@ -4,7 +4,7 @@ import asyncio
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ...core.channel import ChannelContext, ChannelDeliveryReceipt, ChannelSendRequest
 from ...core.models import RuntimeOutputEvent
@@ -13,10 +13,40 @@ from .activity import MAX_RICH_MARKDOWN_BYTES, TelegramActivityProjector
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
 from .approval import TelegramApprovalChannel
 from .attachments import PreparedTelegramAttachment, prepare_outbound_attachments
-from .identity import parse_provider_thread_id
+from .identity import TelegramThreadIdentity, parse_provider_thread_id
 
 _MAX_RATE_LIMIT_RETRIES = 3
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+@dataclass(frozen=True, slots=True)
+class _Route:
+    identity: TelegramThreadIdentity
+    reply_to_message_id: int | None
+
+
+@dataclass(slots=True)
+class _Delivery:
+    """What a multi-part Telegram send has confirmed so far."""
+
+    total: int
+    confirmed: int = 0
+    receipts: list[dict[str, object]] = field(default_factory=list)
+
+    def receipt(self) -> Mapping[str, object]:
+        confirmed_ids = tuple(
+            receipt["provider_message_id"]
+            for receipt in self.receipts
+            if receipt.get("state") == "confirmed"
+            and isinstance(receipt.get("provider_message_id"), str)
+        )
+        return {
+            "total_parts": self.total,
+            "confirmed_parts": self.confirmed,
+            "parts": tuple(self.receipts),
+            "provider_message_id": confirmed_ids[0] if confirmed_ids else None,
+            "provider_receipt_ref": confirmed_ids[-1] if confirmed_ids else None,
+        }
 
 
 class _DeliveryDeadlineExpired(TimeoutError):
@@ -93,20 +123,10 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             api=self._api,
         )
 
-    async def send(
-        self,
-        request: ChannelSendRequest,
-        *,
-        timeout: float,
-    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        self._outbound_requests += 1
-        api = self._api
-        bot_id = self._bot_id
-        if api is None or bot_id is None:
-            return self._failed(
-                "connection_unavailable",
-                "Telegram channel is not ready for outbound delivery",
-            )
+    def _outbound_route(
+        self, request: ChannelSendRequest, bot_id: int
+    ) -> _Route | ProviderCallResult[ChannelDeliveryReceipt]:
+        """Read which chat, topic and reply anchor a request names."""
 
         try:
             identity = parse_provider_thread_id(request.provider_thread_id)
@@ -133,9 +153,17 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     "invalid_reply_reference",
                     "Telegram reply message id must be positive",
                 )
+        return _Route(identity=identity, reply_to_message_id=reply_to_message_id)
+
+    async def _prepare_parts(
+        self, request: ChannelSendRequest, deadline: float
+    ) -> (
+        tuple[tuple[RichMarkdownPart, ...], tuple[PreparedTelegramAttachment, ...]]
+        | ProviderCallResult[ChannelDeliveryReceipt]
+    ):
+        """Split the body and stage the attachments before anything is sent."""
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
         try:
             parts = split_rich_markdown(request.body) if request.body.strip() else ()
         except (TypeError, ValueError) as error:
@@ -162,16 +190,79 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             )
         except (OSError, TypeError, ValueError) as error:
             return self._failed("invalid_attachment", str(error))
+        return parts, attachments
 
-        total_parts = len(parts) + len(attachments)
-        if total_parts == 0:
-            return self._failed(
-                "empty_message",
-                "Telegram outbound message must contain text or an attachment",
+    async def _send_plain_blocks(
+        self,
+        api: TelegramBotApi,
+        payload: dict[str, object],
+        part: RichMarkdownPart,
+        delivery: _Delivery,
+        *,
+        deadline: float,
+    ) -> Mapping[str, object] | ProviderCallResult[ChannelDeliveryReceipt]:
+        """Resend as plain blocks a part the provider refused as markdown."""
+
+        payload["rich_message"] = plain_rich_message(part.markdown)
+        try:
+            provider_message = await self._send_rich_message_with_retry(
+                api,
+                payload,
+                deadline=deadline,
             )
+        except asyncio.CancelledError:
+            raise
+        except _DeliveryDeadlineExpired:
+            return self._clear_failure(
+                delivery,
+                error_kind="delivery_timeout",
+                error_message=(
+                    "Telegram delivery deadline expired before formatting fallback"
+                ),
+            )
+        except TelegramApiError as fallback_error:
+            receipt = self._failed_part(
+                ordinal=part.ordinal,
+                kind="rich_message",
+                delivery_format="blocks",
+                error=fallback_error,
+            )
+            receipt["fallback_from"] = "markdown"
+            delivery.receipts.append(receipt)
+            return self._clear_failure(
+                delivery,
+                error_kind="provider_rejected_part",
+                error_message="Telegram rejected an outbound Rich Message part",
+            )
+        except TelegramTransportError as fallback_error:
+            delivery.receipts.append(
+                {
+                    "ordinal": part.ordinal,
+                    "kind": "rich_message",
+                    "format": "blocks",
+                    "fallback_from": "markdown",
+                    "state": "unknown",
+                    "error_type": fallback_error.error_type,
+                }
+            )
+            return self._unknown(
+                delivery,
+                error_kind="send_unknown",
+                error_message="Telegram Rich Message delivery outcome is unknown",
+            )
+        return provider_message
 
-        receipts: list[dict[str, object]] = []
-        confirmed = 0
+    async def _send_text_parts(
+        self,
+        api: TelegramBotApi,
+        delivery: _Delivery,
+        parts: tuple[RichMarkdownPart, ...],
+        *,
+        identity: TelegramThreadIdentity,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt] | None:
+        """Send the message text, one Rich Message part at a time."""
 
         for part in parts:
             payload: dict[str, object] = {
@@ -195,15 +286,13 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 raise
             except _DeliveryDeadlineExpired:
                 return self._clear_failure(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="delivery_timeout",
                     error_message="Telegram delivery deadline expired",
                 )
             except TelegramApiError as error:
                 if not is_rich_markdown_rejection(error.error_code, str(error)):
-                    receipts.append(
+                    delivery.receipts.append(
                         self._failed_part(
                             ordinal=part.ordinal,
                             kind="rich_message",
@@ -212,9 +301,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                         )
                     )
                     return self._clear_failure(
-                        total=total_parts,
-                        confirmed=confirmed,
-                        receipts=receipts,
+                        delivery,
                         error_kind="provider_rejected_part",
                         error_message="Telegram rejected an outbound Rich Message part",
                     )
@@ -222,62 +309,14 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 self._outbound_markdown_fallbacks += 1
                 fallback_from = "markdown"
                 delivery_format = "blocks"
-                payload["rich_message"] = plain_rich_message(part.markdown)
-                try:
-                    provider_message = await self._send_rich_message_with_retry(
-                        api,
-                        payload,
-                        deadline=deadline,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except _DeliveryDeadlineExpired:
-                    return self._clear_failure(
-                        total=total_parts,
-                        confirmed=confirmed,
-                        receipts=receipts,
-                        error_kind="delivery_timeout",
-                        error_message=(
-                            "Telegram delivery deadline expired before "
-                            "formatting fallback"
-                        ),
-                    )
-                except TelegramApiError as fallback_error:
-                    receipt = self._failed_part(
-                        ordinal=part.ordinal,
-                        kind="rich_message",
-                        delivery_format=delivery_format,
-                        error=fallback_error,
-                    )
-                    receipt["fallback_from"] = fallback_from
-                    receipts.append(receipt)
-                    return self._clear_failure(
-                        total=total_parts,
-                        confirmed=confirmed,
-                        receipts=receipts,
-                        error_kind="provider_rejected_part",
-                        error_message="Telegram rejected an outbound Rich Message part",
-                    )
-                except TelegramTransportError as fallback_error:
-                    receipts.append(
-                        {
-                            "ordinal": part.ordinal,
-                            "kind": "rich_message",
-                            "format": delivery_format,
-                            "fallback_from": fallback_from,
-                            "state": "unknown",
-                            "error_type": fallback_error.error_type,
-                        }
-                    )
-                    return self._unknown(
-                        total=total_parts,
-                        confirmed=confirmed,
-                        receipts=receipts,
-                        error_kind="send_unknown",
-                        error_message="Telegram Rich Message delivery outcome is unknown",
-                    )
+                fallen_back = await self._send_plain_blocks(
+                    api, payload, part, delivery, deadline=deadline
+                )
+                if isinstance(fallen_back, ProviderCallResult):
+                    return fallen_back
+                provider_message = fallen_back
             except TelegramTransportError as error:
-                receipts.append(
+                delivery.receipts.append(
                     {
                         "ordinal": part.ordinal,
                         "kind": "rich_message",
@@ -287,16 +326,14 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     }
                 )
                 return self._unknown(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="send_unknown",
                     error_message="Telegram Rich Message delivery outcome is unknown",
                 )
 
             provider_message_id = self._outbound_provider_message_id(provider_message)
             if provider_message_id is None:
-                receipts.append(
+                delivery.receipts.append(
                     {
                         "ordinal": part.ordinal,
                         "kind": "rich_message",
@@ -307,14 +344,12 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     }
                 )
                 return self._unknown(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="invalid_send_ack",
                     error_message="Telegram send acknowledgement omitted message_id",
                 )
 
-            receipts.append(
+            delivery.receipts.append(
                 {
                     "ordinal": part.ordinal,
                     "kind": "rich_message",
@@ -324,15 +359,33 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     "provider_message_id": provider_message_id,
                 }
             )
-            confirmed += 1
+            delivery.confirmed += 1
             self._outbound_parts_confirmed += 1
+        return None
+
+    async def _send_documents(
+        self,
+        api: TelegramBotApi,
+        delivery: _Delivery,
+        attachments: tuple[PreparedTelegramAttachment, ...],
+        *,
+        text_parts: int,
+        identity: TelegramThreadIdentity,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt] | None:
+        """Send each attachment as its own document message."""
 
         for attachment_index, attachment in enumerate(attachments, start=1):
-            ordinal = len(parts) + attachment_index
+            ordinal = text_parts + attachment_index
             payload: dict[str, object] = {"chat_id": identity.chat_id}
             if identity.topic_id:
                 payload["message_thread_id"] = identity.topic_id
-            if not parts and attachment_index == 1 and reply_to_message_id is not None:
+            if (
+                not text_parts
+                and attachment_index == 1
+                and reply_to_message_id is not None
+            ):
                 payload["reply_parameters"] = {"message_id": reply_to_message_id}
 
             receipt_base: dict[str, object] = {
@@ -353,98 +406,127 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 raise
             except _DeliveryDeadlineExpired:
                 return self._clear_failure(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="delivery_timeout",
                     error_message="Telegram delivery deadline expired",
                 )
             except TelegramApiError as error:
-                receipt = dict(receipt_base)
-                receipt.update(
-                    {
-                        "state": "failed",
-                        "provider_error_code": error.error_code,
-                    }
-                )
+                receipt = receipt_base | {
+                    "state": "failed",
+                    "provider_error_code": error.error_code,
+                }
                 if error.retry_after is not None:
                     receipt["retry_after"] = error.retry_after
-                receipts.append(receipt)
+                delivery.receipts.append(receipt)
                 return self._clear_failure(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="provider_rejected_part",
                     error_message="Telegram rejected an outbound document part",
                 )
             except TelegramTransportError as error:
-                receipt = dict(receipt_base)
-                receipt.update(
-                    {
-                        "state": "unknown",
-                        "error_type": error.error_type,
-                    }
+                delivery.receipts.append(
+                    receipt_base | {"state": "unknown", "error_type": error.error_type}
                 )
-                receipts.append(receipt)
                 return self._unknown(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="send_unknown",
                     error_message="Telegram document delivery outcome is unknown",
                 )
             except (OSError, TypeError, ValueError) as error:
-                receipt = dict(receipt_base)
-                receipt.update(
-                    {
-                        "state": "failed",
-                        "error_type": type(error).__name__,
-                    }
+                delivery.receipts.append(
+                    receipt_base
+                    | {"state": "failed", "error_type": type(error).__name__}
                 )
-                receipts.append(receipt)
                 return self._clear_failure(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="invalid_attachment",
                     error_message="Telegram attachment changed after preflight",
                 )
 
             provider_message_id = self._outbound_provider_message_id(provider_message)
             if provider_message_id is None:
-                receipt = dict(receipt_base)
-                receipt.update(
-                    {
-                        "state": "unknown",
-                        "error_type": "InvalidAcknowledgement",
-                    }
+                delivery.receipts.append(
+                    receipt_base
+                    | {"state": "unknown", "error_type": "InvalidAcknowledgement"}
                 )
-                receipts.append(receipt)
                 return self._unknown(
-                    total=total_parts,
-                    confirmed=confirmed,
-                    receipts=receipts,
+                    delivery,
                     error_kind="invalid_send_ack",
                     error_message="Telegram send acknowledgement omitted message_id",
                 )
 
-            receipt = dict(receipt_base)
-            receipt.update(
-                {
-                    "state": "confirmed",
-                    "provider_message_id": provider_message_id,
-                }
+            delivery.receipts.append(
+                receipt_base
+                | {"state": "confirmed", "provider_message_id": provider_message_id}
             )
-            receipts.append(receipt)
-            confirmed += 1
+            delivery.confirmed += 1
             self._outbound_parts_confirmed += 1
             self._outbound_documents_confirmed += 1
+        return None
+
+    async def send(
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        self._outbound_requests += 1
+        api = self._api
+        bot_id = self._bot_id
+        if api is None or bot_id is None:
+            return self._failed(
+                "connection_unavailable",
+                "Telegram channel is not ready for outbound delivery",
+            )
+
+        route = self._outbound_route(request, bot_id)
+        if isinstance(route, ProviderCallResult):
+            return route
+        identity = route.identity
+        reply_to_message_id = route.reply_to_message_id
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        prepared = await self._prepare_parts(request, deadline)
+        if isinstance(prepared, ProviderCallResult):
+            return prepared
+        parts, attachments = prepared
+
+        total_parts = len(parts) + len(attachments)
+        if total_parts == 0:
+            return self._failed(
+                "empty_message",
+                "Telegram outbound message must contain text or an attachment",
+            )
+
+        delivery = _Delivery(total=total_parts)
+
+        failure = await self._send_text_parts(
+            api,
+            delivery,
+            parts,
+            identity=identity,
+            reply_to_message_id=reply_to_message_id,
+            deadline=deadline,
+        )
+        if failure is None:
+            failure = await self._send_documents(
+                api,
+                delivery,
+                attachments,
+                text_parts=len(parts),
+                identity=identity,
+                reply_to_message_id=reply_to_message_id,
+                deadline=deadline,
+            )
+        if failure is not None:
+            return failure
 
         self._outbound_confirmed_requests += 1
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
-            value=self._channel_receipt(receipts),
-            receipt=self._delivery_receipt(total_parts, confirmed, receipts),
+            value=self._channel_receipt(delivery.receipts),
+            receipt=delivery.receipt(),
         )
 
     async def _send_rich_message_with_retry(
@@ -544,19 +626,17 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
 
     def _clear_failure(
         self,
+        delivery: _Delivery,
         *,
-        total: int,
-        confirmed: int,
-        receipts: list[dict[str, object]],
         error_kind: str,
         error_message: str,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        receipt = self._delivery_receipt(total, confirmed, receipts)
-        if confirmed:
+        receipt = delivery.receipt()
+        if delivery.confirmed:
             self._outbound_partial_requests += 1
             return ProviderCallResult(
                 status=ProviderCallStatus.PARTIAL,
-                value=self._channel_receipt(receipts),
+                value=self._channel_receipt(delivery.receipts),
                 error_kind=error_kind,
                 error_message=error_message,
                 receipt=receipt,
@@ -571,10 +651,8 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
 
     def _unknown(
         self,
+        delivery: _Delivery,
         *,
-        total: int,
-        confirmed: int,
-        receipts: list[dict[str, object]],
         error_kind: str,
         error_message: str,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
@@ -583,7 +661,7 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             status=ProviderCallStatus.UNKNOWN,
             error_kind=error_kind,
             error_message=error_message,
-            receipt=self._delivery_receipt(total, confirmed, receipts),
+            receipt=delivery.receipt(),
         )
 
     @staticmethod
@@ -615,26 +693,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         ):
             return None
         return str(provider_message_id)
-
-    @staticmethod
-    def _delivery_receipt(
-        total: int,
-        confirmed: int,
-        receipts: list[dict[str, object]],
-    ) -> Mapping[str, object]:
-        confirmed_ids = tuple(
-            receipt["provider_message_id"]
-            for receipt in receipts
-            if receipt.get("state") == "confirmed"
-            and isinstance(receipt.get("provider_message_id"), str)
-        )
-        return {
-            "total_parts": total,
-            "confirmed_parts": confirmed,
-            "parts": tuple(receipts),
-            "provider_message_id": confirmed_ids[0] if confirmed_ids else None,
-            "provider_receipt_ref": confirmed_ids[-1] if confirmed_ids else None,
-        }
 
     @staticmethod
     def _channel_receipt(receipts: list[dict[str, object]]) -> ChannelDeliveryReceipt:

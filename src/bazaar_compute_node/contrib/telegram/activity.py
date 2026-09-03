@@ -13,6 +13,7 @@ from ...core.activity import (
     ActivityReducer,
     overview_lines,
     snapshot_line,
+    turn_key,
 )
 from ...core.models import (
     ContextCompactionCompleted,
@@ -27,6 +28,7 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
+from ...core.text import truncate_utf8
 from ...core.timerwheel import TimerWheel
 from ...i18n import Translator
 from ...rendering import TextTemplate
@@ -101,7 +103,7 @@ class TelegramActivityProjector:
             | TurnUnknown,
         ):
             return
-        key = self._turn_key(item)
+        key = turn_key(item)
         if key is None:
             return
         turn = self._turns.get(key)
@@ -263,7 +265,7 @@ class TelegramActivityProjector:
                     "icon": line.icon,
                     "label": _escape_markdown(line.label),
                     "name": _escape_markdown(
-                        _truncate_utf8(line.name, _MAX_TOOL_NAME_BYTES)
+                        truncate_utf8(line.name, _MAX_TOOL_NAME_BYTES)
                     )
                     if line.name
                     else "",
@@ -302,22 +304,6 @@ class TelegramActivityProjector:
                 retries += 1
                 timer = timer_wheel.create(math.ceil(float(retry_after) * 1000))
                 await timer.wait()
-
-    @staticmethod
-    def _turn_key(item: RuntimeOutputEvent) -> tuple[str, str] | None:
-        turn_id = item.envelope.turn_id or item.envelope.provider_turn_id
-        if turn_id is None:
-            return None
-        return item.envelope.session_id, turn_id
-
-
-def _truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    suffix = "…"
-    prefix = encoded[: limit - len(suffix.encode("utf-8"))]
-    return prefix.decode("utf-8", errors="ignore") + suffix
 
 
 def _escape_markdown(value: str) -> str:

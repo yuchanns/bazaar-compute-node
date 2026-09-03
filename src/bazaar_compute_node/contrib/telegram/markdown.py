@@ -13,6 +13,18 @@ class RichMessageView:
     mentions_agent: bool
 
 
+_TEXT_WRAPPERS = {
+    "bold": ("**", "**"),
+    "italic": ("*", "*"),
+    "underline": ("<u>", "</u>"),
+    "strikethrough": ("~~", "~~"),
+    "spoiler": ("||", "||"),
+    "subscript": ("<sub>", "</sub>"),
+    "superscript": ("<sup>", "</sup>"),
+    "marked": ("==", "=="),
+}
+
+
 class RichMessageRenderer:
     def __init__(self, *, bot_id: int, bot_username: str) -> None:
         self._bot_id = bot_id
@@ -82,30 +94,7 @@ class RichMessageRenderer:
             name = block.get("name")
             return f'<a name="{name}"></a>' if isinstance(name, str) and name else ""
         if block_type == "list":
-            items = block.get("items")
-            if not isinstance(items, list):
-                return ""
-            lines: list[str] = []
-            for item in items:
-                if self._remaining_blocks <= 0:
-                    break
-                if not isinstance(item, Mapping):
-                    continue
-                self._remaining_blocks -= 1
-                label = item.get("label")
-                label = label if isinstance(label, str) and label else "-"
-                if item.get("has_checkbox") is True:
-                    label = (
-                        f"{label} [{'x' if item.get('is_checked') is True else ' '}]"
-                    )
-                content = self._render_blocks(item.get("blocks"), depth=depth)
-                if not content:
-                    lines.append(label)
-                    continue
-                content_lines = content.splitlines()
-                lines.append(f"{label} {content_lines[0]}")
-                lines.extend(f"  {line}" for line in content_lines[1:])
-            return "\n".join(lines)
+            return self._render_list(block, depth=depth)
         if block_type == "blockquote":
             content = self._render_blocks(block.get("blocks"), depth=depth)
             credit = self._render_text(block.get("credit"), depth=depth)
@@ -131,20 +120,7 @@ class RichMessageRenderer:
                 return ""
             return f"<details>\n<summary>{summary}</summary>\n\n{content}\n\n</details>"
         if block_type == "map":
-            location = block.get("location")
-            map_text = ""
-            if isinstance(location, Mapping):
-                latitude = location.get("latitude")
-                longitude = location.get("longitude")
-                if (
-                    isinstance(latitude, int | float)
-                    and not isinstance(latitude, bool)
-                    and isinstance(longitude, int | float)
-                    and not isinstance(longitude, bool)
-                ):
-                    map_text = f"[Map: {latitude}, {longitude}]"
-            caption = self._render_caption(block.get("caption"), depth=depth)
-            return "\n\n".join(part for part in (map_text, caption) if part)
+            return self._render_map(block, depth=depth)
         if block_type in {"animation", "audio", "photo", "video", "voice_note"}:
             return self._render_caption(block.get("caption"), depth=depth)
 
@@ -152,6 +128,50 @@ class RichMessageRenderer:
         nested = self._render_blocks(block.get("blocks"), depth=depth)
         caption = self._render_caption(block.get("caption"), depth=depth)
         return "\n\n".join(part for part in (text, nested, caption) if part)
+
+    def _render_list(self, block: Mapping[str, object], *, depth: int) -> str:
+        """Render a list, indenting whatever each item holds under its label."""
+
+        items = block.get("items")
+        if not isinstance(items, list):
+            return ""
+        lines: list[str] = []
+        for item in items:
+            if self._remaining_blocks <= 0:
+                break
+            if not isinstance(item, Mapping):
+                continue
+            self._remaining_blocks -= 1
+            label = item.get("label")
+            label = label if isinstance(label, str) and label else "-"
+            if item.get("has_checkbox") is True:
+                label = f"{label} [{'x' if item.get('is_checked') is True else ' '}]"
+            content = self._render_blocks(item.get("blocks"), depth=depth)
+            if not content:
+                lines.append(label)
+                continue
+            content_lines = content.splitlines()
+            lines.append(f"{label} {content_lines[0]}")
+            lines.extend(f"  {line}" for line in content_lines[1:])
+        return "\n".join(lines)
+
+    def _render_map(self, block: Mapping[str, object], *, depth: int) -> str:
+        """Render a map as the coordinates it points at, with its caption."""
+
+        location = block.get("location")
+        map_text = ""
+        if isinstance(location, Mapping):
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            if (
+                isinstance(latitude, int | float)
+                and not isinstance(latitude, bool)
+                and isinstance(longitude, int | float)
+                and not isinstance(longitude, bool)
+            ):
+                map_text = f"[Map: {latitude}, {longitude}]"
+        caption = self._render_caption(block.get("caption"), depth=depth)
+        return "\n\n".join(part for part in (map_text, caption) if part)
 
     def _render_table(self, block: Mapping[str, object], *, depth: int) -> str:
         cells = block.get("cells")
@@ -192,6 +212,42 @@ class RichMessageRenderer:
         credit = self._render_text(value.get("credit"), depth=depth)
         return f"{text}\n— {credit}" if text and credit else text or credit
 
+    def _render_mention(
+        self, value: Mapping[str, object], text: str, text_type: str
+    ) -> str:
+        """Render a mention, noting when it is this bot being addressed."""
+
+        if text_type == "mention":
+            username = value.get("username")
+            if (
+                isinstance(username, str)
+                and username.lstrip("@").casefold() == self._bot_username
+            ):
+                self._mentions_agent = True
+            if text:
+                return text
+            return (
+                f"@{username.lstrip('@')}"
+                if isinstance(username, str) and username
+                else ""
+            )
+        if text_type == "text_mention":
+            user = value.get("user")
+            if isinstance(user, Mapping) and user.get("id") == self._bot_id:
+                self._mentions_agent = True
+            user_id = user.get("id") if isinstance(user, Mapping) else None
+            return (
+                f"[{text}](tg://user?id={user_id})"
+                if text and isinstance(user_id, int)
+                else text
+            )
+        command = value.get("bot_command")
+        if isinstance(command, str):
+            _, separator, target = command.rpartition("@")
+            if separator and target.casefold() == self._bot_username:
+                self._mentions_agent = True
+        return text or (command if isinstance(command, str) else "")
+
     def _render_text(self, value: object, *, depth: int) -> str:
         if depth > _MAX_RICH_DEPTH:
             return ""
@@ -217,53 +273,12 @@ class RichMessageRenderer:
             return f'<a name="{name}"></a>' if isinstance(name, str) and name else ""
 
         text = self._render_text(value.get("text"), depth=depth + 1)
-        if text_type == "mention":
-            username = value.get("username")
-            if (
-                isinstance(username, str)
-                and username.lstrip("@").casefold() == self._bot_username
-            ):
-                self._mentions_agent = True
-            if text:
-                return text
-            return (
-                f"@{username.lstrip('@')}"
-                if isinstance(username, str) and username
-                else ""
-            )
-        if text_type == "text_mention":
-            user = value.get("user")
-            if isinstance(user, Mapping) and user.get("id") == self._bot_id:
-                self._mentions_agent = True
-            user_id = user.get("id") if isinstance(user, Mapping) else None
-            return (
-                f"[{text}](tg://user?id={user_id})"
-                if text and isinstance(user_id, int)
-                else text
-            )
-        if text_type == "bot_command":
-            command = value.get("bot_command")
-            if isinstance(command, str):
-                _, separator, target = command.rpartition("@")
-                if separator and target.casefold() == self._bot_username:
-                    self._mentions_agent = True
-            return text or (command if isinstance(command, str) else "")
-        if text_type == "bold":
-            return f"**{text}**" if text else ""
-        if text_type == "italic":
-            return f"*{text}*" if text else ""
-        if text_type == "underline":
-            return f"<u>{text}</u>" if text else ""
-        if text_type == "strikethrough":
-            return f"~~{text}~~" if text else ""
-        if text_type == "spoiler":
-            return f"||{text}||" if text else ""
-        if text_type == "subscript":
-            return f"<sub>{text}</sub>" if text else ""
-        if text_type == "superscript":
-            return f"<sup>{text}</sup>" if text else ""
-        if text_type == "marked":
-            return f"=={text}==" if text else ""
+        if text_type in {"mention", "text_mention", "bot_command"}:
+            return self._render_mention(value, text, str(text_type))
+        wrapper = _TEXT_WRAPPERS.get(str(text_type))
+        if wrapper is not None:
+            opening, closing = wrapper
+            return f"{opening}{text}{closing}" if text else ""
         if text_type == "code":
             if not text:
                 return ""
