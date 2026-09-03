@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import locale
 import subprocess
-from argparse import ArgumentParser, Namespace
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import call, patch
 
+import click
 import pytest
 
 from bazaar_compute_node import cli
 from bazaar_compute_node.app import system_service
+from bazaar_compute_node.cmd.bcn import node as node_commands
+from bazaar_compute_node.cmd.bcn import service as service_commands
+from bazaar_compute_node.cmd.bcn._runner import UsageReporter
 
 
 @pytest.fixture
@@ -25,21 +29,30 @@ def service_context(tmp_path: Path) -> system_service.SystemServiceContext:
     )
 
 
-def test_system_service_parser_supports_install_start_and_status() -> None:
-    parser = system_service.build_system_service_parser()
+def test_system_service_supports_install_start_and_status() -> None:
+    routed: list[Namespace] = []
 
-    install = parser.parse_args(["install", "--env-file", "/tmp/bcn.env"])
-    start = parser.parse_args(["start"])
-    stop = parser.parse_args(["stop"])
-    restart = parser.parse_args(["restart"])
-    status = parser.parse_args(["status"])
+    async def record(args: Namespace, _: object) -> int:
+        routed.append(args)
+        return 0
 
-    assert install.system_service_command == "install"
-    assert install.env_file == Path("/tmp/bcn.env")
-    assert start.system_service_command == "start"
-    assert stop.system_service_command == "stop"
-    assert restart.system_service_command == "restart"
-    assert status.system_service_command == "status"
+    with patch.object(
+        service_commands, "run_system_service_command", side_effect=record
+    ):
+        assert (
+            cli.main(["system-service", "install", "--env-file", "/tmp/bcn.env"]) == 0
+        )
+        for command in ("start", "stop", "restart", "status"):
+            assert cli.main(["system-service", command]) == 0
+
+    assert [args.system_service_command for args in routed] == [
+        "install",
+        "start",
+        "stop",
+        "restart",
+        "status",
+    ]
+    assert routed[0].env_file == Path("/tmp/bcn.env")
 
 
 def test_native_command_uses_system_encoding_without_decode_failures() -> None:
@@ -413,13 +426,27 @@ def test_linux_install_registers_without_start(
     ]
 
 
-def test_prepare_system_service_does_not_load_node_runtime_configuration() -> None:
-    parser, args = cli._prepare_cli_arguments(["system-service", "start"])
+def test_system_service_does_not_load_node_runtime_configuration() -> None:
+    routed: list[str] = []
 
-    assert parser.prog == "bcn"
-    assert args.command == "system-service"
-    assert args.system_service_command == "start"
-    assert not hasattr(args, "configuration")
+    async def record(args: Namespace, _: object) -> int:
+        routed.append(args.system_service_command)
+        return 0
+
+    # managing the host service has to work before a node is configured at all
+    with (
+        patch.object(
+            service_commands, "run_system_service_command", side_effect=record
+        ),
+        patch.object(
+            node_commands,
+            "load_node_configuration",
+            side_effect=AssertionError("configuration must not be loaded"),
+        ),
+    ):
+        assert cli.main(["system-service", "start"]) == 0
+
+    assert routed == ["start"]
 
 
 @pytest.mark.asyncio
@@ -428,7 +455,7 @@ async def test_system_service_start_waits_for_ready_health(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = Namespace(system_service_command="start")
-    parser = system_service.build_system_service_parser()
+    parser = UsageReporter()
 
     with (
         patch.object(system_service, "_build_context", return_value=service_context),
@@ -467,10 +494,9 @@ async def test_system_service_start_waits_for_ready_health(
 @pytest.mark.asyncio
 async def test_system_service_start_rejects_external_healthy_endpoint(
     service_context: system_service.SystemServiceContext,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = Namespace(system_service_command="start")
-    parser = system_service.build_system_service_parser()
+    parser = UsageReporter()
 
     with (
         patch.object(system_service, "_build_context", return_value=service_context),
@@ -486,14 +512,11 @@ async def test_system_service_start_rejects_external_healthy_endpoint(
         ),
         patch.object(system_service, "_start") as start,
         patch.object(system_service, "_bcn_health", return_value="ready"),
-        pytest.raises(SystemExit),
+        pytest.raises(click.UsageError, match="endpoint is healthy"),
     ):
         await system_service.run_system_service_command(args, parser)
 
     start.assert_not_called()
-    assert "endpoint is healthy while the native service is inactive" in (
-        capsys.readouterr().err
-    )
 
 
 @pytest.mark.asyncio
@@ -502,7 +525,7 @@ async def test_system_service_stop_uses_native_manager(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = Namespace(system_service_command="stop")
-    parser = system_service.build_system_service_parser()
+    parser = UsageReporter()
 
     with (
         patch.object(system_service, "_build_context", return_value=service_context),
@@ -531,7 +554,7 @@ async def test_system_service_restart_waits_for_ready_health(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = Namespace(system_service_command="restart")
-    parser = system_service.build_system_service_parser()
+    parser = UsageReporter()
 
     with (
         patch.object(system_service, "_build_context", return_value=service_context),
@@ -556,61 +579,21 @@ async def test_system_service_restart_waits_for_ready_health(
 
 
 @pytest.mark.parametrize("command", ["start", "stop", "restart"])
-@pytest.mark.asyncio
-async def test_legacy_lifecycle_commands_print_deprecation_warning(
+def test_legacy_lifecycle_commands_forward_to_the_service_manager(
     command: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    parser = cli.build_parser()
-    args = parser.parse_args([command])
+    routed: list[str] = []
 
-    async def fake_system_service_command(
-        routed_args: Namespace,
-        _: ArgumentParser,
-    ) -> int:
-        assert routed_args.system_service_command == command
+    async def record(args: Namespace, _: object) -> int:
+        routed.append(args.system_service_command)
         return 0
 
-    with (
-        patch.object(cli, "_prepare_cli_arguments", return_value=(parser, args)),
-        patch.object(
-            cli,
-            "run_system_service_command",
-            side_effect=fake_system_service_command,
-        ),
-    ):
-        result = await cli.async_main([command])
+    with patch.object(node_commands, "run_system_service_command", side_effect=record):
+        assert cli.main([command]) == 0
 
-    assert result == 0
+    assert routed == [command]
     assert "DeprecationWarning" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("command", ["stop", "restart"])
-@pytest.mark.asyncio
-async def test_legacy_lifecycle_commands_route_to_system_service(
-    command: str,
-) -> None:
-    parser = cli.build_parser()
-    args = parser.parse_args([command])
-
-    async def fake_system_service_command(
-        routed_args: Namespace,
-        _: ArgumentParser,
-    ) -> int:
-        assert routed_args.system_service_command == command
-        return 0
-
-    with (
-        patch.object(cli, "_prepare_cli_arguments", return_value=(parser, args)),
-        patch.object(
-            cli,
-            "run_system_service_command",
-            side_effect=fake_system_service_command,
-        ),
-    ):
-        result = await cli.async_main([command])
-
-    assert result == 0
 
 
 def test_windows_wrapper_runs_bcn_and_hands_back_its_exit_code(

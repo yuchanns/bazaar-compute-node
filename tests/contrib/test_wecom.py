@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestServer
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.wecom.channel import (
     WeComChannel,
+    _Delivery,
     _RequestResult,
 )
 from bazaar_compute_node.contrib.wecom.markdown import split_markdown
@@ -680,10 +681,10 @@ def test_wecom_prepares_current_attachment_content(tmp_path: Path) -> None:
 
 def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     # a receipt tracks visible parts and upload requests
-    receipt = WeComChannel._delivery_receipt(
-        2,
-        1,
-        [
+    receipt = _Delivery(
+        total=2,
+        confirmed=1,
+        receipts=[
             {
                 "provider_request_id": "send-1",
                 "state": "confirmed",
@@ -691,7 +692,7 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
                 "ordinal": 1,
             }
         ],
-        [
+        uploads=[
             {
                 "provider_request_id": "upload-1",
                 "state": "failed",
@@ -699,7 +700,7 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
                 "attachment_ordinal": 1,
             }
         ],
-    )
+    ).receipt()
 
     assert receipt == {
         "total_parts": 2,
@@ -740,24 +741,26 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     )
 
     result = channel._clear_failure(
-        total=2,
-        receipts=[
-            {
-                "provider_request_id": "send-1",
-                "state": "confirmed",
-                "part_type": "markdown",
-                "ordinal": 1,
-            }
-        ],
-        upload_receipts=[
-            {
-                "provider_request_id": "upload-1",
-                "state": "failed",
-                "stage": "init",
-                "attachment_ordinal": 1,
-            }
-        ],
-        confirmed=1,
+        _Delivery(
+            total=2,
+            confirmed=1,
+            receipts=[
+                {
+                    "provider_request_id": "send-1",
+                    "state": "confirmed",
+                    "part_type": "markdown",
+                    "ordinal": 1,
+                }
+            ],
+            uploads=[
+                {
+                    "provider_request_id": "upload-1",
+                    "state": "failed",
+                    "stage": "init",
+                    "attachment_ordinal": 1,
+                }
+            ],
+        ),
         error_kind="provider_rejected_upload",
         error_message="upload failed",
     )
@@ -783,17 +786,17 @@ def test_wecom_delivery_outcomes(tmp_path: Path) -> None:
     )
 
     result = channel._clear_failure(
-        total=1,
-        receipts=[],
-        upload_receipts=[
-            {
-                "provider_request_id": "upload-1",
-                "state": "unknown",
-                "stage": "finish",
-                "attachment_ordinal": 1,
-            }
-        ],
-        confirmed=0,
+        _Delivery(
+            total=1,
+            uploads=[
+                {
+                    "provider_request_id": "upload-1",
+                    "state": "unknown",
+                    "stage": "finish",
+                    "attachment_ordinal": 1,
+                }
+            ],
+        ),
         error_kind="upload_unknown",
         error_message="upload outcome is unknown",
     )

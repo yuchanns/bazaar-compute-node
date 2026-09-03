@@ -75,7 +75,6 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
-    SessionRuntimeState,
     TokenUsage,
     ToolCallCompleted,
     ToolCallDeltaKind,
@@ -857,7 +856,7 @@ async def test_codex_runtime_stops_session(
     try:
         await asyncio.wait_for(stop_started.wait(), timeout=1)
         assert not stop_task.done()
-        assert session.id not in runtime._connections
+        assert runtime._connections == {}
 
         release_stop.set()
         result = await asyncio.wait_for(stop_task, timeout=1)
@@ -1724,7 +1723,6 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                 timeout=30,
             )
             assert active_result.value is not None
-            assert active_result.value.state is SessionRuntimeState.WORKING
             recovered_stream = active_result.value.stream
             assert recovered_stream is not None
             recovered_events = []
@@ -1754,7 +1752,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
                     timeout=30,
                 )
                 assert resumed_result.value is not None
-                assert resumed_result.value.state is SessionRuntimeState.IDLE
+                assert resumed_result.value.stream is None
                 resumed = resumed_result.value.session
                 assert resumed.provider_thread_id == first_thread
                 resumed_thread, resumed_turn, _ = await consume_turn(

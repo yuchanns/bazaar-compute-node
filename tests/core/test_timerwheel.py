@@ -52,7 +52,7 @@ async def test_timer_waiter_lifecycle() -> None:
         with pytest.raises(asyncio.CancelledError):
             await waiter
         assert timer.active is False
-        assert timer.id not in wheel._entries
+        assert wheel._entries == {}
 
         # a stale generation cannot expire a timer that was reset
         timer = wheel.create(100)

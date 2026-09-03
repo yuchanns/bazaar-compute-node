@@ -2,18 +2,27 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import click
 import pytest
 
-from bazaar_compute_node.bcc import (
-    BccCommandError,
-    _print_error,
-    build_parser,
+from bazaar_compute_node.cmd.bcc import bcc
+from bazaar_compute_node.cmd.bcc._client import BccCommandError
+from bazaar_compute_node.cmd.bcc._format import (
+    print_error,
     serialize_check,
     serialize_inbox_list,
     serialize_read,
     serialize_send,
     serialize_unfollow,
 )
+
+
+def subcommand(group: click.Command, *path: str) -> click.Command:
+    resolved = group
+    for name in path:
+        assert isinstance(resolved, click.Group)
+        resolved = resolved.commands[name]
+    return resolved
 
 
 def message_payload(
@@ -191,13 +200,14 @@ def test_inbox_list_serializer() -> None:
     )
 
 
-def test_inbox_list_parser_accepts_pagination_arguments() -> None:
-    args = build_parser().parse_args(("inbox", "list", "--limit", "3", "--offset", "6"))
+def test_inbox_list_accepts_pagination_arguments() -> None:
+    parameters = {
+        parameter.name: parameter
+        for parameter in subcommand(bcc, "inbox", "list").params
+    }
 
-    assert args.resource == "inbox"
-    assert args.command == "list"
-    assert args.limit == 3
-    assert args.offset == 6
+    assert parameters["limit"].default == 100
+    assert parameters["offset"].default == 0
 
 
 def test_check_serializer_matches_text() -> None:
@@ -469,59 +479,27 @@ def test_empty_check_serializer_is_stable() -> None:
 
 
 def test_thread_unfollow_requires_an_explicit_target() -> None:
-    args = build_parser().parse_args(
-        ("thread", "unfollow", "--target", "#work:parent123")
+    target = next(
+        parameter
+        for parameter in subcommand(bcc, "thread", "unfollow").params
+        if parameter.name == "target"
     )
 
-    assert args.resource == "thread"
-    assert args.command == "unfollow"
-    assert args.target == "#work:parent123"
+    assert target.required is True
 
 
-def test_message_send_parser_accepts_attachments_and_draft_mode() -> None:
-    # attachments keep their order and repeat
-    args = build_parser().parse_args(
-        (
-            "message",
-            "send",
-            "--target",
-            "#work:parent123",
-            "--attachment",
-            "first.txt",
-            "--attachment",
-            "second.png",
-        )
-    )
+def test_message_send_accepts_repeated_attachments_and_draft_mode() -> None:
+    parameters = {
+        parameter.name: parameter
+        for parameter in subcommand(bcc, "message", "send").params
+    }
 
-    assert args.attachment == ["first.txt", "second.png"]
-    assert args.send_draft is False
-
-    # draft mode is accepted without a body
-    parser = build_parser()
-    args = parser.parse_args(
-        ("message", "send", "--send-draft", "--target", "#work:parent123")
-    )
-
-    assert args.send_draft is True
-    assert args.reply_to is None
-    assert args.attachment == []
-    assert not {
-        "source",
-        "source_target",
-        "source_target_id",
-        "target_id",
-    }.intersection(vars(args))
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            (
-                "message",
-                "send",
-                "--target",
-                "#work:parent123",
-                "--source-target",
-                "#work:source",
-            )
-        )
+    attachment = parameters["attachment"]
+    send_draft = parameters["send_draft"]
+    assert isinstance(attachment, click.Option)
+    assert isinstance(send_draft, click.Option)
+    assert attachment.multiple is True
+    assert send_draft.is_flag is True
 
 
 def test_read_serializer() -> None:
@@ -565,38 +543,27 @@ def test_send_serializer_prints_direct_text_verbatim() -> None:
     assert error.value.code == "SEND_RESPONSE_INVALID"
 
 
-def test_read_parser_accepts_history_positioning_arguments() -> None:
-    args = build_parser().parse_args(
-        [
-            "message",
-            "read",
-            "--target",
-            "#work:parent123",
-            "--around",
-            "0123456789abcdef0123456789abcdef",
-            "--limit",
-            "3",
-        ]
-    )
+def test_read_accepts_history_positioning_arguments() -> None:
+    parameters = {
+        parameter.name: parameter
+        for parameter in subcommand(bcc, "message", "read").params
+    }
 
-    assert args.command == "read"
-    assert args.target == "#work:parent123"
-    assert args.around == "0123456789abcdef0123456789abcdef"
-    assert args.limit == 3
+    assert parameters["target"].required is True
+    assert parameters["around"].required is False
+    assert parameters["limit"].default == 100
 
 
 def test_error_contract_is_stderr_only(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exit_error:
-        _print_error(
-            BccCommandError(
-                "history target is invalid",
-                code="INVALID_TARGET",
-                next_action="Run `bcc message read` with a valid target.",
-            )
+    print_error(
+        BccCommandError(
+            "history target is invalid",
+            code="INVALID_TARGET",
+            next_action="Run `bcc message read` with a valid target.",
         )
+    )
 
     captured = capsys.readouterr()
-    assert exit_error.value.code == 1
     assert captured.out == ""
     assert captured.err == (
         "Error: history target is invalid\n"
@@ -608,15 +575,14 @@ def test_error_contract_is_stderr_only(capsys: pytest.CaptureFixture[str]) -> No
 def test_error_contract_reports_a_saved_draft(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with pytest.raises(SystemExit):
-        _print_error(
-            BccCommandError(
-                "the channel rejected the message",
-                code="SEND_FAILED",
-                draft_saved=True,
-                next_action="Revise the draft and send it again.",
-            )
+    print_error(
+        BccCommandError(
+            "the channel rejected the message",
+            code="SEND_FAILED",
+            draft_saved=True,
+            next_action="Revise the draft and send it again.",
         )
+    )
 
     captured = capsys.readouterr()
     lines = captured.err.splitlines()

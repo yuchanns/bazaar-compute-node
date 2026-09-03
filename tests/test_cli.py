@@ -7,21 +7,33 @@ from importlib.metadata import version
 from pathlib import Path
 from uuid import UUID
 
+import click
 import pytest
 
 from bazaar_compute_node import __version__
-from bazaar_compute_node.app.agent_management import build_agent_parser
 from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
-from bazaar_compute_node.app.system_service import build_system_service_parser
-from bazaar_compute_node.cli import (
-    _apply_runtime_configuration,
-    build_parser,
-    main,
-)
+from bazaar_compute_node.cli import main
+from bazaar_compute_node.cmd.bcn import build_cli
+from bazaar_compute_node.cmd.bcn._runner import UsageReporter, arguments
+from bazaar_compute_node.cmd.bcn.node import _apply_runtime_configuration
 from bazaar_compute_node.core.client import CLIENT_INFO
 from bazaar_compute_node.core.paths import resolve_data_dir
 from bazaar_compute_node.core.runtime import RuntimeSandboxMode
-from bazaar_compute_node.i18n import SIMPLIFIED_CHINESE, create_translator
+from bazaar_compute_node.i18n import (
+    SIMPLIFIED_CHINESE,
+    Translator,
+    create_translator,
+)
+
+
+def render_help(translator: Translator) -> str:
+    cli = build_cli(translator)
+    return cli.get_help(click.Context(cli, info_name="bcn"))
+
+
+def render_command_help(cli: click.Group, name: str) -> str:
+    command = cli.commands[name]
+    return command.get_help(click.Context(command, info_name=name))
 
 
 def test_a_node_option_is_accepted_wherever_it_is_written(
@@ -59,7 +71,7 @@ def test_a_group_asked_for_nothing_answers_with_its_own_help(
 
 def test_help_and_version_output() -> None:
     # help shows the resolved data dir
-    help_text = build_parser().format_help()
+    help_text = render_help(create_translator(None))
 
     assert str(resolve_data_dir()).replace(" ", "") in help_text.replace(
         " ", ""
@@ -68,13 +80,14 @@ def test_help_and_version_output() -> None:
     # help follows the selected translator
     translator = create_translator(SIMPLIFIED_CHINESE)
 
-    root_help = build_parser(translator).format_help()
-    agent_help = build_agent_parser(translator).format_help()
-    service_help = build_system_service_parser(translator).format_help()
+    root_help = render_help(translator)
+    cli = build_cli(translator)
+    agent_help = render_command_help(cli, "agent")
+    service_help = render_command_help(cli, "system-service")
 
-    assert "配置文件路径" in root_help
-    assert "管理 bcn 配置文件中的 Agent 定义" in agent_help
-    assert "管理 bcn 的用户级宿主机服务" in service_help
+    assert translator.text("cli.bcn.config") in root_help
+    assert translator.text("cli.agent.description") in agent_help
+    assert translator.text("cli.system_service.description") in service_help
 
     # the reported version matches distribution metadata
     distribution_version = version("bazaar-compute-node")
@@ -103,9 +116,15 @@ kind = "test"
 """.lstrip(),
         encoding="utf-8",
     )
-    parser = build_parser()
-    args = parser.parse_args(["run", "--config", str(config_path)])
-    _apply_runtime_configuration(args, parser)
+    args = arguments(
+        storage=None,
+        audit=None,
+        config=config_path,
+        database_name=None,
+        endpoint=None,
+        foreground=False,
+    )
+    _apply_runtime_configuration(args, UsageReporter())
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
@@ -133,10 +152,8 @@ def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> N
 
 @pytest.mark.parametrize("value", ["", ".", "..", "sub/task.sqlite3", "sub\\task"])
 def test_database_name_rejects_paths(value: str) -> None:
-    parser = build_parser()
-
     with pytest.raises(SystemExit):
-        parser.parse_args(["run", "--database-name", value])
+        main(["run", "--database-name", value])
 
 
 def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
@@ -255,16 +272,22 @@ def test_help_works_in_a_real_process() -> None:
     )
 
     assert result.returncode == 0
-    assert "usage: bcn" in result.stdout
+    assert "Usage: bcn" in result.stdout
 
 
 def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
     config_path = tmp_path / "empty-config.toml"
     config_path.write_text('version = "3"\n', encoding="utf-8")
 
-    parser = build_parser()
-    args = parser.parse_args(["run", "--config", str(config_path), "--foreground"])
-    _apply_runtime_configuration(args, parser)
+    args = arguments(
+        storage=None,
+        audit=None,
+        config=config_path,
+        database_name=None,
+        endpoint=None,
+        foreground=True,
+    )
+    _apply_runtime_configuration(args, UsageReporter())
 
     assert args.configuration.agents == ()
 
@@ -480,7 +503,8 @@ def test_agent_add_converts_deprecated_env_include_to_env(
                     invalid,
                 ]
             )
-    assert "agent" not in tomllib.loads(conflict_path.read_text(encoding="utf-8"))
+    conflict = tomllib.loads(conflict_path.read_text(encoding="utf-8"))
+    assert conflict.get("agent", []) == []
 
 
 def test_agent_add_accumulates_repeated_env_options(tmp_path: Path) -> None:
