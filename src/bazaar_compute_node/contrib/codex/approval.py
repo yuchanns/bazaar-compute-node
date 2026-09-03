@@ -49,56 +49,17 @@ def is_approval_method(method: object) -> bool:
 _MAX_APPROVAL_DETAIL = 4_000
 
 
-def parse_approval_request(
-    message: JsonlMessage,
-    *,
-    session_id: str,
-    runtime_session_id: str,
-    turn_id: str,
-    provider_thread_id: str,
-    provider_turn_id: str | None,
-) -> ApprovalEnvelope:
-    method = message.get("method")
-    if not isinstance(method, str) or not is_approval_method(method):
-        raise AppServerProtocolError("message is not an approval request")
-    request_id = message.get("id")
-    if not is_request_id(request_id):
-        raise AppServerProtocolError("approval request id must be an integer or string")
-    request_id = cast(JsonlRequestId, request_id)
-    params = message.get("params")
-    if not isinstance(params, Mapping):
-        raise AppServerProtocolError("approval request params must be an object")
+_APPROVAL_ACTIONS = {
+    _COMMAND_METHOD: "command_execution",
+    _FILE_CHANGE_METHOD: "file_change",
+    _PERMISSIONS_METHOD: "permissions",
+}
 
-    thread_value = _require_text(params, "threadId")
-    if thread_value != provider_thread_id:
-        raise AppServerProtocolError(
-            "approval request thread does not match runtime thread"
-        )
-    provider_turn_value = _require_text(params, "turnId")
-    if provider_turn_id is None or provider_turn_value != provider_turn_id:
-        raise AppServerProtocolError(
-            "approval request turn does not match runtime turn"
-        )
-    provider_item_id = _require_text(params, "itemId")
-    started_at_ms = params.get("startedAtMs")
-    if (
-        not isinstance(started_at_ms, int)
-        or isinstance(started_at_ms, bool)
-        or started_at_ms < 0
-    ):
-        raise AppServerProtocolError(
-            "approval request startedAtMs must be a non-negative integer"
-        )
-    action = {
-        _COMMAND_METHOD: "command_execution",
-        _FILE_CHANGE_METHOD: "file_change",
-        _PERMISSIONS_METHOD: "permissions",
-    }[method]
-    permissions = params.get("permissions")
-    if method == _PERMISSIONS_METHOD and not isinstance(permissions, Mapping):
-        raise AppServerProtocolError(
-            "permissions approval request has no permissions object"
-        )
+
+def _approval_details(
+    method: str, params: Mapping[str, object], permissions: object
+) -> dict[str, str]:
+    """Read what an approval request is asking to be allowed."""
 
     details: dict[str, str] = {}
     reason = params.get("reason")
@@ -143,6 +104,13 @@ def parse_approval_request(
                 if len(encoded_permissions) > _MAX_APPROVAL_DETAIL
                 else encoded_permissions
             )
+    return details
+
+
+def _approval_metadata(
+    method: str, params: Mapping[str, object], provider_item_id: str
+) -> dict[str, object]:
+    """Carry the provider's own identifiers alongside the request."""
 
     metadata: dict[str, object] = {
         "provider_method": method,
@@ -155,6 +123,55 @@ def parse_approval_request(
         value = params.get(provider_key)
         if isinstance(value, str) and value:
             metadata[metadata_key] = value
+    return metadata
+
+
+def parse_approval_request(
+    message: JsonlMessage,
+    *,
+    session_id: str,
+    runtime_session_id: str,
+    turn_id: str,
+    provider_thread_id: str,
+    provider_turn_id: str | None,
+) -> ApprovalEnvelope:
+    method = message.get("method")
+    if not isinstance(method, str) or not is_approval_method(method):
+        raise AppServerProtocolError("message is not an approval request")
+    request_id = message.get("id")
+    if not is_request_id(request_id):
+        raise AppServerProtocolError("approval request id must be an integer or string")
+    request_id = cast(JsonlRequestId, request_id)
+    params = message.get("params")
+    if not isinstance(params, Mapping):
+        raise AppServerProtocolError("approval request params must be an object")
+
+    thread_value = _require_text(params, "threadId")
+    if thread_value != provider_thread_id:
+        raise AppServerProtocolError(
+            "approval request thread does not match runtime thread"
+        )
+    provider_turn_value = _require_text(params, "turnId")
+    if provider_turn_id is None or provider_turn_value != provider_turn_id:
+        raise AppServerProtocolError(
+            "approval request turn does not match runtime turn"
+        )
+    provider_item_id = _require_text(params, "itemId")
+    started_at_ms = params.get("startedAtMs")
+    if (
+        not isinstance(started_at_ms, int)
+        or isinstance(started_at_ms, bool)
+        or started_at_ms < 0
+    ):
+        raise AppServerProtocolError(
+            "approval request startedAtMs must be a non-negative integer"
+        )
+    permissions = params.get("permissions")
+    if method == _PERMISSIONS_METHOD and not isinstance(permissions, Mapping):
+        raise AppServerProtocolError(
+            "permissions approval request has no permissions object"
+        )
+
     return ApprovalEnvelope(
         request_id=request_id,
         method=method,
@@ -163,11 +180,11 @@ def parse_approval_request(
             request_id=str(request_id),
             session_id=session_id,
             runtime_session_id=runtime_session_id,
-            action=action,
+            action=_APPROVAL_ACTIONS[method],
             created_at_ms=started_at_ms,
             turn_id=turn_id,
-            details=details,
-            metadata=metadata,
+            details=_approval_details(method, params, permissions),
+            metadata=_approval_metadata(method, params, provider_item_id),
         ),
     )
 
