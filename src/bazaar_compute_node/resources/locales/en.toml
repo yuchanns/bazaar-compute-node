@@ -68,6 +68,6 @@
 "activity.label.output" = "Output"
 "activity.wecom.title" = "**{{ title }} · {{ state }}**"
 "activity.note.tokens" = "Input excludes cache hits; total input = input + cache"
-"activity.overview" = "{% if tool_calls %}Tool calls **{{ tool_calls }}**\n{% endif %}{% if context_compactions %}Context compactions **{{ context_compactions }}**\n{% endif %}{% if input_tokens or cached_input_tokens or output_tokens %}{% if input_tokens %}Input **{{ input_tokens }}**{% endif %}{% if cached_input_tokens %}{% if input_tokens %} · {% endif %}Cache **{{ cached_input_tokens }}**{% endif %}{% if output_tokens %}{% if input_tokens or cached_input_tokens %} · {% endif %}Output **{{ output_tokens }}**{% endif %}\n{% endif %}"
+"activity.overview" = "{% if tool_calls %}Tool calls **{{ tool_calls }}**\n{% endif %}{% if context_compactions %}Context compactions **{{ context_compactions }}**\n{% endif %}{% if input_tokens or cached_input_tokens or output_tokens %}{% if input_tokens %}Input **{{ input_tokens | compact }}**{% endif %}{% if cached_input_tokens %}{% if input_tokens %} · {% endif %}Cache **{{ cached_input_tokens | compact }}**{% endif %}{% if output_tokens %}{% if input_tokens or cached_input_tokens %} · {% endif %}Output **{{ output_tokens | compact }}**{% endif %}\n{% endif %}"
 "activity.error" = "⚠️ {{ error }}"
 "activity.final_incomplete" = "⚠️ Some activity details could not be displayed."

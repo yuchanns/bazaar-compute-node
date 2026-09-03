@@ -68,6 +68,6 @@
 "activity.label.output" = "输出"
 "activity.wecom.title" = "**{{ title }} · {{ state }}**"
 "activity.note.tokens" = "输入不含缓存命中，总输入 = 输入 + 缓存"
-"activity.overview" = "{% if tool_calls %}工具调用 **{{ tool_calls }}** 次\n{% endif %}{% if context_compactions %}上下文压缩 **{{ context_compactions }}** 次\n{% endif %}{% if input_tokens or cached_input_tokens or output_tokens %}{% if input_tokens %}输入 **{{ input_tokens }}**{% endif %}{% if cached_input_tokens %}{% if input_tokens %} · {% endif %}缓存 **{{ cached_input_tokens }}**{% endif %}{% if output_tokens %}{% if input_tokens or cached_input_tokens %} · {% endif %}输出 **{{ output_tokens }}**{% endif %}\n{% endif %}"
+"activity.overview" = "{% if tool_calls %}工具调用 **{{ tool_calls }}** 次\n{% endif %}{% if context_compactions %}上下文压缩 **{{ context_compactions }}** 次\n{% endif %}{% if input_tokens or cached_input_tokens or output_tokens %}{% if input_tokens %}输入 **{{ input_tokens | compact }}**{% endif %}{% if cached_input_tokens %}{% if input_tokens %} · {% endif %}缓存 **{{ cached_input_tokens | compact }}**{% endif %}{% if output_tokens %}{% if input_tokens or cached_input_tokens %} · {% endif %}输出 **{{ output_tokens | compact }}**{% endif %}\n{% endif %}"
 "activity.error" = "⚠️ {{ error }}"
 "activity.final_incomplete" = "⚠️ 部分活动详情未能展示。"

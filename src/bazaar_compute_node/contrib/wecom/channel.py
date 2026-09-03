@@ -43,6 +43,7 @@ from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 from ...core.utils.markdown import split_markdown, utf8_bytes
+from ...core.utils.text import compact
 from ...i18n import ENGLISH, Translator, create_translator
 from .outbound import (
     AttachmentReader,
@@ -383,10 +384,10 @@ class WeComChannel(IChannel):
         for key, value in tokens:
             if not value:
                 continue
-            lines.append(f"| {translator.text(key)} | {value} |")
+            lines.append(f"| {translator.text(key)} | {compact(value)} |")
         if overview.input_tokens or overview.cached_input_tokens:
             note = translator.text("activity.note.tokens")
-            lines.extend(("", "---", "", f"*{note}*"))
+            lines.extend(("", "---", "", f"> {note}"))
         return "\n".join(lines)
 
     async def _send_activity_card(

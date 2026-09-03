@@ -1045,11 +1045,11 @@ def test_wecom_activity_markdown_lists_counts_and_tokens(tmp_path: Path) -> None
     assert markdown.startswith("**活动 · 已完成**")
     assert "| 工具调用 | 2 次 |" in markdown
     assert "| 上下文压缩 | 1 次 |" in markdown
-    assert "| 输入 | 12400 |" in markdown
-    assert "| 缓存 | 9100 |" in markdown
+    assert "| 输入 | 12.4K |" in markdown
+    assert "| 缓存 | 9.1K |" in markdown
     assert "| 输出 | 860 |" in markdown
     assert rows
-    assert "输入不含缓存命中" in markdown
+    assert "> 输入不含缓存命中" in markdown
 
 
 def test_wecom_activity_markdown_omits_zero_sections(tmp_path: Path) -> None:
