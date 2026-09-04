@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import cast
 
+from ..actor import Actor, Agent, Thread
 from ..audit import AuditEvent, ErrorKind
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
@@ -12,7 +13,21 @@ from ..models import (
     RuntimeEventState,
 )
 from ..observability import IAudit, LogLevel
+from ..storage import IStorage
 from ..utils.sanitization import omit_sensitive_fields
+
+_REACH_PAGE = 1_000
+
+
+async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
+    """Return the conversations one actor answers for, most recent first."""
+
+    match actor:
+        case Thread(thread_id):
+            return (thread_id,)
+        case Agent():
+            page = await storage.list_inbox_targets(limit=_REACH_PAGE)
+            return tuple(summary.session_id for summary in page.targets)
 
 
 class SessionAuditRecorder:

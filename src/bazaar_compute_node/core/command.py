@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from .actor import Actor
 from .models import (
     InboundAttachment,
     InboxTargetSummary,
@@ -92,15 +93,13 @@ class InboxListResult:
 
 @dataclass(frozen=True, slots=True)
 class MessageDraft:
-    """One process-local outbound payload owned by its source BCN session."""
+    """One process-local outbound payload owned by the target it addresses."""
 
-    source_target_id: str
     target: str
     target_id: str
     body: str
     attachments: tuple[OutboundAttachment, ...]
     reply_to_message_id: str | None
-    source_message_id: str
     created_at_ms: int
 
 
@@ -156,13 +155,17 @@ class SessionNotFoundError(ValueError):
 class ICommandService(Protocol):
     """Session-scoped command surface used by the local wrapper."""
 
-    async def check(self, session_id: str) -> MessageCheckResult:
+    async def pending_targets(self, actor: Actor) -> InboxListResult:
+        """List the conversations with unread messages, draining nothing."""
+        ...
+
+    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
         """Read new messages and advance only the delivery cursor."""
         ...
 
     async def read(
         self,
-        session_id: str,
+        actor: Actor,
         *,
         raw_target: str,
         around_message_id: str | None = None,
@@ -174,7 +177,7 @@ class ICommandService(Protocol):
     async def send(
         self,
         *,
-        session_id: str,
+        actor: Actor,
         command_id: str,
         raw_target: str,
         body: str,
@@ -186,9 +189,7 @@ class ICommandService(Protocol):
         """Run the session fresh-check before calling the Channel port."""
         ...
 
-    async def unfollow(
-        self, session_id: str, *, raw_target: str
-    ) -> ThreadUnfollowResult:
+    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
         """Disable future group notifications and report whether state changed."""
         ...
 
@@ -198,30 +199,30 @@ class IReminderService(Protocol):
 
     async def schedule(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult: ...
 
     async def list(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderListRequest,
     ) -> ReminderListResult: ...
 
     async def snooze(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult: ...
 
     async def update(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult: ...
 
     async def cancel(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult: ...

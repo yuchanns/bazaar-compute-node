@@ -7,7 +7,6 @@ def _target() -> InboxTargetSummary:
         target="dm:user-1",
         session_id="session-1",
         target_kind=ChannelTargetKind.DM,
-        current=False,
         pending_count=0,
         last_activity_at_ms=100,
     )

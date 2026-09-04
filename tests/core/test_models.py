@@ -72,7 +72,6 @@ def make_inbox_target() -> InboxTargetSummary:
         target="dm:user-1",
         session_id="bcn-1",
         target_kind=ChannelTargetKind.DM,
-        current=True,
         pending_count=2,
         last_activity_at_ms=100,
         latest_message_id="message-1",

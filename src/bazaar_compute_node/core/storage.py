@@ -156,15 +156,12 @@ class StorageOperationMixin:
 
     async def read_message_history(
         self,
-        caller_session_id: str,
         *,
         raw_target: str,
         around_message_id: str | None,
         limit: int,
     ) -> ReadMessageHistoryResult:
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(caller_session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
         target = await self.resolve_inbox_target(raw_target)
         source_session = target.bcn_session
         messages = await self.list_messages(
@@ -208,25 +205,16 @@ class StorageOperationMixin:
 
     async def read_inbox_catalog(
         self,
-        caller_session_id: str,
         *,
         limit: int,
-        offset: int,
+        offset: int = 0,
     ) -> InboxListResult:
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(caller_session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
         page = await self.list_inbox_targets(limit=limit, offset=offset)
         targets = []
         for summary in page.targets:
             target = await self.resolve_inbox_target(summary.target)
-            targets.append(
-                replace(
-                    summary,
-                    target=target.display_target,
-                    current=summary.session_id == caller_session_id,
-                )
-            )
+            targets.append(replace(summary, target=target.display_target))
         return InboxListResult(
             targets=tuple(targets),
             total=page.total,
@@ -237,31 +225,31 @@ class StorageOperationMixin:
 
     async def check_outbound_freshness(
         self,
-        source_target_id: str,
+        target_id: str,
         *,
-        source_snapshot_seq: int | None,
+        snapshot_seq: int | None,
         payload: MessageDraft,
         draft_replaced: bool,
     ) -> OutboundFreshnessPass | MessageSendFreshnessHold:
         self = _operations(self)  # noqa: PLW0642
-        if payload.source_target_id != source_target_id:
-            raise ValueError("outbound draft source binding cannot change")
-        if await self.get_bcn_session(source_target_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {source_target_id}")
-        current_seq = await _latest_notifying_inbound_seq(self, source_target_id)
+        if payload.target_id != target_id:
+            raise ValueError("outbound draft target binding cannot change")
+        if await self.get_bcn_session(target_id) is None:
+            raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+        current_seq = await _latest_notifying_inbound_seq(self, target_id)
         if current_seq == 0 or (
-            source_snapshot_seq is not None and current_seq <= source_snapshot_seq
+            snapshot_seq is not None and current_seq <= snapshot_seq
         ):
             return OutboundFreshnessPass(current_inbound_seq=current_seq)
         newer_total = await self.count_messages(
-            source_target_id,
-            after_seq=source_snapshot_seq,
+            target_id,
+            after_seq=snapshot_seq,
             direction=MessageDirection.INBOUND,
             notifying_only=True,
         )
         newer_messages = await self.list_messages(
-            source_target_id,
-            after_seq=source_snapshot_seq,
+            target_id,
+            after_seq=snapshot_seq,
             direction=MessageDirection.INBOUND,
             notifying_only=True,
             latest=True,
@@ -269,7 +257,7 @@ class StorageOperationMixin:
         )
         references = await _referenced_messages(
             self,
-            source_target_id,
+            target_id,
             newer_messages,
         )
         canonical_targets = {
@@ -294,7 +282,7 @@ class StorageOperationMixin:
             messages=newer_messages,
             referenced_messages=references,
             newer_message_total=newer_total,
-            snapshot_seq=source_snapshot_seq,
+            snapshot_seq=snapshot_seq,
             current_inbound_seq=current_seq,
             draft_replaced=draft_replaced,
             target_projections=tuple(target_projections),
@@ -302,46 +290,39 @@ class StorageOperationMixin:
 
     async def materialize_outbound_if_fresh(
         self,
-        source_target_id: str,
-        expected_source_seq: int,
         target_id: str,
+        expected_target_seq: int,
         *,
         command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult:
         self = _operations(self)  # noqa: PLW0642
-        if (
-            payload.source_target_id != source_target_id
-            or payload.target_id != target_id
-        ):
+        if payload.target_id != target_id:
             raise ValueError("outbound draft target binding cannot change")
-        current_source_seq = await _latest_notifying_inbound_seq(
-            self,
-            source_target_id,
-        )
-        if current_source_seq > expected_source_seq:
+        current_target_seq = await _latest_notifying_inbound_seq(self, target_id)
+        if current_target_seq > expected_target_seq:
             outcome = await self.check_outbound_freshness(
-                source_target_id,
-                source_snapshot_seq=expected_source_seq,
+                target_id,
+                snapshot_seq=expected_target_seq,
                 payload=payload,
                 draft_replaced=False,
             )
             if isinstance(outcome, OutboundFreshnessPass):
-                raise RuntimeError("source freshness recheck lost its stale boundary")
-            source_session = await self.get_bcn_session(source_target_id)
-            if source_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {source_target_id}")
-            source_channel = await self.get_channel_session(
-                source_session.channel_session_id
+                raise RuntimeError("target freshness recheck lost its stale boundary")
+            held_session = await self.get_bcn_session(target_id)
+            if held_session is None:
+                raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+            held_channel = await self.get_channel_session(
+                held_session.channel_session_id
             )
-            if source_channel is None:
+            if held_channel is None:
                 raise ValueError(
-                    f"unknown channel session: {source_session.channel_session_id}"
+                    f"unknown channel session: {held_session.channel_session_id}"
                 )
             return MaterializeOutboundResult(
-                channel_session=source_channel,
-                target_session=source_session,
+                channel_session=held_channel,
+                target_session=held_session,
                 reply_to_provider_message_id=None,
                 outcome=outcome,
             )
@@ -384,7 +365,7 @@ class StorageOperationMixin:
             Message(
                 direction=MessageDirection.OUTBOUND,
                 seq=0,
-                message_id=f"outbound-{source_target_id}-{command_id}",
+                message_id=f"outbound-{target_id}-{command_id}",
                 command_id=command_id,
                 session_id=target_id,
                 channel_session_id=channel_session.id,
@@ -475,7 +456,6 @@ class _StorageOperations(Protocol):
 
     async def read_message_history(
         self,
-        caller_session_id: str,
         *,
         raw_target: str,
         around_message_id: str | None,
@@ -484,26 +464,24 @@ class _StorageOperations(Protocol):
 
     async def read_inbox_catalog(
         self,
-        caller_session_id: str,
         *,
         limit: int,
-        offset: int,
+        offset: int = 0,
     ) -> InboxListResult: ...
 
     async def check_outbound_freshness(
         self,
-        source_target_id: str,
+        target_id: str,
         *,
-        source_snapshot_seq: int | None,
+        snapshot_seq: int | None,
         payload: MessageDraft,
         draft_replaced: bool,
     ) -> OutboundFreshnessPass | MessageSendFreshnessHold: ...
 
     async def materialize_outbound_if_fresh(
         self,
-        source_target_id: str,
-        expected_source_seq: int,
         target_id: str,
+        expected_target_seq: int,
         *,
         command_id: str,
         payload: MessageDraft,

@@ -251,7 +251,6 @@ class InboxTargetSummary:
     target: str
     session_id: str
     target_kind: ChannelTargetKind
-    current: bool
     pending_count: int
     last_activity_at_ms: int
     latest_message_id: str | None = None

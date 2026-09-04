@@ -36,6 +36,7 @@ def print_error(error: BccCommandError) -> None:
     )
 
 
+_INBOX_CHECK = TextTemplate.from_resource("bcc/inbox_check.tpl")
 _CHECK = TextTemplate.from_resource("bcc/check.tpl")
 _READ = TextTemplate.from_resource("bcc/read.tpl")
 _UNFOLLOW = TextTemplate.from_resource("bcc/unfollow.tpl")
@@ -49,6 +50,24 @@ _ERROR = TextTemplate.from_resource("bcc/error.tpl")
 
 # `bcc upgrade` reads better than `bcc node upgrade`, so the command line name
 # and the resource it addresses differ here
+
+
+def serialize_inbox_check(result: Mapping[str, object]) -> str:
+    targets = cast(list[Mapping[str, object]], result["targets"])
+    return _INBOX_CHECK.render(
+        {
+            "target_lines": [
+                " ".join(
+                    (
+                        f"[target={target['target']}",
+                        f"pending={target['pending_count']}",
+                        f"latest-msg={target['latest_message_id']}]",
+                    )
+                )
+                for target in targets
+            ]
+        }
+    )
 
 
 def serialize_check(result: Mapping[str, object]) -> str:

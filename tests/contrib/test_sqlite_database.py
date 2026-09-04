@@ -113,7 +113,6 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
             direction=MessageDirection.OUTBOUND,
         )
         history = await scope.read_message_history(
-            bcn_session.id,
             raw_target=pending.target,
             around_message_id=pending.message_id,
             limit=10,
@@ -177,23 +176,39 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
         await scope.save_channel_session(target_channel)
         await scope.save_bcn_session(target_session)
         draft = MessageDraft(
-            source_target_id=source_session.id,
             target="dm:channel-target",
             target_id=target_session.id,
             body="cross-session payload",
             attachments=(),
             reply_to_message_id=None,
-            source_message_id=source_message.message_id,
             created_at_ms=11,
         )
+        target_message = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="018f0000-0000-7000-8000-000000000020",
+                session_id=target_session.id,
+                channel_session_id=target_channel.id,
+                channel=target_channel.channel,
+                provider_thread_id=target_channel.provider_thread_id,
+                provider_message_id="provider-target",
+                received_at_ms=10,
+                sender=SenderIdentity(name="Target User"),
+                target="dm:channel-target",
+                target_kind=ChannelTargetKind.DM,
+                body="target context",
+                metadata={"sender_kind": SenderKind.HUMAN.value},
+            )
+        )
         fresh = await scope.check_outbound_freshness(
-            source_session.id,
-            source_snapshot_seq=source_message.seq,
+            target_session.id,
+            snapshot_seq=target_message.seq,
             payload=draft,
             draft_replaced=False,
         )
         assert isinstance(fresh, OutboundFreshnessPass)
-        newer_source_message = await scope.save_message(
+        await scope.save_message(
             replace(
                 source_message,
                 message_id="018f0000-0000-7000-8000-000000000012",
@@ -202,16 +217,34 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
                 body="new source context",
             )
         )
+        # what the sender's own conversation says does not gate this send
+        assert isinstance(
+            await scope.check_outbound_freshness(
+                target_session.id,
+                snapshot_seq=fresh.current_inbound_seq,
+                payload=draft,
+                draft_replaced=False,
+            ),
+            OutboundFreshnessPass,
+        )
+        newer_target_message = await scope.save_message(
+            replace(
+                target_message,
+                message_id="018f0000-0000-7000-8000-000000000021",
+                provider_message_id="provider-target-2",
+                received_at_ms=12,
+                body="new target context",
+            )
+        )
         stale_recheck = await scope.materialize_outbound_if_fresh(
-            source_session.id,
-            fresh.current_inbound_seq,
             target_session.id,
+            fresh.current_inbound_seq,
             command_id="command-raced",
             payload=draft,
             attempted_at_ms=12,
         )
         assert isinstance(stale_recheck.outcome, MessageSendFreshnessHold)
-        assert stale_recheck.outcome.messages == (newer_source_message,)
+        assert stale_recheck.outcome.messages == (newer_target_message,)
         assert not any(
             message.command_id == "command-raced"
             for message in await scope.list_messages(
@@ -242,14 +275,17 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
         first_finalize = await scope.finalize_outbound_delivery(sent)
         second_finalize = await scope.finalize_outbound_delivery(sent)
         target_history = await scope.read_message_history(
-            target_session.id,
             raw_target="dm:channel-target",
             around_message_id=pending.message_id,
             limit=10,
         )
 
         assert first_finalize == second_finalize
-        assert target_history.history.messages == (first_finalize,)
+        assert target_history.history.messages == (
+            target_message,
+            newer_target_message,
+            first_finalize,
+        )
     finally:
         await database.stop(timeout=2)
 
@@ -474,21 +510,18 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         catalog = await scope.list_inbox_targets()
         freshness = await scope.check_outbound_freshness(
             bcn_session.id,
-            source_snapshot_seq=anchor.seq,
+            snapshot_seq=anchor.seq,
             payload=MessageDraft(
-                source_target_id=bcn_session.id,
                 target=anchor.target,
                 target_id=bcn_session.id,
                 body="acknowledged",
                 attachments=(),
                 reply_to_message_id=None,
-                source_message_id=materialized.message_id,
                 created_at_ms=2_200,
             ),
             draft_replaced=False,
         )
         history = await scope.read_message_history(
-            bcn_session.id,
             raw_target=anchor.target,
             around_message_id=materialized.message_id,
             limit=10,

@@ -10,11 +10,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
-from ..actor import Actors, Agent, Thread
+from ..actor import Actor, Actors, Agent, Thread
 from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
+    InboxListResult,
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
@@ -41,7 +42,7 @@ from ..storage import (
     ResolvedInboxTarget,
 )
 from .delivery import OutboundDeliveryService
-from .services import SessionAuditRecorder
+from .services import _REACH_PAGE, SessionAuditRecorder, threads_in_reach
 
 
 class OutboundAttachmentResolver:
@@ -152,47 +153,71 @@ class SessionCommandService(ICommandService):
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
-    async def check(self, session_id: str) -> MessageCheckResult:
-        async with self._concurrency.for_session(session_id):
-            result = await self._storage.check_messages(
-                session_id,
-                checked_at_ms=self._clock(),
-            )
-            self._observe_freshness(session_id, result.snapshot_seq)
+    async def pending_targets(self, actor: Actor) -> InboxListResult:
+        result = await self._storage.read_inbox_catalog(limit=_REACH_PAGE)
+        reachable = frozenset(await threads_in_reach(self._storage, actor))
+        pending = tuple(
+            summary
+            for summary in result.targets
+            if summary.pending_count > 0 and summary.session_id in reachable
+        )
         await self._audit.append_tool(
-            operation="bcc.message.check",
+            operation="bcc.inbox.check",
             status="completed",
             state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(session_id=session_id),
-            arguments={"session_id": session_id},
+            correlation=self._correlation(session_id=actor.id),
+            arguments={"actor_id": actor.id},
         )
-        return result
+        return replace(
+            result,
+            targets=pending,
+            total=len(pending),
+            shown=len(pending),
+            has_more=False,
+        )
+
+    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
+        drained: list[MessageCheckResult] = []
+        for thread_id in await threads_in_reach(self._storage, actor):
+            async with self._concurrency.for_session(thread_id):
+                result = await self._storage.check_messages(
+                    thread_id,
+                    checked_at_ms=self._clock(),
+                )
+                self._observe_freshness(thread_id, result.snapshot_seq)
+            await self._audit.append_tool(
+                operation="bcc.message.check",
+                status="completed",
+                state=RuntimeEventState.COMPLETED,
+                correlation=self._correlation(session_id=thread_id),
+                arguments={"session_id": thread_id},
+            )
+            drained.append(result)
+        return tuple(drained)
 
     async def read(
         self,
-        session_id: str,
+        actor: Actor,
         *,
         raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
     ) -> MessageReadResult:
         snapshot = await self._storage.read_message_history(
-            session_id,
             raw_target=raw_target,
             around_message_id=around_message_id,
             limit=limit,
         )
-        self._require_in_reach(session_id, snapshot.source_session.id, raw_target)
+        self._require_in_reach(actor, snapshot.source_session.id, raw_target)
         result = snapshot.history
-        if snapshot.source_session.id == session_id:
-            self._observe_freshness(session_id, result.snapshot_seq)
+        self._observe_freshness(snapshot.source_session.id, result.snapshot_seq)
         await self._audit.append_tool(
             operation="bcc.message.read",
             status="completed",
             state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(session_id=session_id),
+            correlation=self._correlation(session_id=snapshot.source_session.id),
             arguments={
-                "caller_session_id": session_id,
+                "actor_id": actor.id,
                 "source_session_id": snapshot.source_session.id,
                 "target": raw_target,
                 "around_message_id": around_message_id,
@@ -203,13 +228,13 @@ class SessionCommandService(ICommandService):
 
     def _require_in_reach(
         self,
-        session_id: str,
+        actor: Actor,
         target_session_id: str,
         raw_target: str,
     ) -> None:
-        """Refuse a target the actor behind this command does not answer for."""
+        """Refuse a target this actor does not answer for."""
 
-        match self._actors.for_thread(session_id):
+        match actor:
             case Agent():
                 return
             case Thread(id) if id == target_session_id:
@@ -222,7 +247,6 @@ class SessionCommandService(ICommandService):
     async def _stage_draft(
         self,
         *,
-        session_id: str,
         command_id: str,
         raw_target: str,
         target: ResolvedInboxTarget,
@@ -234,51 +258,34 @@ class SessionCommandService(ICommandService):
     ) -> tuple[MessageDraft, int] | MessageSendFreshnessHold:
         """Settle what will be sent, and that nothing arrived while it was written."""
 
-        target_session = target.bcn_session
-        canonical_target = target.canonical_target
-        async with self._concurrency.for_session(session_id):
+        target_id = target.bcn_session.id
+        async with self._concurrency.for_session(target_id):
             if send_draft:
-                draft = self._drafts.get(session_id)
+                draft = self._drafts.get(target_id)
                 if draft is None:
                     raise ValueError(f"no active draft for target: {raw_target}")
-                if draft.target_id != target_session.id:
-                    raise ValueError(
-                        f"active draft belongs to another target: {draft.target}"
-                    )
                 payload = draft
             else:
-                source_message = await self._storage.get_latest_message(
-                    session_id,
-                    direction=MessageDirection.INBOUND,
-                )
-                if source_message is None:
-                    raise ValueError(
-                        "current conversation has no inbound source anchor"
-                    )
                 payload = MessageDraft(
-                    source_target_id=session_id,
-                    target=canonical_target,
-                    target_id=target_session.id,
+                    target=target.canonical_target,
+                    target_id=target_id,
                     body=body,
                     attachments=attachments,
                     reply_to_message_id=reply_to_message_id,
-                    source_message_id=source_message.message_id,
                     created_at_ms=created_at_ms,
                 )
-            active_draft = self._drafts.get(session_id)
-            draft_replaced = not send_draft and active_draft is not None
+            draft_replaced = not send_draft and self._drafts.get(target_id) is not None
             if not send_draft:
-                self._drafts[session_id] = payload
+                self._drafts[target_id] = payload
             freshness = await self._storage.check_outbound_freshness(
-                session_id,
-                source_snapshot_seq=self._freshness_snapshots.get(session_id),
+                target_id,
+                snapshot_seq=self._freshness_snapshots.get(target_id),
                 payload=payload,
                 draft_replaced=draft_replaced,
             )
             if isinstance(freshness, MessageSendFreshnessHold):
                 return await self._hold(
                     freshness,
-                    session_id=session_id,
                     command_id=command_id,
                     target=target,
                 )
@@ -288,15 +295,15 @@ class SessionCommandService(ICommandService):
         self,
         hold: MessageSendFreshnessHold,
         *,
-        session_id: str,
         command_id: str,
         target: ResolvedInboxTarget,
     ) -> MessageSendFreshnessHold:
         """Record that something arrived while the message was being written."""
 
-        self._observe_freshness(session_id, hold.current_inbound_seq)
+        target_id = target.bcn_session.id
+        self._observe_freshness(target_id, hold.current_inbound_seq)
         await self._audit_freshness_hold(
-            session_id=session_id,
+            session_id=target_id,
             command_id=command_id,
             target=target.canonical_target,
             result=hold,
@@ -382,21 +389,19 @@ class SessionCommandService(ICommandService):
     async def _deliver(
         self,
         *,
-        session_id: str,
         command_id: str,
         target: ResolvedInboxTarget,
-        target_session_id: str,
-        expected_source_seq: int,
+        expected_target_seq: int,
         payload: MessageDraft,
     ) -> Message[OutboundAttachment] | MessageSendFreshnessHold:
         """Hand the message to its channel and record what the channel made of it."""
 
         canonical_target = target.canonical_target
-        async with self._concurrency.for_session(target_session_id):
+        target_id = target.bcn_session.id
+        async with self._concurrency.for_session(target_id):
             prepared = await self._storage.materialize_outbound_if_fresh(
-                session_id,
-                expected_source_seq,
-                target_session_id,
+                target_id,
+                expected_target_seq,
                 command_id=command_id,
                 payload=payload,
                 attempted_at_ms=self._clock(),
@@ -405,18 +410,17 @@ class SessionCommandService(ICommandService):
             if isinstance(result, MessageSendFreshnessHold):
                 return await self._hold(
                     result,
-                    session_id=session_id,
                     command_id=command_id,
                     target=target,
                 )
             outbound = result
             channel_session = prepared.channel_session
             audit_context = self._correlation(
-                session_id=session_id,
+                session_id=target_id,
                 channel=channel_session.channel,
                 channel_session_id=channel_session.id,
                 command_id=command_id,
-                inbound_seq=expected_source_seq,
+                inbound_seq=expected_target_seq,
                 outbound_message_id=outbound.message_id,
             )
             await self._audit.append(
@@ -444,9 +448,9 @@ class SessionCommandService(ICommandService):
                     OutboundDeliveryState.SENT,
                     OutboundDeliveryState.QUEUED,
                 }
-                and self._drafts.get(session_id) is payload
+                and self._drafts.get(target_id) is payload
             ):
-                self._drafts.pop(session_id, None)
+                self._drafts.pop(target_id, None)
             await self._record_delivery(
                 audit_context,
                 command_id=command_id,
@@ -462,7 +466,7 @@ class SessionCommandService(ICommandService):
     async def send(
         self,
         *,
-        session_id: str,
+        actor: Actor,
         command_id: str,
         raw_target: str,
         body: str,
@@ -472,8 +476,7 @@ class SessionCommandService(ICommandService):
         send_draft: bool = False,
     ) -> MessageSendResult:
         target = await self._storage.resolve_inbox_target(raw_target)
-        target_session = target.bcn_session
-        self._require_in_reach(session_id, target_session.id, raw_target)
+        self._require_in_reach(actor, target.bcn_session.id, raw_target)
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths and not send_draft
@@ -487,7 +490,6 @@ class SessionCommandService(ICommandService):
             raise ValueError("outbound message must not be empty")
 
         staged = await self._stage_draft(
-            session_id=session_id,
             command_id=command_id,
             raw_target=raw_target,
             target=target,
@@ -499,14 +501,12 @@ class SessionCommandService(ICommandService):
         )
         if isinstance(staged, MessageSendFreshnessHold):
             return staged
-        payload, expected_source_seq = staged
+        payload, expected_target_seq = staged
 
         delivered = await self._deliver(
-            session_id=session_id,
             command_id=command_id,
             target=target,
-            target_session_id=target_session.id,
-            expected_source_seq=expected_source_seq,
+            expected_target_seq=expected_target_seq,
             payload=payload,
         )
         if isinstance(delivered, MessageSendFreshnessHold):
@@ -558,16 +558,14 @@ class SessionCommandService(ICommandService):
             },
         )
 
-    async def unfollow(
-        self, session_id: str, *, raw_target: str
-    ) -> ThreadUnfollowResult:
-        async with self._concurrency.for_session(session_id):
-            target = await self._storage.resolve_inbox_target(raw_target)
-            if target.bcn_session.id != session_id:
-                raise ValueError(f"Thread target is not found: {raw_target}")
+    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
+        target = await self._storage.resolve_inbox_target(raw_target)
+        thread_id = target.bcn_session.id
+        self._require_in_reach(actor, thread_id, raw_target)
+        async with self._concurrency.for_session(thread_id):
             channel_session = target.channel_session
             target_messages = await self._storage.list_messages(
-                session_id,
+                thread_id,
                 target=target.canonical_target,
                 direction=MessageDirection.INBOUND,
                 limit=1,
@@ -590,12 +588,12 @@ class SessionCommandService(ICommandService):
             status="completed",
             state=RuntimeEventState.COMPLETED,
             correlation=self._correlation(
-                session_id=session_id,
+                session_id=thread_id,
                 channel=channel_session.channel,
                 channel_session_id=channel_session.id,
             ),
             arguments={
-                "session_id": session_id,
+                "session_id": thread_id,
                 "target": target.canonical_target,
                 "changed": changed,
             },

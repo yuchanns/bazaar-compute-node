@@ -27,6 +27,7 @@ from bazaar_compute_node.app.registry import (
 )
 from bazaar_compute_node.app.transport import LocalCommandClient
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.actor import Mode
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity, IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -220,6 +221,7 @@ def test_install_bcc_wrapper_renders_windows_variants(
 
     command_path = wrapper_module.install_bcc_wrapper(
         tmp_path,
+        mode=Mode.SESSION,
         agent_id="agent-a",
     )
     try:
@@ -227,6 +229,7 @@ def test_install_bcc_wrapper_renders_windows_variants(
         assert command_path.read_text(encoding="utf-8").splitlines() == [
             "@echo off",
             'set "BCN_AGENT_ID=agent-a"',
+            'set "BCN_AGENT_MODE=session"',
             'set "PYTHONIOENCODING=utf-8"',
             'set "PYTHONUTF8=1"',
             'set "LANG=C.UTF-8"',
@@ -237,6 +240,7 @@ def test_install_bcc_wrapper_renders_windows_variants(
         assert (tmp_path / "bcc.ps1").read_text(encoding="utf-8").splitlines() == [
             "$ErrorActionPreference = 'Stop'",
             "$env:BCN_AGENT_ID = 'agent-a'",
+            "$env:BCN_AGENT_MODE = 'session'",
             "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
             "[Console]::OutputEncoding = $utf8NoBom",
             "$OutputEncoding = $utf8NoBom",
@@ -258,7 +262,9 @@ def test_install_bcc_wrapper_renders_windows_variants(
 
 def test_install_bcc_wrapper_rejects_unsafe_agent_id(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported wrapper characters"):
-        wrapper_module.install_bcc_wrapper(tmp_path, agent_id="agent;touch")
+        wrapper_module.install_bcc_wrapper(
+            tmp_path, agent_id="agent;touch", mode=Mode.SESSION
+        )
     assert not tuple(tmp_path.iterdir())
 
 
@@ -319,7 +325,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             "kind": "command",
             "resource": "message",
             "command": "check",
-            "session_id": runtime_session.actor.id,
+            "actor_id": runtime_session.actor.id,
             "runtime_session_id": runtime_session.id,
             "session_capability": environment["BCN_COMMAND_CAPABILITY"],
         }
@@ -327,7 +333,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         for name in (
             "BCN_AGENT_ID",
             "BCN_ENDPOINT",
-            "BCN_SESSION_ID",
+            "BCN_ACTOR_ID",
             "BCN_RUNTIME_SESSION_ID",
             "BCN_COMMAND_CAPABILITY",
         ):

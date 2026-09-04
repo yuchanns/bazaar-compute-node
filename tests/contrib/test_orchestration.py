@@ -781,7 +781,7 @@ async def test_channel_storage_runtime_turn_path() -> None:
             for event in audit.events
         )
         unfollowed = await orchestrator.command_service.unfollow(
-            "bcn-1", raw_target="dm:channel-bcn-1"
+            Thread("bcn-1"), raw_target="dm:channel-bcn-1"
         )
         assert unfollowed.changed is False
         assert storage.channel_sessions["channel-bcn-1"].following is True
@@ -871,17 +871,17 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
 
     async def command_script(commands: ICommandService, session_id: str) -> None:
-        checked = await commands.check(session_id)
+        (checked,) = await commands.check(Thread(session_id))
         if not checked.messages:
             raise AssertionError("command did not observe the inbound message")
         history = await commands.read(
-            session_id,
+            Thread(session_id),
             raw_target=checked.messages[0].target,
         )
         if not history.messages:
             raise AssertionError("history command did not observe the inbound message")
         outbound = await commands.send(
-            session_id=session_id,
+            actor=Thread(session_id),
             command_id="command-1",
             raw_target=checked.messages[0].target,
             body="runtime-generated reply",
@@ -949,7 +949,7 @@ async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
 
     try:
         history = await orchestrator.command_service.read(
-            target_session_id,
+            Thread(target_session_id),
             raw_target=target_reply.target,
             around_message_id=target_reply.message_id,
             limit=1,
@@ -965,7 +965,7 @@ async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
         # another conversation's history belongs to whoever answers for it
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.read(
-                caller_id,
+                Thread(caller_id),
                 raw_target=target_reply.target,
                 limit=1,
             )
@@ -1233,7 +1233,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         )
 
         held_without_snapshot = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-before-check",
             raw_target="dm:channel-bcn-1",
             body="reply",
@@ -1260,10 +1260,10 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         )
         assert not channel.send_attempts
 
-        checked = await orchestrator.command_service.check("bcn-1")
+        (checked,) = await orchestrator.command_service.check(Thread("bcn-1"))
         assert checked.messages
         delivered = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-after-check",
             raw_target="dm:channel-bcn-1",
             body="",
@@ -1284,7 +1284,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert len(channel.send_attempts) == 1
         with pytest.raises(ValueError, match="no active draft"):
             await orchestrator.command_service.send(
-                session_id="bcn-1",
+                actor=Thread("bcn-1"),
                 command_id="command-consumed-draft",
                 raw_target="dm:channel-bcn-1",
                 body="",
@@ -1306,7 +1306,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             )
         )
         stale = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-stale",
             raw_target="dm:channel-bcn-1",
             body="stale draft",
@@ -1315,7 +1315,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert isinstance(stale, MessageSendFreshnessHold)
         assert stale.draft_replaced is False
         revised = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-revised",
             raw_target="dm:channel-bcn-1",
             body="revised draft",
@@ -1337,7 +1337,7 @@ async def test_sqlite_freshness_hold_returns_latest_bounded_context() -> None:
             await orchestrator._record_inbound(make_message(seq=seq))
 
         held = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-bounded-context",
             raw_target="dm:channel-bcn-1",
             body="reply",
@@ -1386,15 +1386,15 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
 
         case = "history and outbound persistence use the canonical target"
         history = await orchestrator.command_service.read(
-            "readable-dm",
+            Thread("readable-dm"),
             raw_target="dm:@alice",
         )
         assert [message.target for message in history.messages] == [
             "dm:channel-readable-dm"
         ], case
-        await orchestrator.command_service.check("readable-dm")
+        await orchestrator.command_service.check(Thread("readable-dm"))
         delivered = await orchestrator.command_service.send(
-            session_id="readable-dm",
+            actor=Thread("readable-dm"),
             command_id="readable-target-send",
             raw_target="dm:@Alice",
             body="Readable target reply",
@@ -1660,7 +1660,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             )
         )
         case = "check and read headers use the current display projection"
-        checked = await orchestrator.command_service.check("readable-dm")
+        (checked,) = await orchestrator.command_service.check(Thread("readable-dm"))
         checked_payload = serialize_message(
             checked.messages[-1], checked.target_projections
         )
@@ -1668,7 +1668,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             case
         )
         history = await orchestrator.command_service.read(
-            "readable-dm",
+            Thread("readable-dm"),
             raw_target="dm:@Alice",
         )
         history_payload = serialize_message(
@@ -1692,7 +1692,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             )
         )
         held = await orchestrator.command_service.send(
-            session_id="readable-dm",
+            actor=Thread("readable-dm"),
             command_id="readable-target-hold",
             raw_target="dm:@Alice",
             body="Held readable target reply",
@@ -1704,10 +1704,10 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         assert held_payload["target"] == "dm:@Alice", case
 
         case = "another conversation is out of reach, and unfollow still names it"
-        await orchestrator.command_service.check("readable-dm")
+        await orchestrator.command_service.check(Thread("readable-dm"))
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.send(
-                session_id="readable-dm",
+                actor=Thread("readable-dm"),
                 command_id="readable-target-out-of-reach",
                 raw_target=lark_target.display_target,
                 body="reply",
@@ -1717,7 +1717,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             replace(lark_target.channel_session, following=True)
         )
         unfollowed = await orchestrator.command_service.unfollow(
-            lark_target.bcn_session.id,
+            Thread(lark_target.bcn_session.id),
             raw_target=lark_target.display_target,
         )
         assert unfollowed.target == lark_target.display_target, case
@@ -1751,14 +1751,14 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         await orchestrator._record_inbound(make_message(session_id="bcn-b"))
 
         first_hold = await orchestrator.command_service.send(
-            session_id="bcn-a",
+            actor=Thread("bcn-a"),
             command_id="command-hold-a",
             raw_target="dm:channel-bcn-a",
             body="draft a",
             created_at_ms=2,
         )
         second_hold = await orchestrator.command_service.send(
-            session_id="bcn-b",
+            actor=Thread("bcn-b"),
             command_id="command-hold-b",
             raw_target="dm:channel-bcn-b",
             body="draft b",
@@ -1767,10 +1767,10 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         assert isinstance(first_hold, MessageSendFreshnessHold)
         assert isinstance(second_hold, MessageSendFreshnessHold)
 
-        await orchestrator.command_service.check("bcn-a")
-        await orchestrator.command_service.check("bcn-b")
+        await orchestrator.command_service.check(Thread("bcn-a"))
+        await orchestrator.command_service.check(Thread("bcn-b"))
         first_sent = await orchestrator.command_service.send(
-            session_id="bcn-a",
+            actor=Thread("bcn-a"),
             command_id="command-send-a",
             raw_target="dm:channel-bcn-a",
             body="",
@@ -1778,7 +1778,7 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
             send_draft=True,
         )
         second_sent = await orchestrator.command_service.send(
-            session_id="bcn-b",
+            actor=Thread("bcn-b"),
             command_id="command-send-b",
             raw_target="dm:channel-bcn-b",
             body="",
@@ -1819,10 +1819,10 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
                 == 1
             )
         )
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
 
         delivered = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-with-attachments",
             raw_target="dm:channel-bcn-1",
             body="Attached reports.",
@@ -1861,13 +1861,13 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         target_anchor = make_message(session_id="bcn-other")
         await orchestrator._record_inbound(target_anchor)
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
 
         # another conversation is answered by another actor, and nothing here
         # reaches it
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.send(
-                session_id="bcn-1",
+                actor=Thread("bcn-1"),
                 command_id="command-other-conversation",
                 raw_target="dm:channel-bcn-other",
                 body="reply",
@@ -1884,7 +1884,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
         ]
 
         unusable_reply = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-invalid-reply",
             raw_target="dm:channel-bcn-1",
             body="invalid reply",
@@ -1909,7 +1909,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
             )
         )
         failed = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-failed",
             raw_target="dm:channel-bcn-1",
             body="failed reply",
@@ -1919,10 +1919,10 @@ async def test_send_preserves_provider_delivery_states() -> None:
         assert failed.message.delivery_state is OutboundDeliveryState.FAILED
         cross_session_attempt_count = len(channel.send_attempts)
 
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
         with pytest.raises(ValueError, match="must not be empty"):
             await orchestrator.command_service.send(
-                session_id="bcn-1",
+                actor=Thread("bcn-1"),
                 command_id="command-empty-body",
                 raw_target="dm:channel-bcn-1",
                 body=" \t",
@@ -1944,7 +1944,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
             )
         )
         queued = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-queued",
             raw_target="dm:channel-bcn-1",
             body="queued reply",
@@ -1965,7 +1965,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
             )
         )
         unknown = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-unknown",
             raw_target="dm:channel-bcn-1",
             body="unknown reply",
@@ -1999,7 +1999,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
             )
         )
         partial = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-partial",
             raw_target="dm:channel-bcn-1",
             body="partial reply",
@@ -2033,7 +2033,7 @@ async def test_send_preserves_provider_delivery_states() -> None:
             )
         )
         failed = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-failed",
             raw_target="dm:channel-bcn-1",
             body="failed reply",
@@ -2227,6 +2227,55 @@ async def test_one_actor_answers_every_conversation_on_one_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_individual_actor_drains_and_answers_every_conversation() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    agent = Agent("workspace-1")
+    try:
+        await orchestrator._record_inbound(make_message(session_id="bcn-a"))
+        await orchestrator._record_inbound(make_message(session_id="bcn-b"))
+
+        pending = await orchestrator.command_service.pending_targets(agent)
+        assert {summary.session_id for summary in pending.targets} == {
+            "bcn-a",
+            "bcn-b",
+        }
+
+        drained = await orchestrator.command_service.check(agent)
+        assert {
+            message.session_id for result in drained for message in result.messages
+        } == {"bcn-a", "bcn-b"}
+        # every conversation keeps its own cursor, and each one moved
+        assert storage.cursors["bcn-a"].delivered_through_seq > 0
+        assert storage.cursors["bcn-b"].delivered_through_seq > 0
+        assert not (await orchestrator.command_service.pending_targets(agent)).targets
+
+        # unread somewhere else does not stand between the Agent and this target
+        await orchestrator._record_inbound(make_message(session_id="bcn-b", seq=2))
+        sent = await orchestrator.command_service.send(
+            actor=agent,
+            command_id="command-individual",
+            raw_target="dm:channel-bcn-a",
+            body="reply",
+            created_at_ms=2,
+        )
+        assert isinstance(sent, MessageSendSuccess)
+        assert channel.send_attempts[-1].session_id == "bcn-a"
+
+        held = await orchestrator.command_service.send(
+            actor=agent,
+            command_id="command-individual-held",
+            raw_target="dm:channel-bcn-b",
+            body="reply",
+            created_at_ms=3,
+        )
+        assert isinstance(held, MessageSendFreshnessHold)
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> None:
     orchestrator, _, runtime, storage, audit = await make_node()
     try:
@@ -2328,9 +2377,10 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         assert storage.channel_sessions["channel-bcn-1"].following is False
         assert orchestrator.runtime_session(Thread("bcn-1")) is None
         assert runtime.started_sessions == []
-        assert (await orchestrator.command_service.check("bcn-1")).messages == ()
+        (checked,) = await orchestrator.command_service.check(Thread("bcn-1"))
+        assert checked.messages == ()
         history = await orchestrator.command_service.read(
-            "bcn-1", raw_target="#test:channel-bcn-1"
+            Thread("bcn-1"), raw_target="#test:channel-bcn-1"
         )
         assert len(history.messages) == 1
         assert history.messages[0].notifies_runtime is False
@@ -2355,7 +2405,7 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
 
         unfollowed = await orchestrator.command_service.unfollow(
-            "bcn-1", raw_target="#test:channel-bcn-1"
+            Thread("bcn-1"), raw_target="#test:channel-bcn-1"
         )
         assert unfollowed.changed is True
         assert storage.channel_sessions["channel-bcn-1"].following is False
@@ -3324,9 +3374,9 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
     orchestrator, channel, runtime, _, _ = await make_node()
 
     async def command_script(commands: ICommandService, session_id: str) -> None:
-        checked = await commands.check(session_id)
+        (checked,) = await commands.check(Thread(session_id))
         await commands.send(
-            session_id=session_id,
+            actor=Thread(session_id),
             command_id="terminal-wait",
             raw_target=checked.messages[0].target,
             body="terminal reply",

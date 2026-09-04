@@ -175,7 +175,6 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
         target=cast(str, row["target"]),
         session_id=cast(str, row["session_id"]),
         target_kind=ChannelTargetKind(cast(str, row["target_kind"])),
-        current=False,
         pending_count=cast(int, row["pending_count"]),
         last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
         latest_message_id=latest_message_id,
