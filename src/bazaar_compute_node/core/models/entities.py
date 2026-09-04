@@ -374,9 +374,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         try:
             return SystemMessageKind(cast(str, value))
         except ValueError as error:
-            raise ValueError(
-                "metadata system_message_kind must be reminder or handoff"
-            ) from error
+            raise ValueError("metadata system_message_kind must be reminder") from error
 
     def inbound_identity(self) -> tuple[str, str, str]:
         if self.direction is not MessageDirection.INBOUND:

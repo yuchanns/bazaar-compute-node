@@ -359,72 +359,6 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         check_response = await LocalCommandClient.request(node.endpoint, request)
         assert check_response["ok"] is True
 
-        list_response = await LocalCommandClient.request(
-            node.endpoint,
-            {
-                **request,
-                "resource": "inbox",
-                "command": "list",
-                "limit": 10,
-                "offset": 0,
-            },
-        )
-        assert list_response["ok"] is True
-        list_result = list_response["result"]
-        assert isinstance(list_result, Mapping)
-        assert list_result["total"] == 1
-        assert list_result["shown"] == 1
-        assert list_result["offset"] == 0
-        assert list_result["has_more"] is False
-        targets = list_result["targets"]
-        assert isinstance(targets, list)
-        assert len(targets) == 1
-        target_summary = targets[0]
-        assert isinstance(target_summary, Mapping)
-        assert target_summary["target"] == target
-        assert target_summary["session_id"] == runtime_session.bcn_session_id
-        assert target_summary["current"] is True
-        assert target_summary["pending_count"] == 0
-        assert target_summary["latest_message_id"] == "message-agent-a"
-        assert target_summary["latest_time_ms"] == 1
-
-        invalid_limit = await LocalCommandClient.request(
-            node.endpoint,
-            {
-                **request,
-                "resource": "inbox",
-                "command": "list",
-                "limit": 0,
-                "offset": 0,
-            },
-        )
-        assert invalid_limit["ok"] is False
-        assert invalid_limit["code"] == "INVALID_LIMIT"
-
-        invalid_offset = await LocalCommandClient.request(
-            node.endpoint,
-            {
-                **request,
-                "resource": "inbox",
-                "command": "list",
-                "limit": 1,
-                "offset": -1,
-            },
-        )
-        assert invalid_offset["ok"] is False
-        assert invalid_offset["code"] == "INVALID_OFFSET"
-
-        assert (
-            await asyncio.to_thread(
-                bcc_module.main, ["inbox", "list", "--limit", "10", "--offset", "0"]
-            )
-            == 0
-        )
-        cli_output = capsys.readouterr().out
-        assert "Inbox targets: 1 returned, offset 0, total 1" in cli_output
-        assert f"target={target}" in cli_output
-        assert "latest-msg=message-agent-a" in cli_output
-
         monkeypatch.setattr(sys, "stdin", StringIO("must not be read"))
         assert (
             await asyncio.to_thread(
@@ -459,25 +393,6 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         assert f"msg={outbound_message_id}" in history_output.out
         assert "type=agent" in history_output.out
         assert "@Agent A: reply" in history_output.out
-
-        latest_response = await LocalCommandClient.request(
-            node.endpoint,
-            {
-                **request,
-                "resource": "inbox",
-                "command": "list",
-                "limit": 10,
-                "offset": 0,
-            },
-        )
-        latest_result = cast(Mapping[str, object], latest_response["result"])
-        latest_targets = cast(list[Mapping[str, object]], latest_result["targets"])
-        assert latest_targets[0]["latest_message_id"] == outbound_message_id
-        assert latest_targets[0]["latest_sender"] == {
-            "id": None,
-            "name": AGENT_NAMES[AGENT_A_ID],
-            "display_name": None,
-        }
 
         post_send_check = await LocalCommandClient.request(node.endpoint, request)
         post_send_result = cast(Mapping[str, object], post_send_check["result"])

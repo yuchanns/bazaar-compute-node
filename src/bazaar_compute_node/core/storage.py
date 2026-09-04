@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
-from uuid import uuid7
 
 from .command import (
     InboxListResult,
@@ -13,7 +12,6 @@ from .command import (
     OutboundFreshnessPass,
     SessionNotFoundError,
     TargetProjection,
-    render_handoff_message_body,
 )
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
@@ -30,9 +28,6 @@ from .models import (
     Reminder,
     ReminderState,
     RuntimeAttempt,
-    SenderIdentity,
-    SenderKind,
-    SystemMessageKind,
 )
 
 
@@ -79,12 +74,6 @@ class MaterializeOutboundResult:
     target_session: BcnSession
     reply_to_provider_message_id: str | None
     outcome: Message[OutboundAttachment] | MessageSendFreshnessHold
-
-
-@dataclass(frozen=True, slots=True)
-class FinalizeOutboundResult:
-    outbound: Message[OutboundAttachment]
-    handoff_message: Message[InboundAttachment] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,15 +380,6 @@ class StorageOperationMixin:
             if reply_message is not None and reply_message.target == payload.target:
                 reply_to_message_id = payload.reply_to_message_id
                 reply_to_provider_message_id = reply_message.provider_message_id
-        cross_session = source_target_id != target_id
-        metadata: dict[str, object] = {}
-        if cross_session:
-            metadata = {
-                "source_target_id": source_target_id,
-                "target_id": target_id,
-                "source_message_id": payload.source_message_id,
-                "handoff_message_id": str(uuid7()),
-            }
         outcome = await self.save_message(
             Message(
                 direction=MessageDirection.OUTBOUND,
@@ -416,7 +396,6 @@ class StorageOperationMixin:
                 created_at_ms=payload.created_at_ms,
                 provider_attempted_at_ms=attempted_at_ms,
                 reply_to_message_id=reply_to_message_id,
-                metadata=metadata,
             )
         )
         return MaterializeOutboundResult(
@@ -429,68 +408,9 @@ class StorageOperationMixin:
     async def finalize_outbound_delivery(
         self,
         outbound: Message[OutboundAttachment],
-    ) -> FinalizeOutboundResult:
+    ) -> Message[OutboundAttachment]:
         self = _operations(self)  # noqa: PLW0642
-        outbound = await self.save_message(outbound)
-        if outbound.delivery_state not in {
-            OutboundDeliveryState.SENT,
-            OutboundDeliveryState.QUEUED,
-        }:
-            return FinalizeOutboundResult(outbound=outbound, handoff_message=None)
-        source_target_id = outbound.metadata.get("source_target_id")
-        if not isinstance(source_target_id, str):
-            return FinalizeOutboundResult(outbound=outbound, handoff_message=None)
-        source_message_id = str(outbound.metadata["source_message_id"])
-        handoff_message_id = str(outbound.metadata["handoff_message_id"])
-        source_message = await self.resolve_message(
-            source_target_id,
-            source_message_id,
-            direction=MessageDirection.INBOUND,
-        )
-        if source_message is None:
-            raise ValueError("Handoff source context is missing")
-        channel_session = await self.get_channel_session(outbound.channel_session_id)
-        if channel_session is None:
-            raise ValueError(f"unknown channel session: {outbound.channel_session_id}")
-        delivered_at_ms = outbound.completed_at_ms or outbound.provider_attempted_at_ms
-        if delivered_at_ms is None:
-            raise RuntimeError("delivered outbound message has no delivery time")
-        candidate = Message[InboundAttachment](
-            direction=MessageDirection.INBOUND,
-            seq=0,
-            message_id=handoff_message_id,
-            session_id=outbound.session_id,
-            channel_session_id=outbound.channel_session_id,
-            channel=channel_session.channel,
-            provider_thread_id=channel_session.provider_thread_id,
-            received_at_ms=delivered_at_ms,
-            sender=SenderIdentity(id="system", name="system"),
-            target=outbound.target,
-            target_kind=channel_session.target_kind,
-            body=render_handoff_message_body(
-                source_message.target, outbound.message_id
-            ),
-            notifies_runtime=True,
-            metadata={
-                "sender_kind": SenderKind.SYSTEM.value,
-                "system_message_kind": SystemMessageKind.HANDOFF.value,
-                "system_message_source_target": source_message.target,
-                "system_message_source_message_id": source_message.message_id,
-                "system_message_outbound_message_id": outbound.message_id,
-            },
-        )
-        existing = await self.get_message(handoff_message_id)
-        if existing is not None:
-            comparable = replace(existing, seq=0)
-            if comparable != candidate:
-                raise ValueError("Handoff system message identity cannot change")
-            handoff_message = existing
-        else:
-            handoff_message = await self.save_message(candidate)
-        return FinalizeOutboundResult(
-            outbound=outbound,
-            handoff_message=handoff_message,
-        )
+        return await self.save_message(outbound)
 
 
 async def _referenced_messages(
@@ -593,7 +513,7 @@ class _StorageOperations(Protocol):
     async def finalize_outbound_delivery(
         self,
         outbound: Message[OutboundAttachment],
-    ) -> FinalizeOutboundResult: ...
+    ) -> Message[OutboundAttachment]: ...
 
     async def find_channel_session(
         self, *, channel: str, provider_thread_id: str

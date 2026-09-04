@@ -149,13 +149,6 @@ class ThreadUnfollowResult:
     changed: bool
 
 
-def render_handoff_message_body(source_target: str, outbound_message_id: str) -> str:
-    return (
-        f"🤝 Handoff from {source_target} — message {outbound_message_id} "
-        "was sent here from that conversation."
-    )
-
-
 class SessionNotFoundError(ValueError):
     """A command referenced a bcn session that is not persisted on this node."""
 
@@ -176,16 +169,6 @@ class ICommandService(Protocol):
         limit: int = 100,
     ) -> MessageReadResult:
         """Read history without advancing the delivery cursor."""
-        ...
-
-    async def list_inbox(
-        self,
-        caller_session_id: str,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> InboxListResult:
-        """List owned message targets without draining or changing inbox state."""
         ...
 
     async def send(

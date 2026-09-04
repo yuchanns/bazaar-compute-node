@@ -53,7 +53,6 @@ class SenderKind(StrEnum):
 
 class SystemMessageKind(StrEnum):
     REMINDER = "reminder"
-    HANDOFF = "handoff"
 
 
 class ReminderState(StrEnum):

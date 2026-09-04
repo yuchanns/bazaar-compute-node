@@ -19,7 +19,7 @@ def render_help(path: tuple[str, ...]) -> str:
 @pytest.mark.parametrize(
     ("path", "expected"),
     (
-        ((), ("Commands:", "message", "inbox", "thread", "reminder")),
+        ((), ("Commands:", "message", "thread", "reminder")),
         (("message",), ("Message operations", "check", "read", "send")),
         (
             ("message", "check"),
@@ -32,11 +32,6 @@ def render_help(path: tuple[str, ...]) -> str:
         (
             ("message", "send"),
             ("body is read from stdin", "--attachment <path>"),
-        ),
-        (("inbox",), ("Inbox discovery operations", "list")),
-        (
-            ("inbox", "list"),
-            ("List available message targets", "--limit <n>", "--offset <n>"),
         ),
         (("thread",), ("Thread attention operations", "unfollow")),
         (("thread", "unfollow"), ("--target <target>",)),

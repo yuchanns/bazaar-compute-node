@@ -19,7 +19,6 @@ from pydantic import (
 
 from ..core.command import (
     ICommandService,
-    InboxListResult,
     MessageSendFreshnessHold,
     SessionNotFoundError,
     TargetProjection,
@@ -163,16 +162,6 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
     }
 
 
-def serialize_inbox_list(result: InboxListResult) -> dict[str, object]:
-    return {
-        "targets": [serialize_inbox_target(target) for target in result.targets],
-        "total": result.total,
-        "shown": result.shown,
-        "offset": result.offset,
-        "has_more": result.has_more,
-    }
-
-
 class CommandDispatchError(ValueError):
     def __init__(
         self,
@@ -230,13 +219,6 @@ class _MessageSendRequest(_CommandRequest):
     )
 
 
-class _InboxListRequest(_CommandRequest):
-    resource: Literal["inbox"]
-    command: Literal["list"]
-    limit: PositiveInt = 100
-    offset: NonNegativeInt = 0
-
-
 class _ThreadUnfollowRequest(_CommandRequest):
     resource: Literal["thread"]
     command: Literal["unfollow"]
@@ -249,7 +231,6 @@ _REQUEST_MODELS: dict[tuple[str, str], _RequestModel] = {
     ("message", "check"): _MessageCheckRequest,
     ("message", "read"): _MessageReadRequest,
     ("message", "send"): _MessageSendRequest,
-    ("inbox", "list"): _InboxListRequest,
     ("thread", "unfollow"): _ThreadUnfollowRequest,
 }
 
@@ -491,10 +472,6 @@ class CommandDispatcher:
                 return await self._send_message(
                     session_id, cast(_MessageSendRequest, request)
                 )
-            case ("inbox", "list"):
-                return await self._list_inbox(
-                    session_id, cast(_InboxListRequest, request)
-                )
             case ("thread", "unfollow"):
                 return await self._unfollow_thread(
                     session_id, cast(_ThreadUnfollowRequest, request)
@@ -580,16 +557,6 @@ class CommandDispatcher:
             }
         )
         return {"ok": True, "result": {"text": text}}
-
-    async def _list_inbox(
-        self, session_id: str, request: _InboxListRequest
-    ) -> Mapping[str, object]:
-        result = await self._service.list_inbox(
-            session_id,
-            limit=request.limit,
-            offset=request.offset,
-        )
-        return {"ok": True, "result": serialize_inbox_list(result)}
 
     async def _unfollow_thread(
         self, session_id: str, request: _ThreadUnfollowRequest

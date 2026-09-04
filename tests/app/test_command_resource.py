@@ -142,7 +142,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
         assert thread_collision["ok"] is False
         assert thread_collision["code"] == "UNKNOWN_COMMAND"
 
-        inbox_collision = await dispatcher(
+        inbox_resource = await dispatcher(
             {
                 "kind": "command",
                 "resource": "inbox",
@@ -150,8 +150,8 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
                 "session_id": "bcn-a",
             }
         )
-        assert inbox_collision["ok"] is False
-        assert inbox_collision["code"] == "UNKNOWN_COMMAND"
+        assert inbox_resource["ok"] is False
+        assert inbox_resource["code"] == "UNKNOWN_RESOURCE"
 
         unknown_resource = await dispatcher(
             {

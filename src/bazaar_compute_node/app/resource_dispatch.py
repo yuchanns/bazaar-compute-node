@@ -291,8 +291,6 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     f"unsupported thread command: {command}",
                 )
             return await super()._dispatch_command(raw_request)
-        if resource == "inbox":
-            return await super()._dispatch_command(raw_request)
         if resource == "node":
             upgrade_service = self._upgrade_service
             if upgrade_service is None:

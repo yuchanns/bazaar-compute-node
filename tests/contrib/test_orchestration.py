@@ -95,7 +95,7 @@ from bazaar_compute_node.core.runtime import (
     Runtime,
     RuntimeCommandContext,
 )
-from bazaar_compute_node.core.storage import IStorage
+from bazaar_compute_node.core.storage import InboxTargetResolutionError, IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import (
     ENGLISH,
@@ -148,7 +148,7 @@ def make_message(
     provider_message_id = f"provider-{session_id}-{seq}"
     sender = SenderIdentity(id="sender-id", name="Sender")
     if sender_kind == SenderKind.SYSTEM.value:
-        metadata["system_message_kind"] = SystemMessageKind.HANDOFF.value
+        metadata["system_message_kind"] = SystemMessageKind.REMINDER.value
         provider_message_id = None
         sender = SenderIdentity(name="system")
     return Message(
@@ -929,7 +929,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_scoped_read_returns_target_messages() -> None:
+async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
     orchestrator, _, _, storage, _ = await make_sqlite_node()
     caller_id = "bcn-caller"
     target_session_id = "bcn-target"
@@ -950,7 +950,7 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
 
     try:
         history = await orchestrator.command_service.read(
-            caller_id,
+            target_session_id,
             raw_target=target_reply.target,
             around_message_id=target_reply.message_id,
             limit=1,
@@ -962,6 +962,14 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
             target_parent.message_id
         ]
         assert history.messages[0].target == target_reply.target
+
+        # another conversation's history belongs to whoever answers for it
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.read(
+                caller_id,
+                raw_target=target_reply.target,
+                limit=1,
+            )
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=2)
@@ -1652,15 +1660,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
                 target_presentation=ChannelTargetPresentation(handle="Alice"),
             )
         )
-        inbox = await orchestrator.command_service.list_inbox("readable-dm")
-        for summary in inbox.targets:
-            target = await repository.resolve_inbox_target(summary.target)
-            assert target.bcn_session.id == summary.session_id, case
-        assert any(summary.target == "dm:@Alice" for summary in inbox.targets), case
-        assert any(
-            summary.target == lark_target.display_target for summary in inbox.targets
-        ), case
-
         case = "check and read headers use the current display projection"
         checked = await orchestrator.command_service.check("readable-dm")
         checked_payload = serialize_message(
@@ -1705,30 +1704,16 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         held_payload = serialize_message(held.messages[-1], held.target_projections)
         assert held_payload["target"] == "dm:@Alice", case
 
-        case = "handoff guidance and unfollow return current display targets"
+        case = "another conversation is out of reach, and unfollow still names it"
         await orchestrator.command_service.check("readable-dm")
-        delivered = await orchestrator.command_service.send(
-            session_id="readable-dm",
-            command_id="readable-target-handoff",
-            raw_target=lark_target.display_target,
-            body="Cross-session readable target reply",
-            created_at_ms=6,
-        )
-        assert isinstance(delivered, MessageSendSuccess), case
-        assert delivered.target == lark_target.display_target, case
-        handoff = await orchestrator.command_service.check(lark_target.bcn_session.id)
-        handoff_message = next(
-            message
-            for message in handoff.messages
-            if message.system_message_kind is SystemMessageKind.HANDOFF
-        )
-        handoff_payload = serialize_message(
-            handoff_message,
-            handoff.target_projections,
-        )
-        assert 'bcc message read --target "dm:@Alice"' in format_check_message(
-            handoff_payload
-        ), case
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.send(
+                session_id="readable-dm",
+                command_id="readable-target-out-of-reach",
+                raw_target=lark_target.display_target,
+                body="reply",
+                created_at_ms=6,
+            )
         await repository.save_channel_session(
             replace(lark_target.channel_session, following=True)
         )
@@ -1859,9 +1844,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
 
 @pytest.mark.asyncio
-async def test_send_delivers_cross_session_and_preserves_provider_delivery_states() -> (
-    None
-):
+async def test_send_preserves_provider_delivery_states() -> None:
     orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
@@ -1881,42 +1864,33 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         await orchestrator._record_inbound(target_anchor)
         await orchestrator.command_service.check("bcn-1")
 
-        cross_session_target = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-cross-session-target",
-            raw_target="dm:channel-bcn-other",
-            body="reply",
-            created_at_ms=2,
-            reply_to_message_id=target_anchor.message_id,
-        )
-        assert isinstance(cross_session_target, MessageSendSuccess)
-        cross_session_target = cross_session_target.message
-        assert cross_session_target.session_id == "bcn-other"
-        assert cross_session_target.delivery_state is OutboundDeliveryState.SENT
-        assert channel.send_attempts[-1].session_id == "bcn-other"
-        assert channel.send_attempts[-1].provider_reply_to_message_id == (
-            target_anchor.provider_message_id
-        )
-        target_messages = _stored_messages(storage, "bcn-other")
-        handoff_message = target_messages[-1]
-        assert handoff_message.system_message_kind is SystemMessageKind.HANDOFF
-        assert handoff_message.metadata["system_message_outbound_message_id"] == (
-            cross_session_target.message_id
-        )
-        assert cross_session_target.message_id in handoff_message.body
-        assert handoff_message.metadata["system_message_source_target"] == (
-            "dm:channel-bcn-1"
-        )
-        assert any(
-            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
-        )
+        # another conversation is answered by another actor, and nothing here
+        # reaches it
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.send(
+                session_id="bcn-1",
+                command_id="command-other-conversation",
+                raw_target="dm:channel-bcn-other",
+                body="reply",
+                created_at_ms=2,
+                reply_to_message_id=target_anchor.message_id,
+            )
+        assert not [
+            message
+            for message in _stored_messages(
+                storage,
+                "bcn-other",
+                direction=MessageDirection.OUTBOUND,
+            )
+        ]
+
         unusable_reply = await orchestrator.command_service.send(
             session_id="bcn-1",
-            command_id="command-cross-session-invalid-reply",
-            raw_target="dm:channel-bcn-other",
+            command_id="command-invalid-reply",
+            raw_target="dm:channel-bcn-1",
             body="invalid reply",
             created_at_ms=3,
-            reply_to_message_id=make_message(seq=1).message_id,
+            reply_to_message_id=make_message(seq=9).message_id,
         )
         assert isinstance(unusable_reply, MessageSendSuccess)
         assert unusable_reply.message.delivery_state is OutboundDeliveryState.SENT
@@ -1924,48 +1898,26 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         # falling back to a non-reply send must not persist the reply pointer,
         # or reading the target's history would keep hitting a dangling id
         assert unusable_reply.message.reply_to_message_id is None
-        readable = await orchestrator.command_service.read(
-            session_id="bcn-1",
-            raw_target="dm:channel-bcn-other",
-            limit=10,
-        )
         assert any(
-            message.message_id == unusable_reply.message.message_id
-            for message in readable.messages
+            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
+
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_rejected",
-                error_message="provider rejected cross-session delivery",
+                error_message="provider rejected delivery",
             )
         )
-        failed_cross_session = await orchestrator.command_service.send(
+        failed = await orchestrator.command_service.send(
             session_id="bcn-1",
-            command_id="command-cross-session-failed",
-            raw_target="dm:channel-bcn-other",
-            body="failed cross-session reply",
+            command_id="command-failed",
+            raw_target="dm:channel-bcn-1",
+            body="failed reply",
             created_at_ms=3,
         )
-        assert isinstance(failed_cross_session, MessageSendSuccess)
-        failed_cross_session = failed_cross_session.message
-        assert failed_cross_session.delivery_state is OutboundDeliveryState.FAILED
-        assert (
-            sum(
-                message.system_message_kind is SystemMessageKind.HANDOFF
-                for message in _stored_messages(storage, "bcn-other")
-            )
-            == 2
-        )
-        with pytest.raises(ValueError, match="another target"):
-            await orchestrator.command_service.send(
-                session_id="bcn-1",
-                command_id="command-cross-session-wrong-draft-target",
-                raw_target="dm:channel-bcn-1",
-                body="",
-                created_at_ms=3,
-                send_draft=True,
-            )
+        assert isinstance(failed, MessageSendSuccess)
+        assert failed.message.delivery_state is OutboundDeliveryState.FAILED
         cross_session_attempt_count = len(channel.send_attempts)
 
         await orchestrator.command_service.check("bcn-1")
@@ -2003,7 +1955,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         queued = queued.message
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[3]]
+        assert channel.queued_messages == [channel.send_attempts[-1]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -2092,8 +2044,14 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         failed = failed.message
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 7
-        assert len(channel.sent_messages) == 2
+        assert len(channel.send_attempts) == 6
+        assert len(channel.sent_messages) == 1
+        # a delivered message leaves nothing behind in any conversation
+        assert not [
+            message
+            for message in _stored_message_index(storage).values()
+            if message.system_message_kind is not None
+        ]
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )

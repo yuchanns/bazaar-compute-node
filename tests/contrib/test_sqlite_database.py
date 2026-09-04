@@ -56,7 +56,7 @@ from bazaar_compute_node.core.timerwheel import TimerWheel
 
 
 @pytest.mark.asyncio
-async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> None:
+async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
     database = SqliteDatabase()
     await database.start(timeout=2)
     try:
@@ -219,52 +219,37 @@ async def test_sqlite_persists_outbound_and_idempotent_handoff_finalize() -> Non
                 direction=MessageDirection.OUTBOUND,
             )
         )
-        cross_pending = await scope.save_message(
+        pending = await scope.save_message(
             Message(
                 direction=MessageDirection.OUTBOUND,
                 seq=0,
-                message_id="outbound-cross",
-                command_id="command-cross",
+                message_id="outbound-target",
+                command_id="command-target",
                 session_id=target_session.id,
                 channel_session_id=target_channel.id,
                 target="dm:channel-target",
-                body="cross-session payload",
+                body="reply",
                 delivery_state=OutboundDeliveryState.PENDING,
                 created_at_ms=11,
                 provider_attempted_at_ms=12,
-                metadata={
-                    "source_target_id": source_session.id,
-                    "target_id": target_session.id,
-                    "source_message_id": source_message.message_id,
-                    "handoff_message_id": ("018f0000-0000-7000-8000-000000000011"),
-                },
             )
         )
-        cross_sent = cross_pending.transition_to(
+        sent = pending.transition_to(
             OutboundDeliveryState.SENT,
             at_ms=13,
-            provider_message_id="provider-cross",
+            provider_message_id="provider-target",
         )
-        first_finalize = await scope.finalize_outbound_delivery(cross_sent)
-        second_finalize = await scope.finalize_outbound_delivery(cross_sent)
+        first_finalize = await scope.finalize_outbound_delivery(sent)
+        second_finalize = await scope.finalize_outbound_delivery(sent)
         target_history = await scope.read_message_history(
-            source_session.id,
+            target_session.id,
             raw_target="dm:channel-target",
-            around_message_id=cross_pending.message_id,
+            around_message_id=pending.message_id,
             limit=10,
         )
 
         assert first_finalize == second_finalize
-        assert first_finalize.handoff_message is not None
-        assert (
-            first_finalize.handoff_message.system_message_kind
-            is SystemMessageKind.HANDOFF
-        )
-        assert first_finalize.outbound.message_id in first_finalize.handoff_message.body
-        assert target_history.history.messages == (
-            first_finalize.outbound,
-            first_finalize.handoff_message,
-        )
+        assert target_history.history.messages == (first_finalize,)
     finally:
         await database.stop(timeout=2)
 

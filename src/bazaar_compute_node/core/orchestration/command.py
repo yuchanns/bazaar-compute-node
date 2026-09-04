@@ -6,16 +6,15 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
-from ..actor import Actors
+from ..actor import Actors, Agent, Thread
 from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
-    InboxListResult,
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
@@ -28,7 +27,6 @@ from ..concurrency import ISessionConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
-    InboundAttachment,
     Message,
     MessageDirection,
     OutboundAttachment,
@@ -36,7 +34,12 @@ from ..models import (
     RuntimeEventState,
 )
 from ..outcomes import OutboundDeliveryResult
-from ..storage import IStorage, MaterializeOutboundResult, ResolvedInboxTarget
+from ..storage import (
+    InboxTargetResolutionError,
+    IStorage,
+    MaterializeOutboundResult,
+    ResolvedInboxTarget,
+)
 from .delivery import OutboundDeliveryService
 from .services import SessionAuditRecorder
 
@@ -137,7 +140,6 @@ class SessionCommandService(ICommandService):
         concurrency: ISessionConcurrency,
         workspace: Callable[[], Path],
         clock: Callable[[], int],
-        publish_wake: Callable[[Message[InboundAttachment]], Awaitable[None]],
     ) -> None:
         self._actors = actors
         self._delivery = delivery
@@ -146,7 +148,6 @@ class SessionCommandService(ICommandService):
         self._concurrency = concurrency
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
-        self._publish_wake = publish_wake
         self._drafts: dict[str, MessageDraft] = {}
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
@@ -181,6 +182,7 @@ class SessionCommandService(ICommandService):
             around_message_id=around_message_id,
             limit=limit,
         )
+        self._require_in_reach(session_id, snapshot.source_session.id, raw_target)
         result = snapshot.history
         if snapshot.source_session.id == session_id:
             self._observe_freshness(session_id, result.snapshot_seq)
@@ -199,30 +201,23 @@ class SessionCommandService(ICommandService):
         )
         return result
 
-    async def list_inbox(
+    def _require_in_reach(
         self,
-        caller_session_id: str,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> InboxListResult:
-        result = await self._storage.read_inbox_catalog(
-            caller_session_id,
-            limit=limit,
-            offset=offset,
-        )
-        await self._audit.append_tool(
-            operation="bcc.inbox.list",
-            status="completed",
-            state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(session_id=caller_session_id),
-            arguments={
-                "caller_session_id": caller_session_id,
-                "limit": limit,
-                "offset": offset,
-            },
-        )
-        return result
+        session_id: str,
+        target_session_id: str,
+        raw_target: str,
+    ) -> None:
+        """Refuse a target the actor behind this command does not answer for."""
+
+        match self._actors.for_thread(session_id):
+            case Agent():
+                return
+            case Thread(id) if id == target_session_id:
+                return
+            case Thread():
+                raise InboxTargetResolutionError(
+                    f"inbox target is not this conversation: {raw_target}"
+                )
 
     async def _stage_draft(
         self,
@@ -393,10 +388,7 @@ class SessionCommandService(ICommandService):
         target_session_id: str,
         expected_source_seq: int,
         payload: MessageDraft,
-    ) -> (
-        tuple[Message[OutboundAttachment], Message[InboundAttachment] | None]
-        | MessageSendFreshnessHold
-    ):
+    ) -> Message[OutboundAttachment] | MessageSendFreshnessHold:
         """Hand the message to its channel and record what the channel made of it."""
 
         canonical_target = target.canonical_target
@@ -442,9 +434,7 @@ class SessionCommandService(ICommandService):
                 delivery_result.state,
                 (ErrorKind.PROVIDER_UNKNOWN, RuntimeEventState.UNKNOWN),
             )
-            finalized = await self._storage.finalize_outbound_delivery(outbound)
-            outbound = finalized.outbound
-            handoff_message = finalized.handoff_message
+            outbound = await self._storage.finalize_outbound_delivery(outbound)
             delivery_state = outbound.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
@@ -467,7 +457,7 @@ class SessionCommandService(ICommandService):
                 terminal_kind=terminal_kind,
                 terminal_state=terminal_state,
             )
-            return outbound, handoff_message
+            return outbound
 
     async def send(
         self,
@@ -483,6 +473,7 @@ class SessionCommandService(ICommandService):
     ) -> MessageSendResult:
         target = await self._storage.resolve_inbox_target(raw_target)
         target_session = target.bcn_session
+        self._require_in_reach(session_id, target_session.id, raw_target)
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths and not send_draft
@@ -520,15 +511,7 @@ class SessionCommandService(ICommandService):
         )
         if isinstance(delivered, MessageSendFreshnessHold):
             return delivered
-        outbound, handoff_message = delivered
-        if handoff_message is not None:
-            try:
-                await self._publish_wake(handoff_message)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self._logger.exception("Handoff inbox wake could not be published")
-        return MessageSendSuccess(message=outbound, target=target.display_target)
+        return MessageSendSuccess(message=delivered, target=target.display_target)
 
     def _observe_freshness(self, session_id: str, seq: int) -> None:
         previous = self._freshness_snapshots.get(session_id)

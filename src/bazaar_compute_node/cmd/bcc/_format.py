@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 from ... import __distribution__
 from ...app.command import (
     format_check_message,
-    format_message_time,
     format_read_message,
 )
 from ...core.reminder import format_utc_timestamp
@@ -37,8 +36,6 @@ def print_error(error: BccCommandError) -> None:
     )
 
 
-_INBOX_TARGET = TextTemplate.from_resource("bcc/inbox_target.tpl")
-_INBOX_LIST = TextTemplate.from_resource("bcc/inbox_list.tpl")
 _CHECK = TextTemplate.from_resource("bcc/check.tpl")
 _READ = TextTemplate.from_resource("bcc/read.tpl")
 _UNFOLLOW = TextTemplate.from_resource("bcc/unfollow.tpl")
@@ -52,61 +49,6 @@ _ERROR = TextTemplate.from_resource("bcc/error.tpl")
 
 # `bcc upgrade` reads better than `bcc node upgrade`, so the command line name
 # and the resource it addresses differ here
-
-
-def _format_inbox_target(summary: Mapping[str, object]) -> str:
-    latest_message_id = cast(str | None, summary["latest_message_id"])
-    latest_sender = cast(
-        Mapping[str, object] | None,
-        summary.get("latest_sender"),
-    )
-    latest_time_ms = cast(int | None, summary["latest_time_ms"])
-    return _INBOX_TARGET.render(
-        {
-            "target": cast(str, summary["target"]),
-            "session_id": cast(str, summary["session_id"]),
-            "target_kind": cast(str, summary["target_kind"]),
-            "current": str(cast(bool, summary["current"])).lower(),
-            "pending_count": cast(int, summary["pending_count"]),
-            "latest_message_id": latest_message_id,
-            "latest_sender_id": (
-                cast(str | None, latest_sender.get("id"))
-                if latest_sender is not None
-                else None
-            ),
-            "latest_sender_name": (
-                cast(str | None, latest_sender.get("name"))
-                if latest_sender is not None
-                else None
-            ),
-            "latest_sender_display_name": (
-                cast(str | None, latest_sender.get("display_name"))
-                if latest_sender is not None
-                else None
-            ),
-            "latest_time": (
-                format_message_time(latest_time_ms)
-                if latest_time_ms is not None
-                else None
-            ),
-        }
-    )
-
-
-def serialize_inbox_list(result: Mapping[str, object]) -> str:
-    targets = cast(list[Mapping[str, object]], result["targets"])
-    shown = cast(int, result["shown"])
-    offset = cast(int, result["offset"])
-    return _INBOX_LIST.render(
-        {
-            "shown": shown,
-            "offset": offset,
-            "total": cast(int, result["total"]),
-            "has_more": cast(bool, result["has_more"]),
-            "next_offset": offset + shown,
-            "target_lines": [_format_inbox_target(target) for target in targets],
-        }
-    )
 
 
 def serialize_check(result: Mapping[str, object]) -> str:

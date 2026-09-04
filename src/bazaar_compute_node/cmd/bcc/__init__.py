@@ -7,7 +7,6 @@ import click
 
 from ._client import BccCommandError
 from ._format import print_error
-from .inbox import inbox
 from .message import message
 from .node import node
 from .reminder import reminder
@@ -29,7 +28,7 @@ from .thread import thread
 def bcc() -> None: ...
 
 
-for group in (message, inbox, thread, reminder):
+for group in (message, thread, reminder):
     bcc.add_command(group)
 
 # Windows has nothing that brings the node back after an upgrade exits it, so

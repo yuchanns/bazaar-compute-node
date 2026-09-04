@@ -214,7 +214,6 @@ class SessionOrchestrator(IAsyncLifecycle):
             concurrency=self._concurrency,
             workspace=workspace,
             clock=self._clock,
-            publish_wake=self.publish_inbox_wake,
         )
         self._turns = SessionTurnCoordinator(
             agent_id=actors.agent_id,
