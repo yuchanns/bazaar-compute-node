@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bazaar_compute_node.contrib.codex.approval import parse_approval_request
+from bazaar_compute_node.core.actor import Thread
 
 
 @pytest.mark.parametrize(
@@ -70,7 +71,7 @@ def test_parse_approval_request_collects_structured_details(
             "method": method,
             "params": params,
         },
-        session_id="session-1",
+        actor=Thread("session-1"),
         runtime_session_id="runtime-1",
         turn_id="turn-1",
         provider_thread_id="thread-1",

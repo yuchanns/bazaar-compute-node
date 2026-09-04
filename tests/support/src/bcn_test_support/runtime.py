@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from time import time_ns
 from typing import ClassVar
 
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.command import ICommandService
 from bazaar_compute_node.core.models import (
@@ -290,7 +291,7 @@ class TestRuntime(IRuntime):
             payload = TurnStarted(event_name=event_name)
         return RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=session.bcn_session_id,
+                actor=session.actor,
                 runtime_session_id=session.id,
                 turn_id=turn.turn_id,
                 provider_turn_id=f"test-provider-{turn.turn_id}",
@@ -308,7 +309,7 @@ class TestRuntime(IRuntime):
         self._update_seq += 1
         return RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=session_id or session.bcn_session_id,
+                actor=Thread(session_id) if session_id else session.actor,
                 runtime_session_id=session.id,
                 turn_id=turn.turn_id,
                 provider_turn_id=f"test-provider-{turn.turn_id}",
@@ -367,7 +368,7 @@ class _TestTurnStream(IRuntimeTurnStream):
                 raise RuntimeError("test runtime command service is not configured")
             await self.plan.command_script(
                 self.runtime.command_service,
-                self.session.bcn_session_id,
+                self.session.actor.id,
             )
         elif (
             not self.command_done
@@ -375,7 +376,7 @@ class _TestTurnStream(IRuntimeTurnStream):
             and self.runtime.default_command_runner is not None
         ):
             self.command_done = True
-            await self.runtime.default_command_runner(self.session.bcn_session_id)
+            await self.runtime.default_command_runner(self.session.actor.id)
         if self.plan.raise_error is not None and not self.error_raised:
             self.error_raised = True
             raise RuntimeError(self.plan.raise_error)

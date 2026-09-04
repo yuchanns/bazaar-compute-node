@@ -11,7 +11,7 @@ from bcn_test_support import (
     TestTurnPlan,
 )
 
-from bazaar_compute_node.core.actor import Actors, Mode
+from bazaar_compute_node.core.actor import Actors, Mode, Thread
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     Message,
@@ -168,7 +168,7 @@ def test_core_names_a_failure_the_runtime_left_unexplained() -> None:
     # a provider can end a turn as failed without an error object; which runtime
     # it was is ours to know, so the reason comes from core, not the adapter
     envelope = RuntimeEventEnvelope(
-        session_id="bcn-1",
+        actor=Thread("bcn-1"),
         runtime_session_id="runtime-1",
         turn_id="turn-1",
         occurred_at_ms=1,

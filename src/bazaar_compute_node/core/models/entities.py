@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 from string import hexdigits
 from typing import Self, cast
 
+from ..actor import Actor
 from .states import (
     ApprovalDecision,
     ChannelTargetKind,
@@ -97,8 +98,7 @@ class BcnSession:
 @dataclass(frozen=True, slots=True)
 class RuntimeSession:
     id: str
-    bcn_session_id: str
-    channel_session_id: str
+    actor: Actor
     runtime: str
     runtime_index: int
     workspace_id: str
@@ -438,7 +438,7 @@ class ConsumerCursor:
 @dataclass(frozen=True, slots=True)
 class ApprovalRequest:
     request_id: str
-    session_id: str
+    actor: Actor
     runtime_session_id: str
     action: str
     created_at_ms: int

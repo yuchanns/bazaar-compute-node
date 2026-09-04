@@ -61,6 +61,7 @@ from bazaar_compute_node.contrib.lark.transport import (
     LarkAck,
     LarkTransport,
 )
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -713,7 +714,7 @@ def test_lark_terminal_releases_stream_route(tmp_path: Path) -> None:
     channel.accept_turn_event(
         RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=session_id,
+                actor=Thread(session_id),
                 runtime_session_id="runtime-session-1",
                 turn_id="turn-1",
                 provider_turn_id=None,
@@ -770,7 +771,7 @@ def _typing_channel(tmp_path: Path, api: _ReactionApi) -> LarkChannel:
 def _tool_call_event(session_id: str) -> RuntimeOutputEvent:
     return RuntimeOutputEvent(
         envelope=RuntimeEventEnvelope(
-            session_id=session_id,
+            actor=Thread(session_id),
             runtime_session_id="runtime-session-1",
             turn_id="turn-1",
             provider_turn_id=None,
@@ -827,7 +828,7 @@ async def test_lark_terminal_takes_the_typing_marker_away(
     channel.accept_turn_event(
         RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=session_id,
+                actor=Thread(session_id),
                 runtime_session_id="runtime-session-1",
                 turn_id="turn-1",
                 provider_turn_id=None,
@@ -849,7 +850,7 @@ def test_lark_approval_card_contract() -> None:
     request = ChannelApprovalRequest(
         approval=ApprovalRequest(
             request_id="approval-1",
-            session_id="session-1",
+            actor=Thread("session-1"),
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,

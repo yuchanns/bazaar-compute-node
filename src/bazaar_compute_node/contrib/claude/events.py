@@ -9,6 +9,7 @@ from typing import Self, cast
 
 from pydantic import TypeAdapter
 
+from ...core.actor import Actor
 from ...core.models import (
     ContentDelta,
     ContentDeltaKind,
@@ -52,7 +53,7 @@ class TurnEventStream(IRuntimeTurnStream):
         self,
         inbox: TurnInbox,
         *,
-        session_id: str,
+        actor: Actor,
         runtime_session_id: str,
         turn_id: str,
         provider_thread_id: str,
@@ -65,7 +66,7 @@ class TurnEventStream(IRuntimeTurnStream):
         initial_error_kind: str = "provider_unknown",
     ) -> None:
         self._inbox = inbox
-        self._session_id = session_id
+        self._actor = actor
         self._runtime_session_id = runtime_session_id
         self._turn_id = turn_id
         self._provider_thread_id = provider_thread_id
@@ -527,7 +528,7 @@ class TurnEventStream(IRuntimeTurnStream):
     def _output_event(self, payload: RuntimeEventPayload) -> RuntimeOutputEvent:
         return RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=self._session_id,
+                actor=self._actor,
                 runtime_session_id=self._runtime_session_id,
                 turn_id=self._turn_id,
                 provider_turn_id=None,

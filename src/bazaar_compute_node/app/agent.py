@@ -156,8 +156,9 @@ class AgentApplication:
             raise ValueError("agent idle timeout exceeds the timer horizon")
         self._runtime_contexts = tuple(runtime_contexts)
         self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
+        self._actors = Actors(agent_id=self.agent_id, mode=configuration.mode)
         self.orchestrator = SessionOrchestrator(
-            actors=Actors(agent_id=self.agent_id, mode=configuration.mode),
+            actors=self._actors,
             channel=self.channel,
             runtimes=self.runtimes,
             storage=self.storage,
@@ -331,7 +332,9 @@ class AgentApplication:
                 "SESSION_NOT_FOUND",
                 f"unknown bcn session: {session_id}",
             )
-        runtime_session = self.orchestrator.runtime_session(session_id)
+        runtime_session = self.orchestrator.runtime_session(
+            self._actors.for_thread(session_id)
+        )
         if runtime_session is None or runtime_session_id != runtime_session.id:
             raise CommandDispatchError(
                 "SESSION_BINDING_FAILED",
@@ -358,11 +361,11 @@ class AgentApplication:
         runtime_index: int,
         session: RuntimeSession,
     ) -> Mapping[str, str]:
-        runtime_session = self.orchestrator.runtime_session(session.bcn_session_id)
+        runtime_session = self.orchestrator.runtime_session(session.actor)
         if runtime_session is None or runtime_session.id != session.id:
             raise RuntimeError("runtime session is not the current live binding")
         return self._build_command_environment(
-            session.bcn_session_id,
+            session.actor.id,
             session.id,
             runtime_index=runtime_index,
         )
@@ -465,7 +468,9 @@ class AgentApplication:
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((session_id, tuple(arguments)))
-        runtime_session = self.orchestrator.runtime_session(session_id)
+        runtime_session = self.orchestrator.runtime_session(
+            self._actors.for_thread(session_id)
+        )
         if runtime_session is None:
             raise RuntimeError("runtime session is not live")
         environment = self._build_command_environment(

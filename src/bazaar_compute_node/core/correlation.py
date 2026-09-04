@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .actor import Actor
+
 
 @dataclass(frozen=True, slots=True)
 class CorrelationContext:
@@ -11,6 +13,7 @@ class CorrelationContext:
     channel: str | None = None
     channel_session_id: str | None = None
     bcn_session_id: str | None = None
+    actor: Actor | None = None
     runtime_session_id: str | None = None
     turn_id: str | None = None
     request_id: str | None = None

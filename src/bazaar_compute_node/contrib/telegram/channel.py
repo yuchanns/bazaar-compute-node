@@ -336,11 +336,11 @@ class TelegramChannel(IChannel):
                 | UsageUpdated()
             ):
                 pass
-        identity = self._stream_routes.get(item.envelope.session_id)
+        identity = self._stream_routes.get(session_id)
         if identity is None or self._typing_runner is None:
             return
-        if item.envelope.session_id not in self._typing_leases:
-            self._typing_leases[item.envelope.session_id] = _TypingLease(
+        if session_id not in self._typing_leases:
+            self._typing_leases[session_id] = _TypingLease(
                 identity=identity,
                 next_due_at=0.0,
             )

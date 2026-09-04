@@ -60,6 +60,7 @@ from bazaar_compute_node.contrib.codex import (
 from bazaar_compute_node.contrib.codex import runtime as runtime_module
 from bazaar_compute_node.contrib.codex.plugin import create_runtime
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.approval import IApprovalHandler
 from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.client import CLIENT_INFO
@@ -148,7 +149,7 @@ class _NoopApprovalHandler(IApprovalHandler):
 def _turn_event_stream() -> TurnEventStream:
     return TurnEventStream(
         JsonlProcessSupervisor(JsonlProcessSpec(executable="unused")),
-        session_id="bcn-1",
+        actor=Thread("bcn-1"),
         runtime_session_id="runtime-1",
         turn_id="turn-1",
         provider_thread_id="thread-1",
@@ -729,8 +730,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
         id="runtime-missing-connection",
-        bcn_session_id="bcn-missing-connection",
-        channel_session_id="channel-missing-connection",
+        actor=Thread("bcn-missing-connection"),
         runtime="codex",
         runtime_index=0,
         workspace_id="workspace-missing-connection",
@@ -777,8 +777,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
         id="runtime-without-active-turn",
-        bcn_session_id="bcn-without-active-turn",
-        channel_session_id="channel-without-active-turn",
+        actor=Thread("bcn-without-active-turn"),
         runtime="codex",
         runtime_index=0,
         workspace_id="workspace-without-active-turn",
@@ -835,8 +834,7 @@ async def test_codex_runtime_stops_session(
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
         id="runtime-queued-stop",
-        bcn_session_id="bcn-queued-stop",
-        channel_session_id="channel-queued-stop",
+        actor=Thread("bcn-queued-stop"),
         runtime="codex",
         runtime_index=0,
         workspace_id="workspace-queued-stop",
@@ -893,8 +891,7 @@ async def test_windows_codex_runtime_assumes_background_job(
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
         id="runtime-windows-background-job",
-        bcn_session_id="bcn-windows-background-job",
-        channel_session_id="channel-windows-background-job",
+        actor=Thread("bcn-windows-background-job"),
         runtime="codex",
         runtime_index=0,
         workspace_id="workspace-windows-background-job",
@@ -938,8 +935,7 @@ async def test_codex_runtime_reports_background_job(
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
         id="runtime-background-job",
-        bcn_session_id="bcn-background-job",
-        channel_session_id="channel-background-job",
+        actor=Thread("bcn-background-job"),
         runtime="codex",
         runtime_index=0,
         workspace_id="workspace-background-job",
@@ -1206,7 +1202,7 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
         assert parse_turn_steer_response(steer_response) == provider_turn.turn_id
         stream = TurnEventStream(
             supervisor,
-            session_id="bcn-test",
+            actor=Thread("bcn-test"),
             runtime_session_id="session-test",
             turn_id="local-turn-1",
             provider_thread_id=thread_id,
@@ -1342,7 +1338,7 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         agent = node.agents[agent_id]
         assert isinstance(agent.runtimes[0], Runtime)
         runtime = agent.runtimes[0]
-        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
         assert await runtime.has_background_job(runtime_session, timeout=30)
 
@@ -1357,7 +1353,7 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
             session_id=scoped_session_id,
             event_name="runtime.process.stop.completed",
         )
-        assert agent.orchestrator.runtime_session(scoped_session_id) is None
+        assert agent.orchestrator.runtime_session(Thread(scoped_session_id)) is None
         assert not connection.supervisor.is_running
         assert connection.supervisor.returncode is not None
         with pytest.raises(ProcessLookupError):
@@ -1494,8 +1490,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
     agent_id = "agent-test"
     session = RuntimeSession(
         id=f"runtime-context-{uuid7()}",
-        bcn_session_id=f"bcn-context-{uuid7()}",
-        channel_session_id=f"channel-context-{uuid7()}",
+        actor=Thread(f"bcn-context-{uuid7()}"),
         runtime="codex",
         runtime_index=0,
         workspace_id=agent_id,
@@ -1619,8 +1614,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         now = time_ns() // 1_000_000
         first_session = RuntimeSession(
             id=f"runtime-first-{uuid7()}",
-            bcn_session_id=f"bcn-first-{uuid7()}",
-            channel_session_id=f"channel-first-{uuid7()}",
+            actor=Thread(f"bcn-first-{uuid7()}"),
             runtime="codex",
             runtime_index=0,
             workspace_id=agent_id,
@@ -1629,8 +1623,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         )
         second_session = RuntimeSession(
             id=f"runtime-second-{uuid7()}",
-            bcn_session_id=f"bcn-second-{uuid7()}",
-            channel_session_id=f"channel-second-{uuid7()}",
+            actor=Thread(f"bcn-second-{uuid7()}"),
             runtime="codex",
             runtime_index=0,
             workspace_id=agent_id,

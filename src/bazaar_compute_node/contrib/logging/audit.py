@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import fields
 
+from ...core.actor import Actor
 from ...core.audit import AuditEvent
 from ...core.observability import IAudit, LogLevel
 
@@ -34,7 +35,10 @@ class LoggingAudit(IAudit):
     async def append(self, event: AuditEvent, *, timeout: float) -> None:
         del timeout
         correlation = {
-            field.name: value
+            # an actor is a value on the way in and an id in the log line
+            f"{field.name}_id" if isinstance(value, Actor) else field.name: (
+                value.id if isinstance(value, Actor) else value
+            )
             for field in fields(event.correlation)
             if (value := getattr(event.correlation, field.name)) is not None
         }

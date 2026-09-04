@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from .actor import Actor
 from .approval import IApprovalHandler
 from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
@@ -167,7 +168,7 @@ class Runtime:
         self._runtimes = tuple(runtimes)
         self._clock = clock
         self._ban_until_ms: dict[int, int] = {}
-        self._holders: dict[str, int] = {}
+        self._holders: dict[Actor, int] = {}
 
     def all(self) -> tuple[IRuntime, ...]:
         return self._runtimes
@@ -203,16 +204,16 @@ class Runtime:
     def record_success(self, index: int) -> int | None:
         return self._ban_until_ms.pop(index, None)
 
-    def holder(self, session_id: str) -> int | None:
+    def holder(self, actor: Actor) -> int | None:
         """Return the runtime that currently holds one session's conversation."""
 
-        return self._holders.get(session_id)
+        return self._holders.get(actor)
 
-    def bind(self, session_id: str, index: int) -> None:
-        self._holders[session_id] = index
+    def bind(self, actor: Actor, index: int) -> None:
+        self._holders[actor] = index
 
-    def release(self, session_id: str) -> None:
-        self._holders.pop(session_id, None)
+    def release(self, actor: Actor) -> None:
+        self._holders.pop(actor, None)
 
     def release_all(self) -> None:
         self._holders.clear()

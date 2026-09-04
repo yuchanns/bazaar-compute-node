@@ -13,6 +13,7 @@ from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.identity import TelegramThreadIdentity
 from bazaar_compute_node.contrib.telegram.outbound import TelegramOutboundChannel
 from bazaar_compute_node.contrib.telegram.plugin import TelegramBuilder
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -198,7 +199,7 @@ async def test_telegram_real_provider_inline_approval(tmp_path: Path) -> None:
             ChannelApprovalRequest(
                 approval=ApprovalRequest(
                     request_id=request_id,
-                    session_id=f"session-{uuid4()}",
+                    actor=Thread(f"session-{uuid4()}"),
                     runtime_session_id=f"runtime-{uuid4()}",
                     action="command_execution",
                     created_at_ms=time_ns() // 1_000_000,

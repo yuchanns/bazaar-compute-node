@@ -246,7 +246,7 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
         )
         dispatcher.start_accepting()
         environment = application._build_command_environment(
-            session.bcn_session_id,
+            session.actor.id,
             session.id,
             runtime_index=0,
         )
@@ -258,7 +258,7 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
                     "resource": "node",
                     "command": "upgrade",
                     "agent_id": AGENT_ID,
-                    "session_id": session.bcn_session_id,
+                    "session_id": session.actor.id,
                     "runtime_session_id": session.id,
                     "session_capability": environment["BCN_COMMAND_CAPABILITY"],
                     "message_id": _anchor_message().message_id,
@@ -275,7 +275,7 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
         # case: the follow-up is durable, so the restart cannot lose it
         repository = cast(SqliteDatabase, node.storage).scope(AGENT_ID, "Test Agent")
         reminders = await repository.list_reminders(
-            session.bcn_session_id,
+            session.actor.id,
             frozenset({ReminderState.SCHEDULED}),
         )
         assert [reminder.reminder_id for reminder in reminders] == [
@@ -329,7 +329,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
         )
         dispatcher.start_accepting()
         environment = application._build_command_environment(
-            session.bcn_session_id,
+            session.actor.id,
             session.id,
             runtime_index=0,
         )
@@ -338,7 +338,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
             "resource": "node",
             "command": "upgrade",
             "agent_id": AGENT_ID,
-            "session_id": session.bcn_session_id,
+            "session_id": session.actor.id,
             "runtime_session_id": session.id,
             "session_capability": environment["BCN_COMMAND_CAPABILITY"],
             "message_id": _anchor_message().message_id,
@@ -356,7 +356,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
         assert restarts == []
         assert (
             await repository.list_reminders(
-                session.bcn_session_id,
+                session.actor.id,
                 frozenset({ReminderState.SCHEDULED}),
             )
             == ()

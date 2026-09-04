@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.command import InboxListResult
 from bazaar_compute_node.core.models import (
     BcnSession,
@@ -41,8 +42,7 @@ def make_bcn_session() -> BcnSession:
 def make_runtime_session() -> RuntimeSession:
     return RuntimeSession(
         id="runtime-1",
-        bcn_session_id="bcn-1",
-        channel_session_id="channel-1",
+        actor=Thread("bcn-1"),
         runtime="test",
         runtime_index=0,
         workspace_id="workspace-1",

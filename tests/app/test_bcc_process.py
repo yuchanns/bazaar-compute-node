@@ -311,7 +311,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         runtime_session = await _wait_for_runtime_session(runtimes[AGENT_A_ID])
         application = node.agents[AGENT_A_ID]
         environment = application._build_command_environment(
-            runtime_session.bcn_session_id,
+            runtime_session.actor.id,
             runtime_session.id,
             runtime_index=0,
         )
@@ -319,7 +319,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
             "kind": "command",
             "resource": "message",
             "command": "check",
-            "session_id": runtime_session.bcn_session_id,
+            "session_id": runtime_session.actor.id,
             "runtime_session_id": runtime_session.id,
             "session_capability": environment["BCN_COMMAND_CAPABILITY"],
         }
@@ -336,7 +336,7 @@ async def test_agent_capability_and_outbound_identity_are_scoped(
         storage = cast(SqliteDatabase, node.storage)
         repository = storage.scope(AGENT_A_ID, AGENT_NAMES[AGENT_A_ID])
         messages = await repository.list_messages(
-            runtime_session.bcn_session_id,
+            runtime_session.actor.id,
             direction=MessageDirection.INBOUND,
         )
         assert len(messages) == 1

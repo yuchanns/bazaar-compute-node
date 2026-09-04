@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
 
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     Channel,
     ChannelIdentity,
@@ -84,7 +85,7 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
     channel.accept_turn_event(
         RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=local_session_id,
+                actor=Thread(local_session_id),
                 runtime_session_id="runtime-1",
                 turn_id="turn-1",
                 provider_turn_id=None,
@@ -105,7 +106,7 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
         timeout=1,
     )
 
-    assert provider.events[0].envelope.session_id == "oc_abc"
+    assert provider.event_sessions[0] == "oc_abc"
     assert provider.send_attempts[0].session_id == "oc_abc"
 
 

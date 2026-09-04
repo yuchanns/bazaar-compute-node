@@ -25,7 +25,7 @@ class Thread:
     id: str
 
 
-type Actor = Agent | Thread
+Actor = Agent | Thread
 
 
 @dataclass(frozen=True, slots=True)

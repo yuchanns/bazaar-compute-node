@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 from ... import __distribution__
 from ...rendering import TextTemplate
+from ..actor import Actor
 from ..agent import Agent, State
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
@@ -61,7 +62,7 @@ type TurnPayload = (
 )
 
 
-type _Advance = Callable[[Agent, str], State]
+type _Advance = Callable[[Agent, Actor], State]
 
 
 def _runtime_event_advance(payload: TurnPayload) -> _Advance:
@@ -257,6 +258,10 @@ class SessionContext:
     bcn_session: BcnSession
     runtime_session: RuntimeSession
 
+    @property
+    def actor(self) -> Actor:
+        return self.runtime_session.actor
+
 
 class _ApprovalHandler:
     def __init__(
@@ -374,7 +379,7 @@ class SessionTurnCoordinator:
         request_id = request.request_id
         current_binding = ApprovalBinding(
             request_id=request_id,
-            bcn_session_id=context.bcn_session.id,
+            actor=context.actor,
             channel_session_id=context.channel_session.id,
             runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
@@ -510,6 +515,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.CANCELLED,
                 error_message="runtime turn cancelled",
                 correlation=turn_correlation,
+                actor=context.actor,
                 session_id=context.bcn_session.id,
             )
             raise
@@ -521,6 +527,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.PROVIDER_FAILED,
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
+                actor=context.actor,
                 session_id=context.bcn_session.id,
                 retry_available=retry_available,
             )
@@ -556,12 +563,12 @@ class SessionTurnCoordinator:
 
         observed_terminal = False
         async for event in stream:
-            if event.envelope.session_id != context.bcn_session.id:
+            if event.envelope.actor != context.actor:
                 self._logger.error(
-                    "runtime emitted event for another session",
+                    "runtime emitted event for another actor",
                     extra={
-                        "expected_session_id": context.bcn_session.id,
-                        "actual_session_id": event.envelope.session_id,
+                        "expected_actor_id": context.actor.id,
+                        "actual_actor_id": event.envelope.actor.id,
                     },
                 )
                 continue
@@ -633,6 +640,7 @@ class SessionTurnCoordinator:
                     error_kind=ErrorKind.PROVIDER_UNKNOWN,
                     error_message="runtime stream ended without a terminal event",
                     correlation=turn_correlation,
+                    actor=context.actor,
                     session_id=context.bcn_session.id,
                     retry_available=retry_available,
                 )
@@ -645,6 +653,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.CANCELLED,
                 error_message="runtime turn cancelled",
                 correlation=turn_correlation,
+                actor=context.actor,
                 session_id=context.bcn_session.id,
             )
             raise
@@ -656,6 +665,7 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.PROVIDER_FAILED,
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
+                actor=context.actor,
                 session_id=context.bcn_session.id,
                 retry_available=retry_available,
             )
@@ -709,7 +719,7 @@ class SessionTurnCoordinator:
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
 
-    def notify_terminal(self, turn: RuntimeTurn, session_id: str) -> None:
+    def notify_terminal(self, turn: RuntimeTurn, actor: Actor, session_id: str) -> None:
         """Announce a turn whose outcome only the orchestrator can settle."""
 
         self._notify_channel_terminal(
@@ -717,6 +727,7 @@ class SessionTurnCoordinator:
             turn.state,
             ErrorKind(turn.error_kind) if turn.error_kind else None,
             turn.error_message,
+            actor,
             session_id,
         )
 
@@ -726,6 +737,7 @@ class SessionTurnCoordinator:
         state: RuntimeTurnState,
         error_kind: ErrorKind | None,
         error_message: str | None,
+        actor: Actor,
         session_id: str,
     ) -> None:
         payload = _TERMINALS[state].payload(
@@ -736,7 +748,7 @@ class SessionTurnCoordinator:
             self._channel.accept_turn_event(
                 RuntimeOutputEvent(
                     envelope=RuntimeEventEnvelope(
-                        session_id=session_id,
+                        actor=actor,
                         runtime_session_id=turn.session_id,
                         turn_id=turn.turn_id,
                         provider_turn_id=turn.provider_turn_id,
@@ -757,10 +769,11 @@ class SessionTurnCoordinator:
         error_kind: ErrorKind | None,
         error_message: str | None,
         correlation: CorrelationContext | None,
+        actor: Actor,
         session_id: str,
         retry_available: bool = False,
     ) -> RuntimeTurn:
-        async with self._concurrency.for_session(session_id):
+        async with self._concurrency.for_session(actor.id):
             if turn.state in {
                 RuntimeTurnState.COMPLETED,
                 RuntimeTurnState.FAILED,
@@ -775,10 +788,10 @@ class SessionTurnCoordinator:
                 error_message=error_message,
             )
             self._turns.pop(turn.turn_id, None)
-            _TERMINALS[state].advance(self._agent, session_id)
+            _TERMINALS[state].advance(self._agent, actor)
         if not (retry_available and _TERMINALS[state].retryable):
             self._notify_channel_terminal(
-                turn, state, error_kind, error_message, session_id
+                turn, state, error_kind, error_message, actor, session_id
             )
         await self._audit.append(
             event_name=f"runtime.turn.{state.value}",
@@ -862,7 +875,7 @@ class SessionTurnCoordinator:
                 self._turns.pop(turn.turn_id, None)
             else:
                 self._turns[turn.turn_id] = updated_turn
-            advance(self._agent, context.bcn_session.id)
+            advance(self._agent, context.actor)
         try:
             audit_kind = ErrorKind(error_kind) if error_kind else None
         except ValueError:

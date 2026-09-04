@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from .actor import Actor
+
 
 class State(StrEnum):
     IDLE = "idle"
@@ -20,29 +22,29 @@ class Agent:
     next runtime to come up returns the Agent to rest.
     """
 
-    def __init__(self, states: dict[str, State]) -> None:
+    def __init__(self, states: dict[Actor, State]) -> None:
         self._states = states
 
-    def get(self, session_id: str) -> State:
-        return self._states.get(session_id, State.IDLE)
+    def get(self, actor: Actor) -> State:
+        return self._states.get(actor, State.IDLE)
 
-    def forget(self, session_id: str) -> None:
-        self._states.pop(session_id, None)
+    def forget(self, actor: Actor) -> None:
+        self._states.pop(actor, None)
 
-    def started_turn(self, session_id: str) -> State:
-        return self._enter(session_id, State.WORKING)
+    def started_turn(self, actor: Actor) -> State:
+        return self._enter(actor, State.WORKING)
 
-    def finished_turn(self, session_id: str) -> State:
-        return self._enter(session_id, State.IDLE)
+    def finished_turn(self, actor: Actor) -> State:
+        return self._enter(actor, State.IDLE)
 
-    def lost_runtime(self, session_id: str) -> State:
-        return self._enter(session_id, State.RECOVERING)
+    def lost_runtime(self, actor: Actor) -> State:
+        return self._enter(actor, State.RECOVERING)
 
-    def refused_runtime(self, session_id: str) -> State:
-        return self._enter(session_id, State.FAILED)
+    def refused_runtime(self, actor: Actor) -> State:
+        return self._enter(actor, State.FAILED)
 
-    def _enter(self, session_id: str, state: State) -> State:
-        self._states[session_id] = state
+    def _enter(self, actor: Actor, state: State) -> State:
+        self._states[actor] = state
         return state
 
 

@@ -204,18 +204,9 @@ class Channel(IChannel):
         *,
         session_id: str,
     ) -> None:
-        provider_session_id = self._provider_session_ids.get(session_id, session_id)
-        if item.envelope.session_id == session_id:
-            item = replace(
-                item,
-                envelope=replace(
-                    item.envelope,
-                    session_id=provider_session_id,
-                ),
-            )
         self._channel.accept_turn_event(
             item,
-            session_id=provider_session_id,
+            session_id=self._provider_session_ids.get(session_id, session_id),
         )
 
     def anchor_turn(self, session_id: str, anchor: Message) -> None:

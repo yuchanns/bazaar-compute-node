@@ -39,6 +39,7 @@ from bazaar_compute_node.contrib.claude.process import (
     build_arguments,
 )
 from bazaar_compute_node.contrib.claude.runtime import Runtime
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import IChannel
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -374,7 +375,7 @@ async def test_real_claude_active_child_exit_is_terminal_unknown(
                 await asyncio.sleep(0.05)
         agent = node.agents[agent_id]
         assert isinstance(agent.runtimes[0], Runtime)
-        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
         connection = agent.runtimes[0]._connections[runtime_session.id]
         pid = connection.supervisor.pid
@@ -396,7 +397,9 @@ async def test_real_claude_active_child_exit_is_terminal_unknown(
             session_id=scoped_session_id,
             turn_id=f"turn-{recovery.message_id}",
         )
-        recovered_session = agent.orchestrator.runtime_session(scoped_session_id)
+        recovered_session = agent.orchestrator.runtime_session(
+            Thread(scoped_session_id)
+        )
         assert recovered_session is not None
         assert recovered_session.provider_thread_id == provider_thread_id
         recovered = agent.runtimes[0]._connections[recovered_session.id]
@@ -432,7 +435,7 @@ async def test_real_claude_idle_child_exit_rebuilds_for_next_turn(
         )
         agent = node.agents[agent_id]
         assert isinstance(agent.runtimes[0], Runtime)
-        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
         connection = agent.runtimes[0]._connections[runtime_session.id]
         pid = connection.supervisor.pid
@@ -446,7 +449,7 @@ async def test_real_claude_idle_child_exit_rebuilds_for_next_turn(
             session_id=scoped_session_id,
             turn_id=f"turn-{second.message_id}",
         )
-        rebuilt_session = agent.orchestrator.runtime_session(scoped_session_id)
+        rebuilt_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert rebuilt_session is not None
         rebuilt = agent.runtimes[0]._connections[rebuilt_session.id]
         assert rebuilt.supervisor.pid != pid
@@ -605,7 +608,7 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
         agent = node.agents[agent_id]
         assert isinstance(agent.runtimes[0], Runtime)
         runtime = agent.runtimes[0]
-        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
         assert await runtime.has_background_job(runtime_session, timeout=30)
         connection = runtime._connections[runtime_session.id]
@@ -614,7 +617,10 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
         assert connection.supervisor.is_running
 
         async with asyncio.timeout(600):
-            while agent.orchestrator.runtime_session(scoped_session_id) is not None:
+            while (
+                agent.orchestrator.runtime_session(Thread(scoped_session_id))
+                is not None
+            ):
                 await asyncio.sleep(0.05)
         await _wait_for_audit_event(
             audit,
@@ -672,7 +678,7 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
         second_tasks: list[asyncio.Task[None]] = []
         async with asyncio.timeout(180):
             while True:
-                session = agent.orchestrator.runtime_session(scoped_session_id)
+                session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
                 if session is not None:
                     observed_background = observed_background or (
                         await runtime.has_background_job(session, timeout=1)
@@ -709,7 +715,7 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
                 await asyncio.sleep(0.01)
 
         assert observed_background
-        session = agent.orchestrator.runtime_session(scoped_session_id)
+        session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert session is not None
         assert connection is not None
         original_pid = connection.supervisor.pid
@@ -834,7 +840,7 @@ async def test_real_claude_provider_limit_result_remains_authoritative() -> None
     assert send_error is None
     stream = TurnEventStream(
         inbox,
-        session_id="bcn-provider-limit",
+        actor=Thread("bcn-provider-limit"),
         runtime_session_id="runtime-provider-limit",
         turn_id=str(uuid4()),
         provider_thread_id=session_id,
@@ -1000,7 +1006,7 @@ async def test_real_claude_hands_a_failing_runtime_over_to_the_next_one(
             turn_id=f"turn-{message.message_id}",
             event_name="claudecode.turn.completed",
         )
-        runtime_session = agent.orchestrator.runtime_session(scoped_session_id)
+        runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
         assert runtime_session.runtime_index == 1
         assert any(
@@ -1025,7 +1031,9 @@ async def test_real_claude_hands_a_failing_runtime_over_to_the_next_one(
             turn_id=f"turn-{follow_up.message_id}",
             event_name="claudecode.turn.completed",
         )
-        follow_up_session = agent.orchestrator.runtime_session(scoped_follow_up_id)
+        follow_up_session = agent.orchestrator.runtime_session(
+            Thread(scoped_follow_up_id)
+        )
         assert follow_up_session is not None
         assert follow_up_session.runtime_index == 1
     finally:
