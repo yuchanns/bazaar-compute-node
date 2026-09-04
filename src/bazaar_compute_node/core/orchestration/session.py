@@ -59,6 +59,8 @@ from .turn import (
 )
 from .upgrade_notice import UpgradeAnnounced, UpgradeNotice, UpgradePending
 
+_NOTICE_WINDOW = 100
+
 
 @dataclass(slots=True)
 class _IngressItem:
@@ -782,17 +784,8 @@ class SessionOrchestrator(IAsyncLifecycle):
         runtime_session = self.runtime_session(notification.context.actor)
         if runtime_session is None:
             return
-        cursor = await self._storage.get_consumer_cursor(session_id)
-        delivered_through_seq = (
-            cursor.delivered_through_seq if cursor is not None else 0
-        )
-        unread = await self._storage.list_messages(
-            session_id,
-            after_seq=delivered_through_seq,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
-        )
-        if not unread:
+        total_unread, _ = await self._unread_summary(session_id)
+        if not total_unread:
             return
         message = notification.message
         # a message arriving mid-turn is consumed here, and the turn path that
@@ -800,7 +793,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         upgrade = self._upgrade_for(notification.context.actor)
         input_text = inbox_notice(
             (message,),
-            total_unread_count=len(unread),
+            total_unread_count=total_unread,
             closing_bracket_on_own_line=False,
             upgrade_version=upgrade[0] if upgrade is not None else None,
             installed_version=upgrade[1] if upgrade is not None else None,
@@ -1384,22 +1377,44 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_turns[turn.turn_id] = turn
         return turn
 
+    async def _unread_summary(
+        self,
+        session_id: str,
+    ) -> tuple[int, tuple[Message, ...]]:
+        """Say how much is unread, counted apart from the window that shows it."""
+
+        cursor = await self._storage.get_consumer_cursor(session_id)
+        after_seq = cursor.delivered_through_seq if cursor is not None else 0
+        total = await self._storage.count_messages(
+            session_id,
+            after_seq=after_seq,
+            direction=MessageDirection.INBOUND,
+            notifying_only=True,
+        )
+        # the newest end, so a message arriving behind a backlog too long to
+        # carry is still the one a notice reports
+        unread = await self._storage.list_messages(
+            session_id,
+            after_seq=after_seq,
+            direction=MessageDirection.INBOUND,
+            notifying_only=True,
+            latest=True,
+            limit=_NOTICE_WINDOW,
+        )
+        return total, unread
+
     async def _notice_for(self, durable_context: _DurableSessionContext) -> str | None:
         """Compose what a turn would say, or nothing when nothing is unread."""
 
-        cursor = await self._storage.get_consumer_cursor(durable_context.bcn_session.id)
-        unread = await self._storage.list_messages(
-            durable_context.bcn_session.id,
-            after_seq=cursor.delivered_through_seq if cursor is not None else 0,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
+        total_unread, unread = await self._unread_summary(
+            durable_context.bcn_session.id
         )
         if not unread:
             return None
         upgrade = self._upgrade_for(durable_context.actor)
         return inbox_notice(
             unread,
-            total_unread_count=len(unread),
+            total_unread_count=total_unread,
             closing_bracket_on_own_line=True,
             upgrade_version=upgrade[0] if upgrade is not None else None,
             installed_version=upgrade[1] if upgrade is not None else None,

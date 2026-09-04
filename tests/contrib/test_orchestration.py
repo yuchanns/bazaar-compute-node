@@ -86,6 +86,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration import SessionOrchestrator
 from bazaar_compute_node.core.orchestration.session import (
+    _NOTICE_WINDOW,
     _RuntimeNotification,
 )
 from bazaar_compute_node.core.orchestration.turn import inbox_notice
@@ -4182,6 +4183,35 @@ async def test_upgrade_is_offered_once_per_release() -> None:
             "Upgrade available: bazaar-compute-node 0.3.0"
             in (runtime.started_turns[2][2])
         )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_wider_than_the_notice_window_reports_its_newest() -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    backlog = _NOTICE_WINDOW + 20
+    try:
+        for seq in range(1, backlog + 1):
+            await orchestrator._record_inbound(
+                make_message(seq=seq, message_id=f"old-{seq:04d}")
+            )
+        await channel.inject(make_message(seq=backlog + 1, message_id="new-0001"))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-new-0001"
+                for event in audit.events
+            )
+        )
+
+        notice = runtime.started_turns[0][2]
+
+        # case: the count is the whole backlog, not the window that carries it
+        assert f"Inbox update: {backlog + 1} unread messages total" in notice
+
+        # case: and the message that woke the turn is the one it reports
+        assert "latest msg=new-0001" in notice
     finally:
         await orchestrator.stop(timeout=1)
 
