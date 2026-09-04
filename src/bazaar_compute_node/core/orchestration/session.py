@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid7
 
 from ...i18n import Translator
+from ..actor import Actor, Actors
 from ..agent import Agent, State
 from ..approval import IApprovalHandler
 from ..audit import ErrorKind
@@ -69,6 +70,7 @@ class _IngressItem:
 class _DurableSessionContext:
     channel_session: ChannelSession
     bcn_session: BcnSession
+    actor: Actor
 
 
 @dataclass(slots=True)
@@ -142,7 +144,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     def __init__(
         self,
         *,
-        agent_id: str,
+        actors: Actors,
         channel: IChannel,
         runtimes: Sequence[IRuntime],
         storage: IStorageScope,
@@ -157,8 +159,6 @@ class SessionOrchestrator(IAsyncLifecycle):
         concurrency: ISessionConcurrency | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
-        if not isinstance(agent_id, str) or not agent_id:
-            raise ValueError("agent_id must be a non-empty string")
         self._clock = clock or now_ms
         self._runtimes = Runtime(runtimes, clock=self._clock)
         if (
@@ -167,7 +167,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             or runtime_idle_timeout_ms < 0
         ):
             raise ValueError("runtime_idle_timeout_ms must be a non-negative integer")
-        self._agent_id = agent_id
+        self._actors = actors
         self._channel = channel
         self._upgrade_notice = upgrade_notice
         self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
@@ -199,7 +199,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             timeout=timeout_budget.provider_call_seconds,
         )
         self._error_reporter = RuntimeErrorReporter(
-            agent_id=agent_id,
+            agent_id=actors.agent_id,
             delivery=self._delivery,
             storage=storage,
             audit=self._audit,
@@ -207,17 +207,17 @@ class SessionOrchestrator(IAsyncLifecycle):
             detail=error_feedback_detail,
         )
         self._command_service = SessionCommandService(
+            actors=actors,
             delivery=self._delivery,
             storage=storage,
             audit=self._audit,
             concurrency=self._concurrency,
-            node_id=lambda: self.agent_id,
             workspace=workspace,
             clock=self._clock,
             publish_wake=self.publish_inbox_wake,
         )
         self._turns = SessionTurnCoordinator(
-            agent_id=agent_id,
+            agent_id=actors.agent_id,
             channel=channel,
             runtimes=self._runtimes,
             storage=storage,
@@ -245,7 +245,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     @property
     def agent_id(self) -> str:
-        return self._agent_id
+        return self._actors.agent_id
 
     @property
     def command_service(self) -> SessionCommandService:
@@ -290,7 +290,11 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_queue_for_session(message.session_id).put_nowait(
             _RuntimeNotification(
                 message=message,
-                context=_DurableSessionContext(channel_session, bcn_session),
+                context=_DurableSessionContext(
+                    channel_session,
+                    bcn_session,
+                    self._actors.for_thread(bcn_session.id),
+                ),
                 wake_id=str(uuid7()),
             )
         )
@@ -1120,6 +1124,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         context = _DurableSessionContext(
             recorded.channel_session,
             recorded.bcn_session,
+            self._actors.for_thread(recorded.bcn_session.id),
         )
         if recorded.message_created:
             await self._audit.append(

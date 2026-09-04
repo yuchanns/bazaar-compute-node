@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
+from ..actor import Actors
 from ..audit import ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
@@ -129,20 +130,20 @@ class SessionCommandService(ICommandService):
     def __init__(
         self,
         *,
+        actors: Actors,
         delivery: OutboundDeliveryService,
         storage: IStorage,
         audit: SessionAuditRecorder,
         concurrency: ISessionConcurrency,
-        node_id: Callable[[], str],
         workspace: Callable[[], Path],
         clock: Callable[[], int],
         publish_wake: Callable[[Message[InboundAttachment]], Awaitable[None]],
     ) -> None:
+        self._actors = actors
         self._delivery = delivery
         self._storage = storage
         self._audit = audit
         self._concurrency = concurrency
-        self._node_id = node_id
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
         self._publish_wake = publish_wake
@@ -629,7 +630,7 @@ class SessionCommandService(ICommandService):
         outbound_message_id: str | None = None,
     ) -> CorrelationContext:
         return CorrelationContext(
-            node_id=self._node_id(),
+            node_id=self._actors.agent_id,
             channel=channel,
             channel_session_id=channel_session_id,
             bcn_session_id=session_id,

@@ -11,6 +11,7 @@ import pytest
 
 import bazaar_compute_node.app.config as config_module
 from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
+from bazaar_compute_node.core.actor import Mode
 from bazaar_compute_node.core.runtime import RuntimeSandboxMode
 
 LEGACY_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
@@ -236,6 +237,7 @@ CODEX_HOME = "BCN_CODEX_HOME_PERSONAL"
 [[agent]]
 id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
 name = "Tifa"
+mode = "dangerous_individual"
 
 [agent.channel]
 kind = "wecom"
@@ -267,6 +269,9 @@ kind = "codex"
     assert first.agents[0].runtimes[1].options == {"provider_option": "kept"}
     assert first.agents[0].runtimes[1].env == {"CODEX_HOME": "BCN_CODEX_HOME_PERSONAL"}
     assert first.agents[1].runtimes[0].env == {}
+    # an agent without a mode answers one conversation at a time
+    assert first.agents[0].mode is Mode.SESSION
+    assert first.agents[1].mode is Mode.DANGEROUS_INDIVIDUAL
     # an already current configuration is never rewritten
     assert config_path.read_text(encoding="utf-8") == original
 
@@ -358,6 +363,10 @@ def test_v3_rejects_invalid_agent_tables() -> None:
     for value in ("bad-name", "", "1INVALID"):
         with pytest.raises(ConfigurationError, match="agent.channel.token_env"):
             parse(agent(channel={"kind": "telegram", "token_env": value}))
+
+    # a mode names one of the execution models bcn knows
+    with pytest.raises(ConfigurationError, match=r"agent #1\.mode"):
+        parse(agent(mode="individual"))
 
     # the runtime array carries every runtime of one agent
     with pytest.raises(

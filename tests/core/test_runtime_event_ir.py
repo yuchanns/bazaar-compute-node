@@ -11,6 +11,7 @@ from bcn_test_support import (
     TestTurnPlan,
 )
 
+from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     Message,
@@ -72,7 +73,7 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
     audit = RecordingAudit()
     await storage.start(timeout=1)
     orchestrator = SessionOrchestrator(
-        agent_id="agent-1",
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),
@@ -131,7 +132,7 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
     audit = RecordingAudit()
     await storage.start(timeout=1)
     orchestrator = SessionOrchestrator(
-        agent_id="agent-1",
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),

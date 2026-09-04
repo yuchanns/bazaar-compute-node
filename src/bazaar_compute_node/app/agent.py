@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from ..core.actor import Actors
 from ..core.channel import Channel, ChannelContext, IChannel
 from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
 from ..core.lifecycle import TimeoutBudget
@@ -156,7 +157,7 @@ class AgentApplication:
         self._runtime_contexts = tuple(runtime_contexts)
         self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
         self.orchestrator = SessionOrchestrator(
-            agent_id=self.agent_id,
+            actors=Actors(agent_id=self.agent_id, mode=configuration.mode),
             channel=self.channel,
             runtimes=self.runtimes,
             storage=self.storage,

@@ -45,6 +45,7 @@ from bazaar_compute_node.contrib.lark.channel import LarkChannel
 from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
+from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.agent import State
 from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
 from bazaar_compute_node.core.channel import (
@@ -340,7 +341,7 @@ async def make_node(
     audit = RecordingAudit()
     await storage.start(timeout=1)
     orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -371,7 +372,7 @@ async def make_sqlite_node() -> tuple[
     await storage.start(timeout=2)
     storage_scope = storage.scope("workspace-1", "Test Agent")
     orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage_scope,
@@ -402,7 +403,7 @@ async def make_idle_timeout_node(
     wheel = TimerWheel()
     await wheel.start()
     orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -3197,7 +3198,7 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
     channel = TestChannel()
     runtime = TestRuntime()
     second = SessionOrchestrator(
-        agent_id="workspace-1",
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -3810,7 +3811,7 @@ async def make_multi_runtime_node() -> tuple[
     wheel = TimerWheel()
     await wheel.start()
     orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=runtimes,
         storage=storage.scope("workspace-1", "Test Agent"),
