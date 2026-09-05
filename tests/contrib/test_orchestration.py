@@ -79,6 +79,7 @@ from bazaar_compute_node.core.models import (
     SenderIdentity,
     SenderKind,
     SystemMessageKind,
+    TurnCancelled,
     TurnCompleted,
     TurnFailed,
     TurnStarted,
@@ -454,6 +455,20 @@ async def wait_until(predicate: object) -> None:
             return
         await asyncio.sleep(0)
     raise AssertionError("condition was not reached")
+
+
+def _turn_endings(channel: TestChannel, turn_id: str) -> list[str]:
+    """Say which conversations a turn was ended on, in the order they saw it."""
+
+    return [
+        session_id
+        for session_id, event in zip(channel.event_sessions, channel.events)
+        if event.envelope.turn_id == turn_id
+        and isinstance(
+            event.payload,
+            TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown,
+        )
+    ]
 
 
 def _stored_messages(
@@ -1048,10 +1063,12 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
         )
 
         turn = await orchestrator._run_notification(
-            _RuntimeNotification(
-                message=persisted,
-                context=context,
-                wake_id="persisted-sender",
+            (
+                _RuntimeNotification(
+                    message=persisted,
+                    context=context,
+                    wake_id="persisted-sender",
+                ),
             )
         )
 
@@ -1071,7 +1088,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         assert context is not None
         assert created
         first_turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=anchor, context=context)
+            (_RuntimeNotification(message=anchor, context=context),)
         )
         assert first_turn is not None
         reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
@@ -1127,7 +1144,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         )
 
         turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=message, context=context)
+            (_RuntimeNotification(message=message, context=context),)
         )
 
         assert turn is not None
@@ -1163,7 +1180,7 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         assert context is not None
         assert created
         first_turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=first_message, context=context)
+            (_RuntimeNotification(message=first_message, context=context),)
         )
         assert first_turn is not None
         runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
@@ -1181,7 +1198,7 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         if sender_kind == SenderKind.SYSTEM.value:
             message = await cast(IStorage, storage).save_message(message)
             turn = await orchestrator._run_notification(
-                _RuntimeNotification(message=message, context=context)
+                (_RuntimeNotification(message=message, context=context),)
             )
             assert turn is not None
         else:
@@ -2223,6 +2240,191 @@ async def test_one_actor_answers_every_conversation_on_one_runtime() -> None:
             for event in audit.events
             if event.correlation.turn_id is not None
         } == {"bcn-a"}
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_marks_every_conversation_steered_into_it() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(session_id="bcn-a"))
+        await wait_until(lambda: bool(runtime.active_streams))
+        await channel.inject(make_message(session_id="bcn-b"))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+
+        assert [session_id for session_id, _ in channel.turn_anchors] == [
+            "bcn-a",
+            "bcn-b",
+        ]
+
+        _, opened_turn, _ = runtime.started_turns[0]
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+
+        await wait_until(
+            lambda: (
+                sorted(_turn_endings(channel, opened_turn.turn_id))
+                == ["bcn-a", "bcn-b"]
+            )
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_steered_twice_is_marked_once() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: bool(runtime.active_streams))
+        await channel.inject(make_message(seq=2))
+        await channel.inject(make_message(seq=3))
+        await wait_until(lambda: len(runtime.steered_turns) == 2)
+
+        assert [session_id for session_id, _ in channel.turn_anchors] == ["bcn-1"]
+
+        _, opened_turn, _ = runtime.started_turns[0]
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+
+        await wait_until(
+            lambda: _turn_endings(channel, opened_turn.turn_id) == ["bcn-1"]
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_answers_every_conversation_it_took_a_message_from() -> (
+    None
+):
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        for session_id in ("bcn-a", "bcn-b", "bcn-c"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            if session_id == "bcn-c":
+                continue
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        results = await asyncio.gather(*completions)
+
+        assert len(runtime.started_turns) == 1
+        assert {result.state for result in results if result is not None} == {
+            RuntimeTurnState.FAILED
+        }
+        assert sorted(request.session_id for request in channel.send_attempts) == [
+            "bcn-a",
+            "bcn-b",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_one_held_error_receipt_does_not_hold_up_the_others() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    channel.send_gate = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        for session_id in ("bcn-a", "bcn-b"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        await wait_until(lambda: len(channel.send_attempts) == 2)
+        channel.send_gate.set()
+
+        await asyncio.gather(*completions)
+        assert sorted(request.session_id for request in channel.send_attempts) == [
+            "bcn-a",
+            "bcn-b",
+        ]
+    finally:
+        channel.send_gate.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_an_individual_notice_covers_every_conversation_in_reach() -> None:
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    try:
+        await orchestrator._record_inbound(make_message(session_id="bcn-b"))  # pyright: ignore[reportPrivateUsage]
+
+        result = await orchestrator.handle_inbound(make_message(session_id="bcn-a"))
+
+        assert result is not None
+        assert runtime.started_turns[0][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 2 changed targets\n"
+            "dm:channel-bcn-a  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "dm:channel-bcn-b  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_notice_covers_every_conversation_it_batched() -> None:
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    try:
+        for session_id in ("bcn-a", "bcn-b"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        await asyncio.gather(*completions)
+
+        assert len(runtime.started_turns) == 1
+        assert runtime.started_turns[0][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 2 changed targets\n"
+            "dm:channel-bcn-b  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "dm:channel-bcn-a  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
     finally:
         await orchestrator.stop(timeout=1)
 

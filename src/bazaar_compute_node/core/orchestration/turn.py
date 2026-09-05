@@ -304,8 +304,33 @@ class SessionTurnCoordinator:
         self._timeout_budget = timeout_budget
         self._concurrency = concurrency
         self._turns = turns
+        self._turn_threads: dict[str, dict[str, Message]] = {}
         self._clock = clock
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
+
+    async def join_turn(self, turn_id: str, thread_id: str, message: Message) -> None:
+        """Take a conversation into a turn, and say where its output belongs."""
+
+        threads = self._turn_threads.setdefault(turn_id, {})
+        if thread_id in threads:
+            return
+        threads[thread_id] = message
+        anchor = await resolve_reminder_anchor(self._storage, self._agent_id, message)
+        if anchor is not None:
+            self._channel.anchor_turn(thread_id, anchor)
+
+    def threads_in_turn(self, turn_id: str) -> tuple[Message, ...]:
+        """Return one message from each conversation a turn has taken one from."""
+
+        return tuple(self._turn_threads.get(turn_id, {}).values())
+
+    def release_turn(self, turn_id: str) -> None:
+        """Forget the conversations a turn no longer answers for."""
+
+        self._turn_threads.pop(turn_id, None)
+
+    def _threads_of(self, turn_id: str, thread_id: str) -> tuple[str, ...]:
+        return tuple(self._turn_threads.get(turn_id) or (thread_id,))
 
     def approval_handler(
         self,
@@ -464,11 +489,7 @@ class SessionTurnCoordinator:
         turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
         try:
-            anchor = await resolve_reminder_anchor(
-                self._storage, self._agent_id, message
-            )
-            if anchor is not None:
-                self._channel.anchor_turn(context.bcn_session.id, anchor)
+            await self.join_turn(turn.turn_id, context.bcn_session.id, message)
             approval_handler = self.approval_handler(message, context, turn)
             await self._audit.append(
                 event_name="runtime.request.turn.started",
@@ -592,7 +613,7 @@ class SessionTurnCoordinator:
                         isinstance(payload, TurnUnknown)
                         or (retry_available and isinstance(payload, TurnFailed))
                     ):
-                        self._forward(event, context.bcn_session.id)
+                        self._forward(event, turn.turn_id, context.bcn_session.id)
                     if _is_terminal_turn_event(payload):
                         observed_terminal = True
                         break
@@ -608,16 +629,24 @@ class SessionTurnCoordinator:
                     | ContextCompactionStarted()
                     | ContextCompactionCompleted()
                 ):
-                    self._forward(event, context.bcn_session.id)
+                    self._forward(event, turn.turn_id, context.bcn_session.id)
         return turn, observed_terminal
 
-    def _forward(self, event: RuntimeOutputEvent, session_id: str) -> None:
+    def _forward(
+        self,
+        event: RuntimeOutputEvent,
+        turn_id: str,
+        thread_id: str,
+    ) -> None:
         """Show a runtime event on the channel; note a channel that refuses it."""
 
-        try:
-            self._channel.accept_turn_event(event, session_id=session_id)
-        except Exception:
-            self._logger.exception("channel rejected %s", type(event.payload).__name__)
+        for thread in self._threads_of(turn_id, thread_id):
+            try:
+                self._channel.accept_turn_event(event, session_id=thread)
+            except Exception:
+                self._logger.exception(
+                    "channel rejected %s", type(event.payload).__name__
+                )
 
     async def _consume_turn_stream(
         self,
@@ -703,6 +732,8 @@ class SessionTurnCoordinator:
                 },
             )
             accepted = False
+        if accepted:
+            await self.join_turn(turn.turn_id, context.bcn_session.id, message)
         try:
             await self._audit.append(
                 event_name=(
@@ -744,22 +775,21 @@ class SessionTurnCoordinator:
             error_kind.value if error_kind else None,
             error_message,
         )
-        try:
-            self._channel.accept_turn_event(
-                RuntimeOutputEvent(
-                    envelope=RuntimeEventEnvelope(
-                        actor=actor,
-                        runtime_session_id=turn.session_id,
-                        turn_id=turn.turn_id,
-                        provider_turn_id=turn.provider_turn_id,
-                        occurred_at_ms=self._clock(),
-                    ),
-                    payload=payload,
-                ),
-                session_id=session_id,
-            )
-        except Exception:
-            self._logger.exception("channel rejected synthesized terminal event")
+        event = RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                actor=actor,
+                runtime_session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                provider_turn_id=turn.provider_turn_id,
+                occurred_at_ms=self._clock(),
+            ),
+            payload=payload,
+        )
+        for thread in self._threads_of(turn.turn_id, session_id):
+            try:
+                self._channel.accept_turn_event(event, session_id=thread)
+            except Exception:
+                self._logger.exception("channel rejected synthesized terminal event")
 
     async def finish_turn(
         self,

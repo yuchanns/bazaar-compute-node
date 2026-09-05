@@ -10,6 +10,8 @@ from ..audit import AuditEvent, ErrorKind
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
 from ..models import (
+    Message,
+    MessageDirection,
     RuntimeEventState,
 )
 from ..observability import IAudit, LogLevel
@@ -28,6 +30,46 @@ async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
         case Agent():
             page = await storage.list_inbox_targets(limit=_REACH_PAGE)
             return tuple(summary.session_id for summary in page.targets)
+
+
+async def count_unread_in_reach(storage: IStorage, actor: Actor) -> int:
+    """Count what is unread across the conversations one actor answers for."""
+
+    match actor:
+        case Thread(thread_id):
+            cursor = await storage.get_consumer_cursor(thread_id)
+            return await storage.count_messages(
+                thread_id,
+                after_seq=cursor.delivered_through_seq if cursor is not None else 0,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+            )
+        case Agent():
+            page = await storage.list_inbox_targets(limit=_REACH_PAGE)
+            return sum(summary.pending_count for summary in page.targets)
+
+
+async def list_unread_in_reach(
+    storage: IStorage,
+    actor: Actor,
+    *,
+    limit: int,
+) -> tuple[Message, ...]:
+    """Take the newest unread the actor answers for, whatever conversation it is in."""
+
+    match actor:
+        case Thread(thread_id):
+            cursor = await storage.get_consumer_cursor(thread_id)
+            return await storage.list_messages(
+                thread_id,
+                after_seq=cursor.delivered_through_seq if cursor is not None else 0,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+                latest=True,
+                limit=limit,
+            )
+        case Agent():
+            return await storage.list_unread_messages(limit=limit)
 
 
 class SessionAuditRecorder:

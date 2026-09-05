@@ -355,6 +355,22 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             offset=offset,
         )
 
+    async def list_unread_messages(self, *, limit: int) -> tuple[Message, ...]:
+        unread: list[Message] = []
+        for session in self._scoped_bcn_sessions():
+            cursor = self._storage.cursors.get(session.id)
+            delivered_through_seq = cursor.delivered_through_seq if cursor else 0
+            unread.extend(
+                message
+                for message in self._filtered_messages(
+                    session.id,
+                    direction=MessageDirection.INBOUND,
+                )
+                if message.notifies_runtime and message.seq > delivered_through_seq
+            )
+        unread.sort(key=lambda message: message.seq)
+        return tuple(unread[-limit:])
+
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
         matches: list[tuple[BcnSession, ChannelSession]] = []
         for session in self._scoped_bcn_sessions():

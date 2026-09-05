@@ -212,6 +212,125 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sqlite_unread_messages_cross_conversations_within_one_agent() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        agent_a = database.scope("agent-a", "Agent A")
+        agent_b = database.scope("agent-b", "Agent B")
+        repository = agent_a
+        first_channel, first_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-first",
+            channel_session_id="channel-first",
+            last_activity_at_ms=100,
+        )
+        first = await _append_message(
+            repository,
+            channel_session=first_channel,
+            bcn_session=first_session,
+            message_id="message-first",
+            target="dm:channel-first",
+            received_at_ms=101,
+            sender_name="first-sender",
+            provider_time_ms=100_000,
+        )
+        second_channel, second_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-second",
+            channel_session_id="channel-second",
+            last_activity_at_ms=200,
+        )
+        second = await _append_message(
+            repository,
+            channel_session=second_channel,
+            bcn_session=second_session,
+            message_id="message-second",
+            target="dm:channel-second",
+            received_at_ms=201,
+            sender_name="second-sender",
+            provider_time_ms=200_000,
+        )
+        drained_channel, drained_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-drained",
+            channel_session_id="channel-drained",
+            last_activity_at_ms=300,
+        )
+        drained = await _append_message(
+            repository,
+            channel_session=drained_channel,
+            bcn_session=drained_session,
+            message_id="message-drained",
+            target="dm:channel-drained",
+            received_at_ms=301,
+            sender_name="drained-sender",
+            provider_time_ms=300_000,
+        )
+        await repository.save_consumer_cursor(
+            ConsumerCursor(
+                session_id=drained_session.id,
+                delivered_through_seq=drained.seq,
+                updated_at_ms=302,
+            )
+        )
+        quiet_channel, quiet_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-quiet",
+            channel_session_id="channel-quiet",
+            last_activity_at_ms=400,
+        )
+        await _append_message(
+            repository,
+            channel_session=quiet_channel,
+            bcn_session=quiet_session,
+            message_id="message-quiet",
+            target="dm:channel-quiet",
+            received_at_ms=401,
+            sender_name="quiet-sender",
+            provider_time_ms=400_000,
+            notifies_runtime=False,
+        )
+
+        repository = agent_b
+        foreign_channel, foreign_session = await _create_session(
+            repository,
+            agent_id="agent-b",
+            session_id="session-foreign",
+            channel_session_id="channel-foreign",
+            last_activity_at_ms=500,
+        )
+        await _append_message(
+            repository,
+            channel_session=foreign_channel,
+            bcn_session=foreign_session,
+            message_id="message-foreign",
+            target="dm:channel-foreign",
+            received_at_ms=501,
+            sender_name="foreign-sender",
+            provider_time_ms=500_000,
+        )
+
+        repository = agent_a
+        unread = await repository.list_unread_messages(limit=10)
+        windowed = await repository.list_unread_messages(limit=1)
+        cursor_after = await repository.get_consumer_cursor(first_session.id)
+
+        assert [message.message_id for message in unread] == [
+            first.message_id,
+            second.message_id,
+        ]
+        assert [message.message_id for message in windowed] == [second.message_id]
+        assert cursor_after is None
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguous() -> (
     None
 ):

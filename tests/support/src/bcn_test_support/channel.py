@@ -62,6 +62,7 @@ class TestChannel(IChannel):
         self.injected_messages: list[Message] = []
         self.send_requests: list[ChannelSendRequest] = []
         self.send_attempts: list[ChannelSendRequest] = []
+        self.send_gate: asyncio.Event | None = None
         self.queued_messages: list[ChannelSendRequest] = []
         self.sent_messages: list[ChannelSendRequest] = []
         self.approval_requests: list[ApprovalRequest] = []
@@ -186,6 +187,8 @@ class TestChannel(IChannel):
         del timeout
         self.send_requests.append(request)
         self.send_attempts.append(request)
+        if self.send_gate is not None:
+            await self.send_gate.wait()
         if not self.started or self.stopped:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,

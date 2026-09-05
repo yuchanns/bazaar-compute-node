@@ -436,6 +436,24 @@ class MessageOperations(RepositoryBase):
             )
         return tuple(owners)
 
+    async def list_unread_messages(
+        self, *, limit: int
+    ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]:
+        rows = await self.fetchall(
+            f"SELECT {_MESSAGE_COLUMNS} FROM messages "
+            "WHERE agent_id = /*agent_id*/? "
+            "AND direction = 'inbound' "
+            "AND notifies_runtime = 1 "
+            "AND seq > COALESCE(("
+            "SELECT delivered_through_seq FROM consumer_cursors "
+            "WHERE consumer_cursors.session_id = messages.session_id"
+            "), 0) "
+            "ORDER BY seq DESC LIMIT ?",
+            (limit,),
+        )
+        rows.reverse()
+        return tuple([await self._message_from_row(row) for row in rows])
+
     async def list_messages(
         self,
         session_id: str,

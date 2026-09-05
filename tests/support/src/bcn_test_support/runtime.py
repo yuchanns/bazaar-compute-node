@@ -87,6 +87,7 @@ class TestRuntime(IRuntime):
         self.stopped_sessions: list[RuntimeSession] = []
         self.started_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
         self.steered_turns: list[tuple[RuntimeSession, RuntimeTurn, str]] = []
+        self.accepts_steer = False
         self.background_job_present = False
         self.background_jobs: set[str] = set()
         self.approval_results = []
@@ -241,7 +242,7 @@ class TestRuntime(IRuntime):
     ) -> bool:
         del timeout
         self.steered_turns.append((session, turn, input_text))
-        return False
+        return self.accepts_steer
 
     async def stop_session(
         self, session: RuntimeSession, *, timeout: float

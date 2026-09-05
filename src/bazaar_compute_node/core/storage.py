@@ -533,6 +533,10 @@ class _StorageOperations(Protocol):
         self, *, limit: int = 100, offset: int = 0
     ) -> InboxTargetPage: ...
 
+    async def list_unread_messages(
+        self, *, limit: int
+    ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]: ...
+
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 
     async def find_message(

@@ -21,7 +21,6 @@ from ..models import (
     BcnSession,
     ChannelSession,
     Message,
-    MessageDirection,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -51,7 +50,11 @@ from ..utils.text import format_exception
 from .command import SessionCommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
-from .services import SessionAuditRecorder
+from .services import (
+    SessionAuditRecorder,
+    count_unread_in_reach,
+    list_unread_in_reach,
+)
 from .turn import (
     SessionContext,
     SessionTurnCoordinator,
@@ -108,6 +111,12 @@ def _awaiting(
             and not item.completion.done()
         ):
             yield item.completion
+
+
+def _turn_id_for(notification: _RuntimeNotification) -> str:
+    """Name the turn a notification is answered by, before it is opened."""
+
+    return f"turn-{notification.wake_id or notification.message.message_id}"
 
 
 def _take_notifications(
@@ -701,9 +710,10 @@ class SessionOrchestrator(IAsyncLifecycle):
                 continue
 
             batch = _take_notifications(item, pending, queue)
+            turn_id = _turn_id_for(batch[0])
             await self._cancel_actor_timer(actor)
             turn_task = asyncio.create_task(
-                self._run_notification(batch[0]),
+                self._run_notification(batch),
                 name=f"bcn-turn-{batch[0].context.bcn_session.id}",
             )
             queue_task = asyncio.create_task(queue.get())
@@ -727,12 +737,13 @@ class SessionOrchestrator(IAsyncLifecycle):
 
                 result = turn_task.result()
                 await self._start_runtime_timer_if_idle(actor)
-                try:
-                    await self._error_reporter.report(batch[0].message, result)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    self._logger.exception("runtime error feedback failed")
+                await asyncio.gather(
+                    *(
+                        self._report_runtime_error(participant, result)
+                        for participant in self._turns.threads_in_turn(turn_id)
+                    ),
+                    return_exceptions=True,
+                )
                 await self._record_runtime_outcome(batch[0].message, result)
                 for completion in _awaiting(batch):
                     completion.set_result(result)
@@ -767,6 +778,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 if batch[0].completion is None:
                     self._logger.exception("wake runtime notification failed")
             finally:
+                self._turns.release_turn(turn_id)
                 if not queue_task.done():
                     queue_task.cancel()
                 try:
@@ -779,15 +791,33 @@ class SessionOrchestrator(IAsyncLifecycle):
                 for _ in range(len(batch)):
                     queue.task_done()
 
+    async def _report_runtime_error(
+        self,
+        message: Message,
+        turn: RuntimeTurn | None,
+    ) -> None:
+        """Tell one conversation how its turn ended; note a report that failed."""
+
+        try:
+            await self._error_reporter.report(message, turn)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("runtime error feedback failed")
+
     async def _steer_active_turn(self, notification: _RuntimeNotification) -> None:
         session_id = notification.context.bcn_session.id
         runtime_session = self.runtime_session(notification.context.actor)
         if runtime_session is None:
             return
-        total_unread, _ = await self._unread_summary(session_id)
-        if not total_unread:
-            return
         message = notification.message
+        total_unread = await count_unread_in_reach(
+            self._storage,
+            notification.context.actor,
+        )
+        cursor = await self._storage.get_consumer_cursor(session_id)
+        if cursor is not None and message.seq <= cursor.delivered_through_seq:
+            return
         # a message arriving mid-turn is consumed here, and the turn path that
         # would otherwise carry the offer then finds nothing unread to run for
         upgrade = self._upgrade_for(notification.context.actor)
@@ -1156,15 +1186,22 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _run_notification(
         self,
-        notification: _RuntimeNotification,
+        batch: Sequence[_RuntimeNotification],
     ) -> RuntimeTurn | None:
+        notification = batch[0]
         durable_context = notification.context
         message = notification.message
         client_user_message_id = notification.wake_id or message.message_id
-        turn_id = f"turn-{client_user_message_id}"
+        turn_id = _turn_id_for(notification)
         input_text = await self._notice_for(durable_context)
         if input_text is None:
             return None
+        for taken in batch:
+            await self._turns.join_turn(
+                turn_id,
+                taken.context.bcn_session.id,
+                taken.message,
+            )
         if await self._storage.get_runtime_attempt(turn_id) is not None:
             return self._runtime_turns.get(turn_id)
 
@@ -1377,38 +1414,23 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._runtime_turns[turn.turn_id] = turn
         return turn
 
-    async def _unread_summary(
-        self,
-        session_id: str,
-    ) -> tuple[int, tuple[Message, ...]]:
-        """Say how much is unread, counted apart from the window that shows it."""
+    async def _unread_summary(self, actor: Actor) -> tuple[int, tuple[Message, ...]]:
+        """Say how much the actor has unread, and how much of it a notice takes."""
 
-        cursor = await self._storage.get_consumer_cursor(session_id)
-        after_seq = cursor.delivered_through_seq if cursor is not None else 0
-        total = await self._storage.count_messages(
-            session_id,
-            after_seq=after_seq,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
-        )
         # the newest end, so a message arriving behind a backlog too long to
         # carry is still the one a notice reports
-        unread = await self._storage.list_messages(
-            session_id,
-            after_seq=after_seq,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
-            latest=True,
+        unread = await list_unread_in_reach(
+            self._storage,
+            actor,
             limit=_NOTICE_WINDOW,
         )
+        total = await count_unread_in_reach(self._storage, actor)
         return total, unread
 
     async def _notice_for(self, durable_context: _DurableSessionContext) -> str | None:
         """Compose what a turn would say, or nothing when nothing is unread."""
 
-        total_unread, unread = await self._unread_summary(
-            durable_context.bcn_session.id
-        )
+        total_unread, unread = await self._unread_summary(durable_context.actor)
         if not unread:
             return None
         upgrade = self._upgrade_for(durable_context.actor)
