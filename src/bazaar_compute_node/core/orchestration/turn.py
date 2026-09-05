@@ -9,6 +9,8 @@ from dataclasses import dataclass, replace
 from ... import __distribution__
 from ...rendering import TextTemplate
 from ..actor import Actor
+from ..actor import Agent as AgentActor
+from ..actor import Thread as ThreadActor
 from ..agent import Agent, State
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
@@ -153,6 +155,9 @@ _TURN_FAILED = "Turn failed"
 _TURN_UNKNOWN = "Turn outcome is unknown"
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
+_APPROVED_WITHOUT_ASKING = (
+    "This Agent answers for every conversation and allows tool use without asking."
+)
 
 
 def _with_a_reason(event: RuntimeOutputEvent) -> RuntimeOutputEvent:
@@ -399,18 +404,9 @@ class SessionTurnCoordinator:
         turn: RuntimeTurn,
         timeout: float,
     ) -> ApprovalResult:
-        """Ask whoever sent the message to allow what the runtime wants to do."""
+        """Settle what the runtime wants to do, by asking or by the mode itself."""
 
         request_id = request.request_id
-        current_binding = ApprovalBinding(
-            request_id=request_id,
-            actor=context.actor,
-            channel_session_id=context.channel_session.id,
-            runtime_session_id=context.runtime_session.id,
-            turn_id=turn.turn_id,
-        )
-        if not current_binding.matches(request):
-            raise ValueError("runtime approval request correlation mismatch")
         approval_correlation = CorrelationContext(
             node_id=self._agent_id,
             channel=context.channel_session.channel,
@@ -421,6 +417,26 @@ class SessionTurnCoordinator:
             request_id=request_id,
             inbound_seq=message.seq,
         )
+        match context.actor:
+            case AgentActor():
+                # TODO: unconditional only until an individual mode keeps
+                # approvals; then decide here from the sandbox policy
+                return await self._approve_without_asking(
+                    request,
+                    message,
+                    correlation=approval_correlation,
+                )
+            case ThreadActor():
+                pass
+        current_binding = ApprovalBinding(
+            request_id=request_id,
+            actor=context.actor,
+            channel_session_id=context.channel_session.id,
+            runtime_session_id=context.runtime_session.id,
+            turn_id=turn.turn_id,
+        )
+        if not current_binding.matches(request):
+            raise ValueError("runtime approval request correlation mismatch")
         sender_kind = message.sender_kind
         approval_target = await resolve_reminder_anchor(
             self._storage,
@@ -471,6 +487,34 @@ class SessionTurnCoordinator:
             | {
                 "decision": result.decision.value,
                 **({"reason": result.reason} if result.reason is not None else {}),
+            },
+        )
+        return result
+
+    async def _approve_without_asking(
+        self,
+        request: ApprovalRequest,
+        message: Message,
+        *,
+        correlation: CorrelationContext,
+    ) -> ApprovalResult:
+        """Allow what the runtime asked for, with no one conversation to ask."""
+
+        result = ApprovalResult(
+            request_id=request.request_id,
+            decision=ApprovalDecision.APPROVED,
+            decided_at_ms=self._clock(),
+            reason=_APPROVED_WITHOUT_ASKING,
+        )
+        await self._audit.append(
+            event_name="approval.decided",
+            state=RuntimeEventState.COMPLETED,
+            correlation=correlation,
+            metadata={
+                "action": request.action,
+                "sender_kind": message.sender_kind.value,
+                "decision": result.decision.value,
+                "reason": result.reason,
             },
         )
         return result

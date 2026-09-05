@@ -1026,7 +1026,63 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         assert channel_request.provider_sender_id == "sender-id"
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
-        assert any(event.event_name == "approval.decided" for event in audit.events)
+        assert [
+            event.event_name
+            for event in audit.events
+            if event.event_name.startswith("approval.")
+        ] == ["approval.requested", "approval.decided"]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_an_individual_actor_allows_tool_use_without_asking_anyone() -> None:
+    orchestrator, channel, runtime, _, audit = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    agent = Agent("workspace-1")
+    try:
+        opening_turn = await orchestrator.handle_inbound(
+            make_message(session_id="bcn-a", seq=1)
+        )
+        assert opening_turn is not None
+        runtime_session = orchestrator.runtime_session(agent)
+        assert runtime_session is not None
+        request = ApprovalRequest(
+            request_id="approval-1",
+            actor=agent,
+            runtime_session_id=runtime_session.id,
+            action="test-action",
+            created_at_ms=1,
+            turn_id="turn-message-bcn-a-2",
+        )
+        runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
+        await channel.inject(make_message(session_id="bcn-a", seq=2))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-a-2"
+                for event in audit.events
+            )
+        )
+
+        assert channel.approval_requests == []
+        assert channel.channel_approval_requests == []
+        assert runtime.approval_results
+        allowed = runtime.approval_results[0]
+        assert allowed.request_id == request.request_id
+        assert allowed.decision is ApprovalDecision.APPROVED
+        assert allowed.reason == (
+            "This Agent answers for every conversation and allows tool use "
+            "without asking."
+        )
+        decided = [
+            event for event in audit.events if event.event_name.startswith("approval.")
+        ]
+        assert [event.event_name for event in decided] == ["approval.decided"]
+        assert decided[0].metadata["decision"] == "approved"
+        assert decided[0].metadata["reason"] == allowed.reason
+        assert decided[0].correlation.request_id == request.request_id
     finally:
         await orchestrator.stop(timeout=1)
 

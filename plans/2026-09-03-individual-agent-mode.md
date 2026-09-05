@@ -239,14 +239,20 @@ turn 消息的线不发，错误回执不广播。各条之间没有依赖，而
 等待，而个体模式只有一条 mailbox、一次一个 active turn，一张未决的卡片会让该 Agent 的全部对话线
 一起停住。
 
-模式判断与 audit 都放在 `_request_approval`（`core/orchestration/turn.py:363`）。它已经是全部许可
+判断与 audit 都放在 `_request_approval`（`core/orchestration/turn.py:363`）。它已经是全部许可
 请求的唯一入口：两个 adapter 各自构造 `ApprovalRequest` 之后都调用同一个 `approval_handler`
 （`contrib/claude/runtime.py:252`、`contrib/codex/events.py:637`），`approval.requested` 与
 `approval.decided` 也都在这里落账，「无人可批则判 rejected」同样在此。模式分支与自动放行加在这一处，
 adapter 侧不感知模式。
 
-该模式下 `_request_approval` 直接返回 approved，不构造 `ApprovalBinding`、不向任何对话线投递卡片。
-每次自动放行仍写入 `approval.decided` audit，`reason` 明确标注为该模式自动放行。
+判断看的是 actor 而不是模式：actor 是一条对话线就照旧征求许可，actor 是 Agent 本身就自动放行。
+两者表达的是同一件事的两面——「有没有唯一一条可以问的对话线」——而以后支持审批的个体模式会与
+`dangerous_individual` 合并成一个模式、由 `sandbox_mode` 决定问不问，那时按模式写的分支要重写，
+按 actor 写的不用。
+
+该分支下 `_request_approval` 直接返回 approved，不构造 `ApprovalBinding`、不向任何对话线投递卡片。
+每次自动放行写一条 `approval.decided` audit，带上 decision 与说明原因的 `reason`；不写
+`approval.requested`，因为没有任何人被问过。
 
 含义由取值本身承担：`dangerous_individual` 意味着该 Agent 没有人工许可闸门，runtime 沙箱中所有
 「询问后放行」的策略对它等同于直接放行，只有沙箱本身无条件拒绝的动作仍然被拒。需要人工闸门的
@@ -332,9 +338,9 @@ Agent 留在 `session` 模式。
 
 ### Task 6：审批
 
-- 按第 8 节在 `_request_approval` 加入模式分支：`dangerous_individual` 直接返回 approved 并写入标注了
-  reason 的 `approval.decided` audit，不构造绑定也不投递卡片；`session` 模式的审批路径原样保留；
-- 补充测试覆盖：两种模式各自的审批行为与 audit；
+- 按第 8 节在 `_request_approval` 加入按 actor 的分支：actor 是 Agent 本身时直接返回 approved 并写入
+  带 reason 的 `approval.decided` audit，不构造绑定也不投递卡片；actor 是一条对话线时审批路径原样保留；
+- 补充测试覆盖：两种 actor 各自的审批行为与 audit；
 - 运行 focused tests 与全部静态门禁，停下等待 review。
 
 ### Task 7：把 session 改名为 thread
