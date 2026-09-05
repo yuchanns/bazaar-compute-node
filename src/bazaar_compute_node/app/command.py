@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from time import time_ns
 from typing import Annotated, Literal, cast
@@ -62,23 +62,6 @@ def _serialize_attachment(
         "error": None,
         "sha256": attachment.sha256,
     }
-
-
-def _in_arrival_order(messages: Iterable[Message]) -> tuple[Message, ...]:
-    """Order what several threads brought by when each message arrived."""
-
-    return tuple(
-        sorted(
-            messages,
-            key=lambda message: (
-                message.received_at_ms
-                if message.received_at_ms is not None
-                else message.created_at_ms or 0,
-                message.thread_id,
-                message.seq,
-            ),
-        )
-    )
 
 
 def _serialized(
@@ -521,8 +504,15 @@ class CommandDispatcher:
             "ok": True,
             "result": {
                 "messages": _serialized(
-                    _in_arrival_order(
-                        message for result in drained for message in result.messages
+                    sorted(
+                        (message for result in drained for message in result.messages),
+                        key=lambda message: (
+                            message.received_at_ms
+                            if message.received_at_ms is not None
+                            else message.created_at_ms or 0,
+                            message.thread_id,
+                            message.seq,
+                        ),
                     ),
                     projections,
                 ),

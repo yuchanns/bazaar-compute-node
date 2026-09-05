@@ -22,6 +22,13 @@ HANDOFF_MESSAGE_REMOVAL_MIGRATION = Migration(
         )
         """,
         """
+        DELETE FROM reminders
+        WHERE anchor_message_id IN (
+            SELECT message_id FROM messages
+            WHERE json_extract(metadata_json, '$.system_message_kind') = 'handoff'
+        )
+        """,
+        """
         DELETE FROM messages
         WHERE json_extract(metadata_json, '$.system_message_kind') = 'handoff'
         """,

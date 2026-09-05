@@ -210,7 +210,7 @@ class StorageOperationMixin:
     async def read_inbox_catalog(
         self,
         *,
-        limit: int,
+        limit: int | None,
         offset: int = 0,
     ) -> InboxListResult:
         self = _operations(self)  # noqa: PLW0642
@@ -530,7 +530,7 @@ class _StorageOperations(Protocol):
     async def read_inbox_catalog(
         self,
         *,
-        limit: int,
+        limit: int | None,
         offset: int = 0,
     ) -> InboxListResult: ...
 
@@ -596,8 +596,10 @@ class _StorageOperations(Protocol):
         notifying_only: bool = False,
     ) -> int: ...
 
+    async def list_thread_ids(self) -> tuple[str, ...]: ...
+
     async def list_inbox_targets(
-        self, *, limit: int = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0
     ) -> InboxTargetPage: ...
 
     async def list_unread_messages(

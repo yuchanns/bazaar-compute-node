@@ -17,26 +17,15 @@ from ..observability import IAudit, LogLevel
 from ..storage import IStorage
 from ..utils.sanitization import omit_sensitive_fields
 
-_REACH_PAGE = 1_000
-
 
 async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
-    """Return the conversations one actor answers for, most recent first."""
+    """Return the conversations one actor answers for."""
 
     match actor:
         case Thread(thread_id):
             return (thread_id,)
         case Agent():
-            threads: list[str] = []
-            offset = 0
-            while True:
-                page = await storage.list_inbox_targets(
-                    limit=_REACH_PAGE, offset=offset
-                )
-                threads.extend(summary.thread_id for summary in page.targets)
-                if not page.targets or not page.has_more:
-                    return tuple(threads)
-                offset += len(page.targets)
+            return await storage.list_thread_ids()
 
 
 async def unread_in_reach(

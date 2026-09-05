@@ -21,8 +21,6 @@ from bcn_test_support import (
     wait_for_turn_terminal,
 )
 
-import bazaar_compute_node.core.orchestration.command as command_module
-import bazaar_compute_node.core.orchestration.services as services_module
 import bazaar_compute_node.core.orchestration.turn as turn_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
@@ -2491,11 +2489,7 @@ async def test_a_batch_notice_covers_every_conversation_it_batched() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reach_and_unread_count_do_not_stop_at_one_page(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(services_module, "_REACH_PAGE", 1)
-    monkeypatch.setattr(command_module, "_REACH_PAGE", 1)
+async def test_reach_and_unread_count_cover_every_conversation() -> None:
     orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
     agent = Agent("workspace-1")
     try:

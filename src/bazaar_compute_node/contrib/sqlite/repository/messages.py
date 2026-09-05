@@ -267,8 +267,14 @@ class MessageOperations(RepositoryBase):
             raise RuntimeError("SQLite message count query returned no row")
         return cast(int, row["message_count"])
 
+    async def list_thread_ids(self) -> tuple[str, ...]:
+        rows = await self.fetchall(
+            "SELECT id FROM threads WHERE agent_id = /*agent_id*/? ORDER BY id"
+        )
+        return tuple(cast(str, row["id"]) for row in rows)
+
     async def list_inbox_targets(
-        self, *, limit: int = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0
     ) -> InboxTargetPage:
         total_row = await self.fetchone(
             _INBOX_TARGET_CATALOG_CTE + "SELECT COUNT(*) AS total FROM target_catalog"
@@ -283,8 +289,8 @@ class MessageOperations(RepositoryBase):
             "latest_provider_time_ms, latest_received_at_ms "
             "FROM target_catalog "
             "ORDER BY last_activity_at_ms DESC, thread_id "
-            "LIMIT ? OFFSET ?",
-            (limit, offset),
+            + ("LIMIT ? OFFSET ?" if limit is not None else "LIMIT -1 OFFSET ?"),
+            (limit, offset) if limit is not None else (offset,),
         )
         return InboxTargetPage(
             targets=tuple(_inbox_target_summary_from_row(row) for row in rows),

@@ -338,8 +338,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             return None
         return session
 
+    async def list_thread_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(thread.id for thread in self._scoped_threads()))
+
     async def list_inbox_targets(
-        self, *, limit: int = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0
     ) -> InboxTargetPage:
         summaries = tuple(
             sorted(
@@ -350,7 +353,9 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 key=lambda summary: (-summary.last_activity_at_ms, summary.thread_id),
             )
         )
-        targets = summaries[offset : offset + limit]
+        targets = (
+            summaries[offset:] if limit is None else summaries[offset : offset + limit]
+        )
         return InboxTargetPage(
             targets=targets,
             total=len(summaries),

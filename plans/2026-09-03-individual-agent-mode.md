@@ -53,8 +53,10 @@ handoff 分支、`materialize_outbound_if_fresh` 的 `cross_session` metadata、
 （`session.py:217`）。`SessionOrchestrator.publish_inbox_wake` 本身保留：Reminder 到期同样经它唤醒
 （`app/application.py:90`、`reminder.py:397`）。`SystemMessageKind` 之后只剩 `REMINDER`。已发布版本
 写下的 handoff 系统消息由新 migration 删除：那条能力连同它的记录一起消失，留着只会让读取这条对话线
-的人撞上一个已经不存在的取值。删除会让某些对话线的最新入站 seq 变小，同一个 migration 因此把越界的
-`delivered_through_seq` 收回到剩余的最新入站消息上；否则下一次 check 会被「游标不能后退」挡住。
+的人撞上一个已经不存在的取值。同一个 migration 还要收拾这些消息留下的引用：越界的
+`delivered_through_seq` 收回到剩余的最新入站消息（否则下一次 check 会被「游标不能后退」挡住）、指向
+它们的 `reply_to_message_id` 置空（否则含该回复的历史窗口解析不出引用，整条对话线读不了）、锚在
+它们身上的 Reminder 一并删除（那种 Reminder 到期只会因为锚丢失被取消）。
 
 `bcc inbox list` 这条命令消失，不保留别名。它的实现改作 `bcc inbox check` 的基础，只在
 `dangerous_individual` 模式出现，`session` 模式的命令表里没有 inbox 这一族。两者语义不同，因此不是
@@ -86,8 +88,9 @@ turn 输入的未读通知按同一条规则取值：未读总数与通知携带
 
 计数与窗口由**同一个存储操作**一次读出（`read_unread_summary`，在快照读事务里），两个量因此永远
 同源：分开读会在两次读之间被另一次排空插进来，窗口非空而计数归零，破坏「总数 ≥ 携带条数」这条
-不变式；按对话线目录分页求和则会在对话线超过一页时把计数做小。`threads_in_reach` 与
-`bcc inbox check` 的目录读取同样要翻完全部页，否则旧对话线会静默掉出可达范围。
+不变式；按对话线目录分页求和则会在对话线超过一页时把计数做小。可达范围与
+`bcc inbox check` 的目录同样各自一次读完：分页跨多个快照读取，而目录按可变的 `last_activity_at_ms`
+排序，两页之间来一条入站消息就会把某条对话线挤过 offset 边界而漏掉。
 
 developer instructions 删除两处：命令族列表里的「**Inbox discovery** — `bcc inbox list`」（其余条目
 编号复原），以及「用 `bcc inbox list` 找旧对话」那一段。两处描述的都是随命令一起消失的能力。handoff

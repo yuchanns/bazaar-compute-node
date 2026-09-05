@@ -28,7 +28,6 @@ from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
-    InboxTargetSummary,
     Message,
     MessageDirection,
     OutboundAttachment,
@@ -43,7 +42,7 @@ from ..storage import (
     ResolvedInboxTarget,
 )
 from .delivery import OutboundDeliveryService
-from .services import _REACH_PAGE, AuditRecorder, threads_in_reach
+from .services import AuditRecorder, threads_in_reach
 
 
 class OutboundAttachmentResolver:
@@ -156,25 +155,17 @@ class CommandService(ICommandService):
 
     async def pending_targets(self, actor: Actor) -> InboxListResult:
         reachable = frozenset(await threads_in_reach(self._storage, actor))
-        pending: list[InboxTargetSummary] = []
-        offset = 0
-        while True:
-            result = await self._storage.read_inbox_catalog(
-                limit=_REACH_PAGE, offset=offset
-            )
-            pending.extend(
-                summary
-                for summary in result.targets
-                if summary.pending_count > 0 and summary.thread_id in reachable
-            )
-            if not result.targets or not result.has_more:
-                break
-            offset += len(result.targets)
+        result = await self._storage.read_inbox_catalog(limit=None)
+        pending = [
+            summary
+            for summary in result.targets
+            if summary.pending_count > 0 and summary.thread_id in reachable
+        ]
         await self._audit.append_tool(
             operation="bcc.inbox.check",
             status="completed",
             state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(thread_id=actor.id),
+            correlation=self._correlation(actor=actor),
             arguments={"actor_id": actor.id},
         )
         return replace(
@@ -611,7 +602,8 @@ class CommandService(ICommandService):
     def _correlation(
         self,
         *,
-        thread_id: str,
+        thread_id: str | None = None,
+        actor: Actor | None = None,
         channel: str | None = None,
         channel_session_id: str | None = None,
         command_id: str | None = None,
@@ -623,6 +615,7 @@ class CommandService(ICommandService):
             channel=channel,
             channel_session_id=channel_session_id,
             thread_id=thread_id,
+            actor=actor,
             command_id=command_id,
             inbound_seq=inbound_seq,
             outbound_message_id=outbound_message_id,

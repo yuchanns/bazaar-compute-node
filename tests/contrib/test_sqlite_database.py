@@ -1117,6 +1117,15 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             ") VALUES ('thread-1', 3, 3)"
         )
         await connection.execute(
+            "INSERT INTO reminders ("
+            "reminder_id, owner_thread_id, anchor_message_id, title, state, "
+            "next_fire_at_ms, revision, last_occurrence_no, created_at_ms, "
+            "updated_at_ms, agent_id"
+            ") VALUES ('018f0000-0000-7000-8000-000000000009', 'thread-1', "
+            "'message-latest-handoff', 'anchored to a handoff', 'scheduled', 100, 1, "
+            "0, 1, 1, 'agent-1')"
+        )
+        await connection.execute(
             "INSERT INTO messages ("
             "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
             "channel, provider_thread_id, message_type, target, target_kind, body, "
@@ -1153,6 +1162,7 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             remaining = await session.fetchall(
                 "SELECT message_id FROM messages ORDER BY seq"
             )
+            reminders = await session.fetchall("SELECT reminder_id FROM reminders")
             schema_version = await session.fetchone(
                 "SELECT MAX(version) AS version FROM schema_migrations"
             )
@@ -1162,6 +1172,9 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "message-reminder",
             "outbound-reply",
         ]
+        # a Reminder anchored to one of them goes with it, rather than waiting
+        # to be canceled for a missing anchor when it comes due
+        assert reminders == []
         # a cursor left pointing at a deleted message comes back into range, so
         # the next check does not read as a cursor moving backwards
         assert cursor_row is not None
