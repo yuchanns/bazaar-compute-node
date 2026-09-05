@@ -36,6 +36,7 @@ _READ_OPERATIONS = frozenset(
         "read_unread_summary",
         "list_ready_attachment_paths",
         "list_reminders",
+        "list_thread_ids",
         "read_inbox_catalog",
         "read_message_history",
         "resolve_message",
