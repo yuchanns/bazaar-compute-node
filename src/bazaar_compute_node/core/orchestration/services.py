@@ -7,11 +7,10 @@ from typing import cast
 
 from ..actor import Actor, Agent, Thread
 from ..audit import AuditEvent, ErrorKind
+from ..command import UnreadSummary
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
 from ..models import (
-    Message,
-    MessageDirection,
     RuntimeEventState,
 )
 from ..observability import IAudit, LogLevel
@@ -40,43 +39,19 @@ async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
                 offset += len(page.targets)
 
 
-async def count_unread_in_reach(storage: IStorage, actor: Actor) -> int:
-    """Count what is unread across the conversations one actor answers for."""
-
-    match actor:
-        case Thread(thread_id):
-            cursor = await storage.get_consumer_cursor(thread_id)
-            return await storage.count_messages(
-                thread_id,
-                after_seq=cursor.delivered_through_seq if cursor is not None else 0,
-                direction=MessageDirection.INBOUND,
-                notifying_only=True,
-            )
-        case Agent():
-            return await storage.count_unread_messages()
-
-
-async def list_unread_in_reach(
+async def unread_in_reach(
     storage: IStorage,
     actor: Actor,
     *,
     limit: int,
-) -> tuple[Message, ...]:
-    """Take the newest unread the actor answers for, whatever conversation it is in."""
+) -> UnreadSummary:
+    """Say what one actor has unread, counted and carried from the same read."""
 
     match actor:
         case Thread(thread_id):
-            cursor = await storage.get_consumer_cursor(thread_id)
-            return await storage.list_messages(
-                thread_id,
-                after_seq=cursor.delivered_through_seq if cursor is not None else 0,
-                direction=MessageDirection.INBOUND,
-                notifying_only=True,
-                latest=True,
-                limit=limit,
-            )
+            return await storage.read_unread_summary(thread_id, limit=limit)
         case Agent():
-            return await storage.list_unread_messages(limit=limit)
+            return await storage.read_unread_summary(None, limit=limit)
 
 
 class AuditRecorder:

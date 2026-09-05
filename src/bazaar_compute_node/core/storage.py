@@ -13,6 +13,7 @@ from .command import (
     OutboundFreshnessPass,
     TargetProjection,
     ThreadNotFoundError,
+    UnreadSummary,
 )
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
@@ -116,6 +117,45 @@ class StorageOperationMixin:
                 )
                 for thread_id in thread_ids
             ]
+        )
+
+    async def read_unread_summary(
+        self,
+        thread_id: str | None,
+        *,
+        limit: int,
+    ) -> UnreadSummary:
+        """Say what is unread, counted and carried from the same read."""
+
+        self = _operations(self)  # noqa: PLW0642
+        if thread_id is None:
+            return UnreadSummary(
+                total=await self.count_unread_messages(),
+                messages=(
+                    await self.list_unread_messages(limit=limit) if limit else ()
+                ),
+            )
+        cursor = await self.get_consumer_cursor(thread_id)
+        after_seq = cursor.delivered_through_seq if cursor is not None else 0
+        return UnreadSummary(
+            total=await self.count_messages(
+                thread_id,
+                after_seq=after_seq,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+            ),
+            messages=(
+                await self.list_messages(
+                    thread_id,
+                    after_seq=after_seq,
+                    direction=MessageDirection.INBOUND,
+                    notifying_only=True,
+                    latest=True,
+                    limit=limit,
+                )
+                if limit
+                else ()
+            ),
         )
 
     async def read_message_history(
@@ -471,6 +511,13 @@ class _StorageOperations(Protocol):
         *,
         checked_at_ms: int,
     ) -> tuple[MessageCheckResult, ...]: ...
+
+    async def read_unread_summary(
+        self,
+        thread_id: str | None,
+        *,
+        limit: int,
+    ) -> UnreadSummary: ...
 
     async def read_message_history(
         self,

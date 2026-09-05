@@ -16,6 +16,7 @@ from bazaar_compute_node.app.config import (
     RuntimeConfiguration,
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
+from bazaar_compute_node.core.actor import Thread as ThreadActor
 from bazaar_compute_node.core.concurrency import ThreadLockRegistry
 from bazaar_compute_node.core.models import (
     ChannelSession,
@@ -33,6 +34,10 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.models.reminder_owner import OwnedReminder
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
+from bazaar_compute_node.core.orchestration.reminder_command import (
+    ReminderCommandService,
+)
+from bazaar_compute_node.core.reminder import ReminderSnoozeRequest
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
@@ -146,6 +151,54 @@ async def stop_scheduler(
 ) -> None:
     await scheduler.stop(timeout=1)
     await timer_wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_a_snooze_sees_what_happened_while_it_waited_for_the_lock() -> None:
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    anchor_id = add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
+    scheduled = make_scheduled_reminder(
+        _REMINDER_A,
+        session_id=_SESSION_A,
+        anchor_message_id=anchor_id,
+    )
+    storage.reminders[_REMINDER_A] = scheduled
+    concurrency = ThreadLockRegistry()
+    service = ReminderCommandService(
+        storage=cast(IStorage, storage),
+        concurrency=concurrency,
+        poke=lambda: None,
+        clock=lambda: 1_000,
+    )
+    try:
+        held = concurrency.for_thread(_SESSION_A)
+        await held.acquire()
+        snoozing = asyncio.create_task(
+            service.snooze(
+                ThreadActor(_SESSION_A),
+                ReminderSnoozeRequest(
+                    reminder_id=_REMINDER_A,
+                    duration_ms=30_000,
+                    evaluated_at_ms=1_000,
+                ),
+            )
+        )
+        await asyncio.sleep(0)
+        # the Reminder changes while the command waits for the conversation
+        renamed = await cast(IStorage, storage).save_reminder_transition(
+            scheduled.revision,
+            scheduled.update_title("renamed while waiting", at_ms=500),
+        )
+        held.release()
+
+        result = await snoozing
+
+        assert renamed.title == "renamed while waiting"
+        assert result.reminder.title == renamed.title
+        assert result.reminder.revision > renamed.revision
+    finally:
+        await storage.stop(timeout=1)
 
 
 @pytest.mark.asyncio

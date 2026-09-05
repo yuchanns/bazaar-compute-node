@@ -100,12 +100,13 @@ class ReminderCommandService(IReminderService):
         actor: Actor,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult:
-        owner_id, reminder = await self._resolve_reminder(
+        owner_id, _ = await self._resolve_reminder(
             self._storage,
             actor,
             request.reminder_id,
         )
         async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             try:
                 updated = reminder.snooze(
                     duration_ms=request.duration_ms,
@@ -129,12 +130,13 @@ class ReminderCommandService(IReminderService):
         actor: Actor,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult:
-        owner_id, reminder = await self._resolve_reminder(
+        owner_id, _ = await self._resolve_reminder(
             self._storage,
             actor,
             request.reminder_id,
         )
         async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 next_action = (
                     "Run `bcc reminder snooze` first, or create a new Reminder."
@@ -181,12 +183,13 @@ class ReminderCommandService(IReminderService):
         actor: Actor,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult:
-        owner_id, reminder = await self._resolve_reminder(
+        owner_id, _ = await self._resolve_reminder(
             self._storage,
             actor,
             request.reminder_id,
         )
         async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 raise ReminderCommandFailure(
                     "REMINDER_NOT_SCHEDULED",
@@ -232,6 +235,17 @@ class ReminderCommandService(IReminderService):
             "REMINDER_ANCHOR_NOT_FOUND",
             f"Reminder anchor was not found in reach: {message_id}",
         )
+
+    async def _held_reminder(self, owner_id: str, reminder_id: str) -> Reminder:
+        """Read the Reminder again now that its conversation is held."""
+
+        reminder = await self._storage.get_reminder(owner_id, reminder_id)
+        if reminder is None:
+            raise ReminderCommandFailure(
+                "REMINDER_NOT_FOUND",
+                f"Reminder was not found in reach: {reminder_id}",
+            )
+        return reminder
 
     @staticmethod
     async def _resolve_reminder(

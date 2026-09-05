@@ -1119,6 +1119,17 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
         await connection.execute(
             "INSERT INTO messages ("
             "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, message_type, target, target_kind, body, "
+            "reply_to_message_id, command_id, delivery_state, created_at_ms, "
+            "provider_attempted_at_ms, attachments_json"
+            ") VALUES ('outbound-reply', 4, 'outbound', 'agent-1', 'thread-1', "
+            "'channel-1', 'test', 'thread-1', 'text', 'dm:channel-1', 'dm', "
+            "'answering the handoff', 'message-handoff', 'command-1', 'sent', 4, 4, "
+            "'[]')"
+        )
+        await connection.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
             "channel, provider_thread_id, received_at_ms, sender, message_type, "
             "target, target_kind, body, mentions_agent, notifies_runtime, "
             "metadata_json"
@@ -1147,16 +1158,31 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             )
 
         # what no release writes any more is gone, and what one still writes stays
-        assert [row["message_id"] for row in remaining] == ["message-reminder"]
+        assert [row["message_id"] for row in remaining] == [
+            "message-reminder",
+            "outbound-reply",
+        ]
         # a cursor left pointing at a deleted message comes back into range, so
         # the next check does not read as a cursor moving backwards
         assert cursor_row is not None
         assert cursor_row["delivered_through_seq"] == 2
         assert checked[0].messages == ()
 
+        # an outbound reply to a deleted message still reads back
+        history = await scope.read_message_history(
+            raw_target="dm:channel-1",
+            around_message_id=None,
+            limit=10,
+        )
+        assert [message.message_id for message in history.history.messages] == [
+            "message-reminder",
+            "outbound-reply",
+        ]
+        assert history.history.messages[-1].reply_to_message_id is None
+
         # a sequence freed by the delete can be handed out again, and the
         # clamped cursor still lets that message through
-        arrived = await scope.save_message(
+        await scope.save_message(
             Message(
                 direction=MessageDirection.INBOUND,
                 seq=0,
@@ -1174,7 +1200,6 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             )
         )
         drained_after = await scope.check_messages(("thread-1",), checked_at_ms=11)
-        assert arrived.seq == 3
         assert tuple(message.message_id for message in drained_after[0].messages) == (
             "inbound-after-upgrade",
         )

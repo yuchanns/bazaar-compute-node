@@ -50,11 +50,7 @@ from ..utils.text import format_exception
 from .command import CommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
-from .services import (
-    AuditRecorder,
-    count_unread_in_reach,
-    list_unread_in_reach,
-)
+from .services import AuditRecorder, unread_in_reach
 from .turn import (
     TurnContext,
     TurnCoordinator,
@@ -809,9 +805,10 @@ class AgentOrchestrator(IAsyncLifecycle):
         if runtime_session is None:
             return
         message = notification.message
-        total_unread = await count_unread_in_reach(
+        summary = await unread_in_reach(
             self._storage,
             notification.context.actor,
+            limit=0,
         )
         cursor = await self._storage.get_consumer_cursor(thread_id)
         if cursor is not None and message.seq <= cursor.delivered_through_seq:
@@ -821,7 +818,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         upgrade = self._upgrade_for(notification.context.actor)
         input_text = inbox_notice(
             (message,),
-            total_unread_count=total_unread,
+            total_unread_count=max(summary.total, 1),
             closing_bracket_on_own_line=False,
             upgrade_version=upgrade[0] if upgrade is not None else None,
             installed_version=upgrade[1] if upgrade is not None else None,
@@ -1412,29 +1409,22 @@ class AgentOrchestrator(IAsyncLifecycle):
         self._runtime_turns[turn.turn_id] = turn
         return turn
 
-    async def _unread_summary(self, actor: Actor) -> tuple[int, tuple[Message, ...]]:
-        """Say how much the actor has unread, and how much of it a notice takes."""
-
-        # the newest end, so a message arriving behind a backlog too long to
-        # carry is still the one a notice reports
-        unread = await list_unread_in_reach(
-            self._storage,
-            actor,
-            limit=_NOTICE_WINDOW,
-        )
-        total = await count_unread_in_reach(self._storage, actor)
-        return total, unread
-
     async def _notice_for(self, durable_context: _DurableTurnContext) -> str | None:
         """Compose what a turn would say, or nothing when nothing is unread."""
 
-        total_unread, unread = await self._unread_summary(durable_context.actor)
-        if not unread:
+        # the newest end, so a message arriving behind a backlog too long to
+        # carry is still the one a notice reports
+        summary = await unread_in_reach(
+            self._storage,
+            durable_context.actor,
+            limit=_NOTICE_WINDOW,
+        )
+        if not summary.messages:
             return None
         upgrade = self._upgrade_for(durable_context.actor)
         return inbox_notice(
-            unread,
-            total_unread_count=total_unread,
+            summary.messages,
+            total_unread_count=summary.total,
             closing_bracket_on_own_line=True,
             upgrade_version=upgrade[0] if upgrade is not None else None,
             installed_version=upgrade[1] if upgrade is not None else None,

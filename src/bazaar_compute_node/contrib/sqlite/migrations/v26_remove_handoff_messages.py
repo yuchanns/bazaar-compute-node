@@ -15,6 +15,13 @@ HANDOFF_MESSAGE_REMOVAL_MIGRATION = Migration(
     name="remove_handoff_messages",
     statements=(
         """
+        UPDATE messages SET reply_to_message_id = NULL
+        WHERE reply_to_message_id IN (
+            SELECT message_id FROM messages
+            WHERE json_extract(metadata_json, '$.system_message_kind') = 'handoff'
+        )
+        """,
+        """
         DELETE FROM messages
         WHERE json_extract(metadata_json, '$.system_message_kind') = 'handoff'
         """,

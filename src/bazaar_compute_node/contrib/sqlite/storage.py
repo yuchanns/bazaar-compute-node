@@ -31,6 +31,9 @@ _READ_OPERATIONS = frozenset(
         "list_messages",
         "list_inbox_targets",
         "list_unread_message_owners",
+        "list_unread_messages",
+        "count_unread_messages",
+        "read_unread_summary",
         "list_ready_attachment_paths",
         "list_reminders",
         "read_inbox_catalog",
@@ -40,7 +43,9 @@ _READ_OPERATIONS = frozenset(
     }
 )
 
-_SNAPSHOT_READ_OPERATIONS = frozenset({"read_inbox_catalog", "read_message_history"})
+_SNAPSHOT_READ_OPERATIONS = frozenset(
+    {"read_inbox_catalog", "read_message_history", "read_unread_summary"}
+)
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {

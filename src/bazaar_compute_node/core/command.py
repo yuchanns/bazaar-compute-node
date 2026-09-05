@@ -31,6 +31,14 @@ class TargetProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class UnreadSummary:
+    """How much an actor has unread, and the newest end of it."""
+
+    total: int
+    messages: tuple[Message[InboundAttachment], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MessageCheckResult:
     """Drain result with a snapshot independent from the delivery cursor."""
 
