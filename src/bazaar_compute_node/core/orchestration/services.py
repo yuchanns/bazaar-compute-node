@@ -29,7 +29,7 @@ async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
             return (thread_id,)
         case Agent():
             page = await storage.list_inbox_targets(limit=_REACH_PAGE)
-            return tuple(summary.session_id for summary in page.targets)
+            return tuple(summary.thread_id for summary in page.targets)
 
 
 async def count_unread_in_reach(storage: IStorage, actor: Actor) -> int:
@@ -72,7 +72,7 @@ async def list_unread_in_reach(
             return await storage.list_unread_messages(limit=limit)
 
 
-class SessionAuditRecorder:
+class AuditRecorder:
     """Write sanitized session audit events with one shared policy."""
 
     def __init__(

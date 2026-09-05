@@ -6,13 +6,13 @@ from collections.abc import Sequence
 import aiosqlite
 
 from ....core.models import (
-    BcnSession,
     ChannelSession,
     InboundAttachment,
     Message,
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
+    Thread,
 )
 from ..executor import SqliteExecuteResult, SqliteSession
 
@@ -124,44 +124,46 @@ class RepositoryBase:
             raise ValueError("SQL parameter count does not match placeholders")
         return "".join(rewritten), tuple(bound)
 
-    async def get_bcn_session(self, session_id: str) -> BcnSession | None:
-        del session_id
+    async def get_thread(self, thread_id: str) -> Thread | None:
+        del thread_id
         raise NotImplementedError
 
-    async def get_channel_session(self, session_id: str) -> ChannelSession | None:
-        del session_id
+    async def get_channel_session(
+        self, channel_session_id: str
+    ) -> ChannelSession | None:
+        del channel_session_id
         raise NotImplementedError
 
     async def get_latest_message_seq(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> int:
-        del session_id, direction, delivery_states
+        del thread_id, direction, delivery_states
         raise NotImplementedError
 
     async def resolve_message(
         self,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None:
-        del session_id, message_id, direction, delivery_states
+        del thread_id, message_id, direction, delivery_states
         raise NotImplementedError
 
     async def get_owned_message(
         self,
         agent_id: str,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None:
-        del agent_id, session_id, message_id, direction
+        del agent_id, thread_id, message_id, direction
         raise NotImplementedError
 
     async def _attachments(self, message_id: str) -> tuple[InboundAttachment, ...]:

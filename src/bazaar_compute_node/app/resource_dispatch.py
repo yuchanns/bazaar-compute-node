@@ -32,7 +32,7 @@ from .upgrade import UpgradeError, UpgradeService, UpgradeUnavailable
 def serialize_reminder(reminder: Reminder) -> dict[str, object]:
     return {
         "reminder_id": reminder.reminder_id,
-        "owner_session_id": reminder.owner_session_id,
+        "owner_thread_id": reminder.owner_thread_id,
         "anchor_message_id": reminder.anchor_message_id,
         "title": reminder.title,
         "state": reminder.state.value,

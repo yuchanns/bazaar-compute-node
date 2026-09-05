@@ -15,7 +15,7 @@ from bazaar_compute_node.core.models import (
     RuntimeEventState,
 )
 from bazaar_compute_node.core.observability import LogLevel
-from bazaar_compute_node.core.orchestration.services import SessionAuditRecorder
+from bazaar_compute_node.core.orchestration.services import AuditRecorder
 
 
 class _FailingAudit:
@@ -59,7 +59,7 @@ def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
         state=RuntimeEventState.FAILED,
         created_at_ms=2,
         correlation=CorrelationContext(
-            bcn_session_id="bcn-1",
+            thread_id="bcn-1",
             runtime_session_id="runtime-1",
             turn_id="turn-1",
         ),
@@ -103,7 +103,7 @@ def test_audit_event_requires_stable_error_kind_and_redacted_metadata() -> None:
 @pytest.mark.asyncio
 async def test_session_audit_recursively_omits_sensitive_provider_metadata() -> None:
     audit = RecordingAudit()
-    recorder = SessionAuditRecorder(
+    recorder = AuditRecorder(
         sink=audit,
         timeout_budget=TimeoutBudget(1, 1, 1, 1),
         clock=lambda: 1,
@@ -112,7 +112,7 @@ async def test_session_audit_recursively_omits_sensitive_provider_metadata() -> 
     await recorder.append(
         event_name="claudecode.turn.completed",
         state=RuntimeEventState.COMPLETED,
-        correlation=CorrelationContext(bcn_session_id="session-1"),
+        correlation=CorrelationContext(thread_id="session-1"),
         metadata={
             "provider_subtype": "success",
             "permission_denial_count": 1,
@@ -136,7 +136,7 @@ async def test_session_audit_recursively_omits_sensitive_provider_metadata() -> 
 
 @pytest.mark.asyncio
 async def test_session_audit_failure_does_not_fail_business_operation() -> None:
-    recorder = SessionAuditRecorder(
+    recorder = AuditRecorder(
         sink=_FailingAudit(),
         timeout_budget=TimeoutBudget(1, 1, 1, 1),
         clock=lambda: 1,
@@ -145,5 +145,5 @@ async def test_session_audit_failure_does_not_fail_business_operation() -> None:
     await recorder.append(
         event_name="runtime.turn.completed",
         state=RuntimeEventState.COMPLETED,
-        correlation=CorrelationContext(bcn_session_id="session-1"),
+        correlation=CorrelationContext(thread_id="session-1"),
     )

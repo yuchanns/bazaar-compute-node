@@ -148,7 +148,7 @@ class ThreadUnfollowResult:
     changed: bool
 
 
-class SessionNotFoundError(ValueError):
+class ThreadNotFoundError(ValueError):
     """A command referenced a bcn session that is not persisted on this node."""
 
 

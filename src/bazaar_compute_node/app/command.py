@@ -21,8 +21,8 @@ from ..core.actor import Actor, Actors
 from ..core.command import (
     ICommandService,
     MessageSendFreshnessHold,
-    SessionNotFoundError,
     TargetProjection,
+    ThreadNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -83,7 +83,7 @@ def serialize_message(
         "seq": message.seq,
         "message_id": message.message_id,
         "direction": message.direction.value,
-        "session_id": message.session_id,
+        "thread_id": message.thread_id,
         "channel_session_id": message.channel_session_id,
         "channel": message.channel,
         "received_at_ms": message.received_at_ms,
@@ -144,7 +144,7 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
     )
     return {
         "target": summary.target,
-        "session_id": summary.session_id,
+        "thread_id": summary.thread_id,
         "target_kind": summary.target_kind.value,
         "pending_count": summary.pending_count,
         "last_activity_at_ms": summary.last_activity_at_ms,
@@ -417,7 +417,7 @@ class CommandDispatcher:
             if error.next_action is not None:
                 response["next_action"] = error.next_action
             return response
-        except SessionNotFoundError as error:
+        except ThreadNotFoundError as error:
             return {
                 "ok": False,
                 "code": "SESSION_NOT_FOUND",

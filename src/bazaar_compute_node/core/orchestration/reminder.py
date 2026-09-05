@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from uuid import uuid7
 
-from ..concurrency import ISessionConcurrency
+from ..concurrency import IThreadConcurrency
 from ..lifecycle import IAsyncLifecycle, TaskFailureSignal
 from ..models import (
     InboundAttachment,
@@ -51,14 +51,14 @@ async def resolve_reminder_anchor(
     if not isinstance(reminder_id, str):
         return None
     try:
-        reminder = await storage.get_reminder(message.session_id, reminder_id)
+        reminder = await storage.get_reminder(message.thread_id, reminder_id)
     except ValueError:
         return None
     if reminder is None:
         return None
     return await storage.get_owned_message(
         agent_id,
-        reminder.owner_session_id,
+        reminder.owner_thread_id,
         reminder.anchor_message_id,
         direction=MessageDirection.INBOUND,
     )
@@ -72,7 +72,7 @@ class ReminderScheduler(IAsyncLifecycle):
         *,
         storage: IStorage,
         timer_wheel: TimerWheel,
-        concurrency: ISessionConcurrency,
+        concurrency: IThreadConcurrency,
         publish_wake: Callable[[str, Message[InboundAttachment]], Awaitable[bool]],
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -248,7 +248,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 # the failure has to be woken on the way out
                 for agent_id, message in sorted(
                     materialized,
-                    key=lambda item: (item[0], item[1].session_id, item[1].seq),
+                    key=lambda item: (item[0], item[1].thread_id, item[1].seq),
                 ):
                     await self._publish_message(agent_id, message)
             await asyncio.sleep(0)
@@ -258,10 +258,10 @@ class ReminderScheduler(IAsyncLifecycle):
         snapshot: OwnedReminder,
     ) -> tuple[str, Message[InboundAttachment]] | None:
         owner = snapshot.owner
-        async with self._concurrency.for_session(owner.owner_session_id):
+        async with self._concurrency.for_thread(owner.owner_thread_id):
             current_owned = await self._storage.get_owned_reminder(
                 owner.agent_id,
-                owner.owner_session_id,
+                owner.owner_thread_id,
                 snapshot.reminder.reminder_id,
             )
             if current_owned is None:
@@ -307,7 +307,7 @@ class ReminderScheduler(IAsyncLifecycle):
             )
             anchor = await self._storage.get_owned_message(
                 owner.agent_id,
-                current.owner_session_id,
+                current.owner_thread_id,
                 current.anchor_message_id,
                 direction=MessageDirection.INBOUND,
             )
@@ -323,7 +323,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=str(uuid7()),
-                session_id=current.owner_session_id,
+                thread_id=current.owner_thread_id,
                 channel_session_id=anchor.channel_session_id,
                 channel=anchor.channel,
                 provider_thread_id=anchor.provider_thread_id,
@@ -379,7 +379,7 @@ class ReminderScheduler(IAsyncLifecycle):
             reason,
             extra={
                 "agent_id": agent_id,
-                "owner_session_id": reminder.owner_session_id,
+                "owner_thread_id": reminder.owner_thread_id,
                 "reminder_id": reminder.reminder_id,
                 "anchor_message_id": reminder.anchor_message_id,
             },
@@ -402,7 +402,7 @@ class ReminderScheduler(IAsyncLifecycle):
                 "reminder wake publish failed",
                 extra={
                     "agent_id": agent_id,
-                    "owner_session_id": message.session_id,
+                    "owner_thread_id": message.thread_id,
                 },
             )
 

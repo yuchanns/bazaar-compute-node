@@ -262,12 +262,23 @@ Agent 留在 `session` 模式。
 
 放在功能改动之后做：`actor_id` 落地后，指代对话线的 `bcn_session_id` 出现点已明显减少，改名的面最小。
 
-`BcnSession` 改名为 `Thread`，`bcn_sessions` 表与各表中指代对话线的 `session_id` 列改名为
-`thread_id`；只改指代对话线的列，`runtime_attempts` 等指代 runtime session 的列不动。表与列的改动写
-新 migration，已发布的 migration 一个字节都不动。`ConsumerCursor.session_id`、`SessionContext`、
-`ISessionConcurrency`、`SessionLockRegistry.for_session` 一并改名，锁入口成为 `for_thread`。
-`SessionOrchestrator` 改为与实际一致的名字：它按 `agent_id` 构造，是 Agent 级的编排器；
-`SessionCommandService` 与 `SessionTurnCoordinator` 去掉不再成立的 `Session` 前缀。
+`BcnSession` 改名为 `Thread`，`bcn_sessions` 表改名为 `threads`，各表中指代对话线的 `session_id`
+列改名为 `thread_id`（`messages`、`consumer_cursors`，以及 `reminders.owner_session_id` →
+`owner_thread_id`）；只改指代对话线的列，`runtime_attempts.session_id` 与 `RuntimeAttempt`、
+`RuntimeTurn` 上同名的字段指代 runtime session，保持不动。受影响的索引一并改名重建。表与列的改动写
+新 migration（v25），已发布的 migration 一个字节都不动。`ConsumerCursor.session_id` 与
+`CorrelationContext.bcn_session_id` 改为 `thread_id`，`SessionContext` 改为 `TurnContext`，
+`ISessionConcurrency`/`SessionLockRegistry` 改为 `IThreadConcurrency`/`ThreadLockRegistry`，锁入口
+成为 `for_thread`。`SessionOrchestrator` 改名为 `AgentOrchestrator`（它按 `agent_id` 构造，是
+Agent 级的编排器），所在模块随之由 `orchestration/session.py` 改为 `orchestration/orchestrator.py`；
+`SessionCommandService`、`SessionTurnCoordinator`、`SessionAuditRecorder` 去掉不再成立的 `Session`
+前缀。`SessionNotFoundError` 改为 `ThreadNotFoundError`。
+
+不改的两处，理由都是「那里的 session 不是对话线」：`IChannel` 的 `accept_turn_event(session_id=)`、
+`anchor_turn(session_id=)` 与 `ChannelSendRequest.session_id` 位于 Channel 边界，`Channel` 会把本地
+对话线 id 换成 provider 的 session id 再交给 contrib 实现，两端同名参数指的是不同的东西，统一改名
+反而会指错；developer instructions 里两句「bcn session」描述的是同一件事，但改提示词会改变模型行为，
+不属于机械改名，留到需要时单独处理。
 
 `channel_sessions` 本轮不改名，两者的关系在文档中写明：`thread` 是对话线的本地身份，
 `channel_session` 是这条对话线在 provider 上的地址，一一对应。改名不改变任何行为，测试只做同步
@@ -345,7 +356,7 @@ Agent 留在 `session` 模式。
 
 ### Task 7：把 session 改名为 thread
 
-- 按第 9 节完成改名，表与列的改动写新 migration，已发布的 migration 不动；
+- 按第 9 节完成改名，表与列的改动写新 migration（v25），已发布的 migration 不动；
 - 改名不改变任何行为，测试只做同步更名；
 - 运行 focused tests、全量 non-E2E 与全部静态门禁，停下等待 review。
 

@@ -26,10 +26,10 @@ from ....core.storage import (
     UnreadMessageOwner,
 )
 from ..codec import (
-    bcn_session_from_row,
     encode_metadata,
     inbound_attachment_from_row,
     message_from_row,
+    thread_from_row,
     validate_inbound_message_input,
     validate_message_input,
     validate_outbound_insert,
@@ -39,7 +39,7 @@ from ..codec import (
 from .base import RepositoryBase
 
 _MESSAGE_COLUMNS = (
-    "message_id, seq, direction, agent_id, session_id, channel_session_id, "
+    "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
     "channel, provider_thread_id, provider_message_id, provider_time_ms, "
     "received_at_ms, sender, sender_id, sender_display_name, "
     "message_type, target, target_kind, "
@@ -52,7 +52,7 @@ _MESSAGE_COLUMNS = (
 _INBOX_TARGET_CATALOG_CTE = """
 WITH latest_message_ranked AS (
     SELECT
-        session_id,
+        thread_id,
         message_id,
         target,
         sender,
@@ -61,7 +61,7 @@ WITH latest_message_ranked AS (
         provider_time_ms,
         COALESCE(received_at_ms, created_at_ms) AS activity_at_ms,
         ROW_NUMBER() OVER (
-            PARTITION BY session_id
+            PARTITION BY thread_id
             ORDER BY seq DESC, message_id DESC
         ) AS message_rank
     FROM messages
@@ -76,7 +76,7 @@ WITH latest_message_ranked AS (
 ),
 latest_message AS (
     SELECT
-        session_id,
+        thread_id,
         message_id,
         target,
         sender,
@@ -88,19 +88,19 @@ latest_message AS (
     WHERE message_rank = 1
 ),
 pending_message AS (
-    SELECT message.session_id, COUNT(*) AS pending_count
+    SELECT message.thread_id, COUNT(*) AS pending_count
     FROM messages AS message
     LEFT JOIN consumer_cursors AS cursor
-        ON cursor.session_id = message.session_id
+        ON cursor.thread_id = message.thread_id
     WHERE message.agent_id = /*agent_id*/?
       AND message.direction = 'inbound'
       AND message.notifies_runtime = 1
       AND message.seq > COALESCE(cursor.delivered_through_seq, 0)
-    GROUP BY message.session_id
+    GROUP BY message.thread_id
 ),
 target_catalog AS (
     SELECT
-        bcn.id AS session_id,
+        thread.id AS thread_id,
         COALESCE(
             latest.target,
             channel.target_kind || ':' || channel.id
@@ -108,13 +108,13 @@ target_catalog AS (
         channel.target_kind AS target_kind,
         COALESCE(pending.pending_count, 0) AS pending_count,
         MAX(
-            COALESCE(bcn.last_activity_at_ms, 0),
+            COALESCE(thread.last_activity_at_ms, 0),
             COALESCE(latest.activity_at_ms, 0),
             COALESCE(channel.last_inbound_at_ms, 0),
             COALESCE(channel.last_outbound_at_ms, 0),
-            COALESCE(bcn.updated_at_ms, 0),
+            COALESCE(thread.updated_at_ms, 0),
             COALESCE(channel.updated_at_ms, 0),
-            COALESCE(bcn.created_at_ms, 0),
+            COALESCE(thread.created_at_ms, 0),
             COALESCE(channel.created_at_ms, 0)
         ) AS last_activity_at_ms,
         latest.message_id AS latest_message_id,
@@ -123,15 +123,15 @@ target_catalog AS (
         latest.sender_display_name AS latest_sender_display_name,
         latest.provider_time_ms AS latest_provider_time_ms,
         latest.activity_at_ms AS latest_received_at_ms
-    FROM bcn_sessions AS bcn
+    FROM threads AS thread
     JOIN channel_sessions AS channel
         ON channel.agent_id = /*agent_id*/?
-       AND channel.id = bcn.channel_session_id
+       AND channel.id = thread.channel_session_id
     LEFT JOIN latest_message AS latest
-        ON latest.session_id = bcn.id
+        ON latest.thread_id = thread.id
     LEFT JOIN pending_message AS pending
-        ON pending.session_id = bcn.id
-    WHERE bcn.agent_id = /*agent_id*/?
+        ON pending.thread_id = thread.id
+    WHERE thread.agent_id = /*agent_id*/?
 )
 """
 
@@ -173,7 +173,7 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
     latest_sender_display_name = cast(str | None, row["latest_sender_display_name"])
     return InboxTargetSummary(
         target=cast(str, row["target"]),
-        session_id=cast(str, row["session_id"]),
+        thread_id=cast(str, row["thread_id"]),
         target_kind=ChannelTargetKind(cast(str, row["target_kind"])),
         pending_count=cast(int, row["pending_count"]),
         last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
@@ -210,13 +210,13 @@ class MessageOperations(RepositoryBase):
 
     async def get_latest_message_seq(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> int:
-        predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
-        parameters: list[object] = [session_id]
+        predicates = ["agent_id = /*agent_id*/?", "thread_id = ?"]
+        parameters: list[object] = [thread_id]
         _append_message_filters(
             predicates,
             parameters,
@@ -234,7 +234,7 @@ class MessageOperations(RepositoryBase):
 
     async def count_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -242,8 +242,8 @@ class MessageOperations(RepositoryBase):
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
         notifying_only: bool = False,
     ) -> int:
-        predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
-        parameters: list[object] = [session_id]
+        predicates = ["agent_id = /*agent_id*/?", "thread_id = ?"]
+        parameters: list[object] = [thread_id]
         if after_seq is not None:
             predicates.append("seq > ?")
             parameters.append(after_seq)
@@ -277,12 +277,12 @@ class MessageOperations(RepositoryBase):
             raise RuntimeError("SQLite inbox target count query returned no row")
         rows = await self.fetchall(
             _INBOX_TARGET_CATALOG_CTE
-            + "SELECT target, session_id, target_kind, pending_count, "
+            + "SELECT target, thread_id, target_kind, pending_count, "
             "last_activity_at_ms, latest_message_id, latest_sender, latest_sender_id, "
             "latest_sender_display_name, "
             "latest_provider_time_ms, latest_received_at_ms "
             "FROM target_catalog "
-            "ORDER BY last_activity_at_ms DESC, session_id "
+            "ORDER BY last_activity_at_ms DESC, thread_id "
             "LIMIT ? OFFSET ?",
             (limit, offset),
         )
@@ -314,22 +314,22 @@ class MessageOperations(RepositoryBase):
                 predicate = "0"
                 parameters = ()
         rows = await self.fetchall(
-            "SELECT bcn.id, bcn.channel_session_id, bcn.workspace_id, "
-            "bcn.created_at_ms, bcn.updated_at_ms, bcn.last_activity_at_ms, "
-            "bcn.metadata_json "
-            "FROM bcn_sessions AS bcn "
+            "SELECT thread.id, thread.channel_session_id, thread.workspace_id, "
+            "thread.created_at_ms, thread.updated_at_ms, thread.last_activity_at_ms, "
+            "thread.metadata_json "
+            "FROM threads AS thread "
             "JOIN channel_sessions AS channel "
             "ON channel.agent_id = /*agent_id*/? "
-            "AND channel.id = bcn.channel_session_id "
-            "WHERE bcn.agent_id = /*agent_id*/? "
-            f"AND ({predicate}) ORDER BY bcn.id",
+            "AND channel.id = thread.channel_session_id "
+            "WHERE thread.agent_id = /*agent_id*/? "
+            f"AND ({predicate}) ORDER BY thread.id",
             parameters,
         )
         if len(rows) != 1:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to exactly one owned session"
             )
-        target = bcn_session_from_row(rows[0])
+        target = thread_from_row(rows[0])
         channel_session = cast(
             ChannelSession,
             await self.get_channel_session(target.channel_session_id),
@@ -340,11 +340,11 @@ class MessageOperations(RepositoryBase):
                 aiosqlite.Row,
                 await self.fetchone(
                     "SELECT COUNT(*) AS target_count "
-                    "FROM bcn_sessions AS bcn "
+                    "FROM threads AS thread "
                     "JOIN channel_sessions AS channel "
                     "ON channel.agent_id = /*agent_id*/? "
-                    "AND channel.id = bcn.channel_session_id "
-                    "WHERE bcn.agent_id = /*agent_id*/? "
+                    "AND channel.id = thread.channel_session_id "
+                    "WHERE thread.agent_id = /*agent_id*/? "
                     "AND channel.target_kind = 'dm' "
                     "AND channel.target_handle_key = ?",
                     (channel_session.target_handle_key,),
@@ -352,7 +352,7 @@ class MessageOperations(RepositoryBase):
             )
             handle_is_unique = cast(int, count_row["target_count"]) == 1
         return ResolvedInboxTarget(
-            bcn_session=target,
+            thread=target,
             channel_session=channel_session,
             handle_is_unique=handle_is_unique,
         )
@@ -414,15 +414,15 @@ class MessageOperations(RepositoryBase):
         rows = await self.fetchall(
             "WITH unread_ranked AS (SELECT message.*, "
             "ROW_NUMBER() OVER (PARTITION BY message.agent_id, "
-            "message.session_id ORDER BY message.seq DESC, message.message_id DESC) "
+            "message.thread_id ORDER BY message.seq DESC, message.message_id DESC) "
             "AS unread_rank FROM messages AS message "
             "LEFT JOIN consumer_cursors AS cursor "
-            "ON cursor.session_id = message.session_id WHERE "
+            "ON cursor.thread_id = message.thread_id WHERE "
             + " AND ".join(predicates)
             + ") SELECT "
             + _MESSAGE_COLUMNS
             + " FROM unread_ranked WHERE unread_rank = 1 "
-            "ORDER BY agent_id, session_id",
+            "ORDER BY agent_id, thread_id",
             parameters,
         )
         owners: list[UnreadMessageOwner] = []
@@ -446,7 +446,7 @@ class MessageOperations(RepositoryBase):
             "AND notifies_runtime = 1 "
             "AND seq > COALESCE(("
             "SELECT delivered_through_seq FROM consumer_cursors "
-            "WHERE consumer_cursors.session_id = messages.session_id"
+            "WHERE consumer_cursors.thread_id = messages.thread_id"
             "), 0) "
             "ORDER BY seq DESC LIMIT ?",
             (limit,),
@@ -456,7 +456,7 @@ class MessageOperations(RepositoryBase):
 
     async def list_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -467,8 +467,8 @@ class MessageOperations(RepositoryBase):
         latest: bool = False,
         limit: int = 100,
     ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]:
-        predicates = ["agent_id = /*agent_id*/?", "session_id = ?"]
-        parameters: list[object] = [session_id]
+        predicates = ["agent_id = /*agent_id*/?", "thread_id = ?"]
+        parameters: list[object] = [thread_id]
         if after_seq is not None:
             predicates.append("seq > ?")
             parameters.append(after_seq)
@@ -559,20 +559,20 @@ class MessageOperations(RepositoryBase):
         if canonical.reply_to_message_id is not None:
             referenced_id = canonical.reply_to_message_id
             referenced = await self.fetchone(
-                "SELECT message_id, session_id, seq FROM messages "
+                "SELECT message_id, thread_id, seq FROM messages "
                 "WHERE agent_id = /*agent_id*/? AND message_id = ?",
                 (referenced_id,),
             )
             if referenced is None:
                 referenced_id = self._agent_local_id("message", referenced_id)
                 referenced = await self.fetchone(
-                    "SELECT message_id, session_id, seq FROM messages "
+                    "SELECT message_id, thread_id, seq FROM messages "
                     "WHERE agent_id = /*agent_id*/? AND message_id = ?",
                     (referenced_id,),
                 )
             if referenced is None:
                 raise ValueError("reply_to_message_id does not reference a message")
-            if referenced["session_id"] != canonical.session_id:
+            if referenced["thread_id"] != canonical.thread_id:
                 raise ValueError("reply_to_message_id must belong to the same session")
             if cast(int, referenced["seq"]) >= canonical.seq:
                 raise ValueError(
@@ -620,14 +620,12 @@ class MessageOperations(RepositoryBase):
         message: Message[InboundAttachment],
     ) -> Message[InboundAttachment]:
         validate_inbound_message_input(message)
-        bcn_session = await self.get_bcn_session(message.session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
-        channel_session = await self.get_channel_session(bcn_session.channel_session_id)
+        thread = await self.get_thread(message.thread_id)
+        if thread is None:
+            raise ValueError(f"unknown thread: {message.thread_id}")
+        channel_session = await self.get_channel_session(thread.channel_session_id)
         if channel_session is None:
-            raise ValueError(
-                f"unknown channel session: {bcn_session.channel_session_id}"
-            )
+            raise ValueError(f"unknown channel session: {thread.channel_session_id}")
         if (
             message.channel_session_id != channel_session.id
             or message.channel != channel_session.channel
@@ -671,16 +669,16 @@ class MessageOperations(RepositoryBase):
         if message.sender_kind is not SenderKind.SYSTEM:
             raise ValueError("system persistence requires a system message")
         binding = await self.fetchone(
-            "SELECT bcn.channel_session_id, channel.channel, "
+            "SELECT thread.channel_session_id, channel.channel, "
             "channel.provider_thread_id, channel.target_kind "
-            "FROM bcn_sessions AS bcn JOIN channel_sessions AS channel "
-            "ON channel.agent_id = bcn.agent_id "
-            "AND channel.id = bcn.channel_session_id "
-            "WHERE bcn.agent_id = ? AND bcn.id = ?",
-            (agent_id, message.session_id),
+            "FROM threads AS thread JOIN channel_sessions AS channel "
+            "ON channel.agent_id = thread.agent_id "
+            "AND channel.id = thread.channel_session_id "
+            "WHERE thread.agent_id = ? AND thread.id = ?",
+            (agent_id, message.thread_id),
         )
         if binding is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
+            raise ValueError(f"unknown thread: {message.thread_id}")
         if (
             message.channel_session_id != binding["channel_session_id"]
             or message.channel != binding["channel"]
@@ -707,7 +705,7 @@ class MessageOperations(RepositoryBase):
     ) -> None:
         await self.execute(
             "INSERT INTO messages ("
-            "message_id, seq, direction, agent_id, session_id, channel_session_id, "
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
             "channel, provider_thread_id, provider_message_id, provider_time_ms, "
             "received_at_ms, sender, sender_id, sender_display_name, "
             "message_type, target, target_kind, "
@@ -719,7 +717,7 @@ class MessageOperations(RepositoryBase):
                 canonical.seq,
                 canonical.direction.value,
                 agent_id,
-                canonical.session_id,
+                canonical.thread_id,
                 canonical.channel_session_id,
                 canonical.channel,
                 canonical.provider_thread_id,
@@ -786,7 +784,7 @@ class MessageOperations(RepositoryBase):
 
     async def resolve_message(
         self,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -794,9 +792,9 @@ class MessageOperations(RepositoryBase):
     ) -> Message[InboundAttachment | OutboundAttachment] | None:
         predicates = ["agent_id = /*agent_id*/?", "message_id = ?"]
         parameters: list[object] = [message_id]
-        if session_id:
-            predicates.append("session_id = ?")
-            parameters.append(session_id)
+        if thread_id:
+            predicates.append("thread_id = ?")
+            parameters.append(thread_id)
         _append_message_filters(
             predicates,
             parameters,
@@ -813,7 +811,7 @@ class MessageOperations(RepositoryBase):
     async def get_owned_message(
         self,
         agent_id: str,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -821,8 +819,8 @@ class MessageOperations(RepositoryBase):
         bound_agent_id = self._bound_agent_id()
         if bound_agent_id is not None and bound_agent_id != agent_id:
             return None
-        predicates = ["agent_id = ?", "session_id = ?", "message_id = ?"]
-        parameters: list[object] = [agent_id, session_id, message_id]
+        predicates = ["agent_id = ?", "thread_id = ?", "message_id = ?"]
+        parameters: list[object] = [agent_id, thread_id, message_id]
         _append_message_filters(
             predicates,
             parameters,
@@ -838,13 +836,13 @@ class MessageOperations(RepositoryBase):
 
     async def get_latest_message(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None:
-        predicates = ["session_id = ?"]
-        parameters: list[object] = [session_id]
+        predicates = ["thread_id = ?"]
+        parameters: list[object] = [thread_id]
         agent_predicate = self._agent_predicate()
         _append_message_filters(
             predicates,
@@ -916,7 +914,7 @@ class MessageOperations(RepositoryBase):
             raise RuntimeError("outbound message has no sender")
         await self.execute(
             "INSERT INTO messages ("
-            "message_id, seq, direction, agent_id, session_id, "
+            "message_id, seq, direction, agent_id, thread_id, "
             "channel_session_id, channel, provider_thread_id, "
             "provider_message_id, sender, sender_id, sender_display_name, "
             "message_type, target, target_kind, "
@@ -929,7 +927,7 @@ class MessageOperations(RepositoryBase):
                 canonical.seq,
                 canonical.direction.value,
                 self._require_agent_id(),
-                canonical.session_id,
+                canonical.thread_id,
                 canonical.channel_session_id,
                 canonical.channel,
                 canonical.provider_thread_id,
@@ -977,7 +975,7 @@ class MessageOperations(RepositoryBase):
 
         if (
             existing.command_id != message.command_id
-            or existing.session_id != message.session_id
+            or existing.thread_id != message.thread_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id
@@ -1015,13 +1013,13 @@ class MessageOperations(RepositoryBase):
         message: Message[OutboundAttachment],
     ) -> Message[OutboundAttachment]:
         validate_outbound_message_input(message)
-        bcn_session = await self.get_bcn_session(message.session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
+        thread = await self.get_thread(message.thread_id)
+        if thread is None:
+            raise ValueError(f"unknown thread: {message.thread_id}")
         channel_session = await self.get_channel_session(message.channel_session_id)
         if channel_session is None:
             raise ValueError(f"unknown channel session: {message.channel_session_id}")
-        if bcn_session.channel_session_id != message.channel_session_id:
+        if thread.channel_session_id != message.channel_session_id:
             raise ValueError("outbound message binding does not match bcn session")
 
         existing = cast(

@@ -14,11 +14,10 @@ from ..agent import Agent, State
 from ..approval import IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import IChannel
-from ..concurrency import ISessionConcurrency, SessionLockRegistry
+from ..concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
-    BcnSession,
     ChannelSession,
     Message,
     RuntimeAttempt,
@@ -26,6 +25,7 @@ from ..models import (
     RuntimeSession,
     RuntimeTurn,
     RuntimeTurnState,
+    Thread,
 )
 from ..observability import IAudit
 from ..outcomes import ProviderCallResult, ProviderCallStatus
@@ -47,17 +47,17 @@ from ..timerwheel import (
 )
 from ..utils.clock import now_ms
 from ..utils.text import format_exception
-from .command import SessionCommandService
+from .command import CommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
 from .services import (
-    SessionAuditRecorder,
+    AuditRecorder,
     count_unread_in_reach,
     list_unread_in_reach,
 )
 from .turn import (
-    SessionContext,
-    SessionTurnCoordinator,
+    TurnContext,
+    TurnCoordinator,
     inbox_notice,
 )
 from .upgrade_notice import UpgradeAnnounced, UpgradeNotice, UpgradePending
@@ -72,16 +72,16 @@ class _IngressItem:
 
 
 @dataclass(slots=True)
-class _DurableSessionContext:
+class _DurableTurnContext:
     channel_session: ChannelSession
-    bcn_session: BcnSession
+    thread: Thread
     actor: Actor
 
 
 @dataclass(slots=True)
 class _RuntimeNotification:
     message: Message
-    context: _DurableSessionContext
+    context: _DurableTurnContext
     completion: asyncio.Future[RuntimeTurn | None] | None = None
     wake_id: str | None = None
 
@@ -149,7 +149,7 @@ class _RuntimeTimerBinding:
     expired: bool = False
 
 
-class SessionOrchestrator(IAsyncLifecycle):
+class AgentOrchestrator(IAsyncLifecycle):
     """Route one Agent's Channel composition through provider-neutral contracts."""
 
     def __init__(
@@ -167,7 +167,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
-        concurrency: ISessionConcurrency | None = None,
+        concurrency: IThreadConcurrency | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self._clock = clock or now_ms
@@ -185,7 +185,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         self._storage = storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
-        self._concurrency = concurrency or SessionLockRegistry()
+        self._concurrency = concurrency or ThreadLockRegistry()
         self._runtime_sessions: dict[Actor, RuntimeSession] = {}
         # the runtime a session last ran on outlives the session itself, so a
         # turn that failed while establishing it can still be attributed
@@ -194,12 +194,12 @@ class SessionOrchestrator(IAsyncLifecycle):
         # what each conversation has been told about the release on offer, so a
         # session hears of one once and of the next one again
         self._session_upgrades: dict[Actor, UpgradeNotice] = {}
-        self._logger = logging.getLogger("bazaar_compute_node.orchestration.session")
+        self._logger = logging.getLogger("bazaar_compute_node.orchestration.agent")
         if not self._logger.handlers:
             self._logger.addHandler(logging.StreamHandler())
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
-        self._audit = SessionAuditRecorder(
+        self._audit = AuditRecorder(
             sink=audit,
             timeout_budget=timeout_budget,
             clock=self._clock,
@@ -217,7 +217,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             translator=translator,
             detail=error_feedback_detail,
         )
-        self._command_service = SessionCommandService(
+        self._command_service = CommandService(
             actors=actors,
             delivery=self._delivery,
             storage=storage,
@@ -226,7 +226,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             workspace=workspace,
             clock=self._clock,
         )
-        self._turns = SessionTurnCoordinator(
+        self._turns = TurnCoordinator(
             agent_id=actors.agent_id,
             channel=channel,
             runtimes=self._runtimes,
@@ -258,7 +258,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         return self._actors.agent_id
 
     @property
-    def command_service(self) -> SessionCommandService:
+    def command_service(self) -> CommandService:
         return self._command_service
 
     @property
@@ -287,25 +287,23 @@ class SessionOrchestrator(IAsyncLifecycle):
             return
         if not self._started:
             raise RuntimeError("session orchestrator is not started")
-        bcn_session = await self._storage.get_bcn_session(message.session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
+        thread = await self._storage.get_thread(message.thread_id)
+        if thread is None:
+            raise ValueError(f"unknown thread: {message.thread_id}")
         channel_session = await self._storage.get_channel_session(
-            bcn_session.channel_session_id
+            thread.channel_session_id
         )
         if channel_session is None:
-            raise ValueError(
-                f"unknown channel session: {bcn_session.channel_session_id}"
-            )
+            raise ValueError(f"unknown channel session: {thread.channel_session_id}")
         self._runtime_queue_for_actor(
-            self._actors.for_thread(message.session_id)
+            self._actors.for_thread(message.thread_id)
         ).put_nowait(
             _RuntimeNotification(
                 message=message,
-                context=_DurableSessionContext(
+                context=_DurableTurnContext(
                     channel_session,
-                    bcn_session,
-                    self._actors.for_thread(bcn_session.id),
+                    thread,
+                    self._actors.for_thread(thread.id),
                 ),
                 wake_id=str(uuid7()),
             )
@@ -343,10 +341,10 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     def _create_runtime_session(
         self,
-        context: _DurableSessionContext,
+        context: _DurableTurnContext,
         *,
         exclude: Container[int] = (),
-    ) -> SessionContext:
+    ) -> TurnContext:
         now_ms = self._clock()
         runtime_index = self._runtimes.select(exclude=exclude)
         runtime_session = RuntimeSession(
@@ -360,9 +358,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         )
         self._runtime_sessions[context.actor] = runtime_session
         self._runtimes.bind(context.actor, runtime_index)
-        return SessionContext(
+        return TurnContext(
             context.channel_session,
-            context.bcn_session,
+            context.thread,
             runtime_session,
         )
 
@@ -451,11 +449,11 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _ensure_runtime_session_or_discard(
         self,
-        context: SessionContext,
+        context: TurnContext,
         *,
         turn: RuntimeTurn | None = None,
         approval_handler: IApprovalHandler | None = None,
-    ) -> tuple[SessionContext, IRuntimeTurnStream | None]:
+    ) -> tuple[TurnContext, IRuntimeTurnStream | None]:
         try:
             return await self._ensure_runtime_session(
                 context,
@@ -714,7 +712,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             await self._cancel_actor_timer(actor)
             turn_task = asyncio.create_task(
                 self._run_notification(batch),
-                name=f"bcn-turn-{batch[0].context.bcn_session.id}",
+                name=f"bcn-turn-{batch[0].context.thread.id}",
             )
             queue_task = asyncio.create_task(queue.get())
             queue_item_consumed = False
@@ -806,7 +804,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             self._logger.exception("runtime error feedback failed")
 
     async def _steer_active_turn(self, notification: _RuntimeNotification) -> None:
-        session_id = notification.context.bcn_session.id
+        thread_id = notification.context.thread.id
         runtime_session = self.runtime_session(notification.context.actor)
         if runtime_session is None:
             return
@@ -815,7 +813,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             self._storage,
             notification.context.actor,
         )
-        cursor = await self._storage.get_consumer_cursor(session_id)
+        cursor = await self._storage.get_consumer_cursor(thread_id)
         if cursor is not None and message.seq <= cursor.delivered_through_seq:
             return
         # a message arriving mid-turn is consumed here, and the turn path that
@@ -841,9 +839,9 @@ class SessionOrchestrator(IAsyncLifecycle):
             return
         await self._turns.steer_turn(
             message,
-            SessionContext(
+            TurnContext(
                 notification.context.channel_session,
-                notification.context.bcn_session,
+                notification.context.thread,
                 runtime_session,
             ),
             active_turn,
@@ -923,7 +921,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             or self._agent.get(actor) is not State.IDLE
         ):
             return
-        async with self._concurrency.for_session(actor.id):
+        async with self._concurrency.for_thread(actor.id):
             binding = self._runtime_timers.get(actor)
             runtime_session = self.runtime_session(actor)
             context_expired = (
@@ -951,7 +949,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _hand_turn_to_another_runtime(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         attempted: set[int],
     ) -> bool:
@@ -972,7 +970,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     ) -> None:
         if turn is None:
             return
-        index = self._runtimes.holder(self._actors.for_thread(message.session_id))
+        index = self._runtimes.holder(self._actors.for_thread(message.thread_id))
         if index is None:
             return
         if turn.state in MESSAGE_KEYS:
@@ -993,7 +991,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                 node_id=self.agent_id,
                 channel=message.channel,
                 channel_session_id=message.channel_session_id,
-                bcn_session_id=message.session_id,
+                thread_id=message.thread_id,
                 runtime_session_id=turn.session_id,
                 turn_id=turn.turn_id,
             ),
@@ -1133,16 +1131,16 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _record_inbound(
         self,
         message: Message,
-    ) -> tuple[_DurableSessionContext | None, Message, bool]:
+    ) -> tuple[_DurableTurnContext | None, Message, bool]:
         recorded = await self._storage.record_inbound(
             message,
             now_ms=self._clock(),
         )
         message = recorded.message
-        context = _DurableSessionContext(
+        context = _DurableTurnContext(
             recorded.channel_session,
-            recorded.bcn_session,
-            self._actors.for_thread(recorded.bcn_session.id),
+            recorded.thread,
+            self._actors.for_thread(recorded.thread.id),
         )
         if recorded.message_created:
             await self._audit.append(
@@ -1152,7 +1150,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     node_id=self.agent_id,
                     channel=message.channel,
                     channel_session_id=message.channel_session_id,
-                    bcn_session_id=message.session_id,
+                    thread_id=message.thread_id,
                     provider_thread_id=message.provider_thread_id,
                     inbound_seq=message.seq,
                 ),
@@ -1161,8 +1159,8 @@ class SessionOrchestrator(IAsyncLifecycle):
                     "channel_session_mapping": (
                         "created" if recorded.channel_session_created else "reused"
                     ),
-                    "bcn_session_mapping": (
-                        "created" if recorded.bcn_session_created else "reused"
+                    "thread_mapping": (
+                        "created" if recorded.thread_created else "reused"
                     ),
                 },
             )
@@ -1199,7 +1197,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         for taken in batch:
             await self._turns.join_turn(
                 turn_id,
-                taken.context.bcn_session.id,
+                taken.context.thread.id,
                 taken.message,
             )
         if await self._storage.get_runtime_attempt(turn_id) is not None:
@@ -1210,9 +1208,9 @@ class SessionOrchestrator(IAsyncLifecycle):
         while True:
             runtime_session = self.runtime_session(durable_context.actor)
             context = (
-                SessionContext(
+                TurnContext(
                     durable_context.channel_session,
-                    durable_context.bcn_session,
+                    durable_context.thread,
                     runtime_session,
                 )
                 if runtime_session is not None
@@ -1245,7 +1243,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _run_turn_on_runtime(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         *,
         input_text: str,
@@ -1306,7 +1304,7 @@ class SessionOrchestrator(IAsyncLifecycle):
                     self._turns.notify_terminal(
                         concluded,
                         context.actor,
-                        context.bcn_session.id,
+                        context.thread.id,
                     )
                 return concluded
             except RuntimeSessionUnavailable as error:
@@ -1336,7 +1334,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _fail_turn(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         error_message: str,
         *,
@@ -1355,7 +1353,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             error_message=error_message,
             correlation=self._turns.turn_correlation(message, context, turn),
             actor=context.actor,
-            session_id=context.bcn_session.id,
+            thread_id=context.thread.id,
             retry_available=retry_available,
         )
         if unknown:
@@ -1366,7 +1364,7 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _conclude(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         finished: RuntimeTurn,
         attempted: set[int],
     ) -> RuntimeTurn | None:
@@ -1380,7 +1378,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _open_turn(
         self,
-        context: SessionContext,
+        context: TurnContext,
         *,
         turn_id: str,
         client_user_message_id: str,
@@ -1427,7 +1425,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         total = await count_unread_in_reach(self._storage, actor)
         return total, unread
 
-    async def _notice_for(self, durable_context: _DurableSessionContext) -> str | None:
+    async def _notice_for(self, durable_context: _DurableTurnContext) -> str | None:
         """Compose what a turn would say, or nothing when nothing is unread."""
 
         total_unread, unread = await self._unread_summary(durable_context.actor)
@@ -1444,9 +1442,9 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _establish_runtime_session(
         self,
-        context: SessionContext,
-        durable_context: _DurableSessionContext,
-    ) -> SessionContext:
+        context: TurnContext,
+        durable_context: _DurableTurnContext,
+    ) -> TurnContext:
         """Bring a session to rest, replacing the runtime once if it will not."""
 
         for attempt in range(2):
@@ -1469,11 +1467,11 @@ class SessionOrchestrator(IAsyncLifecycle):
     async def _recover_turn(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         result: RuntimeTurn,
         *,
         retry_available: bool,
-    ) -> tuple[SessionContext, RuntimeTurn]:
+    ) -> tuple[TurnContext, RuntimeTurn]:
         """Reconcile until the runtime says what became of a turn it lost."""
 
         while self._agent.get(context.actor) is State.RECOVERING:
@@ -1515,7 +1513,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _confirm_runtime_session(
         self,
-        context: SessionContext,
+        context: TurnContext,
         runtime_session: RuntimeSession,
         provider_result: (
             ProviderCallResult[RuntimeSession]
@@ -1579,7 +1577,7 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _record_runtime_loss(
         self,
-        context: SessionContext,
+        context: TurnContext,
         runtime_session: RuntimeSession,
         provider_result: (
             ProviderCallResult[RuntimeSession]
@@ -1618,11 +1616,11 @@ class SessionOrchestrator(IAsyncLifecycle):
 
     async def _ensure_runtime_session(
         self,
-        context: SessionContext,
+        context: TurnContext,
         *,
         turn: RuntimeTurn | None,
         approval_handler: IApprovalHandler | None,
-    ) -> tuple[SessionContext, IRuntimeTurnStream | None]:
+    ) -> tuple[TurnContext, IRuntimeTurnStream | None]:
         runtime_session = context.runtime_session
         recovered_stream: IRuntimeTurnStream | None = None
         # a session that lost sync has to be reconciled before anything else,
@@ -1637,7 +1635,7 @@ class SessionOrchestrator(IAsyncLifecycle):
             node_id=self.agent_id,
             channel=context.channel_session.channel,
             channel_session_id=context.channel_session.id,
-            bcn_session_id=context.bcn_session.id,
+            thread_id=context.thread.id,
             runtime_session_id=runtime_session.id,
             provider_thread_id=runtime_session.provider_thread_id,
         )
@@ -1684,9 +1682,9 @@ class SessionOrchestrator(IAsyncLifecycle):
 
         self._runtime_sessions[runtime_session.actor] = runtime_session
         return (
-            SessionContext(
+            TurnContext(
                 context.channel_session,
-                context.bcn_session,
+                context.thread,
                 runtime_session,
             ),
             recovered_stream,
@@ -1698,7 +1696,7 @@ class SessionOrchestrator(IAsyncLifecycle):
         *,
         timeout: float,
     ) -> None:
-        async with self._concurrency.for_session(runtime_session.actor.id):
+        async with self._concurrency.for_thread(runtime_session.actor.id):
             await self._stop_runtime_session_locked(runtime_session, timeout=timeout)
 
     async def _wait_for_runtime_teardown_tasks(self, *, timeout: float) -> None:

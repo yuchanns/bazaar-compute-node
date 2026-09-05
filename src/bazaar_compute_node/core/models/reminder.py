@@ -14,7 +14,7 @@ def _validate_transition_time(current_ms: int, incoming_ms: int) -> None:
 @dataclass(frozen=True, slots=True)
 class Reminder:
     reminder_id: str
-    owner_session_id: str
+    owner_thread_id: str
     anchor_message_id: str
     title: str
     state: ReminderState

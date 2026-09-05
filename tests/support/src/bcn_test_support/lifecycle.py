@@ -5,14 +5,14 @@ import asyncio
 from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.agent import State
 from bazaar_compute_node.core.channel import ChannelSendRequest
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
 
 from .channel import TestChannel
 
 
 async def wait_for_turn_terminal(
     *,
-    orchestrator: SessionOrchestrator,
+    orchestrator: AgentOrchestrator,
     channel: TestChannel,
     session_id: str,
     client_user_message_id: str,

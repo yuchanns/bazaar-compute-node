@@ -110,7 +110,7 @@ def _anchor_message() -> Message:
         direction=MessageDirection.INBOUND,
         seq=1,
         message_id="0198d4e6-29c5-7465-b74b-88db31f0c200",
-        session_id="provider-session-a",
+        thread_id="provider-session-a",
         channel_session_id="provider-channel-a",
         channel="test",
         provider_thread_id="provider-thread-a",

@@ -33,7 +33,7 @@ def reminder_payload(
 ) -> dict[str, object]:
     return {
         "reminder_id": REMINDER_ID,
-        "owner_session_id": "bcn-a",
+        "owner_thread_id": "bcn-a",
         "anchor_message_id": ANCHOR_ID,
         "title": "Inspect reminder",
         "state": state,

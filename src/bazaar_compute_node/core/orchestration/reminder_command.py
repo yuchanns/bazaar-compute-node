@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from ..actor import Actor
 from ..command import IReminderService
-from ..concurrency import ISessionConcurrency
+from ..concurrency import IThreadConcurrency
 from ..models import Message, MessageDirection, Reminder, ReminderState
 from ..reminder import (
     ReminderCancelRequest,
@@ -44,7 +44,7 @@ class ReminderCommandService(IReminderService):
         self,
         *,
         storage: IStorage,
-        concurrency: ISessionConcurrency,
+        concurrency: IThreadConcurrency,
         poke: Callable[[], None],
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -63,11 +63,11 @@ class ReminderCommandService(IReminderService):
             actor,
             request.message_id,
         )
-        async with self._concurrency.for_session(owner_id):
+        async with self._concurrency.for_thread(owner_id):
             now_ms = self._clock()
             reminder = Reminder(
                 reminder_id="pending",
-                owner_session_id=owner_id,
+                owner_thread_id=owner_id,
                 anchor_message_id=anchor.message_id,
                 title=request.title,
                 state=ReminderState.SCHEDULED,
@@ -105,7 +105,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_session(owner_id):
+        async with self._concurrency.for_thread(owner_id):
             try:
                 updated = reminder.snooze(
                     duration_ms=request.duration_ms,
@@ -134,7 +134,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_session(owner_id):
+        async with self._concurrency.for_thread(owner_id):
             if reminder.state is not ReminderState.SCHEDULED:
                 next_action = (
                     "Run `bcc reminder snooze` first, or create a new Reminder."
@@ -186,7 +186,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_session(owner_id):
+        async with self._concurrency.for_thread(owner_id):
             if reminder.state is not ReminderState.SCHEDULED:
                 raise ReminderCommandFailure(
                     "REMINDER_NOT_SCHEDULED",

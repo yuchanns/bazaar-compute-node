@@ -14,7 +14,7 @@ from .codec import (
 def reminder_from_row(row: aiosqlite.Row) -> Reminder:
     return Reminder(
         reminder_id=_required_text(row["reminder_id"], "reminder_id"),
-        owner_session_id=_required_text(row["owner_session_id"], "owner_session_id"),
+        owner_thread_id=_required_text(row["owner_thread_id"], "owner_thread_id"),
         anchor_message_id=_required_text(row["anchor_message_id"], "anchor_message_id"),
         title=_required_text(row["title"], "title"),
         state=ReminderState(_required_text(row["state"], "reminder.state")),

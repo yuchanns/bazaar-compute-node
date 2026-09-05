@@ -11,10 +11,10 @@ from .repository import SqliteRepository
 _READ_OPERATIONS = frozenset(
     {
         "count_messages",
-        "find_bcn_session",
+        "find_thread",
         "find_channel_session",
         "find_message",
-        "get_bcn_session",
+        "get_thread",
         "get_channel_session",
         "get_consumer_cursor",
         "get_latest_message",

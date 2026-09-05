@@ -43,7 +43,7 @@ def make_reminder(
 ) -> Reminder:
     return Reminder(
         reminder_id=_REMINDER_ID,
-        owner_session_id="session-1",
+        owner_thread_id="session-1",
         anchor_message_id=_MESSAGE_ID,
         title=title,
         state=state,

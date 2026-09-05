@@ -19,7 +19,7 @@ from ..reminder_codec import reminder_from_row
 from .base import RepositoryBase
 
 _REMINDER_COLUMNS = (
-    "reminder_id, owner_session_id, anchor_message_id, title, state, "
+    "reminder_id, owner_thread_id, anchor_message_id, title, state, "
     "next_fire_at_ms, repeat_rule, timezone, revision, last_occurrence_no, "
     "created_at_ms, updated_at_ms, last_fired_at_ms, canceled_at_ms"
 )
@@ -31,21 +31,21 @@ _OWNED_REMINDER_COLUMNS = f"agent_id, {_REMINDER_COLUMNS}"
 class ReminderOperations(RepositoryBase):
     async def get_reminder(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> Reminder | None:
         reference = canonical_id_reference(reminder_id)
         row = await self.fetchone(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-            "WHERE agent_id = /*agent_id*/? AND owner_session_id = ? "
+            "WHERE agent_id = /*agent_id*/? AND owner_thread_id = ? "
             "AND reminder_id = ?",
-            (owner_session_id, reference),
+            (owner_thread_id, reference),
         )
         return reminder_from_row(row) if row is not None else None
 
     async def list_reminders(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
         if not isinstance(statuses, frozenset) or not statuses:
@@ -56,9 +56,9 @@ class ReminderOperations(RepositoryBase):
         placeholders = ", ".join("?" for _ in ordered)
         rows = await self.fetchall(
             f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-            f"WHERE agent_id = /*agent_id*/? AND owner_session_id = ? "
+            f"WHERE agent_id = /*agent_id*/? AND owner_thread_id = ? "
             f"AND state IN ({placeholders}) ORDER BY updated_at_ms DESC, reminder_id",
-            (owner_session_id, *ordered),
+            (owner_thread_id, *ordered),
         )
         return tuple(reminder_from_row(row) for row in rows)
 
@@ -90,7 +90,7 @@ class ReminderOperations(RepositoryBase):
             "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "
             "repeat_rule = ?, timezone = ?, revision = ?, last_occurrence_no = ?, "
             "updated_at_ms = ?, last_fired_at_ms = ?, canceled_at_ms = ? "
-            "WHERE agent_id = /*agent_id*/? AND reminder_id = ? AND owner_session_id = ?",
+            "WHERE agent_id = /*agent_id*/? AND reminder_id = ? AND owner_thread_id = ?",
             (
                 reminder.title,
                 reminder.state.value,
@@ -103,7 +103,7 @@ class ReminderOperations(RepositoryBase):
                 reminder.last_fired_at_ms,
                 reminder.canceled_at_ms,
                 reminder.reminder_id,
-                reminder.owner_session_id,
+                reminder.owner_thread_id,
             ),
         )
 
@@ -116,11 +116,11 @@ class ReminderOperations(RepositoryBase):
             raise ValueError("a new reminder must start at revision 1 with no history")
         if reminder.last_fired_at_ms is not None or reminder.canceled_at_ms is not None:
             raise ValueError("a new reminder cannot contain terminal history")
-        if await self.get_bcn_session(reminder.owner_session_id) is None:
-            raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
+        if await self.get_thread(reminder.owner_thread_id) is None:
+            raise ValueError(f"unknown thread: {reminder.owner_thread_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
         anchor = await self.resolve_message(
-            reminder.owner_session_id,
+            reminder.owner_thread_id,
             anchor_reference,
             direction=MessageDirection.INBOUND,
         )
@@ -132,14 +132,14 @@ class ReminderOperations(RepositoryBase):
             raise RuntimeError("Agent-owned Reminder write requires an Agent scope")
         await self.execute(
             "INSERT INTO reminders ("
-            "agent_id, reminder_id, owner_session_id, anchor_message_id, title, state, "
+            "agent_id, reminder_id, owner_thread_id, anchor_message_id, title, state, "
             "next_fire_at_ms, repeat_rule, timezone, revision, last_occurrence_no, "
             "created_at_ms, updated_at_ms, last_fired_at_ms, canceled_at_ms"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent_id,
                 canonical.reminder_id,
-                canonical.owner_session_id,
+                canonical.owner_thread_id,
                 canonical.anchor_message_id,
                 canonical.title,
                 canonical.state.value,
@@ -164,7 +164,7 @@ class ReminderOperations(RepositoryBase):
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         existing = await self.get_reminder(
-            reminder.owner_session_id, reminder.reminder_id
+            reminder.owner_thread_id, reminder.reminder_id
         )
         if existing is None:
             raise ValueError("reminder not found")
@@ -204,7 +204,7 @@ class ReminderOperations(RepositoryBase):
         incoming = reminder.reminder
         existing_owned = await self.get_owned_reminder(
             reminder.agent_id,
-            incoming.owner_session_id,
+            incoming.owner_thread_id,
             incoming.reminder_id,
         )
         if existing_owned is None:
@@ -218,7 +218,7 @@ class ReminderOperations(RepositoryBase):
             "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "
             "repeat_rule = ?, timezone = ?, revision = ?, last_occurrence_no = ?, "
             "updated_at_ms = ?, last_fired_at_ms = ?, canceled_at_ms = ? "
-            "WHERE agent_id = ? AND reminder_id = ? AND owner_session_id = ?",
+            "WHERE agent_id = ? AND reminder_id = ? AND owner_thread_id = ?",
             (
                 incoming.title,
                 incoming.state.value,
@@ -232,7 +232,7 @@ class ReminderOperations(RepositoryBase):
                 incoming.canceled_at_ms,
                 reminder.agent_id,
                 incoming.reminder_id,
-                incoming.owner_session_id,
+                incoming.owner_thread_id,
             ),
         )
         return incoming
@@ -240,7 +240,7 @@ class ReminderOperations(RepositoryBase):
     async def get_owned_reminder(
         self,
         agent_id: str,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None:
         bound_agent_id = self._bound_agent_id()
@@ -249,8 +249,8 @@ class ReminderOperations(RepositoryBase):
         effective_agent_id = bound_agent_id or agent_id
         row = await self.fetchone(
             f"SELECT {_OWNED_REMINDER_COLUMNS} FROM reminders "
-            "WHERE agent_id = ? AND owner_session_id = ? AND reminder_id = ?",
-            (effective_agent_id, owner_session_id, reminder_id),
+            "WHERE agent_id = ? AND owner_thread_id = ? AND reminder_id = ?",
+            (effective_agent_id, owner_thread_id, reminder_id),
         )
         return self._owned_reminder_from_row(row) if row is not None else None
 
@@ -300,7 +300,7 @@ class ReminderOperations(RepositoryBase):
         incoming = reminder.reminder
         existing_owned = await self.get_owned_reminder(
             reminder.agent_id,
-            incoming.owner_session_id,
+            incoming.owner_thread_id,
             incoming.reminder_id,
         )
         if existing_owned is None:
@@ -312,11 +312,11 @@ class ReminderOperations(RepositoryBase):
             return None
         anchor = await self.fetchone(
             "SELECT channel_session_id, channel, provider_thread_id, target, "
-            "target_kind FROM messages WHERE agent_id = ? AND session_id = ? "
+            "target_kind FROM messages WHERE agent_id = ? AND thread_id = ? "
             "AND message_id = ? AND direction = 'inbound'",
             (
                 reminder.agent_id,
-                incoming.owner_session_id,
+                incoming.owner_thread_id,
                 incoming.anchor_message_id,
             ),
         )
@@ -327,7 +327,7 @@ class ReminderOperations(RepositoryBase):
             "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "
             "repeat_rule = ?, timezone = ?, revision = ?, last_occurrence_no = ?, "
             "updated_at_ms = ?, last_fired_at_ms = ?, canceled_at_ms = ? "
-            "WHERE agent_id = ? AND reminder_id = ? AND owner_session_id = ?",
+            "WHERE agent_id = ? AND reminder_id = ? AND owner_thread_id = ?",
             (
                 incoming.title,
                 incoming.state.value,
@@ -341,7 +341,7 @@ class ReminderOperations(RepositoryBase):
                 incoming.canceled_at_ms,
                 reminder.agent_id,
                 incoming.reminder_id,
-                incoming.owner_session_id,
+                incoming.owner_thread_id,
             ),
         )
         return await self._save_system_message_for_agent(
@@ -374,7 +374,7 @@ class ReminderOperations(RepositoryBase):
     ) -> None:
         if (
             existing.reminder_id != incoming.reminder_id
-            or existing.owner_session_id != incoming.owner_session_id
+            or existing.owner_thread_id != incoming.owner_thread_id
             or existing.anchor_message_id != incoming.anchor_message_id
             or existing.timezone != incoming.timezone
             or existing.created_at_ms != incoming.created_at_ms

@@ -156,7 +156,7 @@ def _message(
         direction=MessageDirection.INBOUND,
         seq=seq,
         message_id=f"message-{session_id}-{seq}",
-        session_id=session_id,
+        thread_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
         provider_thread_id=f"thread-{session_id}",
@@ -185,7 +185,7 @@ async def _wait_for_turn_completion(
                 (
                     event
                     for event in audit.events
-                    if event.correlation.bcn_session_id == session_id
+                    if event.correlation.thread_id == session_id
                     and event.event_name
                     in {
                         "claudecode.turn.completed",
@@ -214,8 +214,7 @@ async def _wait_for_audit_event(
 ) -> None:
     async with asyncio.timeout(timeout):
         while not any(
-            event.event_name == event_name
-            and event.correlation.bcn_session_id == session_id
+            event.event_name == event_name and event.correlation.thread_id == session_id
             for event in audit.events
         ):
             await asyncio.sleep(0.05)
@@ -734,7 +733,7 @@ async def test_real_claude_background_lifecycle_keeps_process_running(
                     inbox is not None and inbox.adopted_provider_wake
                 )
                 if any(
-                    event.correlation.bcn_session_id == scoped_session_id
+                    event.correlation.thread_id == scoped_session_id
                     and event.event_name.endswith("turn.completed")
                     and event.correlation.turn_id == second_turn_id
                     for event in audit.events
@@ -912,7 +911,7 @@ async def _wait_for_turn_event(
     async with asyncio.timeout(timeout):
         while not any(
             event.event_name == event_name
-            and event.correlation.bcn_session_id == session_id
+            and event.correlation.thread_id == session_id
             and event.correlation.turn_id == turn_id
             for event in audit.events
         ):

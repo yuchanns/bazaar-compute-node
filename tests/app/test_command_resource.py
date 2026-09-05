@@ -82,7 +82,7 @@ def make_budget() -> TimeoutBudget:
 def test_inbox_target_serializer_selects_one_latest_time() -> None:
     summary = InboxTargetSummary(
         target="dm:user-1",
-        session_id="session-1",
+        thread_id="session-1",
         target_kind=ChannelTargetKind.DM,
         pending_count=0,
         last_activity_at_ms=100,
@@ -173,7 +173,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         direction=MessageDirection.INBOUND,
         seq=7,
         message_id="message-7",
-        session_id="session-source",
+        thread_id="session-source",
         channel_session_id="channel-source",
         channel="test",
         provider_thread_id="provider-thread",

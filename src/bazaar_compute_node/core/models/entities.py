@@ -85,7 +85,14 @@ class ChannelSession:
 
 
 @dataclass(frozen=True, slots=True)
-class BcnSession:
+class Thread:
+    """One conversation as this node knows it.
+
+    A thread is the local identity of a conversation; the channel session it
+    names is that same conversation's address on the provider. The two are one
+    to one.
+    """
+
     id: str
     channel_session_id: str
     workspace_id: str
@@ -249,7 +256,7 @@ class SenderIdentity:
 @dataclass(frozen=True, slots=True)
 class InboxTargetSummary:
     target: str
-    session_id: str
+    thread_id: str
     target_kind: ChannelTargetKind
     pending_count: int
     last_activity_at_ms: int
@@ -278,7 +285,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     direction: MessageDirection
     seq: int
     message_id: str
-    session_id: str
+    thread_id: str
     channel_session_id: str
     target: str
     body: str
@@ -427,7 +434,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
 
 @dataclass(frozen=True, slots=True)
 class ConsumerCursor:
-    session_id: str
+    thread_id: str
     delivered_through_seq: int = 0
     last_check_at_ms: int | None = None
     last_read_at_ms: int | None = None

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
-from ..core.concurrency import SessionLockRegistry
+from ..core.concurrency import ThreadLockRegistry
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
 from ..core.observability import IAudit
@@ -82,7 +82,7 @@ class NodeApplication:
         self.storage: IStorage = shared_factories.storage()
         self.audit: IAudit = shared_factories.audit()
         self.timer_wheel = TimerWheel()
-        self._reminder_concurrency = SessionLockRegistry()
+        self._reminder_concurrency = ThreadLockRegistry()
         self.reminder_scheduler = ReminderScheduler(
             storage=self.storage,
             timer_wheel=self.timer_wheel,
@@ -369,7 +369,7 @@ class NodeApplication:
             self._log(
                 "reminder.wake.agent_unavailable",
                 agent_id=agent_id,
-                owner_session_id=message.session_id,
+                owner_thread_id=message.thread_id,
             )
             return False
         try:
@@ -380,7 +380,7 @@ class NodeApplication:
             self._log(
                 "reminder.wake.failed",
                 agent_id=agent_id,
-                owner_session_id=message.session_id,
+                owner_thread_id=message.thread_id,
                 error_type=type(error).__name__,
                 error=format_exception(error),
             )

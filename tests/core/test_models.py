@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from bazaar_compute_node.core.actor import Thread
+from bazaar_compute_node.core.actor import Thread as ThreadActor
 from bazaar_compute_node.core.command import InboxListResult
 from bazaar_compute_node.core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     InboxTargetSummary,
@@ -16,6 +15,7 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     SenderIdentity,
     SenderKind,
+    Thread,
 )
 
 
@@ -29,8 +29,8 @@ def make_channel_session() -> ChannelSession:
     )
 
 
-def make_bcn_session() -> BcnSession:
-    return BcnSession(
+def make_thread() -> Thread:
+    return Thread(
         id="bcn-1",
         channel_session_id="channel-1",
         workspace_id="workspace-1",
@@ -42,7 +42,7 @@ def make_bcn_session() -> BcnSession:
 def make_runtime_session() -> RuntimeSession:
     return RuntimeSession(
         id="runtime-1",
-        actor=Thread("bcn-1"),
+        actor=ThreadActor("bcn-1"),
         runtime="test",
         runtime_index=0,
         workspace_id="workspace-1",
@@ -57,7 +57,7 @@ def make_outbound_message() -> Message:
         seq=0,
         message_id="outbound-1",
         command_id="command-1",
-        session_id="bcn-1",
+        thread_id="bcn-1",
         channel_session_id="channel-1",
         target="#test:message-1",
         body="hello",
@@ -70,7 +70,7 @@ def make_outbound_message() -> Message:
 def make_inbox_target() -> InboxTargetSummary:
     return InboxTargetSummary(
         target="dm:user-1",
-        session_id="bcn-1",
+        thread_id="bcn-1",
         target_kind=ChannelTargetKind.DM,
         pending_count=2,
         last_activity_at_ms=100,

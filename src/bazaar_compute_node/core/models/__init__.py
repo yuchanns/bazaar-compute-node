@@ -1,7 +1,6 @@
 from .entities import (
     ApprovalRequest,
     ApprovalResult,
-    BcnSession,
     ChannelSession,
     ChannelTargetPresentation,
     ConsumerCursor,
@@ -13,6 +12,7 @@ from .entities import (
     RuntimeSession,
     RuntimeTurn,
     SenderIdentity,
+    Thread,
 )
 from .events import (
     ContentDelta,
@@ -58,7 +58,6 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
     "ApprovalResult",
-    "BcnSession",
     "ChannelSession",
     "ChannelTargetKind",
     "ChannelTargetPresentation",
@@ -90,6 +89,7 @@ __all__ = [
     "SenderIdentity",
     "SenderKind",
     "SystemMessageKind",
+    "Thread",
     "TokenUsage",
     "ToolCall",
     "ToolCallCompleted",

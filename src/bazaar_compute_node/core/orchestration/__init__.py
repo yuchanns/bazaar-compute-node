@@ -1,6 +1,6 @@
-"""Core session orchestration independent of provider implementations."""
+"""Core Agent orchestration independent of provider implementations."""
 
+from .orchestrator import AgentOrchestrator
 from .reminder import ReminderScheduler
-from .session import SessionOrchestrator
 
-__all__ = ["ReminderScheduler", "SessionOrchestrator"]
+__all__ = ["AgentOrchestrator", "ReminderScheduler"]

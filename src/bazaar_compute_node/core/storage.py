@@ -10,13 +10,12 @@ from .command import (
     MessageReadResult,
     MessageSendFreshnessHold,
     OutboundFreshnessPass,
-    SessionNotFoundError,
     TargetProjection,
+    ThreadNotFoundError,
 )
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
-    BcnSession,
     ChannelSession,
     ConsumerCursor,
     InboundAttachment,
@@ -28,6 +27,7 @@ from .models import (
     Reminder,
     ReminderState,
     RuntimeAttempt,
+    Thread,
 )
 
 
@@ -38,16 +38,16 @@ class InboxTargetResolutionError(ValueError):
 @dataclass(frozen=True, slots=True)
 class RecordInboundResult:
     channel_session: ChannelSession
-    bcn_session: BcnSession
+    thread: Thread
     message: Message[InboundAttachment]
     channel_session_created: bool
-    bcn_session_created: bool
+    thread_created: bool
     message_created: bool
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedInboxTarget:
-    bcn_session: BcnSession
+    thread: Thread
     channel_session: ChannelSession
     handle_is_unique: bool
 
@@ -64,14 +64,14 @@ class ResolvedInboxTarget:
 
 @dataclass(frozen=True, slots=True)
 class ReadMessageHistoryResult:
-    source_session: BcnSession
+    source_thread: Thread
     history: MessageReadResult
 
 
 @dataclass(frozen=True, slots=True)
 class MaterializeOutboundResult:
     channel_session: ChannelSession
-    target_session: BcnSession
+    target_thread: Thread
     reply_to_provider_message_id: str | None
     outcome: Message[OutboundAttachment] | MessageSendFreshnessHold
 
@@ -88,8 +88,8 @@ class UnreadMessageOwner:
             raise ValueError("trigger_message must notify the runtime")
 
     @property
-    def owner_session_id(self) -> str:
-        return self.trigger_message.session_id
+    def owner_thread_id(self) -> str:
+        return self.trigger_message.thread_id
 
 
 _HISTORY_DELIVERY_STATES = frozenset(
@@ -102,27 +102,27 @@ class StorageOperationMixin:
 
     async def check_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         checked_at_ms: int,
     ) -> MessageCheckResult:
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-        cursor = await self.get_consumer_cursor(session_id)
+        if await self.get_thread(thread_id) is None:
+            raise ThreadNotFoundError(f"unknown thread: {thread_id}")
+        cursor = await self.get_consumer_cursor(thread_id)
         if cursor is None:
-            cursor = ConsumerCursor(session_id=session_id)
+            cursor = ConsumerCursor(thread_id=thread_id)
         latest_seq = await self.get_latest_message_seq(
-            session_id,
+            thread_id,
             direction=MessageDirection.INBOUND,
         )
         messages = await self.list_messages(
-            session_id,
+            thread_id,
             after_seq=cursor.delivered_through_seq,
             direction=MessageDirection.INBOUND,
             notifying_only=True,
         )
-        references = await _referenced_messages(self, session_id, messages)
+        references = await _referenced_messages(self, thread_id, messages)
         canonical_targets = {message.target for message in (*messages, *references)}
         canonical_targets.update(
             source_target
@@ -163,15 +163,15 @@ class StorageOperationMixin:
     ) -> ReadMessageHistoryResult:
         self = _operations(self)  # noqa: PLW0642
         target = await self.resolve_inbox_target(raw_target)
-        source_session = target.bcn_session
+        source_thread = target.thread
         messages = await self.list_messages(
-            source_session.id,
+            source_thread.id,
             target=target.canonical_target,
             around_message_id=around_message_id,
             delivery_states=_HISTORY_DELIVERY_STATES,
             limit=limit,
         )
-        references = await _referenced_messages(self, source_session.id, messages)
+        references = await _referenced_messages(self, source_thread.id, messages)
         canonical_targets = {message.target for message in (*messages, *references)}
         canonical_targets.update(
             source_target
@@ -188,11 +188,11 @@ class StorageOperationMixin:
                 TargetProjection(canonical_target, target.display_target)
             )
         latest_seq = await self.get_latest_message_seq(
-            source_session.id,
+            source_thread.id,
             delivery_states=_HISTORY_DELIVERY_STATES,
         )
         return ReadMessageHistoryResult(
-            source_session=source_session,
+            source_thread=source_thread,
             history=MessageReadResult(
                 messages=messages,
                 snapshot_seq=latest_seq,
@@ -234,8 +234,8 @@ class StorageOperationMixin:
         self = _operations(self)  # noqa: PLW0642
         if payload.target_id != target_id:
             raise ValueError("outbound draft target binding cannot change")
-        if await self.get_bcn_session(target_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+        if await self.get_thread(target_id) is None:
+            raise ThreadNotFoundError(f"unknown thread: {target_id}")
         current_seq = await _latest_notifying_inbound_seq(self, target_id)
         if current_seq == 0 or (
             snapshot_seq is not None and current_seq <= snapshot_seq
@@ -310,37 +310,37 @@ class StorageOperationMixin:
             )
             if isinstance(outcome, OutboundFreshnessPass):
                 raise RuntimeError("target freshness recheck lost its stale boundary")
-            held_session = await self.get_bcn_session(target_id)
-            if held_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+            held_thread = await self.get_thread(target_id)
+            if held_thread is None:
+                raise ThreadNotFoundError(f"unknown thread: {target_id}")
             held_channel = await self.get_channel_session(
-                held_session.channel_session_id
+                held_thread.channel_session_id
             )
             if held_channel is None:
                 raise ValueError(
-                    f"unknown channel session: {held_session.channel_session_id}"
+                    f"unknown channel session: {held_thread.channel_session_id}"
                 )
             return MaterializeOutboundResult(
                 channel_session=held_channel,
-                target_session=held_session,
+                target_thread=held_thread,
                 reply_to_provider_message_id=None,
                 outcome=outcome,
             )
         target = await self.resolve_inbox_target(payload.target)
-        if target.bcn_session.id != target_id:
+        if target.thread.id != target_id:
             raise ValueError("outbound target alias binding cannot change")
-        target_session = await self.get_bcn_session(target_id)
-        if target_session is None:
-            raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+        target_thread = await self.get_thread(target_id)
+        if target_thread is None:
+            raise ThreadNotFoundError(f"unknown thread: {target_id}")
         channel_session = await self.get_channel_session(
-            target_session.channel_session_id
+            target_thread.channel_session_id
         )
         if channel_session is None:
             raise ValueError(
-                f"unknown channel session: {target_session.channel_session_id}"
+                f"unknown channel session: {target_thread.channel_session_id}"
             )
         target_messages = await self.list_messages(
-            target_session.id,
+            target_thread.id,
             target=payload.target,
             direction=MessageDirection.INBOUND,
             limit=1,
@@ -354,7 +354,7 @@ class StorageOperationMixin:
         reply_to_provider_message_id = None
         if payload.reply_to_message_id is not None:
             reply_message = await self.resolve_message(
-                target_session.id,
+                target_thread.id,
                 payload.reply_to_message_id,
                 delivery_states=_HISTORY_DELIVERY_STATES,
             )
@@ -367,7 +367,7 @@ class StorageOperationMixin:
                 seq=0,
                 message_id=f"outbound-{target_id}-{command_id}",
                 command_id=command_id,
-                session_id=target_id,
+                thread_id=target_id,
                 channel_session_id=channel_session.id,
                 target=payload.target,
                 body=payload.body,
@@ -381,7 +381,7 @@ class StorageOperationMixin:
         )
         return MaterializeOutboundResult(
             channel_session=channel_session,
-            target_session=target_session,
+            target_thread=target_thread,
             reply_to_provider_message_id=reply_to_provider_message_id,
             outcome=outcome,
         )
@@ -396,7 +396,7 @@ class StorageOperationMixin:
 
 async def _referenced_messages(
     storage: Any,
-    session_id: str,
+    thread_id: str,
     messages: tuple[Message[InboundAttachment | OutboundAttachment], ...],
 ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]:
     message_ids = {message.message_id for message in messages}
@@ -411,7 +411,7 @@ async def _referenced_messages(
         ):
             continue
         referenced_message = await storage.resolve_message(
-            session_id,
+            thread_id,
             reference_id,
             delivery_states=_HISTORY_DELIVERY_STATES,
         )
@@ -422,9 +422,9 @@ async def _referenced_messages(
     return tuple(referenced)
 
 
-async def _latest_notifying_inbound_seq(storage: Any, session_id: str) -> int:
+async def _latest_notifying_inbound_seq(storage: Any, thread_id: str) -> int:
     messages = await storage.list_messages(
-        session_id,
+        thread_id,
         direction=MessageDirection.INBOUND,
         notifying_only=True,
         latest=True,
@@ -449,7 +449,7 @@ class _StorageOperations(Protocol):
 
     async def check_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         checked_at_ms: int,
     ) -> MessageCheckResult: ...
@@ -497,14 +497,16 @@ class _StorageOperations(Protocol):
         self, *, channel: str, provider_thread_id: str
     ) -> ChannelSession | None: ...
 
-    async def get_channel_session(self, session_id: str) -> ChannelSession | None: ...
-    async def get_bcn_session(self, session_id: str) -> BcnSession | None: ...
-    async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None: ...
+    async def get_channel_session(
+        self, channel_session_id: str
+    ) -> ChannelSession | None: ...
+    async def get_thread(self, thread_id: str) -> Thread | None: ...
+    async def find_thread(self, channel_session_id: str) -> Thread | None: ...
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...
-    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None: ...
+    async def get_consumer_cursor(self, thread_id: str) -> ConsumerCursor | None: ...
     async def get_latest_message_seq(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
@@ -512,7 +514,7 @@ class _StorageOperations(Protocol):
 
     async def get_latest_message(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
@@ -520,7 +522,7 @@ class _StorageOperations(Protocol):
 
     async def count_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -550,7 +552,7 @@ class _StorageOperations(Protocol):
 
     async def resolve_message(
         self,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -560,7 +562,7 @@ class _StorageOperations(Protocol):
     async def get_owned_message(
         self,
         agent_id: str,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -570,7 +572,7 @@ class _StorageOperations(Protocol):
 
     async def list_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -583,7 +585,7 @@ class _StorageOperations(Protocol):
     ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]: ...
 
     async def save_channel_session(self, session: ChannelSession) -> None: ...
-    async def save_bcn_session(self, session: BcnSession) -> None: ...
+    async def save_thread(self, session: Thread) -> None: ...
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None: ...
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None: ...
 
@@ -597,12 +599,12 @@ class _StorageOperations(Protocol):
     async def save_message(self, message: Message) -> Message: ...
 
     async def get_reminder(
-        self, owner_session_id: str, reminder_id: str
+        self, owner_thread_id: str, reminder_id: str
     ) -> Reminder | None: ...
 
     async def list_reminders(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]: ...
 
@@ -621,7 +623,7 @@ class _StorageOperations(Protocol):
     async def get_owned_reminder(
         self,
         agent_id: str,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None: ...
 

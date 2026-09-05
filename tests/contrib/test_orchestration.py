@@ -85,8 +85,8 @@ from bazaar_compute_node.core.models import (
     TurnStarted,
     TurnUnknown,
 )
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
-from bazaar_compute_node.core.orchestration.session import (
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
+from bazaar_compute_node.core.orchestration.orchestrator import (
     _NOTICE_WINDOW,
     _RuntimeNotification,
 )
@@ -157,7 +157,7 @@ def make_message(
         direction=MessageDirection.INBOUND,
         seq=seq,
         message_id=message_id or f"message-{session_id}-{seq}",
-        session_id=session_id,
+        thread_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
         provider_thread_id=f"thread-{session_id}",
@@ -332,7 +332,7 @@ async def make_node(
     upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
     mode: Mode = Mode.SESSION,
 ) -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestChannel,
     TestRuntime,
     MemoryStorage,
@@ -343,7 +343,7 @@ async def make_node(
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=mode),
         channel=channel,
         runtimes=(runtime,),
@@ -362,7 +362,7 @@ async def make_node(
 
 
 async def make_sqlite_node() -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestChannel,
     TestRuntime,
     SqliteDatabase,
@@ -374,7 +374,7 @@ async def make_sqlite_node() -> tuple[
     audit = RecordingAudit()
     await storage.start(timeout=2)
     storage_scope = storage.scope("workspace-1", "Test Agent")
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
@@ -394,7 +394,7 @@ async def make_sqlite_node() -> tuple[
 async def make_idle_timeout_node(
     idle_timeout_ms: int,
 ) -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestRuntime,
     MemoryStorage,
     TimerWheel,
@@ -405,7 +405,7 @@ async def make_idle_timeout_node(
     await storage.start(timeout=1)
     wheel = TimerWheel()
     await wheel.start()
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
@@ -552,7 +552,7 @@ async def _wait_for_audit_event(
     async with asyncio.timeout(600):
         while True:
             if any(
-                event.correlation.bcn_session_id == session_id
+                event.correlation.thread_id == session_id
                 and (event_name is None or event.event_name == event_name)
                 and (event_suffix is None or event.event_name.endswith(event_suffix))
                 and (operation is None or event.metadata.get("operation") == operation)
@@ -724,7 +724,7 @@ async def run_natural_conversation_contract(
                     event.correlation.outbound_message_id
                     for event in audit.events
                     if (
-                        event.correlation.bcn_session_id == scoped_session_id
+                        event.correlation.thread_id == scoped_session_id
                         and event.event_name == "channel.outbound.sent"
                         and event.correlation.inbound_seq == inbound.seq
                         and event.correlation.outbound_message_id is not None
@@ -736,7 +736,7 @@ async def run_natural_conversation_contract(
                         event.correlation.outbound_message_id
                         for event in audit.events
                         if (
-                            event.correlation.bcn_session_id == scoped_session_id
+                            event.correlation.thread_id == scoped_session_id
                             and event.event_name == "bcc.send.fresh_check.passed"
                             and event.correlation.inbound_seq == inbound.seq
                             and event.correlation.outbound_message_id is not None
@@ -753,7 +753,7 @@ async def run_natural_conversation_contract(
                 event.correlation.outbound_message_id
                 for event in audit.events
                 if (
-                    event.correlation.bcn_session_id == scoped_session_id
+                    event.correlation.thread_id == scoped_session_id
                     and event.event_name == "bcc.send.fresh_check.failed"
                     and event.correlation.outbound_message_id is not None
                 )
@@ -792,7 +792,7 @@ async def test_channel_storage_runtime_turn_path() -> None:
         assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
         assert runtime.started_turns
         assert any(
-            event.correlation.bcn_session_id == "bcn-1"
+            event.correlation.thread_id == "bcn-1"
             and event.correlation.turn_id == "turn-message-bcn-1-1"
             for event in audit.events
         )
@@ -914,7 +914,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
         await wait_for_turn_terminal(
             orchestrator=orchestrator,
             channel=channel,
-            session_id=message.session_id,
+            session_id=message.thread_id,
             client_user_message_id=message.message_id,
             sent_after=0,
             timeout=1,
@@ -947,9 +947,9 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
     orchestrator, _, _, storage, _ = await make_sqlite_node()
     caller_id = "bcn-caller"
-    target_session_id = "bcn-target"
+    target_thread_id = "bcn-target"
     caller_message = make_message(session_id=caller_id)
-    target_parent = make_message(session_id=target_session_id)
+    target_parent = make_message(session_id=target_thread_id)
     target_reply = replace(
         target_parent,
         seq=2,
@@ -965,7 +965,7 @@ async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
 
     try:
         history = await orchestrator.command_service.read(
-            Thread(target_session_id),
+            Thread(target_thread_id),
             raw_target=target_reply.target,
             around_message_id=target_reply.message_id,
             limit=1,
@@ -1109,7 +1109,7 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
             TestTurnPlan(
                 approval_request=ApprovalRequest(
                     request_id="approval-persisted-sender",
-                    actor=Thread(message.session_id),
+                    actor=Thread(message.thread_id),
                     runtime_session_id=runtime_session.id,
                     action="test-action",
                     created_at_ms=1,
@@ -1150,7 +1150,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
             Reminder(
                 reminder_id="pending",
-                owner_session_id=anchor.session_id,
+                owner_thread_id=anchor.thread_id,
                 anchor_message_id=anchor.message_id,
                 title="Review",
                 state=ReminderState.SCHEDULED,
@@ -1167,7 +1167,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
             direction=MessageDirection.INBOUND,
             seq=0,
             message_id=str(uuid7()),
-            session_id=anchor.session_id,
+            thread_id=anchor.thread_id,
             channel_session_id=anchor.channel_session_id,
             channel=anchor.channel,
             provider_thread_id=anchor.provider_thread_id,
@@ -1183,14 +1183,14 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
                 "reminder_id": reminder.reminder_id,
             },
         )
-        runtime_session = orchestrator.runtime_session(Thread(anchor.session_id))
+        runtime_session = orchestrator.runtime_session(Thread(anchor.thread_id))
         assert runtime_session is not None
         message = await cast(IStorage, storage).save_message(message)
         runtime.queue_turn_plan(
             TestTurnPlan(
                 approval_request=ApprovalRequest(
                     request_id="approval-reminder-anchor",
-                    actor=Thread(anchor.session_id),
+                    actor=Thread(anchor.thread_id),
                     runtime_session_id=runtime_session.id,
                     action="test-action",
                     created_at_ms=3,
@@ -1214,7 +1214,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
 
         # the turn's own output belongs under the message the Reminder was set from
         anchored_session_id, anchored = channel.turn_anchors[-1]
-        assert anchored_session_id == anchor.session_id
+        assert anchored_session_id == anchor.thread_id
         assert anchored.message_id == anchor.message_id
     finally:
         await orchestrator.stop(timeout=1)
@@ -1454,7 +1454,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         target = await repository.resolve_inbox_target("dm:@ALICE")
         assert created is True, case
         assert dm_message.target == "dm:channel-readable-dm", case
-        assert target.bcn_session.id == "readable-dm", case
+        assert target.thread.id == "readable-dm", case
         assert target.canonical_target == "dm:channel-readable-dm", case
         assert target.display_target == "dm:@Alice", case
 
@@ -1791,7 +1791,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             replace(lark_target.channel_session, following=True)
         )
         unfollowed = await orchestrator.command_service.unfollow(
-            Thread(lark_target.bcn_session.id),
+            Thread(lark_target.thread.id),
             raw_target=lark_target.display_target,
         )
         assert unfollowed.target == lark_target.display_target, case
@@ -2292,7 +2292,7 @@ async def test_one_actor_answers_every_conversation_on_one_runtime() -> None:
             )
         } == {"bcn-a", "bcn-b"}
         assert {
-            event.correlation.bcn_session_id
+            event.correlation.thread_id
             for event in audit.events
             if event.correlation.turn_id is not None
         } == {"bcn-a"}
@@ -2496,14 +2496,14 @@ async def test_an_individual_actor_drains_and_answers_every_conversation() -> No
         await orchestrator._record_inbound(make_message(session_id="bcn-b"))
 
         pending = await orchestrator.command_service.pending_targets(agent)
-        assert {summary.session_id for summary in pending.targets} == {
+        assert {summary.thread_id for summary in pending.targets} == {
             "bcn-a",
             "bcn-b",
         }
 
         drained = await orchestrator.command_service.check(agent)
         assert {
-            message.session_id for result in drained for message in result.messages
+            message.thread_id for result in drained for message in result.messages
         } == {"bcn-a", "bcn-b"}
         # every conversation keeps its own cursor, and each one moved
         assert storage.cursors["bcn-a"].delivered_through_seq > 0
@@ -2547,8 +2547,8 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
         assert second is not None
         assert first.state is RuntimeTurnState.COMPLETED
         assert second.state is RuntimeTurnState.COMPLETED
-        assert storage.bcn_sessions["bcn-a"].workspace_id == "workspace-1"
-        assert storage.bcn_sessions["bcn-b"].workspace_id == "workspace-1"
+        assert storage.threads["bcn-a"].workspace_id == "workspace-1"
+        assert storage.threads["bcn-b"].workspace_id == "workspace-1"
         assert {
             session_id
             for session_id in storage.messages
@@ -2559,7 +2559,7 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
             )
         } == {"bcn-a", "bcn-b"}
         assert {
-            event.correlation.bcn_session_id
+            event.correlation.thread_id
             for event in audit.events
             if event.correlation.turn_id is not None
         } == {"bcn-a", "bcn-b"}
@@ -2933,7 +2933,7 @@ async def test_runtime_error_feedback() -> None:
         reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
             Reminder(
                 reminder_id="pending",
-                owner_session_id=canonical_anchor.session_id,
+                owner_thread_id=canonical_anchor.thread_id,
                 anchor_message_id=canonical_anchor.message_id,
                 title="Review",
                 state=ReminderState.SCHEDULED,
@@ -2951,7 +2951,7 @@ async def test_runtime_error_feedback() -> None:
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=str(uuid7()),
-                session_id=canonical_anchor.session_id,
+                thread_id=canonical_anchor.thread_id,
                 channel_session_id=canonical_anchor.channel_session_id,
                 channel=canonical_anchor.channel,
                 provider_thread_id=canonical_anchor.provider_thread_id,
@@ -2976,7 +2976,7 @@ async def test_runtime_error_feedback() -> None:
         await wait_until(lambda: len(channel.send_attempts) == 1)
 
         request = channel.send_attempts[0]
-        assert request.session_id == canonical_anchor.session_id
+        assert request.session_id == canonical_anchor.thread_id
         assert request.target_kind is canonical_anchor.target_kind
         assert request.provider_thread_id == canonical_anchor.provider_thread_id
         assert (
@@ -3016,7 +3016,7 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
                     direction=MessageDirection.INBOUND,
                     seq=0,
                     message_id=str(uuid7()),
-                    session_id=anchor.session_id,
+                    thread_id=anchor.thread_id,
                     channel_session_id=anchor.channel_session_id,
                     channel=anchor.channel,
                     provider_thread_id=anchor.provider_thread_id,
@@ -3097,7 +3097,7 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
             await orchestrator.handle_inbound(invalid)
 
         assert storage.channel_sessions == {}
-        assert storage.bcn_sessions == {}
+        assert storage.threads == {}
         assert storage.cursors == {}
         assert storage.messages == {}
         assert orchestrator.runtime_session(Thread("invalid")) is None
@@ -3507,7 +3507,7 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
 
     channel = TestChannel()
     runtime = TestRuntime()
-    second = SessionOrchestrator(
+    second = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
@@ -3649,7 +3649,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
     try:
         await channel.inject(message)
         await runtime.turn_started.wait()
-        runtime_session = orchestrator.runtime_session(Thread(message.session_id))
+        runtime_session = orchestrator.runtime_session(Thread(message.thread_id))
         assert runtime_session is not None
         runtime.emit_expire(runtime_session.id)
         await wait_until(
@@ -3660,7 +3660,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
         outbound = await wait_for_turn_terminal(
             orchestrator=orchestrator,
             channel=channel,
-            session_id=message.session_id,
+            session_id=message.thread_id,
             client_user_message_id=message.message_id,
             sent_after=0,
             timeout=1,
@@ -4107,7 +4107,7 @@ async def test_multi_runtime_agents(
 
 
 async def make_multi_runtime_node() -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     tuple[_NamedTestRuntime, _NamedTestRuntime],
     TimerWheel,
     TestChannel,
@@ -4120,7 +4120,7 @@ async def make_multi_runtime_node() -> tuple[
     await storage.start(timeout=1)
     wheel = TimerWheel()
     await wheel.start()
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=runtimes,

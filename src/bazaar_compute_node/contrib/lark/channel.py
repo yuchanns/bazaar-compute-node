@@ -371,7 +371,7 @@ class LarkChannel(IChannel):
         if quoted is not None:
             await self._inbound.put(quoted)
         await self._inbound.put(current)
-        self._stream_routes[current.session_id] = provider_message_id
+        self._stream_routes[current.thread_id] = provider_message_id
         self._last_message_disposition = "queued"
         self._last_message_filter_reason = None
         self._observe(
@@ -522,7 +522,7 @@ class LarkChannel(IChannel):
             direction=MessageDirection.INBOUND,
             seq=0,
             message_id=thread_identity.message_id(provider_message_id),
-            session_id=thread_identity.session_id,
+            thread_id=thread_identity.session_id,
             channel_session_id=thread_identity.channel_session_id,
             channel=self.name,
             provider_thread_id=thread_identity.provider_thread_id,

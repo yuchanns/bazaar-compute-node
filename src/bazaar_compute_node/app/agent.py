@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..core.actor import Actor, Actors, Agent, Thread
 from ..core.channel import Channel, ChannelContext, IChannel
-from ..core.concurrency import ISessionConcurrency, SessionLockRegistry
+from ..core.concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
     InboundAttachment,
@@ -22,7 +22,7 @@ from ..core.models import (
     RuntimeSession,
 )
 from ..core.observability import IAudit
-from ..core.orchestration import SessionOrchestrator
+from ..core.orchestration import AgentOrchestrator
 from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
@@ -75,7 +75,7 @@ class AgentApplication:
         storage: IStorageScope,
         audit: IAudit,
         timer_wheel: TimerWheel,
-        reminder_concurrency: ISessionConcurrency,
+        reminder_concurrency: IThreadConcurrency,
         reminder_poke: Callable[[], None],
         endpoint: Callable[[], str],
         timeout_budget: TimeoutBudget,
@@ -95,7 +95,7 @@ class AgentApplication:
         self._wrapper_path: Path | None = None
         self.command_log: list[CommandRecord] = []
         self._session_capabilities: dict[str, _SessionCapabilityBinding] = {}
-        self._concurrency = SessionLockRegistry()
+        self._concurrency = ThreadLockRegistry()
         self._started = False
         self._stopping = False
         self._runtime_configurations = configuration.runtimes
@@ -157,7 +157,7 @@ class AgentApplication:
         self._runtime_contexts = tuple(runtime_contexts)
         self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
         self._actors = Actors(agent_id=self.agent_id, mode=configuration.mode)
-        self.orchestrator = SessionOrchestrator(
+        self.orchestrator = AgentOrchestrator(
             actors=self._actors,
             channel=self.channel,
             runtimes=self.runtimes,
@@ -272,10 +272,10 @@ class AgentApplication:
     ) -> Mapping[str, object]:
         return await self.command_dispatcher(request)
 
-    async def has_session(self, session_id: str) -> bool:
-        if not isinstance(session_id, str) or not session_id:
+    async def has_session(self, thread_id: str) -> bool:
+        if not isinstance(thread_id, str) or not thread_id:
             return False
-        return await self.storage.get_bcn_session(session_id) is not None
+        return await self.storage.get_thread(thread_id) is not None
 
     async def publish_inbox_wake(self, message: Message[InboundAttachment]) -> None:
         if not self._started:
@@ -331,10 +331,10 @@ class AgentApplication:
         session_capability = request.get("session_capability")
         match actor:
             case Thread(thread_id):
-                if await self.storage.get_bcn_session(thread_id) is None:
+                if await self.storage.get_thread(thread_id) is None:
                     raise CommandDispatchError(
                         "SESSION_NOT_FOUND",
-                        f"unknown bcn session: {thread_id}",
+                        f"unknown thread: {thread_id}",
                     )
             case Agent():
                 pass
@@ -446,8 +446,8 @@ class AgentApplication:
         )
         return environment
 
-    def _redact_session_secrets(self, session_id: str, text: str) -> str:
-        binding = self._session_capabilities.get(self._actors.for_thread(session_id).id)
+    def _redact_session_secrets(self, thread_id: str, text: str) -> str:
+        binding = self._session_capabilities.get(self._actors.for_thread(thread_id).id)
         if binding is None:
             return text
         for token in binding.token_values:
@@ -456,12 +456,12 @@ class AgentApplication:
 
     async def _run_runtime_command(
         self,
-        session_id: str,
+        thread_id: str,
         arguments: Sequence[str],
         body: str | None,
     ) -> None:
-        if not session_id:
-            raise ValueError("session_id must be a non-empty string")
+        if not thread_id:
+            raise ValueError("thread_id must be a non-empty string")
         if not arguments or any(
             not isinstance(argument, str) for argument in arguments
         ):
@@ -469,9 +469,9 @@ class AgentApplication:
         wrapper_path = self._wrapper_path
         if wrapper_path is None:
             raise RuntimeError("bcc wrapper is not installed")
-        self.command_log.append((session_id, tuple(arguments)))
+        self.command_log.append((thread_id, tuple(arguments)))
         runtime_session = self.orchestrator.runtime_session(
-            self._actors.for_thread(session_id)
+            self._actors.for_thread(thread_id)
         )
         if runtime_session is None:
             raise RuntimeError("runtime session is not live")

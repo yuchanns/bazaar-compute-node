@@ -184,16 +184,16 @@ class Channel(IChannel):
 
     async def receive(self) -> AsyncIterator[Message[InboundAttachment]]:
         async for message in self._channel.receive():
-            provider_session_id = message.session_id
+            provider_session_id = message.thread_id
             channel_session_id = self._local_id(
                 "channel-session",
                 message.channel_session_id,
             )
-            session_id = self._local_id("bcn-session", provider_session_id)
-            self._provider_session_ids[session_id] = provider_session_id
+            thread_id = self._local_id("bcn-session", provider_session_id)
+            self._provider_session_ids[thread_id] = provider_session_id
             yield replace(
                 message,
-                session_id=session_id,
+                thread_id=thread_id,
                 channel_session_id=channel_session_id,
                 target=f"{message.target_kind.value}:{channel_session_id}",
             )

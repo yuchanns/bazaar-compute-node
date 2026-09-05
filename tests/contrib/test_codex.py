@@ -1327,7 +1327,7 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
                             "codex.turn.cancelled",
                             "codex.turn.unknown",
                         }
-                        and event.correlation.bcn_session_id == scoped_session_id
+                        and event.correlation.thread_id == scoped_session_id
                         and event.correlation.turn_id == turn_id
                     ),
                     None,

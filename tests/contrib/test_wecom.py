@@ -987,7 +987,7 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert current.sender_kind is SenderKind.HUMAN
     assert current.message_id != current.provider_message_id
     assert current.reply_to_message_id == referenced.message_id
-    assert current.session_id == referenced.session_id
+    assert current.thread_id == referenced.thread_id
     assert current.target == referenced.target
     assert "has_quote" not in current.metadata
     assert referenced.provider_message_id is not None

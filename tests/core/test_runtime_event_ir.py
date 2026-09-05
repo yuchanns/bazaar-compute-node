@@ -27,7 +27,7 @@ from bazaar_compute_node.core.models import (
     TurnStarted,
     TurnUnknown,
 )
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
 from bazaar_compute_node.core.orchestration.turn import _with_a_reason
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import ENGLISH, create_translator
@@ -38,7 +38,7 @@ def _message() -> Message:
         direction=MessageDirection.INBOUND,
         seq=1,
         message_id="message-1",
-        session_id="session-1",
+        thread_id="session-1",
         channel_session_id="channel-session-1",
         channel="test",
         provider_thread_id="provider-thread-1",
@@ -72,7 +72,7 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
@@ -131,7 +131,7 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
+    orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),

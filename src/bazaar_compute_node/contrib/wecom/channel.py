@@ -1237,7 +1237,7 @@ class WeComChannel(IChannel):
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=reply_to_message_id,
-                session_id=session_id,
+                thread_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
                 provider_thread_id=conversation,
@@ -1425,7 +1425,7 @@ class WeComChannel(IChannel):
                         f"bcn:wecom:message:{provider_message_id}",
                     )
                 ),
-                session_id=session_id,
+                thread_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
                 provider_thread_id=conversation,

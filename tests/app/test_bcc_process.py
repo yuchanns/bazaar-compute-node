@@ -123,7 +123,7 @@ def _make_message() -> Message:
         direction=MessageDirection.INBOUND,
         seq=1,
         message_id="message-agent-a",
-        session_id="provider-session-a",
+        thread_id="provider-session-a",
         channel_session_id="provider-channel-a",
         channel="test",
         provider_thread_id="provider-thread-a",
