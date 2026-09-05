@@ -63,7 +63,7 @@ async def read(target: str, around: str | None, limit: int) -> None:
 
 
 @message.command(
-    short_help="Send a reply after the session fresh-check gate.",
+    short_help="Send a message to a channel, DM, or thread",
     help=(
         "Send a message through the current Channel. The message body is read "
         "from stdin. A recent `bcc message check` or `bcc message read` snapshot "

@@ -7,7 +7,6 @@ import pytest
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ChannelTargetPresentation,
@@ -15,6 +14,7 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     SenderIdentity,
+    Thread,
 )
 from bazaar_compute_node.core.storage import InboxTargetResolutionError
 
@@ -27,7 +27,7 @@ async def _create_session(
     channel_session_id: str,
     target_kind: ChannelTargetKind = ChannelTargetKind.DM,
     last_activity_at_ms: int | None,
-) -> tuple[ChannelSession, BcnSession]:
+) -> tuple[ChannelSession, Thread]:
     channel_session = ChannelSession(
         id=channel_session_id,
         channel="telegram",
@@ -36,7 +36,7 @@ async def _create_session(
         updated_at_ms=last_activity_at_ms or 1,
         target_kind=target_kind,
     )
-    bcn_session = BcnSession(
+    thread = Thread(
         id=session_id,
         channel_session_id=channel_session_id,
         workspace_id=agent_id,
@@ -45,15 +45,15 @@ async def _create_session(
         last_activity_at_ms=last_activity_at_ms,
     )
     await transaction.save_channel_session(channel_session)
-    await transaction.save_bcn_session(bcn_session)
-    return channel_session, bcn_session
+    await transaction.save_thread(thread)
+    return channel_session, thread
 
 
 async def _append_message(
     transaction: Any,
     *,
     channel_session: ChannelSession,
-    bcn_session: BcnSession,
+    thread: Thread,
     message_id: str,
     target: str,
     received_at_ms: int,
@@ -66,7 +66,7 @@ async def _append_message(
             direction=MessageDirection.INBOUND,
             seq=0,
             message_id=message_id,
-            session_id=bcn_session.id,
+            thread_id=thread.id,
             channel_session_id=channel_session.id,
             channel=channel_session.channel,
             provider_thread_id=channel_session.provider_thread_id,
@@ -101,7 +101,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         pending = await _append_message(
             repository,
             channel_session=pending_channel,
-            bcn_session=pending_session,
+            thread=pending_session,
             message_id="message-pending",
             target="dm:channel-pending",
             received_at_ms=301,
@@ -120,7 +120,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         read = await _append_message(
             repository,
             channel_session=read_channel,
-            bcn_session=read_session,
+            thread=read_session,
             message_id="message-read",
             target="group:channel-read",
             received_at_ms=201,
@@ -129,7 +129,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         )
         await repository.save_consumer_cursor(
             ConsumerCursor(
-                session_id=read_session.id,
+                thread_id=read_session.id,
                 delivered_through_seq=read.seq,
                 updated_at_ms=202,
             )
@@ -154,7 +154,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         await _append_message(
             repository,
             channel_session=foreign_channel,
-            bcn_session=foreign_session,
+            thread=foreign_session,
             message_id="message-foreign",
             target="dm:channel-foreign",
             received_at_ms=1_000,
@@ -163,17 +163,17 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         )
 
         repository = agent_a
-        cursor_before = await repository.get_consumer_cursor(pending.session_id)
-        read_cursor_before = await repository.get_consumer_cursor(read.session_id)
+        cursor_before = await repository.get_consumer_cursor(pending.thread_id)
+        read_cursor_before = await repository.get_consumer_cursor(read.thread_id)
         first_page = await repository.list_inbox_targets(limit=2, offset=0)
         second_page = await repository.list_inbox_targets(limit=2, offset=2)
         empty_page = await repository.list_inbox_targets(limit=2, offset=3)
-        cursor_after = await repository.get_consumer_cursor(pending.session_id)
-        read_cursor_after = await repository.get_consumer_cursor(read.session_id)
+        cursor_after = await repository.get_consumer_cursor(pending.thread_id)
+        read_cursor_after = await repository.get_consumer_cursor(read.thread_id)
         pending_owner = await repository.resolve_inbox_target("dm:channel-pending")
         empty_owner = await repository.resolve_inbox_target("dm:channel-empty")
 
-        assert [target.session_id for target in first_page.targets] == [
+        assert [target.thread_id for target in first_page.targets] == [
             "session-pending",
             "session-read",
         ]
@@ -192,9 +192,7 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         assert first_page.targets[1].latest_message_id == read.message_id
         assert first_page.targets[1].latest_provider_time_ms is None
         assert second_page.total == 3
-        assert [target.session_id for target in second_page.targets] == [
-            "session-empty"
-        ]
+        assert [target.thread_id for target in second_page.targets] == ["session-empty"]
         assert second_page.shown == 1
         assert second_page.has_more is False
         assert second_page.targets[0].target == "dm:channel-empty"
@@ -205,8 +203,127 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         )
         assert cursor_after == cursor_before
         assert read_cursor_after == read_cursor_before
-        assert pending_owner.bcn_session.id == pending_session.id
-        assert empty_owner.bcn_session.id == "session-empty"
+        assert pending_owner.thread.id == pending_session.id
+        assert empty_owner.thread.id == "session-empty"
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_unread_messages_cross_conversations_within_one_agent() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        agent_a = database.scope("agent-a", "Agent A")
+        agent_b = database.scope("agent-b", "Agent B")
+        repository = agent_a
+        first_channel, first_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-first",
+            channel_session_id="channel-first",
+            last_activity_at_ms=100,
+        )
+        first = await _append_message(
+            repository,
+            channel_session=first_channel,
+            thread=first_session,
+            message_id="message-first",
+            target="dm:channel-first",
+            received_at_ms=101,
+            sender_name="first-sender",
+            provider_time_ms=100_000,
+        )
+        second_channel, second_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-second",
+            channel_session_id="channel-second",
+            last_activity_at_ms=200,
+        )
+        second = await _append_message(
+            repository,
+            channel_session=second_channel,
+            thread=second_session,
+            message_id="message-second",
+            target="dm:channel-second",
+            received_at_ms=201,
+            sender_name="second-sender",
+            provider_time_ms=200_000,
+        )
+        drained_channel, drained_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-drained",
+            channel_session_id="channel-drained",
+            last_activity_at_ms=300,
+        )
+        drained = await _append_message(
+            repository,
+            channel_session=drained_channel,
+            thread=drained_session,
+            message_id="message-drained",
+            target="dm:channel-drained",
+            received_at_ms=301,
+            sender_name="drained-sender",
+            provider_time_ms=300_000,
+        )
+        await repository.save_consumer_cursor(
+            ConsumerCursor(
+                thread_id=drained_session.id,
+                delivered_through_seq=drained.seq,
+                updated_at_ms=302,
+            )
+        )
+        quiet_channel, quiet_session = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-quiet",
+            channel_session_id="channel-quiet",
+            last_activity_at_ms=400,
+        )
+        await _append_message(
+            repository,
+            channel_session=quiet_channel,
+            thread=quiet_session,
+            message_id="message-quiet",
+            target="dm:channel-quiet",
+            received_at_ms=401,
+            sender_name="quiet-sender",
+            provider_time_ms=400_000,
+            notifies_runtime=False,
+        )
+
+        repository = agent_b
+        foreign_channel, foreign_session = await _create_session(
+            repository,
+            agent_id="agent-b",
+            session_id="session-foreign",
+            channel_session_id="channel-foreign",
+            last_activity_at_ms=500,
+        )
+        await _append_message(
+            repository,
+            channel_session=foreign_channel,
+            thread=foreign_session,
+            message_id="message-foreign",
+            target="dm:channel-foreign",
+            received_at_ms=501,
+            sender_name="foreign-sender",
+            provider_time_ms=500_000,
+        )
+
+        repository = agent_a
+        unread = await repository.list_unread_messages(limit=10)
+        windowed = await repository.list_unread_messages(limit=1)
+        cursor_after = await repository.get_consumer_cursor(first_session.id)
+
+        assert [message.message_id for message in unread] == [
+            first.message_id,
+            second.message_id,
+        ]
+        assert [message.message_id for message in windowed] == [second.message_id]
+        assert cursor_after is None
     finally:
         await database.stop(timeout=2)
 
@@ -236,7 +353,7 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
         await _append_message(
             repository,
             channel_session=first_channel,
-            bcn_session=first_session,
+            thread=first_session,
             message_id="message-first",
             target="dm:ambiguous",
             received_at_ms=2,
@@ -259,7 +376,7 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
         await _append_message(
             repository,
             channel_session=second_channel,
-            bcn_session=second_session,
+            thread=second_session,
             message_id="message-second",
             target="dm:ambiguous",
             received_at_ms=1,

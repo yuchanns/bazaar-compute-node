@@ -7,6 +7,7 @@ from typing import Annotated, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from ...core.actor import Actor
 from ...core.approval import IApprovalHandler
 from ...core.models import (
     ContentDelta,
@@ -138,7 +139,7 @@ class TurnEventStream(IRuntimeTurnStream):
         self,
         supervisor: JsonlProcessSupervisor,
         *,
-        session_id: str,
+        actor: Actor,
         runtime_session_id: str,
         turn_id: str,
         provider_thread_id: str,
@@ -151,7 +152,7 @@ class TurnEventStream(IRuntimeTurnStream):
         on_closed: Callable[[], None] | None = None,
     ) -> None:
         self._supervisor = supervisor
-        self._session_id = session_id
+        self._actor = actor
         self._runtime_session_id = runtime_session_id
         self._turn_id = turn_id
         self._provider_thread_id = provider_thread_id
@@ -546,7 +547,7 @@ class TurnEventStream(IRuntimeTurnStream):
     ) -> RuntimeOutputEvent:
         return RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=self._session_id,
+                actor=self._actor,
                 runtime_session_id=self._runtime_session_id,
                 turn_id=self._turn_id,
                 provider_turn_id=provider_turn_id or self._provider_turn_id,
@@ -624,7 +625,7 @@ class TurnEventStream(IRuntimeTurnStream):
         try:
             approval = parse_approval_request(
                 message,
-                session_id=self._session_id,
+                actor=self._actor,
                 runtime_session_id=self._runtime_session_id,
                 turn_id=self._turn_id,
                 provider_thread_id=self._provider_thread_id,

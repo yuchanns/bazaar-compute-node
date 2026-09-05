@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from ..actor import Actor
+
 type JsonValue = (
     str | int | float | bool | None | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 )
@@ -24,7 +26,7 @@ class ToolCallDeltaKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEventEnvelope:
-    session_id: str
+    actor: Actor
     runtime_session_id: str
     turn_id: str
     provider_turn_id: str | None

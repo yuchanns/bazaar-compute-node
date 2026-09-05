@@ -7,6 +7,7 @@ from typing import Annotated, Literal, cast
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 
+from ..core.actor import Actor, Actors
 from ..core.command import ICommandService, IReminderService
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import Reminder, ReminderState
@@ -31,7 +32,7 @@ from .upgrade import UpgradeError, UpgradeService, UpgradeUnavailable
 def serialize_reminder(reminder: Reminder) -> dict[str, object]:
     return {
         "reminder_id": reminder.reminder_id,
-        "owner_session_id": reminder.owner_session_id,
+        "owner_thread_id": reminder.owner_thread_id,
         "anchor_message_id": reminder.anchor_message_id,
         "title": reminder.title,
         "state": reminder.state.value,
@@ -239,6 +240,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         self,
         service: ICommandService,
         *,
+        actors: Actors,
         reminder_service: IReminderService,
         timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
@@ -246,6 +248,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
     ) -> None:
         super().__init__(
             service,
+            actors=actors,
             timeout_budget=timeout_budget,
             session_binding_validator=session_binding_validator,
         )
@@ -292,6 +295,11 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 )
             return await super()._dispatch_command(raw_request)
         if resource == "inbox":
+            if command != "check":
+                raise CommandDispatchError(
+                    "UNKNOWN_COMMAND",
+                    f"unsupported inbox command: {command}",
+                )
             return await super()._dispatch_command(raw_request)
         if resource == "node":
             upgrade_service = self._upgrade_service
@@ -324,11 +332,11 @@ class CommandDispatcher(_MessageCommandDispatcher):
                     )
                 },
             )
-            session_id = request.session_id
+            actor = self._resolve_actor(request.actor_id)
             if self._session_binding_validator is not None:
-                await self._session_binding_validator(session_id, raw_request)
+                await self._session_binding_validator(actor, raw_request)
             return await self._dispatch_upgrade(
-                session_id,
+                actor,
                 cast(_NodeUpgradeRequest, request),
                 upgrade_service,
             )
@@ -350,12 +358,12 @@ class CommandDispatcher(_MessageCommandDispatcher):
             request_model,
             errors=request_errors,
         )
-        session_id = request.session_id
+        actor = self._resolve_actor(request.actor_id)
         if self._session_binding_validator is not None:
-            await self._session_binding_validator(session_id, raw_request)
+            await self._session_binding_validator(actor, raw_request)
 
         try:
-            return await self._dispatch_reminder(session_id, command, request)
+            return await self._dispatch_reminder(actor, command, request)
         except ReminderCommandFailure as error:
             raise CommandDispatchError(
                 error.code,
@@ -365,7 +373,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
 
     async def _dispatch_upgrade(
         self,
-        session_id: str,
+        actor: Actor,
         request: _NodeUpgradeRequest,
         upgrade_service: UpgradeService,
     ) -> Mapping[str, object]:
@@ -376,7 +384,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             # un-restarted than to go on without it
             try:
                 result = await self._reminder_service.schedule(
-                    session_id,
+                    actor,
                     ReminderScheduleRequest.from_options(
                         title=(f"Report the outcome of upgrading to {upgrade_version}"),
                         message_id=request.message_id,
@@ -420,7 +428,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
 
     async def _dispatch_reminder(
         self,
-        session_id: str,
+        actor: Actor,
         command: str,
         parsed_request: _CommandRequest,
     ) -> Mapping[str, object]:
@@ -428,23 +436,23 @@ class CommandDispatcher(_MessageCommandDispatcher):
         match command:
             case "schedule":
                 return await self._schedule_reminder(
-                    session_id, cast(_ReminderScheduleRequest, parsed_request), now_ms
+                    actor, cast(_ReminderScheduleRequest, parsed_request), now_ms
                 )
             case "list":
                 return await self._list_reminders(
-                    session_id, cast(_ReminderListRequest, parsed_request)
+                    actor, cast(_ReminderListRequest, parsed_request)
                 )
             case "snooze":
                 return await self._snooze_reminder(
-                    session_id, cast(_ReminderSnoozeRequest, parsed_request), now_ms
+                    actor, cast(_ReminderSnoozeRequest, parsed_request), now_ms
                 )
             case "update":
                 return await self._update_reminder(
-                    session_id, cast(_ReminderUpdateRequest, parsed_request), now_ms
+                    actor, cast(_ReminderUpdateRequest, parsed_request), now_ms
                 )
             case "cancel":
                 return await self._cancel_reminder(
-                    session_id, cast(_ReminderCancelRequest, parsed_request), now_ms
+                    actor, cast(_ReminderCancelRequest, parsed_request), now_ms
                 )
             case _:
                 raise CommandDispatchError(
@@ -454,7 +462,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
 
     async def _schedule_reminder(
         self,
-        session_id: str,
+        actor: Actor,
         request_values: _ReminderScheduleRequest,
         now_ms: int,
     ) -> Mapping[str, object]:
@@ -490,16 +498,16 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 ),
                 str(error),
             ) from error
-        result = await self._reminder_service.schedule(session_id, request)
+        result = await self._reminder_service.schedule(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _list_reminders(
         self,
-        session_id: str,
+        actor: Actor,
         request_values: _ReminderListRequest,
     ) -> Mapping[str, object]:
         result = await self._reminder_service.list(
-            session_id,
+            actor,
             ReminderListRequest(
                 statuses=_listed_statuses(request_values.all, request_values.status)
             ),
@@ -515,7 +523,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
 
     async def _snooze_reminder(
         self,
-        session_id: str,
+        actor: Actor,
         request_values: _ReminderSnoozeRequest,
         now_ms: int,
     ) -> Mapping[str, object]:
@@ -530,12 +538,12 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 "REMINDER_NOT_FOUND" if self._is_id_error(error) else "INVALID_COMMAND"
             )
             raise CommandDispatchError(code, str(error)) from error
-        result = await self._reminder_service.snooze(session_id, request)
+        result = await self._reminder_service.snooze(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _update_reminder(
         self,
-        session_id: str,
+        actor: Actor,
         request_values: _ReminderUpdateRequest,
         now_ms: int,
     ) -> Mapping[str, object]:
@@ -556,12 +564,12 @@ class CommandDispatcher(_MessageCommandDispatcher):
             else:
                 code = "REMINDER_UPDATE_FAILED"
             raise CommandDispatchError(code, str(error)) from error
-        result = await self._reminder_service.update(session_id, request)
+        result = await self._reminder_service.update(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _cancel_reminder(
         self,
-        session_id: str,
+        actor: Actor,
         request_values: _ReminderCancelRequest,
         now_ms: int,
     ) -> Mapping[str, object]:
@@ -572,7 +580,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             )
         except ValueError as error:
             raise CommandDispatchError("REMINDER_NOT_FOUND", str(error)) from error
-        result = await self._reminder_service.cancel(session_id, request)
+        result = await self._reminder_service.cancel(actor, request)
         return _reminder_payload(result.reminder)
 
     @staticmethod

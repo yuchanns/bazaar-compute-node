@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from time import time_ns
 
+from ...core.actor import Actor
 from ...core.models import ApprovalDecision, ApprovalRequest, ApprovalResult
 from .protocol import ClaudeProtocolError, JsonObject
 
@@ -22,7 +23,7 @@ class ApprovalEnvelope:
 def parse_approval_request(
     message: Mapping[str, object],
     *,
-    session_id: str,
+    actor: Actor,
     runtime_session_id: str,
     turn_id: str,
 ) -> ApprovalEnvelope:
@@ -51,7 +52,7 @@ def parse_approval_request(
         tool_input=tool_input,
         request=ApprovalRequest(
             request_id=tool_use_id,
-            session_id=session_id,
+            actor=actor,
             runtime_session_id=runtime_session_id,
             action=tool_name,
             created_at_ms=time_ns() // 1_000_000,

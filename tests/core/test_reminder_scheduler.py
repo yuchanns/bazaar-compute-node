@@ -16,9 +16,9 @@ from bazaar_compute_node.app.config import (
     RuntimeConfiguration,
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
-from bazaar_compute_node.core.concurrency import SessionLockRegistry
+from bazaar_compute_node.core.actor import Thread as ThreadActor
+from bazaar_compute_node.core.concurrency import ThreadLockRegistry
 from bazaar_compute_node.core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
@@ -30,9 +30,14 @@ from bazaar_compute_node.core.models import (
     SenderIdentity,
     SenderKind,
     SystemMessageKind,
+    Thread,
 )
 from bazaar_compute_node.core.models.reminder_owner import OwnedReminder
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
+from bazaar_compute_node.core.orchestration.reminder_command import (
+    ReminderCommandService,
+)
+from bazaar_compute_node.core.reminder import ReminderSnoozeRequest
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
@@ -56,7 +61,7 @@ def add_session(storage: MemoryStorage, *, agent_id: str, session_id: str) -> st
         updated_at_ms=0,
         target_kind=ChannelTargetKind.DM,
     )
-    storage.bcn_sessions[session_id] = BcnSession(
+    storage.threads[session_id] = Thread(
         id=session_id,
         channel_session_id=channel_session_id,
         workspace_id=agent_id,
@@ -69,7 +74,7 @@ def add_session(storage: MemoryStorage, *, agent_id: str, session_id: str) -> st
             direction=MessageDirection.INBOUND,
             seq=len(storage.messages) + 1,
             message_id=anchor_id,
-            session_id=session_id,
+            thread_id=session_id,
             channel_session_id=channel_session_id,
             channel="test",
             provider_thread_id=f"provider-{session_id}",
@@ -94,7 +99,7 @@ def make_scheduled_reminder(
 ) -> Reminder:
     return Reminder(
         reminder_id=reminder_id,
-        owner_session_id=session_id,
+        owner_thread_id=session_id,
         anchor_message_id=anchor_message_id,
         title=f"Reminder {reminder_id}",
         state=ReminderState.SCHEDULED,
@@ -132,7 +137,7 @@ async def start_scheduler(
     scheduler = ReminderScheduler(
         storage=cast(IStorage, storage),
         timer_wheel=timer_wheel,
-        concurrency=SessionLockRegistry(),
+        concurrency=ThreadLockRegistry(),
         publish_wake=publish,
         clock=clock,
     )
@@ -146,6 +151,54 @@ async def stop_scheduler(
 ) -> None:
     await scheduler.stop(timeout=1)
     await timer_wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_a_snooze_sees_what_happened_while_it_waited_for_the_lock() -> None:
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    anchor_id = add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
+    scheduled = make_scheduled_reminder(
+        _REMINDER_A,
+        session_id=_SESSION_A,
+        anchor_message_id=anchor_id,
+    )
+    storage.reminders[_REMINDER_A] = scheduled
+    concurrency = ThreadLockRegistry()
+    service = ReminderCommandService(
+        storage=cast(IStorage, storage),
+        concurrency=concurrency,
+        poke=lambda: None,
+        clock=lambda: 1_000,
+    )
+    try:
+        held = concurrency.for_thread(_SESSION_A)
+        await held.acquire()
+        snoozing = asyncio.create_task(
+            service.snooze(
+                ThreadActor(_SESSION_A),
+                ReminderSnoozeRequest(
+                    reminder_id=_REMINDER_A,
+                    duration_ms=30_000,
+                    evaluated_at_ms=1_000,
+                ),
+            )
+        )
+        await asyncio.sleep(0)
+        # the Reminder changes while the command waits for the conversation
+        renamed = await cast(IStorage, storage).save_reminder_transition(
+            scheduled.revision,
+            scheduled.update_title("renamed while waiting", at_ms=500),
+        )
+        held.release()
+
+        result = await snoozing
+
+        assert renamed.title == "renamed while waiting"
+        assert result.reminder.title == renamed.title
+        assert result.reminder.revision > renamed.revision
+    finally:
+        await storage.stop(timeout=1)
 
 
 @pytest.mark.asyncio
@@ -178,7 +231,7 @@ async def test_global_scheduler_materializes_system_messages_and_routes_wakes() 
     storage.cursors.update(
         {
             session_id: ConsumerCursor(
-                session_id=session_id,
+                thread_id=session_id,
                 delivered_through_seq=storage.messages[session_id][0].seq,
             )
             for session_id in anchors
@@ -192,7 +245,7 @@ async def test_global_scheduler_materializes_system_messages_and_routes_wakes() 
 
     scheduler, timer_wheel = await start_scheduler(storage, publish_wake=publish)
     try:
-        assert [(agent_id, message.session_id) for agent_id, message in wakes] == [
+        assert [(agent_id, message.thread_id) for agent_id, message in wakes] == [
             (_AGENT_A, _SESSION_A),
             (_AGENT_A, _SESSION_C),
             (_AGENT_B, _SESSION_B),
@@ -251,7 +304,7 @@ async def test_scheduler_cancels_orphan_and_materializes_valid_reminder() -> Non
     try:
         assert storage.reminders[_REMINDER_A].state is ReminderState.CANCELED
         assert storage.reminders[_REMINDER_B].state is ReminderState.FIRED
-        assert any(message.session_id == _SESSION_B for _, message in wakes)
+        assert any(message.thread_id == _SESSION_B for _, message in wakes)
     finally:
         await stop_scheduler(scheduler, timer_wheel)
 
@@ -369,7 +422,7 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
     storage.cursors.update(
         {
             session_id: ConsumerCursor(
-                session_id=session_id,
+                thread_id=session_id,
                 delivered_through_seq=storage.messages[session_id][0].seq,
             )
             for session_id in anchors
@@ -382,7 +435,7 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
     scheduler = ReminderScheduler(
         storage=cast(IStorage, storage),
         timer_wheel=timer_wheel,
-        concurrency=SessionLockRegistry(),
+        concurrency=ThreadLockRegistry(),
         publish_wake=_recording_publish(wakes),
         clock=lambda: 100,
     )
@@ -393,7 +446,7 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
         # the first reminder already fired and its unread system message would
         # never be woken again, so its wake has to survive the failed cycle
         assert storage.reminders[_REMINDER_A].state is ReminderState.FIRED
-        assert [(agent_id, message.session_id) for agent_id, message in wakes] == [
+        assert [(agent_id, message.thread_id) for agent_id, message in wakes] == [
             (_AGENT_A, _SESSION_A)
         ]
     finally:

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 import click
 
+from ...core.actor import Mode
 from ._client import BccCommandError
 from ._format import print_error
 from .inbox import inbox
@@ -29,8 +30,11 @@ from .thread import thread
 def bcc() -> None: ...
 
 
-for group in (message, inbox, thread, reminder):
+for group in (message, thread, reminder):
     bcc.add_command(group)
+
+if os.environ.get("BCN_AGENT_MODE") == Mode.DANGEROUS_INDIVIDUAL.value:
+    bcc.add_command(inbox)
 
 # Windows has nothing that brings the node back after an upgrade exits it, so
 # there the node offers no upgrade and the commands would only ever be refused

@@ -3,24 +3,24 @@ from __future__ import annotations
 from uuid import NAMESPACE_URL, uuid5
 
 from ....core.models import (
-    BcnSession,
     ChannelSession,
     ConsumerCursor,
     MessageDirection,
     RuntimeAttempt,
+    Thread,
 )
 from ..codec import (
-    bcn_session_from_row,
     channel_session_from_row,
     consumer_cursor_from_row,
     encode_metadata,
     runtime_attempt_from_row,
-    validate_bcn_session_update,
+    thread_from_row,
     validate_channel_session_input,
     validate_channel_session_update,
     validate_consumer_cursor_input,
     validate_consumer_cursor_update,
     validate_cursor_bounds,
+    validate_thread_update,
 )
 from .base import RepositoryBase
 
@@ -44,35 +44,37 @@ class SessionOperations(RepositoryBase):
         )
         return channel_session_from_row(row) if row is not None else None
 
-    async def get_channel_session(self, session_id: str) -> ChannelSession | None:
+    async def get_channel_session(
+        self, channel_session_id: str
+    ) -> ChannelSession | None:
         row = await self.fetchone(
             "SELECT id, channel, provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "target_display_name, target_handle, target_handle_key, "
             "provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND id = ?",
-            (session_id,),
+            (channel_session_id,),
         )
         return channel_session_from_row(row) if row is not None else None
 
-    async def get_bcn_session(self, session_id: str) -> BcnSession | None:
+    async def get_thread(self, thread_id: str) -> Thread | None:
         row = await self.fetchone(
             "SELECT id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
-            "last_activity_at_ms, metadata_json FROM bcn_sessions "
+            "last_activity_at_ms, metadata_json FROM threads "
             "WHERE agent_id = /*agent_id*/? AND id = ?",
-            (session_id,),
+            (thread_id,),
         )
-        return bcn_session_from_row(row) if row is not None else None
+        return thread_from_row(row) if row is not None else None
 
-    async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
+    async def find_thread(self, channel_session_id: str) -> Thread | None:
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
-            "last_activity_at_ms, metadata_json FROM bcn_sessions "
+            "last_activity_at_ms, metadata_json FROM threads "
             "WHERE agent_id = /*agent_id*/? AND channel_session_id = ? ORDER BY rowid",
             (channel_session_id,),
-            "channel-to-bcn session binding",
+            "channel-to-thread binding",
         )
-        return bcn_session_from_row(row) if row is not None else None
+        return thread_from_row(row) if row is not None else None
 
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         row = await self.fetchone(
@@ -82,51 +84,51 @@ class SessionOperations(RepositoryBase):
         )
         return runtime_attempt_from_row(row) if row is not None else None
 
-    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
-        if await self.get_bcn_session(session_id) is None:
+    async def get_consumer_cursor(self, thread_id: str) -> ConsumerCursor | None:
+        if await self.get_thread(thread_id) is None:
             return None
         row = await self.fetchone(
-            "SELECT session_id, delivered_through_seq, last_check_at_ms, "
-            "last_read_at_ms, updated_at_ms FROM consumer_cursors WHERE session_id = ?",
-            (session_id,),
+            "SELECT thread_id, delivered_through_seq, last_check_at_ms, "
+            "last_read_at_ms, updated_at_ms FROM consumer_cursors WHERE thread_id = ?",
+            (thread_id,),
         )
         return consumer_cursor_from_row(row) if row is not None else None
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
         validate_consumer_cursor_input(cursor)
-        if await self.get_bcn_session(cursor.session_id) is None:
-            raise ValueError(f"unknown bcn session: {cursor.session_id}")
+        if await self.get_thread(cursor.thread_id) is None:
+            raise ValueError(f"unknown thread: {cursor.thread_id}")
         latest_inbound_seq = await self.get_latest_message_seq(
-            cursor.session_id,
+            cursor.thread_id,
             direction=MessageDirection.INBOUND,
         )
         validate_cursor_bounds(
             cursor,
             latest_inbound_seq=latest_inbound_seq,
         )
-        existing = await self.get_consumer_cursor(cursor.session_id)
+        existing = await self.get_consumer_cursor(cursor.thread_id)
         if existing is not None:
             validate_consumer_cursor_update(existing, cursor)
             await self.execute(
                 "UPDATE consumer_cursors SET delivered_through_seq = ?, "
                 "last_check_at_ms = ?, "
-                "last_read_at_ms = ?, updated_at_ms = ? WHERE session_id = ?",
+                "last_read_at_ms = ?, updated_at_ms = ? WHERE thread_id = ?",
                 (
                     cursor.delivered_through_seq,
                     cursor.last_check_at_ms,
                     cursor.last_read_at_ms,
                     cursor.updated_at_ms,
-                    cursor.session_id,
+                    cursor.thread_id,
                 ),
             )
             return
         await self.execute(
             "INSERT INTO consumer_cursors ("
-            "session_id, delivered_through_seq, last_check_at_ms, "
+            "thread_id, delivered_through_seq, last_check_at_ms, "
             "last_read_at_ms, updated_at_ms"
             ") VALUES (?, ?, ?, ?, ?)",
             (
-                cursor.session_id,
+                cursor.thread_id,
                 cursor.delivered_through_seq,
                 cursor.last_check_at_ms,
                 cursor.last_read_at_ms,
@@ -192,19 +194,19 @@ class SessionOperations(RepositoryBase):
             ),
         )
 
-    async def save_bcn_session(self, session: BcnSession) -> None:
+    async def save_thread(self, session: Thread) -> None:
         self._require_workspace(session.workspace_id)
         channel_session = await self.get_channel_session(session.channel_session_id)
         if channel_session is None:
             raise ValueError(f"unknown channel session: {session.channel_session_id}")
 
-        existing = await self.get_bcn_session(session.id)
+        existing = await self.get_thread(session.id)
         if existing is None:
-            duplicate = await self.find_bcn_session(session.channel_session_id)
+            duplicate = await self.find_thread(session.channel_session_id)
             if duplicate is not None:
                 raise ValueError(f"channel session is already bound to {duplicate.id}")
             await self.execute(
-                "INSERT INTO bcn_sessions ("
+                "INSERT INTO threads ("
                 "agent_id, id, channel_session_id, workspace_id, "
                 "created_at_ms, updated_at_ms, last_activity_at_ms, "
                 "metadata_json"
@@ -222,9 +224,9 @@ class SessionOperations(RepositoryBase):
             )
             return
 
-        session = validate_bcn_session_update(existing, session)
+        session = validate_thread_update(existing, session)
         await self.execute(
-            "UPDATE bcn_sessions SET updated_at_ms = ?, "
+            "UPDATE threads SET updated_at_ms = ?, "
             "last_activity_at_ms = ?, metadata_json = ? "
             "WHERE id = ?",
             (

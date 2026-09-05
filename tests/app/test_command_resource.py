@@ -22,6 +22,7 @@ from bazaar_compute_node.app.config import (
 from bazaar_compute_node.app.registry import AdapterRegistry
 from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
 from bazaar_compute_node.app.upgrade import UpgradeService
+from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
@@ -40,7 +41,7 @@ from bazaar_compute_node.core.models import (
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 
-def make_configuration() -> NodeConfiguration:
+def make_configuration(mode: Mode = Mode.SESSION) -> NodeConfiguration:
     return NodeConfiguration(
         version_check=False,
         storage="sqlite",
@@ -51,6 +52,7 @@ def make_configuration() -> NodeConfiguration:
                 name="Test Agent",
                 channel=ChannelConfiguration(kind="test"),
                 runtimes=(RuntimeConfiguration(kind="test"),),
+                mode=mode,
             ),
         ),
     )
@@ -81,9 +83,8 @@ def make_budget() -> TimeoutBudget:
 def test_inbox_target_serializer_selects_one_latest_time() -> None:
     summary = InboxTargetSummary(
         target="dm:user-1",
-        session_id="session-1",
+        thread_id="session-1",
         target_kind=ChannelTargetKind.DM,
-        current=True,
         pending_count=0,
         last_activity_at_ms=100,
         latest_message_id="message-1",
@@ -114,7 +115,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
             {
                 "kind": "command",
                 "command": "check",
-                "session_id": "bcn-a",
+                "actor_id": "bcn-a",
             }
         )
         assert missing_resource["ok"] is False
@@ -125,7 +126,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
                 "kind": "command",
                 "resource": "message",
                 "command": "unfollow",
-                "session_id": "bcn-a",
+                "actor_id": "bcn-a",
             }
         )
         assert message_collision["ok"] is False
@@ -136,7 +137,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
                 "kind": "command",
                 "resource": "thread",
                 "command": "check",
-                "session_id": "bcn-a",
+                "actor_id": "bcn-a",
             }
         )
         assert thread_collision["ok"] is False
@@ -146,8 +147,8 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
             {
                 "kind": "command",
                 "resource": "inbox",
-                "command": "check",
-                "session_id": "bcn-a",
+                "command": "list",
+                "actor_id": "bcn-a",
             }
         )
         assert inbox_collision["ok"] is False
@@ -158,7 +159,7 @@ async def test_command_dispatch_requires_resource_and_rejects_collisions(
                 "kind": "command",
                 "resource": "unknown",
                 "command": "list",
-                "session_id": "bcn-a",
+                "actor_id": "bcn-a",
             }
         )
         assert unknown_resource["ok"] is False
@@ -173,7 +174,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         direction=MessageDirection.INBOUND,
         seq=7,
         message_id="message-7",
-        session_id="session-source",
+        thread_id="session-source",
         channel_session_id="channel-source",
         channel="test",
         provider_thread_id="provider-thread",
@@ -199,6 +200,7 @@ async def test_message_send_renders_freshness_hold() -> None:
     )
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
@@ -208,7 +210,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         "kind": "command",
         "resource": "message",
         "command": "send",
-        "session_id": "session-source",
+        "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
         "command_id": "message-command-1",
@@ -226,7 +228,7 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert "End of window: 1/1 shown." in freshness_text
     assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
     assert set(service.send.await_args.kwargs) == {
-        "session_id",
+        "actor",
         "command_id",
         "raw_target",
         "body",
@@ -242,6 +244,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
     service = SimpleNamespace(send=AsyncMock())
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
@@ -251,7 +254,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
         "kind": "command",
         "resource": "message",
         "command": "send",
-        "session_id": "session-source",
+        "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
         "command_id": "message-command-1",
@@ -311,6 +314,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
 async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=None,
@@ -322,7 +326,7 @@ async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> No
             "kind": "command",
             "resource": "node",
             "command": "version",
-            "session_id": "session-source",
+            "actor_id": "session-source",
         }
     )
 
@@ -336,6 +340,7 @@ async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> No
 async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
@@ -347,7 +352,7 @@ async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
             "kind": "command",
             "resource": "node",
             "command": "upgrade",
-            "session_id": "session-source",
+            "actor_id": "session-source",
             "message_id": "0198d4e6-29c5-7465-b74b-88db31f0c118",
         }
     )
@@ -362,6 +367,7 @@ async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
 async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
@@ -373,7 +379,7 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
             "kind": "command",
             "resource": "node",
             "command": "upgrade",
-            "session_id": "session-source",
+            "actor_id": "session-source",
         }
     )
 
@@ -388,6 +394,7 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
 async def test_version_reports_the_process_and_not_the_disk() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
         timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(installed_version="0.1.0"),
@@ -399,7 +406,7 @@ async def test_version_reports_the_process_and_not_the_disk() -> None:
             "kind": "command",
             "resource": "node",
             "command": "version",
-            "session_id": "session-source",
+            "actor_id": "session-source",
         }
     )
 

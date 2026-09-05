@@ -19,7 +19,7 @@ from ..models import (
 from ..storage import IStorageScope
 from .delivery import OutboundDeliveryService
 from .reminder import resolve_reminder_anchor
-from .services import SessionAuditRecorder
+from .services import AuditRecorder
 
 MESSAGE_KEYS: Mapping[RuntimeTurnState, str] = MappingProxyType(
     {
@@ -44,7 +44,7 @@ class RuntimeErrorReporter:
         agent_id: str,
         delivery: OutboundDeliveryService,
         storage: IStorageScope,
-        audit: SessionAuditRecorder,
+        audit: AuditRecorder,
         translator: Translator,
         detail: Callable[[str, str], str],
     ) -> None:
@@ -68,12 +68,12 @@ class RuntimeErrorReporter:
             return
 
         terminal_detail = turn.error_message or turn.error_kind or turn.state.value
-        feedback_detail = self._detail(message.session_id, terminal_detail)
+        feedback_detail = self._detail(message.thread_id, terminal_detail)
         correlation = CorrelationContext(
             node_id=self._agent_id,
             channel=message.channel,
             channel_session_id=message.channel_session_id,
-            bcn_session_id=message.session_id,
+            thread_id=message.thread_id,
             runtime_session_id=turn.session_id,
             turn_id=turn.turn_id,
             inbound_seq=message.seq,
@@ -96,7 +96,7 @@ class RuntimeErrorReporter:
         )
         result = await self._delivery.deliver(
             ChannelSendRequest(
-                session_id=message.session_id,
+                session_id=message.thread_id,
                 body=self._translator.text(message_key, {"error": feedback_detail}),
                 attachments=(),
                 target_kind=message.target_kind,
@@ -130,7 +130,7 @@ class RuntimeErrorReporter:
             state=RuntimeEventState.FAILED,
             correlation=correlation,
             error_kind=error_kind,
-            error_message=self._detail(message.session_id, error_message),
+            error_message=self._detail(message.thread_id, error_message),
             metadata=metadata,
         )
 

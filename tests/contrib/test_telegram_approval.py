@@ -15,6 +15,7 @@ from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.api import TelegramBotApi
 from bazaar_compute_node.contrib.telegram.approval import TelegramApprovalChannel
 from bazaar_compute_node.contrib.telegram.identity import TelegramThreadIdentity
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import ChannelApprovalRequest, ChannelContext
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
@@ -82,7 +83,7 @@ def _request(
     return ChannelApprovalRequest(
         approval=ApprovalRequest(
             request_id="approval-1",
-            session_id="session-1",
+            actor=Thread("session-1"),
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,

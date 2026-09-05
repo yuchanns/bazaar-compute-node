@@ -8,7 +8,6 @@ from typing import cast
 import aiosqlite
 
 from ...core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
@@ -20,6 +19,7 @@ from ...core.models import (
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
+    Thread,
 )
 
 
@@ -56,8 +56,8 @@ def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
     )
 
 
-def bcn_session_from_row(row: aiosqlite.Row) -> BcnSession:
-    return BcnSession(
+def thread_from_row(row: aiosqlite.Row) -> Thread:
+    return Thread(
         id=_required_text(row["id"], "id"),
         channel_session_id=_required_text(
             row["channel_session_id"], "channel_session_id"
@@ -120,7 +120,7 @@ def message_from_row(
         "direction": direction,
         "seq": cast(int, row["seq"]),
         "message_id": _required_text(row["message_id"], "message_id"),
-        "session_id": _required_text(row["session_id"], "session_id"),
+        "thread_id": _required_text(row["thread_id"], "thread_id"),
         "channel_session_id": _required_text(
             row["channel_session_id"], "channel_session_id"
         ),
@@ -212,7 +212,7 @@ def _decode_outbound_attachments(raw_value: object) -> tuple[OutboundAttachment,
 
 def consumer_cursor_from_row(row: aiosqlite.Row) -> ConsumerCursor:
     return ConsumerCursor(
-        session_id=_required_text(row["session_id"], "session_id"),
+        thread_id=_required_text(row["thread_id"], "thread_id"),
         delivered_through_seq=cast(int, row["delivered_through_seq"]),
         last_check_at_ms=cast(int | None, row["last_check_at_ms"]),
         last_read_at_ms=cast(int | None, row["last_read_at_ms"]),
@@ -459,10 +459,10 @@ def validate_channel_session_update(
     )
 
 
-def validate_bcn_session_update(
-    existing: BcnSession,
-    incoming: BcnSession,
-) -> BcnSession:
+def validate_thread_update(
+    existing: Thread,
+    incoming: Thread,
+) -> Thread:
     if (
         existing.channel_session_id != incoming.channel_session_id
         or existing.workspace_id != incoming.workspace_id

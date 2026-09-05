@@ -12,6 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from uuid import UUID, uuid7
 
+from ..core.actor import Mode
 from ..core.paths import resolve_data_dir
 from ..core.runtime import RuntimeSandboxMode
 
@@ -69,6 +70,7 @@ class AgentConfiguration:
     name: str
     channel: ChannelConfiguration
     runtimes: tuple[RuntimeConfiguration, ...]
+    mode: Mode = Mode.SESSION
     idle_timeout_seconds: float = 0
 
     def __post_init__(self) -> None:
@@ -320,6 +322,14 @@ def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
         raise ConfigurationError(
             f"agent #{index}.idle_timeout must be a non-negative finite number"
         )
+    raw_mode = table.get("mode", Mode.SESSION.value)
+    try:
+        mode = Mode(raw_mode)
+    except ValueError as error:
+        allowed = ", ".join(member.value for member in Mode)
+        raise ConfigurationError(
+            f"agent #{index}.mode must be one of: {allowed}"
+        ) from error
     return AgentConfiguration(
         id=_required_text(table.get("id"), f"agent #{index}.id"),
         name=_required_text(table.get("name"), f"agent #{index}.name"),
@@ -330,6 +340,7 @@ def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
             ),
         ),
         runtimes=tuple(runtimes),
+        mode=mode,
         idle_timeout_seconds=float(idle_timeout),
     )
 
@@ -601,6 +612,7 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
                 "[[agent]]",
                 f"id = {_toml_value(agent.id)}",
                 f"name = {_toml_value(agent.name)}",
+                f"mode = {_toml_value(agent.mode.value)}",
                 f"idle_timeout = {_toml_value(agent.idle_timeout_seconds)}",
                 "",
                 "[agent.channel]",

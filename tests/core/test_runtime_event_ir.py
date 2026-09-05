@@ -11,6 +11,7 @@ from bcn_test_support import (
     TestTurnPlan,
 )
 
+from bazaar_compute_node.core.actor import Actors, Mode, Thread
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     Message,
@@ -26,7 +27,7 @@ from bazaar_compute_node.core.models import (
     TurnStarted,
     TurnUnknown,
 )
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
 from bazaar_compute_node.core.orchestration.turn import _with_a_reason
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import ENGLISH, create_translator
@@ -37,7 +38,7 @@ def _message() -> Message:
         direction=MessageDirection.INBOUND,
         seq=1,
         message_id="message-1",
-        session_id="session-1",
+        thread_id="session-1",
         channel_session_id="channel-session-1",
         channel="test",
         provider_thread_id="provider-thread-1",
@@ -71,8 +72,8 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
-        agent_id="agent-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),
@@ -130,8 +131,8 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
-        agent_id="agent-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),
@@ -167,7 +168,7 @@ def test_core_names_a_failure_the_runtime_left_unexplained() -> None:
     # a provider can end a turn as failed without an error object; which runtime
     # it was is ours to know, so the reason comes from core, not the adapter
     envelope = RuntimeEventEnvelope(
-        session_id="bcn-1",
+        actor=Thread("bcn-1"),
         runtime_session_id="runtime-1",
         turn_id="turn-1",
         occurred_at_ms=1,

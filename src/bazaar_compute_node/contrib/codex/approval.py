@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
+from ...core.actor import Actor
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -129,7 +130,7 @@ def _approval_metadata(
 def parse_approval_request(
     message: JsonlMessage,
     *,
-    session_id: str,
+    actor: Actor,
     runtime_session_id: str,
     turn_id: str,
     provider_thread_id: str,
@@ -178,7 +179,7 @@ def parse_approval_request(
         params=params,
         request=CoreApprovalRequest(
             request_id=str(request_id),
-            session_id=session_id,
+            actor=actor,
             runtime_session_id=runtime_session_id,
             action=_APPROVAL_ACTIONS[method],
             created_at_ms=started_at_ms,

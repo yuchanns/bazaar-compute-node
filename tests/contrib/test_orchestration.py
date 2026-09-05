@@ -40,11 +40,14 @@ from bazaar_compute_node.app.registry import (
     AgentAdapterFactories,
     SharedAdapterFactories,
 )
+from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
+from bazaar_compute_node.app.upgrade import UpgradeService
 from bazaar_compute_node.contrib.lark.api import LarkApi
 from bazaar_compute_node.contrib.lark.channel import LarkChannel
 from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
+from bazaar_compute_node.core.actor import Actors, Agent, Mode, Thread
 from bazaar_compute_node.core.agent import State
 from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
 from bazaar_compute_node.core.channel import (
@@ -55,6 +58,7 @@ from bazaar_compute_node.core.channel import (
 )
 from bazaar_compute_node.core.command import (
     ICommandService,
+    IReminderService,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -78,13 +82,15 @@ from bazaar_compute_node.core.models import (
     SenderIdentity,
     SenderKind,
     SystemMessageKind,
+    TurnCancelled,
     TurnCompleted,
     TurnFailed,
     TurnStarted,
     TurnUnknown,
 )
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
-from bazaar_compute_node.core.orchestration.session import (
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
+from bazaar_compute_node.core.orchestration.orchestrator import (
+    _NOTICE_WINDOW,
     _RuntimeNotification,
 )
 from bazaar_compute_node.core.orchestration.turn import inbox_notice
@@ -94,7 +100,7 @@ from bazaar_compute_node.core.runtime import (
     Runtime,
     RuntimeCommandContext,
 )
-from bazaar_compute_node.core.storage import IStorage
+from bazaar_compute_node.core.storage import InboxTargetResolutionError, IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.i18n import (
     ENGLISH,
@@ -147,14 +153,14 @@ def make_message(
     provider_message_id = f"provider-{session_id}-{seq}"
     sender = SenderIdentity(id="sender-id", name="Sender")
     if sender_kind == SenderKind.SYSTEM.value:
-        metadata["system_message_kind"] = SystemMessageKind.HANDOFF.value
+        metadata["system_message_kind"] = SystemMessageKind.REMINDER.value
         provider_message_id = None
         sender = SenderIdentity(name="system")
     return Message(
         direction=MessageDirection.INBOUND,
         seq=seq,
         message_id=message_id or f"message-{session_id}-{seq}",
-        session_id=session_id,
+        thread_id=session_id,
         channel_session_id=channel_session_id,
         channel="test",
         provider_thread_id=f"thread-{session_id}",
@@ -327,8 +333,9 @@ async def make_node(
     translator: Translator = _ENGLISH_TRANSLATOR,
     error_feedback_detail: Callable[[str, str], str] = unchanged_error_feedback_detail,
     upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
+    mode: Mode = Mode.SESSION,
 ) -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestChannel,
     TestRuntime,
     MemoryStorage,
@@ -339,8 +346,8 @@ async def make_node(
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="workspace-1", mode=mode),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -358,7 +365,7 @@ async def make_node(
 
 
 async def make_sqlite_node() -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestChannel,
     TestRuntime,
     SqliteDatabase,
@@ -370,8 +377,8 @@ async def make_sqlite_node() -> tuple[
     audit = RecordingAudit()
     await storage.start(timeout=2)
     storage_scope = storage.scope("workspace-1", "Test Agent")
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage_scope,
@@ -390,7 +397,7 @@ async def make_sqlite_node() -> tuple[
 async def make_idle_timeout_node(
     idle_timeout_ms: int,
 ) -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     TestRuntime,
     MemoryStorage,
     TimerWheel,
@@ -401,8 +408,8 @@ async def make_idle_timeout_node(
     await storage.start(timeout=1)
     wheel = TimerWheel()
     await wheel.start()
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -423,11 +430,11 @@ async def make_idle_timeout_node(
 async def test_orchestrator_degrades_and_recovers_local_worker_failures() -> None:
     orchestrator, _, _, storage, _ = await make_node()
     try:
-        orchestrator._runtime_queue_for_session("session-1")
-        worker = orchestrator._runtime_workers["session-1"]
+        orchestrator._runtime_queue_for_actor(Thread("session-1"))
+        worker = orchestrator._runtime_workers[Thread("session-1")]
         worker.cancel()
         await wait_until(
-            lambda: orchestrator._runtime_workers.get("session-1") is not worker
+            lambda: orchestrator._runtime_workers.get(Thread("session-1")) is not worker
         )
 
         receive_task = orchestrator._receive_task
@@ -451,6 +458,20 @@ async def wait_until(predicate: object) -> None:
             return
         await asyncio.sleep(0)
     raise AssertionError("condition was not reached")
+
+
+def _turn_endings(channel: TestChannel, turn_id: str) -> list[str]:
+    """Say which conversations a turn was ended on, in the order they saw it."""
+
+    return [
+        session_id
+        for session_id, event in zip(channel.event_sessions, channel.events)
+        if event.envelope.turn_id == turn_id
+        and isinstance(
+            event.payload,
+            TurnCompleted | TurnFailed | TurnCancelled | TurnUnknown,
+        )
+    ]
 
 
 def _stored_messages(
@@ -534,7 +555,7 @@ async def _wait_for_audit_event(
     async with asyncio.timeout(600):
         while True:
             if any(
-                event.correlation.bcn_session_id == session_id
+                event.correlation.thread_id == session_id
                 and (event_name is None or event.event_name == event_name)
                 and (event_suffix is None or event.event_name.endswith(event_suffix))
                 and (operation is None or event.metadata.get("operation") == operation)
@@ -706,7 +727,7 @@ async def run_natural_conversation_contract(
                     event.correlation.outbound_message_id
                     for event in audit.events
                     if (
-                        event.correlation.bcn_session_id == scoped_session_id
+                        event.correlation.thread_id == scoped_session_id
                         and event.event_name == "channel.outbound.sent"
                         and event.correlation.inbound_seq == inbound.seq
                         and event.correlation.outbound_message_id is not None
@@ -718,7 +739,7 @@ async def run_natural_conversation_contract(
                         event.correlation.outbound_message_id
                         for event in audit.events
                         if (
-                            event.correlation.bcn_session_id == scoped_session_id
+                            event.correlation.thread_id == scoped_session_id
                             and event.event_name == "bcc.send.fresh_check.passed"
                             and event.correlation.inbound_seq == inbound.seq
                             and event.correlation.outbound_message_id is not None
@@ -735,7 +756,7 @@ async def run_natural_conversation_contract(
                 event.correlation.outbound_message_id
                 for event in audit.events
                 if (
-                    event.correlation.bcn_session_id == scoped_session_id
+                    event.correlation.thread_id == scoped_session_id
                     and event.event_name == "bcc.send.fresh_check.failed"
                     and event.correlation.outbound_message_id is not None
                 )
@@ -771,15 +792,15 @@ async def test_channel_storage_runtime_turn_path() -> None:
             "bcn-1",
             direction=MessageDirection.INBOUND,
         ) == [message]
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
         assert runtime.started_turns
         assert any(
-            event.correlation.bcn_session_id == "bcn-1"
+            event.correlation.thread_id == "bcn-1"
             and event.correlation.turn_id == "turn-message-bcn-1-1"
             for event in audit.events
         )
         unfollowed = await orchestrator.command_service.unfollow(
-            "bcn-1", raw_target="dm:channel-bcn-1"
+            Thread("bcn-1"), raw_target="dm:channel-bcn-1"
         )
         assert unfollowed.changed is False
         assert storage.channel_sessions["channel-bcn-1"].following is True
@@ -812,9 +833,7 @@ async def test_stream_events() -> None:
             TurnStarted,
             TurnCompleted,
         ]
-        assert {event.envelope.session_id for event in channel.stream_events} == {
-            "bcn-1"
-        }
+        assert {event.envelope.actor.id for event in channel.stream_events} == {"bcn-1"}
         first_delta = channel.stream_events[0].payload
         last_delta = channel.stream_events[-1].payload
         assert isinstance(first_delta, ContentDelta)
@@ -842,7 +861,7 @@ async def test_stream_events() -> None:
         )
 
         assert not channel.stream_events
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -871,17 +890,17 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
     orchestrator, channel, runtime, storage, audit = await make_node()
 
     async def command_script(commands: ICommandService, session_id: str) -> None:
-        checked = await commands.check(session_id)
+        (checked,) = await commands.check(Thread(session_id))
         if not checked.messages:
             raise AssertionError("command did not observe the inbound message")
         history = await commands.read(
-            session_id,
+            Thread(session_id),
             raw_target=checked.messages[0].target,
         )
         if not history.messages:
             raise AssertionError("history command did not observe the inbound message")
         outbound = await commands.send(
-            session_id=session_id,
+            actor=Thread(session_id),
             command_id="command-1",
             raw_target=checked.messages[0].target,
             body="runtime-generated reply",
@@ -898,7 +917,7 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
         await wait_for_turn_terminal(
             orchestrator=orchestrator,
             channel=channel,
-            session_id=message.session_id,
+            session_id=message.thread_id,
             client_user_message_id=message.message_id,
             sent_after=0,
             timeout=1,
@@ -928,12 +947,12 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_scoped_read_returns_target_messages() -> None:
+async def test_a_conversation_reads_its_own_history_and_no_other() -> None:
     orchestrator, _, _, storage, _ = await make_sqlite_node()
     caller_id = "bcn-caller"
-    target_session_id = "bcn-target"
+    target_thread_id = "bcn-target"
     caller_message = make_message(session_id=caller_id)
-    target_parent = make_message(session_id=target_session_id)
+    target_parent = make_message(session_id=target_thread_id)
     target_reply = replace(
         target_parent,
         seq=2,
@@ -949,7 +968,7 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
 
     try:
         history = await orchestrator.command_service.read(
-            caller_id,
+            Thread(target_thread_id),
             raw_target=target_reply.target,
             around_message_id=target_reply.message_id,
             limit=1,
@@ -961,6 +980,14 @@ async def test_agent_scoped_read_returns_target_messages() -> None:
             target_parent.message_id
         ]
         assert history.messages[0].target == target_reply.target
+
+        # another conversation's history belongs to whoever answers for it
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.read(
+                Thread(caller_id),
+                raw_target=target_reply.target,
+                limit=1,
+            )
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=2)
@@ -972,11 +999,11 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
         request = ApprovalRequest(
             request_id="approval-1",
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             runtime_session_id=runtime_session.id,
             action="test-action",
             created_at_ms=1,
@@ -1002,7 +1029,63 @@ async def test_approval_is_routed_to_the_current_channel_session() -> None:
         assert channel_request.provider_sender_id == "sender-id"
         assert runtime.approval_results
         assert runtime.approval_results[0].request_id == request.request_id
-        assert any(event.event_name == "approval.decided" for event in audit.events)
+        assert [
+            event.event_name
+            for event in audit.events
+            if event.event_name.startswith("approval.")
+        ] == ["approval.requested", "approval.decided"]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_an_individual_actor_allows_tool_use_without_asking_anyone() -> None:
+    orchestrator, channel, runtime, _, audit = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    agent = Agent("workspace-1")
+    try:
+        opening_turn = await orchestrator.handle_inbound(
+            make_message(session_id="bcn-a", seq=1)
+        )
+        assert opening_turn is not None
+        runtime_session = orchestrator.runtime_session(agent)
+        assert runtime_session is not None
+        request = ApprovalRequest(
+            request_id="approval-1",
+            actor=agent,
+            runtime_session_id=runtime_session.id,
+            action="test-action",
+            created_at_ms=1,
+            turn_id="turn-message-bcn-a-2",
+        )
+        runtime.queue_turn_plan(TestTurnPlan(approval_request=request))
+        await channel.inject(make_message(session_id="bcn-a", seq=2))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-message-bcn-a-2"
+                for event in audit.events
+            )
+        )
+
+        assert channel.approval_requests == []
+        assert channel.channel_approval_requests == []
+        assert runtime.approval_results
+        allowed = runtime.approval_results[0]
+        assert allowed.request_id == request.request_id
+        assert allowed.decision is ApprovalDecision.APPROVED
+        assert allowed.reason == (
+            "This Agent answers for every conversation and allows tool use "
+            "without asking."
+        )
+        decided = [
+            event for event in audit.events if event.event_name.startswith("approval.")
+        ]
+        assert [event.event_name for event in decided] == ["approval.decided"]
+        assert decided[0].metadata["decision"] == "approved"
+        assert decided[0].metadata["reason"] == allowed.reason
+        assert decided[0].correlation.request_id == request.request_id
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -1013,7 +1096,7 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
         context, message, created = await orchestrator._record_inbound(
             make_message(seq=2)
@@ -1029,7 +1112,7 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
             TestTurnPlan(
                 approval_request=ApprovalRequest(
                     request_id="approval-persisted-sender",
-                    session_id=message.session_id,
+                    actor=Thread(message.thread_id),
                     runtime_session_id=runtime_session.id,
                     action="test-action",
                     created_at_ms=1,
@@ -1039,10 +1122,12 @@ async def test_approval_preserves_sender_id_after_sqlite_round_trip() -> None:
         )
 
         turn = await orchestrator._run_notification(
-            _RuntimeNotification(
-                message=persisted,
-                context=context,
-                wake_id="persisted-sender",
+            (
+                _RuntimeNotification(
+                    message=persisted,
+                    context=context,
+                    wake_id="persisted-sender",
+                ),
             )
         )
 
@@ -1062,13 +1147,13 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         assert context is not None
         assert created
         first_turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=anchor, context=context)
+            (_RuntimeNotification(message=anchor, context=context),)
         )
         assert first_turn is not None
         reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
             Reminder(
                 reminder_id="pending",
-                owner_session_id=anchor.session_id,
+                owner_thread_id=anchor.thread_id,
                 anchor_message_id=anchor.message_id,
                 title="Review",
                 state=ReminderState.SCHEDULED,
@@ -1085,7 +1170,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
             direction=MessageDirection.INBOUND,
             seq=0,
             message_id=str(uuid7()),
-            session_id=anchor.session_id,
+            thread_id=anchor.thread_id,
             channel_session_id=anchor.channel_session_id,
             channel=anchor.channel,
             provider_thread_id=anchor.provider_thread_id,
@@ -1101,14 +1186,14 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
                 "reminder_id": reminder.reminder_id,
             },
         )
-        runtime_session = orchestrator.runtime_session(anchor.session_id)
+        runtime_session = orchestrator.runtime_session(Thread(anchor.thread_id))
         assert runtime_session is not None
         message = await cast(IStorage, storage).save_message(message)
         runtime.queue_turn_plan(
             TestTurnPlan(
                 approval_request=ApprovalRequest(
                     request_id="approval-reminder-anchor",
-                    session_id=anchor.session_id,
+                    actor=Thread(anchor.thread_id),
                     runtime_session_id=runtime_session.id,
                     action="test-action",
                     created_at_ms=3,
@@ -1118,7 +1203,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
         )
 
         turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=message, context=context)
+            (_RuntimeNotification(message=message, context=context),)
         )
 
         assert turn is not None
@@ -1132,7 +1217,7 @@ async def test_reminder_approval_uses_its_human_anchor_as_the_target() -> None:
 
         # the turn's own output belongs under the message the Reminder was set from
         anchored_session_id, anchored = channel.turn_anchors[-1]
-        assert anchored_session_id == anchor.session_id
+        assert anchored_session_id == anchor.thread_id
         assert anchored.message_id == anchor.message_id
     finally:
         await orchestrator.stop(timeout=1)
@@ -1154,14 +1239,14 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         assert context is not None
         assert created
         first_turn = await orchestrator._run_notification(
-            _RuntimeNotification(message=first_message, context=context)
+            (_RuntimeNotification(message=first_message, context=context),)
         )
         assert first_turn is not None
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
         request = ApprovalRequest(
             request_id=f"approval-{sender_kind}-1",
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             runtime_session_id=runtime_session.id,
             action="test-action",
             created_at_ms=1,
@@ -1172,7 +1257,7 @@ async def test_non_human_approval_is_rejected_before_channel_call(
         if sender_kind == SenderKind.SYSTEM.value:
             message = await cast(IStorage, storage).save_message(message)
             turn = await orchestrator._run_notification(
-                _RuntimeNotification(message=message, context=context)
+                (_RuntimeNotification(message=message, context=context),)
             )
             assert turn is not None
         else:
@@ -1225,7 +1310,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         )
 
         held_without_snapshot = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-before-check",
             raw_target="dm:channel-bcn-1",
             body="reply",
@@ -1252,10 +1337,10 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         )
         assert not channel.send_attempts
 
-        checked = await orchestrator.command_service.check("bcn-1")
+        (checked,) = await orchestrator.command_service.check(Thread("bcn-1"))
         assert checked.messages
         delivered = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-after-check",
             raw_target="dm:channel-bcn-1",
             body="",
@@ -1276,7 +1361,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert len(channel.send_attempts) == 1
         with pytest.raises(ValueError, match="no active draft"):
             await orchestrator.command_service.send(
-                session_id="bcn-1",
+                actor=Thread("bcn-1"),
                 command_id="command-consumed-draft",
                 raw_target="dm:channel-bcn-1",
                 body="",
@@ -1298,7 +1383,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
             )
         )
         stale = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-stale",
             raw_target="dm:channel-bcn-1",
             body="stale draft",
@@ -1307,7 +1392,7 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert isinstance(stale, MessageSendFreshnessHold)
         assert stale.draft_replaced is False
         revised = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-revised",
             raw_target="dm:channel-bcn-1",
             body="revised draft",
@@ -1329,7 +1414,7 @@ async def test_sqlite_freshness_hold_returns_latest_bounded_context() -> None:
             await orchestrator._record_inbound(make_message(seq=seq))
 
         held = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-bounded-context",
             raw_target="dm:channel-bcn-1",
             body="reply",
@@ -1372,21 +1457,21 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         target = await repository.resolve_inbox_target("dm:@ALICE")
         assert created is True, case
         assert dm_message.target == "dm:channel-readable-dm", case
-        assert target.bcn_session.id == "readable-dm", case
+        assert target.thread.id == "readable-dm", case
         assert target.canonical_target == "dm:channel-readable-dm", case
         assert target.display_target == "dm:@Alice", case
 
         case = "history and outbound persistence use the canonical target"
         history = await orchestrator.command_service.read(
-            "readable-dm",
+            Thread("readable-dm"),
             raw_target="dm:@alice",
         )
         assert [message.target for message in history.messages] == [
             "dm:channel-readable-dm"
         ], case
-        await orchestrator.command_service.check("readable-dm")
+        await orchestrator.command_service.check(Thread("readable-dm"))
         delivered = await orchestrator.command_service.send(
-            session_id="readable-dm",
+            actor=Thread("readable-dm"),
             command_id="readable-target-send",
             raw_target="dm:@Alice",
             body="Readable target reply",
@@ -1651,17 +1736,8 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
                 target_presentation=ChannelTargetPresentation(handle="Alice"),
             )
         )
-        inbox = await orchestrator.command_service.list_inbox("readable-dm")
-        for summary in inbox.targets:
-            target = await repository.resolve_inbox_target(summary.target)
-            assert target.bcn_session.id == summary.session_id, case
-        assert any(summary.target == "dm:@Alice" for summary in inbox.targets), case
-        assert any(
-            summary.target == lark_target.display_target for summary in inbox.targets
-        ), case
-
         case = "check and read headers use the current display projection"
-        checked = await orchestrator.command_service.check("readable-dm")
+        (checked,) = await orchestrator.command_service.check(Thread("readable-dm"))
         checked_payload = serialize_message(
             checked.messages[-1], checked.target_projections
         )
@@ -1669,7 +1745,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             case
         )
         history = await orchestrator.command_service.read(
-            "readable-dm",
+            Thread("readable-dm"),
             raw_target="dm:@Alice",
         )
         history_payload = serialize_message(
@@ -1693,7 +1769,7 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
             )
         )
         held = await orchestrator.command_service.send(
-            session_id="readable-dm",
+            actor=Thread("readable-dm"),
             command_id="readable-target-hold",
             raw_target="dm:@Alice",
             body="Held readable target reply",
@@ -1704,35 +1780,21 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         held_payload = serialize_message(held.messages[-1], held.target_projections)
         assert held_payload["target"] == "dm:@Alice", case
 
-        case = "handoff guidance and unfollow return current display targets"
-        await orchestrator.command_service.check("readable-dm")
-        delivered = await orchestrator.command_service.send(
-            session_id="readable-dm",
-            command_id="readable-target-handoff",
-            raw_target=lark_target.display_target,
-            body="Cross-session readable target reply",
-            created_at_ms=6,
-        )
-        assert isinstance(delivered, MessageSendSuccess), case
-        assert delivered.target == lark_target.display_target, case
-        handoff = await orchestrator.command_service.check(lark_target.bcn_session.id)
-        handoff_message = next(
-            message
-            for message in handoff.messages
-            if message.system_message_kind is SystemMessageKind.HANDOFF
-        )
-        handoff_payload = serialize_message(
-            handoff_message,
-            handoff.target_projections,
-        )
-        assert 'bcc message read --target "dm:@Alice"' in format_check_message(
-            handoff_payload
-        ), case
+        case = "another conversation is out of reach, and unfollow still names it"
+        await orchestrator.command_service.check(Thread("readable-dm"))
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.send(
+                actor=Thread("readable-dm"),
+                command_id="readable-target-out-of-reach",
+                raw_target=lark_target.display_target,
+                body="reply",
+                created_at_ms=6,
+            )
         await repository.save_channel_session(
             replace(lark_target.channel_session, following=True)
         )
         unfollowed = await orchestrator.command_service.unfollow(
-            lark_target.bcn_session.id,
+            Thread(lark_target.thread.id),
             raw_target=lark_target.display_target,
         )
         assert unfollowed.target == lark_target.display_target, case
@@ -1766,14 +1828,14 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         await orchestrator._record_inbound(make_message(session_id="bcn-b"))
 
         first_hold = await orchestrator.command_service.send(
-            session_id="bcn-a",
+            actor=Thread("bcn-a"),
             command_id="command-hold-a",
             raw_target="dm:channel-bcn-a",
             body="draft a",
             created_at_ms=2,
         )
         second_hold = await orchestrator.command_service.send(
-            session_id="bcn-b",
+            actor=Thread("bcn-b"),
             command_id="command-hold-b",
             raw_target="dm:channel-bcn-b",
             body="draft b",
@@ -1782,10 +1844,10 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         assert isinstance(first_hold, MessageSendFreshnessHold)
         assert isinstance(second_hold, MessageSendFreshnessHold)
 
-        await orchestrator.command_service.check("bcn-a")
-        await orchestrator.command_service.check("bcn-b")
+        await orchestrator.command_service.check(Thread("bcn-a"))
+        await orchestrator.command_service.check(Thread("bcn-b"))
         first_sent = await orchestrator.command_service.send(
-            session_id="bcn-a",
+            actor=Thread("bcn-a"),
             command_id="command-send-a",
             raw_target="dm:channel-bcn-a",
             body="",
@@ -1793,7 +1855,7 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
             send_draft=True,
         )
         second_sent = await orchestrator.command_service.send(
-            session_id="bcn-b",
+            actor=Thread("bcn-b"),
             command_id="command-send-b",
             raw_target="dm:channel-bcn-b",
             body="",
@@ -1834,10 +1896,10 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
                 == 1
             )
         )
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
 
         delivered = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-with-attachments",
             raw_target="dm:channel-bcn-1",
             body="Attached reports.",
@@ -1858,9 +1920,7 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
 
 @pytest.mark.asyncio
-async def test_send_delivers_cross_session_and_preserves_provider_delivery_states() -> (
-    None
-):
+async def test_send_preserves_provider_delivery_states() -> None:
     orchestrator, channel, _, storage, audit = await make_node()
     try:
         await channel.inject(make_message(seq=1))
@@ -1878,44 +1938,35 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         )
         target_anchor = make_message(session_id="bcn-other")
         await orchestrator._record_inbound(target_anchor)
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
 
-        cross_session_target = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-cross-session-target",
-            raw_target="dm:channel-bcn-other",
-            body="reply",
-            created_at_ms=2,
-            reply_to_message_id=target_anchor.message_id,
-        )
-        assert isinstance(cross_session_target, MessageSendSuccess)
-        cross_session_target = cross_session_target.message
-        assert cross_session_target.session_id == "bcn-other"
-        assert cross_session_target.delivery_state is OutboundDeliveryState.SENT
-        assert channel.send_attempts[-1].session_id == "bcn-other"
-        assert channel.send_attempts[-1].provider_reply_to_message_id == (
-            target_anchor.provider_message_id
-        )
-        target_messages = _stored_messages(storage, "bcn-other")
-        handoff_message = target_messages[-1]
-        assert handoff_message.system_message_kind is SystemMessageKind.HANDOFF
-        assert handoff_message.metadata["system_message_outbound_message_id"] == (
-            cross_session_target.message_id
-        )
-        assert cross_session_target.message_id in handoff_message.body
-        assert handoff_message.metadata["system_message_source_target"] == (
-            "dm:channel-bcn-1"
-        )
-        assert any(
-            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
-        )
+        # another conversation is answered by another actor, and nothing here
+        # reaches it
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.send(
+                actor=Thread("bcn-1"),
+                command_id="command-other-conversation",
+                raw_target="dm:channel-bcn-other",
+                body="reply",
+                created_at_ms=2,
+                reply_to_message_id=target_anchor.message_id,
+            )
+        assert not [
+            message
+            for message in _stored_messages(
+                storage,
+                "bcn-other",
+                direction=MessageDirection.OUTBOUND,
+            )
+        ]
+
         unusable_reply = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-cross-session-invalid-reply",
-            raw_target="dm:channel-bcn-other",
+            actor=Thread("bcn-1"),
+            command_id="command-invalid-reply",
+            raw_target="dm:channel-bcn-1",
             body="invalid reply",
             created_at_ms=3,
-            reply_to_message_id=make_message(seq=1).message_id,
+            reply_to_message_id=make_message(seq=9).message_id,
         )
         assert isinstance(unusable_reply, MessageSendSuccess)
         assert unusable_reply.message.delivery_state is OutboundDeliveryState.SENT
@@ -1923,54 +1974,32 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         # falling back to a non-reply send must not persist the reply pointer,
         # or reading the target's history would keep hitting a dangling id
         assert unusable_reply.message.reply_to_message_id is None
-        readable = await orchestrator.command_service.read(
-            session_id="bcn-1",
-            raw_target="dm:channel-bcn-other",
-            limit=10,
-        )
         assert any(
-            message.message_id == unusable_reply.message.message_id
-            for message in readable.messages
+            event.event_name == "tool.bcc.message.send.sent" for event in audit.events
         )
+
         channel.queue_send_result(
             ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
                 error_kind="provider_rejected",
-                error_message="provider rejected cross-session delivery",
+                error_message="provider rejected delivery",
             )
         )
-        failed_cross_session = await orchestrator.command_service.send(
-            session_id="bcn-1",
-            command_id="command-cross-session-failed",
-            raw_target="dm:channel-bcn-other",
-            body="failed cross-session reply",
+        failed = await orchestrator.command_service.send(
+            actor=Thread("bcn-1"),
+            command_id="command-failed",
+            raw_target="dm:channel-bcn-1",
+            body="failed reply",
             created_at_ms=3,
         )
-        assert isinstance(failed_cross_session, MessageSendSuccess)
-        failed_cross_session = failed_cross_session.message
-        assert failed_cross_session.delivery_state is OutboundDeliveryState.FAILED
-        assert (
-            sum(
-                message.system_message_kind is SystemMessageKind.HANDOFF
-                for message in _stored_messages(storage, "bcn-other")
-            )
-            == 2
-        )
-        with pytest.raises(ValueError, match="another target"):
-            await orchestrator.command_service.send(
-                session_id="bcn-1",
-                command_id="command-cross-session-wrong-draft-target",
-                raw_target="dm:channel-bcn-1",
-                body="",
-                created_at_ms=3,
-                send_draft=True,
-            )
+        assert isinstance(failed, MessageSendSuccess)
+        assert failed.message.delivery_state is OutboundDeliveryState.FAILED
         cross_session_attempt_count = len(channel.send_attempts)
 
-        await orchestrator.command_service.check("bcn-1")
+        await orchestrator.command_service.check(Thread("bcn-1"))
         with pytest.raises(ValueError, match="must not be empty"):
             await orchestrator.command_service.send(
-                session_id="bcn-1",
+                actor=Thread("bcn-1"),
                 command_id="command-empty-body",
                 raw_target="dm:channel-bcn-1",
                 body=" \t",
@@ -1992,7 +2021,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             )
         )
         queued = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-queued",
             raw_target="dm:channel-bcn-1",
             body="queued reply",
@@ -2002,7 +2031,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         queued = queued.message
         assert queued.delivery_state is OutboundDeliveryState.QUEUED
         assert queued.provider_receipt_ref == "queue-1"
-        assert channel.queued_messages == [channel.send_attempts[3]]
+        assert channel.queued_messages == [channel.send_attempts[-1]]
 
         channel.queue_send_result(
             ProviderCallResult(
@@ -2013,7 +2042,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             )
         )
         unknown = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-unknown",
             raw_target="dm:channel-bcn-1",
             body="unknown reply",
@@ -2047,7 +2076,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             )
         )
         partial = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-partial",
             raw_target="dm:channel-bcn-1",
             body="partial reply",
@@ -2081,7 +2110,7 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
             )
         )
         failed = await orchestrator.command_service.send(
-            session_id="bcn-1",
+            actor=Thread("bcn-1"),
             command_id="command-failed",
             raw_target="dm:channel-bcn-1",
             body="failed reply",
@@ -2091,8 +2120,14 @@ async def test_send_delivers_cross_session_and_preserves_provider_delivery_state
         failed = failed.message
         assert failed.delivery_state is OutboundDeliveryState.FAILED
         assert failed.provider_receipt_ref == "attempted-send-2"
-        assert len(channel.send_attempts) == 7
-        assert len(channel.sent_messages) == 2
+        assert len(channel.send_attempts) == 6
+        assert len(channel.sent_messages) == 1
+        # a delivered message leaves nothing behind in any conversation
+        assert not [
+            message
+            for message in _stored_message_index(storage).values()
+            if message.system_message_kind is not None
+        ]
         assert any(
             event.event_name == "channel.outbound.queued" for event in audit.events
         )
@@ -2109,7 +2144,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
     task = orchestrator.dispatch_inbound(make_message())
     await wait_until(lambda: bool(runtime.active_streams))
-    assert orchestrator.session_runtime_state("bcn-1") is State.WORKING
+    assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.WORKING
 
     await orchestrator.stop(timeout=1)
     result = await asyncio.gather(task, return_exceptions=True)
@@ -2124,7 +2159,7 @@ async def test_graceful_stop_cancels_turn_and_closes_runtime_stream() -> None:
     assert runtime.stopped
     assert channel.stopped
     assert not storage.stopped
-    assert orchestrator.session_runtime_state("bcn-1") is None
+    assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
 
 
 @pytest.mark.asyncio
@@ -2152,8 +2187,8 @@ async def test_channel_persists_next_inbound_while_turn_is_active() -> None:
         await wait_until(lambda: len(runtime.steered_turns) == 1)
         assert len(runtime.started_turns) == 1
         steered_session, steered_turn, steer_input = runtime.steered_turns[0]
-        assert steered_session.bcn_session_id == "bcn-1"
-        assert steered_session == orchestrator.runtime_session("bcn-1")
+        assert steered_session.actor.id == "bcn-1"
+        assert steered_session == orchestrator.runtime_session(Thread("bcn-1"))
         assert steered_turn.turn_id == "turn-message-bcn-1-1"
         assert steer_input == (
             "[inbox notice:\n"
@@ -2225,6 +2260,383 @@ async def test_active_turn_without_provider_id_still_attempts_runtime_steer() ->
 
 
 @pytest.mark.asyncio
+async def test_one_actor_answers_every_conversation_on_one_runtime() -> None:
+    orchestrator, _, runtime, storage, audit = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    agent = Agent("workspace-1")
+    try:
+        first, second = await asyncio.gather(
+            orchestrator.handle_inbound(make_message(session_id="bcn-a")),
+            orchestrator.handle_inbound(make_message(session_id="bcn-b")),
+        )
+
+        assert first is not None
+        assert second is not None
+        assert first.state is RuntimeTurnState.COMPLETED
+        assert second.state is RuntimeTurnState.COMPLETED
+
+        # one mailbox, one runtime session, one binding for the whole Agent
+        assert list(orchestrator._runtime_queues) == [agent]  # pyright: ignore[reportPrivateUsage]
+        assert list(orchestrator._runtime_sessions) == [agent]  # pyright: ignore[reportPrivateUsage]
+        assert {session.actor for session in runtime.started_sessions} == {agent}
+        assert first.session_id == second.session_id
+
+        # both conversations were taken into the same turn, and each message
+        # stays filed under the conversation it came from
+        assert first.turn_id == second.turn_id
+        assert {
+            session_id
+            for session_id in storage.messages
+            if _stored_messages(
+                storage,
+                session_id,
+                direction=MessageDirection.INBOUND,
+            )
+        } == {"bcn-a", "bcn-b"}
+        assert {
+            event.correlation.thread_id
+            for event in audit.events
+            if event.correlation.turn_id is not None
+        } == {"bcn-a"}
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_marks_every_conversation_steered_into_it() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(session_id="bcn-a"))
+        await wait_until(lambda: bool(runtime.active_streams))
+        await channel.inject(make_message(session_id="bcn-b"))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+
+        assert [session_id for session_id, _ in channel.turn_anchors] == [
+            "bcn-a",
+            "bcn-b",
+        ]
+
+        _, opened_turn, _ = runtime.started_turns[0]
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+
+        await wait_until(
+            lambda: (
+                sorted(_turn_endings(channel, opened_turn.turn_id))
+                == ["bcn-a", "bcn-b"]
+            )
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_steered_twice_is_marked_once() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: bool(runtime.active_streams))
+        await channel.inject(make_message(seq=2))
+        await channel.inject(make_message(seq=3))
+        await wait_until(lambda: len(runtime.steered_turns) == 2)
+
+        assert [session_id for session_id, _ in channel.turn_anchors] == ["bcn-1"]
+
+        _, opened_turn, _ = runtime.started_turns[0]
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+
+        await wait_until(
+            lambda: _turn_endings(channel, opened_turn.turn_id) == ["bcn-1"]
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_answers_every_conversation_it_took_a_message_from() -> (
+    None
+):
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        for session_id in ("bcn-a", "bcn-b", "bcn-c"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            if session_id == "bcn-c":
+                continue
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        results = await asyncio.gather(*completions)
+
+        assert len(runtime.started_turns) == 1
+        assert {result.state for result in results if result is not None} == {
+            RuntimeTurnState.FAILED
+        }
+        assert sorted(request.session_id for request in channel.send_attempts) == [
+            "bcn-a",
+            "bcn-b",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_one_held_error_receipt_does_not_hold_up_the_others() -> None:
+    orchestrator, channel, runtime, _, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    channel.send_gate = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    runtime.queue_turn_plan(
+        TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
+    )
+    try:
+        for session_id in ("bcn-a", "bcn-b"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        await wait_until(lambda: len(channel.send_attempts) == 2)
+        channel.send_gate.set()
+
+        await asyncio.gather(*completions)
+        assert sorted(request.session_id for request in channel.send_attempts) == [
+            "bcn-a",
+            "bcn-b",
+        ]
+    finally:
+        channel.send_gate.set()
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_an_individual_notice_covers_every_conversation_in_reach() -> None:
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    try:
+        await orchestrator._record_inbound(make_message(session_id="bcn-b"))  # pyright: ignore[reportPrivateUsage]
+
+        result = await orchestrator.handle_inbound(make_message(session_id="bcn-a"))
+
+        assert result is not None
+        assert runtime.started_turns[0][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 2 changed targets\n"
+            "dm:channel-bcn-a  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "dm:channel-bcn-b  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_notice_covers_every_conversation_it_batched() -> None:
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    loop = asyncio.get_running_loop()
+    completions: list[asyncio.Future[RuntimeTurn | None]] = []
+    queue = orchestrator._runtime_queue_for_actor(Agent("workspace-1"))  # pyright: ignore[reportPrivateUsage]
+    try:
+        for session_id in ("bcn-a", "bcn-b"):
+            context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(session_id=session_id)
+            )
+            assert context is not None
+            completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
+            completions.append(completion)
+            queue.put_nowait(_RuntimeNotification(message, context, completion))
+
+        await asyncio.gather(*completions)
+
+        assert len(runtime.started_turns) == 1
+        assert runtime.started_turns[0][2] == (
+            "[inbox notice:\n"
+            "Inbox update: 2 unread messages total; 2 changed targets\n"
+            "dm:channel-bcn-b  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "dm:channel-bcn-a  pending: 1 message · first msg=message- · "
+            "latest sender @Sender · latest msg=message- · dm\n"
+            "]"
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_reach_and_unread_count_cover_every_conversation() -> None:
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    agent = Agent("workspace-1")
+    try:
+        for thread_id in ("bcn-a", "bcn-b", "bcn-c"):
+            await orchestrator._record_inbound(make_message(session_id=thread_id))  # pyright: ignore[reportPrivateUsage]
+
+        pending = await orchestrator.command_service.pending_targets(agent)
+        assert {summary.thread_id for summary in pending.targets} == {
+            "bcn-a",
+            "bcn-b",
+            "bcn-c",
+        }
+
+        result = await orchestrator.handle_inbound(make_message(session_id="bcn-d"))
+
+        assert result is not None
+        assert (
+            "Inbox update: 4 unread messages total; 4 changed targets"
+            in runtime.started_turns[0][2]
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_check_returns_while_another_thread_holds_its_lock() -> None:
+    orchestrator, _, _, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    agent = Agent("workspace-1")
+    try:
+        for thread_id in ("bcn-a", "bcn-b"):
+            await orchestrator._record_inbound(make_message(session_id=thread_id))  # pyright: ignore[reportPrivateUsage]
+
+        held = orchestrator._concurrency.for_thread("bcn-b")  # pyright: ignore[reportPrivateUsage]
+        async with held:
+            drained = await asyncio.wait_for(
+                orchestrator.command_service.check(agent),
+                timeout=1,
+            )
+
+        assert {
+            message.thread_id for result in drained for message in result.messages
+        } == {"bcn-a", "bcn-b"}
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_check_returns_what_every_thread_brought_in_arrival_order() -> None:
+    orchestrator, _, _, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    dispatcher = CommandDispatcher(
+        orchestrator.command_service,
+        actors=Actors(agent_id="workspace-1", mode=Mode.DANGEROUS_INDIVIDUAL),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=UpgradeService(
+            available_version=lambda: None,
+            installed_version="0.1.0",
+            request_restart=lambda: None,
+        ),
+    )
+    dispatcher.start_accepting()
+    try:
+        for thread_id, seq, body in (
+            ("bcn-a", 1, "first"),
+            ("bcn-b", 2, "second"),
+            ("bcn-a", 3, "third"),
+        ):
+            await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(
+                    session_id=thread_id,
+                    seq=seq,
+                    message_id=f"message-{seq}",
+                    body=body,
+                )
+            )
+
+        response = await dispatcher(
+            {
+                "kind": "command",
+                "resource": "message",
+                "command": "check",
+                "actor_id": "workspace-1",
+            }
+        )
+
+        assert response["ok"] is True
+        result = cast(Mapping[str, object], response["result"])
+        messages = cast(Sequence[Mapping[str, object]], result["messages"])
+        assert [message["body"] for message in messages] == [
+            "first",
+            "second",
+            "third",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_an_individual_actor_drains_and_answers_every_conversation() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    agent = Agent("workspace-1")
+    try:
+        await orchestrator._record_inbound(make_message(session_id="bcn-a"))
+        await orchestrator._record_inbound(make_message(session_id="bcn-b"))
+
+        pending = await orchestrator.command_service.pending_targets(agent)
+        assert {summary.thread_id for summary in pending.targets} == {
+            "bcn-a",
+            "bcn-b",
+        }
+
+        drained = await orchestrator.command_service.check(agent)
+        assert {
+            message.thread_id for result in drained for message in result.messages
+        } == {"bcn-a", "bcn-b"}
+        # every conversation keeps its own cursor, and each one moved
+        assert storage.cursors["bcn-a"].delivered_through_seq > 0
+        assert storage.cursors["bcn-b"].delivered_through_seq > 0
+        assert not (await orchestrator.command_service.pending_targets(agent)).targets
+
+        # unread somewhere else does not stand between the Agent and this target
+        await orchestrator._record_inbound(make_message(session_id="bcn-b", seq=2))
+        sent = await orchestrator.command_service.send(
+            actor=agent,
+            command_id="command-individual",
+            raw_target="dm:channel-bcn-a",
+            body="reply",
+            created_at_ms=2,
+        )
+        assert isinstance(sent, MessageSendSuccess)
+        assert channel.send_attempts[-1].session_id == "bcn-a"
+
+        held = await orchestrator.command_service.send(
+            actor=agent,
+            command_id="command-individual-held",
+            raw_target="dm:channel-bcn-b",
+            body="reply",
+            created_at_ms=3,
+        )
+        assert isinstance(held, MessageSendFreshnessHold)
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> None:
     orchestrator, _, runtime, storage, audit = await make_node()
     try:
@@ -2237,8 +2649,8 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
         assert second is not None
         assert first.state is RuntimeTurnState.COMPLETED
         assert second.state is RuntimeTurnState.COMPLETED
-        assert storage.bcn_sessions["bcn-a"].workspace_id == "workspace-1"
-        assert storage.bcn_sessions["bcn-b"].workspace_id == "workspace-1"
+        assert storage.threads["bcn-a"].workspace_id == "workspace-1"
+        assert storage.threads["bcn-b"].workspace_id == "workspace-1"
         assert {
             session_id
             for session_id in storage.messages
@@ -2249,16 +2661,16 @@ async def test_multiple_sessions_keep_workspace_and_correlation_isolated() -> No
             )
         } == {"bcn-a", "bcn-b"}
         assert {
-            event.correlation.bcn_session_id
+            event.correlation.thread_id
             for event in audit.events
             if event.correlation.turn_id is not None
         } == {"bcn-a", "bcn-b"}
-        assert {session.bcn_session_id for session in runtime.started_sessions} == {
+        assert {session.actor.id for session in runtime.started_sessions} == {
             "bcn-a",
             "bcn-b",
         }
-        first_runtime = orchestrator.runtime_session("bcn-a")
-        second_runtime = orchestrator.runtime_session("bcn-b")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-a"))
+        second_runtime = orchestrator.runtime_session(Thread("bcn-b"))
         assert first_runtime is not None
         assert second_runtime is not None
         assert first_runtime.id != second_runtime.id
@@ -2324,11 +2736,12 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         )
         assert await orchestrator.handle_inbound(quiet) is None
         assert storage.channel_sessions["channel-bcn-1"].following is False
-        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
         assert runtime.started_sessions == []
-        assert (await orchestrator.command_service.check("bcn-1")).messages == ()
+        (checked,) = await orchestrator.command_service.check(Thread("bcn-1"))
+        assert checked.messages == ()
         history = await orchestrator.command_service.read(
-            "bcn-1", raw_target="#test:channel-bcn-1"
+            Thread("bcn-1"), raw_target="#test:channel-bcn-1"
         )
         assert len(history.messages) == 1
         assert history.messages[0].notifies_runtime is False
@@ -2353,7 +2766,7 @@ async def test_group_mention_starts_following_after_quiet_history() -> None:
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
 
         unfollowed = await orchestrator.command_service.unfollow(
-            "bcn-1", raw_target="#test:channel-bcn-1"
+            Thread("bcn-1"), raw_target="#test:channel-bcn-1"
         )
         assert unfollowed.changed is True
         assert storage.channel_sessions["channel-bcn-1"].following is False
@@ -2400,7 +2813,7 @@ async def test_batched_notifications_collapse_into_one_turn() -> None:
     loop = asyncio.get_running_loop()
     first_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
     second_completion: asyncio.Future[RuntimeTurn | None] = loop.create_future()
-    runtime_queue = orchestrator._runtime_queue_for_session("bcn-1")
+    runtime_queue = orchestrator._runtime_queue_for_actor(Thread("bcn-1"))
     runtime_queue.put_nowait(
         _RuntimeNotification(
             first_message,
@@ -2578,7 +2991,7 @@ async def test_runtime_error_feedback() -> None:
     runtime.queue_turn_plan(
         TestTurnPlan(states=(RuntimeEventState.STARTED, RuntimeEventState.FAILED))
     )
-    runtime_queue = orchestrator._runtime_queue_for_session("bcn-1")
+    runtime_queue = orchestrator._runtime_queue_for_actor(Thread("bcn-1"))
     runtime_queue.put_nowait(
         _RuntimeNotification(
             first_message,
@@ -2622,7 +3035,7 @@ async def test_runtime_error_feedback() -> None:
         reminder = await storage.scope("workspace-1", "Test Agent").save_new_reminder(
             Reminder(
                 reminder_id="pending",
-                owner_session_id=canonical_anchor.session_id,
+                owner_thread_id=canonical_anchor.thread_id,
                 anchor_message_id=canonical_anchor.message_id,
                 title="Review",
                 state=ReminderState.SCHEDULED,
@@ -2640,7 +3053,7 @@ async def test_runtime_error_feedback() -> None:
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=str(uuid7()),
-                session_id=canonical_anchor.session_id,
+                thread_id=canonical_anchor.thread_id,
                 channel_session_id=canonical_anchor.channel_session_id,
                 channel=canonical_anchor.channel,
                 provider_thread_id=canonical_anchor.provider_thread_id,
@@ -2665,7 +3078,7 @@ async def test_runtime_error_feedback() -> None:
         await wait_until(lambda: len(channel.send_attempts) == 1)
 
         request = channel.send_attempts[0]
-        assert request.session_id == canonical_anchor.session_id
+        assert request.session_id == canonical_anchor.thread_id
         assert request.target_kind is canonical_anchor.target_kind
         assert request.provider_thread_id == canonical_anchor.provider_thread_id
         assert (
@@ -2705,7 +3118,7 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
                     direction=MessageDirection.INBOUND,
                     seq=0,
                     message_id=str(uuid7()),
-                    session_id=anchor.session_id,
+                    thread_id=anchor.thread_id,
                     channel_session_id=anchor.channel_session_id,
                     channel=anchor.channel,
                     provider_thread_id=anchor.provider_thread_id,
@@ -2751,11 +3164,7 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
         assert "reminder notice" not in idle_notice + active_notice
 
         await cast(IStorage, storage).check_messages(
-            "bcn-idle",
-            checked_at_ms=5,
-        )
-        await cast(IStorage, storage).check_messages(
-            "bcn-active",
+            ("bcn-idle", "bcn-active"),
             checked_at_ms=5,
         )
         await orchestrator.publish_inbox_wake(idle_reminder)
@@ -2786,10 +3195,10 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
             await orchestrator.handle_inbound(invalid)
 
         assert storage.channel_sessions == {}
-        assert storage.bcn_sessions == {}
+        assert storage.threads == {}
         assert storage.cursors == {}
         assert storage.messages == {}
-        assert orchestrator.runtime_session("invalid") is None
+        assert orchestrator.runtime_session(Thread("invalid")) is None
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -2808,8 +3217,8 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
 
         assert result is not None
         assert result.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
-        current_runtime = orchestrator.runtime_session("bcn-1")
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
+        current_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert current_runtime is not None
         assert len(runtime.started_sessions) == 2
         assert runtime.started_sessions[0].id != current_runtime.id
@@ -2847,7 +3256,7 @@ async def test_runtime_start_failure_handling(monkeypatch: pytest.MonkeyPatch) -
         assert result is not None
         assert result.state is RuntimeTurnState.UNKNOWN
         await wait_until(lambda: runtime.stopped_sessions == runtime.started_sessions)
-        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
     finally:
         release_stop.set()
         await orchestrator.stop(timeout=1)
@@ -2938,8 +3347,8 @@ async def test_unconfirmed_reconcile_clears_session_before_next_inbound(
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
         assert first_turn.state is RuntimeTurnState.UNKNOWN
-        assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.session_runtime_state("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
         assert len(runtime.reconciled_sessions) == 1
         first_runtime = runtime.reconciled_sessions[0]
 
@@ -2947,7 +3356,7 @@ async def test_unconfirmed_reconcile_clears_session_before_next_inbound(
 
         assert second_turn is not None
         assert second_turn.state is RuntimeTurnState.COMPLETED
-        current_runtime = orchestrator.runtime_session("bcn-1")
+        current_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert current_runtime is not None
         assert current_runtime.id != first_runtime.id
         assert runtime.reconciled_sessions == [first_runtime]
@@ -2968,9 +3377,9 @@ async def test_runtime_session_reconciliation() -> None:
 
         assert turn is not None
         assert turn.state is RuntimeTurnState.UNKNOWN
-        current_runtime = orchestrator.runtime_session("bcn-1")
+        current_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert current_runtime is not None
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
     finally:
         await orchestrator.stop(timeout=1)
@@ -2992,9 +3401,9 @@ async def test_runtime_session_reconciliation() -> None:
         await wait_until(
             lambda: bool(runtime.reconciled_sessions and runtime.active_streams)
         )
-        current_runtime = orchestrator.runtime_session("bcn-1")
+        current_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert current_runtime is not None
-        assert orchestrator.session_runtime_state("bcn-1") is State.WORKING
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.WORKING
 
         second_task = orchestrator.dispatch_inbound(make_message(seq=2))
         await wait_until(lambda: len(runtime.steered_turns) == 1)
@@ -3010,8 +3419,8 @@ async def test_runtime_session_reconciliation() -> None:
         assert first_turn.state is RuntimeTurnState.COMPLETED
         assert second_turn is not None
         assert second_turn.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.runtime_session("bcn-1") == current_runtime
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
+        assert orchestrator.runtime_session(Thread("bcn-1")) == current_runtime
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
         assert runtime.reconciled_sessions == [current_runtime]
         assert channel.send_attempts == []
     finally:
@@ -3024,16 +3433,16 @@ async def test_runtime_session_reconciliation() -> None:
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        first_runtime = orchestrator.runtime_session("bcn-1")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
 
         await orchestrator._stop_runtime_session(first_runtime, timeout=1)
 
-        assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.session_runtime_state("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
         second_turn = await orchestrator.handle_inbound(make_message(seq=2))
         assert second_turn is not None
-        second_runtime = orchestrator.runtime_session("bcn-1")
+        second_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert second_runtime is not None
         assert second_runtime.id != first_runtime.id
         assert UUID(second_runtime.id).version == 7
@@ -3070,13 +3479,13 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        first_runtime = orchestrator.runtime_session("bcn-1")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
 
         await orchestrator._stop_runtime_session(first_runtime, timeout=1)
         await stop_started.wait()
 
-        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
         assert len(orchestrator._runtime_teardown_tasks) == 1
 
         second_turn = await asyncio.wait_for(
@@ -3084,7 +3493,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
             timeout=1,
         )
         assert second_turn is not None
-        second_runtime = orchestrator.runtime_session("bcn-1")
+        second_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert second_runtime is not None
         assert second_runtime.id != first_runtime.id
         assert not release_stop.is_set()
@@ -3119,7 +3528,7 @@ async def test_runtime_teardown_scheduling(monkeypatch: pytest.MonkeyPatch) -> N
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
 
         await orchestrator._stop_runtime_session(runtime_session, timeout=1)
@@ -3152,7 +3561,7 @@ async def test_unconfirmed_stop_clears_runtime_session(
     try:
         first_turn = await orchestrator.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        first_runtime = orchestrator.runtime_session("bcn-1")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
         runtime.queue_stop_result(
             ProviderCallResult(
@@ -3168,11 +3577,11 @@ async def test_unconfirmed_stop_clears_runtime_session(
 
         await orchestrator._stop_runtime_session(first_runtime, timeout=1)
 
-        assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.session_runtime_state("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
         second_turn = await orchestrator.handle_inbound(make_message(seq=2))
         assert second_turn is not None
-        replacement = orchestrator.runtime_session("bcn-1")
+        replacement = orchestrator.runtime_session(Thread("bcn-1"))
         assert replacement is not None
         assert replacement.id != first_runtime.id
         assert runtime.started_sessions[-1].id == replacement.id
@@ -3188,7 +3597,7 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
     try:
         first_turn = await first.handle_inbound(make_message(seq=1))
         assert first_turn is not None
-        first_runtime = first.runtime_session("bcn-1")
+        first_runtime = first.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
         first_runtime_id = first_runtime.id
     finally:
@@ -3196,8 +3605,8 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
 
     channel = TestChannel()
     runtime = TestRuntime()
-    second = SessionOrchestrator(
-        agent_id="workspace-1",
+    second = AgentOrchestrator(
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -3213,7 +3622,7 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
     try:
         second_turn = await second.handle_inbound(make_message(seq=2))
         assert second_turn is not None
-        second_runtime = second.runtime_session("bcn-1")
+        second_runtime = second.runtime_session(Thread("bcn-1"))
         assert second_runtime is not None
         assert first_runtime_id is not None
         assert second_runtime.id != first_runtime_id
@@ -3231,8 +3640,8 @@ async def test_quiet_inbound_does_not_create_runtime_state_or_cursor() -> None:
         )
 
         assert result is None
-        assert orchestrator.runtime_session("bcn-1") is None
-        assert orchestrator.session_runtime_state("bcn-1") is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
         assert await storage.get_consumer_cursor("bcn-1") is None
     finally:
         await orchestrator.stop(timeout=1)
@@ -3247,8 +3656,8 @@ async def test_context_expiry() -> None:
             orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1)),
             orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1)),
         )
-        first_a = orchestrator.runtime_session("bcn-a")
-        first_b = orchestrator.runtime_session("bcn-b")
+        first_a = orchestrator.runtime_session(Thread("bcn-a"))
+        first_b = orchestrator.runtime_session(Thread("bcn-b"))
         assert first_a is not None
         assert first_b is not None
 
@@ -3256,8 +3665,8 @@ async def test_context_expiry() -> None:
         runtime.emit_expire(first_a.id)
         await wait_until(
             lambda: (
-                orchestrator.runtime_session("bcn-a") is None
-                and orchestrator.runtime_session("bcn-b") is None
+                orchestrator.runtime_session(Thread("bcn-a")) is None
+                and orchestrator.runtime_session(Thread("bcn-b")) is None
             )
         )
         await wait_until(lambda: len(runtime.stopped_sessions) == 2)
@@ -3270,11 +3679,11 @@ async def test_context_expiry() -> None:
         assert len(runtime.started_sessions) == 2
 
         await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=2))
-        second_a = orchestrator.runtime_session("bcn-a")
+        second_a = orchestrator.runtime_session(Thread("bcn-a"))
         assert second_a is not None
         assert second_a.id != first_a.id
         runtime.emit_expire(second_a.id)
-        await wait_until(lambda: orchestrator.runtime_session("bcn-a") is None)
+        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-a")) is None)
         await wait_until(lambda: len(runtime.stopped_sessions) == 3)
 
         assert runtime.stopped_sessions.count(second_a) == 1
@@ -3288,7 +3697,7 @@ async def test_context_expiry() -> None:
     first_task = orchestrator.dispatch_inbound(make_message(seq=1))
     try:
         await runtime.turn_started.wait()
-        first_runtime = orchestrator.runtime_session("bcn-1")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
 
         runtime.emit_expire(first_runtime.id)
@@ -3301,7 +3710,7 @@ async def test_context_expiry() -> None:
         next(iter(runtime.active_streams)).release()
         first_turn, second_turn = await asyncio.gather(first_task, second_task)
 
-        second_runtime = orchestrator.runtime_session("bcn-1")
+        second_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_turn is not None
         assert second_turn is not None
         assert second_runtime is not None
@@ -3322,9 +3731,9 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
     orchestrator, channel, runtime, _, _ = await make_node()
 
     async def command_script(commands: ICommandService, session_id: str) -> None:
-        checked = await commands.check(session_id)
+        (checked,) = await commands.check(Thread(session_id))
         await commands.send(
-            session_id=session_id,
+            actor=Thread(session_id),
             command_id="terminal-wait",
             raw_target=checked.messages[0].target,
             body="terminal reply",
@@ -3338,7 +3747,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
     try:
         await channel.inject(message)
         await runtime.turn_started.wait()
-        runtime_session = orchestrator.runtime_session(message.session_id)
+        runtime_session = orchestrator.runtime_session(Thread(message.thread_id))
         assert runtime_session is not None
         runtime.emit_expire(runtime_session.id)
         await wait_until(
@@ -3349,7 +3758,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
         outbound = await wait_for_turn_terminal(
             orchestrator=orchestrator,
             channel=channel,
-            session_id=message.session_id,
+            session_id=message.thread_id,
             client_user_message_id=message.message_id,
             sent_after=0,
             timeout=1,
@@ -3370,14 +3779,14 @@ async def test_context_and_timer_expiry_stop_the_runtime_once(
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
 
         if context_first:
             runtime.emit_expire(runtime_session.id)
         else:
             await asyncio.sleep(0.06)
-        await wait_until(lambda: orchestrator.runtime_session("bcn-1") is None)
+        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-1")) is None)
 
         if context_first:
             await asyncio.sleep(0.06)
@@ -3396,7 +3805,7 @@ async def test_runtime_idle_timeout() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
 
         await asyncio.sleep(0.05)
@@ -3404,7 +3813,7 @@ async def test_runtime_idle_timeout() -> None:
             replace(make_message(seq=2), notifies_runtime=False)
         )
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-1") is not None:
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
                 await asyncio.sleep(0.01)
         assert runtime.stopped_sessions == [runtime_session]
     finally:
@@ -3415,15 +3824,15 @@ async def test_runtime_idle_timeout() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(80)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
 
         await asyncio.sleep(0.05)
         await orchestrator.handle_inbound(make_message(seq=2))
         await asyncio.sleep(0.05)
 
-        assert orchestrator.runtime_session("bcn-1") is runtime_session
-        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
+        binding = orchestrator._runtime_timers.get(Thread("bcn-1"))
         assert binding is not None
         assert binding.timer.active
         assert len(runtime.started_sessions) == 1
@@ -3436,11 +3845,11 @@ async def test_runtime_idle_timeout() -> None:
     runtime.background_job_present = True
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
         await asyncio.sleep(0.06)
 
-        assert orchestrator.runtime_session("bcn-1") is runtime_session
+        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
         assert orchestrator._runtime_timers == {}
         assert runtime.stopped_sessions == []
 
@@ -3457,11 +3866,11 @@ async def test_runtime_idle_timeout() -> None:
         async with asyncio.timeout(1):
             while not orchestrator._runtime_timers:
                 await asyncio.sleep(0.01)
-        binding = orchestrator._runtime_timers.get("bcn-1")
+        binding = orchestrator._runtime_timers.get(Thread("bcn-1"))
         assert binding is not None
         assert binding.timer.active
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-1") is not None:
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
                 await asyncio.sleep(0.01)
         assert runtime.stopped_sessions == [runtime_session]
     finally:
@@ -3472,14 +3881,14 @@ async def test_runtime_idle_timeout() -> None:
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        first_runtime = orchestrator.runtime_session("bcn-1")
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
         assert first_runtime is not None
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-1") is not None:
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
                 await asyncio.sleep(0.01)
 
         await orchestrator.handle_inbound(make_message(seq=2))
-        second_runtime = orchestrator.runtime_session("bcn-1")
+        second_runtime = orchestrator.runtime_session(Thread("bcn-1"))
 
         assert second_runtime is not None
         assert second_runtime.id != first_runtime.id
@@ -3496,23 +3905,23 @@ async def test_runtime_idle_timeout() -> None:
             orchestrator.handle_inbound(make_message(seq=1))
         )
         await runtime.turn_started.wait()
-        runtime_session = orchestrator.runtime_session("bcn-1")
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
         await asyncio.sleep(0.06)
 
-        assert orchestrator.runtime_session("bcn-1") is runtime_session
+        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
         assert orchestrator._runtime_timers == {}
         assert runtime.stopped_sessions == []
 
         stream = next(iter(runtime.active_streams))
         stream.release()
         await inbound_task
-        assert orchestrator.runtime_session("bcn-1") is runtime_session
-        binding = orchestrator._runtime_timers.get("bcn-1")
+        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
+        binding = orchestrator._runtime_timers.get(Thread("bcn-1"))
         assert binding is not None
         assert binding.timer.active
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-1") is not None:
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
                 await asyncio.sleep(0.01)
         assert runtime.stopped_sessions == [runtime_session]
     finally:
@@ -3526,14 +3935,14 @@ async def test_runtime_idle_timeout() -> None:
         await asyncio.sleep(0.03)
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-a") is not None:
+            while orchestrator.runtime_session(Thread("bcn-a")) is not None:
                 await asyncio.sleep(0.01)
 
-        assert orchestrator.runtime_session("bcn-b") is not None
+        assert orchestrator.runtime_session(Thread("bcn-b")) is not None
         async with asyncio.timeout(1):
-            while orchestrator.runtime_session("bcn-b") is not None:
+            while orchestrator.runtime_session(Thread("bcn-b")) is not None:
                 await asyncio.sleep(0.01)
-        assert {session.bcn_session_id for session in runtime.stopped_sessions} == {
+        assert {session.actor.id for session in runtime.stopped_sessions} == {
             "bcn-a",
             "bcn-b",
         }
@@ -3545,15 +3954,15 @@ async def test_runtime_idle_timeout() -> None:
     orchestrator, _, _, wheel = await make_idle_timeout_node(1_000)
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
-        first_runtime = orchestrator.runtime_session("bcn-1")
-        first_binding = orchestrator._runtime_timers["bcn-1"]
+        first_runtime = orchestrator.runtime_session(Thread("bcn-1"))
+        first_binding = orchestrator._runtime_timers[Thread("bcn-1")]
         assert first_runtime is not None
         await orchestrator._discard_runtime_session(first_runtime)
 
         await orchestrator.handle_inbound(make_message(seq=2))
 
-        second_runtime = orchestrator.runtime_session("bcn-1")
-        second_binding = orchestrator._runtime_timers["bcn-1"]
+        second_runtime = orchestrator.runtime_session(Thread("bcn-1"))
+        second_binding = orchestrator._runtime_timers[Thread("bcn-1")]
         assert second_runtime is not None
         assert second_runtime.id != first_runtime.id
         assert first_binding.timer.active is False
@@ -3587,7 +3996,7 @@ async def test_pre_start_failure_reconciles_and_retries_the_current_inbound() ->
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.COMPLETED
-        assert orchestrator.session_runtime_state("bcn-1") is State.IDLE
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is State.IDLE
         assert len(runtime.reconciled_sessions) == 1
         assert runtime.reconciled_sessions[0].provider_thread_id is not None
         assert len(runtime.started_turns) == 2
@@ -3617,8 +4026,8 @@ async def test_repeated_pre_start_failure_stops_after_one_retry() -> None:
 
         assert follow_up_turn is not None
         assert follow_up_turn.state is RuntimeTurnState.FAILED
-        assert orchestrator.session_runtime_state("bcn-1") is None
-        assert orchestrator.runtime_session("bcn-1") is None
+        assert orchestrator.session_runtime_state(Thread("bcn-1")) is None
+        assert orchestrator.runtime_session(Thread("bcn-1")) is None
         assert len(runtime.reconciled_sessions) == 1
         assert len(runtime.started_turns) == 1
         assert len(storage.runtime_attempts) == 2
@@ -3796,7 +4205,7 @@ async def test_multi_runtime_agents(
 
 
 async def make_multi_runtime_node() -> tuple[
-    SessionOrchestrator,
+    AgentOrchestrator,
     tuple[_NamedTestRuntime, _NamedTestRuntime],
     TimerWheel,
     TestChannel,
@@ -3809,8 +4218,8 @@ async def make_multi_runtime_node() -> tuple[
     await storage.start(timeout=1)
     wheel = TimerWheel()
     await wheel.start()
-    orchestrator = SessionOrchestrator(
-        agent_id="workspace-1",
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=runtimes,
         storage=storage.scope("workspace-1", "Test Agent"),
@@ -3835,7 +4244,7 @@ async def test_multi_runtime_session_binding() -> None:
     first_task = orchestrator.dispatch_inbound(make_message(session_id="bcn-a", seq=1))
     try:
         await first.turn_started.wait()
-        session_a = orchestrator.runtime_session("bcn-a")
+        session_a = orchestrator.runtime_session(Thread("bcn-a"))
         assert session_a is not None
         assert (session_a.runtime, session_a.runtime_index) == ("first", 0)
 
@@ -3851,7 +4260,7 @@ async def test_multi_runtime_session_binding() -> None:
         # only a ban moves selection on, so bcn-b needs the first one banned
         orchestrator._runtimes.record_failure(0)
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
-        session_b = orchestrator.runtime_session("bcn-b")
+        session_b = orchestrator.runtime_session(Thread("bcn-b"))
         assert session_b is not None
         assert (session_b.runtime, session_b.runtime_index) == ("second", 1)
 
@@ -3879,17 +4288,17 @@ async def test_multi_runtime_expiry_is_scoped_to_its_runtime() -> None:
         await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1))
         orchestrator._runtimes.record_failure(0)
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
-        session_a = orchestrator.runtime_session("bcn-a")
-        session_b = orchestrator.runtime_session("bcn-b")
+        session_a = orchestrator.runtime_session(Thread("bcn-a"))
+        session_b = orchestrator.runtime_session(Thread("bcn-b"))
         assert session_a is not None
         assert session_b is not None
         assert (session_a.runtime_index, session_b.runtime_index) == (0, 1)
 
         first.emit_expire(session_a.id)
-        await wait_until(lambda: orchestrator.runtime_session("bcn-a") is None)
+        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-a")) is None)
         await wait_until(lambda: len(first.stopped_sessions) == 1)
 
-        assert orchestrator.runtime_session("bcn-b") is session_b
+        assert orchestrator.runtime_session(Thread("bcn-b")) is session_b
         assert [session.id for session in first.stopped_sessions] == [session_a.id]
         assert second.stopped_sessions == []
     finally:
@@ -3989,7 +4398,7 @@ async def test_multi_runtime_hands_over_a_runtime_that_cannot_start_a_session() 
 
         # case: later sessions keep away from the banned runtime
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
-        session_b = orchestrator.runtime_session("bcn-b")
+        session_b = orchestrator.runtime_session(Thread("bcn-b"))
         assert session_b is not None
         assert session_b.runtime_index == 1
     finally:
@@ -4020,7 +4429,7 @@ async def test_multi_runtime_failover_answers_before_reporting_an_error() -> Non
         assert result.state is RuntimeTurnState.COMPLETED
         assert channel.send_attempts == []
         assert len(second.started_turns) == 1
-        session_a = orchestrator.runtime_session("bcn-a")
+        session_a = orchestrator.runtime_session(Thread("bcn-a"))
         assert session_a is not None
         assert session_a.runtime_index == 1
         assert ("runtime.pool.banned", 0, "first") in _pool_events(audit)
@@ -4064,7 +4473,7 @@ async def test_multi_runtime_reports_once_every_runtime_has_failed() -> None:
         # case: with every runtime banned the next turn probes the one banned
         # longest ago, and completing on it lifts that ban
         await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
-        session_b = orchestrator.runtime_session("bcn-b")
+        session_b = orchestrator.runtime_session(Thread("bcn-b"))
         assert session_b is not None
         assert session_b.runtime_index == 0
         events = _pool_events(audit)
@@ -4130,6 +4539,35 @@ async def test_upgrade_is_offered_once_per_release() -> None:
             "Upgrade available: bazaar-compute-node 0.3.0"
             in (runtime.started_turns[2][2])
         )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_wider_than_the_notice_window_reports_its_newest() -> None:
+    orchestrator, channel, runtime, _, audit = await make_node()
+    backlog = _NOTICE_WINDOW + 20
+    try:
+        for seq in range(1, backlog + 1):
+            await orchestrator._record_inbound(
+                make_message(seq=seq, message_id=f"old-{seq:04d}")
+            )
+        await channel.inject(make_message(seq=backlog + 1, message_id="new-0001"))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed"
+                and event.correlation.turn_id == "turn-new-0001"
+                for event in audit.events
+            )
+        )
+
+        notice = runtime.started_turns[0][2]
+
+        # case: the count is the whole backlog, not the window that carries it
+        assert f"Inbox update: {backlog + 1} unread messages total" in notice
+
+        # case: and the message that woke the turn is the one it reports
+        assert "latest msg=new-0001" in notice
     finally:
         await orchestrator.stop(timeout=1)
 

@@ -29,6 +29,7 @@ from bazaar_compute_node.contrib.claude.protocol import (
     ClaudeProtocolError,
 )
 from bazaar_compute_node.contrib.claude.runtime import _Connection, _observe_background
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.models import (
     ContextCompactionCompleted,
     RuntimeSession,
@@ -226,7 +227,7 @@ def _turn_event_stream() -> tuple[TurnEventStream, TurnInbox]:
     return (
         TurnEventStream(
             inbox,
-            session_id="bcn-session-1",
+            actor=Thread("bcn-session-1"),
             runtime_session_id="runtime-session-1",
             turn_id="turn-1",
             provider_thread_id="provider-session-1",
@@ -515,7 +516,7 @@ async def test_claude_task_notification_adoption() -> None:
 
     stream = TurnEventStream(
         inbox,
-        session_id="bcn-session-1",
+        actor=Thread("bcn-session-1"),
         runtime_session_id="runtime-session-1",
         turn_id="turn-1",
         provider_thread_id="provider-session-1",

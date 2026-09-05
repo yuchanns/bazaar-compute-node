@@ -6,6 +6,8 @@ import shlex
 import sys
 from pathlib import Path
 
+from ..core.actor import Mode
+
 _AGENT_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -17,7 +19,7 @@ def _wrapper_paths(command_path: Path) -> tuple[Path, ...]:
     raise ValueError(f"unsupported bcc wrapper path: {command_path}")
 
 
-def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
+def install_bcc_wrapper(bin_dir: Path, *, agent_id: str, mode: Mode) -> Path:
     """Install one Agent-bound bcc wrapper and return its executable path."""
 
     if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
@@ -32,6 +34,7 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
             command_path.write_text(
                 "@echo off\n"
                 f'set "BCN_AGENT_ID={agent_id}"\n'
+                f'set "BCN_AGENT_MODE={mode.value}"\n'
                 'set "PYTHONIOENCODING=utf-8"\n'
                 'set "PYTHONUTF8=1"\n'
                 'set "LANG=C.UTF-8"\n'
@@ -43,6 +46,7 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
             (bin_dir / "bcc.ps1").write_text(
                 "$ErrorActionPreference = 'Stop'\n"
                 f"$env:BCN_AGENT_ID = '{agent_id}'\n"
+                f"$env:BCN_AGENT_MODE = '{mode.value}'\n"
                 "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)\n"
                 "[Console]::OutputEncoding = $utf8NoBom\n"
                 "$OutputEncoding = $utf8NoBom\n"
@@ -69,6 +73,7 @@ def install_bcc_wrapper(bin_dir: Path, *, agent_id: str) -> Path:
         command_path.write_text(
             "#!/bin/sh\n"
             f"export BCN_AGENT_ID={shlex.quote(agent_id)}\n"
+            f"export BCN_AGENT_MODE={shlex.quote(mode.value)}\n"
             f"exec {shlex.quote(str(python_executable))} "
             '-m bazaar_compute_node.bcc "$@"\n',
             encoding="utf-8",

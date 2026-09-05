@@ -9,7 +9,6 @@ from uuid import uuid7
 
 from bazaar_compute_node.core.inbox import InboxTargetPage
 from bazaar_compute_node.core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
@@ -20,6 +19,7 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     RuntimeAttempt,
     SenderIdentity,
+    Thread,
 )
 from bazaar_compute_node.core.storage import (
     InboxTargetResolutionError,
@@ -40,7 +40,7 @@ class MemoryStorage:
 
     def __init__(self) -> None:
         self.channel_sessions: dict[str, ChannelSession] = {}
-        self.bcn_sessions: dict[str, BcnSession] = {}
+        self.threads: dict[str, Thread] = {}
         self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
         self.messages: dict[str, list[Message]] = {}
@@ -151,7 +151,7 @@ class _MemoryStorageScope:
 
 _Snapshot = tuple[
     dict[str, ChannelSession],
-    dict[str, BcnSession],
+    dict[str, Thread],
     dict[str, RuntimeAttempt],
     dict[str, ConsumerCursor],
     dict[str, list[Message]],
@@ -175,7 +175,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         await self._storage._lock.acquire()
         self._snapshot = (
             deepcopy(self._storage.channel_sessions),
-            deepcopy(self._storage.bcn_sessions),
+            deepcopy(self._storage.threads),
             deepcopy(self._storage.runtime_attempts),
             deepcopy(self._storage.cursors),
             deepcopy(self._storage.messages),
@@ -192,7 +192,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if exc_type is not None and self._snapshot is not None:
             (
                 self._storage.channel_sessions,
-                self._storage.bcn_sessions,
+                self._storage.threads,
                 self._storage.runtime_attempts,
                 self._storage.cursors,
                 self._storage.messages,
@@ -252,17 +252,17 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                     updated_at_ms=now_ms,
                 )
 
-        bcn_session = await self.find_bcn_session(channel_session.id)
-        bcn_session_created = bcn_session is None
-        if bcn_session is None:
-            bcn_session = BcnSession(
-                id=message.session_id,
+        thread = await self.find_thread(channel_session.id)
+        thread_created = thread is None
+        if thread is None:
+            thread = Thread(
+                id=message.thread_id,
                 channel_session_id=channel_session.id,
-                workspace_id=self._agent_id or message.session_id,
+                workspace_id=self._agent_id or message.thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
             )
-            await self.save_bcn_session(bcn_session)
+            await self.save_thread(thread)
 
         if existing_message is None:
             notifies_runtime = message.notifies_runtime and (
@@ -272,7 +272,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             )
             message = replace(
                 message,
-                session_id=bcn_session.id,
+                thread_id=thread.id,
                 channel_session_id=channel_session.id,
                 target=channel_session.canonical_target,
                 target_presentation=None,
@@ -281,9 +281,9 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
         if (
             message.notifies_runtime
-            and await self.get_consumer_cursor(bcn_session.id) is None
+            and await self.get_consumer_cursor(thread.id) is None
         ):
-            await self.save_consumer_cursor(ConsumerCursor(session_id=bcn_session.id))
+            await self.save_consumer_cursor(ConsumerCursor(thread_id=thread.id))
 
         if existing_message is None:
             message = await self.save_message(message)
@@ -292,20 +292,20 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 last_inbound_at_ms=message.received_at_ms,
                 updated_at_ms=now_ms,
             )
-            bcn_session = replace(
-                bcn_session,
+            thread = replace(
+                thread,
                 last_activity_at_ms=message.received_at_ms,
                 updated_at_ms=now_ms,
             )
             await self.save_channel_session(channel_session)
-            await self.save_bcn_session(bcn_session)
+            await self.save_thread(thread)
 
         return RecordInboundResult(
             channel_session=channel_session,
-            bcn_session=bcn_session,
+            thread=thread,
             message=message,
             channel_session_created=channel_session_created,
-            bcn_session_created=bcn_session_created,
+            thread_created=thread_created,
             message_created=existing_message is None,
         )
 
@@ -327,37 +327,66 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             raise ValueError("multiple rows violate channel provider identity")
         return matches[0] if matches else None
 
-    async def get_channel_session(self, session_id: str) -> ChannelSession | None:
-        return self._storage.channel_sessions.get(session_id)
+    async def get_channel_session(
+        self, channel_session_id: str
+    ) -> ChannelSession | None:
+        return self._storage.channel_sessions.get(channel_session_id)
 
-    async def get_bcn_session(self, session_id: str) -> BcnSession | None:
-        session = self._storage.bcn_sessions.get(session_id)
+    async def get_thread(self, thread_id: str) -> Thread | None:
+        session = self._storage.threads.get(thread_id)
         if session is None or not self._in_scope(session):
             return None
         return session
 
+    async def list_thread_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(thread.id for thread in self._scoped_threads()))
+
     async def list_inbox_targets(
-        self, *, limit: int = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0
     ) -> InboxTargetPage:
         summaries = tuple(
             sorted(
                 (
                     self._inbox_target_summary(session)
-                    for session in self._scoped_bcn_sessions()
+                    for session in self._scoped_threads()
                 ),
-                key=lambda summary: (-summary.last_activity_at_ms, summary.session_id),
+                key=lambda summary: (-summary.last_activity_at_ms, summary.thread_id),
             )
         )
-        targets = summaries[offset : offset + limit]
+        targets = (
+            summaries[offset:] if limit is None else summaries[offset : offset + limit]
+        )
         return InboxTargetPage(
             targets=targets,
             total=len(summaries),
             offset=offset,
         )
 
+    async def list_unread_messages(self, *, limit: int) -> tuple[Message, ...]:
+        return tuple((await self._unread_in_scope())[-limit:])
+
+    async def _unread_in_scope(self) -> list[Message]:
+        unread: list[Message] = []
+        for session in self._scoped_threads():
+            cursor = self._storage.cursors.get(session.id)
+            delivered_through_seq = cursor.delivered_through_seq if cursor else 0
+            unread.extend(
+                message
+                for message in self._filtered_messages(
+                    session.id,
+                    direction=MessageDirection.INBOUND,
+                )
+                if message.notifies_runtime and message.seq > delivered_through_seq
+            )
+        unread.sort(key=lambda message: message.seq)
+        return unread
+
+    async def count_unread_messages(self) -> int:
+        return len(await self._unread_in_scope())
+
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
-        matches: list[tuple[BcnSession, ChannelSession]] = []
-        for session in self._scoped_bcn_sessions():
+        matches: list[tuple[Thread, ChannelSession]] = []
+        for session in self._scoped_threads():
             channel_session = self._storage.channel_sessions.get(
                 session.channel_session_id
             )
@@ -390,7 +419,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 sum(
                     candidate.target_kind is ChannelTargetKind.DM
                     and candidate.target_handle_key == channel_session.target_handle_key
-                    for candidate_session in self._scoped_bcn_sessions()
+                    for candidate_session in self._scoped_threads()
                     if (
                         candidate := self._storage.channel_sessions.get(
                             candidate_session.channel_session_id
@@ -401,15 +430,15 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 == 1
             )
         return ResolvedInboxTarget(
-            bcn_session=target,
+            thread=target,
             channel_session=channel_session,
             handle_is_unique=handle_is_unique,
         )
 
-    async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None:
+    async def find_thread(self, channel_session_id: str) -> Thread | None:
         matches = [
             session
-            for session in self._storage.bcn_sessions.values()
+            for session in self._storage.threads.values()
             if session.channel_session_id == channel_session_id
             and self._in_scope(session)
         ]
@@ -423,18 +452,18 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None:
         return self._storage.runtime_attempts.get(turn_id)
 
-    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None:
-        return self._storage.cursors.get(session_id)
+    async def get_consumer_cursor(self, thread_id: str) -> ConsumerCursor | None:
+        return self._storage.cursors.get(thread_id)
 
     async def get_latest_message_seq(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> int:
         messages = self._filtered_messages(
-            session_id,
+            thread_id,
             direction=direction,
             delivery_states=delivery_states,
         )
@@ -442,13 +471,13 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     async def get_latest_message(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message | None:
         messages = self._filtered_messages(
-            session_id,
+            thread_id,
             direction=direction,
             delivery_states=delivery_states,
         )
@@ -456,7 +485,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     async def count_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -465,7 +494,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         notifying_only: bool = False,
     ) -> int:
         messages = self._filtered_messages(
-            session_id,
+            thread_id,
             direction=direction,
             delivery_states=delivery_states,
         )
@@ -476,17 +505,17 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             for message in messages
         )
 
-    def _in_scope(self, session: BcnSession) -> bool:
+    def _in_scope(self, session: Thread) -> bool:
         return self._agent_id is None or session.workspace_id == self._agent_id
 
-    def _scoped_bcn_sessions(self) -> tuple[BcnSession, ...]:
+    def _scoped_threads(self) -> tuple[Thread, ...]:
         return tuple(
             session
-            for session in self._storage.bcn_sessions.values()
+            for session in self._storage.threads.values()
             if self._in_scope(session)
         )
 
-    def _inbox_target_summary(self, session: BcnSession) -> InboxTargetSummary:
+    def _inbox_target_summary(self, session: Thread) -> InboxTargetSummary:
         channel_session = self._storage.channel_sessions.get(session.channel_session_id)
         if channel_session is None:
             raise ValueError(f"unknown channel session: {session.channel_session_id}")
@@ -540,9 +569,8 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         )
         return InboxTargetSummary(
             target=target,
-            session_id=session.id,
+            thread_id=session.id,
             target_kind=channel_session.target_kind,
-            current=False,
             pending_count=pending_count,
             last_activity_at_ms=last_activity_at_ms,
             latest_message_id=latest.message_id if latest is not None else None,
@@ -587,7 +615,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]:
         owners = []
-        for session in self._scoped_bcn_sessions():
+        for session in self._scoped_threads():
             cursor = self._storage.cursors.get(session.id)
             delivered_through_seq = cursor.delivered_through_seq if cursor else 0
             unread = [
@@ -608,13 +636,13 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         return tuple(
             sorted(
                 owners,
-                key=lambda owner: (owner.agent_id, owner.owner_session_id),
+                key=lambda owner: (owner.agent_id, owner.owner_thread_id),
             )
         )
 
     async def list_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -626,7 +654,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         limit: int = 100,
     ) -> tuple[Message, ...]:
         messages = self._filtered_messages(
-            session_id,
+            thread_id,
             direction=direction,
             delivery_states=delivery_states,
         )
@@ -656,12 +684,12 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     def _filtered_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> list[Message]:
-        messages = list(self._storage.messages.get(session_id, []))
+        messages = list(self._storage.messages.get(thread_id, []))
         if direction is not None:
             messages = [
                 message for message in messages if message.direction is direction
@@ -701,11 +729,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 )
         self._storage.channel_sessions[session.id] = session
 
-    async def save_bcn_session(self, session: BcnSession) -> None:
+    async def save_thread(self, session: Thread) -> None:
         self._require_workspace(session.workspace_id)
         if session.channel_session_id not in self._storage.channel_sessions:
             raise ValueError(f"unknown channel session: {session.channel_session_id}")
-        existing = self._storage.bcn_sessions.get(session.id)
+        existing = self._storage.threads.get(session.id)
         if existing is not None:
             if (
                 existing.channel_session_id != session.channel_session_id
@@ -713,12 +741,12 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 or existing.created_at_ms != session.created_at_ms
             ):
                 raise ValueError("bcn session binding cannot change")
-            session = _validate_bcn_session_update(existing, session)
+            session = _validate_thread_update(existing, session)
         else:
-            duplicate = await self.find_bcn_session(session.channel_session_id)
+            duplicate = await self.find_thread(session.channel_session_id)
             if duplicate is not None:
                 raise ValueError(f"channel session is already bound to {duplicate.id}")
-        self._storage.bcn_sessions[session.id] = session
+        self._storage.threads[session.id] = session
 
     def _require_workspace(self, workspace_id: str) -> None:
         if self._agent_id is not None and workspace_id != self._agent_id:
@@ -742,7 +770,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def _save_inbound_message(self, message: Message) -> Message:
         if message.direction is not MessageDirection.INBOUND:
             raise ValueError("inbound persistence requires an inbound message")
-        messages = self._storage.messages.setdefault(message.session_id, [])
+        messages = self._storage.messages.setdefault(message.thread_id, [])
         provider_matches = (
             [
                 existing
@@ -780,7 +808,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             )
             if referenced is None:
                 raise ValueError("reply_to_message_id does not reference a message")
-            if referenced.session_id != message.session_id:
+            if referenced.thread_id != message.thread_id:
                 raise ValueError("reply_to_message_id must belong to the same session")
             if referenced.seq >= message.seq:
                 raise ValueError(
@@ -790,7 +818,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         return message
 
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None:
-        self._storage.cursors[cursor.session_id] = cursor
+        self._storage.cursors[cursor.thread_id] = cursor
 
     async def get_message(
         self,
@@ -811,7 +839,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
 
     async def resolve_message(
         self,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -821,7 +849,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             (
                 message
                 for message in self._filtered_messages(
-                    session_id,
+                    thread_id,
                     direction=direction,
                     delivery_states=delivery_states,
                 )
@@ -833,30 +861,30 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def get_owned_message(
         self,
         agent_id: str,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
     ) -> Message | None:
         if self._agent_id is not None and self._agent_id != agent_id:
             return None
-        session = self._storage.bcn_sessions.get(session_id)
+        session = self._storage.threads.get(thread_id)
         if session is None or session.workspace_id != agent_id:
             return None
         return await self.resolve_message(
-            session_id,
+            thread_id,
             message_id,
             direction=direction,
         )
 
     async def _save_outbound_message(self, message: Message) -> Message:
         _validate_outbound_message_input(message)
-        bcn_session = self._storage.bcn_sessions.get(message.session_id)
-        if bcn_session is None:
-            raise ValueError(f"unknown bcn session: {message.session_id}")
+        thread = self._storage.threads.get(message.thread_id)
+        if thread is None:
+            raise ValueError(f"unknown thread: {message.thread_id}")
         if message.channel_session_id not in self._storage.channel_sessions:
             raise ValueError(f"unknown channel session: {message.channel_session_id}")
-        if bcn_session.channel_session_id != message.channel_session_id:
+        if thread.channel_session_id != message.channel_session_id:
             raise ValueError("outbound message binding does not match bcn session")
 
         existing = await self.get_message(
@@ -876,13 +904,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 target_kind=channel_session.target_kind,
             )
             _validate_outbound_insert(canonical)
-            self._storage.messages.setdefault(canonical.session_id, []).append(
-                canonical
-            )
+            self._storage.messages.setdefault(canonical.thread_id, []).append(canonical)
             return canonical
         if (
             existing.command_id != message.command_id
-            or existing.session_id != message.session_id
+            or existing.thread_id != message.thread_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id
@@ -891,7 +917,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         ):
             raise ValueError("outbound message identity cannot change")
         canonical = _validate_outbound_update(existing, message)
-        messages = self._storage.messages[canonical.session_id]
+        messages = self._storage.messages[canonical.thread_id]
         index = next(
             index
             for index, existing_message in enumerate(messages)
@@ -1101,10 +1127,10 @@ def _validate_channel_session_update(
     )
 
 
-def _validate_bcn_session_update(
-    existing: BcnSession,
-    incoming: BcnSession,
-) -> BcnSession:
+def _validate_thread_update(
+    existing: Thread,
+    incoming: Thread,
+) -> Thread:
     if (
         existing.channel_session_id != incoming.channel_session_id
         or existing.workspace_id != incoming.workspace_id

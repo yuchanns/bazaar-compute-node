@@ -5,12 +5,13 @@ import asyncio
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
 
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     Channel,
     ChannelIdentity,
     ChannelSendRequest,
 )
-from bazaar_compute_node.core.concurrency import SessionLockRegistry
+from bazaar_compute_node.core.concurrency import ThreadLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ChannelTargetKind,
@@ -64,7 +65,7 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
             direction=MessageDirection.INBOUND,
             seq=1,
             message_id="00000000-0000-4000-8000-000000000001",
-            session_id="oc_abc",
+            thread_id="oc_abc",
             channel_session_id="oc_abc",
             channel="test",
             provider_thread_id="user-id",
@@ -78,13 +79,13 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
     )
 
     received = await anext(channel.receive())
-    local_session_id = received.session_id
+    local_session_id = received.thread_id
     assert local_session_id != "oc_abc"
 
     channel.accept_turn_event(
         RuntimeOutputEvent(
             envelope=RuntimeEventEnvelope(
-                session_id=local_session_id,
+                actor=Thread(local_session_id),
                 runtime_session_id="runtime-1",
                 turn_id="turn-1",
                 provider_turn_id=None,
@@ -105,7 +106,7 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
         timeout=1,
     )
 
-    assert provider.events[0].envelope.session_id == "oc_abc"
+    assert provider.event_sessions[0] == "oc_abc"
     assert provider.send_attempts[0].session_id == "oc_abc"
 
 
@@ -180,14 +181,14 @@ async def test_test_runtime_delivers_expiry_to_one_waiter() -> None:
 
 @pytest.mark.asyncio
 async def test_same_session_operations_share_one_serial_lock() -> None:
-    registry = SessionLockRegistry()
+    registry = ThreadLockRegistry()
     first_entered = asyncio.Event()
     release_first = asyncio.Event()
     second_entered = asyncio.Event()
     order: list[str] = []
 
     async def first_operation() -> None:
-        async with registry.for_session("session-1"):
+        async with registry.for_thread("session-1"):
             order.append("first-enter")
             first_entered.set()
             await release_first.wait()
@@ -195,7 +196,7 @@ async def test_same_session_operations_share_one_serial_lock() -> None:
 
     async def second_operation() -> None:
         await first_entered.wait()
-        async with registry.for_session("session-1"):
+        async with registry.for_thread("session-1"):
             order.append("second-enter")
             second_entered.set()
 
@@ -212,19 +213,19 @@ async def test_same_session_operations_share_one_serial_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_different_sessions_do_not_share_the_lock() -> None:
-    registry = SessionLockRegistry()
+    registry = ThreadLockRegistry()
     first_entered = asyncio.Event()
     second_entered = asyncio.Event()
     release_first = asyncio.Event()
 
     async def first_operation() -> None:
-        async with registry.for_session("session-1"):
+        async with registry.for_thread("session-1"):
             first_entered.set()
             await release_first.wait()
 
     async def second_operation() -> None:
         await first_entered.wait()
-        async with registry.for_session("session-2"):
+        async with registry.for_thread("session-2"):
             second_entered.set()
 
     first_task = asyncio.create_task(first_operation())

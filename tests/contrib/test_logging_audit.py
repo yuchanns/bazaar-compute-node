@@ -29,7 +29,7 @@ async def test_logging_audit_emits_structured_event() -> None:
             created_at_ms=42,
             correlation=CorrelationContext(
                 node_id="node-1",
-                bcn_session_id="bcn-1",
+                thread_id="bcn-1",
                 turn_id="turn-1",
             ),
             metadata={"operation": "turn"},
@@ -40,7 +40,7 @@ async def test_logging_audit_emits_structured_event() -> None:
     payload = json.loads(stream.getvalue())
     assert payload == {
         "correlation": {
-            "bcn_session_id": "bcn-1",
+            "thread_id": "bcn-1",
             "node_id": "node-1",
             "turn_id": "turn-1",
         },

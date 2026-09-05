@@ -45,7 +45,7 @@ async def request(
         "kind": "command",
         "resource": resource,
         "command": command,
-        "session_id": _environment("BCN_SESSION_ID", "SESSION_REQUIRED"),
+        "actor_id": _environment("BCN_ACTOR_ID", "SESSION_REQUIRED"),
         "runtime_session_id": _environment(
             "BCN_RUNTIME_SESSION_ID", "SESSION_BINDING_REQUIRED"
         ),

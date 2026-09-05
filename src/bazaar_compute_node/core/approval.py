@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..i18n import Translator
+from .actor import Actor
 from .models import ApprovalRequest, ApprovalResult
 
 _ACTION_MESSAGE_KEYS = {
@@ -69,7 +70,7 @@ class ApprovalBinding:
     """Route one runtime approval request to its current Channel session."""
 
     request_id: str
-    bcn_session_id: str
+    actor: Actor
     channel_session_id: str
     runtime_session_id: str
     turn_id: str | None = None
@@ -79,7 +80,7 @@ class ApprovalBinding:
 
         return (
             self.request_id == request.request_id
-            and self.bcn_session_id == request.session_id
+            and self.actor == request.actor
             and self.runtime_session_id == request.runtime_session_id
             and self.turn_id == request.turn_id
         )

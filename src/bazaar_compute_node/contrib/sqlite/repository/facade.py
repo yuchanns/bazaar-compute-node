@@ -4,13 +4,13 @@ from dataclasses import replace
 from typing import cast
 
 from ....core.models import (
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ConsumerCursor,
     InboundAttachment,
     Message,
     MessageDirection,
+    Thread,
 )
 from ....core.storage import RecordInboundResult, StorageOperationMixin
 from .messages import MessageOperations
@@ -77,10 +77,10 @@ class SqliteRepository(
         self,
         message: Message[InboundAttachment],
         channel_session: ChannelSession,
-        bcn_session: BcnSession,
+        thread: Thread,
         *,
         now_ms: int,
-    ) -> tuple[Message[InboundAttachment], ChannelSession, BcnSession]:
+    ) -> tuple[Message[InboundAttachment], ChannelSession, Thread]:
         """Write down a message never seen before, and when its sessions last moved."""
 
         message = cast(
@@ -92,14 +92,14 @@ class SqliteRepository(
             last_inbound_at_ms=message.received_at_ms,
             updated_at_ms=now_ms,
         )
-        bcn_session = replace(
-            bcn_session,
+        thread = replace(
+            thread,
             last_activity_at_ms=message.received_at_ms,
             updated_at_ms=now_ms,
         )
         await self.save_channel_session(channel_session)
-        await self.save_bcn_session(bcn_session)
-        return message, channel_session, bcn_session
+        await self.save_thread(thread)
+        return message, channel_session, thread
 
     async def record_inbound(
         self,
@@ -130,17 +130,17 @@ class SqliteRepository(
             new_message=existing_message is None,
         )
 
-        bcn_session = await self.find_bcn_session(channel_session.id)
-        bcn_session_created = bcn_session is None
-        if bcn_session is None:
-            bcn_session = BcnSession(
-                id=message.session_id,
+        thread = await self.find_thread(channel_session.id)
+        thread_created = thread is None
+        if thread is None:
+            thread = Thread(
+                id=message.thread_id,
                 channel_session_id=channel_session.id,
                 workspace_id=self._require_agent_id(),
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
             )
-            await self.save_bcn_session(bcn_session)
+            await self.save_thread(thread)
 
         if existing_message is None:
             notifies_runtime = message.notifies_runtime and (
@@ -150,7 +150,7 @@ class SqliteRepository(
             )
             message = replace(
                 message,
-                session_id=bcn_session.id,
+                thread_id=thread.id,
                 channel_session_id=channel_session.id,
                 target=channel_session.canonical_target,
                 target_presentation=None,
@@ -159,20 +159,20 @@ class SqliteRepository(
 
         if (
             message.notifies_runtime
-            and await self.get_consumer_cursor(bcn_session.id) is None
+            and await self.get_consumer_cursor(thread.id) is None
         ):
-            await self.save_consumer_cursor(ConsumerCursor(session_id=bcn_session.id))
+            await self.save_consumer_cursor(ConsumerCursor(thread_id=thread.id))
 
         if existing_message is None:
-            message, channel_session, bcn_session = await self._save_new_inbound(
-                message, channel_session, bcn_session, now_ms=now_ms
+            message, channel_session, thread = await self._save_new_inbound(
+                message, channel_session, thread, now_ms=now_ms
             )
 
         return RecordInboundResult(
             channel_session=channel_session,
-            bcn_session=bcn_session,
+            thread=thread,
             message=message,
             channel_session_created=channel_session_created,
-            bcn_session_created=bcn_session_created,
+            thread_created=thread_created,
             message_created=existing_message is None,
         )

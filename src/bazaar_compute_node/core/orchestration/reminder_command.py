@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..command import IReminderService, SessionNotFoundError
-from ..concurrency import ISessionConcurrency
+from ..actor import Actor
+from ..command import IReminderService
+from ..concurrency import IThreadConcurrency
 from ..models import Message, MessageDirection, Reminder, ReminderState
 from ..reminder import (
     ReminderCancelRequest,
@@ -19,6 +20,7 @@ from ..reminder import (
 )
 from ..storage import IStorage
 from ..utils.clock import now_ms
+from .services import threads_in_reach
 
 
 class ReminderCommandFailure(ValueError):
@@ -42,7 +44,7 @@ class ReminderCommandService(IReminderService):
         self,
         *,
         storage: IStorage,
-        concurrency: ISessionConcurrency,
+        concurrency: IThreadConcurrency,
         poke: Callable[[], None],
         clock: Callable[[], int] | None = None,
     ) -> None:
@@ -53,20 +55,19 @@ class ReminderCommandService(IReminderService):
 
     async def schedule(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult:
-        async with self._concurrency.for_session(session_id):
-            await self._require_session(self._storage, session_id)
-            anchor = await self._resolve_anchor(
-                self._storage,
-                session_id,
-                request.message_id,
-            )
+        owner_id, anchor = await self._resolve_anchor(
+            self._storage,
+            actor,
+            request.message_id,
+        )
+        async with self._concurrency.for_thread(owner_id):
             now_ms = self._clock()
             reminder = Reminder(
                 reminder_id="pending",
-                owner_session_id=session_id,
+                owner_thread_id=owner_id,
                 anchor_message_id=anchor.message_id,
                 title=request.title,
                 state=ReminderState.SCHEDULED,
@@ -84,28 +85,28 @@ class ReminderCommandService(IReminderService):
 
     async def list(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderListRequest,
     ) -> ReminderListResult:
-        await self._require_session(self._storage, session_id)
-        reminders = await self._storage.list_reminders(
-            session_id,
-            request.statuses,
-        )
-        return ReminderListResult(reminders)
+        listed: list[Reminder] = []
+        for thread_id in await threads_in_reach(self._storage, actor):
+            listed.extend(
+                await self._storage.list_reminders(thread_id, request.statuses)
+            )
+        return ReminderListResult(tuple(listed))
 
     async def snooze(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult:
-        async with self._concurrency.for_session(session_id):
-            await self._require_session(self._storage, session_id)
-            reminder = await self._resolve_reminder(
-                self._storage,
-                session_id,
-                request.reminder_id,
-            )
+        owner_id, _ = await self._resolve_reminder(
+            self._storage,
+            actor,
+            request.reminder_id,
+        )
+        async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             try:
                 updated = reminder.snooze(
                     duration_ms=request.duration_ms,
@@ -126,16 +127,16 @@ class ReminderCommandService(IReminderService):
 
     async def update(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult:
-        async with self._concurrency.for_session(session_id):
-            await self._require_session(self._storage, session_id)
-            reminder = await self._resolve_reminder(
-                self._storage,
-                session_id,
-                request.reminder_id,
-            )
+        owner_id, _ = await self._resolve_reminder(
+            self._storage,
+            actor,
+            request.reminder_id,
+        )
+        async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 next_action = (
                     "Run `bcc reminder snooze` first, or create a new Reminder."
@@ -179,16 +180,16 @@ class ReminderCommandService(IReminderService):
 
     async def cancel(
         self,
-        session_id: str,
+        actor: Actor,
         request: ReminderCancelRequest,
     ) -> ReminderCancelResult:
-        async with self._concurrency.for_session(session_id):
-            await self._require_session(self._storage, session_id)
-            reminder = await self._resolve_reminder(
-                self._storage,
-                session_id,
-                request.reminder_id,
-            )
+        owner_id, _ = await self._resolve_reminder(
+            self._storage,
+            actor,
+            request.reminder_id,
+        )
+        async with self._concurrency.for_thread(owner_id):
+            reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 raise ReminderCommandFailure(
                     "REMINDER_NOT_SCHEDULED",
@@ -209,56 +210,63 @@ class ReminderCommandService(IReminderService):
         return ReminderCancelResult(updated)
 
     @staticmethod
-    async def _require_session(
-        storage: IStorage,
-        session_id: str,
-    ) -> None:
-        if await storage.get_bcn_session(session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-
-    @staticmethod
     async def _resolve_anchor(
         storage: IStorage,
-        session_id: str,
+        actor: Actor,
         message_id: str,
-    ) -> Message:
-        try:
-            anchor = await storage.resolve_message(
-                session_id,
-                message_id,
-                direction=MessageDirection.INBOUND,
-            )
-        except ValueError as error:
+    ) -> tuple[str, Message]:
+        """Return the conversation a Reminder will belong to, and its anchor."""
+
+        for thread_id in await threads_in_reach(storage, actor):
+            try:
+                anchor = await storage.resolve_message(
+                    thread_id,
+                    message_id,
+                    direction=MessageDirection.INBOUND,
+                )
+            except ValueError as error:
+                raise ReminderCommandFailure(
+                    "REMINDER_ANCHOR_NOT_FOUND",
+                    str(error),
+                ) from error
+            if anchor is not None:
+                return thread_id, anchor
+        raise ReminderCommandFailure(
+            "REMINDER_ANCHOR_NOT_FOUND",
+            f"Reminder anchor was not found in reach: {message_id}",
+        )
+
+    async def _held_reminder(self, owner_id: str, reminder_id: str) -> Reminder:
+        """Read the Reminder again now that its conversation is held."""
+
+        reminder = await self._storage.get_reminder(owner_id, reminder_id)
+        if reminder is None:
             raise ReminderCommandFailure(
-                "REMINDER_ANCHOR_NOT_FOUND",
-                str(error),
-            ) from error
-        if anchor is None:
-            raise ReminderCommandFailure(
-                "REMINDER_ANCHOR_NOT_FOUND",
-                f"Reminder anchor was not found in the current session: {message_id}",
+                "REMINDER_NOT_FOUND",
+                f"Reminder was not found in reach: {reminder_id}",
             )
-        return anchor
+        return reminder
 
     @staticmethod
     async def _resolve_reminder(
         storage: IStorage,
-        session_id: str,
+        actor: Actor,
         reminder_id: str,
-    ) -> Reminder:
-        try:
-            reminder = await storage.get_reminder(session_id, reminder_id)
-        except ValueError as error:
-            raise ReminderCommandFailure(
-                "REMINDER_NOT_FOUND",
-                str(error),
-            ) from error
-        if reminder is None:
-            raise ReminderCommandFailure(
-                "REMINDER_NOT_FOUND",
-                f"Reminder was not found in the current session: {reminder_id}",
-            )
-        return reminder
+    ) -> tuple[str, Reminder]:
+        for thread_id in await threads_in_reach(storage, actor):
+            try:
+                reminder = await storage.get_reminder(thread_id, reminder_id)
+            except ValueError as error:
+                raise ReminderCommandFailure(
+                    "REMINDER_NOT_FOUND",
+                    str(error),
+                ) from error
+            if reminder is not None:
+                return thread_id, reminder
+        raise ReminderCommandFailure(
+            "REMINDER_NOT_FOUND",
+            f"Reminder was not found in reach: {reminder_id}",
+        )
 
 
 __all__ = ["ReminderCommandFailure", "ReminderCommandService"]

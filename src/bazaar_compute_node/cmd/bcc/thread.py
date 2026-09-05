@@ -11,7 +11,7 @@ def thread() -> None: ...
 
 
 @thread.command(
-    short_help="Stop following a group/thread target.",
+    short_help=("Stop following a thread you no longer need ordinary delivery for"),
     help=(
         "Stop following the current group/thread target for future message wakes. "
         "This does not affect Reminder ownership or Reminder wakes."

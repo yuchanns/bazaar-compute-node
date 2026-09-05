@@ -72,7 +72,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
 
     async def get_reminder(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> Reminder | None:
         reference = canonical_id_reference(reminder_id)
@@ -80,7 +80,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
             (
                 reminder
                 for reminder in self._reminder_storage.reminders.values()
-                if reminder.owner_session_id == owner_session_id
+                if reminder.owner_thread_id == owner_thread_id
                 and reminder.reminder_id == reference
             ),
             None,
@@ -88,7 +88,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
 
     async def list_reminders(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]:
         if not isinstance(statuses, frozenset) or not statuses:
@@ -98,7 +98,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         reminders = [
             reminder
             for reminder in self._reminder_storage.reminders.values()
-            if reminder.owner_session_id == owner_session_id
+            if reminder.owner_thread_id == owner_thread_id
             and reminder.state in statuses
         ]
         reminders.sort(
@@ -115,11 +115,11 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
             raise ValueError("a new reminder must start at revision 1 with no history")
         if reminder.last_fired_at_ms is not None or reminder.canceled_at_ms is not None:
             raise ValueError("a new reminder cannot contain terminal history")
-        if reminder.owner_session_id not in self._reminder_storage.bcn_sessions:
-            raise ValueError(f"unknown bcn session: {reminder.owner_session_id}")
+        if reminder.owner_thread_id not in self._reminder_storage.threads:
+            raise ValueError(f"unknown thread: {reminder.owner_thread_id}")
         anchor_reference = canonical_id_reference(reminder.anchor_message_id)
         anchor = await self.resolve_message(
-            reminder.owner_session_id,
+            reminder.owner_thread_id,
             anchor_reference,
             direction=MessageDirection.INBOUND,
         )
@@ -137,7 +137,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if not isinstance(reminder, Reminder):
             raise TypeError("reminder must be a Reminder")
         existing = await self.get_reminder(
-            reminder.owner_session_id, reminder.reminder_id
+            reminder.owner_thread_id, reminder.reminder_id
         )
         if existing is None:
             raise ValueError("reminder not found")
@@ -211,11 +211,11 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     async def get_owned_reminder(
         self,
         agent_id: str,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None:
-        reminder = await self.get_reminder(owner_session_id, reminder_id)
-        if reminder is None or self._agent_id_for_session(owner_session_id) != agent_id:
+        reminder = await self.get_reminder(owner_thread_id, reminder_id)
+        if reminder is None or self._agent_id_for_thread(owner_thread_id) != agent_id:
             return None
         return OwnedReminder(agent_id=agent_id, reminder=reminder)
 
@@ -226,7 +226,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
     ) -> Reminder | None:
         owned = await self.get_owned_reminder(
             reminder.agent_id,
-            reminder.reminder.owner_session_id,
+            reminder.reminder.owner_thread_id,
             reminder.reminder.reminder_id,
         )
         if owned is None:
@@ -293,7 +293,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         incoming = reminder.reminder
         existing_owned = await self.get_owned_reminder(
             reminder.agent_id,
-            incoming.owner_session_id,
+            incoming.owner_thread_id,
             incoming.reminder_id,
         )
         if existing_owned is None:
@@ -306,7 +306,7 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         if existing.next_fire_at_ms is None:
             return None
         anchor = await self.resolve_message(
-            incoming.owner_session_id,
+            incoming.owner_thread_id,
             incoming.anchor_message_id,
             direction=MessageDirection.INBOUND,
         )
@@ -316,13 +316,13 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         return await self._save_inbound_message(system_message)
 
     def _owned_reminder(self, reminder: Reminder) -> OwnedReminder | None:
-        agent_id = self._agent_id_for_session(reminder.owner_session_id)
+        agent_id = self._agent_id_for_thread(reminder.owner_thread_id)
         if agent_id is None:
             return None
         return OwnedReminder(agent_id=agent_id, reminder=reminder)
 
-    def _agent_id_for_session(self, session_id: str) -> str | None:
-        session = self._reminder_storage.bcn_sessions.get(session_id)
+    def _agent_id_for_thread(self, session_id: str) -> str | None:
+        session = self._reminder_storage.threads.get(session_id)
         return session.workspace_id if session is not None else None
 
 
@@ -343,7 +343,7 @@ def _validate_reminder_identity(
 ) -> None:
     if (
         existing.reminder_id != incoming.reminder_id
-        or existing.owner_session_id != incoming.owner_session_id
+        or existing.owner_thread_id != incoming.owner_thread_id
         or existing.anchor_message_id != incoming.anchor_message_id
         or existing.timezone != incoming.timezone
         or existing.created_at_ms != incoming.created_at_ms

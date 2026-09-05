@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
-from uuid import uuid7
 
 from .command import (
     InboxListResult,
@@ -11,14 +11,13 @@ from .command import (
     MessageReadResult,
     MessageSendFreshnessHold,
     OutboundFreshnessPass,
-    SessionNotFoundError,
     TargetProjection,
-    render_handoff_message_body,
+    ThreadNotFoundError,
+    UnreadSummary,
 )
 from .inbox import InboxTargetPage
 from .lifecycle import IAsyncLifecycle
 from .models import (
-    BcnSession,
     ChannelSession,
     ConsumerCursor,
     InboundAttachment,
@@ -30,9 +29,7 @@ from .models import (
     Reminder,
     ReminderState,
     RuntimeAttempt,
-    SenderIdentity,
-    SenderKind,
-    SystemMessageKind,
+    Thread,
 )
 
 
@@ -43,16 +40,16 @@ class InboxTargetResolutionError(ValueError):
 @dataclass(frozen=True, slots=True)
 class RecordInboundResult:
     channel_session: ChannelSession
-    bcn_session: BcnSession
+    thread: Thread
     message: Message[InboundAttachment]
     channel_session_created: bool
-    bcn_session_created: bool
+    thread_created: bool
     message_created: bool
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedInboxTarget:
-    bcn_session: BcnSession
+    thread: Thread
     channel_session: ChannelSession
     handle_is_unique: bool
 
@@ -69,22 +66,16 @@ class ResolvedInboxTarget:
 
 @dataclass(frozen=True, slots=True)
 class ReadMessageHistoryResult:
-    source_session: BcnSession
+    source_thread: Thread
     history: MessageReadResult
 
 
 @dataclass(frozen=True, slots=True)
 class MaterializeOutboundResult:
     channel_session: ChannelSession
-    target_session: BcnSession
+    target_thread: Thread
     reply_to_provider_message_id: str | None
     outcome: Message[OutboundAttachment] | MessageSendFreshnessHold
-
-
-@dataclass(frozen=True, slots=True)
-class FinalizeOutboundResult:
-    outbound: Message[OutboundAttachment]
-    handoff_message: Message[InboundAttachment] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +90,8 @@ class UnreadMessageOwner:
             raise ValueError("trigger_message must notify the runtime")
 
     @property
-    def owner_session_id(self) -> str:
-        return self.trigger_message.session_id
+    def owner_thread_id(self) -> str:
+        return self.trigger_message.thread_id
 
 
 _HISTORY_DELIVERY_STATES = frozenset(
@@ -113,79 +104,78 @@ class StorageOperationMixin:
 
     async def check_messages(
         self,
-        session_id: str,
+        thread_ids: Sequence[str],
         *,
         checked_at_ms: int,
-    ) -> MessageCheckResult:
+    ) -> tuple[MessageCheckResult, ...]:
+        """Drain these conversations together, so none is read without arriving."""
+
+        return tuple(
+            [
+                await _check_one_thread(
+                    _operations(self), thread_id, checked_at_ms=checked_at_ms
+                )
+                for thread_id in thread_ids
+            ]
+        )
+
+    async def read_unread_summary(
+        self,
+        thread_id: str | None,
+        *,
+        limit: int,
+    ) -> UnreadSummary:
+        """Say what is unread, counted and carried from the same read."""
+
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {session_id}")
-        cursor = await self.get_consumer_cursor(session_id)
-        if cursor is None:
-            cursor = ConsumerCursor(session_id=session_id)
-        latest_seq = await self.get_latest_message_seq(
-            session_id,
-            direction=MessageDirection.INBOUND,
-        )
-        messages = await self.list_messages(
-            session_id,
-            after_seq=cursor.delivered_through_seq,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
-        )
-        references = await _referenced_messages(self, session_id, messages)
-        canonical_targets = {message.target for message in (*messages, *references)}
-        canonical_targets.update(
-            source_target
-            for message in (*messages, *references)
-            if isinstance(
-                source_target := message.metadata.get("system_message_source_target"),
-                str,
+        if thread_id is None:
+            return UnreadSummary(
+                total=await self.count_unread_messages(),
+                messages=(
+                    await self.list_unread_messages(limit=limit) if limit else ()
+                ),
             )
-        )
-        target_projections: list[TargetProjection] = []
-        for canonical_target in sorted(canonical_targets):
-            target = await self.resolve_inbox_target(canonical_target)
-            target_projections.append(
-                TargetProjection(canonical_target, target.display_target)
-            )
-        await self.save_consumer_cursor(
-            replace(
-                cursor,
-                delivered_through_seq=latest_seq,
-                last_check_at_ms=checked_at_ms,
-                updated_at_ms=checked_at_ms,
-            )
-        )
-        return MessageCheckResult(
-            messages=messages,
-            snapshot_seq=latest_seq,
-            delivered_through_seq=latest_seq,
-            referenced_messages=references,
-            target_projections=tuple(target_projections),
+        cursor = await self.get_consumer_cursor(thread_id)
+        after_seq = cursor.delivered_through_seq if cursor is not None else 0
+        return UnreadSummary(
+            total=await self.count_messages(
+                thread_id,
+                after_seq=after_seq,
+                direction=MessageDirection.INBOUND,
+                notifying_only=True,
+            ),
+            messages=(
+                await self.list_messages(
+                    thread_id,
+                    after_seq=after_seq,
+                    direction=MessageDirection.INBOUND,
+                    notifying_only=True,
+                    latest=True,
+                    limit=limit,
+                )
+                if limit
+                else ()
+            ),
         )
 
     async def read_message_history(
         self,
-        caller_session_id: str,
         *,
         raw_target: str,
         around_message_id: str | None,
         limit: int,
     ) -> ReadMessageHistoryResult:
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(caller_session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
         target = await self.resolve_inbox_target(raw_target)
-        source_session = target.bcn_session
+        source_thread = target.thread
         messages = await self.list_messages(
-            source_session.id,
+            source_thread.id,
             target=target.canonical_target,
             around_message_id=around_message_id,
             delivery_states=_HISTORY_DELIVERY_STATES,
             limit=limit,
         )
-        references = await _referenced_messages(self, source_session.id, messages)
+        references = await _referenced_messages(self, source_thread.id, messages)
         canonical_targets = {message.target for message in (*messages, *references)}
         canonical_targets.update(
             source_target
@@ -202,11 +192,11 @@ class StorageOperationMixin:
                 TargetProjection(canonical_target, target.display_target)
             )
         latest_seq = await self.get_latest_message_seq(
-            source_session.id,
+            source_thread.id,
             delivery_states=_HISTORY_DELIVERY_STATES,
         )
         return ReadMessageHistoryResult(
-            source_session=source_session,
+            source_thread=source_thread,
             history=MessageReadResult(
                 messages=messages,
                 snapshot_seq=latest_seq,
@@ -219,25 +209,16 @@ class StorageOperationMixin:
 
     async def read_inbox_catalog(
         self,
-        caller_session_id: str,
         *,
-        limit: int,
-        offset: int,
+        limit: int | None,
+        offset: int = 0,
     ) -> InboxListResult:
         self = _operations(self)  # noqa: PLW0642
-        if await self.get_bcn_session(caller_session_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {caller_session_id}")
         page = await self.list_inbox_targets(limit=limit, offset=offset)
         targets = []
         for summary in page.targets:
             target = await self.resolve_inbox_target(summary.target)
-            targets.append(
-                replace(
-                    summary,
-                    target=target.display_target,
-                    current=summary.session_id == caller_session_id,
-                )
-            )
+            targets.append(replace(summary, target=target.display_target))
         return InboxListResult(
             targets=tuple(targets),
             total=page.total,
@@ -248,31 +229,31 @@ class StorageOperationMixin:
 
     async def check_outbound_freshness(
         self,
-        source_target_id: str,
+        target_id: str,
         *,
-        source_snapshot_seq: int | None,
+        snapshot_seq: int | None,
         payload: MessageDraft,
         draft_replaced: bool,
     ) -> OutboundFreshnessPass | MessageSendFreshnessHold:
         self = _operations(self)  # noqa: PLW0642
-        if payload.source_target_id != source_target_id:
-            raise ValueError("outbound draft source binding cannot change")
-        if await self.get_bcn_session(source_target_id) is None:
-            raise SessionNotFoundError(f"unknown bcn session: {source_target_id}")
-        current_seq = await _latest_notifying_inbound_seq(self, source_target_id)
+        if payload.target_id != target_id:
+            raise ValueError("outbound draft target binding cannot change")
+        if await self.get_thread(target_id) is None:
+            raise ThreadNotFoundError(f"unknown thread: {target_id}")
+        current_seq = await _latest_notifying_inbound_seq(self, target_id)
         if current_seq == 0 or (
-            source_snapshot_seq is not None and current_seq <= source_snapshot_seq
+            snapshot_seq is not None and current_seq <= snapshot_seq
         ):
             return OutboundFreshnessPass(current_inbound_seq=current_seq)
         newer_total = await self.count_messages(
-            source_target_id,
-            after_seq=source_snapshot_seq,
+            target_id,
+            after_seq=snapshot_seq,
             direction=MessageDirection.INBOUND,
             notifying_only=True,
         )
         newer_messages = await self.list_messages(
-            source_target_id,
-            after_seq=source_snapshot_seq,
+            target_id,
+            after_seq=snapshot_seq,
             direction=MessageDirection.INBOUND,
             notifying_only=True,
             latest=True,
@@ -280,7 +261,7 @@ class StorageOperationMixin:
         )
         references = await _referenced_messages(
             self,
-            source_target_id,
+            target_id,
             newer_messages,
         )
         canonical_targets = {
@@ -305,7 +286,7 @@ class StorageOperationMixin:
             messages=newer_messages,
             referenced_messages=references,
             newer_message_total=newer_total,
-            snapshot_seq=source_snapshot_seq,
+            snapshot_seq=snapshot_seq,
             current_inbound_seq=current_seq,
             draft_replaced=draft_replaced,
             target_projections=tuple(target_projections),
@@ -313,64 +294,57 @@ class StorageOperationMixin:
 
     async def materialize_outbound_if_fresh(
         self,
-        source_target_id: str,
-        expected_source_seq: int,
         target_id: str,
+        expected_target_seq: int,
         *,
         command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult:
         self = _operations(self)  # noqa: PLW0642
-        if (
-            payload.source_target_id != source_target_id
-            or payload.target_id != target_id
-        ):
+        if payload.target_id != target_id:
             raise ValueError("outbound draft target binding cannot change")
-        current_source_seq = await _latest_notifying_inbound_seq(
-            self,
-            source_target_id,
-        )
-        if current_source_seq > expected_source_seq:
+        current_target_seq = await _latest_notifying_inbound_seq(self, target_id)
+        if current_target_seq > expected_target_seq:
             outcome = await self.check_outbound_freshness(
-                source_target_id,
-                source_snapshot_seq=expected_source_seq,
+                target_id,
+                snapshot_seq=expected_target_seq,
                 payload=payload,
                 draft_replaced=False,
             )
             if isinstance(outcome, OutboundFreshnessPass):
-                raise RuntimeError("source freshness recheck lost its stale boundary")
-            source_session = await self.get_bcn_session(source_target_id)
-            if source_session is None:
-                raise SessionNotFoundError(f"unknown bcn session: {source_target_id}")
-            source_channel = await self.get_channel_session(
-                source_session.channel_session_id
+                raise RuntimeError("target freshness recheck lost its stale boundary")
+            held_thread = await self.get_thread(target_id)
+            if held_thread is None:
+                raise ThreadNotFoundError(f"unknown thread: {target_id}")
+            held_channel = await self.get_channel_session(
+                held_thread.channel_session_id
             )
-            if source_channel is None:
+            if held_channel is None:
                 raise ValueError(
-                    f"unknown channel session: {source_session.channel_session_id}"
+                    f"unknown channel session: {held_thread.channel_session_id}"
                 )
             return MaterializeOutboundResult(
-                channel_session=source_channel,
-                target_session=source_session,
+                channel_session=held_channel,
+                target_thread=held_thread,
                 reply_to_provider_message_id=None,
                 outcome=outcome,
             )
         target = await self.resolve_inbox_target(payload.target)
-        if target.bcn_session.id != target_id:
+        if target.thread.id != target_id:
             raise ValueError("outbound target alias binding cannot change")
-        target_session = await self.get_bcn_session(target_id)
-        if target_session is None:
-            raise SessionNotFoundError(f"unknown bcn session: {target_id}")
+        target_thread = await self.get_thread(target_id)
+        if target_thread is None:
+            raise ThreadNotFoundError(f"unknown thread: {target_id}")
         channel_session = await self.get_channel_session(
-            target_session.channel_session_id
+            target_thread.channel_session_id
         )
         if channel_session is None:
             raise ValueError(
-                f"unknown channel session: {target_session.channel_session_id}"
+                f"unknown channel session: {target_thread.channel_session_id}"
             )
         target_messages = await self.list_messages(
-            target_session.id,
+            target_thread.id,
             target=payload.target,
             direction=MessageDirection.INBOUND,
             limit=1,
@@ -384,29 +358,20 @@ class StorageOperationMixin:
         reply_to_provider_message_id = None
         if payload.reply_to_message_id is not None:
             reply_message = await self.resolve_message(
-                target_session.id,
+                target_thread.id,
                 payload.reply_to_message_id,
                 delivery_states=_HISTORY_DELIVERY_STATES,
             )
             if reply_message is not None and reply_message.target == payload.target:
                 reply_to_message_id = payload.reply_to_message_id
                 reply_to_provider_message_id = reply_message.provider_message_id
-        cross_session = source_target_id != target_id
-        metadata: dict[str, object] = {}
-        if cross_session:
-            metadata = {
-                "source_target_id": source_target_id,
-                "target_id": target_id,
-                "source_message_id": payload.source_message_id,
-                "handoff_message_id": str(uuid7()),
-            }
         outcome = await self.save_message(
             Message(
                 direction=MessageDirection.OUTBOUND,
                 seq=0,
-                message_id=f"outbound-{source_target_id}-{command_id}",
+                message_id=f"outbound-{target_id}-{command_id}",
                 command_id=command_id,
-                session_id=target_id,
+                thread_id=target_id,
                 channel_session_id=channel_session.id,
                 target=payload.target,
                 body=payload.body,
@@ -416,12 +381,11 @@ class StorageOperationMixin:
                 created_at_ms=payload.created_at_ms,
                 provider_attempted_at_ms=attempted_at_ms,
                 reply_to_message_id=reply_to_message_id,
-                metadata=metadata,
             )
         )
         return MaterializeOutboundResult(
             channel_session=channel_session,
-            target_session=target_session,
+            target_thread=target_thread,
             reply_to_provider_message_id=reply_to_provider_message_id,
             outcome=outcome,
         )
@@ -429,73 +393,68 @@ class StorageOperationMixin:
     async def finalize_outbound_delivery(
         self,
         outbound: Message[OutboundAttachment],
-    ) -> FinalizeOutboundResult:
+    ) -> Message[OutboundAttachment]:
         self = _operations(self)  # noqa: PLW0642
-        outbound = await self.save_message(outbound)
-        if outbound.delivery_state not in {
-            OutboundDeliveryState.SENT,
-            OutboundDeliveryState.QUEUED,
-        }:
-            return FinalizeOutboundResult(outbound=outbound, handoff_message=None)
-        source_target_id = outbound.metadata.get("source_target_id")
-        if not isinstance(source_target_id, str):
-            return FinalizeOutboundResult(outbound=outbound, handoff_message=None)
-        source_message_id = str(outbound.metadata["source_message_id"])
-        handoff_message_id = str(outbound.metadata["handoff_message_id"])
-        source_message = await self.resolve_message(
-            source_target_id,
-            source_message_id,
-            direction=MessageDirection.INBOUND,
+        return await self.save_message(outbound)
+
+
+async def _check_one_thread(
+    storage: Any,
+    thread_id: str,
+    *,
+    checked_at_ms: int,
+) -> MessageCheckResult:
+    if await storage.get_thread(thread_id) is None:
+        raise ThreadNotFoundError(f"unknown thread: {thread_id}")
+    cursor = await storage.get_consumer_cursor(thread_id)
+    if cursor is None:
+        cursor = ConsumerCursor(thread_id=thread_id)
+    latest_seq = await storage.get_latest_message_seq(
+        thread_id,
+        direction=MessageDirection.INBOUND,
+    )
+    messages = await storage.list_messages(
+        thread_id,
+        after_seq=cursor.delivered_through_seq,
+        direction=MessageDirection.INBOUND,
+        notifying_only=True,
+    )
+    references = await _referenced_messages(storage, thread_id, messages)
+    canonical_targets = {message.target for message in (*messages, *references)}
+    canonical_targets.update(
+        source_target
+        for message in (*messages, *references)
+        if isinstance(
+            source_target := message.metadata.get("system_message_source_target"),
+            str,
         )
-        if source_message is None:
-            raise ValueError("Handoff source context is missing")
-        channel_session = await self.get_channel_session(outbound.channel_session_id)
-        if channel_session is None:
-            raise ValueError(f"unknown channel session: {outbound.channel_session_id}")
-        delivered_at_ms = outbound.completed_at_ms or outbound.provider_attempted_at_ms
-        if delivered_at_ms is None:
-            raise RuntimeError("delivered outbound message has no delivery time")
-        candidate = Message[InboundAttachment](
-            direction=MessageDirection.INBOUND,
-            seq=0,
-            message_id=handoff_message_id,
-            session_id=outbound.session_id,
-            channel_session_id=outbound.channel_session_id,
-            channel=channel_session.channel,
-            provider_thread_id=channel_session.provider_thread_id,
-            received_at_ms=delivered_at_ms,
-            sender=SenderIdentity(id="system", name="system"),
-            target=outbound.target,
-            target_kind=channel_session.target_kind,
-            body=render_handoff_message_body(
-                source_message.target, outbound.message_id
-            ),
-            notifies_runtime=True,
-            metadata={
-                "sender_kind": SenderKind.SYSTEM.value,
-                "system_message_kind": SystemMessageKind.HANDOFF.value,
-                "system_message_source_target": source_message.target,
-                "system_message_source_message_id": source_message.message_id,
-                "system_message_outbound_message_id": outbound.message_id,
-            },
+    )
+    target_projections: list[TargetProjection] = []
+    for canonical_target in sorted(canonical_targets):
+        target = await storage.resolve_inbox_target(canonical_target)
+        target_projections.append(
+            TargetProjection(canonical_target, target.display_target)
         )
-        existing = await self.get_message(handoff_message_id)
-        if existing is not None:
-            comparable = replace(existing, seq=0)
-            if comparable != candidate:
-                raise ValueError("Handoff system message identity cannot change")
-            handoff_message = existing
-        else:
-            handoff_message = await self.save_message(candidate)
-        return FinalizeOutboundResult(
-            outbound=outbound,
-            handoff_message=handoff_message,
+    await storage.save_consumer_cursor(
+        replace(
+            cursor,
+            delivered_through_seq=latest_seq,
+            last_check_at_ms=checked_at_ms,
+            updated_at_ms=checked_at_ms,
         )
+    )
+    return MessageCheckResult(
+        messages=messages,
+        snapshot_seq=latest_seq,
+        delivered_through_seq=latest_seq,
+        referenced_messages=references,
+        target_projections=tuple(target_projections),
+    )
 
 
 async def _referenced_messages(
     storage: Any,
-    session_id: str,
+    thread_id: str,
     messages: tuple[Message[InboundAttachment | OutboundAttachment], ...],
 ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]:
     message_ids = {message.message_id for message in messages}
@@ -510,7 +469,7 @@ async def _referenced_messages(
         ):
             continue
         referenced_message = await storage.resolve_message(
-            session_id,
+            thread_id,
             reference_id,
             delivery_states=_HISTORY_DELIVERY_STATES,
         )
@@ -521,9 +480,9 @@ async def _referenced_messages(
     return tuple(referenced)
 
 
-async def _latest_notifying_inbound_seq(storage: Any, session_id: str) -> int:
+async def _latest_notifying_inbound_seq(storage: Any, thread_id: str) -> int:
     messages = await storage.list_messages(
-        session_id,
+        thread_id,
         direction=MessageDirection.INBOUND,
         notifying_only=True,
         latest=True,
@@ -548,14 +507,20 @@ class _StorageOperations(Protocol):
 
     async def check_messages(
         self,
-        session_id: str,
+        thread_ids: Sequence[str],
         *,
         checked_at_ms: int,
-    ) -> MessageCheckResult: ...
+    ) -> tuple[MessageCheckResult, ...]: ...
+
+    async def read_unread_summary(
+        self,
+        thread_id: str | None,
+        *,
+        limit: int,
+    ) -> UnreadSummary: ...
 
     async def read_message_history(
         self,
-        caller_session_id: str,
         *,
         raw_target: str,
         around_message_id: str | None,
@@ -564,26 +529,24 @@ class _StorageOperations(Protocol):
 
     async def read_inbox_catalog(
         self,
-        caller_session_id: str,
         *,
-        limit: int,
-        offset: int,
+        limit: int | None,
+        offset: int = 0,
     ) -> InboxListResult: ...
 
     async def check_outbound_freshness(
         self,
-        source_target_id: str,
+        target_id: str,
         *,
-        source_snapshot_seq: int | None,
+        snapshot_seq: int | None,
         payload: MessageDraft,
         draft_replaced: bool,
     ) -> OutboundFreshnessPass | MessageSendFreshnessHold: ...
 
     async def materialize_outbound_if_fresh(
         self,
-        source_target_id: str,
-        expected_source_seq: int,
         target_id: str,
+        expected_target_seq: int,
         *,
         command_id: str,
         payload: MessageDraft,
@@ -593,20 +556,22 @@ class _StorageOperations(Protocol):
     async def finalize_outbound_delivery(
         self,
         outbound: Message[OutboundAttachment],
-    ) -> FinalizeOutboundResult: ...
+    ) -> Message[OutboundAttachment]: ...
 
     async def find_channel_session(
         self, *, channel: str, provider_thread_id: str
     ) -> ChannelSession | None: ...
 
-    async def get_channel_session(self, session_id: str) -> ChannelSession | None: ...
-    async def get_bcn_session(self, session_id: str) -> BcnSession | None: ...
-    async def find_bcn_session(self, channel_session_id: str) -> BcnSession | None: ...
+    async def get_channel_session(
+        self, channel_session_id: str
+    ) -> ChannelSession | None: ...
+    async def get_thread(self, thread_id: str) -> Thread | None: ...
+    async def find_thread(self, channel_session_id: str) -> Thread | None: ...
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...
-    async def get_consumer_cursor(self, session_id: str) -> ConsumerCursor | None: ...
+    async def get_consumer_cursor(self, thread_id: str) -> ConsumerCursor | None: ...
     async def get_latest_message_seq(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
@@ -614,7 +579,7 @@ class _StorageOperations(Protocol):
 
     async def get_latest_message(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
@@ -622,7 +587,7 @@ class _StorageOperations(Protocol):
 
     async def count_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -631,9 +596,17 @@ class _StorageOperations(Protocol):
         notifying_only: bool = False,
     ) -> int: ...
 
+    async def list_thread_ids(self) -> tuple[str, ...]: ...
+
     async def list_inbox_targets(
-        self, *, limit: int = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0
     ) -> InboxTargetPage: ...
+
+    async def list_unread_messages(
+        self, *, limit: int
+    ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]: ...
+
+    async def count_unread_messages(self) -> int: ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 
@@ -648,7 +621,7 @@ class _StorageOperations(Protocol):
 
     async def resolve_message(
         self,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -658,7 +631,7 @@ class _StorageOperations(Protocol):
     async def get_owned_message(
         self,
         agent_id: str,
-        session_id: str,
+        thread_id: str,
         message_id: str,
         *,
         direction: MessageDirection | None = None,
@@ -668,7 +641,7 @@ class _StorageOperations(Protocol):
 
     async def list_messages(
         self,
-        session_id: str,
+        thread_id: str,
         *,
         after_seq: int | None = None,
         target: str | None = None,
@@ -681,7 +654,7 @@ class _StorageOperations(Protocol):
     ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]: ...
 
     async def save_channel_session(self, session: ChannelSession) -> None: ...
-    async def save_bcn_session(self, session: BcnSession) -> None: ...
+    async def save_thread(self, session: Thread) -> None: ...
     async def save_runtime_attempt(self, attempt: RuntimeAttempt) -> None: ...
     async def save_consumer_cursor(self, cursor: ConsumerCursor) -> None: ...
 
@@ -695,12 +668,12 @@ class _StorageOperations(Protocol):
     async def save_message(self, message: Message) -> Message: ...
 
     async def get_reminder(
-        self, owner_session_id: str, reminder_id: str
+        self, owner_thread_id: str, reminder_id: str
     ) -> Reminder | None: ...
 
     async def list_reminders(
         self,
-        owner_session_id: str,
+        owner_thread_id: str,
         statuses: frozenset[ReminderState],
     ) -> tuple[Reminder, ...]: ...
 
@@ -719,7 +692,7 @@ class _StorageOperations(Protocol):
     async def get_owned_reminder(
         self,
         agent_id: str,
-        owner_session_id: str,
+        owner_thread_id: str,
         reminder_id: str,
     ) -> OwnedReminder | None: ...
 

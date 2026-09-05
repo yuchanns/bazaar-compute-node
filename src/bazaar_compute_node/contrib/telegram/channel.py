@@ -336,11 +336,11 @@ class TelegramChannel(IChannel):
                 | UsageUpdated()
             ):
                 pass
-        identity = self._stream_routes.get(item.envelope.session_id)
+        identity = self._stream_routes.get(session_id)
         if identity is None or self._typing_runner is None:
             return
-        if item.envelope.session_id not in self._typing_leases:
-            self._typing_leases[item.envelope.session_id] = _TypingLease(
+        if session_id not in self._typing_leases:
+            self._typing_leases[session_id] = _TypingLease(
                 identity=identity,
                 next_due_at=0.0,
             )
@@ -763,7 +763,7 @@ class TelegramChannel(IChannel):
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=identity.message_id(update.provider_message_id),
-                session_id=identity.session_id,
+                thread_id=identity.session_id,
                 channel_session_id=channel_session_id,
                 channel="telegram",
                 provider_thread_id=identity.provider_thread_id,
@@ -858,7 +858,7 @@ class TelegramChannel(IChannel):
                 direction=MessageDirection.INBOUND,
                 seq=0,
                 message_id=message_id,
-                session_id=identity.session_id,
+                thread_id=identity.session_id,
                 channel_session_id=channel_session_id,
                 channel="telegram",
                 provider_thread_id=identity.provider_thread_id,

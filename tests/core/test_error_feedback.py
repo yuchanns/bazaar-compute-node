@@ -17,7 +17,7 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration.delivery import OutboundDeliveryService
 from bazaar_compute_node.core.orchestration.error_feedback import RuntimeErrorReporter
-from bazaar_compute_node.core.orchestration.services import SessionAuditRecorder
+from bazaar_compute_node.core.orchestration.services import AuditRecorder
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 
@@ -27,7 +27,7 @@ def make_message() -> Message:
         direction=MessageDirection.INBOUND,
         seq=7,
         message_id="message-7",
-        session_id="bcn-1",
+        thread_id="bcn-1",
         channel_session_id="channel-1",
         channel="test",
         provider_thread_id="thread-1",
@@ -76,7 +76,7 @@ def make_reporter(
         agent_id="agent-1",
         delivery=OutboundDeliveryService(channel, timeout=1),
         storage=(storage or MemoryStorage()).scope("workspace-1", "Test Agent"),
-        audit=SessionAuditRecorder(sink=audit, timeout_budget=budget, clock=lambda: 3),
+        audit=AuditRecorder(sink=audit, timeout_budget=budget, clock=lambda: 3),
         translator=create_translator(language),
         detail=detail,
     )

@@ -22,6 +22,7 @@ from bazaar_compute_node.contrib.wecom.outbound import (
     prepare_attachments,
     visible_message_body,
 )
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     ChannelApprovalRequest,
     ChannelContext,
@@ -185,7 +186,7 @@ async def test_wecom_approval_card_event_updates_card_and_wakes_request(
         await channel.start(timeout=1)
         approval = ApprovalRequest(
             request_id="approval-1",
-            session_id="session-1",
+            actor=Thread("session-1"),
             runtime_session_id="runtime-1",
             action="command_execution",
             created_at_ms=1,
@@ -327,7 +328,7 @@ async def test_wecom_slow_card_update_does_not_block_another_session(
                 ChannelApprovalRequest(
                     approval=ApprovalRequest(
                         request_id="approval-with-slow-update",
-                        session_id="session-1",
+                        actor=Thread("session-1"),
                         runtime_session_id="runtime-1",
                         action="command_execution",
                         created_at_ms=1,
@@ -432,7 +433,7 @@ async def test_wecom_approval_cancellation_cleans_pending_request(
     approval = ChannelApprovalRequest(
         approval=ApprovalRequest(
             request_id="approval-cancelled",
-            session_id="session-1",
+            actor=Thread("session-1"),
             runtime_session_id="runtime-1",
             action="permissions",
             created_at_ms=1,
@@ -510,7 +511,7 @@ async def test_wecom_stop_rejects_pending_approval(tmp_path: Path) -> None:
                 ChannelApprovalRequest(
                     approval=ApprovalRequest(
                         request_id="approval-stopped",
-                        session_id="session-1",
+                        actor=Thread("session-1"),
                         runtime_session_id="runtime-1",
                         action="file_change",
                         created_at_ms=1,
@@ -986,7 +987,7 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert current.sender_kind is SenderKind.HUMAN
     assert current.message_id != current.provider_message_id
     assert current.reply_to_message_id == referenced.message_id
-    assert current.session_id == referenced.session_id
+    assert current.thread_id == referenced.thread_id
     assert current.target == referenced.target
     assert "has_quote" not in current.metadata
     assert referenced.provider_message_id is not None

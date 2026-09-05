@@ -17,12 +17,12 @@ from pydantic import (
     ValidationError,
 )
 
+from ..core.actor import Actor, Actors
 from ..core.command import (
     ICommandService,
-    InboxListResult,
     MessageSendFreshnessHold,
-    SessionNotFoundError,
     TargetProjection,
+    ThreadNotFoundError,
 )
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -83,7 +83,7 @@ def serialize_message(
         "seq": message.seq,
         "message_id": message.message_id,
         "direction": message.direction.value,
-        "session_id": message.session_id,
+        "thread_id": message.thread_id,
         "channel_session_id": message.channel_session_id,
         "channel": message.channel,
         "received_at_ms": message.received_at_ms,
@@ -144,9 +144,8 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
     )
     return {
         "target": summary.target,
-        "session_id": summary.session_id,
+        "thread_id": summary.thread_id,
         "target_kind": summary.target_kind.value,
-        "current": summary.current,
         "pending_count": summary.pending_count,
         "last_activity_at_ms": summary.last_activity_at_ms,
         "latest_message_id": summary.latest_message_id,
@@ -160,16 +159,6 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
             }
         ),
         "latest_time_ms": latest_time_ms,
-    }
-
-
-def serialize_inbox_list(result: InboxListResult) -> dict[str, object]:
-    return {
-        "targets": [serialize_inbox_target(target) for target in result.targets],
-        "total": result.total,
-        "shown": result.shown,
-        "offset": result.offset,
-        "has_more": result.has_more,
     }
 
 
@@ -200,7 +189,7 @@ class _CommandRequest(BaseModel):
     kind: Literal["command"]
     resource: StrictStr
     command: StrictStr
-    session_id: NonEmptyText
+    actor_id: NonEmptyText
 
 
 class _MessageCheckRequest(_CommandRequest):
@@ -230,11 +219,9 @@ class _MessageSendRequest(_CommandRequest):
     )
 
 
-class _InboxListRequest(_CommandRequest):
+class _InboxCheckRequest(_CommandRequest):
     resource: Literal["inbox"]
-    command: Literal["list"]
-    limit: PositiveInt = 100
-    offset: NonNegativeInt = 0
+    command: Literal["check"]
 
 
 class _ThreadUnfollowRequest(_CommandRequest):
@@ -249,7 +236,7 @@ _REQUEST_MODELS: dict[tuple[str, str], _RequestModel] = {
     ("message", "check"): _MessageCheckRequest,
     ("message", "read"): _MessageReadRequest,
     ("message", "send"): _MessageSendRequest,
-    ("inbox", "list"): _InboxListRequest,
+    ("inbox", "check"): _InboxCheckRequest,
     ("thread", "unfollow"): _ThreadUnfollowRequest,
 }
 
@@ -275,7 +262,7 @@ _SEND_FAILURES: dict[OutboundDeliveryState, tuple[str, str, str]] = {
 }
 
 _REQUEST_ERRORS: dict[str, tuple[str, str]] = {
-    "session_id": ("SESSION_REQUIRED", "session_id must be a non-empty string"),
+    "actor_id": ("SESSION_REQUIRED", "actor_id must be a non-empty string"),
     "limit": ("INVALID_LIMIT", "limit must be a positive integer"),
     "offset": ("INVALID_OFFSET", "offset must be a non-negative integer"),
     "target": ("TARGET_REQUIRED", "target must be a non-empty string"),
@@ -330,7 +317,7 @@ def _parse_command_request[RequestT: _CommandRequest](
         raise CommandDispatchError(code, message) from error
 
 
-SessionBindingValidator = Callable[[str, Mapping[str, object]], Awaitable[None]]
+SessionBindingValidator = Callable[[Actor, Mapping[str, object]], Awaitable[None]]
 
 
 class CommandDispatcher:
@@ -340,9 +327,11 @@ class CommandDispatcher:
         self,
         service: ICommandService,
         *,
+        actors: Actors,
         timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
+        self._actors = actors
         self._service = service
         self._timeout_budget = timeout_budget
         self._session_binding_validator = session_binding_validator
@@ -350,6 +339,12 @@ class CommandDispatcher:
         self._in_flight: set[asyncio.Task[object]] = set()
         self._drained = asyncio.Event()
         self._drained.set()
+
+    def _resolve_actor(self, actor_id: str) -> Actor:
+        try:
+            return self._actors.resolve(actor_id)
+        except ValueError as error:
+            raise CommandDispatchError("SESSION_NOT_FOUND", str(error)) from error
 
     @property
     def accepting(self) -> bool:
@@ -422,7 +417,7 @@ class CommandDispatcher:
             if error.next_action is not None:
                 response["next_action"] = error.next_action
             return response
-        except SessionNotFoundError as error:
+        except ThreadNotFoundError as error:
             return {
                 "ok": False,
                 "code": "SESSION_NOT_FOUND",
@@ -476,51 +471,76 @@ class CommandDispatcher:
             )
 
         request = _parse_command_request(raw_request, _REQUEST_MODELS[route])
-        session_id = request.session_id
+        actor = self._resolve_actor(request.actor_id)
         if self._session_binding_validator is not None:
-            await self._session_binding_validator(session_id, raw_request)
+            await self._session_binding_validator(actor, raw_request)
 
         match route:
             case ("message", "check"):
-                return await self._check_messages(session_id)
+                return await self._check_messages(actor)
             case ("message", "read"):
                 return await self._read_messages(
-                    session_id, cast(_MessageReadRequest, request)
+                    actor, cast(_MessageReadRequest, request)
                 )
             case ("message", "send"):
                 return await self._send_message(
-                    session_id, cast(_MessageSendRequest, request)
+                    actor, cast(_MessageSendRequest, request)
                 )
-            case ("inbox", "list"):
-                return await self._list_inbox(
-                    session_id, cast(_InboxListRequest, request)
-                )
+            case ("inbox", "check"):
+                return await self._check_inbox(actor)
             case ("thread", "unfollow"):
                 return await self._unfollow_thread(
-                    session_id, cast(_ThreadUnfollowRequest, request)
+                    actor, cast(_ThreadUnfollowRequest, request)
                 )
             case _:
                 raise AssertionError("validated command route has no handler")
 
-    async def _check_messages(self, session_id: str) -> Mapping[str, object]:
-        result = await self._service.check(session_id)
+    async def _check_messages(self, actor: Actor) -> Mapping[str, object]:
+        drained = await self._service.check(actor)
+        projections = tuple(
+            projection for result in drained for projection in result.target_projections
+        )
         return {
             "ok": True,
             "result": {
-                "messages": _serialized(result.messages, result.target_projections),
-                "referenced_messages": _serialized(
-                    result.referenced_messages, result.target_projections
+                "messages": _serialized(
+                    sorted(
+                        (message for result in drained for message in result.messages),
+                        key=lambda message: (
+                            message.received_at_ms
+                            if message.received_at_ms is not None
+                            else message.created_at_ms or 0,
+                            message.thread_id,
+                            message.seq,
+                        ),
+                    ),
+                    projections,
                 ),
-                "snapshot_seq": result.snapshot_seq,
-                "delivered_through_seq": result.delivered_through_seq,
+                "referenced_messages": _serialized(
+                    tuple(
+                        message
+                        for result in drained
+                        for message in result.referenced_messages
+                    ),
+                    projections,
+                ),
+            },
+        }
+
+    async def _check_inbox(self, actor: Actor) -> Mapping[str, object]:
+        result = await self._service.pending_targets(actor)
+        return {
+            "ok": True,
+            "result": {
+                "targets": [serialize_inbox_target(target) for target in result.targets]
             },
         }
 
     async def _read_messages(
-        self, session_id: str, request: _MessageReadRequest
+        self, actor: Actor, request: _MessageReadRequest
     ) -> Mapping[str, object]:
         result = await self._service.read(
-            session_id,
+            actor,
             raw_target=request.target,
             around_message_id=request.around_message_id,
             limit=request.limit,
@@ -539,10 +559,10 @@ class CommandDispatcher:
         }
 
     async def _send_message(
-        self, session_id: str, request: _MessageSendRequest
+        self, actor: Actor, request: _MessageSendRequest
     ) -> Mapping[str, object]:
         result = await self._service.send(
-            session_id=session_id,
+            actor=actor,
             command_id=request.command_id,
             raw_target=request.target,
             body=request.body,
@@ -581,20 +601,10 @@ class CommandDispatcher:
         )
         return {"ok": True, "result": {"text": text}}
 
-    async def _list_inbox(
-        self, session_id: str, request: _InboxListRequest
-    ) -> Mapping[str, object]:
-        result = await self._service.list_inbox(
-            session_id,
-            limit=request.limit,
-            offset=request.offset,
-        )
-        return {"ok": True, "result": serialize_inbox_list(result)}
-
     async def _unfollow_thread(
-        self, session_id: str, request: _ThreadUnfollowRequest
+        self, actor: Actor, request: _ThreadUnfollowRequest
     ) -> Mapping[str, object]:
-        result = await self._service.unfollow(session_id, raw_target=request.target)
+        result = await self._service.unfollow(actor, raw_target=request.target)
         return {
             "ok": True,
             "result": {"target": result.target, "changed": result.changed},

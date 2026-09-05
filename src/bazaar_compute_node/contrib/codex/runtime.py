@@ -173,6 +173,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     runtime_session_id=session.id,
                     runtime=session.runtime,
                     workspace=str(connection.workspace),
+                    mode=self._context.mode,
                 ).render(),
                 model=self._model,
                 cwd=connection.workspace,
@@ -243,7 +244,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._connections[session.id] = connection
         stream = TurnEventStream(
             connection.supervisor,
-            session_id=session.bcn_session_id,
+            actor=session.actor,
             runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=provider_thread_id,
@@ -322,7 +323,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 self._logger.info,
                 "runtime.process.reconcile.retry_succeeded",
                 attempt=attempt + 1,
-                session_id=session.bcn_session_id,
+                session_id=session.actor.id,
             )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED,
@@ -390,7 +391,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                         "runtime.process.reconcile.retry_exhausted",
                         attempt=attempt + 1,
                         error_type=type(error).__name__,
-                        session_id=session.bcn_session_id,
+                        session_id=session.actor.id,
                     )
                     return _provider_result(error)
                 self._log(
@@ -399,7 +400,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     attempt=attempt + 1,
                     error_type=type(error).__name__,
                     next_attempt=attempt + 2,
-                    session_id=session.bcn_session_id,
+                    session_id=session.actor.id,
                 )
             except Exception as error:  # noqa: BLE001
                 await self._stop_connection(connection, timeout=timeout)
@@ -465,7 +466,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         connection.active_turn_id = turn.turn_id
         return TurnEventStream(
             connection.supervisor,
-            session_id=session.bcn_session_id,
+            actor=session.actor,
             runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
@@ -515,7 +516,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 self._logger.warning,
                 "runtime.turn.steer.not_accepted",
                 error_type=type(error).__name__,
-                session_id=session.bcn_session_id,
+                session_id=session.actor.id,
             )
             return False
         return True

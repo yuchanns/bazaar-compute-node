@@ -3,35 +3,20 @@ from __future__ import annotations
 import click
 
 from ._client import request, run
-from ._format import echo, serialize_inbox_list
+from ._format import echo, serialize_inbox_check
 
 
-@click.group(help="Inbox discovery operations")
+@click.group(help="Inbox target summary operations")
 def inbox() -> None: ...
 
 
-@inbox.command("list", help="List available message targets")
-@click.option(
-    "--limit",
-    type=int,
-    default=100,
-    metavar="<n>",
-    help="Maximum number of targets to return (default: 100).",
-)
-@click.option(
-    "--offset",
-    type=int,
-    default=0,
-    metavar="<n>",
-    help="Number of targets to skip (default: 0).",
+@inbox.command(
+    "check",
+    help="Show pending inbox targets without draining or reading message content.",
 )
 @run
-async def list_targets(limit: int, offset: int) -> None:
-    echo(
-        serialize_inbox_list(
-            await request("inbox", "list", {"limit": limit, "offset": offset})
-        )
-    )
+async def check_targets() -> None:
+    echo(serialize_inbox_check(await request("inbox", "check", {})))
 
 
 __all__ = ["inbox"]

@@ -10,7 +10,7 @@ class ReminderOwner:
     """Global Reminder owner identity across configured Agents."""
 
     agent_id: str
-    owner_session_id: str
+    owner_thread_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +22,7 @@ class OwnedReminder:
 
     @property
     def owner(self) -> ReminderOwner:
-        return ReminderOwner(self.agent_id, self.reminder.owner_session_id)
+        return ReminderOwner(self.agent_id, self.reminder.owner_thread_id)
 
 
 __all__ = ["OwnedReminder", "ReminderOwner"]

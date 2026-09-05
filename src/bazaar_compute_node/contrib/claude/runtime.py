@@ -245,7 +245,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             ) -> dict[str, object]:
                 approval = parse_approval_request(
                     message,
-                    session_id=session.bcn_session_id,
+                    actor=session.actor,
                     runtime_session_id=session.id,
                     turn_id=turn.turn_id,
                 )
@@ -348,7 +348,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
 
         stream = TurnEventStream(
             inbox,
-            session_id=session.bcn_session_id,
+            actor=session.actor,
             runtime_session_id=session.id,
             turn_id=turn.turn_id,
             provider_thread_id=connection.provider_thread_id,
@@ -446,6 +446,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             runtime_session_id=session.id,
             runtime=session.runtime,
             workspace=str(workspace),
+            mode=self._context.mode,
         ).render()
         settings = json.dumps(
             _sandbox_settings(

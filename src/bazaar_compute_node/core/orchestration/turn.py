@@ -8,18 +8,20 @@ from dataclasses import dataclass, replace
 
 from ... import __distribution__
 from ...rendering import TextTemplate
+from ..actor import Actor
+from ..actor import Agent as AgentActor
+from ..actor import Thread as ThreadActor
 from ..agent import Agent, State
 from ..approval import ApprovalBinding, IApprovalHandler
 from ..audit import ErrorKind
 from ..channel import ChannelApprovalRequest, IChannel
-from ..concurrency import ISessionConcurrency
+from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
 from ..lifecycle import TimeoutBudget
 from ..models import (
     ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
-    BcnSession,
     ChannelSession,
     ChannelTargetKind,
     ContentDelta,
@@ -33,6 +35,7 @@ from ..models import (
     RuntimeTurn,
     RuntimeTurnState,
     SenderKind,
+    Thread,
     ToolCallCompleted,
     ToolCallFailed,
     ToolCallInteraction,
@@ -49,7 +52,7 @@ from ..models import (
 from ..runtime import IRuntimeTurnStream, Runtime, RuntimeSessionUnavailable
 from ..storage import IStorageScope
 from .reminder import resolve_reminder_anchor
-from .services import SessionAuditRecorder
+from .services import AuditRecorder
 
 
 def _is_turn_event(event_name: str) -> bool:
@@ -61,7 +64,7 @@ type TurnPayload = (
 )
 
 
-type _Advance = Callable[[Agent, str], State]
+type _Advance = Callable[[Agent, Actor], State]
 
 
 def _runtime_event_advance(payload: TurnPayload) -> _Advance:
@@ -152,6 +155,9 @@ _TURN_FAILED = "Turn failed"
 _TURN_UNKNOWN = "Turn outcome is unknown"
 _INBOX_NOTICE = TextTemplate.from_resource("inbox_notice.tpl")
 _NO_PERSON_TO_APPROVE = TextTemplate.from_resource("approval_no_person.tpl").render()
+_APPROVED_WITHOUT_ASKING = (
+    "This Agent answers for every conversation and allows tool use without asking."
+)
 
 
 def _with_a_reason(event: RuntimeOutputEvent) -> RuntimeOutputEvent:
@@ -252,10 +258,14 @@ def inbox_notice(
 
 
 @dataclass(frozen=True, slots=True)
-class SessionContext:
+class TurnContext:
     channel_session: ChannelSession
-    bcn_session: BcnSession
+    thread: Thread
     runtime_session: RuntimeSession
+
+    @property
+    def actor(self) -> Actor:
+        return self.runtime_session.actor
 
 
 class _ApprovalHandler:
@@ -271,7 +281,7 @@ class _ApprovalHandler:
         return await self._callback(request, timeout)
 
 
-class SessionTurnCoordinator:
+class TurnCoordinator:
     """Drive runtime turns and persist their event/state transitions."""
 
     def __init__(
@@ -281,10 +291,10 @@ class SessionTurnCoordinator:
         channel: IChannel,
         runtimes: Runtime,
         storage: IStorageScope,
-        audit: SessionAuditRecorder,
+        audit: AuditRecorder,
         agent: Agent,
         timeout_budget: TimeoutBudget,
-        concurrency: ISessionConcurrency,
+        concurrency: IThreadConcurrency,
         turns: dict[str, RuntimeTurn],
         clock: Callable[[], int],
     ) -> None:
@@ -299,13 +309,38 @@ class SessionTurnCoordinator:
         self._timeout_budget = timeout_budget
         self._concurrency = concurrency
         self._turns = turns
+        self._turn_threads: dict[str, dict[str, Message]] = {}
         self._clock = clock
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
+
+    async def join_turn(self, turn_id: str, thread_id: str, message: Message) -> None:
+        """Take a conversation into a turn, and say where its output belongs."""
+
+        threads = self._turn_threads.setdefault(turn_id, {})
+        if thread_id in threads:
+            return
+        threads[thread_id] = message
+        anchor = await resolve_reminder_anchor(self._storage, self._agent_id, message)
+        if anchor is not None:
+            self._channel.anchor_turn(thread_id, anchor)
+
+    def threads_in_turn(self, turn_id: str) -> tuple[Message, ...]:
+        """Return one message from each conversation a turn has taken one from."""
+
+        return tuple(self._turn_threads.get(turn_id, {}).values())
+
+    def release_turn(self, turn_id: str) -> None:
+        """Forget the conversations a turn no longer answers for."""
+
+        self._turn_threads.pop(turn_id, None)
+
+    def _threads_of(self, turn_id: str, thread_id: str) -> tuple[str, ...]:
+        return tuple(self._turn_threads.get(turn_id) or (thread_id,))
 
     def approval_handler(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
     ) -> IApprovalHandler:
         return _ApprovalHandler(
@@ -321,7 +356,7 @@ class SessionTurnCoordinator:
     async def _ask_channel(
         self,
         request: ApprovalRequest,
-        context: SessionContext,
+        context: TurnContext,
         approval_target: Message,
         *,
         correlation: CorrelationContext,
@@ -365,32 +400,43 @@ class SessionTurnCoordinator:
         request: ApprovalRequest,
         *,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         timeout: float,
     ) -> ApprovalResult:
-        """Ask whoever sent the message to allow what the runtime wants to do."""
+        """Settle what the runtime wants to do, by asking or by the mode itself."""
 
         request_id = request.request_id
+        approval_correlation = CorrelationContext(
+            node_id=self._agent_id,
+            channel=context.channel_session.channel,
+            channel_session_id=context.channel_session.id,
+            thread_id=context.thread.id,
+            runtime_session_id=context.runtime_session.id,
+            turn_id=turn.turn_id,
+            request_id=request_id,
+            inbound_seq=message.seq,
+        )
+        match context.actor:
+            case AgentActor():
+                # TODO: unconditional only until an individual mode keeps
+                # approvals; then decide here from the sandbox policy
+                return await self._approve_without_asking(
+                    request,
+                    message,
+                    correlation=approval_correlation,
+                )
+            case ThreadActor():
+                pass
         current_binding = ApprovalBinding(
             request_id=request_id,
-            bcn_session_id=context.bcn_session.id,
+            actor=context.actor,
             channel_session_id=context.channel_session.id,
             runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
         )
         if not current_binding.matches(request):
             raise ValueError("runtime approval request correlation mismatch")
-        approval_correlation = CorrelationContext(
-            node_id=self._agent_id,
-            channel=context.channel_session.channel,
-            channel_session_id=context.channel_session.id,
-            bcn_session_id=context.bcn_session.id,
-            runtime_session_id=context.runtime_session.id,
-            turn_id=turn.turn_id,
-            request_id=request_id,
-            inbound_seq=message.seq,
-        )
         sender_kind = message.sender_kind
         approval_target = await resolve_reminder_anchor(
             self._storage,
@@ -445,10 +491,38 @@ class SessionTurnCoordinator:
         )
         return result
 
+    async def _approve_without_asking(
+        self,
+        request: ApprovalRequest,
+        message: Message,
+        *,
+        correlation: CorrelationContext,
+    ) -> ApprovalResult:
+        """Allow what the runtime asked for, with no one conversation to ask."""
+
+        result = ApprovalResult(
+            request_id=request.request_id,
+            decision=ApprovalDecision.APPROVED,
+            decided_at_ms=self._clock(),
+            reason=_APPROVED_WITHOUT_ASKING,
+        )
+        await self._audit.append(
+            event_name="approval.decided",
+            state=RuntimeEventState.COMPLETED,
+            correlation=correlation,
+            metadata={
+                "action": request.action,
+                "sender_kind": message.sender_kind.value,
+                "decision": result.decision.value,
+                "reason": result.reason,
+            },
+        )
+        return result
+
     async def run_turn(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         *,
         input_text: str,
@@ -459,11 +533,7 @@ class SessionTurnCoordinator:
         turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
         try:
-            anchor = await resolve_reminder_anchor(
-                self._storage, self._agent_id, message
-            )
-            if anchor is not None:
-                self._channel.anchor_turn(context.bcn_session.id, anchor)
+            await self.join_turn(turn.turn_id, context.thread.id, message)
             approval_handler = self.approval_handler(message, context, turn)
             await self._audit.append(
                 event_name="runtime.request.turn.started",
@@ -510,7 +580,8 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.CANCELLED,
                 error_message="runtime turn cancelled",
                 correlation=turn_correlation,
-                session_id=context.bcn_session.id,
+                actor=context.actor,
+                thread_id=context.thread.id,
             )
             raise
         except Exception as error:  # noqa: BLE001
@@ -521,14 +592,15 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.PROVIDER_FAILED,
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
-                session_id=context.bcn_session.id,
+                actor=context.actor,
+                thread_id=context.thread.id,
                 retry_available=retry_available,
             )
 
     async def resume_turn(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
         *,
@@ -546,7 +618,7 @@ class SessionTurnCoordinator:
     async def _consume_events(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
         *,
@@ -556,12 +628,12 @@ class SessionTurnCoordinator:
 
         observed_terminal = False
         async for event in stream:
-            if event.envelope.session_id != context.bcn_session.id:
+            if event.envelope.actor != context.actor:
                 self._logger.error(
-                    "runtime emitted event for another session",
+                    "runtime emitted event for another actor",
                     extra={
-                        "expected_session_id": context.bcn_session.id,
-                        "actual_session_id": event.envelope.session_id,
+                        "expected_actor_id": context.actor.id,
+                        "actual_actor_id": event.envelope.actor.id,
                     },
                 )
                 continue
@@ -585,7 +657,7 @@ class SessionTurnCoordinator:
                         isinstance(payload, TurnUnknown)
                         or (retry_available and isinstance(payload, TurnFailed))
                     ):
-                        self._forward(event, context.bcn_session.id)
+                        self._forward(event, turn.turn_id, context.thread.id)
                     if _is_terminal_turn_event(payload):
                         observed_terminal = True
                         break
@@ -601,21 +673,29 @@ class SessionTurnCoordinator:
                     | ContextCompactionStarted()
                     | ContextCompactionCompleted()
                 ):
-                    self._forward(event, context.bcn_session.id)
+                    self._forward(event, turn.turn_id, context.thread.id)
         return turn, observed_terminal
 
-    def _forward(self, event: RuntimeOutputEvent, session_id: str) -> None:
+    def _forward(
+        self,
+        event: RuntimeOutputEvent,
+        turn_id: str,
+        thread_id: str,
+    ) -> None:
         """Show a runtime event on the channel; note a channel that refuses it."""
 
-        try:
-            self._channel.accept_turn_event(event, session_id=session_id)
-        except Exception:
-            self._logger.exception("channel rejected %s", type(event.payload).__name__)
+        for thread in self._threads_of(turn_id, thread_id):
+            try:
+                self._channel.accept_turn_event(event, session_id=thread)
+            except Exception:
+                self._logger.exception(
+                    "channel rejected %s", type(event.payload).__name__
+                )
 
     async def _consume_turn_stream(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         stream: IRuntimeTurnStream,
         *,
@@ -633,7 +713,8 @@ class SessionTurnCoordinator:
                     error_kind=ErrorKind.PROVIDER_UNKNOWN,
                     error_message="runtime stream ended without a terminal event",
                     correlation=turn_correlation,
-                    session_id=context.bcn_session.id,
+                    actor=context.actor,
+                    thread_id=context.thread.id,
                     retry_available=retry_available,
                 )
             return turn
@@ -645,7 +726,8 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.CANCELLED,
                 error_message="runtime turn cancelled",
                 correlation=turn_correlation,
-                session_id=context.bcn_session.id,
+                actor=context.actor,
+                thread_id=context.thread.id,
             )
             raise
         except Exception as error:  # noqa: BLE001
@@ -656,7 +738,8 @@ class SessionTurnCoordinator:
                 error_kind=ErrorKind.PROVIDER_FAILED,
                 error_message=f"runtime turn failed: {type(error).__name__}",
                 correlation=turn_correlation,
-                session_id=context.bcn_session.id,
+                actor=context.actor,
+                thread_id=context.thread.id,
                 retry_available=retry_available,
             )
         finally:
@@ -665,7 +748,7 @@ class SessionTurnCoordinator:
     async def steer_turn(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         *,
         input_text: str,
@@ -688,11 +771,13 @@ class SessionTurnCoordinator:
                 "runtime turn steer failed",
                 extra={
                     "error_type": type(error).__name__,
-                    "session_id": context.bcn_session.id,
+                    "thread_id": context.thread.id,
                     "turn_id": turn.turn_id,
                 },
             )
             accepted = False
+        if accepted:
+            await self.join_turn(turn.turn_id, context.thread.id, message)
         try:
             await self._audit.append(
                 event_name=(
@@ -709,7 +794,7 @@ class SessionTurnCoordinator:
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
 
-    def notify_terminal(self, turn: RuntimeTurn, session_id: str) -> None:
+    def notify_terminal(self, turn: RuntimeTurn, actor: Actor, thread_id: str) -> None:
         """Announce a turn whose outcome only the orchestrator can settle."""
 
         self._notify_channel_terminal(
@@ -717,7 +802,8 @@ class SessionTurnCoordinator:
             turn.state,
             ErrorKind(turn.error_kind) if turn.error_kind else None,
             turn.error_message,
-            session_id,
+            actor,
+            thread_id,
         )
 
     def _notify_channel_terminal(
@@ -726,28 +812,28 @@ class SessionTurnCoordinator:
         state: RuntimeTurnState,
         error_kind: ErrorKind | None,
         error_message: str | None,
-        session_id: str,
+        actor: Actor,
+        thread_id: str,
     ) -> None:
         payload = _TERMINALS[state].payload(
             error_kind.value if error_kind else None,
             error_message,
         )
-        try:
-            self._channel.accept_turn_event(
-                RuntimeOutputEvent(
-                    envelope=RuntimeEventEnvelope(
-                        session_id=session_id,
-                        runtime_session_id=turn.session_id,
-                        turn_id=turn.turn_id,
-                        provider_turn_id=turn.provider_turn_id,
-                        occurred_at_ms=self._clock(),
-                    ),
-                    payload=payload,
-                ),
-                session_id=session_id,
-            )
-        except Exception:
-            self._logger.exception("channel rejected synthesized terminal event")
+        event = RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                actor=actor,
+                runtime_session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                provider_turn_id=turn.provider_turn_id,
+                occurred_at_ms=self._clock(),
+            ),
+            payload=payload,
+        )
+        for thread in self._threads_of(turn.turn_id, thread_id):
+            try:
+                self._channel.accept_turn_event(event, session_id=thread)
+            except Exception:
+                self._logger.exception("channel rejected synthesized terminal event")
 
     async def finish_turn(
         self,
@@ -757,10 +843,11 @@ class SessionTurnCoordinator:
         error_kind: ErrorKind | None,
         error_message: str | None,
         correlation: CorrelationContext | None,
-        session_id: str,
+        actor: Actor,
+        thread_id: str,
         retry_available: bool = False,
     ) -> RuntimeTurn:
-        async with self._concurrency.for_session(session_id):
+        async with self._concurrency.for_thread(actor.id):
             if turn.state in {
                 RuntimeTurnState.COMPLETED,
                 RuntimeTurnState.FAILED,
@@ -775,10 +862,10 @@ class SessionTurnCoordinator:
                 error_message=error_message,
             )
             self._turns.pop(turn.turn_id, None)
-            _TERMINALS[state].advance(self._agent, session_id)
+            _TERMINALS[state].advance(self._agent, actor)
         if not (retry_available and _TERMINALS[state].retryable):
             self._notify_channel_terminal(
-                turn, state, error_kind, error_message, session_id
+                turn, state, error_kind, error_message, actor, thread_id
             )
         await self._audit.append(
             event_name=f"runtime.turn.{state.value}",
@@ -792,7 +879,7 @@ class SessionTurnCoordinator:
     async def _apply_runtime_event(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
         envelope: RuntimeEventEnvelope,
         payload: TurnPayload,
@@ -826,7 +913,7 @@ class SessionTurnCoordinator:
                 metadata=metadata,
             ):
                 state = RuntimeEventState.UNKNOWN
-        async with self._concurrency.for_session(message.session_id):
+        async with self._concurrency.for_thread(message.thread_id):
             advance = _runtime_event_advance(payload)
             target_state = (
                 _EVENTS[state].turn_state if _is_turn_event(event_name) else turn.state
@@ -862,7 +949,7 @@ class SessionTurnCoordinator:
                 self._turns.pop(turn.turn_id, None)
             else:
                 self._turns[turn.turn_id] = updated_turn
-            advance(self._agent, context.bcn_session.id)
+            advance(self._agent, context.actor)
         try:
             audit_kind = ErrorKind(error_kind) if error_kind else None
         except ValueError:
@@ -885,14 +972,14 @@ class SessionTurnCoordinator:
     def turn_correlation(
         self,
         message: Message,
-        context: SessionContext,
+        context: TurnContext,
         turn: RuntimeTurn,
     ) -> CorrelationContext:
         return CorrelationContext(
             node_id=self._agent_id,
             channel=context.channel_session.channel,
             channel_session_id=context.channel_session.id,
-            bcn_session_id=context.bcn_session.id,
+            thread_id=context.thread.id,
             runtime_session_id=context.runtime_session.id,
             turn_id=turn.turn_id,
             inbound_seq=message.seq,

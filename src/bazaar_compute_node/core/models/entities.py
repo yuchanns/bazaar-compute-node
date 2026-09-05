@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 from string import hexdigits
 from typing import Self, cast
 
+from ..actor import Actor
 from .states import (
     ApprovalDecision,
     ChannelTargetKind,
@@ -84,7 +85,14 @@ class ChannelSession:
 
 
 @dataclass(frozen=True, slots=True)
-class BcnSession:
+class Thread:
+    """One conversation as this node knows it.
+
+    A thread is the local identity of a conversation; the channel session it
+    names is that same conversation's address on the provider. The two are one
+    to one.
+    """
+
     id: str
     channel_session_id: str
     workspace_id: str
@@ -97,8 +105,7 @@ class BcnSession:
 @dataclass(frozen=True, slots=True)
 class RuntimeSession:
     id: str
-    bcn_session_id: str
-    channel_session_id: str
+    actor: Actor
     runtime: str
     runtime_index: int
     workspace_id: str
@@ -249,9 +256,8 @@ class SenderIdentity:
 @dataclass(frozen=True, slots=True)
 class InboxTargetSummary:
     target: str
-    session_id: str
+    thread_id: str
     target_kind: ChannelTargetKind
-    current: bool
     pending_count: int
     last_activity_at_ms: int
     latest_message_id: str | None = None
@@ -279,7 +285,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     direction: MessageDirection
     seq: int
     message_id: str
-    session_id: str
+    thread_id: str
     channel_session_id: str
     target: str
     body: str
@@ -374,9 +380,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         try:
             return SystemMessageKind(cast(str, value))
         except ValueError as error:
-            raise ValueError(
-                "metadata system_message_kind must be reminder or handoff"
-            ) from error
+            raise ValueError("metadata system_message_kind must be reminder") from error
 
     def inbound_identity(self) -> tuple[str, str, str]:
         if self.direction is not MessageDirection.INBOUND:
@@ -430,7 +434,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
 
 @dataclass(frozen=True, slots=True)
 class ConsumerCursor:
-    session_id: str
+    thread_id: str
     delivered_through_seq: int = 0
     last_check_at_ms: int | None = None
     last_read_at_ms: int | None = None
@@ -440,7 +444,7 @@ class ConsumerCursor:
 @dataclass(frozen=True, slots=True)
 class ApprovalRequest:
     request_id: str
-    session_id: str
+    actor: Actor
     runtime_session_id: str
     action: str
     created_at_ms: int

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..rendering import TextTemplate
+from .actor import Mode
 
 _DEVELOPER_INSTRUCTIONS = TextTemplate.from_resource("developer_instructions.md")
 
@@ -17,6 +18,7 @@ class DeveloperInstructionContext:
     runtime_session_id: str
     runtime: str
     workspace: str
+    mode: Mode = Mode.SESSION
 
     def __post_init__(self) -> None:
         for field_name, value in (
@@ -45,6 +47,7 @@ class DeveloperInstructionContext:
                 "runtime_session_id": self.runtime_session_id,
                 "runtime": self.runtime,
                 "workspace": self.workspace,
+                "mode": self.mode.value,
             }
         )
 

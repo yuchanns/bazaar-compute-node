@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 
+from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.agent import State
 from bazaar_compute_node.core.channel import ChannelSendRequest
-from bazaar_compute_node.core.orchestration import SessionOrchestrator
+from bazaar_compute_node.core.orchestration import AgentOrchestrator
 
 from .channel import TestChannel
 
 
 async def wait_for_turn_terminal(
     *,
-    orchestrator: SessionOrchestrator,
+    orchestrator: AgentOrchestrator,
     channel: TestChannel,
     session_id: str,
     client_user_message_id: str,
@@ -40,7 +41,7 @@ async def wait_for_turn_terminal(
 
     outbound: tuple[ChannelSendRequest, ...] = ()
     active_turn = False
-    state = orchestrator.session_runtime_state(session_id)
+    state = orchestrator.session_runtime_state(Thread(session_id))
     try:
         async with asyncio.timeout(timeout):
             while True:
@@ -53,9 +54,10 @@ async def wait_for_turn_terminal(
                     turn.client_user_message_id == client_user_message_id
                     for turn in orchestrator._runtime_turns.values()  # pyright: ignore[reportPrivateUsage]
                 )
-                state = orchestrator.session_runtime_state(session_id)
+                state = orchestrator.session_runtime_state(Thread(session_id))
                 lifecycle_terminal = (
-                    state is None and orchestrator.runtime_session(session_id) is None
+                    state is None
+                    and orchestrator.runtime_session(Thread(session_id)) is None
                     if expect_runtime_discarded
                     else state is State.IDLE
                 )
@@ -67,5 +69,5 @@ async def wait_for_turn_terminal(
             "turn did not reach the provider-neutral terminal contract: "
             f"session_id={session_id!r}, outbound_count={len(outbound)}, "
             f"session_runtime_state={state!r}, active_turn={active_turn}, "
-            f"runtime_live={orchestrator.runtime_session(session_id) is not None}"
+            f"runtime_live={orchestrator.runtime_session(Thread(session_id)) is not None}"
         ) from error
