@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0rc1 - 2026-09-05
+
+## What's Changed
+* feat: let one runtime answer for every conversation an Agent has by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/68
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.39...v0.2.0rc1
+
 ## 0.1.39 - 2026-09-03
 
 **Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.39rc4...v0.1.39
