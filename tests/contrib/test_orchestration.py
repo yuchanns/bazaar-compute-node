@@ -21,6 +21,8 @@ from bcn_test_support import (
     wait_for_turn_terminal,
 )
 
+import bazaar_compute_node.core.orchestration.command as command_module
+import bazaar_compute_node.core.orchestration.services as services_module
 import bazaar_compute_node.core.orchestration.turn as turn_module
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
@@ -40,6 +42,8 @@ from bazaar_compute_node.app.registry import (
     AgentAdapterFactories,
     SharedAdapterFactories,
 )
+from bazaar_compute_node.app.resource_dispatch import CommandDispatcher
+from bazaar_compute_node.app.upgrade import UpgradeService
 from bazaar_compute_node.contrib.lark.api import LarkApi
 from bazaar_compute_node.contrib.lark.channel import LarkChannel
 from bazaar_compute_node.contrib.lark.identity import LarkBotIdentity
@@ -56,6 +60,7 @@ from bazaar_compute_node.core.channel import (
 )
 from bazaar_compute_node.core.command import (
     ICommandService,
+    IReminderService,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -2486,6 +2491,109 @@ async def test_a_batch_notice_covers_every_conversation_it_batched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reach_and_unread_count_do_not_stop_at_one_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(services_module, "_REACH_PAGE", 1)
+    monkeypatch.setattr(command_module, "_REACH_PAGE", 1)
+    orchestrator, _, runtime, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    agent = Agent("workspace-1")
+    try:
+        for thread_id in ("bcn-a", "bcn-b", "bcn-c"):
+            await orchestrator._record_inbound(make_message(session_id=thread_id))  # pyright: ignore[reportPrivateUsage]
+
+        pending = await orchestrator.command_service.pending_targets(agent)
+        assert {summary.thread_id for summary in pending.targets} == {
+            "bcn-a",
+            "bcn-b",
+            "bcn-c",
+        }
+
+        result = await orchestrator.handle_inbound(make_message(session_id="bcn-d"))
+
+        assert result is not None
+        assert (
+            "Inbox update: 4 unread messages total; 4 changed targets"
+            in runtime.started_turns[0][2]
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_check_returns_while_another_thread_holds_its_lock() -> None:
+    orchestrator, _, _, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    agent = Agent("workspace-1")
+    try:
+        for thread_id in ("bcn-a", "bcn-b"):
+            await orchestrator._record_inbound(make_message(session_id=thread_id))  # pyright: ignore[reportPrivateUsage]
+
+        held = orchestrator._concurrency.for_thread("bcn-b")  # pyright: ignore[reportPrivateUsage]
+        async with held:
+            drained = await asyncio.wait_for(
+                orchestrator.command_service.check(agent),
+                timeout=1,
+            )
+
+        assert {
+            message.thread_id for result in drained for message in result.messages
+        } == {"bcn-a", "bcn-b"}
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_check_returns_what_every_thread_brought_in_arrival_order() -> None:
+    orchestrator, _, _, _, _ = await make_node(mode=Mode.DANGEROUS_INDIVIDUAL)
+    dispatcher = CommandDispatcher(
+        orchestrator.command_service,
+        actors=Actors(agent_id="workspace-1", mode=Mode.DANGEROUS_INDIVIDUAL),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=UpgradeService(
+            available_version=lambda: None,
+            installed_version="0.1.0",
+            request_restart=lambda: None,
+        ),
+    )
+    dispatcher.start_accepting()
+    try:
+        for thread_id, seq, body in (
+            ("bcn-a", 1, "first"),
+            ("bcn-b", 2, "second"),
+            ("bcn-a", 3, "third"),
+        ):
+            await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+                make_message(
+                    session_id=thread_id,
+                    seq=seq,
+                    message_id=f"message-{seq}",
+                    body=body,
+                )
+            )
+
+        response = await dispatcher(
+            {
+                "kind": "command",
+                "resource": "message",
+                "command": "check",
+                "actor_id": "workspace-1",
+            }
+        )
+
+        assert response["ok"] is True
+        result = cast(Mapping[str, object], response["result"])
+        messages = cast(Sequence[Mapping[str, object]], result["messages"])
+        assert [message["body"] for message in messages] == [
+            "first",
+            "second",
+            "third",
+        ]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_an_individual_actor_drains_and_answers_every_conversation() -> None:
     orchestrator, channel, _, storage, _ = await make_node(
         mode=Mode.DANGEROUS_INDIVIDUAL
@@ -3062,11 +3170,7 @@ async def test_reminder_wakes_use_ordinary_inbox_for_idle_active_and_duplicates(
         assert "reminder notice" not in idle_notice + active_notice
 
         await cast(IStorage, storage).check_messages(
-            "bcn-idle",
-            checked_at_ms=5,
-        )
-        await cast(IStorage, storage).check_messages(
-            "bcn-active",
+            ("bcn-idle", "bcn-active"),
             checked_at_ms=5,
         )
         await orchestrator.publish_inbox_wake(idle_reminder)

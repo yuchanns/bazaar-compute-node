@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -102,56 +103,19 @@ class StorageOperationMixin:
 
     async def check_messages(
         self,
-        thread_id: str,
+        thread_ids: Sequence[str],
         *,
         checked_at_ms: int,
-    ) -> MessageCheckResult:
-        self = _operations(self)  # noqa: PLW0642
-        if await self.get_thread(thread_id) is None:
-            raise ThreadNotFoundError(f"unknown thread: {thread_id}")
-        cursor = await self.get_consumer_cursor(thread_id)
-        if cursor is None:
-            cursor = ConsumerCursor(thread_id=thread_id)
-        latest_seq = await self.get_latest_message_seq(
-            thread_id,
-            direction=MessageDirection.INBOUND,
-        )
-        messages = await self.list_messages(
-            thread_id,
-            after_seq=cursor.delivered_through_seq,
-            direction=MessageDirection.INBOUND,
-            notifying_only=True,
-        )
-        references = await _referenced_messages(self, thread_id, messages)
-        canonical_targets = {message.target for message in (*messages, *references)}
-        canonical_targets.update(
-            source_target
-            for message in (*messages, *references)
-            if isinstance(
-                source_target := message.metadata.get("system_message_source_target"),
-                str,
-            )
-        )
-        target_projections: list[TargetProjection] = []
-        for canonical_target in sorted(canonical_targets):
-            target = await self.resolve_inbox_target(canonical_target)
-            target_projections.append(
-                TargetProjection(canonical_target, target.display_target)
-            )
-        await self.save_consumer_cursor(
-            replace(
-                cursor,
-                delivered_through_seq=latest_seq,
-                last_check_at_ms=checked_at_ms,
-                updated_at_ms=checked_at_ms,
-            )
-        )
-        return MessageCheckResult(
-            messages=messages,
-            snapshot_seq=latest_seq,
-            delivered_through_seq=latest_seq,
-            referenced_messages=references,
-            target_projections=tuple(target_projections),
+    ) -> tuple[MessageCheckResult, ...]:
+        """Drain these conversations together, so none is read without arriving."""
+
+        return tuple(
+            [
+                await _check_one_thread(
+                    _operations(self), thread_id, checked_at_ms=checked_at_ms
+                )
+                for thread_id in thread_ids
+            ]
         )
 
     async def read_message_history(
@@ -394,6 +358,60 @@ class StorageOperationMixin:
         return await self.save_message(outbound)
 
 
+async def _check_one_thread(
+    storage: Any,
+    thread_id: str,
+    *,
+    checked_at_ms: int,
+) -> MessageCheckResult:
+    if await storage.get_thread(thread_id) is None:
+        raise ThreadNotFoundError(f"unknown thread: {thread_id}")
+    cursor = await storage.get_consumer_cursor(thread_id)
+    if cursor is None:
+        cursor = ConsumerCursor(thread_id=thread_id)
+    latest_seq = await storage.get_latest_message_seq(
+        thread_id,
+        direction=MessageDirection.INBOUND,
+    )
+    messages = await storage.list_messages(
+        thread_id,
+        after_seq=cursor.delivered_through_seq,
+        direction=MessageDirection.INBOUND,
+        notifying_only=True,
+    )
+    references = await _referenced_messages(storage, thread_id, messages)
+    canonical_targets = {message.target for message in (*messages, *references)}
+    canonical_targets.update(
+        source_target
+        for message in (*messages, *references)
+        if isinstance(
+            source_target := message.metadata.get("system_message_source_target"),
+            str,
+        )
+    )
+    target_projections: list[TargetProjection] = []
+    for canonical_target in sorted(canonical_targets):
+        target = await storage.resolve_inbox_target(canonical_target)
+        target_projections.append(
+            TargetProjection(canonical_target, target.display_target)
+        )
+    await storage.save_consumer_cursor(
+        replace(
+            cursor,
+            delivered_through_seq=latest_seq,
+            last_check_at_ms=checked_at_ms,
+            updated_at_ms=checked_at_ms,
+        )
+    )
+    return MessageCheckResult(
+        messages=messages,
+        snapshot_seq=latest_seq,
+        delivered_through_seq=latest_seq,
+        referenced_messages=references,
+        target_projections=tuple(target_projections),
+    )
+
+
 async def _referenced_messages(
     storage: Any,
     thread_id: str,
@@ -449,10 +467,10 @@ class _StorageOperations(Protocol):
 
     async def check_messages(
         self,
-        thread_id: str,
+        thread_ids: Sequence[str],
         *,
         checked_at_ms: int,
-    ) -> MessageCheckResult: ...
+    ) -> tuple[MessageCheckResult, ...]: ...
 
     async def read_message_history(
         self,
@@ -538,6 +556,8 @@ class _StorageOperations(Protocol):
     async def list_unread_messages(
         self, *, limit: int
     ) -> tuple[Message[InboundAttachment | OutboundAttachment], ...]: ...
+
+    async def count_unread_messages(self) -> int: ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 

@@ -2,8 +2,46 @@ from __future__ import annotations
 
 import pytest
 
+from bazaar_compute_node.core.actor import Mode
 from bazaar_compute_node.core.instruction import DeveloperInstructionContext
 from bazaar_compute_node.rendering import TextTemplate
+
+
+def test_developer_instructions_offer_inbox_check_only_where_it_exists() -> None:
+    def rendered(mode: Mode) -> str:
+        return DeveloperInstructionContext(
+            agent_name="Test Agent",
+            bot_name=None,
+            agent_id="agent-1",
+            runtime_session_id="runtime-1",
+            runtime="test",
+            workspace="/workspace",
+            mode=mode,
+        ).render()
+
+    session = rendered(Mode.SESSION)
+    individual = rendered(Mode.DANGEROUS_INDIVIDUAL)
+
+    # case: an Agent answering for one conversation never hears of a command
+    # its command table does not have
+    assert "bcc inbox check" not in session
+
+    # case: an Agent answering for every conversation is told where to start
+    assert (
+        "call `bcc inbox check`; use `bcc message check` / `bcc message read`"
+        in individual
+    )
+
+    # case: and that is the only line the mode changes
+    assert (
+        session.replace(
+            "call `bcc message check` and use `bcc message read` when you choose to "
+            "inspect message content.",
+            "call `bcc inbox check`; use `bcc message check` / `bcc message read` "
+            "when you choose to inspect message content.",
+        )
+        == individual
+    )
 
 
 def test_developer_instructions_render_identity() -> None:

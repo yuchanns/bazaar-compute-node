@@ -173,6 +173,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     runtime_session_id=session.id,
                     runtime=session.runtime,
                     workspace=str(connection.workspace),
+                    mode=self._context.mode,
                 ).render(),
                 model=self._model,
                 cwd=connection.workspace,

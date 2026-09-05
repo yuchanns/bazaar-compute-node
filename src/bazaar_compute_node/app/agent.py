@@ -136,6 +136,7 @@ class AgentApplication:
                 agent_name=self.name,
                 bot_name=self._bot_name,
                 runtime_options=runtime_options,
+                mode=configuration.mode,
                 sandbox_mode=runtime_configuration.sandbox_mode,
                 network_access=runtime_configuration.network_access,
                 startup_timeout_seconds=timeout_budget.startup_seconds,

@@ -446,6 +446,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             runtime_session_id=session.id,
             runtime=session.runtime,
             workspace=str(workspace),
+            mode=self._context.mode,
         ).render()
         settings = json.dumps(
             _sandbox_settings(

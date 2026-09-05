@@ -44,6 +44,7 @@ _SNAPSHOT_READ_OPERATIONS = frozenset({"read_inbox_catalog", "read_message_histo
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
+        "check_messages",
         "check_outbound_freshness",
         "finalize_outbound_delivery",
         "record_inbound",

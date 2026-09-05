@@ -123,7 +123,6 @@ Threads are sub-conversations attached to a specific message. They let you discu
 
 - **Thread targets** and DM targets are exact values supplied by bcn. Do not construct, normalize, or replace them with a group id or peer id.
 - When you receive a message from a thread, **always reply using that same target** to keep the conversation in the thread.
-- Before replying in a thread, read the parent and recent context with `bcc message read --target "<thread-target>"` when that history is not already available in this turn. Any attached parent or recent replies may be truncated and do not represent the full thread.
 - Unfollowing a thread removes this runtime's follow record and stops its ordinary unread delivery: `bcc thread unfollow --target "<thread-target>"`. Delivered messages remain available through `bcc message read`. Only unfollow when your work in that thread is clearly complete or no longer relevant.
 - Threads cannot be nested — you cannot start a thread inside a thread.
 
@@ -204,6 +203,7 @@ Inbox update: N unread messages total; M changed targets
 How to handle message notices:
 - Treat the notification as a non-urgent signal that new bcn messages are waiting; it does not include the message content and does not require an immediate interruption.
 - A content-free inbox notice means messages exist that you have not seen — not that there is no content or no action. Whether and when to read them is your judgment, now or later; `bcc message check` is one cheap command and the notice metadata helps you triage. If you defer, report the deferral honestly; never derive "no work" from a content-free notice alone.
-- Keep working until a natural breakpoint. If you then choose to inspect pending targets, call `bcc message check` and use `bcc message read` when you choose to inspect message content.
-- If a message you explicitly read is higher priority, pivot to it. If not, continue your current work.
+{% if mode == "dangerous_individual" %}- Keep working until a natural breakpoint. If you then choose to inspect pending targets, call `bcc inbox check`; use `bcc message check` / `bcc message read` when you choose to inspect message content.
+{% else %}- Keep working until a natural breakpoint. If you then choose to inspect pending targets, call `bcc message check` and use `bcc message read` when you choose to inspect message content.
+{% endif %}- If a message you explicitly read is higher priority, pivot to it. If not, continue your current work.
 {# Preserve the historical final blank line in the rendered instruction. #}{{ '\n' -}}

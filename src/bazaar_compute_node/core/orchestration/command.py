@@ -28,6 +28,7 @@ from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
     ChannelTargetKind,
+    InboxTargetSummary,
     Message,
     MessageDirection,
     OutboundAttachment,
@@ -154,13 +155,21 @@ class CommandService(ICommandService):
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
     async def pending_targets(self, actor: Actor) -> InboxListResult:
-        result = await self._storage.read_inbox_catalog(limit=_REACH_PAGE)
         reachable = frozenset(await threads_in_reach(self._storage, actor))
-        pending = tuple(
-            summary
-            for summary in result.targets
-            if summary.pending_count > 0 and summary.thread_id in reachable
-        )
+        pending: list[InboxTargetSummary] = []
+        offset = 0
+        while True:
+            result = await self._storage.read_inbox_catalog(
+                limit=_REACH_PAGE, offset=offset
+            )
+            pending.extend(
+                summary
+                for summary in result.targets
+                if summary.pending_count > 0 and summary.thread_id in reachable
+            )
+            if not result.targets or not result.has_more:
+                break
+            offset += len(result.targets)
         await self._audit.append_tool(
             operation="bcc.inbox.check",
             status="completed",
@@ -170,21 +179,21 @@ class CommandService(ICommandService):
         )
         return replace(
             result,
-            targets=pending,
+            targets=tuple(pending),
             total=len(pending),
             shown=len(pending),
+            offset=0,
             has_more=False,
         )
 
     async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
-        drained: list[MessageCheckResult] = []
-        for thread_id in await threads_in_reach(self._storage, actor):
-            async with self._concurrency.for_thread(thread_id):
-                result = await self._storage.check_messages(
-                    thread_id,
-                    checked_at_ms=self._clock(),
-                )
-                self._observe_freshness(thread_id, result.snapshot_seq)
+        thread_ids = await threads_in_reach(self._storage, actor)
+        drained = await self._storage.check_messages(
+            thread_ids,
+            checked_at_ms=self._clock(),
+        )
+        for thread_id, result in zip(thread_ids, drained, strict=True):
+            self._observe_freshness(thread_id, result.snapshot_seq)
             await self._audit.append_tool(
                 operation="bcc.message.check",
                 status="completed",
@@ -192,8 +201,7 @@ class CommandService(ICommandService):
                 correlation=self._correlation(thread_id=thread_id),
                 arguments={"thread_id": thread_id},
             )
-            drained.append(result)
-        return tuple(drained)
+        return drained
 
     async def read(
         self,

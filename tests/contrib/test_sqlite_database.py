@@ -51,8 +51,64 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
 from bazaar_compute_node.core.paths import resolve_data_dir, resolve_workspace_dir
 from bazaar_compute_node.core.reminder import render_reminder_fire_body
-from bazaar_compute_node.core.storage import IStorage
+from bazaar_compute_node.core.storage import IStorage, ThreadNotFoundError
 from bazaar_compute_node.core.timerwheel import TimerWheel
+
+
+@pytest.mark.asyncio
+async def test_sqlite_check_drains_every_thread_or_none_of_them() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        channel_session = ChannelSession(
+            id="channel-1",
+            channel="telegram",
+            provider_thread_id="thread-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        thread = Thread(
+            id="bcn-1",
+            channel_session_id=channel_session.id,
+            workspace_id="agent-1",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+        await scope.save_channel_session(channel_session)
+        await scope.save_thread(thread)
+        inbound = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="inbound-1",
+                thread_id=thread.id,
+                channel_session_id=channel_session.id,
+                channel="telegram",
+                provider_thread_id="thread-1",
+                provider_message_id="provider-1",
+                received_at_ms=2,
+                sender=SenderIdentity(name="sender"),
+                message_type="text",
+                target="dm:channel-1",
+                body="hello",
+            )
+        )
+
+        with pytest.raises(ThreadNotFoundError):
+            await scope.check_messages(
+                (thread.id, "bcn-missing"),
+                checked_at_ms=3,
+            )
+
+        # the conversation that was drained before the failure is unread again
+        assert await scope.get_consumer_cursor(thread.id) is None
+        drained = await scope.check_messages((thread.id,), checked_at_ms=4)
+        assert tuple(message.message_id for message in drained[0].messages) == (
+            inbound.message_id,
+        )
+    finally:
+        await database.stop(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -527,7 +583,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             limit=10,
         )
         checked = await scope.check_messages(
-            bcn_session.id,
+            (bcn_session.id,),
             checked_at_ms=2_300,
         )
 
@@ -558,7 +614,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             history.history.messages[-1].system_message_kind
             is SystemMessageKind.REMINDER
         )
-        assert tuple(message.message_id for message in checked.messages) == (
+        assert tuple(message.message_id for message in checked[0].messages) == (
             materialized.message_id,
         )
 
@@ -635,7 +691,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 25
+        assert schema_version["version"] == 26
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1000,6 +1056,135 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-1")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Agent 1")
+        for migration in MIGRATIONS[:25]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.execute(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "provider_identity_ref_json, created_at_ms, updated_at_ms, agent_id"
+            ") VALUES ('channel-1', 'test', 'thread-1', 'dm', 1, '{}', 1, 1, 'agent-1')"
+        )
+        await connection.execute(
+            "INSERT INTO threads ("
+            "id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "agent_id"
+            ") VALUES ('thread-1', 'channel-1', 'agent-1', 1, 1, 'agent-1')"
+        )
+        await connection.executemany(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, received_at_ms, sender, message_type, "
+            "target, target_kind, body, mentions_agent, notifies_runtime, "
+            "metadata_json"
+            ") VALUES (?, ?, 'inbound', 'agent-1', 'thread-1', 'channel-1', 'test', "
+            "'thread-1', ?, 'system', 'text', 'dm:channel-1', 'dm', ?, 0, 1, ?)",
+            (
+                (
+                    "message-handoff",
+                    1,
+                    1,
+                    "handoff note",
+                    '{"sender_kind":"system","system_message_kind":"handoff"}',
+                ),
+                (
+                    "message-reminder",
+                    2,
+                    2,
+                    "reminder note",
+                    '{"sender_kind":"system","system_message_kind":"reminder"}',
+                ),
+            ),
+        )
+        await connection.execute(
+            "INSERT INTO consumer_cursors ("
+            "thread_id, delivered_through_seq, updated_at_ms"
+            ") VALUES ('thread-1', 3, 3)"
+        )
+        await connection.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, received_at_ms, sender, message_type, "
+            "target, target_kind, body, mentions_agent, notifies_runtime, "
+            "metadata_json"
+            ") VALUES ('message-latest-handoff', 3, 'inbound', 'agent-1', 'thread-1', "
+            "'channel-1', 'test', 'thread-1', 3, 'system', 'text', 'dm:channel-1', "
+            "'dm', 'handoff note', 0, 1, "
+            '\'{"sender_kind":"system","system_message_kind":"handoff"}\')'
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Agent 1")
+        checked = await scope.check_messages(("thread-1",), checked_at_ms=9)
+        async with database.reader() as session, session.transaction():
+            cursor_row = await session.fetchone(
+                "SELECT delivered_through_seq FROM consumer_cursors "
+                "WHERE thread_id = 'thread-1'"
+            )
+            remaining = await session.fetchall(
+                "SELECT message_id FROM messages ORDER BY seq"
+            )
+            schema_version = await session.fetchone(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            )
+
+        # what no release writes any more is gone, and what one still writes stays
+        assert [row["message_id"] for row in remaining] == ["message-reminder"]
+        # a cursor left pointing at a deleted message comes back into range, so
+        # the next check does not read as a cursor moving backwards
+        assert cursor_row is not None
+        assert cursor_row["delivered_through_seq"] == 2
+        assert checked[0].messages == ()
+
+        # a sequence freed by the delete can be handed out again, and the
+        # clamped cursor still lets that message through
+        arrived = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="inbound-after-upgrade",
+                thread_id="thread-1",
+                channel_session_id="channel-1",
+                channel="test",
+                provider_thread_id="thread-1",
+                provider_message_id="provider-after-upgrade",
+                received_at_ms=10,
+                sender=SenderIdentity(name="sender"),
+                message_type="text",
+                target="dm:channel-1",
+                body="after upgrade",
+            )
+        )
+        drained_after = await scope.check_messages(("thread-1",), checked_at_ms=11)
+        assert arrived.seq == 3
+        assert tuple(message.message_id for message in drained_after[0].messages) == (
+            "inbound-after-upgrade",
+        )
+        assert schema_version is not None
+        assert schema_version["version"] == 26
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
 async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts() -> (
     None
 ):
@@ -1068,7 +1253,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 25
+        assert schema_version["version"] == 26
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1177,7 +1362,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 25
+        assert schema_version["version"] == 26
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

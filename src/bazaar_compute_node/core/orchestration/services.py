@@ -28,8 +28,16 @@ async def threads_in_reach(storage: IStorage, actor: Actor) -> tuple[str, ...]:
         case Thread(thread_id):
             return (thread_id,)
         case Agent():
-            page = await storage.list_inbox_targets(limit=_REACH_PAGE)
-            return tuple(summary.thread_id for summary in page.targets)
+            threads: list[str] = []
+            offset = 0
+            while True:
+                page = await storage.list_inbox_targets(
+                    limit=_REACH_PAGE, offset=offset
+                )
+                threads.extend(summary.thread_id for summary in page.targets)
+                if not page.targets or not page.has_more:
+                    return tuple(threads)
+                offset += len(page.targets)
 
 
 async def count_unread_in_reach(storage: IStorage, actor: Actor) -> int:
@@ -45,8 +53,7 @@ async def count_unread_in_reach(storage: IStorage, actor: Actor) -> int:
                 notifying_only=True,
             )
         case Agent():
-            page = await storage.list_inbox_targets(limit=_REACH_PAGE)
-            return sum(summary.pending_count for summary in page.targets)
+            return await storage.count_unread_messages()
 
 
 async def list_unread_in_reach(

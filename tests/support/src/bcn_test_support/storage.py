@@ -358,6 +358,9 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         )
 
     async def list_unread_messages(self, *, limit: int) -> tuple[Message, ...]:
+        return tuple((await self._unread_in_scope())[-limit:])
+
+    async def _unread_in_scope(self) -> list[Message]:
         unread: list[Message] = []
         for session in self._scoped_threads():
             cursor = self._storage.cursors.get(session.id)
@@ -371,7 +374,10 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 if message.notifies_runtime and message.seq > delivered_through_seq
             )
         unread.sort(key=lambda message: message.seq)
-        return tuple(unread[-limit:])
+        return unread
+
+    async def count_unread_messages(self) -> int:
+        return len(await self._unread_in_scope())
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
         matches: list[tuple[Thread, ChannelSession]] = []

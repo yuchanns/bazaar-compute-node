@@ -36,6 +36,7 @@ from .v22_readable_targets import READABLE_TARGET_MIGRATION
 from .v23_persist_sender_identity import SENDER_IDENTITY_MIGRATION
 from .v24_persist_sender_display_name import SENDER_DISPLAY_NAME_MIGRATION
 from .v25_rename_sessions_to_threads import THREAD_RENAME_MIGRATION
+from .v26_remove_handoff_messages import HANDOFF_MESSAGE_REMOVAL_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -83,6 +84,7 @@ MIGRATIONS = _migration_ledger(
     SENDER_IDENTITY_MIGRATION,
     SENDER_DISPLAY_NAME_MIGRATION,
     THREAD_RENAME_MIGRATION,
+    HANDOFF_MESSAGE_REMOVAL_MIGRATION,
 )
 
 

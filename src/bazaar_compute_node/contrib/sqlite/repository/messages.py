@@ -454,6 +454,21 @@ class MessageOperations(RepositoryBase):
         rows.reverse()
         return tuple([await self._message_from_row(row) for row in rows])
 
+    async def count_unread_messages(self) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS unread_count FROM messages "
+            "WHERE agent_id = /*agent_id*/? "
+            "AND direction = 'inbound' "
+            "AND notifies_runtime = 1 "
+            "AND seq > COALESCE(("
+            "SELECT delivered_through_seq FROM consumer_cursors "
+            "WHERE consumer_cursors.thread_id = messages.thread_id"
+            "), 0)"
+        )
+        if row is None:
+            raise RuntimeError("SQLite unread message count query returned no row")
+        return cast(int, row["unread_count"])
+
     async def list_messages(
         self,
         thread_id: str,

@@ -51,7 +51,10 @@ handoff 分支、`materialize_outbound_if_fresh` 的 `cross_session` metadata、
 `render_handoff_message_body`（`core/command.py:152`）、`SystemMessageKind.HANDOFF`，以及命令层的
 `publish_wake` 参数与它在 `SessionCommandService` 内的唯一调用点（`command.py:139、148、525`）与接线
 （`session.py:217`）。`SessionOrchestrator.publish_inbox_wake` 本身保留：Reminder 到期同样经它唤醒
-（`app/application.py:90`、`reminder.py:397`）。`SystemMessageKind` 之后只剩 `REMINDER`。
+（`app/application.py:90`、`reminder.py:397`）。`SystemMessageKind` 之后只剩 `REMINDER`。已发布版本
+写下的 handoff 系统消息由新 migration 删除：那条能力连同它的记录一起消失，留着只会让读取这条对话线
+的人撞上一个已经不存在的取值。删除会让某些对话线的最新入站 seq 变小，同一个 migration 因此把越界的
+`delivered_through_seq` 收回到剩余的最新入站消息上；否则下一次 check 会被「游标不能后退」挡住。
 
 `bcc inbox list` 这条命令消失，不保留别名。它的实现改作 `bcc inbox check` 的基础，只在
 `dangerous_individual` 模式出现，`session` 模式的命令表里没有 inbox 这一族。两者语义不同，因此不是
@@ -81,15 +84,22 @@ turn 输入的未读通知按同一条规则取值：未读总数与通知携带
 里别处的未读不该让一条已经被排空的到达再投一次，游标单调，比较消息 seq 即可。作用域由 actor 表达，
 不引入模式判断。
 
+计数与窗口必须走同一个谓词、都不受分页影响：计数用 `count_unread_messages`，窗口用
+`list_unread_messages`，两条查询同源；按对话线目录分页求和会在对话线超过一页时把计数做小，进而破坏
+「总数 ≥ 携带条数」这条不变式。`threads_in_reach` 与 `bcc inbox check` 的目录读取同样要翻完全部页，
+否则旧对话线会静默掉出可达范围。
+
 developer instructions 删除两处：命令族列表里的「**Inbox discovery** — `bcc inbox list`」（其余条目
 编号复原），以及「用 `bcc inbox list` 找旧对话」那一段。两处描述的都是随命令一起消失的能力。handoff
 相关的提示词此前已随命令撤除，无残留。
 
-`Runtime Notifications` 一节中「选择查看待处理内容时调用什么」这一句按模式取值：`session` 模式保持
-现状，只提 `bcc message check`；`dangerous_individual` 模式改为先 `bcc inbox check` 看有哪些待处理
-target、再用 `bcc message check` / `bcc message read` 看内容。取值用模板已有的条件渲染表达
-（`developer_instructions.md` 第 1 行已经在用 `{% if %}`），`DeveloperInstructionContext` 增加 mode
-字段。这是提示词中唯一按模式取值的一句，其余全篇两种模式共用。
+提示词只描述该模式下真实存在的能力：不存在的命令一个字都不提，也不写「本模式不支持」之类的反向
+提示——那等于告诉它有这个东西。按这条规则，全篇只有 `Runtime Notifications` 一节中「选择查看待处理
+内容时调用什么」这一句随模式取值：`session` 模式保持现状，只提 `bcc message check`；
+`dangerous_individual` 模式改为 `call \`bcc inbox check\`; use \`bcc message check\` /
+\`bcc message read\` when you choose to inspect message content.`。命令族清单两种模式一致，不列 inbox
+一族。取值用模板已有的条件渲染表达（`developer_instructions.md` 第 1 行已经在用 `{% if %}`），
+`DeveloperInstructionContext` 增加 mode 字段，由 `RuntimeCommandContext` 带到两个 adapter。
 
 `Threads` 一节的「回复 thread 前先读父级上下文，附带的父级引用可能被截断」一并删除：三个 Channel
 都会把被引用的消息作为一条独立入站消息落库（`contrib/wecom/channel.py:1204`、
@@ -171,10 +181,15 @@ actor 队列，消息自身携带原对话线的 target。
 
 - `session` 模式不提供 inbox 一族；`dangerous_individual` 模式提供 `bcc inbox check`，列出当前有待
   处理消息的 target，不消费、不推进任何游标，没有 `--limit` / `--offset`；
-- `bcc message check` 在 `dangerous_individual` 模式下聚合本 Agent 全部对话线的未读，逐个推进各自的
-  `ConsumerCursor`，并按每条线自身的 snapshot_seq 更新 `_freshness_snapshots`；游标保持按对话线，
-  不退化为 Agent 全局游标；输出按 `created_at_ms`、对话线 id、`seq` 稳定排序，每条消息的 envelope
-  已含 target，无需新增字段；
+- `bcc message check` 在 `dangerous_individual` 模式下聚合本 Agent 全部对话线的未读，推进各自的
+  `ConsumerCursor`，并按每条线自身的 snapshot_seq 更新 `_freshness_snapshots`；整轮排空是**一个**存储
+  操作，因此在 SQLite 侧是一个事务：要么每条线的游标都前进，要么一条都不动，中途失败或超时不会留下
+  「已标记读过却没交到模型手上」的消息。core 不持有事务，只调用这一个操作，返回之前也不再去拿任何
+  对话线的锁——排空已经原子，事后记录 snapshot 拿锁只会让一把被别处占住的锁把整轮结果堵死，而
+  snapshot 偏旧只使发送闸门更严；游标保持按对话线，
+  不退化为 Agent 全局游标；输出按到达时间、对话线 id、`seq` 稳定排序（入站消息的到达时间是
+  `received_at_ms`，`created_at_ms` 只有出站消息才有），每条消息的 envelope 已含 target，无需新增
+  字段；
 - `bcc message read`、`bcc message send`、`bcc thread unfollow` 的参数与语义两种模式一致，可达范围由
   第 2 节那条规则决定。
 

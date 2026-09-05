@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from .actor import Actor
+from .actor import Actor, Mode
 from .approval import IApprovalHandler
 from .client import CLIENT_INFO, ClientInfo
 from .lifecycle import IAsyncLifecycle
@@ -62,6 +62,7 @@ class RuntimeCommandContext:
     agent_name: str
     bot_name: Callable[[], str | None]
     runtime_options: Mapping[str, str] = field(default_factory=dict)
+    mode: Mode = Mode.SESSION
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE
     network_access: bool = True
     startup_timeout_seconds: float = 60

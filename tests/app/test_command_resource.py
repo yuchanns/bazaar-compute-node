@@ -41,7 +41,7 @@ from bazaar_compute_node.core.models import (
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 
 
-def make_configuration() -> NodeConfiguration:
+def make_configuration(mode: Mode = Mode.SESSION) -> NodeConfiguration:
     return NodeConfiguration(
         version_check=False,
         storage="sqlite",
@@ -52,6 +52,7 @@ def make_configuration() -> NodeConfiguration:
                 name="Test Agent",
                 channel=ChannelConfiguration(kind="test"),
                 runtimes=(RuntimeConfiguration(kind="test"),),
+                mode=mode,
             ),
         ),
     )
