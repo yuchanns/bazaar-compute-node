@@ -17,6 +17,7 @@ from ...core.channel import (
     ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
+    DmAddress,
     IChannel,
 )
 from ...core.models import (
@@ -954,14 +955,19 @@ class LarkChannel(IChannel):
         except LarkApiError, LarkTransportError, TimeoutError:
             self._typing_failures += 1
 
-    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
         del sender_kind
         identity = self._identity
         if identity is None or sender.id is None:
             return None
-        return LarkThreadIdentity(
-            bot_open_id=identity.open_id, chat_id=sender.id
-        ).provider_thread_id
+        thread = LarkThreadIdentity(bot_open_id=identity.open_id, chat_id=sender.id)
+        return DmAddress(
+            channel_session_id=thread.channel_session_id,
+            thread_id=thread.session_id,
+            provider_thread_id=thread.provider_thread_id,
+        )
 
     async def send(
         self,

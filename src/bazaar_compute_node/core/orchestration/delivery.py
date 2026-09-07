@@ -4,8 +4,13 @@ import asyncio
 import math
 
 from ..audit import ErrorKind
-from ..channel import ChannelDeliveryReceipt, ChannelSendRequest, IChannel
-from ..models import OutboundDeliveryState
+from ..channel import (
+    ChannelDeliveryReceipt,
+    ChannelSendRequest,
+    DmAddress,
+    IChannel,
+)
+from ..models import OutboundDeliveryState, SenderIdentity, SenderKind
 from ..outcomes import (
     OutboundDeliveryResult,
     ProviderCallResult,
@@ -26,6 +31,11 @@ class OutboundDeliveryService:
             raise ValueError("timeout must be a positive finite number")
         self._channel = channel
         self._timeout = float(timeout)
+
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        return self._channel.dm_address(sender, sender_kind=sender_kind)
 
     async def deliver(self, request: ChannelSendRequest) -> OutboundDeliveryResult:
         try:

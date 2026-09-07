@@ -236,30 +236,27 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             id=str(bot_id),
             name=f"{bot_username}({bot_first_name})",
         )
-        # A DM's chat_id is the peer's own user id.
-        # A person is addressable by numeric id only, even holding a username.
+        # A DM's chat_id is the peer's own user id, and a person is addressable
+        # by that numeric id alone even when they hold a username.
         assert (
-            channel.dm_id(
+            channel.dm_address(
                 SenderIdentity(id=str(TEST_USER_ID), name="human"),
                 sender_kind=SenderKind.HUMAN,
             )
-            == f"telegram:{bot_id}:{TEST_USER_ID}:0"
-        )
+        ).provider_thread_id == f"telegram:{bot_id}:{TEST_USER_ID}:0"
         # Bots reach each other by username; a numeric id does not apply.
         assert (
-            channel.dm_id(
+            channel.dm_address(
                 SenderIdentity(id="7", name="kana"), sender_kind=SenderKind.AGENT
             )
-            == f"telegram:{bot_id}:@kana:0"
-        )
+        ).provider_thread_id == f"telegram:{bot_id}:@kana:0"
         # A bot without a username falls back to the numeric id rather than
         # minting an address Telegram would reject.
         assert (
-            channel.dm_id(SenderIdentity(id="7"), sender_kind=SenderKind.AGENT)
-            == f"telegram:{bot_id}:7:0"
-        )
+            channel.dm_address(SenderIdentity(id="7"), sender_kind=SenderKind.AGENT)
+        ).provider_thread_id == f"telegram:{bot_id}:7:0"
         assert (
-            channel.dm_id(
+            channel.dm_address(
                 SenderIdentity(id="ou_not_numeric"), sender_kind=SenderKind.HUMAN
             )
             is None

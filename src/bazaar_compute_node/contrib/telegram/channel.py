@@ -15,6 +15,7 @@ from ...core.channel import (
     ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
+    DmAddress,
     IChannel,
 )
 from ...core.correlation import CorrelationContext
@@ -441,7 +442,9 @@ class TelegramChannel(IChannel):
             exc_info=(type(error), error, error.__traceback__),
         )
 
-    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
         bot_id = self._bot_id
         if bot_id is None:
             return None
@@ -457,9 +460,12 @@ class TelegramChannel(IChannel):
                 return None
         else:
             return None
-        return TelegramThreadIdentity(
-            bot_id=bot_id, chat_id=chat_id, topic_id=0
-        ).provider_thread_id
+        identity = TelegramThreadIdentity(bot_id=bot_id, chat_id=chat_id, topic_id=0)
+        return DmAddress(
+            channel_session_id=identity.channel_session_id,
+            thread_id=identity.session_id,
+            provider_thread_id=identity.provider_thread_id,
+        )
 
     async def send(
         self,

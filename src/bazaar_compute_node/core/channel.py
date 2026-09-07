@@ -122,6 +122,20 @@ class IApproval(Protocol):
     ) -> ApprovalResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class DmAddress:
+    """A DM conversation in one channel's own terms.
+
+    Both ids come from the channel's own identity string rather than from the
+    provider thread id, so a later inbound message from the same peer lands on
+    this conversation instead of creating a second one.
+    """
+
+    channel_session_id: str
+    thread_id: str
+    provider_thread_id: str
+
+
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
     @property
     def name(self) -> str: ...
@@ -148,8 +162,10 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
 
         return
 
-    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
-        """Return the id of a DM to this sender, if this channel has one for it.
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        """Return where a DM to this sender lives, if this channel has one.
 
         `None` means the sender cannot be turned into a DM address here, and the
         caller reports the target as not found.

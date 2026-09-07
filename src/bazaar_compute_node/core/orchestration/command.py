@@ -27,6 +27,7 @@ from ..command import (
 from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
+    ChannelSession,
     ChannelTargetKind,
     Message,
     MessageDirection,
@@ -34,6 +35,9 @@ from ..models import (
     OutboundDeliveryState,
     RuntimeEventState,
 )
+
+# `Thread` here is the actor variant; the conversation row keeps its own name.
+from ..models import Thread as ConversationRow
 from ..outcomes import OutboundDeliveryResult
 from ..storage import (
     InboxTargetResolutionError,
@@ -224,6 +228,52 @@ class CommandService(ICommandService):
             },
         )
         return result
+
+    async def _resolve_or_mint(self, raw_target: str) -> ResolvedInboxTarget:
+        """Resolve a target, minting a DM conversation for a known sender.
+
+        Only `dm:@` is minted, and only from a sender this Agent has already
+        heard from: the address comes from that past message, never from a
+        directory lookup. Anything else stays a resolution failure.
+        """
+
+        try:
+            return await self._storage.resolve_inbox_target(raw_target)
+        except InboxTargetResolutionError:
+            if not raw_target.startswith("dm:@") or len(raw_target) == 4:
+                raise
+            known = await self._storage.find_known_sender(raw_target[4:])
+            if known is None:
+                raise
+            address = self._delivery.dm_address(
+                known.sender, sender_kind=known.sender_kind
+            )
+            if address is None:
+                raise
+        handle = raw_target[4:]
+        now = self._clock()
+        await self._storage.save_channel_session(
+            ChannelSession(
+                id=address.channel_session_id,
+                channel=known.channel,
+                provider_thread_id=address.provider_thread_id,
+                created_at_ms=now,
+                updated_at_ms=now,
+                target_kind=ChannelTargetKind.DM,
+                target_handle=handle,
+                target_handle_key=handle.casefold(),
+            )
+        )
+        await self._storage.save_thread(
+            ConversationRow(
+                id=address.thread_id,
+                channel_session_id=address.channel_session_id,
+                workspace_id=self._actors.agent_id,
+                created_at_ms=now,
+                updated_at_ms=now,
+            )
+        )
+        return await self._storage.resolve_inbox_target(raw_target)
 
     def _require_in_reach(
         self,
@@ -474,7 +524,7 @@ class CommandService(ICommandService):
         reply_to_message_id: str | None = None,
         send_draft: bool = False,
     ) -> MessageSendResult:
-        target = await self._storage.resolve_inbox_target(raw_target)
+        target = await self._resolve_or_mint(raw_target)
         self._require_in_reach(actor, target.thread.id, raw_target)
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)

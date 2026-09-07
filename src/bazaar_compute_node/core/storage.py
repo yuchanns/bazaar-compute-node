@@ -354,14 +354,6 @@ class StorageOperationMixin:
             raise ValueError(
                 f"unknown channel session: {target_thread.channel_session_id}"
             )
-        target_messages = await self.list_messages(
-            target_thread.id,
-            target=payload.target,
-            direction=MessageDirection.INBOUND,
-            limit=1,
-        )
-        if not target_messages:
-            raise ValueError(f"thread target is not replyable: {payload.target}")
         # a reply the target cannot resolve is dropped on both sides: keeping the
         # local id would leave the outbound pointing at a message that reading
         # this target's history can never resolve
