@@ -22,6 +22,7 @@ from ....core.models import (
 )
 from ....core.storage import (
     InboxTargetResolutionError,
+    KnownSender,
     ResolvedInboxTarget,
     UnreadMessageOwner,
 )
@@ -362,6 +363,45 @@ class MessageOperations(RepositoryBase):
             channel_session=channel_session,
             handle_is_unique=handle_is_unique,
         )
+
+    async def find_known_sender(self, token: str) -> KnownSender | None:
+        """Find a sender this Agent has heard from, by what its `@` renders as.
+
+        `sender` carries the handle when the provider offers one and `sender_id`
+        the provider identity otherwise, which is the same order the `@` position
+        is rendered in. Matching follows that order so the more specific value
+        decides first. The display name is deliberately not a key: it is not
+        unique, and addressing by it would let one name reach several people.
+        """
+
+        for predicate, parameter in (
+            ("LOWER(sender) = LOWER(?)", token),
+            ("sender_id = ?", token),
+        ):
+            row = await self.fetchone(
+                "SELECT sender, sender_id, sender_display_name, channel "
+                "FROM messages "
+                "WHERE agent_id = /*agent_id*/? "
+                "AND direction = ? "
+                f"AND {predicate} "
+                "ORDER BY seq DESC LIMIT 1",
+                (MessageDirection.INBOUND.value, parameter),
+            )
+            if row is None:
+                continue
+            sender = cast(str | None, row["sender"])
+            sender_id = cast(str | None, row["sender_id"])
+            if sender is None and sender_id is None:
+                continue
+            return KnownSender(
+                sender=SenderIdentity(
+                    id=sender_id,
+                    name=sender,
+                    display_name=cast(str | None, row["sender_display_name"]),
+                ),
+                channel=cast(str, row["channel"]),
+            )
+        return None
 
     async def find_message(
         self,

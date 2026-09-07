@@ -60,6 +60,7 @@ async def _append_message(
     sender_name: str,
     provider_time_ms: int | None,
     notifies_runtime: bool = True,
+    sender: SenderIdentity | None = None,
 ) -> Message:
     return await transaction.save_message(
         Message(
@@ -72,7 +73,7 @@ async def _append_message(
             provider_thread_id=channel_session.provider_thread_id,
             provider_message_id=f"provider-{message_id}",
             received_at_ms=received_at_ms,
-            sender=SenderIdentity(name=sender_name),
+            sender=sender or SenderIdentity(name=sender_name),
             message_type="text",
             target=target,
             body=f"body-{message_id}",
@@ -388,5 +389,57 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
             await repository.resolve_inbox_target("dm:missing")
         with pytest.raises(InboxTargetResolutionError):
             await repository.resolve_inbox_target("dm:@ambiguous")
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_known_sender_matches_handle_then_provider_id() -> None:
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        repository = database.scope("agent-a", "Agent A")
+        channel_session, thread = await _create_session(
+            repository,
+            agent_id="agent-a",
+            session_id="session-known",
+            channel_session_id="channel-known",
+            last_activity_at_ms=1,
+        )
+        await _append_message(
+            repository,
+            channel_session=channel_session,
+            thread=thread,
+            message_id="message-handle",
+            target="group:channel-known",
+            received_at_ms=1,
+            sender_name="unused",
+            provider_time_ms=None,
+            sender=SenderIdentity(id="11111", name="Kana", display_name="有马佳奈"),
+        )
+        await _append_message(
+            repository,
+            channel_session=channel_session,
+            thread=thread,
+            message_id="message-id-only",
+            target="group:channel-known",
+            received_at_ms=2,
+            sender_name="unused",
+            provider_time_ms=None,
+            sender=SenderIdentity(id="ou_open_id", display_name="张三"),
+        )
+
+        by_handle = await repository.find_known_sender("kana")
+        assert by_handle is not None
+        assert by_handle.sender.id == "11111"
+        assert by_handle.channel == channel_session.channel
+
+        by_provider_id = await repository.find_known_sender("ou_open_id")
+        assert by_provider_id is not None
+        assert by_provider_id.sender.id == "ou_open_id"
+        assert by_provider_id.sender.name is None
+
+        assert await repository.find_known_sender("有马佳奈") is None
+        assert await repository.find_known_sender("nobody") is None
     finally:
         await database.stop(timeout=2)

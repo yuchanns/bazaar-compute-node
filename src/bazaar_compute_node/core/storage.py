@@ -29,6 +29,7 @@ from .models import (
     Reminder,
     ReminderState,
     RuntimeAttempt,
+    SenderIdentity,
     Thread,
 )
 
@@ -62,6 +63,14 @@ class ResolvedInboxTarget:
         return self.channel_session.display_target(
             handle_is_unique=self.handle_is_unique
         )
+
+
+@dataclass(frozen=True, slots=True)
+class KnownSender:
+    """A sender this Agent has already received a message from."""
+
+    sender: SenderIdentity
+    channel: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +618,8 @@ class _StorageOperations(Protocol):
     async def count_unread_messages(self) -> int: ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
+
+    async def find_known_sender(self, token: str) -> KnownSender | None: ...
 
     async def find_message(
         self,
