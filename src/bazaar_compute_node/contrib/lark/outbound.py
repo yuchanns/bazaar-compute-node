@@ -360,6 +360,12 @@ async def send_outbound(
     )
 
 
+def _receive_id_type(chat_id: str) -> str:
+    """Lark ids carry their kind in the prefix: `ou_` a user, `oc_` a chat."""
+
+    return "open_id" if chat_id.startswith("ou_") else "chat_id"
+
+
 async def _send_message_part(
     api: LarkApi,
     *,
@@ -386,6 +392,7 @@ async def _send_message_part(
         else:
             provider_message_id = await api.send_message(
                 chat_id=thread.chat_id,
+                receive_id_type=_receive_id_type(thread.chat_id),
                 message_type=message_type,
                 content=content,
                 uuid=str(uuid4()),

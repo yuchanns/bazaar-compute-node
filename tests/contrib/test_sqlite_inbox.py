@@ -14,6 +14,7 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     SenderIdentity,
+    SenderKind,
     Thread,
 )
 from bazaar_compute_node.core.storage import InboxTargetResolutionError
@@ -61,6 +62,7 @@ async def _append_message(
     provider_time_ms: int | None,
     notifies_runtime: bool = True,
     sender: SenderIdentity | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> Message:
     return await transaction.save_message(
         Message(
@@ -80,6 +82,7 @@ async def _append_message(
             target_kind=channel_session.target_kind,
             notifies_runtime=notifies_runtime,
             provider_time_ms=provider_time_ms,
+            metadata=metadata or {},
         )
     )
 
@@ -416,6 +419,7 @@ async def test_sqlite_known_sender_matches_handle_then_provider_id() -> None:
             sender_name="unused",
             provider_time_ms=None,
             sender=SenderIdentity(id="11111", name="Kana", display_name="有马佳奈"),
+            metadata={"sender_kind": SenderKind.AGENT.value},
         )
         await _append_message(
             repository,
@@ -433,6 +437,7 @@ async def test_sqlite_known_sender_matches_handle_then_provider_id() -> None:
         assert by_handle is not None
         assert by_handle.sender.id == "11111"
         assert by_handle.channel == channel_session.channel
+        assert by_handle.sender_kind is SenderKind.AGENT
 
         by_provider_id = await repository.find_known_sender("ou_open_id")
         assert by_provider_id is not None

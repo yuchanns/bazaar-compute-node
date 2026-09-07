@@ -441,6 +441,26 @@ class TelegramChannel(IChannel):
             exc_info=(type(error), error, error.__traceback__),
         )
 
+    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+        bot_id = self._bot_id
+        if bot_id is None:
+            return None
+        chat_id: int | str
+        # sendMessage accepts an @username only for a bot, supergroup or
+        # channel; a person is still addressable by numeric id alone.
+        if sender_kind is SenderKind.AGENT and sender.name is not None:
+            chat_id = f"@{sender.name}"
+        elif sender.id is not None:
+            try:
+                chat_id = int(sender.id)
+            except ValueError:
+                return None
+        else:
+            return None
+        return TelegramThreadIdentity(
+            bot_id=bot_id, chat_id=chat_id, topic_id=0
+        ).provider_thread_id
+
     async def send(
         self,
         request: ChannelSendRequest,

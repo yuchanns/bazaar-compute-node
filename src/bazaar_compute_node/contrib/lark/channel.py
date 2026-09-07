@@ -954,6 +954,15 @@ class LarkChannel(IChannel):
         except LarkApiError, LarkTransportError, TimeoutError:
             self._typing_failures += 1
 
+    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+        del sender_kind
+        identity = self._identity
+        if identity is None or sender.id is None:
+            return None
+        return LarkThreadIdentity(
+            bot_open_id=identity.open_id, chat_id=sender.id
+        ).provider_thread_id
+
     async def send(
         self,
         request: ChannelSendRequest,

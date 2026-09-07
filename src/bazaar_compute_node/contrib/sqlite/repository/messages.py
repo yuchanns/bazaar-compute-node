@@ -379,7 +379,8 @@ class MessageOperations(RepositoryBase):
             ("sender_id = ?", token),
         ):
             row = await self.fetchone(
-                "SELECT sender, sender_id, sender_display_name, channel "
+                "SELECT sender, sender_id, sender_display_name, channel, "
+                "metadata_json "
                 "FROM messages "
                 "WHERE agent_id = /*agent_id*/? "
                 "AND direction = ? "
@@ -400,6 +401,7 @@ class MessageOperations(RepositoryBase):
                     display_name=cast(str | None, row["sender_display_name"]),
                 ),
                 channel=cast(str, row["channel"]),
+                sender_kind=_sender_kind_of(cast(str | None, row["metadata_json"])),
             )
         return None
 
@@ -1093,3 +1095,10 @@ class MessageOperations(RepositoryBase):
         if existing is None:
             return await self._insert_outbound(message, channel_session)
         return await self._update_outbound(existing, message)
+
+
+def _sender_kind_of(metadata_json: str | None) -> SenderKind:
+    if not metadata_json:
+        return SenderKind.UNKNOWN
+    value = json.loads(metadata_json).get("sender_kind", SenderKind.UNKNOWN.value)
+    return SenderKind(cast(str, value))

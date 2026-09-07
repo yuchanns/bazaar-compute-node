@@ -30,6 +30,7 @@ from .models import (
     ReminderState,
     RuntimeAttempt,
     SenderIdentity,
+    SenderKind,
     Thread,
 )
 
@@ -71,6 +72,7 @@ class KnownSender:
 
     sender: SenderIdentity
     channel: str
+    sender_kind: SenderKind
 
 
 @dataclass(frozen=True, slots=True)

@@ -236,6 +236,34 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             id=str(bot_id),
             name=f"{bot_username}({bot_first_name})",
         )
+        # A DM's chat_id is the peer's own user id.
+        # A person is addressable by numeric id only, even holding a username.
+        assert (
+            channel.dm_id(
+                SenderIdentity(id=str(TEST_USER_ID), name="human"),
+                sender_kind=SenderKind.HUMAN,
+            )
+            == f"telegram:{bot_id}:{TEST_USER_ID}:0"
+        )
+        # Bots reach each other by username; a numeric id does not apply.
+        assert (
+            channel.dm_id(
+                SenderIdentity(id="7", name="kana"), sender_kind=SenderKind.AGENT
+            )
+            == f"telegram:{bot_id}:@kana:0"
+        )
+        # A bot without a username falls back to the numeric id rather than
+        # minting an address Telegram would reject.
+        assert (
+            channel.dm_id(SenderIdentity(id="7"), sender_kind=SenderKind.AGENT)
+            == f"telegram:{bot_id}:7:0"
+        )
+        assert (
+            channel.dm_id(
+                SenderIdentity(id="ou_not_numeric"), sender_kind=SenderKind.HUMAN
+            )
+            is None
+        )
         message = {
             "message_id": 2,
             "date": channel._started_at_s,
@@ -353,3 +381,25 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
     assert not isinstance(in_group, str)
     # Only the stranger was recorded; the two accepted messages were not.
     assert len(audit.events) == 1
+
+
+def test_telegram_identity_round_trips_numeric_and_username_chats() -> None:
+    from bazaar_compute_node.contrib.telegram.identity import (
+        TelegramThreadIdentity,
+        parse_provider_thread_id,
+    )
+
+    numeric = TelegramThreadIdentity(bot_id=1, chat_id=42, topic_id=0)
+    assert numeric.provider_thread_id == "telegram:1:42:0"
+    assert parse_provider_thread_id(numeric.provider_thread_id) == numeric
+
+    username = TelegramThreadIdentity(bot_id=1, chat_id="@kana", topic_id=0)
+    assert username.provider_thread_id == "telegram:1:@kana:0"
+    assert parse_provider_thread_id(username.provider_thread_id) == username
+
+    # An existing identity string must parse unchanged, or every historical
+    # conversation would be re-keyed: the uuid is derived from this string.
+    assert parse_provider_thread_id("telegram:1:-100200:3").chat_id == -100200
+
+    with pytest.raises(ValueError):
+        TelegramThreadIdentity(bot_id=1, chat_id="kana", topic_id=0)

@@ -17,6 +17,8 @@ from .models import (
     Message,
     OutboundAttachment,
     RuntimeOutputEvent,
+    SenderIdentity,
+    SenderKind,
 )
 from .outcomes import ProviderCallResult
 from .timerwheel import TimerWheel
@@ -145,6 +147,15 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         """Say which message a turn's own output belongs under."""
 
         return
+
+    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+        """Return the id of a DM to this sender, if this channel has one for it.
+
+        `None` means the sender cannot be turned into a DM address here, and the
+        caller reports the target as not found.
+        """
+
+        return None
 
     async def send(
         self,

@@ -997,3 +997,12 @@ def test_lark_card_ack_encodes_cardkit_toast(tmp_path: Path) -> None:
 
     assert envelope["code"] == 200
     assert toast == {"toast": {"type": "success", "content": "Approved"}}
+
+
+def test_lark_receive_id_type_follows_the_id_prefix() -> None:
+    from bazaar_compute_node.contrib.lark.outbound import _receive_id_type
+
+    # A minted DM address carries the peer's open_id; sending it as a chat_id
+    # is rejected by Lark.
+    assert _receive_id_type("ou_7d8a6e6df7621556") == "open_id"
+    assert _receive_id_type("oc_a0553eda9014c201") == "chat_id"

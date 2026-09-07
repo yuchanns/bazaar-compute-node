@@ -412,12 +412,13 @@ class LarkApi:
         content: str,
         uuid: str,
         timeout: float,
+        receive_id_type: str = "chat_id",
     ) -> str:
         body = await self._post_json(
             "message_create",
             "/open-apis/im/v1/messages",
             timeout=timeout,
-            params={"receive_id_type": "chat_id"},
+            params={"receive_id_type": receive_id_type},
             json_body={
                 "receive_id": chat_id,
                 "msg_type": message_type,

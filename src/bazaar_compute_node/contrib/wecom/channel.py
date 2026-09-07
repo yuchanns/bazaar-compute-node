@@ -484,6 +484,10 @@ class WeComChannel(IChannel):
             )
         return None
 
+    def dm_id(self, sender: SenderIdentity, *, sender_kind: SenderKind) -> str | None:
+        del sender_kind
+        return sender.id
+
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:

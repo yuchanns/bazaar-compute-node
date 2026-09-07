@@ -402,7 +402,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 sender = message.sender
                 if sender is None or not matches(sender):
                     continue
-                return KnownSender(sender=sender, channel=message.channel)
+                return KnownSender(
+                    sender=sender,
+                    channel=message.channel,
+                    sender_kind=message.sender_kind,
+                )
         return None
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
