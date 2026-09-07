@@ -39,6 +39,14 @@ class InboxTargetResolutionError(ValueError):
     """A target does not resolve to exactly one Agent-owned BCN session."""
 
 
+class AmbiguousInboxTargetError(InboxTargetResolutionError):
+    """Several Agent-owned conversations answer to this target.
+
+    Distinct from finding nothing: the caller must name which one it means
+    rather than have one picked for it.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class RecordInboundResult:
     channel_session: ChannelSession

@@ -66,7 +66,7 @@ def parse_provider_thread_id(value: str) -> TelegramThreadIdentity:
     parts = value.split(":")
     if len(parts) != 4 or parts[0] != _PROVIDER_PREFIX:
         raise ValueError("Telegram provider_thread_id has invalid format")
-    chat_text = parts[2]
+    chat_id: int | str = parts[2]
     try:
         bot_id = int(parts[1])
         topic_id = int(parts[3])
@@ -74,11 +74,10 @@ def parse_provider_thread_id(value: str) -> TelegramThreadIdentity:
         raise ValueError(
             "Telegram provider_thread_id contains invalid integers"
         ) from error
-    chat_id: int | str
     try:
-        chat_id = int(chat_text)
+        chat_id = int(chat_id)
     except ValueError:
-        chat_id = chat_text
+        pass
     return TelegramThreadIdentity(bot_id=bot_id, chat_id=chat_id, topic_id=topic_id)
 
 

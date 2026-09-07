@@ -13,6 +13,7 @@ _READ_OPERATIONS = frozenset(
         "count_messages",
         "find_thread",
         "find_channel_session",
+        "find_known_sender",
         "find_message",
         "get_thread",
         "get_channel_session",

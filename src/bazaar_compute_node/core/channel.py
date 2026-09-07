@@ -243,6 +243,23 @@ class Channel(IChannel):
             self._provider_session_ids.get(session_id, session_id), anchor
         )
 
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        address = self._channel.dm_address(sender, sender_kind=sender_kind)
+        if address is None:
+            return None
+        thread_id = self._local_id("bcn-session", address.thread_id)
+        self._provider_session_ids[thread_id] = address.thread_id
+        return DmAddress(
+            channel_session_id=self._local_id(
+                "channel-session",
+                address.channel_session_id,
+            ),
+            thread_id=thread_id,
+            provider_thread_id=address.provider_thread_id,
+        )
+
     async def send(
         self,
         request: ChannelSendRequest,

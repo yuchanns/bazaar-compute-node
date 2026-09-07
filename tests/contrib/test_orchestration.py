@@ -100,7 +100,11 @@ from bazaar_compute_node.core.runtime import (
     Runtime,
     RuntimeCommandContext,
 )
-from bazaar_compute_node.core.storage import InboxTargetResolutionError, IStorage
+from bazaar_compute_node.core.storage import (
+    AmbiguousInboxTargetError,
+    InboxTargetResolutionError,
+    IStorage,
+)
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_node.i18n import (
@@ -4669,6 +4673,58 @@ async def test_a_dm_is_minted_for_a_sender_seen_in_a_group() -> None:
             and sent.body == "hello in private"
             for sent in channel.sent_messages
         )
+
+        # The same peer addressed by its provider id instead of its handle: the
+        # name the provider gave this conversation outranks the lookup token.
+        await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm-again",
+            raw_target="dm:@peer-1",
+            body="hello again",
+            created_at_ms=3,
+        )
+        assert storage.channel_sessions["channel-dm-peer-1"].target_handle == "kana"
+
+        # A peer first addressed by its provider id: the conversation still
+        # takes the name the provider gave that peer, not the id.
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=2,
+                message_id="message-group-2",
+                thread_id="bcn-group",
+                channel_session_id="channel-group",
+                channel="test",
+                provider_thread_id="thread-group",
+                provider_message_id="provider-group-2",
+                received_at_ms=4,
+                sender=SenderIdentity(id="peer-2", name="mika"),
+                message_type="text",
+                target="group:channel-group",
+                target_kind=ChannelTargetKind.GROUP,
+                body="hello too",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-group", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 2
+            )
+        )
+        await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm-by-id",
+            raw_target="dm:@peer-2",
+            body="hello mika",
+            created_at_ms=5,
+        )
+        assert storage.channel_sessions["channel-dm-peer-2"].target_handle == "mika"
+
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -4718,6 +4774,48 @@ async def test_a_sender_the_channel_cannot_address_stays_not_found() -> None:
                 raw_target="dm:@nameless",
                 body="hello in private",
                 created_at_ms=2,
+            )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        for index in (1, 2):
+            await channel.inject(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=index,
+                    message_id=f"message-dm-{index}",
+                    thread_id=f"bcn-dm-{index}",
+                    channel_session_id=f"channel-dm-{index}",
+                    channel="test",
+                    provider_thread_id=f"test:dm:peer-{index}",
+                    provider_message_id=f"provider-dm-{index}",
+                    received_at_ms=index,
+                    sender=SenderIdentity(id=f"peer-{index}", name="kana"),
+                    message_type="text",
+                    target=f"dm:channel-dm-{index}",
+                    target_kind=ChannelTargetKind.DM,
+                    target_presentation=ChannelTargetPresentation(handle="kana"),
+                    body="hello",
+                )
+            )
+        await wait_until(lambda: len(storage.channel_sessions) == 2)
+
+        # Both conversations answer to `kana`; minting a third would pick one
+        # of them for the caller.
+        with pytest.raises(AmbiguousInboxTargetError):
+            await orchestrator.command_service.send(
+                actor=Agent("workspace-1"),
+                command_id="command-dm-ambiguous",
+                raw_target="dm:@kana",
+                body="which one?",
+                created_at_ms=3,
             )
     finally:
         await orchestrator.stop(timeout=1)

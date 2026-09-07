@@ -36,6 +36,7 @@ class _PendingApproval:
     token: str
     thread: LarkThreadIdentity
     expected_sender_id: str
+    callback_chat_id: str
     prompt_message_id: str | None
     future: asyncio.Future[ApprovalResult]
 
@@ -135,6 +136,7 @@ class LarkApprovalChannel(LarkChannel):
             token=secrets.token_urlsafe(18),
             thread=thread,
             expected_sender_id=request.provider_sender_id,
+            callback_chat_id=thread.chat_id,
             prompt_message_id=None,
             future=loop.create_future(),
         )
@@ -154,7 +156,7 @@ class LarkApprovalChannel(LarkChannel):
             )
             budget = remaining(deadline)
             if reply_to_message_id is not None:
-                prompt_message_id = await api.reply_message(
+                sent = await api.reply_message(
                     message_id=reply_to_message_id,
                     message_type="interactive",
                     content=content,
@@ -163,14 +165,22 @@ class LarkApprovalChannel(LarkChannel):
                     timeout=budget,
                 )
             else:
-                prompt_message_id = await api.send_message(
+                sent = await api.send_message(
                     chat_id=thread.chat_id,
+                    # A one-to-one chat is named by the peer, so the id that
+                    # addresses it is an `ou_`; card callbacks report the `oc_`
+                    # the provider gave that chat, which only the send tells us.
+                    receive_id_type=(
+                        "open_id" if thread.chat_id.startswith("ou_") else "chat_id"
+                    ),
                     message_type="interactive",
                     content=content,
                     uuid=uuid4().hex,
                     timeout=budget,
                 )
-            prompt_message_id = _provider_text(prompt_message_id)
+            if sent.chat_id is not None:
+                pending.callback_chat_id = sent.chat_id
+            prompt_message_id = _provider_text(sent.message_id)
             if prompt_message_id is None:
                 raise ValueError("Lark approval prompt has no message_id")
             if (
@@ -237,7 +247,7 @@ class LarkApprovalChannel(LarkChannel):
                     resolved_callback_text(self._translator, state),
                     toast_type="warning",
                 )
-            if chat_id != pending.thread.chat_id or (
+            if chat_id != pending.callback_chat_id or (
                 pending.prompt_message_id is not None
                 and message_id != pending.prompt_message_id
             ):

@@ -360,12 +360,6 @@ async def send_outbound(
     )
 
 
-def _receive_id_type(chat_id: str) -> str:
-    """Lark ids carry their kind in the prefix: `ou_` a user, `oc_` a chat."""
-
-    return "open_id" if chat_id.startswith("ou_") else "chat_id"
-
-
 async def _send_message_part(
     api: LarkApi,
     *,
@@ -381,7 +375,7 @@ async def _send_message_part(
         return None, TimeoutError("Lark delivery deadline expired")
     try:
         if reply_anchor is not None:
-            provider_message_id = await api.reply_message(
+            sent = await api.reply_message(
                 message_id=reply_anchor,
                 message_type=message_type,
                 content=content,
@@ -390,9 +384,12 @@ async def _send_message_part(
                 timeout=timeout,
             )
         else:
-            provider_message_id = await api.send_message(
+            sent = await api.send_message(
                 chat_id=thread.chat_id,
-                receive_id_type=_receive_id_type(thread.chat_id),
+                # Lark ids carry their kind in the prefix: `ou_` a user, `oc_` a chat.
+                receive_id_type=(
+                    "open_id" if thread.chat_id.startswith("ou_") else "chat_id"
+                ),
                 message_type=message_type,
                 content=content,
                 uuid=str(uuid4()),
@@ -402,7 +399,7 @@ async def _send_message_part(
         raise
     except Exception as error:  # noqa: BLE001
         return None, error
-    return provider_message_id, None
+    return sent.message_id, None
 
 
 def _finish_failure(

@@ -21,6 +21,7 @@ from ....core.models import (
     SenderKind,
 )
 from ....core.storage import (
+    AmbiguousInboxTargetError,
     InboxTargetResolutionError,
     KnownSender,
     ResolvedInboxTarget,
@@ -332,9 +333,13 @@ class MessageOperations(RepositoryBase):
             f"AND ({predicate}) ORDER BY thread.id",
             parameters,
         )
-        if len(rows) != 1:
+        if len(rows) > 1:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        if not rows:
             raise InboxTargetResolutionError(
-                "inbox target does not resolve to exactly one owned session"
+                "inbox target does not resolve to an owned session"
             )
         target = thread_from_row(rows[0])
         channel_session = cast(
@@ -394,6 +399,13 @@ class MessageOperations(RepositoryBase):
             sender_id = cast(str | None, row["sender_id"])
             if sender is None and sender_id is None:
                 continue
+            metadata_json = cast(str | None, row["metadata_json"])
+            sender_kind = SenderKind.UNKNOWN
+            if metadata_json:
+                stored_kind = json.loads(metadata_json).get(
+                    "sender_kind", SenderKind.UNKNOWN.value
+                )
+                sender_kind = SenderKind(cast(str, stored_kind))
             return KnownSender(
                 sender=SenderIdentity(
                     id=sender_id,
@@ -401,7 +413,7 @@ class MessageOperations(RepositoryBase):
                     display_name=cast(str | None, row["sender_display_name"]),
                 ),
                 channel=cast(str, row["channel"]),
-                sender_kind=_sender_kind_of(cast(str | None, row["metadata_json"])),
+                sender_kind=sender_kind,
             )
         return None
 
@@ -1095,10 +1107,3 @@ class MessageOperations(RepositoryBase):
         if existing is None:
             return await self._insert_outbound(message, channel_session)
         return await self._update_outbound(existing, message)
-
-
-def _sender_kind_of(metadata_json: str | None) -> SenderKind:
-    if not metadata_json:
-        return SenderKind.UNKNOWN
-    value = json.loads(metadata_json).get("sender_kind", SenderKind.UNKNOWN.value)
-    return SenderKind(cast(str, value))

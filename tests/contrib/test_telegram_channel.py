@@ -263,6 +263,15 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             )
             is None
         )
+        # A group message posted on behalf of a channel or an anonymous admin
+        # carries that chat's own id and no sender kind; addressing it would
+        # publish the DM into the very group it came from.
+        assert (
+            channel.dm_address(
+                SenderIdentity(id="-1001234567890"), sender_kind=SenderKind.UNKNOWN
+            )
+            is None
+        )
         message = {
             "message_id": 2,
             "date": channel._started_at_s,

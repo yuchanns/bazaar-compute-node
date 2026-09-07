@@ -453,7 +453,13 @@ class TelegramChannel(IChannel):
         # channel; a person is still addressable by numeric id alone.
         if sender_kind is SenderKind.AGENT and sender.name is not None:
             chat_id = f"@{sender.name}"
-        elif sender.id is not None:
+        # A message a channel or an anonymous admin posted to a group carries
+        # that chat's id and no `from`, so its kind is unknown; addressing it
+        # would publish the DM back into the group it came from.
+        elif (
+            sender_kind in {SenderKind.HUMAN, SenderKind.AGENT}
+            and sender.id is not None
+        ):
             try:
                 chat_id = int(sender.id)
             except ValueError:

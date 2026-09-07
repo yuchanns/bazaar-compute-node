@@ -22,6 +22,7 @@ from bazaar_compute_node.core.models import (
     Thread,
 )
 from bazaar_compute_node.core.storage import (
+    AmbiguousInboxTargetError,
     InboxTargetResolutionError,
     IStorageScope,
     KnownSender,
@@ -435,9 +436,13 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 )
             if matched:
                 matches.append((session, channel_session))
-        if len(matches) != 1:
+        if len(matches) > 1:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        if not matches:
             raise InboxTargetResolutionError(
-                "inbox target does not resolve to exactly one owned session"
+                "inbox target does not resolve to an owned session"
             )
         target, channel_session = matches[0]
         handle_is_unique = True

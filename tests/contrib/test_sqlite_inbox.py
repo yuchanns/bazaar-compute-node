@@ -17,7 +17,10 @@ from bazaar_compute_node.core.models import (
     SenderKind,
     Thread,
 )
-from bazaar_compute_node.core.storage import InboxTargetResolutionError
+from bazaar_compute_node.core.storage import (
+    AmbiguousInboxTargetError,
+    InboxTargetResolutionError,
+)
 
 
 async def _create_session(
@@ -390,7 +393,7 @@ async def test_sqlite_inbox_target_resolution_fails_closed_on_unknown_or_ambiguo
 
         with pytest.raises(InboxTargetResolutionError):
             await repository.resolve_inbox_target("dm:missing")
-        with pytest.raises(InboxTargetResolutionError):
+        with pytest.raises(AmbiguousInboxTargetError):
             await repository.resolve_inbox_target("dm:@ambiguous")
     finally:
         await database.stop(timeout=2)
