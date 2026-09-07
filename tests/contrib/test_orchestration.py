@@ -4612,3 +4612,112 @@ async def test_no_upgrade_leaves_the_opening_turn_untouched() -> None:
         assert "Upgrade available" not in runtime.started_turns[0][2]
     finally:
         await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_dm_is_minted_for_a_sender_seen_in_a_group() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-group-1",
+                thread_id="bcn-group",
+                channel_session_id="channel-group",
+                channel="test",
+                provider_thread_id="thread-group",
+                provider_message_id="provider-group-1",
+                received_at_ms=1,
+                sender=SenderIdentity(id="peer-1", name="kana"),
+                message_type="text",
+                target="group:channel-group",
+                target_kind=ChannelTargetKind.GROUP,
+                body="hello everyone",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-group", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 1
+            )
+        )
+
+        # The peer has only ever spoken in a group, so this DM does not exist
+        # yet; its address has to come from that group message.
+        await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm",
+            raw_target="dm:@kana",
+            body="hello in private",
+            created_at_ms=2,
+        )
+
+        minted = storage.channel_sessions["channel-dm-peer-1"]
+        assert minted.target_kind is ChannelTargetKind.DM
+        assert minted.target_handle == "kana"
+        assert minted.provider_thread_id == "test:dm:peer-1"
+        assert any(
+            sent.provider_thread_id == "test:dm:peer-1"
+            and sent.body == "hello in private"
+            for sent in channel.sent_messages
+        )
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_sender_the_channel_cannot_address_stays_not_found() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        # This provider gave a name but no id, so the channel has nothing to
+        # build a DM address from.
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-group-2",
+                thread_id="bcn-group",
+                channel_session_id="channel-group",
+                channel="test",
+                provider_thread_id="thread-group",
+                provider_message_id="provider-group-2",
+                received_at_ms=1,
+                sender=SenderIdentity(name="nameless"),
+                message_type="text",
+                target="group:channel-group",
+                target_kind=ChannelTargetKind.GROUP,
+                body="hello everyone",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-group", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 1
+            )
+        )
+
+        with pytest.raises(InboxTargetResolutionError):
+            await orchestrator.command_service.send(
+                actor=Agent("workspace-1"),
+                command_id="command-dm-2",
+                raw_target="dm:@nameless",
+                body="hello in private",
+                created_at_ms=2,
+            )
+    finally:
+        await orchestrator.stop(timeout=1)
