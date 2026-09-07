@@ -27,7 +27,7 @@ _RESOLVED_TOKEN_LIMIT = 256
 class _PendingApproval:
     request_id: str
     token: str
-    chat_id: int
+    chat_id: int | str
     topic_id: int
     markdown: str
     prompt_message_id: int | None

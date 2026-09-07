@@ -400,7 +400,9 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         ):
             for message in inbound:
                 sender = message.sender
-                if sender is None or not matches(sender):
+                if sender is None or message.channel is None:
+                    continue
+                if not matches(sender):
                     continue
                 return KnownSender(
                     sender=sender,
