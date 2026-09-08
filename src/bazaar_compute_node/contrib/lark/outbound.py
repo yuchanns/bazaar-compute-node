@@ -475,7 +475,9 @@ def _is_unknown(error: Exception) -> bool:
 
 def _error_details(error: Exception) -> tuple[str, str]:
     if isinstance(error, LarkApiError):
-        return f"lark_provider_{error.method}", error.message
+        # The provider code is what separates a recipient outside the app's
+        # availability from one who blocked the bot, so it has to reach the report.
+        return f"lark_provider_{error.method}", str(error)
     if isinstance(error, LarkTransportError):
         return f"lark_transport_{error.method}", error.error_kind
     if isinstance(error, TimeoutError):
