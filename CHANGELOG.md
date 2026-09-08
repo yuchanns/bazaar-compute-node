@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0rc2 - 2026-09-08
+
+## What's Changed
+* fix: let a Telegram private chat answer only an allowed sender by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/70
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.2.0rc1...v0.2.0rc2
+
 ## 0.2.0rc1 - 2026-09-05
 
 ## What's Changed
