@@ -21,7 +21,9 @@ from ....core.models import (
     SenderKind,
 )
 from ....core.storage import (
+    AmbiguousInboxTargetError,
     InboxTargetResolutionError,
+    KnownSender,
     ResolvedInboxTarget,
     UnreadMessageOwner,
 )
@@ -331,9 +333,13 @@ class MessageOperations(RepositoryBase):
             f"AND ({predicate}) ORDER BY thread.id",
             parameters,
         )
-        if len(rows) != 1:
+        if len(rows) > 1:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        if not rows:
             raise InboxTargetResolutionError(
-                "inbox target does not resolve to exactly one owned session"
+                "inbox target does not resolve to an owned session"
             )
         target = thread_from_row(rows[0])
         channel_session = cast(
@@ -362,6 +368,54 @@ class MessageOperations(RepositoryBase):
             channel_session=channel_session,
             handle_is_unique=handle_is_unique,
         )
+
+    async def find_known_sender(self, token: str) -> KnownSender | None:
+        """Find a sender this Agent has heard from, by what its `@` renders as.
+
+        `sender` carries the handle when the provider offers one and `sender_id`
+        the provider identity otherwise, which is the same order the `@` position
+        is rendered in. Matching follows that order so the more specific value
+        decides first. The display name is deliberately not a key: it is not
+        unique, and addressing by it would let one name reach several people.
+        """
+
+        for predicate, parameter in (
+            ("LOWER(sender) = LOWER(?)", token),
+            ("sender_id = ?", token),
+        ):
+            row = await self.fetchone(
+                "SELECT sender, sender_id, sender_display_name, channel, "
+                "metadata_json "
+                "FROM messages "
+                "WHERE agent_id = /*agent_id*/? "
+                "AND direction = ? "
+                f"AND {predicate} "
+                "ORDER BY seq DESC LIMIT 1",
+                (MessageDirection.INBOUND.value, parameter),
+            )
+            if row is None:
+                continue
+            sender = cast(str | None, row["sender"])
+            sender_id = cast(str | None, row["sender_id"])
+            if sender is None and sender_id is None:
+                continue
+            metadata_json = cast(str | None, row["metadata_json"])
+            sender_kind = SenderKind.UNKNOWN
+            if metadata_json:
+                stored_kind = json.loads(metadata_json).get(
+                    "sender_kind", SenderKind.UNKNOWN.value
+                )
+                sender_kind = SenderKind(cast(str, stored_kind))
+            return KnownSender(
+                sender=SenderIdentity(
+                    id=sender_id,
+                    name=sender,
+                    display_name=cast(str | None, row["sender_display_name"]),
+                ),
+                channel=cast(str, row["channel"]),
+                sender_kind=sender_kind,
+            )
+        return None
 
     async def find_message(
         self,

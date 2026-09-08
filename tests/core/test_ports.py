@@ -20,6 +20,7 @@ from bazaar_compute_node.core.models import (
     RuntimeEventEnvelope,
     RuntimeOutputEvent,
     SenderIdentity,
+    SenderKind,
     TurnCompleted,
 )
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -108,6 +109,36 @@ async def test_channel_sends_and_streams_under_one_session_namespace() -> None:
 
     assert provider.event_sessions[0] == "oc_abc"
     assert provider.send_attempts[0].session_id == "oc_abc"
+
+
+@pytest.mark.asyncio
+async def test_a_minted_dm_address_carries_the_same_namespace_as_a_received_one() -> (
+    None
+):
+    provider = TestChannel()
+    channel = Channel("agent-test", provider)
+    await channel.start(timeout=1)
+    peer = SenderIdentity(id="peer-1", name="Peer")
+
+    address = channel.dm_address(peer, sender_kind=SenderKind.AGENT)
+    provider_address = provider.dm_address(peer, sender_kind=SenderKind.AGENT)
+    assert address is not None
+    assert provider_address is not None
+    assert address.thread_id != provider_address.thread_id
+    assert address.channel_session_id != provider_address.channel_session_id
+
+    await channel.send(
+        ChannelSendRequest(
+            session_id=address.thread_id,
+            body="hello",
+            attachments=(),
+            target_kind=ChannelTargetKind.DM,
+            provider_thread_id=address.provider_thread_id,
+        ),
+        timeout=1,
+    )
+
+    assert provider.send_attempts[0].session_id == provider_address.thread_id
 
 
 def test_timeout_budget_requires_finite_positive_boundaries() -> None:

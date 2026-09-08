@@ -29,12 +29,22 @@ from .models import (
     Reminder,
     ReminderState,
     RuntimeAttempt,
+    SenderIdentity,
+    SenderKind,
     Thread,
 )
 
 
 class InboxTargetResolutionError(ValueError):
     """A target does not resolve to exactly one Agent-owned BCN session."""
+
+
+class AmbiguousInboxTargetError(InboxTargetResolutionError):
+    """Several Agent-owned conversations answer to this target.
+
+    Distinct from finding nothing: the caller must name which one it means
+    rather than have one picked for it.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +72,15 @@ class ResolvedInboxTarget:
         return self.channel_session.display_target(
             handle_is_unique=self.handle_is_unique
         )
+
+
+@dataclass(frozen=True, slots=True)
+class KnownSender:
+    """A sender this Agent has already received a message from."""
+
+    sender: SenderIdentity
+    channel: str
+    sender_kind: SenderKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,14 +362,6 @@ class StorageOperationMixin:
             raise ValueError(
                 f"unknown channel session: {target_thread.channel_session_id}"
             )
-        target_messages = await self.list_messages(
-            target_thread.id,
-            target=payload.target,
-            direction=MessageDirection.INBOUND,
-            limit=1,
-        )
-        if not target_messages:
-            raise ValueError(f"thread target is not replyable: {payload.target}")
         # a reply the target cannot resolve is dropped on both sides: keeping the
         # local id would leave the outbound pointing at a message that reading
         # this target's history can never resolve
@@ -609,6 +620,8 @@ class _StorageOperations(Protocol):
     async def count_unread_messages(self) -> int: ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
+
+    async def find_known_sender(self, token: str) -> KnownSender | None: ...
 
     async def find_message(
         self,

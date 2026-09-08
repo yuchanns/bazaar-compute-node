@@ -210,6 +210,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         self._command_service = CommandService(
             actors=actors,
+            channel=channel,
             delivery=self._delivery,
             storage=storage,
             audit=self._audit,

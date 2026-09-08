@@ -22,8 +22,10 @@ from bazaar_compute_node.core.models import (
     Thread,
 )
 from bazaar_compute_node.core.storage import (
+    AmbiguousInboxTargetError,
     InboxTargetResolutionError,
     IStorageScope,
+    KnownSender,
     RecordInboundResult,
     ResolvedInboxTarget,
     StorageOperationMixin,
@@ -384,6 +386,32 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def count_unread_messages(self) -> int:
         return len(await self._unread_in_scope())
 
+    async def find_known_sender(self, token: str) -> KnownSender | None:
+        inbound: list[Message] = []
+        for thread in self._scoped_threads():
+            inbound.extend(
+                self._filtered_messages(thread.id, direction=MessageDirection.INBOUND)
+            )
+        inbound.sort(key=lambda message: message.seq, reverse=True)
+        for matches in (
+            lambda sender: (
+                sender.name is not None and sender.name.casefold() == token.casefold()
+            ),
+            lambda sender: sender.id == token,
+        ):
+            for message in inbound:
+                sender = message.sender
+                if sender is None or message.channel is None:
+                    continue
+                if not matches(sender):
+                    continue
+                return KnownSender(
+                    sender=sender,
+                    channel=message.channel,
+                    sender_kind=message.sender_kind,
+                )
+        return None
+
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
         matches: list[tuple[Thread, ChannelSession]] = []
         for session in self._scoped_threads():
@@ -408,9 +436,13 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 )
             if matched:
                 matches.append((session, channel_session))
-        if len(matches) != 1:
+        if len(matches) > 1:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        if not matches:
             raise InboxTargetResolutionError(
-                "inbox target does not resolve to exactly one owned session"
+                "inbox target does not resolve to an owned session"
             )
         target, channel_session = matches[0]
         handle_is_unique = True

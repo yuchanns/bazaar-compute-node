@@ -236,6 +236,42 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             id=str(bot_id),
             name=f"{bot_username}({bot_first_name})",
         )
+        # A DM's chat_id is the peer's own user id, and a person is addressable
+        # by that numeric id alone even when they hold a username.
+        human = channel.dm_address(
+            SenderIdentity(id=str(TEST_USER_ID), name="human"),
+            sender_kind=SenderKind.HUMAN,
+        )
+        assert human is not None
+        assert human.provider_thread_id == f"telegram:{bot_id}:{TEST_USER_ID}:0"
+        # Bots reach each other by username; a numeric id does not apply.
+        bot = channel.dm_address(
+            SenderIdentity(id="7", name="kana"), sender_kind=SenderKind.AGENT
+        )
+        assert bot is not None
+        assert bot.provider_thread_id == f"telegram:{bot_id}:@kana:0"
+        # A bot without a username falls back to the numeric id rather than
+        # minting an address Telegram would reject.
+        nameless_bot = channel.dm_address(
+            SenderIdentity(id="7"), sender_kind=SenderKind.AGENT
+        )
+        assert nameless_bot is not None
+        assert nameless_bot.provider_thread_id == f"telegram:{bot_id}:7:0"
+        assert (
+            channel.dm_address(
+                SenderIdentity(id="ou_not_numeric"), sender_kind=SenderKind.HUMAN
+            )
+            is None
+        )
+        # A group message posted on behalf of a channel or an anonymous admin
+        # carries that chat's own id and no sender kind; addressing it would
+        # publish the DM into the very group it came from.
+        assert (
+            channel.dm_address(
+                SenderIdentity(id="-1001234567890"), sender_kind=SenderKind.UNKNOWN
+            )
+            is None
+        )
         message = {
             "message_id": 2,
             "date": channel._started_at_s,
@@ -353,3 +389,25 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
     assert not isinstance(in_group, str)
     # Only the stranger was recorded; the two accepted messages were not.
     assert len(audit.events) == 1
+
+
+def test_telegram_identity_round_trips_numeric_and_username_chats() -> None:
+    from bazaar_compute_node.contrib.telegram.identity import (
+        TelegramThreadIdentity,
+        parse_provider_thread_id,
+    )
+
+    numeric = TelegramThreadIdentity(bot_id=1, chat_id=42, topic_id=0)
+    assert numeric.provider_thread_id == "telegram:1:42:0"
+    assert parse_provider_thread_id(numeric.provider_thread_id) == numeric
+
+    username = TelegramThreadIdentity(bot_id=1, chat_id="@kana", topic_id=0)
+    assert username.provider_thread_id == "telegram:1:@kana:0"
+    assert parse_provider_thread_id(username.provider_thread_id) == username
+
+    # An existing identity string must parse unchanged, or every historical
+    # conversation would be re-keyed: the uuid is derived from this string.
+    assert parse_provider_thread_id("telegram:1:-100200:3").chat_id == -100200
+
+    with pytest.raises(ValueError):
+        TelegramThreadIdentity(bot_id=1, chat_id="kana", topic_id=0)

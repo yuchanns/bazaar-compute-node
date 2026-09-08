@@ -123,7 +123,7 @@ async def test_lark_cardkit_requests_and_card_reference_reply() -> None:
                 sequence=2,
                 timeout=1,
             )
-            message_id = await api.reply_card(
+            sent = await api.reply_card(
                 message_id="trigger-message",
                 card_id=card_id,
                 reply_in_thread=True,
@@ -132,7 +132,7 @@ async def test_lark_cardkit_requests_and_card_reference_reply() -> None:
             )
 
             assert card_id == "card-1"
-            assert message_id == "message-1"
+            assert sent.message_id == "message-1"
             cardkit_requests = [
                 request for request in requests if "cardkit" in request[1]
             ]

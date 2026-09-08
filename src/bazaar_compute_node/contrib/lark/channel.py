@@ -17,6 +17,7 @@ from ...core.channel import (
     ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
+    DmAddress,
     IChannel,
 )
 from ...core.models import (
@@ -414,7 +415,15 @@ class LarkChannel(IChannel):
         )
         thread_identity = LarkThreadIdentity(
             bot_open_id=fields.identity.open_id,
-            chat_id=fields.chat_id,
+            # A one-to-one chat is named by the peer, not by the `oc_` id the
+            # provider gives that chat: the peer is the only part of it we can
+            # know before the chat exists, so a conversation opened from
+            # `dm:@name` and one the peer starts are the same conversation.
+            chat_id=(
+                fields.sender_open_id
+                if target_kind is ChannelTargetKind.DM
+                else fields.chat_id
+            ),
             thread_id=thread_id,
         )
         presentation = None
@@ -954,6 +963,20 @@ class LarkChannel(IChannel):
         except LarkApiError, LarkTransportError, TimeoutError:
             self._typing_failures += 1
 
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        del sender_kind
+        identity = self._identity
+        if identity is None or sender.id is None:
+            return None
+        thread = LarkThreadIdentity(bot_open_id=identity.open_id, chat_id=sender.id)
+        return DmAddress(
+            channel_session_id=thread.channel_session_id,
+            thread_id=thread.session_id,
+            provider_thread_id=thread.provider_thread_id,
+        )
+
     async def send(
         self,
         request: ChannelSendRequest,
@@ -1089,6 +1112,7 @@ class _EventFields:
     provider_message_id: str
     chat_id: str
     chat_type: str
+    sender_open_id: str
     sender_type: str
 
 
@@ -1147,6 +1171,7 @@ def _read_event(
         provider_message_id=provider_message_id,
         chat_id=chat_id,
         chat_type=chat_type,
+        sender_open_id=sender_open_id,
         sender_type=sender_type,
     )
 

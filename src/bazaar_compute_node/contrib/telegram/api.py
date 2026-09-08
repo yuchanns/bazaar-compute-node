@@ -87,12 +87,15 @@ class TelegramBotApi:
     async def send_chat_action(
         self,
         *,
-        chat_id: int,
+        chat_id: int | str,
         action: str,
         message_thread_id: int | None = None,
         timeout: float,
     ) -> None:
-        if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id == 0:
+        if isinstance(chat_id, str):
+            if not chat_id:
+                raise ValueError("Telegram chat_id text must be non-empty")
+        elif not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id == 0:
             raise ValueError("Telegram chat_id must be a non-zero integer")
         if not isinstance(action, str) or not action:
             raise ValueError("Telegram chat action must be non-empty")

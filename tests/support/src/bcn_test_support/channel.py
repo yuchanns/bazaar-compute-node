@@ -10,6 +10,7 @@ from bazaar_compute_node.core.channel import (
     ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
+    DmAddress,
     IChannel,
     IChannelBuilder,
 )
@@ -22,6 +23,8 @@ from bazaar_compute_node.core.models import (
     ContextCompactionStarted,
     Message,
     RuntimeOutputEvent,
+    SenderIdentity,
+    SenderKind,
     ToolCallCompleted,
     ToolCallFailed,
     ToolCallInteraction,
@@ -86,6 +89,18 @@ class TestChannel(IChannel):
 
     def get_identity(self) -> ChannelIdentity | None:
         return self.identity if self.accepting else None
+
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        del sender_kind
+        if sender.id is None:
+            return None
+        return DmAddress(
+            channel_session_id=f"channel-dm-{sender.id}",
+            thread_id=f"thread-dm-{sender.id}",
+            provider_thread_id=f"test:dm:{sender.id}",
+        )
 
     async def start(self, *, timeout: float) -> None:
         del timeout

@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 
 from ..actor import Actor, Actors, Agent, Thread
 from ..audit import AuditRecorder, ErrorKind
-from ..channel import ChannelSendRequest
+from ..channel import ChannelSendRequest, IChannel
 from ..command import (
     ICommandService,
     InboxListResult,
@@ -27,6 +27,7 @@ from ..command import (
 from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
 from ..models import (
+    ChannelSession,
     ChannelTargetKind,
     Message,
     MessageDirection,
@@ -34,8 +35,12 @@ from ..models import (
     OutboundDeliveryState,
     RuntimeEventState,
 )
+
+# `Thread` here is the actor variant; the conversation row keeps its own name.
+from ..models import Thread as ConversationRow
 from ..outcomes import OutboundDeliveryResult
 from ..storage import (
+    AmbiguousInboxTargetError,
     InboxTargetResolutionError,
     IStorage,
     MaterializeOutboundResult,
@@ -135,6 +140,7 @@ class CommandService(ICommandService):
         self,
         *,
         actors: Actors,
+        channel: IChannel,
         delivery: OutboundDeliveryService,
         storage: IStorage,
         audit: AuditRecorder,
@@ -143,6 +149,7 @@ class CommandService(ICommandService):
         clock: Callable[[], int],
     ) -> None:
         self._actors = actors
+        self._channel = channel
         self._delivery = delivery
         self._storage = storage
         self._audit = audit
@@ -224,6 +231,77 @@ class CommandService(ICommandService):
             },
         )
         return result
+
+    async def _resolve_or_mint(
+        self, actor: Actor, raw_target: str
+    ) -> ResolvedInboxTarget:
+        """Resolve a target, minting a DM conversation for a known sender.
+
+        Only `dm:@` is minted, and only from a sender this Agent has already
+        heard from: the address comes from that past message, never from a
+        directory lookup. A conversation-scoped actor never reaches a
+        conversation it did not already own, so it is refused before anything
+        is written. Anything else stays a resolution failure.
+        """
+
+        try:
+            return await self._storage.resolve_inbox_target(raw_target)
+        except AmbiguousInboxTargetError:
+            # Several conversations answer to this handle. Minting a new one
+            # would silently pick a peer for the caller.
+            raise
+        except InboxTargetResolutionError:
+            if (
+                not isinstance(actor, Agent)
+                or not raw_target.startswith("dm:@")
+                or len(raw_target) == 4
+            ):
+                raise
+            known = await self._storage.find_known_sender(raw_target[4:])
+            if known is None:
+                raise
+            address = self._channel.dm_address(
+                known.sender, sender_kind=known.sender_kind
+            )
+            if address is None:
+                raise
+        now = self._clock()
+        stored_session = await self._storage.get_channel_session(
+            address.channel_session_id
+        )
+        if stored_session is None:
+            stored_session = ChannelSession(
+                id=address.channel_session_id,
+                channel=known.channel,
+                provider_thread_id=address.provider_thread_id,
+                created_at_ms=now,
+                updated_at_ms=now,
+                target_kind=ChannelTargetKind.DM,
+            )
+        # The name this conversation already answers to comes first, then what
+        # the provider calls the peer, and only then the token that found it.
+        handle = stored_session.target_handle or known.sender.name or raw_target[4:]
+        await self._storage.save_channel_session(
+            replace(
+                stored_session,
+                updated_at_ms=now,
+                target_handle=handle,
+                target_handle_key=handle.casefold(),
+            )
+        )
+        stored_thread = await self._storage.get_thread(address.thread_id)
+        if stored_thread is None:
+            stored_thread = ConversationRow(
+                id=address.thread_id,
+                channel_session_id=address.channel_session_id,
+                workspace_id=self._actors.agent_id,
+                created_at_ms=now,
+                updated_at_ms=now,
+            )
+        await self._storage.save_thread(replace(stored_thread, updated_at_ms=now))
+        # Ask for the conversation we just wrote rather than for the token that
+        # found it: the handle it answers to is the provider's, not that token.
+        return await self._storage.resolve_inbox_target(stored_session.canonical_target)
 
     def _require_in_reach(
         self,
@@ -474,8 +552,6 @@ class CommandService(ICommandService):
         reply_to_message_id: str | None = None,
         send_draft: bool = False,
     ) -> MessageSendResult:
-        target = await self._storage.resolve_inbox_target(raw_target)
-        self._require_in_reach(actor, target.thread.id, raw_target)
         attachments = (
             await asyncio.to_thread(self._attachment_resolver, attachment_paths)
             if attachment_paths and not send_draft
@@ -487,6 +563,8 @@ class CommandService(ICommandService):
             )
         if not send_draft and not body.strip() and not attachments:
             raise ValueError("outbound message must not be empty")
+        target = await self._resolve_or_mint(actor, raw_target)
+        self._require_in_reach(actor, target.thread.id, raw_target)
 
         staged = await self._stage_draft(
             command_id=command_id,

@@ -73,9 +73,11 @@ from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
     ChannelTargetKind,
+    Message,
     OutboundAttachment,
     RuntimeEventEnvelope,
     RuntimeOutputEvent,
+    SenderIdentity,
     SenderKind,
     ToolCall,
     ToolCallStarted,
@@ -997,3 +999,56 @@ def test_lark_card_ack_encodes_cardkit_toast(tmp_path: Path) -> None:
 
     assert envelope["code"] == 200
     assert toast == {"toast": {"type": "success", "content": "Approved"}}
+
+
+@pytest.mark.asyncio
+async def test_a_one_to_one_conversation_is_named_by_the_peer(tmp_path: Path) -> None:
+    channel = LarkChannel(
+        _context(tmp_path, {}),
+        app_id="app-id",
+        app_secret="app-secret",
+        region="feishu",
+        base_url="https://open.feishu.cn",
+        timer_wheel=TimerWheel(),
+    )
+    channel._identity = LarkBotIdentity(open_id="ou_bot")
+
+    assert (
+        await channel._handle_event(
+            "event",
+            {
+                "schema": "2.0",
+                "header": {
+                    "event_id": "event-lark-p2p-1",
+                    "event_type": "im.message.receive_v1",
+                    "tenant_key": "tenant-key",
+                },
+                "event": {
+                    "message": {
+                        "message_id": "om_lark_p2p_1",
+                        "chat_id": "oc_p2p_chat",
+                        "chat_type": "p2p",
+                        "message_type": "text",
+                        "content": json.dumps({"text": "hello"}),
+                        "create_time": "1",
+                    },
+                    "sender": {
+                        "sender_id": {"open_id": "ou_peer"},
+                        "sender_type": "user",
+                        "tenant_key": "tenant-key",
+                    },
+                },
+            },
+            object(),
+        )
+        is True
+    )
+    inbound = channel._inbound.get_nowait()
+    assert isinstance(inbound, Message)
+
+    address = channel.dm_address(
+        SenderIdentity(id="ou_peer"), sender_kind=SenderKind.HUMAN
+    )
+    assert address is not None
+    assert inbound.channel_session_id == address.channel_session_id
+    assert inbound.thread_id == address.thread_id

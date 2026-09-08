@@ -15,6 +15,15 @@ import aiohttp
 from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 
+
+@dataclass(frozen=True, slots=True)
+class LarkSentMessage:
+    """What the provider says about a message it just accepted."""
+
+    message_id: str
+    chat_id: str | None
+
+
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
 _MAX_ERROR_MESSAGE = 256
@@ -412,12 +421,13 @@ class LarkApi:
         content: str,
         uuid: str,
         timeout: float,
-    ) -> str:
+        receive_id_type: str = "chat_id",
+    ) -> LarkSentMessage:
         body = await self._post_json(
             "message_create",
             "/open-apis/im/v1/messages",
             timeout=timeout,
-            params={"receive_id_type": "chat_id"},
+            params={"receive_id_type": receive_id_type},
             json_body={
                 "receive_id": chat_id,
                 "msg_type": message_type,
@@ -425,7 +435,10 @@ class LarkApi:
                 "uuid": uuid,
             },
         )
-        return _response_id(body, "message_create", "message_id")
+        return LarkSentMessage(
+            message_id=_response_id(body, "message_create", "message_id"),
+            chat_id=_optional_response_text(body, "chat_id"),
+        )
 
     async def reply_message(
         self,
@@ -436,7 +449,7 @@ class LarkApi:
         reply_in_thread: bool,
         uuid: str,
         timeout: float,
-    ) -> str:
+    ) -> LarkSentMessage:
         body = await self._post_json(
             "message_reply",
             f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reply",
@@ -448,7 +461,10 @@ class LarkApi:
                 "uuid": uuid,
             },
         )
-        return _response_id(body, "message_reply", "message_id")
+        return LarkSentMessage(
+            message_id=_response_id(body, "message_reply", "message_id"),
+            chat_id=_optional_response_text(body, "chat_id"),
+        )
 
     async def reply_card(
         self,
@@ -458,7 +474,7 @@ class LarkApi:
         reply_in_thread: bool,
         uuid: str,
         timeout: float,
-    ) -> str:
+    ) -> LarkSentMessage:
         return await self.reply_message(
             message_id=message_id,
             message_type="interactive",
@@ -911,6 +927,17 @@ def _provider_message(value: object) -> str:
     if not isinstance(value, str) or not value:
         return "provider rejected request"
     return value[:_MAX_ERROR_MESSAGE]
+
+
+def _optional_response_text(
+    body: Mapping[str, object],
+    field_name: str,
+) -> str | None:
+    data = body.get("data")
+    value = data.get(field_name) if isinstance(data, Mapping) else None
+    if not isinstance(value, str) or not value or "\r" in value or "\n" in value:
+        return None
+    return value
 
 
 def _response_id(

@@ -4,7 +4,11 @@ import asyncio
 import math
 
 from ..audit import ErrorKind
-from ..channel import ChannelDeliveryReceipt, ChannelSendRequest, IChannel
+from ..channel import (
+    ChannelDeliveryReceipt,
+    ChannelSendRequest,
+    IChannel,
+)
 from ..models import OutboundDeliveryState
 from ..outcomes import (
     OutboundDeliveryResult,

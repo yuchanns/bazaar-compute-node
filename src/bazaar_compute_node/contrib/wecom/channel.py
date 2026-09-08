@@ -24,6 +24,7 @@ from ...core.channel import (
     ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
+    DmAddress,
     IChannel,
 )
 from ...core.models import (
@@ -483,6 +484,19 @@ class WeComChannel(IChannel):
                 receipt=delivery.receipt(),
             )
         return None
+
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        del sender_kind
+        if sender.id is None:
+            return None
+        identity = f"wecom:dm:{sender.id}"
+        return DmAddress(
+            channel_session_id=str(uuid5(NAMESPACE_URL, identity)),
+            thread_id=str(uuid5(NAMESPACE_URL, f"bcn:{identity}")),
+            provider_thread_id=sender.id,
+        )
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
