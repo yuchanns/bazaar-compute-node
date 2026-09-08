@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
 from ...i18n import Translator
-from ..audit import ErrorKind
+from ..audit import AuditRecorder, ErrorKind
 from ..channel import ChannelSendRequest
 from ..correlation import CorrelationContext
 from ..models import (
@@ -19,7 +19,6 @@ from ..models import (
 from ..storage import IStorageScope
 from .delivery import OutboundDeliveryService
 from .reminder import resolve_reminder_anchor
-from .services import AuditRecorder
 
 MESSAGE_KEYS: Mapping[RuntimeTurnState, str] = MappingProxyType(
     {

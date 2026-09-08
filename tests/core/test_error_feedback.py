@@ -5,6 +5,7 @@ from collections.abc import Callable
 import pytest
 from bcn_test_support import MemoryStorage, RecordingAudit, TestChannel
 
+from bazaar_compute_node.core.audit import AuditRecorder
 from bazaar_compute_node.core.channel import ChannelDeliveryReceipt
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -17,7 +18,6 @@ from bazaar_compute_node.core.models import (
 )
 from bazaar_compute_node.core.orchestration.delivery import OutboundDeliveryService
 from bazaar_compute_node.core.orchestration.error_feedback import RuntimeErrorReporter
-from bazaar_compute_node.core.orchestration.services import AuditRecorder
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
 

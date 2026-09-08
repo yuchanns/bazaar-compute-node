@@ -12,6 +12,7 @@ from bcn_test_support import (
 )
 
 from bazaar_compute_node.core.actor import Actors, Mode, Thread
+from bazaar_compute_node.core.audit import AuditRecorder
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     Message,
@@ -30,6 +31,7 @@ from bazaar_compute_node.core.models import (
 from bazaar_compute_node.core.orchestration import AgentOrchestrator
 from bazaar_compute_node.core.orchestration.turn import _with_a_reason
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_node.i18n import ENGLISH, create_translator
 
 
@@ -71,19 +73,20 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
     runtime = TestRuntime()
     storage = MemoryStorage()
     audit = RecordingAudit()
+    budget = TimeoutBudget(
+        startup_seconds=1,
+        provider_call_seconds=1,
+        command_seconds=1,
+        shutdown_seconds=1,
+    )
     await storage.start(timeout=1)
     orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),
-        audit=audit,
-        timeout_budget=TimeoutBudget(
-            startup_seconds=1,
-            provider_call_seconds=1,
-            command_seconds=1,
-            shutdown_seconds=1,
-        ),
+        audit=AuditRecorder(sink=audit, timeout_budget=budget, clock=now_ms),
+        timeout_budget=budget,
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
         translator=create_translator(ENGLISH),
@@ -130,19 +133,20 @@ async def test_synthesized_terminal_reaches_the_channel() -> None:
     runtime = TestRuntime()
     storage = MemoryStorage()
     audit = RecordingAudit()
+    budget = TimeoutBudget(
+        startup_seconds=1,
+        provider_call_seconds=1,
+        command_seconds=1,
+        shutdown_seconds=1,
+    )
     await storage.start(timeout=1)
     orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("agent-1", "Test Agent"),
-        audit=audit,
-        timeout_budget=TimeoutBudget(
-            startup_seconds=1,
-            provider_call_seconds=1,
-            command_seconds=1,
-            shutdown_seconds=1,
-        ),
+        audit=AuditRecorder(sink=audit, timeout_budget=budget, clock=now_ms),
+        timeout_budget=budget,
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
         translator=create_translator(ENGLISH),

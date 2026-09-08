@@ -17,6 +17,7 @@ from ...core.channel import (
     ChannelSendRequest,
     IChannel,
 )
+from ...core.correlation import CorrelationContext
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -28,6 +29,7 @@ from ...core.models import (
     InboundAttachment,
     Message,
     MessageDirection,
+    RuntimeEventState,
     RuntimeOutputEvent,
     SenderIdentity,
     SenderKind,
@@ -44,6 +46,7 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
+from ...core.observability import LogLevel
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
@@ -666,6 +669,24 @@ class TelegramChannel(IChannel):
             isinstance(provider_sender, Mapping)
             and provider_sender.get("id") in self._allowed_sender_ids
         ):
+            audit = self._context.audit
+            if audit is not None:
+                await audit.append(
+                    event_name="channel.inbound.rejected",
+                    state=RuntimeEventState.COMPLETED,
+                    correlation=CorrelationContext(
+                        node_id=self._context.agent_id,
+                        channel=self.name,
+                    ),
+                    level=LogLevel.WARNING,
+                    metadata={
+                        "reason": "unauthorized_sender",
+                        "telegram_sender_id": provider_sender.get("id")
+                        if isinstance(provider_sender, Mapping)
+                        else None,
+                        "telegram_chat_id": chat.get("id"),
+                    },
+                )
             return "unauthorized_sender"
         chat_id = chat.get("id")
         provider_message_id = message.get("message_id")

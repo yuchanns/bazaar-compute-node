@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from ..i18n import Translator
+from .audit import AuditRecorder
 from .lifecycle import IAsyncLifecycle
 from .models import (
     ApprovalRequest,
@@ -107,6 +108,7 @@ class ChannelContext:
     workspace: Callable[[], Path]
     translator: Translator | None = None
     timer_wheel: TimerWheel | None = None
+    audit: AuditRecorder | None = None
 
 
 class IApproval(Protocol):

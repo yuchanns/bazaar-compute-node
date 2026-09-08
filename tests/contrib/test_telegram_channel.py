@@ -5,12 +5,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from bcn_test_support import RecordingAudit
 
 import bazaar_compute_node.contrib.telegram.channel as telegram_channel_module
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
+from bazaar_compute_node.core.audit import AuditRecorder
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import SenderIdentity, SenderKind
+from bazaar_compute_node.core.observability import LogLevel
 
 TEST_BOT_ID = 1_000_000_001
 TEST_USER_ID = 1_000_000_002
@@ -295,12 +299,19 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
     async def referenced_paths() -> set[str]:
         return set()
 
+    audit = RecordingAudit()
+    recorder = AuditRecorder(
+        sink=audit,
+        timeout_budget=TimeoutBudget(1, 1, 1, 1),
+        clock=lambda: 1,
+    )
     channel = TelegramChannel(
         ChannelContext(
             agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
+            audit=recorder,
         ),
         token="token",
         allowed_sender_ids=frozenset({TEST_USER_ID}),
@@ -321,6 +332,10 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
         bot_username=TEST_BOT_USERNAME,
     )
     assert stranger == "unauthorized_sender"
+    rejected = audit.events[-1]
+    assert rejected.event_name == "channel.inbound.rejected"
+    assert rejected.level is LogLevel.WARNING
+    assert rejected.metadata["telegram_sender_id"] == TEST_OTHER_BOT_ID
 
     allowed = await channel._read_message(
         update(TEST_USER_ID, {"id": TEST_USER_ID, "type": "private"}),
@@ -336,3 +351,5 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
         bot_username=TEST_BOT_USERNAME,
     )
     assert not isinstance(in_group, str)
+    # Only the stranger was recorded; the two accepted messages were not.
+    assert len(audit.events) == 1
