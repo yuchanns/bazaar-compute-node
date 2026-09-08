@@ -353,8 +353,6 @@ class LarkChannel(IChannel):
                     "threaded": thread_identity.thread_id != "0",
                 },
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             return None, f"mapping_failed:{type(error).__name__}"
         return quoted, failure
@@ -565,8 +563,6 @@ class LarkChannel(IChannel):
                 parent_id,
                 timeout=_PARENT_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._observe(
                 "lark.reply.fetch_failed",
@@ -653,8 +649,6 @@ class LarkChannel(IChannel):
             name = _contact_display_name(response)
             completed = True
             return name
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._contact_lookup_failures += 1
             self._observe(
@@ -744,8 +738,6 @@ class LarkChannel(IChannel):
                 )
             completed = True
             return name
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._chat_lookup_failures += 1
             self._observe(
@@ -800,8 +792,6 @@ class LarkChannel(IChannel):
                     resource=resource,
                     timeout=_RESOURCE_TIMEOUT_SECONDS,
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 attachment = self._context.attachments.failed(
                     name=resource.name,
@@ -1038,8 +1028,6 @@ class LarkChannel(IChannel):
                 request=request,
                 timeout=remaining(deadline),
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,

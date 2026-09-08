@@ -7,7 +7,6 @@
 "cli.agent.name" = "Agent 显示名称。"
 "cli.agent.remove" = "移除 Agent 定义。"
 "cli.agent.runtime" = "运行时提供方的类型。"
-"cli.agent.selector" = "Agent ID 或 Agent 名称（精确匹配）。"
 "cli.agent.set" = "设置 Agent、渠道或运行时配置。可重复使用，例如 --set agent.idle_timeout=600、--set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN 或 --set runtime.env=CODEX_HOME=BCN_CODEX_HOME_WORK。"
 "cli.bcn.config" = "配置文件路径；默认为节点数据目录。"
 "cli.bcn.database_name" = "节点数据目录下的 SQLite 数据库文件名。"

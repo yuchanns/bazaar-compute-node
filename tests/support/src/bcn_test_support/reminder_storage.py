@@ -167,47 +167,6 @@ class _ReminderMemoryStorageTransaction(_BaseMemoryStorageTransaction):
         self._reminder_storage.reminders[reminder.reminder_id] = reminder
         return reminder
 
-    async def get_next_scheduled_reminder(self) -> Reminder | None:
-        reminders = [
-            reminder
-            for reminder in self._reminder_storage.reminders.values()
-            if reminder.state is ReminderState.SCHEDULED
-        ]
-        if not reminders:
-            return None
-        return min(
-            reminders,
-            key=lambda reminder: (
-                reminder.next_fire_at_ms
-                if reminder.next_fire_at_ms is not None
-                else -1,
-                reminder.reminder_id,
-            ),
-        )
-
-    async def list_due_reminders(
-        self,
-        now_ms: int,
-        *,
-        limit: int,
-    ) -> tuple[Reminder, ...]:
-        reminders = [
-            reminder
-            for reminder in self._reminder_storage.reminders.values()
-            if reminder.state is ReminderState.SCHEDULED
-            and reminder.next_fire_at_ms is not None
-            and reminder.next_fire_at_ms <= now_ms
-        ]
-        reminders.sort(
-            key=lambda reminder: (
-                reminder.next_fire_at_ms
-                if reminder.next_fire_at_ms is not None
-                else -1,
-                reminder.reminder_id,
-            )
-        )
-        return tuple(reminders[:limit])
-
     async def get_owned_reminder(
         self,
         agent_id: str,

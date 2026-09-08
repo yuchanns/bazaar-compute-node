@@ -411,8 +411,6 @@ class AgentOrchestrator(IAsyncLifecycle):
                 timeout=self._timeout_budget.provider_call_seconds,
             ):
                 return
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception("runtime background job check failed")
         await self._start_runtime_timer(runtime_session)
@@ -496,8 +494,6 @@ class AgentOrchestrator(IAsyncLifecycle):
         self._stopping = True
         try:
             await self._channel.stop(timeout=timeout)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._shutdown_errors.append(f"channel.stop: {type(error).__name__}")
 
@@ -556,8 +552,6 @@ class AgentOrchestrator(IAsyncLifecycle):
         for index, runtime in enumerate(self._runtimes.all()):
             try:
                 await runtime.stop(timeout=timeout)
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 self._shutdown_errors.append(
                     f"runtime.stop:{index}: {type(error).__name__}"
@@ -691,8 +685,6 @@ class AgentOrchestrator(IAsyncLifecycle):
                         queue,
                         queue_quiescent=not pending and queue.empty(),
                     )
-                except asyncio.CancelledError:
-                    raise
                 except Exception:
                     self._logger.exception("runtime %s failed", type(item).__name__)
                 finally:
@@ -790,8 +782,6 @@ class AgentOrchestrator(IAsyncLifecycle):
 
         try:
             await self._error_reporter.report(message, turn)
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception("runtime error feedback failed")
 
@@ -1762,8 +1752,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             result = await self._runtimes.get(
                 runtime_session.runtime_index
             ).stop_session(runtime_session, timeout=timeout)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             result = None
             stop_message = format_exception(error)

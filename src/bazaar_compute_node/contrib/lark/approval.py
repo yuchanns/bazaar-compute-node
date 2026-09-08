@@ -326,8 +326,6 @@ class LarkApprovalChannel(LarkChannel):
                 card=card,
                 timeout=_CARD_UPDATE_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:  # noqa: BLE001
             self._approval_card_update_failures += 1
 

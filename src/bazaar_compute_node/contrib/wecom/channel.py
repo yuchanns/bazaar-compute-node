@@ -816,8 +816,6 @@ class WeComChannel(IChannel):
             if remaining <= 0:
                 raise TimeoutError
             frame = await asyncio.wait_for(future, timeout=remaining)
-        except asyncio.CancelledError:
-            raise
         except (TimeoutError, ConnectionError) as error:
             return type(error).__name__
         finally:
@@ -1002,8 +1000,6 @@ class WeComChannel(IChannel):
                 await self._connect_once()
                 network_attempt = 0
                 auth_attempt = 0
-            except asyncio.CancelledError:
-                raise
             except _AuthenticationError as error:
                 auth_attempt += 1
                 self._auth_attempts = auth_attempt
@@ -1482,8 +1478,6 @@ class WeComChannel(IChannel):
                 connection.send_str(payload),
                 timeout=_CARD_UPDATE_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._approval_card_update_failures += 1
             self._approval_card_update_unknown += 1
@@ -1695,8 +1689,6 @@ class WeComChannel(IChannel):
                 ),
                 {"kind": kind, "sha256": hashlib.sha256(plaintext).hexdigest()},
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             error_kind = f"media_materialization_failed:{type(error).__name__}"
             source_identity = self._content_fingerprint(

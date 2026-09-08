@@ -588,14 +588,6 @@ class _StorageOperations(Protocol):
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> int: ...
 
-    async def get_latest_message(
-        self,
-        thread_id: str,
-        *,
-        direction: MessageDirection | None = None,
-        delivery_states: frozenset[OutboundDeliveryState] | None = None,
-    ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
-
     async def count_messages(
         self,
         thread_id: str,
@@ -695,12 +687,6 @@ class _StorageOperations(Protocol):
     async def save_reminder_transition(
         self, expected_revision: int, reminder: Reminder
     ) -> Reminder: ...
-
-    async def get_next_scheduled_reminder(self) -> Reminder | None: ...
-
-    async def list_due_reminders(
-        self, now_ms: int, *, limit: int
-    ) -> tuple[Reminder, ...]: ...
 
     async def get_owned_reminder(
         self,

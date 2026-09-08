@@ -55,7 +55,7 @@ class Translator:
     ) -> str:
         if not isinstance(key, str) or not key:
             raise ValueError("message key must be non-empty text")
-        template = self._messages.get(key, _ENGLISH_TEMPLATES.get(key))
+        template = self._messages.get(key)
         if template is None:
             return key
         return template.render(arguments)

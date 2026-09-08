@@ -270,8 +270,6 @@ async def _send_attachments(
                 reply_in_thread=delivery.in_thread,
                 deadline=deadline,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             return delivery.failed(error)
 
@@ -395,8 +393,6 @@ async def _send_message_part(
                 uuid=str(uuid4()),
                 timeout=timeout,
             )
-    except asyncio.CancelledError:
-        raise
     except Exception as error:  # noqa: BLE001
         return None, error
     return sent.message_id, None

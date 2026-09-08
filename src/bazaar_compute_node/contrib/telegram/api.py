@@ -275,8 +275,6 @@ class TelegramBotApi:
                 async for chunk in response.content.iter_chunked(_DOWNLOAD_CHUNK_BYTES):
                     if chunk:
                         yield bytes(chunk)
-        except TelegramApiError:
-            raise
         except TimeoutError:
             raise TelegramTransportError("downloadFile", "TimeoutError") from None
         except aiohttp.ClientError as error:
@@ -321,8 +319,6 @@ class TelegramBotApi:
                         error_code=None,
                         description="provider returned invalid JSON",
                     ) from None
-        except TelegramApiError:
-            raise
         except TimeoutError:
             raise TelegramTransportError(method, "TimeoutError") from None
         except aiohttp.ClientError as error:

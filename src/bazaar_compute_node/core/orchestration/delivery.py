@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import math
 
 from ..audit import ErrorKind
@@ -37,8 +36,6 @@ class OutboundDeliveryService:
                 request,
                 timeout=self._timeout,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             return OutboundDeliveryResult(
                 state=OutboundDeliveryState.UNKNOWN,

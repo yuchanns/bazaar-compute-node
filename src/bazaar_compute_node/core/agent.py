@@ -28,9 +28,6 @@ class Agent:
     def get(self, actor: Actor) -> State:
         return self._states.get(actor, State.IDLE)
 
-    def forget(self, actor: Actor) -> None:
-        self._states.pop(actor, None)
-
     def started_turn(self, actor: Actor) -> State:
         return self._enter(actor, State.WORKING)
 

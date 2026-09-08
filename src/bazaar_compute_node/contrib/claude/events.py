@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections import deque
@@ -84,9 +83,6 @@ class TurnEventStream(IRuntimeTurnStream):
         self._pending: deque[RuntimeOutputEvent] = deque()
         self._tool_names: dict[str, str] = {}
         self._block_stream_ids: dict[int, str] = {}
-        self._terminal_future: asyncio.Future[RuntimeOutputEvent] = (
-            asyncio.get_running_loop().create_future()
-        )
 
     def __aiter__(self) -> Self:
         return self
@@ -117,8 +113,6 @@ class TurnEventStream(IRuntimeTurnStream):
             try:
                 message = await self._inbox.receive()
                 items = await self._map_message(message)
-            except asyncio.CancelledError:
-                raise
             except (ClaudeProtocolError, TypeError, ValueError) as error:
                 await self._on_unusable(error)
                 return await self._terminal_event(
@@ -147,10 +141,6 @@ class TurnEventStream(IRuntimeTurnStream):
                 RuntimeError("Claude turn stream closed before a terminal result")
             )
         await self._call_closed()
-
-    async def wait_terminal(self, *, timeout: float) -> RuntimeOutputEvent:
-        async with asyncio.timeout(timeout):
-            return await asyncio.shield(self._terminal_future)
 
     async def _map_message(self, message: JsonObject) -> tuple[RuntimeOutputEvent, ...]:
         kind = message["type"]
@@ -568,8 +558,6 @@ class TurnEventStream(IRuntimeTurnStream):
             error_message=error_message,
             metadata=metadata,
         )
-        if not self._terminal_future.done():
-            self._terminal_future.set_result(event)
         await self._call_closed()
         return event
 

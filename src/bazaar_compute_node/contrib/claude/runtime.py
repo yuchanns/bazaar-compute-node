@@ -120,8 +120,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         for connection in connections:
             try:
                 await self._stop_connection(connection, timeout=timeout)
-            except asyncio.CancelledError:
-                raise
             except OSError, TimeoutError, ClaudeTransportError:
                 continue
         self._started = False
@@ -387,8 +385,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 connection.queued_human_cycle_started.clear()
             try:
                 await connection.client.send_user_message(input_text, timeout=timeout)
-            except asyncio.CancelledError:
-                raise
             except ClaudeTransportError:
                 return False
             connection.pending_human_results += 1
@@ -535,8 +531,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             await self._stop_connection(
                 connection, timeout=_UNUSABLE_CONNECTION_STOP_SECONDS
             )
-        except asyncio.CancelledError:
-            raise
         except OSError, TimeoutError, ClaudeTransportError:
             return
 

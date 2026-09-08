@@ -60,12 +60,13 @@ def _message_id(frame: Frame) -> str:
 
 
 @pytest.mark.asyncio
-async def test_lark_cardkit_requests_and_card_reference_reply() -> None:
+async def test_lark_message_reply_preserves_authentication_and_provider_errors() -> (
+    None
+):
     requests: list[tuple[str, str, Mapping[str, object], str | None]] = []
     rate_limited = False
 
     async def open_api(request: web.Request) -> web.Response:
-        nonlocal rate_limited
         payload = await request.json()
         assert isinstance(payload, Mapping)
         requests.append(
@@ -80,15 +81,11 @@ async def test_lark_cardkit_requests_and_card_reference_reply() -> None:
             return web.json_response(
                 {"code": 0, "tenant_access_token": "tenant-token", "expire": 3600}
             )
-        if request.path == "/open-apis/cardkit/v1/cards":
-            if rate_limited:
-                return web.json_response(
-                    {"code": 230020, "msg": "rate limited"}, status=429
-                )
-            return web.json_response({"code": 0, "data": {"card_id": "card-1"}})
-        if request.path.endswith("/reply"):
-            return web.json_response({"code": 0, "data": {"message_id": "message-1"}})
-        return web.json_response({"code": 0, "data": {}})
+        if rate_limited:
+            return web.json_response(
+                {"code": 230020, "msg": "rate limited"}, status=429
+            )
+        return web.json_response({"code": 0, "data": {"message_id": "message-1"}})
 
     application = web.Application()
     application.router.add_route("*", "/{path:.*}", open_api)
@@ -105,73 +102,35 @@ async def test_lark_cardkit_requests_and_card_reference_reply() -> None:
                 base_url=str(server.make_url("/")).rstrip("/"),
                 timer_wheel=timer_wheel,
             )
-            card_id = await api.create_card(
-                {"schema": "2.0", "body": {"elements": []}}, timeout=1
-            )
-            await api.add_card_elements(
-                card_id,
-                [{"tag": "markdown", "content": "开始", "element_id": "i000001"}],
-                uuid="add-uuid",
-                sequence=1,
-                timeout=1,
-            )
-            await api.update_card_element(
-                card_id,
-                "i000001",
-                {"tag": "markdown", "content": "完成", "element_id": "i000001"},
-                uuid="update-uuid",
-                sequence=2,
-                timeout=1,
-            )
-            sent = await api.reply_card(
+            sent = await api.reply_message(
                 message_id="trigger-message",
-                card_id=card_id,
+                message_type="text",
+                content='{"text":"完成"}',
                 reply_in_thread=True,
                 uuid="reply-uuid",
                 timeout=1,
             )
-
-            assert card_id == "card-1"
             assert sent.message_id == "message-1"
-            cardkit_requests = [
-                request for request in requests if "cardkit" in request[1]
-            ]
-            assert [request[:2] for request in cardkit_requests] == [
-                ("POST", "/open-apis/cardkit/v1/cards"),
-                ("POST", "/open-apis/cardkit/v1/cards/card-1/elements"),
-                ("PUT", "/open-apis/cardkit/v1/cards/card-1/elements/i000001"),
-            ]
-            assert json.loads(str(cardkit_requests[0][2]["data"])) == {
-                "schema": "2.0",
-                "body": {"elements": []},
-            }
-            assert cardkit_requests[1][2]["type"] == "append"
-            assert cardkit_requests[1][2]["uuid"] == "add-uuid"
-            assert cardkit_requests[1][2]["sequence"] == 1
-            assert (
-                json.loads(str(cardkit_requests[1][2]["elements"]))[0]["element_id"]
-                == "i000001"
+            reply = requests[-1]
+            assert reply[:2] == (
+                "POST",
+                "/open-apis/im/v1/messages/trigger-message/reply",
             )
-            assert cardkit_requests[2][2]["uuid"] == "update-uuid"
-            assert cardkit_requests[2][2]["sequence"] == 2
-            assert json.loads(str(cardkit_requests[2][2]["element"]))["content"] == (
-                "完成"
-            )
-            reply = next(
-                request for request in requests if request[1].endswith("/reply")
-            )
-            assert reply[2]["msg_type"] == "interactive"
-            assert json.loads(str(reply[2]["content"])) == {
-                "type": "card",
-                "data": {"card_id": "card-1"},
-            }
+            assert reply[2]["msg_type"] == "text"
+            assert json.loads(str(reply[2]["content"])) == {"text": "完成"}
             assert reply[2]["reply_in_thread"] is True
             assert reply[2]["uuid"] == "reply-uuid"
-            assert all(request[3] == "Bearer tenant-token" for request in requests[1:])
-
+            assert reply[3] == "Bearer tenant-token"
             rate_limited = True
             with pytest.raises(LarkApiError) as captured:
-                await api.create_card({"schema": "2.0"}, timeout=1)
+                await api.reply_message(
+                    message_id="trigger-message",
+                    message_type="text",
+                    content='{"text":"重试"}',
+                    reply_in_thread=True,
+                    uuid="retry-uuid",
+                    timeout=1,
+                )
             assert captured.value.http_status == 429
             assert captured.value.provider_code == 230020
             await api.stop()

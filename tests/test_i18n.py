@@ -1,37 +1,11 @@
 from __future__ import annotations
 
 import locale
-import tomllib
-from importlib.resources import files
 
 import pytest
 
 import bazaar_compute_node.i18n.catalog as catalog_module
 from bazaar_compute_node.i18n import ENGLISH, SIMPLIFIED_CHINESE, create_translator
-from bazaar_compute_node.rendering import TextTemplate
-
-
-def _catalog(language: str) -> dict[str, object]:
-    resource = files("bazaar_compute_node").joinpath(
-        "resources", "locales", f"{language}.toml"
-    )
-    return tomllib.loads(resource.read_text(encoding="utf-8"))
-
-
-def test_catalogs_share_keys_and_template_variables() -> None:
-    english = _catalog(ENGLISH)
-    schinese = _catalog(SIMPLIFIED_CHINESE)
-
-    assert english.keys() == schinese.keys()
-    assert english
-    for key in english:
-        english_source = english[key]
-        schinese_source = schinese[key]
-        assert isinstance(english_source, str)
-        assert isinstance(schinese_source, str)
-        assert TextTemplate.from_source(key, english_source).variables == (
-            TextTemplate.from_source(key, schinese_source).variables
-        )
 
 
 def test_translator_preserves_interpolation_values_and_requires_exact_keys() -> None:

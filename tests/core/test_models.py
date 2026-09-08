@@ -2,53 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from bazaar_compute_node.core.actor import Thread as ThreadActor
 from bazaar_compute_node.core.command import InboxListResult
 from bazaar_compute_node.core.models import (
-    ChannelSession,
     ChannelTargetKind,
     InboxTargetSummary,
     Message,
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
-    RuntimeSession,
     SenderIdentity,
     SenderKind,
-    Thread,
 )
-
-
-def make_channel_session() -> ChannelSession:
-    return ChannelSession(
-        id="channel-1",
-        channel="test",
-        provider_thread_id="thread-1",
-        created_at_ms=1,
-        updated_at_ms=1,
-    )
-
-
-def make_thread() -> Thread:
-    return Thread(
-        id="bcn-1",
-        channel_session_id="channel-1",
-        workspace_id="workspace-1",
-        created_at_ms=1,
-        updated_at_ms=1,
-    )
-
-
-def make_runtime_session() -> RuntimeSession:
-    return RuntimeSession(
-        id="runtime-1",
-        actor=ThreadActor("bcn-1"),
-        runtime="test",
-        runtime_index=0,
-        workspace_id="workspace-1",
-        created_at_ms=1,
-        updated_at_ms=1,
-    )
 
 
 def make_outbound_message() -> Message:

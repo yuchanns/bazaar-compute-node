@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -118,8 +117,6 @@ class AuditRecorder:
                 event,
                 timeout=self._timeout_budget.command_seconds,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception(
                 "audit append failed",
@@ -137,7 +134,6 @@ class AuditRecorder:
         error_kind: ErrorKind | None = None,
         error_message: str | None = None,
     ) -> None:
-        safe_arguments = cast(Mapping[str, object], omit_sensitive_fields(arguments))
         await self.append(
             event_name=f"tool.{operation}.{status}",
             state=state,
@@ -148,6 +144,6 @@ class AuditRecorder:
                 "kind": "tool_call",
                 "operation": operation,
                 "status": status,
-                "arguments": safe_arguments,
+                "arguments": arguments,
             },
         )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Mapping
 from time import time_ns
 from typing import Annotated, Literal, Self, cast
@@ -646,8 +645,6 @@ class TurnEventStream(IRuntimeTurnStream):
                 result=response,
                 timeout=self._approval_timeout,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:
             if not response_attempted:
                 await self._respond_with_error(request_id, error)

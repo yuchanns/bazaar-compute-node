@@ -407,8 +407,6 @@ class TelegramApprovalChannel(TelegramChannel):
                 payload,
                 timeout=_CALLBACK_ANSWER_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except (
             TelegramApiError,
             TelegramTransportError,
@@ -436,8 +434,6 @@ class TelegramApprovalChannel(TelegramChannel):
                 text=text,
                 timeout=_CALLBACK_ANSWER_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except (
             TelegramApiError,
             TelegramTransportError,

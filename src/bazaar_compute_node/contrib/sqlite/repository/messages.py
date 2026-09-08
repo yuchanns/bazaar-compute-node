@@ -909,30 +909,6 @@ class MessageOperations(RepositoryBase):
         )
         return await self._message_from_row(row) if row is not None else None
 
-    async def get_latest_message(
-        self,
-        thread_id: str,
-        *,
-        direction: MessageDirection | None = None,
-        delivery_states: frozenset[OutboundDeliveryState] | None = None,
-    ) -> Message[InboundAttachment | OutboundAttachment] | None:
-        predicates = ["thread_id = ?"]
-        parameters: list[object] = [thread_id]
-        agent_predicate = self._agent_predicate()
-        _append_message_filters(
-            predicates,
-            parameters,
-            direction=direction,
-            delivery_states=delivery_states,
-        )
-        row = await self.fetchone(
-            f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE {agent_predicate}"
-            + " AND ".join(predicates)
-            + " ORDER BY seq DESC LIMIT 1",
-            parameters,
-        )
-        return await self._message_from_row(row) if row is not None else None
-
     async def _message_from_row(
         self,
         row: aiosqlite.Row,

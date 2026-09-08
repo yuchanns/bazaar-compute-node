@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import stat
@@ -172,8 +171,6 @@ async def materialize_attachments(
                 kind=source.kind,
                 media_type=source.media_type,
             )
-        except asyncio.CancelledError:
-            raise
         except (
             TelegramApiError,
             TelegramTransportError,

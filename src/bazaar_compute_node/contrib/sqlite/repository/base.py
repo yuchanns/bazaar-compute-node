@@ -184,6 +184,3 @@ class RepositoryBase:
 
     def _bound_agent_id(self) -> str | None:
         return self.agent_id
-
-    def _agent_predicate(self) -> str:
-        return "agent_id = /*agent_id*/? AND " if self._bound_agent_id() else ""

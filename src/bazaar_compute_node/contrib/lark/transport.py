@@ -202,8 +202,6 @@ class LarkTransport:
                 first_connection = False
                 reconnect_attempts = 0
                 raise LarkTransportError("websocket", "closed")
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 if self._ready.is_set():
                     first_connection = False
@@ -349,8 +347,6 @@ class LarkTransport:
     ) -> bool:
         try:
             await operation()
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             if not failure.done():
                 failure.set_result(error)
@@ -787,8 +783,6 @@ def _error_kind(error: BaseException) -> str:
 async def _run_post_ack(callback: Callable[[], Awaitable[None]]) -> None:
     try:
         await callback()
-    except asyncio.CancelledError:
-        raise
     except Exception:  # noqa: BLE001
         return
 

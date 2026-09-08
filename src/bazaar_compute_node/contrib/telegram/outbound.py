@@ -182,8 +182,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 payload,
                 deadline=deadline,
             )
-        except asyncio.CancelledError:
-            raise
         except _DeliveryDeadlineExpired:
             return self._clear_failure(
                 delivery,
@@ -254,8 +252,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     payload,
                     deadline=deadline,
                 )
-            except asyncio.CancelledError:
-                raise
             except _DeliveryDeadlineExpired:
                 return self._clear_failure(
                     delivery,
@@ -374,8 +370,6 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     attachment,
                     deadline=deadline,
                 )
-            except asyncio.CancelledError:
-                raise
             except _DeliveryDeadlineExpired:
                 return self._clear_failure(
                     delivery,

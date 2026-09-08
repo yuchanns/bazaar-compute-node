@@ -62,29 +62,6 @@ class ReminderOperations(RepositoryBase):
         )
         return tuple(reminder_from_row(row) for row in rows)
 
-    async def get_next_scheduled_reminder(self) -> Reminder | None:
-        row = await self.fetchone(
-            f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-            "WHERE agent_id = /*agent_id*/? AND state = ? "
-            "ORDER BY next_fire_at_ms, reminder_id LIMIT 1",
-            (ReminderState.SCHEDULED.value,),
-        )
-        return reminder_from_row(row) if row is not None else None
-
-    async def list_due_reminders(
-        self,
-        now_ms: int,
-        *,
-        limit: int,
-    ) -> tuple[Reminder, ...]:
-        rows = await self.fetchall(
-            f"SELECT {_REMINDER_COLUMNS} FROM reminders "
-            "WHERE agent_id = /*agent_id*/? AND state = ? AND next_fire_at_ms <= ? "
-            "ORDER BY next_fire_at_ms, reminder_id LIMIT ?",
-            (ReminderState.SCHEDULED.value, now_ms, limit),
-        )
-        return tuple(reminder_from_row(row) for row in rows)
-
     async def _update_reminder(self, reminder: Reminder) -> None:
         await self.execute(
             "UPDATE reminders SET title = ?, state = ?, next_fire_at_ms = ?, "

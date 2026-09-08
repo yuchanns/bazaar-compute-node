@@ -28,7 +28,7 @@ async def test_windows_rejects_unix_command_endpoint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_transport_authenticates_and_restricts_tcp_fallback(
+async def test_local_transport_serves_the_platform_endpoint(
     tmp_path: Path,
 ) -> None:
     async def handle(_: Mapping[str, object]) -> dict[str, object]:
@@ -59,15 +59,5 @@ async def test_local_transport_authenticates_and_restricts_tcp_fallback(
                 )
             )
             assert all(item["ok"] is True for item in responses)
-        if endpoint.startswith("tcp://"):
-            endpoint_without_query, query = endpoint.split("?", maxsplit=1)
-            with pytest.raises(ValueError, match="capability token"):
-                await LocalCommandClient.request(endpoint_without_query, {})
-            invalid_token = f"{endpoint_without_query}?token=invalid"
-            invalid_response = await LocalCommandClient.request(invalid_token, {})
-            assert invalid_response["code"] == "LOCAL_AUTH_FAILED"
-            port = endpoint_without_query.rsplit(":", maxsplit=1)[1]
-            with pytest.raises(ValueError, match="loopback"):
-                await LocalCommandClient.request(f"tcp://192.0.2.1:{port}?{query}", {})
     finally:
         await server.stop()

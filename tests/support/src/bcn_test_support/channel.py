@@ -61,7 +61,6 @@ class TestChannel(IChannel):
         self.started = False
         self.accepting = False
         self.stopped = False
-        self.receive_closed = False
         self.injected_messages: list[Message] = []
         self.send_requests: list[ChannelSendRequest] = []
         self.send_attempts: list[ChannelSendRequest] = []
@@ -80,7 +79,6 @@ class TestChannel(IChannel):
         self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
         self._send_results: deque[ProviderCallResult[ChannelDeliveryReceipt]] = deque()
-        self._approval_results: deque[ApprovalResult] = deque()
         self._approval_decision = ApprovalDecision.APPROVED
         self._approval_reason: str | None = None
         self._approval_gate: asyncio.Event | None = None
@@ -107,7 +105,6 @@ class TestChannel(IChannel):
         self.started = True
         self.accepting = True
         self.stopped = False
-        self.receive_closed = False
         self._stop_requested = False
 
     async def stop(self, *, timeout: float) -> None:
@@ -129,7 +126,6 @@ class TestChannel(IChannel):
         while True:
             item = await self._inbound.get()
             if item is self._stop_marker:
-                self.receive_closed = True
                 return
             if not isinstance(item, Message):
                 raise TypeError("test channel queue contained an invalid message")
@@ -175,9 +171,6 @@ class TestChannel(IChannel):
         self, result: ProviderCallResult[ChannelDeliveryReceipt]
     ) -> None:
         self._send_results.append(result)
-
-    def queue_approval_result(self, result: ApprovalResult) -> None:
-        self._approval_results.append(result)
 
     def set_approval_decision(
         self,
@@ -238,15 +231,12 @@ class TestChannel(IChannel):
             except asyncio.CancelledError:
                 self.cancelled_approval_requests.append(approval)
                 raise
-        if self._approval_results:
-            result = self._approval_results.popleft()
-        else:
-            result = ApprovalResult(
-                request_id=approval.request_id,
-                decision=self._approval_decision,
-                decided_at_ms=approval.created_at_ms,
-                reason=self._approval_reason,
-            )
+        result = ApprovalResult(
+            request_id=approval.request_id,
+            decision=self._approval_decision,
+            decided_at_ms=approval.created_at_ms,
+            reason=self._approval_reason,
+        )
         self.approval_results.append(result)
         return result
 

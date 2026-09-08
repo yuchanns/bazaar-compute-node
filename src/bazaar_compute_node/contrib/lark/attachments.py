@@ -274,8 +274,6 @@ class LarkResourceCache:
                     kind=resource.resource_type,
                     media_type=media_type,
                 )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             return self._materializer.failed(
                 name=name,

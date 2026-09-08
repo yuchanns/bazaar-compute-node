@@ -143,8 +143,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         for _, connection in connections:
             try:
                 await connection.supervisor.stop(timeout=timeout)
-            except asyncio.CancelledError:
-                raise
             except OSError, TimeoutError, JsonlTransportError:
                 continue
         self._started = False
@@ -361,8 +359,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             if connection is None:
                 try:
                     connection = await self._open_connection(session, timeout=timeout)
-                except asyncio.CancelledError:
-                    raise
                 except Exception as error:  # noqa: BLE001
                     return _provider_result(error)
             try:
@@ -453,8 +449,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             )
             provider_turn = parse_turn_response(response)
             provider_turn_id = provider_turn.turn_id
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             initial_error = error
             if isinstance(error, JsonlRemoteError):
@@ -509,8 +503,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 raise AppServerProtocolError(
                     "turn/steer returned a different provider turn"
                 )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._log(
                 self._logger.warning,
@@ -710,8 +702,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     timeout=_BACKGROUND_REFRESH_TIMEOUT_SECONDS,
                 )
                 present = parse_background_terminals_response(response)
-            except asyncio.CancelledError:
-                raise
             except AppServerProtocolError, JsonlTransportError:
                 return
             if self._connections.get(session_id) is not connection:
@@ -727,8 +717,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
     ) -> None:
         try:
             await connection.supervisor.stop(timeout=timeout)
-        except asyncio.CancelledError:
-            raise
         except OSError, TimeoutError, JsonlTransportError:
             return
 
