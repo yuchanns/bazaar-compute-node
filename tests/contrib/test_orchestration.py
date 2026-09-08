@@ -49,7 +49,7 @@ from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.actor import Actors, Agent, Mode, Thread
 from bazaar_compute_node.core.agent import State
-from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
+from bazaar_compute_node.core.audit import AuditEvent, AuditRecorder, ErrorKind
 from bazaar_compute_node.core.channel import (
     ChannelContext,
     ChannelDeliveryReceipt,
@@ -102,6 +102,7 @@ from bazaar_compute_node.core.runtime import (
 )
 from bazaar_compute_node.core.storage import InboxTargetResolutionError, IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
+from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_node.i18n import (
     ENGLISH,
     SIMPLIFIED_CHINESE,
@@ -351,7 +352,11 @@ async def make_node(
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
-        audit=audit,
+        audit=AuditRecorder(
+            sink=audit,
+            timeout_budget=make_budget(),
+            clock=now_ms,
+        ),
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=workspace,
@@ -382,7 +387,11 @@ async def make_sqlite_node() -> tuple[
         channel=channel,
         runtimes=(runtime,),
         storage=storage_scope,
-        audit=audit,
+        audit=AuditRecorder(
+            sink=audit,
+            timeout_budget=make_budget(),
+            clock=now_ms,
+        ),
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
@@ -413,7 +422,11 @@ async def make_idle_timeout_node(
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
-        audit=RecordingAudit(),
+        audit=AuditRecorder(
+            sink=RecordingAudit(),
+            timeout_budget=make_budget(),
+            clock=now_ms,
+        ),
         timeout_budget=make_budget(),
         timer_wheel=wheel,
         runtime_idle_timeout_ms=idle_timeout_ms,
@@ -1443,7 +1456,9 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         options={},
         workspace=lambda: tmp_path,
     )
-    telegram = TelegramChannel(context, token="token")
+    telegram = TelegramChannel(
+        context, token="token", allowed_sender_ids=frozenset({42, 43})
+    )
     telegram._bot_id = 1
     telegram._bot_username = "test_bot"
     telegram._started_at_s = 1
@@ -3610,7 +3625,11 @@ async def test_daemon_lifecycle_creates_a_new_runtime_session() -> None:
         channel=channel,
         runtimes=(runtime,),
         storage=storage.scope("workspace-1", "Test Agent"),
-        audit=RecordingAudit(),
+        audit=AuditRecorder(
+            sink=RecordingAudit(),
+            timeout_budget=make_budget(),
+            clock=now_ms,
+        ),
         timeout_budget=make_budget(),
         timer_wheel=TimerWheel(),
         workspace=Path.cwd,
@@ -4223,7 +4242,11 @@ async def make_multi_runtime_node() -> tuple[
         channel=channel,
         runtimes=runtimes,
         storage=storage.scope("workspace-1", "Test Agent"),
-        audit=audit,
+        audit=AuditRecorder(
+            sink=audit,
+            timeout_budget=make_budget(),
+            clock=now_ms,
+        ),
         timeout_budget=make_budget(),
         timer_wheel=wheel,
         workspace=Path.cwd,

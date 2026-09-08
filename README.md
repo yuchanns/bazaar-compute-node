@@ -32,11 +32,14 @@ bcn --version
 uv tool upgrade bazaar-compute-node
 
 # Add an Agent / 添加 Agent
+# allowed_sender_ids holds the Telegram user ids allowed to open a private chat
+# allowed_sender_ids 是允许与其私聊的 Telegram 用户 id
 bcn agent add \
   --name Tifa \
   --channel telegram \
   --runtime codex \
-  --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN
+  --set channel.token_env=BCN_TELEGRAM_TIFA_TOKEN \
+  --set channel.allowed_sender_ids=[123456789]
 
 # Configure the runtime environment / 配置运行时环境
 # Example file content / 示例文件内容:

@@ -17,6 +17,7 @@ from ...core.channel import (
     ChannelSendRequest,
     IChannel,
 )
+from ...core.correlation import CorrelationContext
 from ...core.models import (
     ApprovalDecision,
     ApprovalResult,
@@ -28,6 +29,7 @@ from ...core.models import (
     InboundAttachment,
     Message,
     MessageDirection,
+    RuntimeEventState,
     RuntimeOutputEvent,
     SenderIdentity,
     SenderKind,
@@ -44,6 +46,7 @@ from ...core.models import (
     TurnUnknown,
     UsageUpdated,
 )
+from ...core.observability import LogLevel
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
 from ...core.timerwheel import TimerWheel
 from .api import TelegramApiError, TelegramBotApi, TelegramTransportError
@@ -95,9 +98,16 @@ class _InboundUpdate:
 
 
 class TelegramChannel(IChannel):
-    def __init__(self, context: ChannelContext, *, token: str) -> None:
+    def __init__(
+        self,
+        context: ChannelContext,
+        *,
+        token: str,
+        allowed_sender_ids: frozenset[int],
+    ) -> None:
         self._context = context
         self._token = token
+        self._allowed_sender_ids = allowed_sender_ids
         self._timer_wheel: TimerWheel | None = context.timer_wheel
         self._started_at_s = time_ns() // 1_000_000_000
         self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
@@ -653,6 +663,31 @@ class TelegramChannel(IChannel):
         chat_type = chat.get("type")
         if chat_type not in {"private", "group", "supergroup"}:
             return "unsupported_chat_type"
+        # Anyone on Telegram can open a private chat with a bot. A group has to
+        # be joined, so only the private case is closed here.
+        if chat_type == "private" and not (
+            isinstance(provider_sender, Mapping)
+            and provider_sender.get("id") in self._allowed_sender_ids
+        ):
+            audit = self._context.audit
+            if audit is not None:
+                await audit.append(
+                    event_name="channel.inbound.rejected",
+                    state=RuntimeEventState.COMPLETED,
+                    correlation=CorrelationContext(
+                        node_id=self._context.agent_id,
+                        channel=self.name,
+                    ),
+                    level=LogLevel.WARNING,
+                    metadata={
+                        "reason": "unauthorized_sender",
+                        "telegram_sender_id": provider_sender.get("id")
+                        if isinstance(provider_sender, Mapping)
+                        else None,
+                        "telegram_chat_id": chat.get("id"),
+                    },
+                )
+            return "unauthorized_sender"
         chat_id = chat.get("id")
         provider_message_id = message.get("message_id")
         provider_time_s = message.get("date")

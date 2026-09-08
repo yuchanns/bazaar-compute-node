@@ -7,7 +7,7 @@ from bcn_test_support import RecordingAudit
 
 from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.approval import ApprovalBinding
-from bazaar_compute_node.core.audit import AuditEvent, ErrorKind
+from bazaar_compute_node.core.audit import AuditEvent, AuditRecorder, ErrorKind
 from bazaar_compute_node.core.correlation import CorrelationContext
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
@@ -15,7 +15,6 @@ from bazaar_compute_node.core.models import (
     RuntimeEventState,
 )
 from bazaar_compute_node.core.observability import LogLevel
-from bazaar_compute_node.core.orchestration.services import AuditRecorder
 
 
 class _FailingAudit:

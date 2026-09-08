@@ -12,7 +12,7 @@ from ...i18n import Translator
 from ..actor import Actor, Actors
 from ..agent import Agent, State
 from ..approval import IApprovalHandler
-from ..audit import ErrorKind
+from ..audit import AuditRecorder, ErrorKind
 from ..channel import IChannel
 from ..concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..correlation import CorrelationContext
@@ -27,7 +27,6 @@ from ..models import (
     RuntimeTurnState,
     Thread,
 )
-from ..observability import IAudit
 from ..outcomes import ProviderCallResult, ProviderCallStatus
 from ..runtime import (
     IRuntime,
@@ -50,7 +49,7 @@ from ..utils.text import format_exception
 from .command import CommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
-from .services import AuditRecorder, unread_in_reach
+from .services import unread_in_reach
 from .turn import (
     TurnContext,
     TurnCoordinator,
@@ -155,7 +154,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         channel: IChannel,
         runtimes: Sequence[IRuntime],
         storage: IStorageScope,
-        audit: IAudit,
+        audit: AuditRecorder,
         timeout_budget: TimeoutBudget,
         timer_wheel: TimerWheel,
         runtime_idle_timeout_ms: int = 0,
@@ -195,11 +194,7 @@ class AgentOrchestrator(IAsyncLifecycle):
             self._logger.addHandler(logging.StreamHandler())
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
-        self._audit = AuditRecorder(
-            sink=audit,
-            timeout_budget=timeout_budget,
-            clock=self._clock,
-        )
+        self._audit = audit
         self._agent = Agent(self._session_runtime_states)
         self._delivery = OutboundDeliveryService(
             channel,

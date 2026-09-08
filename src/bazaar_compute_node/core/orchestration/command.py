@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from ..actor import Actor, Actors, Agent, Thread
-from ..audit import ErrorKind
+from ..audit import AuditRecorder, ErrorKind
 from ..channel import ChannelSendRequest
 from ..command import (
     ICommandService,
@@ -42,7 +42,7 @@ from ..storage import (
     ResolvedInboxTarget,
 )
 from .delivery import OutboundDeliveryService
-from .services import AuditRecorder, threads_in_reach
+from .services import threads_in_reach
 
 
 class OutboundAttachmentResolver:

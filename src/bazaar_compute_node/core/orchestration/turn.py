@@ -13,7 +13,7 @@ from ..actor import Agent as AgentActor
 from ..actor import Thread as ThreadActor
 from ..agent import Agent, State
 from ..approval import ApprovalBinding, IApprovalHandler
-from ..audit import ErrorKind
+from ..audit import AuditRecorder, ErrorKind
 from ..channel import ChannelApprovalRequest, IChannel
 from ..concurrency import IThreadConcurrency
 from ..correlation import CorrelationContext
@@ -52,7 +52,6 @@ from ..models import (
 from ..runtime import IRuntimeTurnStream, Runtime, RuntimeSessionUnavailable
 from ..storage import IStorageScope
 from .reminder import resolve_reminder_anchor
-from .services import AuditRecorder
 
 
 def _is_turn_event(event_name: str) -> bool:
