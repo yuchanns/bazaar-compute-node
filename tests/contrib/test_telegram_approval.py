@@ -121,6 +121,7 @@ def test_telegram_approval_markdown_renders_optional_description(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_ORIGINAL_SENDER_ID}),
     )
 
     assert channel._approval_markdown(_request(str(TEST_ORIGINAL_SENDER_ID))) == (
@@ -153,6 +154,7 @@ async def test_telegram_approval_uses_original_sender_id_not_display_name(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_ORIGINAL_SENDER_ID}),
     )
     api = _FakeApprovalApi()
     monkeypatch.setattr(channel, "_api", api)
@@ -214,6 +216,7 @@ async def test_telegram_approval_requires_live_sender_id(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_ORIGINAL_SENDER_ID}),
     )
     monkeypatch.setattr(channel, "_api", _FakeApprovalApi())
     monkeypatch.setattr(channel, "_bot_id", TEST_BOT_ID)
@@ -239,6 +242,7 @@ async def test_telegram_approval_localizes_prompt_buttons_and_feedback(
             translator=create_translator(SIMPLIFIED_CHINESE),
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_ORIGINAL_SENDER_ID}),
     )
     api = _FakeApprovalApi()
     monkeypatch.setattr(channel, "_api", api)
@@ -447,6 +451,7 @@ async def test_telegram_slow_callback_does_not_block_another_session_and_stops(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_ORIGINAL_SENDER_ID, TEST_OTHER_SENDER_ID}),
     )
     approval_task: asyncio.Task[ApprovalResult] | None = None
     inbound = channel.receive()

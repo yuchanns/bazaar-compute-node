@@ -1443,7 +1443,9 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         options={},
         workspace=lambda: tmp_path,
     )
-    telegram = TelegramChannel(context, token="token")
+    telegram = TelegramChannel(
+        context, token="token", allowed_sender_ids=frozenset({42, 43})
+    )
     telegram._bot_id = 1
     telegram._bot_username = "test_bot"
     telegram._started_at_s = 1

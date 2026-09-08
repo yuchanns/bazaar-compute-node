@@ -95,9 +95,16 @@ class _InboundUpdate:
 
 
 class TelegramChannel(IChannel):
-    def __init__(self, context: ChannelContext, *, token: str) -> None:
+    def __init__(
+        self,
+        context: ChannelContext,
+        *,
+        token: str,
+        allowed_sender_ids: frozenset[int],
+    ) -> None:
         self._context = context
         self._token = token
+        self._allowed_sender_ids = allowed_sender_ids
         self._timer_wheel: TimerWheel | None = context.timer_wheel
         self._started_at_s = time_ns() // 1_000_000_000
         self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
@@ -653,6 +660,13 @@ class TelegramChannel(IChannel):
         chat_type = chat.get("type")
         if chat_type not in {"private", "group", "supergroup"}:
             return "unsupported_chat_type"
+        # Anyone on Telegram can open a private chat with a bot. A group has to
+        # be joined, so only the private case is closed here.
+        if chat_type == "private" and not (
+            isinstance(provider_sender, Mapping)
+            and provider_sender.get("id") in self._allowed_sender_ids
+        ):
+            return "unauthorized_sender"
         chat_id = chat.get("id")
         provider_message_id = message.get("message_id")
         provider_time_s = message.get("date")

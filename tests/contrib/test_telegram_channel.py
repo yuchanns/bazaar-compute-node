@@ -215,6 +215,7 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             workspace=lambda: tmp_path,
         ),
         token="token",
+        allowed_sender_ids=frozenset({TEST_USER_ID}),
     )
 
     assert channel.get_identity() is None
@@ -287,3 +288,51 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
 
     assert channel.get_identity() is None
     assert fake_session.closed
+
+
+@pytest.mark.asyncio
+async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    channel = TelegramChannel(
+        ChannelContext(
+            agent_id="agent-test",
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+            options={},
+            workspace=lambda: tmp_path,
+        ),
+        token="token",
+        allowed_sender_ids=frozenset({TEST_USER_ID}),
+    )
+
+    def update(sender_id: int, chat: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "message_id": 1,
+            "date": 1,
+            "chat": chat,
+            "from": {"id": sender_id, "is_bot": False, "username": "someone"},
+            "text": "hello",
+        }
+
+    stranger = await channel._read_message(
+        update(TEST_OTHER_BOT_ID, {"id": TEST_OTHER_BOT_ID, "type": "private"}),
+        bot_id=TEST_BOT_ID,
+        bot_username=TEST_BOT_USERNAME,
+    )
+    assert stranger == "unauthorized_sender"
+
+    allowed = await channel._read_message(
+        update(TEST_USER_ID, {"id": TEST_USER_ID, "type": "private"}),
+        bot_id=TEST_BOT_ID,
+        bot_username=TEST_BOT_USERNAME,
+    )
+    assert not isinstance(allowed, str)
+
+    # A group has to be joined by someone, so the allowlist does not reach it.
+    in_group = await channel._read_message(
+        update(TEST_OTHER_BOT_ID, {"id": TEST_CHAT_ID, "type": "supergroup"}),
+        bot_id=TEST_BOT_ID,
+        bot_username=TEST_BOT_USERNAME,
+    )
+    assert not isinstance(in_group, str)
