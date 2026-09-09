@@ -5,8 +5,8 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -24,7 +24,6 @@ from ...core.paths import resolve_workspace_dir
 from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
-    RuntimeBackgroundIdle,
     RuntimeCommandContext,
     RuntimeExpire,
     RuntimeLifecycleEvent,
@@ -62,7 +61,6 @@ _INITIALIZE_ATTEMPTS = 2
 _RECONCILE_ATTEMPTS = 2
 _WORKSPACE_AGENTS_WATCH_ID = "bcn-agents-workspace"
 _CODEX_HOME_AGENTS_WATCH_ID = "bcn-agents-codex-home"
-_BACKGROUND_REFRESH_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(slots=True)
@@ -72,8 +70,6 @@ class _Connection:
     workspace: Path
     provider_thread_id: str
     active_turn_id: str | None = None
-    background_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    background_job_present: bool = False
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
@@ -113,7 +109,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._effort = effort
         self._connections: dict[str, _Connection] = {}
         self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
-        self._background_refresh_tasks: set[asyncio.Task[None]] = set()
         self._logger = logging.getLogger("bazaar_compute_node.runtime.codex")
         self._started = False
         self._stopping = False
@@ -122,11 +117,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         del timeout
         if self._stopping:
             raise RuntimeError("Codex App Server runtime is stopping")
-        if os.name == "nt":
-            self._logger.warning(
-                "Codex idle timeout is not supported on Windows; "
-                "see openai/codex#15461."
-            )
         self._started = True
 
     async def stop(self, *, timeout: float) -> None:
@@ -135,11 +125,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         self._stopping = True
         connections = tuple(self._connections.items())
         self._connections.clear()
-        refresh_tasks = tuple(self._background_refresh_tasks)
-        for task in refresh_tasks:
-            task.cancel()
-        if refresh_tasks:
-            await asyncio.gather(*refresh_tasks, return_exceptions=True)
         for _, connection in connections:
             try:
                 await connection.supervisor.stop(timeout=timeout)
@@ -519,25 +504,20 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         timeout: float,
     ) -> bool:
-        if os.name == "nt":
-            # Detached OS processes are not exposed by the Windows Codex provider.
-            return True
         connection = self._connections.get(session.id)
         provider_thread_id = session.provider_thread_id
         if connection is None or not provider_thread_id:
             return False
         try:
-            async with connection.background_state_lock:
-                response = await connection.client.list_background_terminals(
-                    provider_thread_id,
-                    timeout=timeout,
-                )
-                present = parse_background_terminals_response(response)
-                if self._connections.get(session.id) is connection:
-                    _record_background_state(connection, present)
+            response = await connection.client.list_background_terminals(
+                provider_thread_id,
+                timeout=timeout,
+            )
         except AppServerProtocolError, JsonlTransportError:
-            return False
-        return present
+            # a question the provider could not answer is not a no: report work
+            # so the caller keeps the session instead of recycling a busy one
+            return True
+        return parse_background_terminals_response(response)
 
     async def stop_session(
         self,
@@ -563,7 +543,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         *,
         targets: dict[str, Path],
         runtime_session_id: str,
-        origin_holder: list[_Connection],
     ) -> bool:
         """Decide what a provider notification means for the session that owns it."""
 
@@ -572,27 +551,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
             parse_skills_changed_notification(message)
             self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
             return True
-        if method == "item/completed" and os.name != "nt":
-            params = message.get("params")
-            item = params.get("item") if isinstance(params, Mapping) else None
-            if (
-                isinstance(params, Mapping)
-                and isinstance(params.get("threadId"), str)
-                and isinstance(item, Mapping)
-                and item.get("type") == "commandExecution"
-            ):
-                if not origin_holder:
-                    return False
-                origin = origin_holder[0]
-                task = asyncio.create_task(
-                    self._refresh_background_state(
-                        runtime_session_id,
-                        origin,
-                    ),
-                    name=f"bcn-codex-background-{runtime_session_id}",
-                )
-                self._background_refresh_tasks.add(task)
-                task.add_done_callback(self._background_refresh_tasks.discard)
         if method != "fs/changed":
             return False
         changed = parse_fs_changed_notification(message)
@@ -648,7 +606,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
         environment = dict(self._context.environment_for_session(session))
         for attempt in range(_INITIALIZE_ATTEMPTS):
             watch_targets: dict[str, Path] = {}
-            connection_holder: list[_Connection] = []
 
             supervisor = JsonlProcessSupervisor(
                 JsonlProcessSpec(
@@ -661,7 +618,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
                     self._route_notification,
                     targets=watch_targets,
                     runtime_session_id=session.id,
-                    origin_holder=connection_holder,
                 ),
             )
             client = Client(supervisor)
@@ -682,32 +638,8 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 workspace=workspace,
                 provider_thread_id=session.provider_thread_id or "",
             )
-            connection_holder.append(connection)
             return connection
         raise AssertionError("Codex initialization retry loop did not return")
-
-    async def _refresh_background_state(
-        self,
-        session_id: str,
-        connection: _Connection,
-    ) -> None:
-        if self._connections.get(session_id) is not connection:
-            return
-        async with connection.background_state_lock:
-            if self._connections.get(session_id) is not connection:
-                return
-            try:
-                response = await connection.client.list_background_terminals(
-                    connection.provider_thread_id,
-                    timeout=_BACKGROUND_REFRESH_TIMEOUT_SECONDS,
-                )
-                present = parse_background_terminals_response(response)
-            except AppServerProtocolError, JsonlTransportError:
-                return
-            if self._connections.get(session_id) is not connection:
-                return
-            if _record_background_state(connection, present):
-                self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(session_id))
 
     async def _stop_connection(
         self,
@@ -728,12 +660,6 @@ class Runtime(IRuntime, IAsyncLifecycle):
     def _ensure_started(self) -> None:
         if not self._started or self._stopping:
             raise RuntimeError("Codex App Server runtime is not started")
-
-
-def _record_background_state(connection: _Connection, present: bool) -> bool:
-    was_present = connection.background_job_present
-    connection.background_job_present = present
-    return was_present and not present
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

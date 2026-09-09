@@ -38,6 +38,7 @@ from bazaar_compute_node.contrib.codex import (
     JsonlProcessSupervisor,
     JsonlProtocolError,
     JsonlRemoteError,
+    JsonlTransportError,
     Runtime,
     TurnEventStream,
     build_fs_watch_params,
@@ -654,22 +655,6 @@ def test_codex_protocol_builders_and_parsers_preserve_runtime_contract() -> None
     assert fs_change.changed_paths == (watched_path,)
 
 
-def test_codex_background_state_reports_only_the_idle_edge() -> None:
-    supervisor = JsonlProcessSupervisor(JsonlProcessSpec(executable="unused"))
-    connection = runtime_module._Connection(
-        supervisor,
-        Client(supervisor),
-        Path.cwd(),
-        "thread-1",
-    )
-
-    assert not runtime_module._record_background_state(connection, False)
-    assert not runtime_module._record_background_state(connection, True)
-    assert not runtime_module._record_background_state(connection, True)
-    assert runtime_module._record_background_state(connection, False)
-    assert not runtime_module._record_background_state(connection, False)
-
-
 def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     async def run_command(*_: object) -> None:
         return None
@@ -872,13 +857,24 @@ async def test_codex_runtime_stops_session(
 
 
 @pytest.mark.asyncio
-async def test_windows_codex_runtime_assumes_background_job(
+async def test_codex_runtime_reports_background_job_when_the_query_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # an unanswered question must not read as "no background work", or the
+    # caller recycles a runtime that may still be busy
+    async def list_background_terminals(
+        _: Client,
+        thread_id: str,
+        *,
+        timeout: float,
+    ) -> dict[str, object]:
+        del thread_id, timeout
+        raise JsonlTransportError("transport is gone", kind="process_exited")
+
     async def run_command(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(runtime_module.os, "name", "nt")
+    monkeypatch.setattr(Client, "list_background_terminals", list_background_terminals)
     runtime = Runtime(
         RuntimeCommandContext(
             run_command=run_command,
@@ -890,24 +886,36 @@ async def test_windows_codex_runtime_assumes_background_job(
     )
     now_ms = time_ns() // 1_000_000
     session = RuntimeSession(
-        id="runtime-windows-background-job",
-        actor=Thread("bcn-windows-background-job"),
+        id="runtime-background-job-error",
+        actor=Thread("bcn-background-job-error"),
         runtime="codex",
         runtime_index=0,
-        workspace_id="workspace-windows-background-job",
-        provider_thread_id=None,
+        workspace_id="workspace-background-job-error",
+        provider_thread_id="thread-background-job-error",
         created_at_ms=now_ms,
         updated_at_ms=now_ms,
+    )
+    supervisor = JsonlProcessSupervisor(JsonlProcessSpec(executable="unused"))
+    runtime._connections[session.id] = runtime_module._Connection(
+        supervisor=supervisor,
+        client=Client(supervisor),
+        workspace=Path.cwd(),
+        provider_thread_id=session.provider_thread_id or "",
     )
 
     assert await runtime.has_background_job(session, timeout=3)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("os_name", ("posix", "nt"))
+@pytest.mark.parametrize("running", (True, False))
 async def test_codex_runtime_reports_background_job(
     monkeypatch: pytest.MonkeyPatch,
+    os_name: str,
+    running: bool,
 ) -> None:
-    monkeypatch.setattr(runtime_module.os, "name", "posix")
+    # every platform answers from the provider's own background terminal list
+    monkeypatch.setattr(runtime_module.os, "name", os_name)
 
     async def list_background_terminals(
         _: Client,
@@ -917,7 +925,8 @@ async def test_codex_runtime_reports_background_job(
     ) -> dict[str, object]:
         assert thread_id == "thread-background-job"
         assert timeout == 3
-        return {"result": {"data": [{"processId": "job-1"}]}}
+        data = [{"processId": "job-1"}] if running else []
+        return {"result": {"data": data}}
 
     async def run_command(*_: object) -> None:
         return None
@@ -951,7 +960,7 @@ async def test_codex_runtime_reports_background_job(
         provider_thread_id=session.provider_thread_id or "",
     )
 
-    assert await runtime.has_background_job(session, timeout=3)
+    assert await runtime.has_background_job(session, timeout=3) is running
 
 
 @pytest.mark.asyncio
