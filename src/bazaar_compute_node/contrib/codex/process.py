@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 from collections import deque
@@ -60,6 +61,8 @@ class JsonlProcessSpec:
 
 
 _QUEUE_CLOSED = object()
+_REAP_REPORT_SECONDS = 30.0
+_LOGGER = logging.getLogger("bazaar_compute_node.runtime.codex.process")
 
 
 class JsonlProcessSupervisor:
@@ -93,6 +96,8 @@ class JsonlProcessSupervisor:
         self._pending: dict[JsonlRequestId, asyncio.Future[JsonlMessage]] = {}
         self._next_request_id = 0
         self._closed_message_sent = False
+        self._abandoned: set[asyncio.Task[None]] = set()
+        self._started = False
 
     @property
     def state(self) -> JsonlProcessState:
@@ -123,10 +128,9 @@ class JsonlProcessSupervisor:
     async def start(self, *, timeout: float) -> None:
         _validate_timeout(timeout)
         async with self._lifecycle_lock:
-            if self.is_running:
-                return
-            await self._join_tasks()
-            self._reset_runtime_state()
+            if self._started:
+                raise RuntimeError("a stopped supervisor cannot start again")
+            self._started = True
             self._state = JsonlProcessState.STARTING
             try:
                 async with asyncio.timeout(timeout):
@@ -171,19 +175,42 @@ class JsonlProcessSupervisor:
                 self._send_closed_message()
                 return
             self._state = JsonlProcessState.STOPPING
-            deadline = asyncio.get_running_loop().time() + timeout
+            now = asyncio.get_running_loop().time()
+            graceful_deadline = now + timeout * 0.6
+            terminate_deadline = now + timeout * 0.8
+            kill_deadline = now + timeout * 0.9
+            deadline = now + timeout
             if process.stdin is not None:
                 process.stdin.close()
             try:
-                await self._wait_for_process(process, deadline)
+                await self._wait_for_process(process, graceful_deadline)
             except TimeoutError:
                 _terminate_process(process)
                 try:
-                    await self._wait_for_process(process, deadline)
+                    await self._wait_for_process(process, terminate_deadline)
                 except TimeoutError:
                     _kill_process(process)
-                    await process.wait()
-            await self._join_tasks()
+                    try:
+                        await self._wait_for_process(process, kill_deadline)
+                    except TimeoutError:
+                        # a process that survived SIGKILL will not be waited out,
+                        # so let go of it here instead of holding the lifecycle
+                        # lock
+                        self._abandon(process)
+                        self._state = JsonlProcessState.STOPPED
+                        self._send_closed_message()
+                        return
+            # an exited process is no guarantee of EOF: a background command it
+            # left behind can hold the pipes open, and then the readers never
+            # finish on their own either
+            remaining = deadline - asyncio.get_running_loop().time()
+            try:
+                if remaining <= 0:
+                    raise TimeoutError
+                async with asyncio.timeout(remaining):
+                    await self._join_tasks()
+            except TimeoutError:
+                self._abandon(process)
             self._state = JsonlProcessState.STOPPED
             self._send_closed_message()
 
@@ -493,6 +520,70 @@ class JsonlProcessSupervisor:
         async with asyncio.timeout(remaining):
             await asyncio.shield(process.wait())
 
+    def _abandon(self, process: asyncio.subprocess.Process) -> None:
+        """Give up on a process without losing track of it.
+
+        Closing this side of the pipes is what unblocks everything: the readers
+        stop waiting for an EOF that a grandchild holding the write end will
+        never deliver, and the exit waiters can complete once the pipes count as
+        disconnected. Whoever still holds that write end is free to keep it.
+        """
+
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            for fd in (1, 2):
+                pipe = transport.get_pipe_transport(fd)
+                if pipe is not None:
+                    pipe.close()
+        # the watcher normally publishes the exit, and it is about to be
+        # cancelled, so release whoever is already waiting on it
+        self._exit_event.set()
+        pending = tuple(self._pending.values())
+        self._pending.clear()
+        # the process may already have exited here, and then its status is the
+        # honest answer; the reaper publishes the rest once it arrives
+        exited = JsonlProcessExited(
+            returncode=process.returncode,
+            stderr_tail=self.stderr_tail,
+        )
+        for future in pending:
+            if not future.done():
+                future.set_exception(exited)
+        tasks = tuple(
+            task
+            for task in (self._stdout_task, self._stderr_task, self._watch_task)
+            if task is not None and task is not asyncio.current_task()
+        )
+        for task in tasks:
+            task.cancel()
+        self._stdout_task = None
+        self._stderr_task = None
+        self._watch_task = None
+        self._process = None
+        reaper = asyncio.create_task(
+            self._reap(process, tasks),
+            name=f"bcn-codex-reap-{process.pid}",
+        )
+        self._abandoned.add(reaper)
+        reaper.add_done_callback(self._abandoned.discard)
+
+    async def _reap(
+        self,
+        process: asyncio.subprocess.Process,
+        tasks: tuple[asyncio.Task[None], ...],
+    ) -> None:
+        """Outlive the caller waiting for a process nobody else is waiting for."""
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            async with asyncio.timeout(_REAP_REPORT_SECONDS):
+                returncode = await process.wait()
+        except TimeoutError:
+            _LOGGER.warning("process %s outlived its kill; still waiting", process.pid)
+            returncode = await process.wait()
+        self._returncode = returncode
+
     async def _join_tasks(self) -> None:
         tasks = tuple(
             task
@@ -504,20 +595,6 @@ class JsonlProcessSupervisor:
         self._stdout_task = None
         self._stderr_task = None
         self._watch_task = None
-
-    def _reset_runtime_state(self) -> None:
-        while True:
-            try:
-                self._incoming.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        self._stderr_tail.clear()
-        self._returncode = None
-        self._fatal_error = None
-        self._next_request_id = 0
-        self._closed_message_sent = False
-        self._exit_event.clear()
-        self._pending.clear()
 
     def _send_closed_message(self) -> None:
         if self._closed_message_sent:
