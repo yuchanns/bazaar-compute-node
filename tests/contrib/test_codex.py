@@ -1238,12 +1238,8 @@ async def test_local_codex_uses_required_model_and_effort() -> None:
 
 
 @pytest.mark.e2e
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="Windows Codex cannot observe background tasks",
-)
 @pytest.mark.asyncio
-async def test_real_codex_background_idle_event_restarts_runtime_timer(
+async def test_real_codex_background_job_defers_idle_recycling(
     system_temp_dir: Path,
 ) -> None:
     codex = shutil.which("codex")
@@ -1304,12 +1300,22 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
             f"bcn:{agent_id}:bcn-session:{session_id}",
         )
     )
+    # a terminal only survives the tool call when the command outlives
+    # yield_time_ms, whose floor is 250 ms on POSIX and 10000 ms on Windows
+    long_command = "Start-Sleep -Seconds 180" if os.name == "nt" else "sleep 180"
+    yield_time_ms = 10000 if os.name == "nt" else 1000
     first = make_message(
         session_id=session_id,
         body=(
-            "Run `sleep 20` with the command tool's `yield_time_ms` set to 1000 so "
-            "it remains an active background terminal. Confirm as soon as it starts, "
-            "without waiting for the command to finish; do not append `&`."
+            "You are testing background-terminal lifecycle. Use the command tool "
+            "exactly once.\n"
+            f"Run exactly: {long_command}\n"
+            f"Set yield_time_ms to {yield_time_ms} in the tool call.\n"
+            "Do not append &, use nohup, use setsid, or wait for the command to "
+            "finish.\n"
+            "Return immediately after the tool reports that the command is still "
+            "running.\n"
+            "Do not run any other command. Reply exactly: BACKGROUND_STARTED."
         ),
     )
     try:
@@ -1349,7 +1355,11 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         runtime = agent.runtimes[0]
         runtime_session = agent.orchestrator.runtime_session(Thread(scoped_session_id))
         assert runtime_session is not None
-        assert await runtime.has_background_job(runtime_session, timeout=30)
+        # the terminal has to still be running for this test to mean anything;
+        # give the provider a moment to publish it before deciding
+        async with asyncio.timeout(30):
+            while not await runtime.has_background_job(runtime_session, timeout=30):
+                await asyncio.sleep(0.2)
 
         connection = runtime._connections.get(runtime_session.id)
         assert connection is not None
@@ -1357,16 +1367,29 @@ async def test_real_codex_background_idle_event_restarts_runtime_timer(
         assert pid is not None
         assert connection.supervisor.is_running
 
-        await _wait_for_audit_event(
-            audit,
-            session_id=scoped_session_id,
-            event_name="runtime.process.stop.completed",
+        # the idle timer keeps expiring while the command runs, and every
+        # expiry that finds it renews instead of recycling the session
+        await asyncio.sleep(1)
+        assert (
+            agent.orchestrator.runtime_session(Thread(scoped_session_id))
+            is runtime_session
         )
-        assert agent.orchestrator.runtime_session(Thread(scoped_session_id)) is None
+        assert connection.supervisor.is_running
+
+        async with asyncio.timeout(600):
+            while (
+                agent.orchestrator.runtime_session(Thread(scoped_session_id))
+                is not None
+                or connection.supervisor.is_running
+            ):
+                await asyncio.sleep(0.05)
         assert not connection.supervisor.is_running
         assert connection.supervisor.returncode is not None
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        if os.name != "nt":
+            # signal 0 only reports liveness on POSIX; the reaped returncode
+            # above is what proves the process is gone on either platform
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
     finally:
         await node.stop()
 

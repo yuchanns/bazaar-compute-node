@@ -205,21 +205,6 @@ async def _wait_for_turn_completion(
     assert terminal_event.event_name == expected_event_name, terminal_event
 
 
-async def _wait_for_audit_event(
-    audit: RecordingAudit,
-    *,
-    session_id: str,
-    event_name: str,
-    timeout: float = 60,
-) -> None:
-    async with asyncio.timeout(timeout):
-        while not any(
-            event.event_name == event_name and event.correlation.thread_id == session_id
-            for event in audit.events
-        ):
-            await asyncio.sleep(0.05)
-
-
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
     del session
     return {}
@@ -576,7 +561,7 @@ async def test_real_claude_danger_full_access_bypasses_approval(
 
 
 @pytest.mark.asyncio
-async def test_real_claude_background_idle_event_restarts_runtime_timer(
+async def test_real_claude_background_job_defers_idle_recycling(
     system_temp_dir: Path,
 ) -> None:
     node, channel, audit, agent_id = _node(
@@ -615,20 +600,27 @@ async def test_real_claude_background_idle_event_restarts_runtime_timer(
         assert pid is not None
         assert connection.supervisor.is_running
 
+        # the idle timer keeps expiring while the teammate works, and every
+        # expiry that finds it renews instead of recycling the session
+        await asyncio.sleep(1)
+        assert (
+            agent.orchestrator.runtime_session(Thread(scoped_session_id))
+            is runtime_session
+        )
+        assert connection.supervisor.is_running
+
         async with asyncio.timeout(600):
             while (
                 agent.orchestrator.runtime_session(Thread(scoped_session_id))
                 is not None
+                or connection.supervisor.is_running
             ):
                 await asyncio.sleep(0.05)
-        await _wait_for_audit_event(
-            audit,
-            session_id=scoped_session_id,
-            event_name="runtime.process.stop.completed",
-        )
         assert not connection.supervisor.is_running
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        if os.name != "nt":
+            # signal 0 only reports liveness on POSIX
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
     finally:
         await node.stop()
 
