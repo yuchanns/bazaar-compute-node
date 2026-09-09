@@ -25,7 +25,6 @@ from ...core.paths import resolve_workspace_dir
 from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
-    RuntimeBackgroundIdle,
     RuntimeCommandContext,
     RuntimeLifecycleEvent,
     RuntimeSandboxMode,
@@ -60,7 +59,6 @@ class _Connection:
     queued_human_cycle_started: asyncio.Event = field(default_factory=asyncio.Event)
     active_stream: TurnEventStream | None = None
     active_background_task_ids: set[str] = field(default_factory=set)
-    background_active: bool = False
 
 
 class Runtime(IRuntime, IAsyncLifecycle):
@@ -507,8 +505,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
                 self._retirement_tasks.add(task)
                 task.add_done_callback(self._retirement_tasks.discard)
                 return
-            if _observe_background(connection, message):
-                self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(session.id))
+            _observe_background(connection, message)
 
         client.set_message_observer(observe)
         return connection
@@ -595,27 +592,24 @@ def _sandbox_settings(
     return settings
 
 
-def _observe_background(connection: _Connection, message: dict[str, object]) -> bool:
-    was_active = connection.background_active
+def _observe_background(connection: _Connection, message: dict[str, object]) -> None:
     # Claude Code republishes the whole set on every change, so the latest
     # snapshot is the answer and nothing has to be accumulated from edges
     if (
-        message.get("type") == "system"
-        and message.get("subtype") == "background_tasks_changed"
+        message.get("type") != "system"
+        or message.get("subtype") != "background_tasks_changed"
     ):
-        tasks = message.get("tasks")
-        if isinstance(tasks, list):
-            connection.active_background_task_ids = {
-                task_id
-                for task in tasks
-                if isinstance(task, dict)
-                and isinstance(task_id := task.get("task_id"), str)
-                and task_id
-            }
-    connection.background_active = bool(
-        connection.active_background_task_ids or connection.client.provider_wake_active
-    )
-    return was_active and not connection.background_active
+        return
+    tasks = message.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    connection.active_background_task_ids = {
+        task_id
+        for task in tasks
+        if isinstance(task, dict)
+        and isinstance(task_id := task.get("task_id"), str)
+        and task_id
+    }
 
 
 def _provider_result(error: BaseException) -> ProviderCallResult[Any]:

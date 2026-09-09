@@ -32,7 +32,6 @@ from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
     Runtime,
-    RuntimeBackgroundIdle,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
@@ -88,7 +87,7 @@ class _RuntimeExpiry:
     generation: int
 
 
-type _RuntimeQueueItem = _RuntimeNotification | _RuntimeExpiry | RuntimeBackgroundIdle
+type _RuntimeQueueItem = _RuntimeNotification | _RuntimeExpiry
 
 
 def _awaiting(
@@ -629,27 +628,8 @@ class AgentOrchestrator(IAsyncLifecycle):
             finally:
                 queue.task_done()
 
-    async def _handle_queue_item(
-        self,
-        actor: Actor,
-        item: _RuntimeExpiry | RuntimeBackgroundIdle,
-        queue: asyncio.Queue[_RuntimeQueueItem],
-        *,
-        queue_quiescent: bool,
-    ) -> None:
-        """Act on a queue item that is not a turn to take."""
-
-        match item:
-            case _RuntimeExpiry():
-                await self._handle_runtime_expiry(
-                    item, queue, queue_quiescent=queue_quiescent
-                )
-            case RuntimeBackgroundIdle():
-                await self._handle_runtime_background_idle(actor, item)
-
     async def _absorb_queue_item(
         self,
-        actor: Actor,
         item: _RuntimeQueueItem,
         pending: list[_RuntimeQueueItem],
         queue: asyncio.Queue[_RuntimeQueueItem],
@@ -661,7 +641,7 @@ class AgentOrchestrator(IAsyncLifecycle):
             pending.append(item)
             await self._steer_active_turn(item)
             return
-        await self._handle_queue_item(actor, item, queue, queue_quiescent=False)
+        await self._handle_runtime_expiry(item, queue, queue_quiescent=False)
         queue.task_done()
 
     async def _runtime_loop(
@@ -674,8 +654,7 @@ class AgentOrchestrator(IAsyncLifecycle):
             item = pending.pop(0) if pending else await queue.get()
             if not isinstance(item, _RuntimeNotification):
                 try:
-                    await self._handle_queue_item(
-                        actor,
+                    await self._handle_runtime_expiry(
                         item,
                         queue,
                         queue_quiescent=not pending and queue.empty(),
@@ -704,9 +683,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                     if queue_task in done:
                         queued_item = queue_task.result()
                         queue_item_consumed = True
-                        await self._absorb_queue_item(
-                            actor, queued_item, pending, queue
-                        )
+                        await self._absorb_queue_item(queued_item, pending, queue)
                     if turn_task in done:
                         break
                     queue_task = asyncio.create_task(queue.get())
@@ -843,16 +820,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             queue_quiescent=queue_quiescent,
         )
 
-    async def _handle_runtime_background_idle(
-        self,
-        actor: Actor,
-        event: RuntimeBackgroundIdle,
-    ) -> None:
-        runtime_session = self.runtime_session(actor)
-        if runtime_session is None or runtime_session.id != event.runtime_session_id:
-            return
-        await self._start_runtime_timer_if_idle(actor)
-
     async def _stop_expired_runtime_if_idle(
         self,
         actor: Actor,
@@ -967,19 +934,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             event = await runtime.receive_event()
             if self._stopping:
                 return
-            if isinstance(event, RuntimeBackgroundIdle):
-                source = next(
-                    (
-                        runtime_session
-                        for runtime_session in self._runtime_sessions.values()
-                        if runtime_session.id == event.runtime_session_id
-                        and runtime_session.runtime_index == index
-                    ),
-                    None,
-                )
-                if source is not None:
-                    self._runtime_queues[source.actor].put_nowait(event)
-                continue
             source = next(
                 (
                     runtime_session

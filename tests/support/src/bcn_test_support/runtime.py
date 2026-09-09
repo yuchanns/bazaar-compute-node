@@ -30,7 +30,6 @@ from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallSt
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
-    RuntimeBackgroundIdle,
     RuntimeExpire,
     RuntimeLifecycleEvent,
     RuntimeSessionReconciliation,
@@ -136,9 +135,6 @@ class TestRuntime(IRuntime):
 
     def emit_expire(self, runtime_session_id: str) -> None:
         self._lifecycle_events.put_nowait(RuntimeExpire(runtime_session_id))
-
-    def emit_background_idle(self, runtime_session_id: str) -> None:
-        self._lifecycle_events.put_nowait(RuntimeBackgroundIdle(runtime_session_id))
 
     async def receive_event(self) -> RuntimeLifecycleEvent:
         return await self._lifecycle_events.get()

@@ -635,7 +635,7 @@ def test_claude_background_tasks_track_the_published_snapshot() -> None:
     )
 
     # a background shell command is a task like any other
-    assert not _observe_background(
+    _observe_background(
         connection,
         {
             "type": "system",
@@ -649,7 +649,7 @@ def test_claude_background_tasks_track_the_published_snapshot() -> None:
     assert connection.active_background_task_ids == {"task-1", "task-2"}
 
     # the published set replaces what was there instead of accumulating edges
-    assert not _observe_background(
+    _observe_background(
         connection,
         {
             "type": "system",
@@ -659,7 +659,7 @@ def test_claude_background_tasks_track_the_published_snapshot() -> None:
     )
     assert connection.active_background_task_ids == {"task-2"}
 
-    assert _observe_background(
+    _observe_background(
         connection,
         {
             "type": "system",
@@ -670,7 +670,7 @@ def test_claude_background_tasks_track_the_published_snapshot() -> None:
     assert connection.active_background_task_ids == set()
 
     # a task event that carries no set leaves the last snapshot standing
-    assert not _observe_background(
+    _observe_background(
         connection,
         {
             "type": "system",

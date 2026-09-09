@@ -42,14 +42,7 @@ class RuntimeExpire:
     runtime_session_id: str
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeBackgroundIdle:
-    """Report that one runtime session's background work became idle."""
-
-    runtime_session_id: str
-
-
-type RuntimeLifecycleEvent = RuntimeExpire | RuntimeBackgroundIdle
+type RuntimeLifecycleEvent = RuntimeExpire
 
 
 @dataclass(frozen=True, slots=True)
