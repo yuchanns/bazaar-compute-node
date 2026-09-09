@@ -90,6 +90,7 @@ class TestRuntime(IRuntime):
         self.accepts_steer = False
         self.background_job_present = False
         self.background_jobs: set[str] = set()
+        self.background_job_checks = 0
         self.approval_results = []
         self.active_streams: set[_TestTurnStream] = set()
         self.closed_streams: list[_TestTurnStream] = []
@@ -230,6 +231,7 @@ class TestRuntime(IRuntime):
         self, session: RuntimeSession, *, timeout: float
     ) -> bool:
         del timeout
+        self.background_job_checks += 1
         return self.background_job_present or session.id in self.background_jobs
 
     async def steer_turn(

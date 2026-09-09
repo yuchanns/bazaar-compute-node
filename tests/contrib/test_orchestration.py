@@ -3863,35 +3863,24 @@ async def test_runtime_idle_timeout() -> None:
         await orchestrator.stop(timeout=1)
         await wheel.close()
 
-    # background work suppresses the idle timeout
+    # background work found at expiry keeps the session and restarts the timer
     orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
     runtime.background_job_present = True
     try:
         await orchestrator.handle_inbound(make_message(seq=1))
         runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
         assert runtime_session is not None
-        await asyncio.sleep(0.06)
 
-        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
-        assert orchestrator._runtime_timers == {}
-        assert runtime.stopped_sessions == []
-
-        runtime.emit_background_idle("stale-runtime")
-        await asyncio.sleep(0)
-        assert orchestrator._runtime_timers == {}
-        runtime.emit_background_idle(runtime_session.id)
-        await asyncio.sleep(0)
-        assert orchestrator._runtime_timers == {}
-
-        runtime.background_job_present = False
-        runtime.emit_background_idle(runtime_session.id)
-        runtime.emit_background_idle(runtime_session.id)
         async with asyncio.timeout(1):
-            while not orchestrator._runtime_timers:
+            while runtime.background_job_checks < 2:
                 await asyncio.sleep(0.01)
+        assert orchestrator.runtime_session(Thread("bcn-1")) is runtime_session
+        assert runtime.stopped_sessions == []
         binding = orchestrator._runtime_timers.get(Thread("bcn-1"))
         assert binding is not None
         assert binding.timer.active
+
+        runtime.background_job_present = False
         async with asyncio.timeout(1):
             while orchestrator.runtime_session(Thread("bcn-1")) is not None:
                 await asyncio.sleep(0.01)

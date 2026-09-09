@@ -404,15 +404,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             or self._agent.get(actor) is not State.IDLE
         ):
             return
-        runtime = self._runtimes.get(runtime_session.runtime_index)
-        try:
-            if await runtime.has_background_job(
-                runtime_session,
-                timeout=self._timeout_budget.provider_call_seconds,
-            ):
-                return
-        except Exception:
-            self._logger.exception("runtime background job check failed")
         await self._start_runtime_timer(runtime_session)
 
     async def _forward_runtime_session_expiry(
@@ -924,6 +915,21 @@ class AgentOrchestrator(IAsyncLifecycle):
                 or self._agent.get(actor) is not State.IDLE
             ):
                 return
+            if not context_expired:
+                runtime = self._runtimes.get(runtime_session.runtime_index)
+                try:
+                    background_job = await runtime.has_background_job(
+                        runtime_session,
+                        timeout=self._timeout_budget.provider_call_seconds,
+                    )
+                except Exception:
+                    # an unanswered check is not an answer: keep the session and
+                    # ask again next time rather than recycling a busy runtime
+                    self._logger.exception("runtime background job check failed")
+                    background_job = True
+                if background_job:
+                    await self._start_runtime_timer(runtime_session)
+                    return
             await self._stop_runtime_session_locked(
                 runtime_session,
                 timeout=self._timeout_budget.provider_call_seconds,
