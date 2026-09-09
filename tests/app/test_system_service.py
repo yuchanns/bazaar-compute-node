@@ -98,7 +98,7 @@ def test_native_command_uses_system_encoding_without_decode_failures() -> None:
         text=True,
         encoding=locale.getencoding(),
         errors="replace",
-        creationflags=0,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
 

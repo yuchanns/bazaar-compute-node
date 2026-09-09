@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from time import time_ns
@@ -124,6 +126,16 @@ class _StaticRegistry(AdapterRegistry):
             channel=StaticChannelBuilder(self._channel),
             runtimes={kind: self._runtime for kind in runtimes},
         )
+
+
+def terminate_recorded_process(pid_file: Path) -> None:
+    """Kill a grandchild the test spawned, so runs do not leave sleepers behind."""
+
+    if not pid_file.exists():
+        return
+    for line in pid_file.read_text().split():
+        with suppress(OSError):
+            os.kill(int(line), getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def python_process(script: str, *, cwd: Path | None = None) -> JsonlProcessSpec:
@@ -964,6 +976,115 @@ async def test_codex_runtime_reports_background_job(
 
 
 @pytest.mark.asyncio
+async def test_jsonl_supervisor_stop_outlives_an_exited_process_holding_pipes(
+    tmp_path: Path,
+) -> None:
+    # the process exits on its own, so the kill path never runs, but the
+    # grandchild it left behind still holds the pipes open
+    pid_file = tmp_path / "grandchild.pid"
+    supervisor = JsonlProcessSupervisor(
+        python_process(
+            f"""
+import pathlib, subprocess, sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+)
+with pathlib.Path({str(pid_file)!r}).open("a") as handle:
+    handle.write(f"{{child.pid}}\\n")
+""",
+            cwd=tmp_path,
+        )
+    )
+    try:
+        await supervisor.start(timeout=5)
+        started = asyncio.get_running_loop().time()
+        await supervisor.stop(timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert supervisor.state is JsonlProcessState.STOPPED
+        assert elapsed < 10
+    finally:
+        terminate_recorded_process(pid_file)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX signal semantics")
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_stop_outlives_a_held_pipe(tmp_path: Path) -> None:
+    # a grandchild that inherited stdout keeps the pipe open after its parent is
+    # killed, so stop() has to let go instead of waiting for an EOF that is not
+    # coming
+    pid_file = tmp_path / "grandchild.pid"
+    supervisor = JsonlProcessSupervisor(
+        python_process(
+            f"""
+import pathlib, signal, subprocess, sys, time
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+)
+with pathlib.Path({str(pid_file)!r}).open("a") as handle:
+    handle.write(f"{{child.pid}}\\n")
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(60)
+""",
+            cwd=tmp_path,
+        )
+    )
+    try:
+        await supervisor.start(timeout=5)
+        waiting = asyncio.create_task(supervisor.wait())
+        await asyncio.sleep(0)
+        started = asyncio.get_running_loop().time()
+        await supervisor.stop(timeout=1)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert supervisor.state is JsonlProcessState.STOPPED
+        assert elapsed < 10
+        assert not supervisor.is_running
+        # a caller that was already waiting has to be released too
+        async with asyncio.timeout(10):
+            await waiting
+
+        # the reaper still publishes the exit once the process is finally gone
+        async with asyncio.timeout(10):
+            while supervisor.returncode is None:
+                await asyncio.sleep(0.05)
+
+    finally:
+        terminate_recorded_process(pid_file)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX signal semantics")
+@pytest.mark.asyncio
+async def test_jsonl_supervisor_stop_reports_the_exit_of_a_process_it_had_to_kill(
+    tmp_path: Path,
+) -> None:
+    # the stop budget keeps a slice back to watch the kill land, so a process
+    # that only ignores SIGTERM still answers with a real exit
+    supervisor = JsonlProcessSupervisor(
+        python_process(
+            """
+import signal, time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(60)
+""",
+            cwd=tmp_path,
+        )
+    )
+    await supervisor.start(timeout=5)
+    await supervisor.stop(timeout=1)
+
+    assert supervisor.state is JsonlProcessState.STOPPED
+    assert supervisor.returncode is not None
+
+
+@pytest.mark.asyncio
 async def test_jsonl_supervisor_contract(tmp_path: Path) -> None:
     # invalid JSON and a nonzero exit are classified
     invalid = JsonlProcessSupervisor(
@@ -1000,7 +1121,7 @@ sys.exit(7)
     assert str(exited.fatal_error).endswith(": fatal app-server detail")
     await exited.stop(timeout=2)
 
-    # timeout, cancellation and restart are handled
+    # timeout and cancellation are handled
     supervisor = JsonlProcessSupervisor(
         python_process(
             """
@@ -1021,9 +1142,6 @@ for line in sys.stdin:
     cancelled.cancel()
     with pytest.raises(asyncio.CancelledError):
         await cancelled
-    await supervisor.stop(timeout=2)
-
-    await supervisor.start(timeout=2)
     await supervisor.stop(timeout=2)
     assert supervisor.state is JsonlProcessState.STOPPED
 

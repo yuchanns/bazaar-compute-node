@@ -60,7 +60,10 @@ async def test_attachment_materializer_uses_binary_flag_on_windows(
 
     def recording_open(path: Path, flags: int, mode: int) -> int:
         opened_flags.append(flags)
-        return real_open(path, flags & ~binary_flag, mode)
+        # the flag is real on Windows, where dropping it would translate
+        # newlines and corrupt the bytes this test is checking
+        native = flags if os.name == "nt" else flags & ~binary_flag
+        return real_open(path, native, mode)
 
     monkeypatch.setattr(attachment_module.os, "O_BINARY", binary_flag, raising=False)
     monkeypatch.setattr(attachment_module.os, "open", recording_open)

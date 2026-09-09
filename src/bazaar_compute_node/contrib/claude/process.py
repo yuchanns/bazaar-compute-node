@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from .protocol import (
 MAX_JSONL_BYTES = 1024 * 1024
 _EXIT_PIPE_DRAIN_SECONDS = 1
 _CLOSED = object()
+_REAP_REPORT_SECONDS = 30.0
+_LOGGER = logging.getLogger("bazaar_compute_node.runtime.claude.process")
 
 
 class ProcessState(StrEnum):
@@ -120,6 +123,8 @@ class ProcessSupervisor:
         self._write_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
         self._exit_event = asyncio.Event()
+        self._abandoned: set[asyncio.Task[None]] = set()
+        self._started = False
 
     @property
     def state(self) -> ProcessState:
@@ -147,8 +152,9 @@ class ProcessSupervisor:
 
     async def start(self, *, timeout: float) -> None:
         async with self._lifecycle_lock:
-            if self.is_running:
-                return
+            if self._started:
+                raise RuntimeError("a stopped supervisor cannot start again")
+            self._started = True
             self._state = ProcessState.RUNNING
             try:
                 async with asyncio.timeout(timeout):
@@ -227,6 +233,7 @@ class ProcessSupervisor:
             now = asyncio.get_running_loop().time()
             graceful_deadline = now + timeout * 0.6
             terminate_deadline = now + timeout * 0.9
+            kill_deadline = now + timeout
             if process.stdin is not None:
                 process.stdin.close()
             try:
@@ -237,11 +244,73 @@ class ProcessSupervisor:
                     await self._wait_until(process, terminate_deadline)
                 except TimeoutError:
                     process.kill()
-                    await process.wait()
+                    try:
+                        await self._wait_until(process, kill_deadline)
+                    except TimeoutError:
+                        # a process that survived a kill will not be waited out,
+                        # so let go of it here instead of holding the lifecycle
+                        # lock
+                        self._abandon(process)
+                        self._state = ProcessState.STOPPED
+                        self._exit_event.set()
+                        return
             self._returncode = process.returncode
             await self._join_tasks(cancel=True)
             self._state = ProcessState.STOPPED
             self._exit_event.set()
+
+    def _abandon(self, process: asyncio.subprocess.Process) -> None:
+        """Give up on a process without losing track of it.
+
+        Closing this side of the pipes is what unblocks everything: the readers
+        stop waiting for an EOF that a grandchild holding the write end will
+        never deliver, and the exit waiters can complete once the pipes count as
+        disconnected. Whoever still holds that write end is free to keep it.
+        """
+
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            for fd in (1, 2):
+                pipe = transport.get_pipe_transport(fd)
+                if pipe is not None:
+                    pipe.close()
+        # the watcher normally closes the queue, and it is about to be
+        # cancelled, so release whoever is already waiting in receive()
+        self._incoming.put_nowait(_CLOSED)
+        tasks = tuple(
+            task
+            for task in (self._stdout_task, self._stderr_task, self._watch_task)
+            if task is not None and task is not asyncio.current_task()
+        )
+        for task in tasks:
+            task.cancel()
+        self._stdout_task = None
+        self._stderr_task = None
+        self._watch_task = None
+        self._process = None
+        reaper = asyncio.create_task(
+            self._reap(process, tasks),
+            name=f"bcn-claude-reap-{process.pid}",
+        )
+        self._abandoned.add(reaper)
+        reaper.add_done_callback(self._abandoned.discard)
+
+    async def _reap(
+        self,
+        process: asyncio.subprocess.Process,
+        tasks: tuple[asyncio.Task[None], ...],
+    ) -> None:
+        """Outlive the caller waiting for a process nobody else is waiting for."""
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            async with asyncio.timeout(_REAP_REPORT_SECONDS):
+                returncode = await process.wait()
+        except TimeoutError:
+            _LOGGER.warning("process %s outlived its kill; still waiting", process.pid)
+            returncode = await process.wait()
+        self._returncode = returncode
 
     async def _read_stdout(self, process: asyncio.subprocess.Process) -> None:
         stdout = process.stdout

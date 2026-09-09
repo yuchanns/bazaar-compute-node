@@ -582,6 +582,26 @@ async def test_claude_parent_exit_is_not_blocked_by_inherited_pipes(
             pass
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process signals")
+@pytest.mark.asyncio
+async def test_claude_stop_reports_the_exit_of_a_process_it_had_to_kill(
+    tmp_path: Path,
+) -> None:
+    # the last slice of the stop budget is reserved to watch the kill land, so a
+    # process that merely ignores SIGTERM still answers with a real exit
+    script = (
+        "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"
+    )
+    supervisor = ProcessSupervisor(
+        ProcessSpec(sys.executable, ("-c", script), tmp_path, os.environ)
+    )
+    await supervisor.start(timeout=10)
+    await supervisor.stop(timeout=1)
+
+    assert supervisor.returncode is not None
+    assert await supervisor.wait(timeout=1) is not None
+
+
 def test_claude_runtime_factory_preserves_runtime_options() -> None:
     async def run_command(
         command: str, arguments: Sequence[str], cwd: str | None

@@ -18,9 +18,17 @@ from bazaar_compute_node.app.transport import (
 from bazaar_compute_node.core.paths import resolve_data_dir
 
 
-async def wait_for_runtime_endpoint(endpoint_path: Path) -> str:
+async def wait_for_runtime_endpoint(
+    endpoint_path: Path,
+    process: subprocess.Popen[str] | None = None,
+    *,
+    timeout: float = 30,
+) -> str:
+    # a node that is merely slow to start looks the same as one that never
+    # will, so wait on the clock rather than on a fixed number of attempts
     endpoint = local_endpoint_for_path(endpoint_path)
-    for _ in range(200):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         response: Mapping[str, object] | None = None
         try:
             response = await LocalCommandClient.request(
@@ -32,8 +40,16 @@ async def wait_for_runtime_endpoint(endpoint_path: Path) -> str:
             response = None
         if response is not None and response.get("ok") is True:
             return endpoint
+        # a node that already died will never publish, so say so now rather
+        # than sitting out the whole allowance
+        if process is not None and process.poll() is not None:
+            break
         await asyncio.sleep(0.01)
-    raise AssertionError("test node did not publish its local endpoint")
+    detail = ""
+    if process is not None and process.poll() is not None:
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        detail = f" (exited {process.returncode}): {stderr.strip()}"
+    raise AssertionError(f"test node did not publish its local endpoint{detail}")
 
 
 async def request_with_retry(
@@ -139,7 +155,7 @@ async def test_real_process_reports_health_and_keeps_agent_configuration(
 ) -> None:
     process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
     try:
-        endpoint = await wait_for_runtime_endpoint(endpoint_path)
+        endpoint = await wait_for_runtime_endpoint(endpoint_path, process)
         assert endpoint.startswith("pipe://" if os.name == "nt" else "unix://")
         health = await wait_for_health(endpoint)
         assert health["started"] is True
@@ -180,14 +196,14 @@ async def test_foreground_process_restarts_with_persisted_configuration(
 ) -> None:
     process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
     try:
-        endpoint = await wait_for_runtime_endpoint(endpoint_path)
+        endpoint = await wait_for_runtime_endpoint(endpoint_path, process)
         await wait_for_health(endpoint)
         await stop_test_process(endpoint_path)
         await asyncio.to_thread(process.wait, 5)
         assert process.returncode == 0
 
         process, endpoint_path, data_dir, _ = start_test_process(tmp_path)
-        response_endpoint = await wait_for_runtime_endpoint(endpoint_path)
+        response_endpoint = await wait_for_runtime_endpoint(endpoint_path, process)
         assert response_endpoint == endpoint
         health = await wait_for_health(response_endpoint)
         assert health["ready"] is True
