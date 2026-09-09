@@ -597,26 +597,21 @@ def _sandbox_settings(
 
 def _observe_background(connection: _Connection, message: dict[str, object]) -> bool:
     was_active = connection.background_active
-    if message.get("type") == "system":
-        subtype = message.get("subtype")
-        task_id = message.get("task_id")
-        if isinstance(task_id, str) and task_id:
-            if subtype == "task_started" and message.get("task_type") in {
-                "local_agent",
-                "local_workflow",
-            }:
-                connection.active_background_task_ids.add(task_id)
-            elif subtype == "task_notification":
-                connection.active_background_task_ids.discard(task_id)
-            elif subtype == "task_updated":
-                patch = message.get("patch")
-                if isinstance(patch, dict) and patch.get("status") in {
-                    "completed",
-                    "failed",
-                    "stopped",
-                    "killed",
-                }:
-                    connection.active_background_task_ids.discard(task_id)
+    # Claude Code republishes the whole set on every change, so the latest
+    # snapshot is the answer and nothing has to be accumulated from edges
+    if (
+        message.get("type") == "system"
+        and message.get("subtype") == "background_tasks_changed"
+    ):
+        tasks = message.get("tasks")
+        if isinstance(tasks, list):
+            connection.active_background_task_ids = {
+                task_id
+                for task in tasks
+                if isinstance(task, dict)
+                and isinstance(task_id := task.get("task_id"), str)
+                and task_id
+            }
     connection.background_active = bool(
         connection.active_background_task_ids or connection.client.provider_wake_active
     )
