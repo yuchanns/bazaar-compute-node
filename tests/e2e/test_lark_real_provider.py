@@ -29,7 +29,7 @@ def _channel(tmp_path: Path, timer_wheel: TimerWheel) -> LarkChannel:
     app_id = os.environ.get("BCN_LARK_APP_ID")
     app_secret = os.environ.get("BCN_LARK_APP_SECRET")
     if not app_id or not app_secret:
-        pytest.skip(
+        pytest.fail(
             "BCN_LARK_APP_ID and BCN_LARK_APP_SECRET are required for Lark provider verification"
         )
     region = os.environ.get("BCN_LARK_REGION", "feishu")
@@ -83,7 +83,7 @@ async def test_lark_real_provider_delivers_a_message(tmp_path: Path) -> None:
 
     chat_id = os.environ.get("BCN_LARK_TEST_CHAT_ID")
     if not chat_id:
-        pytest.skip("BCN_LARK_TEST_CHAT_ID is required to verify Lark delivery")
+        pytest.fail("BCN_LARK_TEST_CHAT_ID is required to verify Lark delivery")
     timer_wheel = TimerWheel()
     await timer_wheel.start()
     channel: LarkChannel | None = None
