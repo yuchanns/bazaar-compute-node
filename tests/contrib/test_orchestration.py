@@ -3688,29 +3688,34 @@ async def test_context_expiry() -> None:
         runtime.emit_expire(first_a.id)
         await wait_until(
             lambda: (
-                orchestrator.runtime_session(Thread("bcn-a")) is None
-                and orchestrator.runtime_session(Thread("bcn-b")) is None
+                first_a.id in orchestrator._stale_context_ids
+                and first_b.id in orchestrator._stale_context_ids
             )
         )
-        await wait_until(lambda: len(runtime.stopped_sessions) == 2)
 
-        assert {session.id for session in runtime.stopped_sessions} == {
-            first_a.id,
-            first_b.id,
-        }
-        assert len(runtime.stopped_sessions) == 2
+        # marking alone changes nothing: both sessions keep serving
+        assert orchestrator.runtime_session(Thread("bcn-a")) is first_a
+        assert orchestrator.runtime_session(Thread("bcn-b")) is first_b
+        assert runtime.stopped_sessions == []
         assert len(runtime.started_sessions) == 2
 
+        # the next turn is what replaces the marked session it runs on
         await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=2))
         second_a = orchestrator.runtime_session(Thread("bcn-a"))
         assert second_a is not None
         assert second_a.id != first_a.id
-        runtime.emit_expire(second_a.id)
-        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-a")) is None)
-        await wait_until(lambda: len(runtime.stopped_sessions) == 3)
+        assert runtime.stopped_sessions == [first_a]
+        assert orchestrator.runtime_session(Thread("bcn-b")) is first_b
 
+        runtime.emit_expire(second_a.id)
+        await wait_until(lambda: second_a.id in orchestrator._stale_context_ids)
+        await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=3))
+        third_a = orchestrator.runtime_session(Thread("bcn-a"))
+        assert third_a is not None
+        assert third_a.id != second_a.id
         assert runtime.stopped_sessions.count(second_a) == 1
-        assert len(runtime.started_sessions) == 3
+        # bcn-a started three times, bcn-b once and still running
+        assert len(runtime.started_sessions) == 4
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -3724,7 +3729,7 @@ async def test_context_expiry() -> None:
         assert first_runtime is not None
 
         runtime.emit_expire(first_runtime.id)
-        await wait_until(lambda: first_runtime.id in orchestrator._expired_runtime_ids)
+        await wait_until(lambda: first_runtime.id in orchestrator._stale_context_ids)
         assert runtime.stopped_sessions == []
 
         runtime.queue_turn_plan(TestTurnPlan())
@@ -3750,7 +3755,92 @@ async def test_context_expiry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> None:
+async def test_context_expiry_still_recycles_without_another_turn() -> None:
+    # a mark that lands mid-turn cancels the running timer, so the turn has to
+    # leave a new one behind or nothing ever revisits the session
+    orchestrator, runtime, _, wheel = await make_idle_timeout_node(30)
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    task = orchestrator.dispatch_inbound(make_message(seq=1))
+    try:
+        await runtime.turn_started.wait()
+        runtime_session = orchestrator.runtime_session(Thread("bcn-1"))
+        assert runtime_session is not None
+
+        runtime.emit_expire(runtime_session.id)
+        await wait_until(lambda: runtime_session.id in orchestrator._stale_context_ids)
+
+        next(iter(runtime.active_streams)).release()
+        assert await task is not None
+
+        async with asyncio.timeout(1):
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
+                await asyncio.sleep(0.01)
+        assert runtime.stopped_sessions == [runtime_session]
+        assert runtime_session.id not in orchestrator._stale_context_ids
+    finally:
+        if not task.done():
+            task.cancel()
+        await orchestrator.stop(timeout=1)
+        await wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_context_expiry_reaches_sessions_created_since() -> None:
+    # a marked session can outlive the change that marked it, so later changes
+    # still have to reach whatever was created in the meantime
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=1))
+        first_a = orchestrator.runtime_session(Thread("bcn-a"))
+        assert first_a is not None
+
+        runtime.background_job_present = True
+        runtime.emit_expire(first_a.id)
+        await wait_until(lambda: first_a.id in orchestrator._stale_context_ids)
+
+        await orchestrator.handle_inbound(make_message(session_id="bcn-b", seq=1))
+        first_b = orchestrator.runtime_session(Thread("bcn-b"))
+        assert first_b is not None
+        assert first_b.id not in orchestrator._stale_context_ids
+
+        runtime.emit_expire(first_a.id)
+        await wait_until(lambda: first_b.id in orchestrator._stale_context_ids)
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_context_expiry_waits_for_background_work() -> None:
+    # a marked session that still has background work keeps serving turns
+    orchestrator, _, runtime, _, _ = await make_node()
+    try:
+        await orchestrator.handle_inbound(make_message(seq=1))
+        first = orchestrator.runtime_session(Thread("bcn-1"))
+        assert first is not None
+
+        runtime.background_job_present = True
+        runtime.emit_expire(first.id)
+        await wait_until(lambda: first.id in orchestrator._stale_context_ids)
+
+        await orchestrator.handle_inbound(make_message(seq=2))
+        assert orchestrator.runtime_session(Thread("bcn-1")) is first
+        assert runtime.stopped_sessions == []
+        assert first.id in orchestrator._stale_context_ids
+
+        # once the work is gone the next turn takes the replacement
+        runtime.background_job_present = False
+        await orchestrator.handle_inbound(make_message(seq=3))
+        second = orchestrator.runtime_session(Thread("bcn-1"))
+        assert second is not None
+        assert second.id != first.id
+        assert runtime.stopped_sessions == [first]
+        assert second.id not in orchestrator._stale_context_ids
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_terminal_wait_completes_while_the_runtime_is_marked_expired() -> None:
     orchestrator, channel, runtime, _, _ = await make_node()
 
     async def command_script(commands: ICommandService, session_id: str) -> None:
@@ -3773,9 +3863,7 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
         runtime_session = orchestrator.runtime_session(Thread(message.thread_id))
         assert runtime_session is not None
         runtime.emit_expire(runtime_session.id)
-        await wait_until(
-            lambda: runtime_session.id in orchestrator._expired_runtime_ids
-        )
+        await wait_until(lambda: runtime_session.id in orchestrator._stale_context_ids)
 
         next(iter(runtime.active_streams)).release()
         outbound = await wait_for_turn_terminal(
@@ -3785,11 +3873,16 @@ async def test_terminal_wait_accepts_confirmed_runtime_discard_after_turn() -> N
             client_user_message_id=message.message_id,
             sent_after=0,
             timeout=1,
-            expect_runtime_discarded=True,
+            expect_runtime_discarded=False,
         )
 
         assert [message.body for message in outbound] == ["terminal reply"]
-        assert runtime.stopped_sessions == [runtime_session]
+        # the mark waits for a moment that costs nothing, so this turn finishes
+        # on the session it started on
+        assert runtime.stopped_sessions == []
+        assert (
+            orchestrator.runtime_session(Thread(message.thread_id)) is runtime_session
+        )
     finally:
         await orchestrator.stop(timeout=1)
 
@@ -3807,13 +3900,14 @@ async def test_context_and_timer_expiry_stop_the_runtime_once(
 
         if context_first:
             runtime.emit_expire(runtime_session.id)
-        else:
-            await asyncio.sleep(0.06)
-        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-1")) is None)
+            await wait_until(
+                lambda: runtime_session.id in orchestrator._stale_context_ids
+            )
+        async with asyncio.timeout(1):
+            while orchestrator.runtime_session(Thread("bcn-1")) is not None:
+                await asyncio.sleep(0.01)
 
-        if context_first:
-            await asyncio.sleep(0.06)
-        else:
+        if not context_first:
             runtime.emit_expire(runtime_session.id)
             await asyncio.sleep(0)
         assert runtime.stopped_sessions == [runtime_session]
@@ -4311,7 +4405,10 @@ async def test_multi_runtime_expiry_is_scoped_to_its_runtime() -> None:
         assert (session_a.runtime_index, session_b.runtime_index) == (0, 1)
 
         first.emit_expire(session_a.id)
-        await wait_until(lambda: orchestrator.runtime_session(Thread("bcn-a")) is None)
+        await wait_until(lambda: session_a.id in orchestrator._stale_context_ids)
+        assert session_b.id not in orchestrator._stale_context_ids
+
+        await orchestrator.handle_inbound(make_message(session_id="bcn-a", seq=2))
         await wait_until(lambda: len(first.stopped_sessions) == 1)
 
         assert orchestrator.runtime_session(Thread("bcn-b")) is session_b
