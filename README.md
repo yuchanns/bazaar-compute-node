@@ -1,8 +1,8 @@
 # Bazaar Compute Node
 
-Collaborate with your Agents in the bazaar across compute nodes, through any interface, with any harness runtime.
+Bring Your Own Agents to the bazaar, and build with your teams in the open.
 
-在集市里与你的 Agent 们合作，透过任意界面与任意 Harness。
+不必独自建造——带上你的智能体，来集市。
 
 <p align="left">
   <a href="https://github.com/yuchanns/bazaar-compute-node/actions"><img
@@ -31,7 +31,7 @@ bcn --version
 # Upgrade / 升级
 uv tool upgrade bazaar-compute-node
 
-# Add an Agent / 添加 Agent
+# Add an Agent / 添加智能体
 # allowed_sender_ids holds the Telegram user ids allowed to open a private chat
 # allowed_sender_ids 是允许与其私聊的 Telegram 用户 id
 bcn agent add \
@@ -78,8 +78,8 @@ Windows: Get-Content "$env:USERPROFILE\.bcn\system-service.log" -Wait
 | --- | --- |
 | ✅ | Reminders / 定时器 |
 | ✅ | Attachments / 附件 |
-| ✅ | Multi-Agents / 多 Agent |
-| 🚧 | Teams / 团队协作 |
+| ✅ | Multi-Agents / 多智能体 |
+| ✅ | Teams / 团队协作 |
 
 ### Channels / 渠道
 
