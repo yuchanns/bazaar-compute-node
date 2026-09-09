@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from ..core.utils import UnlimitedLineReader
 from ..core.utils.text import format_exception
@@ -56,13 +56,7 @@ class LocalCommandServer:
         self._unix_path: Path | None = None
         self._unix_identity: tuple[int, int] | None = None
         self._windows_server: Any | None = None
-        self._capability: str | None = None
         self._endpoint: str | None = None
-
-    def set_handler(self, handler: RequestHandler) -> None:
-        if self._server is not None or self._windows_server is not None:
-            raise RuntimeError("local command server handler is already active")
-        self._handler = handler
 
     @property
     def endpoint(self) -> str:
@@ -114,13 +108,11 @@ class LocalCommandServer:
         if windows_server is not None:
             await windows_server.stop()
             self._endpoint = None
-            self._capability = None
             return
 
         server = self._server
         self._server = None
         self._endpoint = None
-        self._capability = None
         if server is not None:
             server.close()
             await server.wait_closed()
@@ -157,8 +149,6 @@ class LocalCommandServer:
             if not isinstance(payload, dict):
                 raise TypeError("request must be a JSON object")
             response = await self._dispatch(payload)
-        except asyncio.CancelledError:
-            raise
         except json.JSONDecodeError as error:
             response = {
                 "ok": False,
@@ -194,14 +184,6 @@ class LocalCommandServer:
         if self._handler is None:
             raise RuntimeError("local command server is not ready")
         request = dict(payload)
-        if self._capability is not None:
-            capability = request.pop("capability", None)
-            if capability != self._capability:
-                return {
-                    "ok": False,
-                    "code": "LOCAL_AUTH_FAILED",
-                    "error": "local command capability is invalid",
-                }
         return await self._handler(request)
 
 
@@ -243,24 +225,6 @@ class LocalCommandClient:
             return await asyncio.to_thread(request_named_pipe, endpoint, payload)
         if parsed.scheme == "unix":
             reader, writer = await _open_unix_connection(parsed.path)
-        elif parsed.scheme == "tcp":
-            query = parse_qs(parsed.query)
-            token_values = query.get("token")
-            if (
-                set(query) != {"token"}
-                or token_values is None
-                or len(token_values) != 1
-            ):
-                raise ValueError("TCP command endpoint has no capability token")
-            if parsed.hostname != "127.0.0.1":
-                raise ValueError("TCP command endpoint must use loopback")
-            request["capability"] = token_values[0]
-            if parsed.hostname is None or parsed.port is None:
-                raise ValueError("TCP command endpoint is invalid")
-            reader, writer = await asyncio.open_connection(
-                parsed.hostname,
-                parsed.port,
-            )
         else:
             raise ValueError(f"unsupported local command endpoint: {endpoint}")
 

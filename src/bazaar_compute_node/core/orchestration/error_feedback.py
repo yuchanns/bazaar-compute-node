@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -152,8 +151,6 @@ class RuntimeErrorReporter:
                 error_message=error_message,
                 metadata=metadata,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception("runtime error feedback audit failed")
 

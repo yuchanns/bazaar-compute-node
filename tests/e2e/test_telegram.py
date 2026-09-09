@@ -40,7 +40,7 @@ async def _referenced_paths() -> set[str]:
 def _required_int(name: str) -> int:
     value = os.environ.get(name)
     if value is None:
-        pytest.skip(f"{name} is required for Telegram provider verification")
+        pytest.fail(f"{name} is required for Telegram provider verification")
     try:
         return int(value)
     except ValueError as error:
@@ -49,7 +49,7 @@ def _required_int(name: str) -> int:
 
 def _channel(tmp_path: Path) -> TelegramOutboundChannel:
     if not os.environ.get("BCN_TELEGRAM_BOT_TOKEN"):
-        pytest.skip(
+        pytest.fail(
             "BCN_TELEGRAM_BOT_TOKEN is required for Telegram provider verification"
         )
     channel = TelegramBuilder().build(

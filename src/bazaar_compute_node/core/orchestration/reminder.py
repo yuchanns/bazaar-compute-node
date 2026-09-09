@@ -89,10 +89,6 @@ class ReminderScheduler(IAsyncLifecycle):
         self._stopping = False
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.reminder")
 
-    @property
-    def active_timer(self) -> Timer | None:
-        return self._active_timer
-
     def poke(self) -> None:
         if not self._stopping:
             self._poke.set()
@@ -142,8 +138,6 @@ class ReminderScheduler(IAsyncLifecycle):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 raise
-            except asyncio.CancelledError:
-                raise
         self._task = None
         self._active_timer = None
         self._started = False
@@ -177,8 +171,6 @@ class ReminderScheduler(IAsyncLifecycle):
                     _WALL_CLOCK_RECHECK_MS,
                 )
                 await self._wait_for_frontier(delay_ms)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 self._logger.exception("reminder cycle failed; retrying")
                 try:
@@ -289,8 +281,6 @@ class ReminderScheduler(IAsyncLifecycle):
                     if current.repeat_rule is not None
                     else None
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 await self._cancel_unusable_reminder(
                     owner.agent_id,
@@ -395,8 +385,6 @@ class ReminderScheduler(IAsyncLifecycle):
     ) -> None:
         try:
             await self._publish_wake(agent_id, message)
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception(
                 "reminder wake publish failed",

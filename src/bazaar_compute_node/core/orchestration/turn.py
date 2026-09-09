@@ -763,8 +763,6 @@ class TurnCoordinator:
                 input_text,
                 timeout=self._timeout_budget.provider_call_seconds,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._logger.warning(
                 "runtime turn steer failed",
@@ -788,8 +786,6 @@ class TurnCoordinator:
                 correlation=self.turn_correlation(message, context, turn),
                 metadata={"provider_method": "turn/steer"},
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
 

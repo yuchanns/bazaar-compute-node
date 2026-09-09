@@ -26,13 +26,3 @@ def test_an_individual_agent_owns_no_actor_but_itself() -> None:
 
     with pytest.raises(ValueError, match="unknown actor"):
         actors.resolve("thread-a")
-
-
-def test_an_actor_carries_the_id_it_stands_for() -> None:
-    for actors in (
-        Actors(agent_id="agent-1", mode=Mode.SESSION),
-        Actors(agent_id="agent-1", mode=Mode.DANGEROUS_INDIVIDUAL),
-    ):
-        match actors.for_thread("thread-a"):
-            case Agent(id) | Thread(id):
-                assert id

@@ -281,11 +281,6 @@ class AgentApplication:
     ) -> Mapping[str, object]:
         return await self.command_dispatcher(request)
 
-    async def has_session(self, thread_id: str) -> bool:
-        if not isinstance(thread_id, str) or not thread_id:
-            return False
-        return await self.storage.get_thread(thread_id) is not None
-
     async def publish_inbox_wake(self, message: Message[InboundAttachment]) -> None:
         if not self._started:
             raise RuntimeError("Agent application is not started")

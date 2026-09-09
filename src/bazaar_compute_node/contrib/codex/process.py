@@ -350,8 +350,6 @@ class JsonlProcessSupervisor:
                     )
                     return
                 self._route_message(cast(JsonlMessage, payload))
-        except asyncio.CancelledError:
-            raise
         except (ConnectionError, OSError) as error:
             await self._protocol_failure(f"stdout read failed: {type(error).__name__}")
 
@@ -368,8 +366,6 @@ class JsonlProcessSupervisor:
                     result = self._stderr_handler(text)
                     if result is not None:
                         await result
-        except asyncio.CancelledError:
-            raise
         except ConnectionError, OSError:
             return
 

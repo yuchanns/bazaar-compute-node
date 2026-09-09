@@ -1610,157 +1610,154 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         )
 
     agent_id = str(uuid7())
+    now = time_ns() // 1_000_000
+    first_session = RuntimeSession(
+        id=f"runtime-first-{uuid7()}",
+        actor=Thread(f"bcn-first-{uuid7()}"),
+        runtime="codex",
+        runtime_index=0,
+        workspace_id=agent_id,
+        created_at_ms=now,
+        updated_at_ms=now,
+    )
+    second_session = RuntimeSession(
+        id=f"runtime-second-{uuid7()}",
+        actor=Thread(f"bcn-second-{uuid7()}"),
+        runtime="codex",
+        runtime_index=0,
+        workspace_id=agent_id,
+        created_at_ms=now,
+        updated_at_ms=now,
+    )
+    context = RuntimeCommandContext(
+        run_command=unexpected_command,
+        environment_for_session=lambda _: dict(os.environ),
+        agent_name="Test Agent",
+        bot_name=lambda: "provider_bot",
+        agent_id=agent_id,
+    )
+    first_runtime = Runtime(
+        context,
+        executable=codex,
+        model=TEST_MODEL,
+        effort=TEST_EFFORT,
+    )
+    second_runtime = Runtime(
+        context,
+        executable=codex,
+        model=TEST_MODEL,
+        effort=TEST_EFFORT,
+    )
+    await asyncio.gather(
+        first_runtime.start(timeout=10),
+        second_runtime.start(timeout=10),
+    )
     try:
-        now = time_ns() // 1_000_000
-        first_session = RuntimeSession(
-            id=f"runtime-first-{uuid7()}",
-            actor=Thread(f"bcn-first-{uuid7()}"),
-            runtime="codex",
-            runtime_index=0,
-            workspace_id=agent_id,
-            created_at_ms=now,
-            updated_at_ms=now,
+        first_result, second_result = await asyncio.gather(
+            first_runtime.start_session(first_session, timeout=30),
+            second_runtime.start_session(second_session, timeout=30),
         )
-        second_session = RuntimeSession(
-            id=f"runtime-second-{uuid7()}",
-            actor=Thread(f"bcn-second-{uuid7()}"),
-            runtime="codex",
-            runtime_index=0,
-            workspace_id=agent_id,
-            created_at_ms=now,
-            updated_at_ms=now,
+        assert first_result.value is not None
+        assert second_result.value is not None
+        first_running = first_result.value
+        second_running = second_result.value
+        first_thread, first_turn, first_events = await consume_turn(
+            first_runtime,
+            first_running,
+            "first-initial",
         )
-        context = RuntimeCommandContext(
-            run_command=unexpected_command,
-            environment_for_session=lambda _: dict(os.environ),
-            agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
-            agent_id=agent_id,
+        follow_up_thread, follow_up_turn, _ = await consume_turn(
+            first_runtime,
+            first_running,
+            "first-follow-up",
         )
-        first_runtime = Runtime(
+        assert follow_up_thread == first_thread
+        assert follow_up_turn != first_turn
+
+        concurrent = await asyncio.gather(
+            consume_turn(second_runtime, second_running, "second-concurrent"),
+            consume_turn(first_runtime, first_running, "first-concurrent"),
+        )
+        assert concurrent[0][0] != concurrent[1][0]
+        assert concurrent[0][1] != concurrent[1][1]
+        assert first_events[0] == "codex.turn.started"
+
+        active_turn = RuntimeTurn(
+            turn_id="turn-active-reconcile",
+            session_id=first_running.id,
+            state=RuntimeTurnState.STARTING,
+            started_at_ms=time_ns() // 1_000_000,
+            client_user_message_id="message-active-reconcile",
+        )
+        active_stream = await first_runtime.start_turn(
+            first_running,
+            active_turn,
+            "Please wait at least ten seconds before replying, then give one "
+            "short sentence about explicit state machines.",
+            _NoopApprovalHandler(),
+            timeout=30,
+        )
+        started_event = await anext(active_stream)
+        assert isinstance(started_event.payload, TurnStarted)
+        active_provider_turn_id = started_event.envelope.provider_turn_id
+        assert isinstance(active_provider_turn_id, str)
+        await active_stream.aclose()
+        active_turn = replace(
+            active_turn,
+            state=RuntimeTurnState.RUNNING,
+            provider_turn_id=active_provider_turn_id,
+        )
+
+        active_result = await first_runtime.reconcile_session(
+            first_running,
+            active_turn,
+            _NoopApprovalHandler(),
+            timeout=30,
+        )
+        assert active_result.value is not None
+        recovered_stream = active_result.value.stream
+        assert recovered_stream is not None
+        recovered_events = []
+        async with asyncio.timeout(180):
+            async for event in recovered_stream:
+                recovered_events.append(event)
+        recovered_runtime_events = [
+            event
+            for event in recovered_events
+            if isinstance(event.payload, TurnStarted | TurnCompleted)
+        ]
+        assert isinstance(recovered_runtime_events[-1].payload, TurnCompleted)
+
+        await first_runtime.stop(timeout=20)
+        resumed_runtime = Runtime(
             context,
             executable=codex,
             model=TEST_MODEL,
             effort=TEST_EFFORT,
         )
-        second_runtime = Runtime(
-            context,
-            executable=codex,
-            model=TEST_MODEL,
-            effort=TEST_EFFORT,
-        )
-        await asyncio.gather(
-            first_runtime.start(timeout=10),
-            second_runtime.start(timeout=10),
-        )
+        await resumed_runtime.start(timeout=10)
         try:
-            first_result, second_result = await asyncio.gather(
-                first_runtime.start_session(first_session, timeout=30),
-                second_runtime.start_session(second_session, timeout=30),
-            )
-            assert first_result.value is not None
-            assert second_result.value is not None
-            first_running = first_result.value
-            second_running = second_result.value
-            first_thread, first_turn, first_events = await consume_turn(
-                first_runtime,
+            resumed_result = await resumed_runtime.reconcile_session(
                 first_running,
-                "first-initial",
-            )
-            follow_up_thread, follow_up_turn, _ = await consume_turn(
-                first_runtime,
-                first_running,
-                "first-follow-up",
-            )
-            assert follow_up_thread == first_thread
-            assert follow_up_turn != first_turn
-
-            concurrent = await asyncio.gather(
-                consume_turn(second_runtime, second_running, "second-concurrent"),
-                consume_turn(first_runtime, first_running, "first-concurrent"),
-            )
-            assert concurrent[0][0] != concurrent[1][0]
-            assert concurrent[0][1] != concurrent[1][1]
-            assert first_events[0] == "codex.turn.started"
-
-            active_turn = RuntimeTurn(
-                turn_id="turn-active-reconcile",
-                session_id=first_running.id,
-                state=RuntimeTurnState.STARTING,
-                started_at_ms=time_ns() // 1_000_000,
-                client_user_message_id="message-active-reconcile",
-            )
-            active_stream = await first_runtime.start_turn(
-                first_running,
-                active_turn,
-                "Please wait at least ten seconds before replying, then give one "
-                "short sentence about explicit state machines.",
-                _NoopApprovalHandler(),
+                None,
+                None,
                 timeout=30,
             )
-            started_event = await anext(active_stream)
-            assert isinstance(started_event.payload, TurnStarted)
-            active_provider_turn_id = started_event.envelope.provider_turn_id
-            assert isinstance(active_provider_turn_id, str)
-            await active_stream.aclose()
-            active_turn = replace(
-                active_turn,
-                state=RuntimeTurnState.RUNNING,
-                provider_turn_id=active_provider_turn_id,
+            assert resumed_result.value is not None
+            assert resumed_result.value.stream is None
+            resumed = resumed_result.value.session
+            assert resumed.provider_thread_id == first_thread
+            resumed_thread, resumed_turn, _ = await consume_turn(
+                resumed_runtime,
+                resumed,
+                "first-resumed",
             )
-
-            active_result = await first_runtime.reconcile_session(
-                first_running,
-                active_turn,
-                _NoopApprovalHandler(),
-                timeout=30,
-            )
-            assert active_result.value is not None
-            recovered_stream = active_result.value.stream
-            assert recovered_stream is not None
-            recovered_events = []
-            async with asyncio.timeout(180):
-                async for event in recovered_stream:
-                    recovered_events.append(event)
-            recovered_runtime_events = [
-                event
-                for event in recovered_events
-                if isinstance(event.payload, TurnStarted | TurnCompleted)
-            ]
-            assert isinstance(recovered_runtime_events[-1].payload, TurnCompleted)
-
-            await first_runtime.stop(timeout=20)
-            resumed_runtime = Runtime(
-                context,
-                executable=codex,
-                model=TEST_MODEL,
-                effort=TEST_EFFORT,
-            )
-            await resumed_runtime.start(timeout=10)
-            try:
-                resumed_result = await resumed_runtime.reconcile_session(
-                    first_running,
-                    None,
-                    None,
-                    timeout=30,
-                )
-                assert resumed_result.value is not None
-                assert resumed_result.value.stream is None
-                resumed = resumed_result.value.session
-                assert resumed.provider_thread_id == first_thread
-                resumed_thread, resumed_turn, _ = await consume_turn(
-                    resumed_runtime,
-                    resumed,
-                    "first-resumed",
-                )
-                assert resumed_thread == first_thread
-                assert resumed_turn not in {first_turn, follow_up_turn}
-            finally:
-                await resumed_runtime.stop(timeout=20)
+            assert resumed_thread == first_thread
+            assert resumed_turn not in {first_turn, follow_up_turn}
         finally:
-            await second_runtime.stop(timeout=20)
+            await resumed_runtime.stop(timeout=20)
     finally:
-        pass
+        await second_runtime.stop(timeout=20)
 
 
 @pytest.mark.e2e

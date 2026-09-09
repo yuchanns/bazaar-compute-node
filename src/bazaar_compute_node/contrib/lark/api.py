@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -214,8 +213,6 @@ class LarkApi:
         while not self._token_stopping:
             try:
                 snapshot = await self._refresh_tenant_access_token()
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 self._record_token_refresh_failure(error)
                 if self._token_stopping:
@@ -236,8 +233,6 @@ class LarkApi:
                 await self._wait_for_token_refresh(
                     max(0.0, snapshot.refresh_at - monotonic())
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 self._token_refresh_failures += 1
                 self._token_refresh_error = error
@@ -300,8 +295,6 @@ class LarkApi:
     async def _wait_for_retry(self, delay_seconds: float) -> bool:
         try:
             await self._wait_for_token_refresh(delay_seconds)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._record_token_refresh_failure(error)
             self._token_available.set()
@@ -466,27 +459,6 @@ class LarkApi:
             chat_id=_optional_response_text(body, "chat_id"),
         )
 
-    async def reply_card(
-        self,
-        *,
-        message_id: str,
-        card_id: str,
-        reply_in_thread: bool,
-        uuid: str,
-        timeout: float,
-    ) -> LarkSentMessage:
-        return await self.reply_message(
-            message_id=message_id,
-            message_type="interactive",
-            content=json.dumps(
-                {"type": "card", "data": {"card_id": card_id}},
-                separators=(",", ":"),
-            ),
-            reply_in_thread=reply_in_thread,
-            uuid=uuid,
-            timeout=timeout,
-        )
-
     async def create_reaction(
         self,
         message_id: str,
@@ -521,75 +493,6 @@ class LarkApi:
             http_method="DELETE",
         )
         self._check_provider_result(body, "message_reaction_delete")
-
-    async def create_card(
-        self,
-        card: dict[str, object],
-        *,
-        timeout: float,
-    ) -> str:
-        body = await self._post_json(
-            "cardkit_card_create",
-            "/open-apis/cardkit/v1/cards",
-            timeout=timeout,
-            json_body={
-                "type": "card_json",
-                "data": json.dumps(card, ensure_ascii=False, separators=(",", ":")),
-            },
-        )
-        return _response_id(body, "cardkit_card_create", "card_id")
-
-    async def add_card_elements(
-        self,
-        card_id: str,
-        elements: list[dict[str, object]],
-        *,
-        uuid: str,
-        sequence: int,
-        timeout: float,
-    ) -> None:
-        await self._post_json(
-            "cardkit_element_create",
-            f"/open-apis/cardkit/v1/cards/{quote(card_id, safe='')}/elements",
-            timeout=timeout,
-            json_body={
-                "type": "append",
-                "uuid": uuid,
-                "sequence": sequence,
-                "elements": json.dumps(
-                    elements,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            },
-        )
-
-    async def update_card_element(
-        self,
-        card_id: str,
-        element_id: str,
-        element: dict[str, object],
-        *,
-        uuid: str,
-        sequence: int,
-        timeout: float,
-    ) -> None:
-        await self._post_json(
-            "cardkit_element_update",
-            f"/open-apis/cardkit/v1/cards/{quote(card_id, safe='')}/elements/"
-            f"{quote(element_id, safe='')}",
-            http_method="PUT",
-            timeout=timeout,
-            json_body={
-                "uuid": uuid,
-                "sequence": sequence,
-                "element": json.dumps(
-                    element,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            },
-        )
 
     async def update_card(
         self,
@@ -700,8 +603,6 @@ class LarkApi:
                         message="provider rejected message resource",
                     )
                 yield response
-        except LarkApiError:
-            raise
         except TimeoutError:
             raise LarkTransportError("message_resource", "TimeoutError") from None
         except (aiohttp.ClientError, OSError) as error:
@@ -736,7 +637,6 @@ class LarkApi:
         timeout: float,
         json_body: dict[str, object],
         params: Mapping[str, str] | None = None,
-        http_method: str = "POST",
     ) -> Mapping[str, object]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -748,7 +648,7 @@ class LarkApi:
             params=params,
             headers={"Authorization": f"Bearer {token}"},
             json_body=json_body,
-            http_method=http_method,
+            http_method="POST",
         )
         self._check_provider_result(body, method)
         return body
@@ -772,8 +672,6 @@ class LarkApi:
                         provider_code=None,
                         message="provider returned invalid JSON",
                     ) from None
-        except LarkApiError:
-            raise
         except TimeoutError:
             raise LarkTransportError(method, "TimeoutError") from None
         except (aiohttp.ClientError, OSError) as error:

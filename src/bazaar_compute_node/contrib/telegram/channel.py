@@ -404,8 +404,6 @@ class TelegramChannel(IChannel):
                 action="typing",
                 timeout=_TYPING_REQUEST_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception:  # noqa: BLE001
             self._typing_action_failures += 1
 
@@ -513,8 +511,6 @@ class TelegramChannel(IChannel):
             self._last_poll_at_ms = time_ns() // 1_000_000
             try:
                 updates = await api.get_updates(offset=offset)
-            except asyncio.CancelledError:
-                raise
             except TelegramApiError as error:
                 self._state = "degraded"
                 self._last_poll_error_kind = (
@@ -578,8 +574,6 @@ class TelegramChannel(IChannel):
                 self._updates_received += 1
                 try:
                     await self._dispatch_update(update, update_id=update_id)
-                except asyncio.CancelledError:
-                    raise
                 except Exception as error:  # noqa: BLE001
                     self._updates_filtered += 1
                     self._last_update_disposition = (

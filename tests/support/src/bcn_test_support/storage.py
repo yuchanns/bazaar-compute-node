@@ -501,20 +501,6 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         )
         return messages[-1].seq if messages else 0
 
-    async def get_latest_message(
-        self,
-        thread_id: str,
-        *,
-        direction: MessageDirection | None = None,
-        delivery_states: frozenset[OutboundDeliveryState] | None = None,
-    ) -> Message | None:
-        messages = self._filtered_messages(
-            thread_id,
-            direction=direction,
-            delivery_states=delivery_states,
-        )
-        return messages[-1] if messages else None
-
     async def count_messages(
         self,
         thread_id: str,

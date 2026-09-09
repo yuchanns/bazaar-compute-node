@@ -534,8 +534,6 @@ class SqliteExecutor:
             for connection in to_close:
                 try:
                     await connection.close()
-                except asyncio.CancelledError:
-                    raise
                 except Exception:
                     _LOGGER.exception("SQLite idle reader close failed")
 

@@ -78,8 +78,6 @@ class VersionWatcher:
             self._available = (
                 latest if Version(latest) > Version(self._current_version) else None
             )
-        except asyncio.CancelledError:
-            raise
         except aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError:
             self._logger.warning("version check failed", exc_info=True)
 

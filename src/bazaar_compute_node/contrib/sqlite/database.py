@@ -88,7 +88,6 @@ class SqliteDatabase:
         self._max_readers = max_readers
         self._reader_idle_timeout = float(reader_idle_timeout)
         self._executor: SqliteExecutor | None = None
-        self._schema_version: int | None = None
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -119,7 +118,7 @@ class SqliteDatabase:
                         self.database_path,
                         0o600,
                     )
-                    self._schema_version = await self._migrate(writer)
+                    await self._migrate(writer)
                     for _ in range(self._max_idle_readers):
                         readers.append(await self._open_connection(query_only=True))
                     executor = SqliteExecutor(
@@ -134,7 +133,6 @@ class SqliteDatabase:
                     self._executor = executor
             except BaseException:
                 self._executor = None
-                self._schema_version = None
                 if executor is not None and executor.is_started:
                     await executor.stop()
                 else:
@@ -199,7 +197,6 @@ class SqliteDatabase:
                 raise
             finally:
                 self._executor = None
-                self._schema_version = None
 
     async def wait_failure(self) -> None:
         executor = self._require_executor()

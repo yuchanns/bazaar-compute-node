@@ -262,8 +262,6 @@ class ProcessSupervisor:
                             if isinstance(error, str) and error.strip():
                                 self._result_error_tail.append(error.strip())
                 await self._incoming.put(payload)
-        except asyncio.CancelledError:
-            raise
         except (UnicodeDecodeError, json.JSONDecodeError, ClaudeProtocolError) as error:
             await self._fail(ClaudeProtocolError(str(error)))
         except (ConnectionError, OSError) as error:
@@ -279,8 +277,6 @@ class ProcessSupervisor:
                 self._stderr_tail.append(
                     line.decode("utf-8", errors="replace").rstrip("\r\n")
                 )
-        except asyncio.CancelledError:
-            raise
         except ConnectionError, OSError:
             return
 

@@ -243,23 +243,17 @@ class NodeApplication:
             await self.version_watcher.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             errors.append(f"version_watcher.stop:{type(error).__name__}")
         try:
             await self.reminder_scheduler.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             errors.append(f"reminder_scheduler.stop:{type(error).__name__}")
         for agent_id, agent in tuple(self.agents.items()):
             try:
                 await agent.stop()
-            except asyncio.CancelledError:
-                raise
             except Exception as error:  # noqa: BLE001
                 errors.append(f"agent[{agent_id}].stop:{type(error).__name__}")
                 self._log(
@@ -374,8 +368,6 @@ class NodeApplication:
             return False
         try:
             await agent.publish_inbox_wake(message)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._log(
                 "reminder.wake.failed",

@@ -404,8 +404,6 @@ class CommandDispatcher:
             raise CommandDispatchError(
                 "INVALID_COMMAND", "request kind is not supported"
             )
-        except asyncio.CancelledError:
-            raise
         except CommandDispatchError as error:
             response: dict[str, object] = {
                 "ok": False,

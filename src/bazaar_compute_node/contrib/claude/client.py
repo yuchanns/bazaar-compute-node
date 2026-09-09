@@ -343,8 +343,6 @@ class Client:
                 await self._route_business_message(envelope, sequence)
                 if self._message_observer is not None:
                     self._message_observer(envelope)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._fail_pending(error)
             self._publish_failure(error)
@@ -359,8 +357,6 @@ class Client:
                     "Claude control request has no active turn handler"
                 )
             response = await handler(envelope)
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             _LOGGER.warning(
                 "Claude control request handler failed",
@@ -404,8 +400,6 @@ class Client:
                         },
                     },
                 )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001
             self._publish_failure(
                 error

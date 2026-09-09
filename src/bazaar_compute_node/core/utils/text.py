@@ -24,13 +24,4 @@ def compact(count: int) -> str:
     return rounded.removesuffix(".0") + suffix
 
 
-def truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    suffix = "…"
-    prefix = encoded[: limit - len(suffix.encode("utf-8"))]
-    return prefix.decode("utf-8", errors="ignore") + suffix
-
-
-__all__ = ["compact", "format_exception", "truncate_utf8"]
+__all__ = ["compact", "format_exception"]
