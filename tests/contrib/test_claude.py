@@ -622,7 +622,7 @@ def test_claude_runtime_factory_preserves_runtime_options() -> None:
     )
 
 
-def test_claude_background_tasks_emit_only_the_idle_edge() -> None:
+def test_claude_background_tasks_track_the_published_snapshot() -> None:
     supervisor = ProcessSupervisor(
         ProcessSpec(Path("claude").as_posix(), (), Path.cwd(), {})
     )
@@ -634,46 +634,49 @@ def test_claude_background_tasks_emit_only_the_idle_edge() -> None:
         (2, 1, 239),
     )
 
-    assert not _observe_background(
+    # a background shell command is a task like any other
+    _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [
+                {"task_id": "task-1", "task_type": "local_bash"},
+                {"task_id": "task-2", "task_type": "local_agent"},
+            ],
+        },
+    )
+    assert connection.active_background_task_ids == {"task-1", "task-2"}
+
+    # the published set replaces what was there instead of accumulating edges
+    _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [{"task_id": "task-2", "task_type": "local_agent"}],
+        },
+    )
+    assert connection.active_background_task_ids == {"task-2"}
+
+    _observe_background(
+        connection,
+        {
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [],
+        },
+    )
+    assert connection.active_background_task_ids == set()
+
+    # a task event that carries no set leaves the last snapshot standing
+    _observe_background(
         connection,
         {
             "type": "system",
             "subtype": "task_started",
-            "task_id": "task-1",
-            "task_type": "local_agent",
+            "task_id": "task-3",
+            "task_type": "local_bash",
         },
     )
-    assert not _observe_background(
-        connection,
-        {
-            "type": "system",
-            "subtype": "task_started",
-            "task_id": "task-2",
-            "task_type": "local_workflow",
-        },
-    )
-    assert not _observe_background(
-        connection,
-        {
-            "type": "system",
-            "subtype": "task_notification",
-            "task_id": "task-1",
-        },
-    )
-    assert _observe_background(
-        connection,
-        {
-            "type": "system",
-            "subtype": "task_updated",
-            "task_id": "task-2",
-            "patch": {"status": "completed"},
-        },
-    )
-    assert not _observe_background(
-        connection,
-        {
-            "type": "system",
-            "subtype": "task_notification",
-            "task_id": "task-2",
-        },
-    )
+    assert connection.active_background_task_ids == set()

@@ -32,8 +32,6 @@ from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
     Runtime,
-    RuntimeBackgroundIdle,
-    RuntimeExpire,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
 )
@@ -89,9 +87,7 @@ class _RuntimeExpiry:
     generation: int
 
 
-type _RuntimeQueueItem = (
-    _RuntimeNotification | _RuntimeExpiry | RuntimeExpire | RuntimeBackgroundIdle
-)
+type _RuntimeQueueItem = _RuntimeNotification | _RuntimeExpiry
 
 
 def _awaiting(
@@ -237,7 +233,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         self._runtime_queues: dict[Actor, asyncio.Queue[_RuntimeQueueItem]] = {}
         self._runtime_workers: dict[Actor, asyncio.Task[None]] = {}
         self._runtime_timers: dict[Actor, _RuntimeTimerBinding] = {}
-        self._expired_runtime_ids: set[str] = set()
+        self._stale_context_ids: set[str] = set()
         self._receive_task: asyncio.Task[None] | None = None
         self._runtime_event_tasks: list[asyncio.Task[None]] = []
         self._background_failures: dict[str, str] = {}
@@ -357,7 +353,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
 
     async def _discard_runtime_session(self, runtime_session: RuntimeSession) -> None:
-        self._expired_runtime_ids.discard(runtime_session.id)
+        self._stale_context_ids.discard(runtime_session.id)
         if self.runtime_session(runtime_session.actor) is runtime_session:
             await self._cancel_runtime_timer(runtime_session)
             self._runtime_sessions.pop(runtime_session.actor, None)
@@ -396,23 +392,23 @@ class AgentOrchestrator(IAsyncLifecycle):
             watcher,
         )
 
+    async def _runtime_has_background_job(self, session: RuntimeSession) -> bool:
+        runtime = self._runtimes.get(session.runtime_index)
+        try:
+            return await runtime.has_background_job(
+                session,
+                timeout=self._timeout_budget.provider_call_seconds,
+            )
+        except Exception:
+            # an unanswered check is not an answer: keep the session and ask
+            # again later rather than replacing a runtime that is still working
+            self._logger.exception("runtime background job check failed")
+            return True
+
     async def _start_runtime_timer_if_idle(self, actor: Actor) -> None:
         runtime_session = self.runtime_session(actor)
-        if (
-            runtime_session is None
-            or runtime_session.id in self._expired_runtime_ids
-            or self._agent.get(actor) is not State.IDLE
-        ):
+        if runtime_session is None or self._agent.get(actor) is not State.IDLE:
             return
-        runtime = self._runtimes.get(runtime_session.runtime_index)
-        try:
-            if await runtime.has_background_job(
-                runtime_session,
-                timeout=self._timeout_budget.provider_call_seconds,
-            ):
-                return
-        except Exception:
-            self._logger.exception("runtime background job check failed")
         await self._start_runtime_timer(runtime_session)
 
     async def _forward_runtime_session_expiry(
@@ -562,7 +558,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         self._runtime_sessions.clear()
         self._runtimes.release_all()
         self._runtime_turns.clear()
-        self._expired_runtime_ids.clear()
+        self._stale_context_ids.clear()
 
     def dispatch_inbound(
         self,
@@ -632,29 +628,8 @@ class AgentOrchestrator(IAsyncLifecycle):
             finally:
                 queue.task_done()
 
-    async def _handle_queue_item(
-        self,
-        actor: Actor,
-        item: _RuntimeExpiry | RuntimeExpire | RuntimeBackgroundIdle,
-        queue: asyncio.Queue[_RuntimeQueueItem],
-        *,
-        queue_quiescent: bool,
-    ) -> None:
-        """Act on a queue item that is not a turn to take."""
-
-        match item:
-            case _RuntimeExpiry():
-                await self._handle_runtime_expiry(
-                    item, queue, queue_quiescent=queue_quiescent
-                )
-            case RuntimeExpire():
-                await self._handle_runtime_context_expire(actor, item, queue)
-            case RuntimeBackgroundIdle():
-                await self._handle_runtime_background_idle(actor, item)
-
     async def _absorb_queue_item(
         self,
-        actor: Actor,
         item: _RuntimeQueueItem,
         pending: list[_RuntimeQueueItem],
         queue: asyncio.Queue[_RuntimeQueueItem],
@@ -666,7 +641,7 @@ class AgentOrchestrator(IAsyncLifecycle):
             pending.append(item)
             await self._steer_active_turn(item)
             return
-        await self._handle_queue_item(actor, item, queue, queue_quiescent=False)
+        await self._handle_runtime_expiry(item, queue, queue_quiescent=False)
         queue.task_done()
 
     async def _runtime_loop(
@@ -679,8 +654,7 @@ class AgentOrchestrator(IAsyncLifecycle):
             item = pending.pop(0) if pending else await queue.get()
             if not isinstance(item, _RuntimeNotification):
                 try:
-                    await self._handle_queue_item(
-                        actor,
+                    await self._handle_runtime_expiry(
                         item,
                         queue,
                         queue_quiescent=not pending and queue.empty(),
@@ -709,9 +683,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                     if queue_task in done:
                         queued_item = queue_task.result()
                         queue_item_consumed = True
-                        await self._absorb_queue_item(
-                            actor, queued_item, pending, queue
-                        )
+                        await self._absorb_queue_item(queued_item, pending, queue)
                     if turn_task in done:
                         break
                     queue_task = asyncio.create_task(queue.get())
@@ -729,11 +701,6 @@ class AgentOrchestrator(IAsyncLifecycle):
                 await self._record_runtime_outcome(batch[0].message, result)
                 for completion in _awaiting(batch):
                     completion.set_result(result)
-                await self._stop_expired_runtime_if_idle(
-                    actor,
-                    queue,
-                    queue_quiescent=not pending and queue.empty(),
-                )
             except asyncio.CancelledError:
                 turn_task.cancel()
                 queue_task.cancel()
@@ -853,31 +820,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             queue_quiescent=queue_quiescent,
         )
 
-    async def _handle_runtime_context_expire(
-        self,
-        actor: Actor,
-        expire: RuntimeExpire,
-        queue: asyncio.Queue[_RuntimeQueueItem],
-    ) -> None:
-        runtime_session = self.runtime_session(actor)
-        if runtime_session is None or runtime_session.id != expire.runtime_session_id:
-            return
-        await self._stop_expired_runtime_if_idle(
-            actor,
-            queue,
-            queue_quiescent=True,
-        )
-
-    async def _handle_runtime_background_idle(
-        self,
-        actor: Actor,
-        event: RuntimeBackgroundIdle,
-    ) -> None:
-        runtime_session = self.runtime_session(actor)
-        if runtime_session is None or runtime_session.id != event.runtime_session_id:
-            return
-        await self._start_runtime_timer_if_idle(actor)
-
     async def _stop_expired_runtime_if_idle(
         self,
         actor: Actor,
@@ -887,10 +829,6 @@ class AgentOrchestrator(IAsyncLifecycle):
     ) -> None:
         binding = self._runtime_timers.get(actor)
         runtime_session = self.runtime_session(actor)
-        context_expired = (
-            runtime_session is not None
-            and runtime_session.id in self._expired_runtime_ids
-        )
         timer_expired = (
             binding is not None
             and binding.expired
@@ -899,18 +837,14 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         if (
             runtime_session is None
-            or not (context_expired or timer_expired)
-            or (not context_expired and not queue_quiescent)
+            or not timer_expired
+            or not queue_quiescent
             or self._agent.get(actor) is not State.IDLE
         ):
             return
         async with self._concurrency.for_thread(actor.id):
             binding = self._runtime_timers.get(actor)
             runtime_session = self.runtime_session(actor)
-            context_expired = (
-                runtime_session is not None
-                and runtime_session.id in self._expired_runtime_ids
-            )
             timer_expired = (
                 binding is not None
                 and binding.expired
@@ -919,10 +853,13 @@ class AgentOrchestrator(IAsyncLifecycle):
             )
             if (
                 runtime_session is None
-                or not (context_expired or timer_expired)
-                or (not context_expired and not queue.empty())
+                or not timer_expired
+                or not queue.empty()
                 or self._agent.get(actor) is not State.IDLE
             ):
+                return
+            if await self._runtime_has_background_job(runtime_session):
+                await self._start_runtime_timer(runtime_session)
                 return
             await self._stop_runtime_session_locked(
                 runtime_session,
@@ -997,19 +934,6 @@ class AgentOrchestrator(IAsyncLifecycle):
             event = await runtime.receive_event()
             if self._stopping:
                 return
-            if isinstance(event, RuntimeBackgroundIdle):
-                source = next(
-                    (
-                        runtime_session
-                        for runtime_session in self._runtime_sessions.values()
-                        if runtime_session.id == event.runtime_session_id
-                        and runtime_session.runtime_index == index
-                    ),
-                    None,
-                )
-                if source is not None:
-                    self._runtime_queues[source.actor].put_nowait(event)
-                continue
             source = next(
                 (
                     runtime_session
@@ -1019,20 +943,19 @@ class AgentOrchestrator(IAsyncLifecycle):
                 ),
                 None,
             )
-            if source is None or source.id in self._expired_runtime_ids:
+            if source is None:
                 continue
             targets = tuple(
                 runtime_session
                 for runtime_session in self._runtime_sessions.values()
                 if runtime_session.runtime_index == index
             )
-            self._expired_runtime_ids.update(
+            # marking is the whole reaction: the session keeps serving until a
+            # moment when replacing it costs nothing, either an idle timer that
+            # finds no background job or the next turn
+            self._stale_context_ids.update(
                 runtime_session.id for runtime_session in targets
             )
-            for runtime_session in targets:
-                self._runtime_queues[runtime_session.actor].put_nowait(
-                    RuntimeExpire(runtime_session.id)
-                )
 
     def _forget_task(self, task: asyncio.Task[RuntimeTurn | None]) -> None:
         self._active_tasks.discard(task)
@@ -1423,6 +1346,17 @@ class AgentOrchestrator(IAsyncLifecycle):
     ) -> TurnContext:
         """Bring a session to rest, replacing the runtime once if it will not."""
 
+        # a marked session carries stale context, so replace it before this turn
+        # unless it is still hosting background work that a stop would take down
+        if context.runtime_session.id in self._stale_context_ids and not (
+            await self._runtime_has_background_job(context.runtime_session)
+        ):
+            await self._stop_runtime_session(
+                context.runtime_session,
+                timeout=self._timeout_budget.provider_call_seconds,
+            )
+            await self._discard_runtime_session(context.runtime_session)
+            context = self._create_runtime_session(durable_context)
         for attempt in range(2):
             context, recovered_stream = await self._ensure_runtime_session_or_discard(
                 context
