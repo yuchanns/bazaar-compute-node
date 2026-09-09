@@ -4870,6 +4870,87 @@ async def test_a_sender_the_channel_cannot_address_stays_not_found() -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_peer_addressed_two_ways_stays_one_conversation() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        # This peer's DM was opened under its handle and carries no handle of
+        # its own, so `dm:@kana` cannot resolve to it and has to mint.
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-dm-1",
+                thread_id="bcn-dm-handle",
+                channel_session_id="channel-dm-handle",
+                channel="test",
+                provider_thread_id="test:dm:@kana",
+                provider_message_id="provider-dm-1",
+                received_at_ms=1,
+                sender=SenderIdentity(id="peer-1", name="kana"),
+                message_type="text",
+                target="dm:channel-dm-handle",
+                target_kind=ChannelTargetKind.DM,
+                body="hello",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(lambda: len(storage.channel_sessions) == 1)
+
+        await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm",
+            raw_target="dm:@kana",
+            body="hello in private",
+            created_at_ms=2,
+        )
+
+        # Minting reached the conversation that was already open instead of
+        # opening a second half of it.
+        assert len(storage.channel_sessions) == 1
+        assert (
+            storage.channel_sessions["channel-dm-handle"].provider_thread_id
+            == "test:dm:@kana"
+        )
+
+        # The peer answers under its provider id, which is the other way to
+        # reach this same conversation.
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=2,
+                message_id="message-dm-2",
+                thread_id="bcn-dm-id",
+                channel_session_id="channel-dm-peer-1",
+                channel="test",
+                provider_thread_id="test:dm:peer-1",
+                provider_message_id="provider-dm-2",
+                received_at_ms=3,
+                sender=SenderIdentity(id="peer-1", name="kana"),
+                message_type="text",
+                target="dm:channel-dm-peer-1",
+                target_kind=ChannelTargetKind.DM,
+                body="hello back",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-dm-handle", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 2
+            )
+        )
+        assert len(storage.channel_sessions) == 1
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
     orchestrator, channel, _, storage, _ = await make_node(
         mode=Mode.DANGEROUS_INDIVIDUAL

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import time_ns
 from unicodedata import category
 
@@ -468,8 +468,35 @@ class TelegramChannel(IChannel):
         return DmAddress(
             channel_session_id=identity.channel_session_id,
             thread_id=identity.session_id,
-            provider_thread_id=identity.provider_thread_id,
+            provider_thread_ids=self._dm_identities(identity, sender),
         )
+
+    @staticmethod
+    def _dm_identities(
+        identity: TelegramThreadIdentity, sender: SenderIdentity | None
+    ) -> tuple[str, ...]:
+        """Every identity this one DM answers to, the given one first.
+
+        A peer reached by `@username` and the same peer reached by its numeric
+        id are one conversation, and either form may be the one that opened it.
+        """
+
+        identities = (identity.provider_thread_id,)
+        if sender is None:
+            return identities
+        chat_id: int | str
+        if isinstance(identity.chat_id, str):
+            if sender.id is None:
+                return identities
+            try:
+                chat_id = int(sender.id)
+            except ValueError:
+                return identities
+        elif sender.name:
+            chat_id = f"@{sender.name}"
+        else:
+            return identities
+        return (*identities, replace(identity, chat_id=chat_id).provider_thread_id)
 
     async def send(
         self,

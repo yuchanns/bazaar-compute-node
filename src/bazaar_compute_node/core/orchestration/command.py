@@ -266,14 +266,17 @@ class CommandService(ICommandService):
             if address is None:
                 raise
         now = self._clock()
-        stored_session = await self._storage.get_channel_session(
-            address.channel_session_id
+        # the peer may already have written first under another of its
+        # identities, and that conversation is this one
+        stored_session = await self._storage.find_channel_session(
+            channel=known.channel,
+            provider_thread_ids=address.provider_thread_ids,
         )
         if stored_session is None:
             stored_session = ChannelSession(
                 id=address.channel_session_id,
                 channel=known.channel,
-                provider_thread_id=address.provider_thread_id,
+                provider_thread_id=address.provider_thread_ids[0],
                 created_at_ms=now,
                 updated_at_ms=now,
                 target_kind=ChannelTargetKind.DM,
@@ -289,11 +292,11 @@ class CommandService(ICommandService):
                 target_handle_key=handle.casefold(),
             )
         )
-        stored_thread = await self._storage.get_thread(address.thread_id)
+        stored_thread = await self._storage.find_thread(stored_session.id)
         if stored_thread is None:
             stored_thread = ConversationRow(
                 id=address.thread_id,
-                channel_session_id=address.channel_session_id,
+                channel_session_id=stored_session.id,
                 workspace_id=self._actors.agent_id,
                 created_at_ms=now,
                 updated_at_ms=now,

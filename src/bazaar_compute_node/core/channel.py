@@ -126,14 +126,16 @@ class IApproval(Protocol):
 class DmAddress:
     """A DM conversation in one channel's own terms.
 
-    Both ids come from the channel's own identity string rather than from the
-    provider thread id, so a later inbound message from the same peer lands on
-    this conversation instead of creating a second one.
+    A channel that can address the same peer more than one way reaches the same
+    conversation under any of `provider_thread_ids`: an inbound message that
+    arrived under one of them already opened this conversation, and opening a
+    second one would split it in half. A conversation that does not exist yet is
+    opened under the first.
     """
 
     channel_session_id: str
     thread_id: str
-    provider_thread_id: str
+    provider_thread_ids: tuple[str, ...]
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
@@ -257,7 +259,7 @@ class Channel(IChannel):
                 address.channel_session_id,
             ),
             thread_id=thread_id,
-            provider_thread_id=address.provider_thread_id,
+            provider_thread_ids=address.provider_thread_ids,
         )
 
     async def send(

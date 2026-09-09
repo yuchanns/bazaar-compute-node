@@ -243,20 +243,28 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             sender_kind=SenderKind.HUMAN,
         )
         assert human is not None
-        assert human.provider_thread_id == f"telegram:{bot_id}:{TEST_USER_ID}:0"
+        assert human.provider_thread_ids == (
+            f"telegram:{bot_id}:{TEST_USER_ID}:0",
+            f"telegram:{bot_id}:@human:0",
+        )
         # Bots reach each other by username; a numeric id does not apply.
         bot = channel.dm_address(
             SenderIdentity(id="7", name="kana"), sender_kind=SenderKind.AGENT
         )
         assert bot is not None
-        assert bot.provider_thread_id == f"telegram:{bot_id}:@kana:0"
+        # That same bot speaks with a numeric chat id, so the conversation this
+        # address opens is the one its messages already arrive in.
+        assert bot.provider_thread_ids == (
+            f"telegram:{bot_id}:@kana:0",
+            f"telegram:{bot_id}:7:0",
+        )
         # A bot without a username falls back to the numeric id rather than
         # minting an address Telegram would reject.
         nameless_bot = channel.dm_address(
             SenderIdentity(id="7"), sender_kind=SenderKind.AGENT
         )
         assert nameless_bot is not None
-        assert nameless_bot.provider_thread_id == f"telegram:{bot_id}:7:0"
+        assert nameless_bot.provider_thread_ids == (f"telegram:{bot_id}:7:0",)
         assert (
             channel.dm_address(
                 SenderIdentity(id="ou_not_numeric"), sender_kind=SenderKind.HUMAN

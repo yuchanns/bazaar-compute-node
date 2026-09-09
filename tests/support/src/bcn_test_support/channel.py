@@ -97,7 +97,13 @@ class TestChannel(IChannel):
         return DmAddress(
             channel_session_id=f"channel-dm-{sender.id}",
             thread_id=f"thread-dm-{sender.id}",
-            provider_thread_id=f"test:dm:{sender.id}",
+            # a peer that holds a handle is reachable by it too, and that is
+            # the form an already open conversation may be stored under
+            provider_thread_ids=(
+                (f"test:dm:{sender.id}", f"test:dm:@{sender.name}")
+                if sender.name
+                else (f"test:dm:{sender.id}",)
+            ),
         )
 
     async def start(self, *, timeout: float) -> None:

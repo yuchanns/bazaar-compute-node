@@ -570,7 +570,7 @@ class _StorageOperations(Protocol):
     ) -> Message[OutboundAttachment]: ...
 
     async def find_channel_session(
-        self, *, channel: str, provider_thread_id: str
+        self, *, channel: str, provider_thread_ids: tuple[str, ...]
     ) -> ChannelSession | None: ...
 
     async def get_channel_session(

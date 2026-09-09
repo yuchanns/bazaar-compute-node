@@ -964,7 +964,7 @@ class LarkChannel(IChannel):
         return DmAddress(
             channel_session_id=thread.channel_session_id,
             thread_id=thread.session_id,
-            provider_thread_id=thread.provider_thread_id,
+            provider_thread_ids=(thread.provider_thread_id,),
         )
 
     async def send(

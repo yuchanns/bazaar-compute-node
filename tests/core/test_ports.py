@@ -133,7 +133,7 @@ async def test_a_minted_dm_address_carries_the_same_namespace_as_a_received_one(
             body="hello",
             attachments=(),
             target_kind=ChannelTargetKind.DM,
-            provider_thread_id=address.provider_thread_id,
+            provider_thread_id=address.provider_thread_ids[0],
         ),
         timeout=1,
     )

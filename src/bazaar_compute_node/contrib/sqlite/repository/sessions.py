@@ -30,16 +30,26 @@ class SessionOperations(RepositoryBase):
         self,
         *,
         channel: str,
-        provider_thread_id: str,
+        provider_thread_ids: tuple[str, ...],
     ) -> ChannelSession | None:
+        """Find the conversation stored under any of these identities.
+
+        A channel that addresses one peer several ways offers every form it
+        knows, and they answer to a single row: whichever form opened the
+        conversation is the one it keeps.
+        """
+
+        if not provider_thread_ids:
+            return None
+        placeholders = ", ".join("?" for _ in provider_thread_ids)
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel, provider_thread_id, target_kind, following, "
             "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
             "target_display_name, target_handle, target_handle_key, "
             "provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
-            "AND provider_thread_id = ? ORDER BY rowid",
-            (channel, provider_thread_id),
+            f"AND provider_thread_id IN ({placeholders}) ORDER BY rowid",
+            (channel, *provider_thread_ids),
             "channel provider identity",
         )
         return channel_session_from_row(row) if row is not None else None
@@ -142,7 +152,7 @@ class SessionOperations(RepositoryBase):
         if existing is None:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
-                provider_thread_id=session.provider_thread_id,
+                provider_thread_ids=(session.provider_thread_id,),
             )
             if duplicate is not None:
                 raise ValueError(

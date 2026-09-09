@@ -19,6 +19,7 @@ from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     ChannelSession,
+    ChannelTargetKind,
     Message,
     RuntimeAttempt,
     RuntimeEventState,
@@ -1034,12 +1035,46 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         self._start_runtime_worker(actor, queue)
 
+    async def _settle_provider_thread_id(self, message: Message) -> Message:
+        """Name this conversation the way it is already stored.
+
+        A channel that can address one peer several ways may hand this message
+        the name that peer speaks under while the conversation was opened under
+        another. Only the stored row settles which one it answers to, and from
+        here on there is one name again.
+        """
+
+        if (
+            message.target_kind is not ChannelTargetKind.DM
+            or message.channel is None
+            or message.provider_thread_id is None
+            or message.sender is None
+        ):
+            return message
+        address = self._channel.dm_address(
+            message.sender, sender_kind=message.sender_kind
+        )
+        if address is None:
+            return message
+        candidates = tuple(
+            dict.fromkeys((message.provider_thread_id, *address.provider_thread_ids))
+        )
+        if len(candidates) == 1:
+            return message
+        stored = await self._storage.find_channel_session(
+            channel=message.channel,
+            provider_thread_ids=candidates,
+        )
+        if stored is None or stored.provider_thread_id == message.provider_thread_id:
+            return message
+        return replace(message, provider_thread_id=stored.provider_thread_id)
+
     async def _record_inbound(
         self,
         message: Message,
     ) -> tuple[_DurableTurnContext | None, Message, bool]:
         recorded = await self._storage.record_inbound(
-            message,
+            await self._settle_provider_thread_id(message),
             now_ms=self._clock(),
         )
         message = recorded.message

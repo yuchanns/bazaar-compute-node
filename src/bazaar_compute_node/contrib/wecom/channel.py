@@ -495,7 +495,7 @@ class WeComChannel(IChannel):
         return DmAddress(
             channel_session_id=str(uuid5(NAMESPACE_URL, identity)),
             thread_id=str(uuid5(NAMESPACE_URL, f"bcn:{identity}")),
-            provider_thread_id=sender.id,
+            provider_thread_ids=(sender.id,),
         )
 
     async def send(

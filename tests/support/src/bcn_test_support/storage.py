@@ -219,7 +219,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             message = cast(Message, existing_message)
         channel_session = await self.find_channel_session(
             channel=channel,
-            provider_thread_id=provider_thread_id,
+            provider_thread_ids=(provider_thread_id,),
         )
         channel_session_created = channel_session is None
         if channel_session is None:
@@ -315,14 +315,14 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         self,
         *,
         channel: str,
-        provider_thread_id: str,
+        provider_thread_ids: tuple[str, ...],
     ) -> ChannelSession | None:
         matches = [
             session
             for session in self._storage.channel_sessions.values()
             if (
                 session.channel == channel
-                and session.provider_thread_id == provider_thread_id
+                and session.provider_thread_id in provider_thread_ids
             )
         ]
         if len(matches) > 1:
@@ -739,7 +739,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         else:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
-                provider_thread_id=session.provider_thread_id,
+                provider_thread_ids=(session.provider_thread_id,),
             )
             if duplicate is not None:
                 raise ValueError(
