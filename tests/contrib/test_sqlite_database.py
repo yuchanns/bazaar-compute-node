@@ -691,7 +691,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1217,7 +1217,139 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v27_merges_a_dm_that_was_stored_under_two_names() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-1")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Agent 1")
+        for migration in MIGRATIONS[:26]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        # kana was reached by handle and answers by chat id: one conversation.
+        # mika is two different peers who happen to share a display name.
+        await connection.executemany(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "provider_identity_ref_json, target_handle, target_handle_key, "
+            "created_at_ms, updated_at_ms, agent_id"
+            ") VALUES (?, 'telegram', ?, 'dm', 1, '{}', ?, ?, 1, 1, 'agent-1')",
+            (
+                ("channel-kana-handle", "telegram:1:@kana:0", "kana", "kana"),
+                ("channel-kana-chat", "telegram:1:7:0", "kana", "kana"),
+                ("channel-mika-one", "telegram:1:8:0", "mika", "mika"),
+                ("channel-mika-two", "telegram:1:9:0", "mika", "mika"),
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO threads ("
+            "id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "agent_id"
+            ") VALUES (?, ?, 'agent-1', 1, 1, 'agent-1')",
+            (
+                ("thread-kana-handle", "channel-kana-handle"),
+                ("thread-kana-chat", "channel-kana-chat"),
+                ("thread-mika-one", "channel-mika-one"),
+                ("thread-mika-two", "channel-mika-two"),
+            ),
+        )
+        await connection.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, message_type, target, target_kind, body, "
+            "command_id, delivery_state, created_at_ms, provider_attempted_at_ms, "
+            "attachments_json"
+            ") VALUES ('outbound-to-kana', 1, 'outbound', 'agent-1', "
+            "'thread-kana-handle', 'channel-kana-handle', 'telegram', "
+            "'telegram:1:@kana:0', 'text', 'dm:channel-kana-handle', 'dm', "
+            "'hello in private', 'command-1', 'sent', 1, 1, '[]')"
+        )
+        await connection.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, provider_message_id, received_at_ms, "
+            "sender, sender_id, message_type, target, target_kind, body, "
+            "mentions_agent, notifies_runtime, metadata_json"
+            ") VALUES ('inbound-from-kana', 2, 'inbound', 'agent-1', "
+            "'thread-kana-chat', 'channel-kana-chat', 'telegram', 'telegram:1:7:0', "
+            "'11', 2, 'kana', '7', 'text', 'dm:@kana', 'dm', 'hello back', 0, 1, "
+            '\'{"sender_kind":"agent"}\')'
+        )
+        await connection.executemany(
+            "INSERT INTO consumer_cursors ("
+            "thread_id, delivered_through_seq, updated_at_ms"
+            ") VALUES (?, ?, 1)",
+            (("thread-kana-handle", 1), ("thread-kana-chat", 0)),
+        )
+        await connection.execute(
+            "INSERT INTO reminders ("
+            "reminder_id, owner_thread_id, anchor_message_id, title, state, "
+            "next_fire_at_ms, revision, last_occurrence_no, created_at_ms, "
+            "updated_at_ms, agent_id"
+            ") VALUES ('018f0000-0000-7000-8000-00000000002a', 'thread-kana-handle', "
+            "'inbound-from-kana', 'follow up with kana', 'scheduled', 100, 1, 0, 1, "
+            "1, 'agent-1')"
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        async with database.reader() as session, session.transaction():
+            sessions = await session.fetchall(
+                "SELECT id FROM channel_sessions ORDER BY id"
+            )
+            threads = await session.fetchall("SELECT id FROM threads ORDER BY id")
+            moved = await session.fetchone(
+                "SELECT thread_id, channel_session_id, provider_thread_id, target "
+                "FROM messages WHERE message_id = 'outbound-to-kana'"
+            )
+            cursors = await session.fetchall(
+                "SELECT thread_id, delivered_through_seq FROM consumer_cursors "
+                "ORDER BY thread_id"
+            )
+            reminder = await session.fetchone("SELECT owner_thread_id FROM reminders")
+
+        # the two halves of kana's conversation are one, and the two peers who
+        # share a display name are still two
+        assert [row["id"] for row in sessions] == [
+            "channel-kana-chat",
+            "channel-mika-one",
+            "channel-mika-two",
+        ]
+        assert [row["id"] for row in threads] == [
+            "thread-kana-chat",
+            "thread-mika-one",
+            "thread-mika-two",
+        ]
+        assert moved is not None
+        assert moved["thread_id"] == "thread-kana-chat"
+        assert moved["channel_session_id"] == "channel-kana-chat"
+        assert moved["target"] == "dm:@kana"
+        # how this message was addressed is a fact about the message, and the
+        # merge does not get to rewrite it
+        assert moved["provider_thread_id"] == "telegram:1:@kana:0"
+        # the surviving cursor covers what it inherited
+        assert [
+            (row["thread_id"], row["delivered_through_seq"]) for row in cursors
+        ] == [("thread-kana-chat", 1)]
+        assert reminder is not None
+        assert reminder["owner_thread_id"] == "thread-kana-chat"
     finally:
         await database.stop(timeout=2)
 
@@ -1291,7 +1423,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1400,7 +1532,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
