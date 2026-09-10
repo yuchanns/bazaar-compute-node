@@ -294,9 +294,13 @@ def validate_outbound_message_input(message: object) -> None:
 
 
 def validate_outbound_insert(message: Message[OutboundAttachment]) -> None:
-    if message.delivery_state is not OutboundDeliveryState.PENDING:
-        raise ValueError("a new outbound message must start in pending state")
-    if any(
+    """Check a message written once the provider has already answered.
+
+    An outbound is recorded after its attempt, so it arrives carrying whatever
+    became of it; only a message still waiting may claim to know nothing.
+    """
+
+    if message.delivery_state is OutboundDeliveryState.PENDING and any(
         value is not None
         for value in (
             message.provider_message_id,
@@ -442,7 +446,6 @@ def validate_channel_session_update(
         existing.channel != incoming.channel
         or existing.provider_thread_id != incoming.provider_thread_id
         or existing.target_kind is not incoming.target_kind
-        or existing.created_at_ms != incoming.created_at_ms
     ):
         raise ValueError("channel session identity cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)

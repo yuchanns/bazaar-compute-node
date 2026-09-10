@@ -6,13 +6,14 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Callable, Mapping
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from uuid import uuid7
 
 from ..actor import Actor, Actors, Agent, Thread
 from ..audit import AuditRecorder, ErrorKind
-from ..channel import ChannelSendRequest, IChannel
+from ..channel import ChannelSendRequest, DmAddress, IChannel
 from ..command import (
     ICommandService,
     InboxListResult,
@@ -120,6 +121,57 @@ class OutboundAttachmentResolver:
         return tuple(attachments)
 
 
+_DELIVERED_STATES = frozenset(
+    {
+        OutboundDeliveryState.SENT,
+        OutboundDeliveryState.QUEUED,
+        OutboundDeliveryState.PARTIAL,
+    }
+)
+
+
+def _answered(
+    outbound: Message[OutboundAttachment],
+    delivery_result: OutboundDeliveryResult,
+    *,
+    at_ms: int,
+) -> Message[OutboundAttachment]:
+    """Fold what the channel made of a message back into it."""
+
+    outbound = outbound.transition_to(
+        delivery_result.state,
+        at_ms=at_ms,
+        provider_message_id=delivery_result.provider_message_id,
+        provider_receipt_ref=delivery_result.provider_receipt_ref,
+        error_kind=delivery_result.error_kind,
+        error_message=delivery_result.error_message,
+    )
+    if not delivery_result.receipt:
+        return outbound
+    return replace(
+        outbound,
+        metadata={
+            **outbound.metadata,
+            "delivery_receipt": dict(delivery_result.receipt),
+        },
+    )
+
+
+def _reached_the_peer(delivery_result: OutboundDeliveryResult) -> bool:
+    """Say whether any of this message is with the peer.
+
+    A message that never left is not part of the conversation, and writing it
+    down would put words in a history that never carried them. An attempt whose
+    outcome is unknown still counts when the provider named a part it took.
+    """
+
+    return (
+        delivery_result.state in _DELIVERED_STATES
+        or delivery_result.provider_message_id is not None
+        or delivery_result.provider_thread_id is not None
+    )
+
+
 _DELIVERY_OUTCOMES: dict[
     OutboundDeliveryState, tuple[ErrorKind | None, RuntimeEventState]
 ] = {
@@ -131,6 +183,15 @@ _DELIVERY_OUTCOMES: dict[
     ),
     OutboundDeliveryState.FAILED: (ErrorKind.PROVIDER_FAILED, RuntimeEventState.FAILED),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _DmOpening:
+    """Where a DM that has never been held would be sent, and what to call it."""
+
+    address: DmAddress
+    channel: str
+    handle: str
 
 
 class CommandService(ICommandService):
@@ -157,6 +218,9 @@ class CommandService(ICommandService):
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
         self._drafts: dict[str, MessageDraft] = {}
+        # an outbound is written down once the provider answers, so until then
+        # only this holds a command to its one attempt
+        self._sending: set[str] = set()
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
@@ -232,76 +296,134 @@ class CommandService(ICommandService):
         )
         return result
 
-    async def _resolve_or_mint(
-        self, actor: Actor, raw_target: str
-    ) -> ResolvedInboxTarget:
-        """Resolve a target, minting a DM conversation for a known sender.
+    async def _dm_opening(self, actor: Actor, raw_target: str) -> _DmOpening | None:
+        """Find where a DM this node has never held would be sent.
 
-        Only `dm:@` is minted, and only from a sender this Agent has already
+        Only `dm:@` opens, and only towards a sender this Agent has already
         heard from: the address comes from that past message, never from a
         directory lookup. A conversation-scoped actor never reaches a
         conversation it did not already own, so it is refused before anything
-        is written. Anything else stays a resolution failure.
+        is sent. `None` means the target stays unresolvable.
         """
 
-        try:
-            return await self._storage.resolve_inbox_target(raw_target)
-        except AmbiguousInboxTargetError:
-            # Several conversations answer to this handle. Minting a new one
-            # would silently pick a peer for the caller.
-            raise
-        except InboxTargetResolutionError:
-            if (
-                not isinstance(actor, Agent)
-                or not raw_target.startswith("dm:@")
-                or len(raw_target) == 4
-            ):
-                raise
-            known = await self._storage.find_known_sender(raw_target[4:])
-            if known is None:
-                raise
-            address = self._channel.dm_address(
-                known.sender, sender_kind=known.sender_kind
-            )
-            if address is None:
-                raise
-        now = self._clock()
-        stored_session = await self._storage.get_channel_session(
-            address.channel_session_id
-        )
-        if stored_session is None:
-            stored_session = ChannelSession(
-                id=address.channel_session_id,
-                channel=known.channel,
-                provider_thread_id=address.provider_thread_id,
-                created_at_ms=now,
-                updated_at_ms=now,
+        if (
+            not isinstance(actor, Agent)
+            or not raw_target.startswith("dm:@")
+            or len(raw_target) == 4
+        ):
+            return None
+        known = await self._storage.find_known_sender(raw_target[4:])
+        if known is None:
+            return None
+        address = self._channel.dm_address(known.sender, sender_kind=known.sender_kind)
+        if address is None:
+            return None
+        # The name the provider calls the peer comes first, then the token that
+        # found it.
+        handle = known.sender.name or raw_target[4:]
+        return _DmOpening(address=address, channel=known.channel, handle=handle)
+
+    async def _open_dm(
+        self,
+        *,
+        command_id: str,
+        raw_target: str,
+        opening: _DmOpening,
+        body: str,
+        attachments: tuple[OutboundAttachment, ...],
+        created_at_ms: int,
+    ) -> MessageSendSuccess:
+        """Send into a conversation that does not exist yet, then write it down.
+
+        The provider names the conversation it delivered into, and a chat opened
+        by a name it answers to is not reachable by its id until then. Writing
+        afterwards is what keeps this message and every later one in the same
+        conversation.
+        """
+
+        address = opening.address
+        attempted_at_ms = self._clock()
+        delivery_result = await self._delivery.deliver(
+            ChannelSendRequest(
+                session_id=address.thread_id,
+                body=body,
+                attachments=attachments,
                 target_kind=ChannelTargetKind.DM,
-            )
-        # The name this conversation already answers to comes first, then what
-        # the provider calls the peer, and only then the token that found it.
-        handle = stored_session.target_handle or known.sender.name or raw_target[4:]
-        await self._storage.save_channel_session(
-            replace(
-                stored_session,
-                updated_at_ms=now,
-                target_handle=handle,
-                target_handle_key=handle.casefold(),
+                provider_thread_id=address.provider_thread_id,
+                delivery_handle=address.delivery_handle,
             )
         )
-        stored_thread = await self._storage.get_thread(address.thread_id)
-        if stored_thread is None:
-            stored_thread = ConversationRow(
+        now = self._clock()
+        session = ChannelSession(
+            id=address.channel_session_id,
+            channel=opening.channel,
+            provider_thread_id=(
+                delivery_result.provider_thread_id or address.provider_thread_id
+            ),
+            created_at_ms=now,
+            updated_at_ms=now,
+            target_kind=ChannelTargetKind.DM,
+            target_handle=opening.handle,
+            target_handle_key=opening.handle.casefold(),
+        )
+        outbound = Message[OutboundAttachment](
+            direction=MessageDirection.OUTBOUND,
+            seq=0,
+            message_id=str(uuid7()),
+            command_id=command_id,
+            thread_id=address.thread_id,
+            channel_session_id=session.id,
+            target=session.canonical_target,
+            body=body,
+            attachments=attachments,
+            target_kind=ChannelTargetKind.DM,
+            delivery_state=OutboundDeliveryState.PENDING,
+            created_at_ms=created_at_ms,
+            provider_attempted_at_ms=attempted_at_ms,
+        )
+        outbound = _answered(outbound, delivery_result, at_ms=self._clock())
+        delivery_state = outbound.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        audit_context = self._correlation(
+            thread_id=address.thread_id,
+            channel=session.channel,
+            channel_session_id=session.id,
+            command_id=command_id,
+            outbound_message_id=outbound.message_id,
+        )
+        # a chat that was never opened is not a conversation, and writing one
+        # down would leave `dm:@name` resolving to something that cannot be
+        # spoken to; what became of the attempt is still worth recording
+        if not _reached_the_peer(delivery_result):
+            await self._record_delivery(
+                audit_context,
+                outbound,
+                delivery_result,
+                command_id=command_id,
+                canonical_target=raw_target,
+            )
+            return MessageSendSuccess(message=outbound, target=raw_target)
+        await self._storage.save_channel_session(session)
+        await self._storage.save_thread(
+            ConversationRow(
                 id=address.thread_id,
-                channel_session_id=address.channel_session_id,
+                channel_session_id=session.id,
                 workspace_id=self._actors.agent_id,
                 created_at_ms=now,
                 updated_at_ms=now,
             )
-        await self._storage.save_thread(replace(stored_thread, updated_at_ms=now))
-        # Ask for the conversation we just wrote rather than for the token that
-        # found it: the handle it answers to is the provider's, not that token.
-        return await self._storage.resolve_inbox_target(stored_session.canonical_target)
+        )
+        outbound = await self._storage.finalize_outbound_delivery(outbound)
+        await self._record_delivery(
+            audit_context,
+            outbound,
+            delivery_result,
+            command_id=command_id,
+            canonical_target=session.canonical_target,
+        )
+        resolved = await self._storage.resolve_inbox_target(session.canonical_target)
+        return MessageSendSuccess(message=outbound, target=resolved.display_target)
 
     def _require_in_reach(
         self,
@@ -405,42 +527,30 @@ class CommandService(ICommandService):
                 provider_reply_to_message_id=prepared.reply_to_provider_message_id,
             )
         )
-        outbound = replace(
-            outbound,
-            provider_attempted_at_ms=outbound.provider_attempted_at_ms or self._clock(),
-        )
-        outbound = outbound.transition_to(
-            delivery_result.state,
-            at_ms=self._clock(),
-            provider_message_id=delivery_result.provider_message_id,
-            provider_receipt_ref=delivery_result.provider_receipt_ref,
-            error_kind=delivery_result.error_kind,
-            error_message=delivery_result.error_message,
-        )
-        if delivery_result.receipt:
-            outbound = replace(
-                outbound,
-                metadata={
-                    **outbound.metadata,
-                    "delivery_receipt": dict(delivery_result.receipt),
-                },
-            )
-        return outbound, delivery_result
+        return _answered(
+            outbound, delivery_result, at_ms=self._clock()
+        ), delivery_result
 
     async def _record_delivery(
         self,
         audit_context: CorrelationContext,
+        outbound: Message[OutboundAttachment],
+        delivery_result: OutboundDeliveryResult,
         *,
         command_id: str,
         canonical_target: str,
-        delivery_state: OutboundDeliveryState,
-        error_message: str | None,
-        receipt: Mapping[str, object] | None,
-        terminal_kind: ErrorKind | None,
-        terminal_state: RuntimeEventState,
     ) -> None:
         """Write down what the channel did with the message, twice over."""
 
+        delivery_state = outbound.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        error_message = outbound.error_message
+        receipt = delivery_result.receipt
+        terminal_kind, terminal_state = _DELIVERY_OUTCOMES.get(
+            delivery_result.state,
+            (ErrorKind.PROVIDER_UNKNOWN, RuntimeEventState.UNKNOWN),
+        )
         await self._audit.append(
             event_name=f"channel.outbound.{delivery_state.value}",
             state=terminal_state,
@@ -511,14 +621,11 @@ class CommandService(ICommandService):
                 correlation=audit_context,
             )
             outbound, delivery_result = await self._transmit(outbound, prepared)
-            terminal_kind, terminal_state = _DELIVERY_OUTCOMES.get(
-                delivery_result.state,
-                (ErrorKind.PROVIDER_UNKNOWN, RuntimeEventState.UNKNOWN),
-            )
-            outbound = await self._storage.finalize_outbound_delivery(outbound)
             delivery_state = outbound.delivery_state
             if delivery_state is None:
                 raise RuntimeError("outbound message has no delivery state")
+            if _reached_the_peer(delivery_result):
+                outbound = await self._storage.finalize_outbound_delivery(outbound)
             if (
                 delivery_state
                 in {
@@ -530,13 +637,10 @@ class CommandService(ICommandService):
                 self._drafts.pop(target_id, None)
             await self._record_delivery(
                 audit_context,
+                outbound,
+                delivery_result,
                 command_id=command_id,
                 canonical_target=canonical_target,
-                delivery_state=delivery_state,
-                error_message=outbound.error_message,
-                receipt=delivery_result.receipt,
-                terminal_kind=terminal_kind,
-                terminal_state=terminal_state,
             )
             return outbound
 
@@ -563,7 +667,67 @@ class CommandService(ICommandService):
             )
         if not send_draft and not body.strip() and not attachments:
             raise ValueError("outbound message must not be empty")
-        target = await self._resolve_or_mint(actor, raw_target)
+        if command_id in self._sending:
+            raise ValueError(f"command was already sent: {command_id}")
+        self._sending.add(command_id)
+        try:
+            if await self._storage.has_outbound_for_command(command_id):
+                raise ValueError(f"command was already sent: {command_id}")
+            return await self._send(
+                actor=actor,
+                command_id=command_id,
+                raw_target=raw_target,
+                body=body,
+                created_at_ms=created_at_ms,
+                attachments=attachments,
+                reply_to_message_id=reply_to_message_id,
+                send_draft=send_draft,
+            )
+        finally:
+            self._sending.discard(command_id)
+
+    async def _send(
+        self,
+        *,
+        actor: Actor,
+        command_id: str,
+        raw_target: str,
+        body: str,
+        created_at_ms: int,
+        attachments: tuple[OutboundAttachment, ...],
+        reply_to_message_id: str | None,
+        send_draft: bool,
+    ) -> MessageSendResult:
+        try:
+            target = await self._storage.resolve_inbox_target(raw_target)
+        except AmbiguousInboxTargetError:
+            # Several conversations answer to this handle. Opening another one
+            # would silently pick a peer for the caller.
+            raise
+        except InboxTargetResolutionError:
+            opening = await self._dm_opening(actor, raw_target)
+            if opening is None or send_draft:
+                raise
+            # the conversation may be open already under a name this token does
+            # not answer to, and then there is nothing to open
+            held = await self._storage.find_channel_session(
+                channel=opening.channel,
+                provider_thread_id=opening.address.provider_thread_id,
+            )
+            # a conversation whose thread never made it is not open yet, and
+            # resolving it would fail for good
+            if held is not None and await self._storage.find_thread(held.id) is None:
+                held = None
+            if held is None:
+                return await self._open_dm(
+                    command_id=command_id,
+                    raw_target=raw_target,
+                    opening=opening,
+                    body=body,
+                    attachments=attachments,
+                    created_at_ms=created_at_ms,
+                )
+            target = await self._storage.resolve_inbox_target(held.canonical_target)
         self._require_in_reach(actor, target.thread.id, raw_target)
 
         staged = await self._stage_draft(

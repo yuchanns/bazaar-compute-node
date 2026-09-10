@@ -4,7 +4,7 @@ import asyncio
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ...core.channel import ChannelContext, ChannelDeliveryReceipt, ChannelSendRequest
 from ...core.outcomes import ProviderCallResult, ProviderCallStatus
@@ -39,12 +39,18 @@ class _Delivery:
             if receipt.get("state") == "confirmed"
             and isinstance(receipt.get("provider_message_id"), str)
         )
+        thread_ids = tuple(
+            value
+            for receipt in self.receipts
+            if isinstance(value := receipt.get("provider_thread_id"), str)
+        )
         return {
             "total_parts": self.total,
             "confirmed_parts": self.confirmed,
             "parts": tuple(self.receipts),
             "provider_message_id": confirmed_ids[0] if confirmed_ids else None,
             "provider_receipt_ref": confirmed_ids[-1] if confirmed_ids else None,
+            "provider_thread_id": thread_ids[0] if thread_ids else None,
         }
 
 
@@ -109,7 +115,11 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                 "invalid_route",
                 "Telegram outbound route belongs to another bot",
             )
+        # typing follows the conversation, which its own id names; only the
+        # send itself may need the name that opens a chat
         self._stream_routes[request.session_id] = identity
+        if request.delivery_handle is not None:
+            identity = replace(identity, chat_id=f"@{request.delivery_handle}")
 
         reply_to_message_id: int | None = None
         if request.provider_reply_to_message_id is not None:
@@ -325,6 +335,9 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
                     "fallback_from": fallback_from,
                     "state": "confirmed",
                     "provider_message_id": provider_message_id,
+                    "provider_thread_id": self._acknowledged_thread_id(
+                        provider_message, identity
+                    ),
                 }
             )
             delivery.confirmed += 1
@@ -423,7 +436,13 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
 
             delivery.receipts.append(
                 receipt_base
-                | {"state": "confirmed", "provider_message_id": provider_message_id}
+                | {
+                    "state": "confirmed",
+                    "provider_message_id": provider_message_id,
+                    "provider_thread_id": self._acknowledged_thread_id(
+                        provider_message, identity
+                    ),
+                }
             )
             delivery.confirmed += 1
             self._outbound_parts_confirmed += 1
@@ -661,6 +680,24 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         return str(provider_message_id)
 
     @staticmethod
+    def _acknowledged_thread_id(
+        message: Mapping[str, object], identity: TelegramThreadIdentity
+    ) -> str | None:
+        """The conversation Telegram says this message landed in.
+
+        A chat opened by `@username` answers under its own numeric id, and the
+        send acknowledgement is where that id first appears.
+        """
+
+        chat = message.get("chat")
+        if not isinstance(chat, Mapping):
+            return None
+        chat_id = chat.get("id")
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id == 0:
+            return None
+        return replace(identity, chat_id=chat_id).provider_thread_id
+
+    @staticmethod
     def _channel_receipt(receipts: list[dict[str, object]]) -> ChannelDeliveryReceipt:
         confirmed_ids: list[str] = []
         for receipt in receipts:
@@ -673,11 +710,17 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
             raise AssertionError(
                 "confirmed Telegram delivery requires provider message id"
             )
+        thread_ids = tuple(
+            value
+            for receipt in receipts
+            if isinstance(value := receipt.get("provider_thread_id"), str)
+        )
         return ChannelDeliveryReceipt(
             provider_message_id=confirmed_ids[0],
             provider_receipt_ref=(
                 confirmed_ids[-1] if len(confirmed_ids) > 1 else None
             ),
+            provider_thread_id=thread_ids[0] if thread_ids else None,
         )
 
 

@@ -386,6 +386,14 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def count_unread_messages(self) -> int:
         return len(await self._unread_in_scope())
 
+    async def has_outbound_for_command(self, command_id: str) -> bool:
+        return any(
+            message.command_id == command_id
+            and message.direction is MessageDirection.OUTBOUND
+            for thread in self._storage.messages.values()
+            for message in thread
+        )
+
     async def find_known_sender(self, token: str) -> KnownSender | None:
         inbound: list[Message] = []
         for thread in self._scoped_threads():
@@ -1021,9 +1029,7 @@ def _validate_outbound_message_input(message: object) -> None:
 
 
 def _validate_outbound_insert(message: Message) -> None:
-    if message.delivery_state is not OutboundDeliveryState.PENDING:
-        raise ValueError("a new outbound message must start in pending state")
-    if any(
+    if message.delivery_state is OutboundDeliveryState.PENDING and any(
         value is not None
         for value in (
             message.provider_message_id,
@@ -1128,7 +1134,6 @@ def _validate_channel_session_update(
     if (
         existing.channel != incoming.channel
         or existing.provider_thread_id != incoming.provider_thread_id
-        or existing.created_at_ms != incoming.created_at_ms
     ):
         raise ValueError("channel session identity cannot change")
     _validate_updated_at(existing.updated_at_ms, incoming.updated_at_ms)
