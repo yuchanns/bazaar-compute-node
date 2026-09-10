@@ -58,6 +58,7 @@ class OutboundDeliveryService:
                 state=OutboundDeliveryState.SENT,
                 provider_message_id=receipt.provider_message_id,
                 provider_receipt_ref=receipt.provider_receipt_ref,
+                provider_thread_id=receipt.provider_thread_id,
                 receipt=dict(provider_result.receipt),
             )
 
@@ -69,6 +70,7 @@ class OutboundDeliveryService:
                 state=OutboundDeliveryState.QUEUED,
                 provider_message_id=receipt.provider_message_id,
                 provider_receipt_ref=receipt.provider_receipt_ref,
+                provider_thread_id=receipt.provider_thread_id,
                 receipt=dict(provider_result.receipt),
             )
 
@@ -80,6 +82,7 @@ class OutboundDeliveryService:
                 state=OutboundDeliveryState.PARTIAL,
                 provider_message_id=receipt.provider_message_id,
                 provider_receipt_ref=receipt.provider_receipt_ref,
+                provider_thread_id=receipt.provider_thread_id,
                 error_kind=(
                     provider_result.error_kind or ErrorKind.PROVIDER_PARTIAL.value
                 ),
@@ -91,10 +94,15 @@ class OutboundDeliveryService:
         provider_receipt_ref = provider_result.receipt.get("provider_receipt_ref")
         if not isinstance(provider_receipt_ref, str) or not provider_receipt_ref:
             provider_receipt_ref = None
+        # a delivery that ended badly can still have opened the conversation
+        provider_thread_id = provider_result.receipt.get("provider_thread_id")
+        if not isinstance(provider_thread_id, str) or not provider_thread_id:
+            provider_thread_id = None
         if provider_result.status is ProviderCallStatus.FAILED:
             return OutboundDeliveryResult(
                 state=OutboundDeliveryState.FAILED,
                 provider_receipt_ref=provider_receipt_ref,
+                provider_thread_id=provider_thread_id,
                 error_kind=(
                     provider_result.error_kind or ErrorKind.PROVIDER_FAILED.value
                 ),
@@ -104,6 +112,7 @@ class OutboundDeliveryService:
         return OutboundDeliveryResult(
             state=OutboundDeliveryState.UNKNOWN,
             provider_receipt_ref=provider_receipt_ref,
+            provider_thread_id=provider_thread_id,
             error_kind=(provider_result.error_kind or ErrorKind.PROVIDER_UNKNOWN.value),
             error_message=provider_result.error_message,
             next_action="reconcile channel delivery before retrying",

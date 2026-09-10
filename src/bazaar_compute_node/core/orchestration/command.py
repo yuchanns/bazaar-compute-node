@@ -266,8 +266,9 @@ class CommandService(ICommandService):
             if address is None:
                 raise
         now = self._clock()
-        stored_session = await self._storage.get_channel_session(
-            address.channel_session_id
+        stored_session = await self._storage.find_channel_session(
+            channel=known.channel,
+            provider_thread_id=address.provider_thread_id,
         )
         if stored_session is None:
             stored_session = ChannelSession(
@@ -277,6 +278,11 @@ class CommandService(ICommandService):
                 created_at_ms=now,
                 updated_at_ms=now,
                 target_kind=ChannelTargetKind.DM,
+                metadata=(
+                    {"delivery_handle": address.delivery_handle}
+                    if address.delivery_handle is not None
+                    else {}
+                ),
             )
         # The name this conversation already answers to comes first, then what
         # the provider calls the peer, and only then the token that found it.
@@ -289,11 +295,11 @@ class CommandService(ICommandService):
                 target_handle_key=handle.casefold(),
             )
         )
-        stored_thread = await self._storage.get_thread(address.thread_id)
+        stored_thread = await self._storage.find_thread(stored_session.id)
         if stored_thread is None:
             stored_thread = ConversationRow(
                 id=address.thread_id,
-                channel_session_id=address.channel_session_id,
+                channel_session_id=stored_session.id,
                 workspace_id=self._actors.agent_id,
                 created_at_ms=now,
                 updated_at_ms=now,
@@ -403,6 +409,14 @@ class CommandService(ICommandService):
                 target_kind=channel_session.target_kind,
                 provider_thread_id=channel_session.provider_thread_id,
                 provider_reply_to_message_id=prepared.reply_to_provider_message_id,
+                delivery_handle=(
+                    handle
+                    if isinstance(
+                        handle := channel_session.metadata.get("delivery_handle"), str
+                    )
+                    and handle
+                    else None
+                ),
             )
         )
         outbound = replace(
@@ -425,7 +439,58 @@ class CommandService(ICommandService):
                     "delivery_receipt": dict(delivery_result.receipt),
                 },
             )
+        await self._settle_delivered_conversation(channel_session, delivery_result)
         return outbound, delivery_result
+
+    async def _settle_delivered_conversation(
+        self,
+        channel_session: ChannelSession,
+        delivery_result: OutboundDeliveryResult,
+    ) -> None:
+        """Take what a delivery says about the conversation it landed in.
+
+        A chat that has now been spoken in at all is reachable by its own id,
+        so the name that opened it stops being needed. The id itself normally only
+        confirms the name this conversation already has; when it does not, the
+        provider is the authority on where the message went, unless that
+        conversation is already open here: two rows under one name is worse
+        than a name that lags.
+        """
+
+        # the handle goes first: saving the row again after a rebind would
+        # offer an identity the row no longer has
+        opened = delivery_result.provider_thread_id is not None or (
+            delivery_result.state
+            in (OutboundDeliveryState.SENT, OutboundDeliveryState.PARTIAL)
+        )
+        if opened and "delivery_handle" in channel_session.metadata:
+            current = await self._storage.get_channel_session(channel_session.id)
+            if current is not None and "delivery_handle" in current.metadata:
+                await self._storage.save_channel_session(
+                    replace(
+                        current,
+                        metadata={
+                            key: value
+                            for key, value in current.metadata.items()
+                            if key != "delivery_handle"
+                        },
+                        updated_at_ms=self._clock(),
+                    )
+                )
+        delivered = delivery_result.provider_thread_id
+        if delivered is None or delivered == channel_session.provider_thread_id:
+            return
+        opened = await self._storage.find_channel_session(
+            channel=channel_session.channel,
+            provider_thread_id=delivered,
+        )
+        if opened is not None:
+            return
+        await self._storage.rebind_channel_session(
+            channel_session.id,
+            provider_thread_id=delivered,
+            updated_at_ms=self._clock(),
+        )
 
     async def _record_delivery(
         self,

@@ -576,6 +576,17 @@ class _StorageOperations(Protocol):
     async def get_channel_session(
         self, channel_session_id: str
     ) -> ChannelSession | None: ...
+
+    async def rebind_channel_session(
+        self,
+        channel_session_id: str,
+        *,
+        provider_thread_id: str,
+        updated_at_ms: int,
+    ) -> None:
+        """Let the provider rename a conversation this node opened blind."""
+        ...
+
     async def get_thread(self, thread_id: str) -> Thread | None: ...
     async def find_thread(self, channel_session_id: str) -> Thread | None: ...
     async def get_runtime_attempt(self, turn_id: str) -> RuntimeAttempt | None: ...

@@ -4870,6 +4870,106 @@ async def test_a_sender_the_channel_cannot_address_stays_not_found() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_minted_dm_is_named_by_its_peer_and_opened_by_handle() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-group-1",
+                thread_id="bcn-group",
+                channel_session_id="channel-group",
+                channel="test",
+                provider_thread_id="thread-group",
+                provider_message_id="provider-group-1",
+                received_at_ms=1,
+                sender=SenderIdentity(id="peer-1", name="kana"),
+                message_type="text",
+                target="group:channel-group",
+                target_kind=ChannelTargetKind.GROUP,
+                body="hello everyone",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-group", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 1
+            )
+        )
+
+        # This peer has only spoken in a group, so the DM does not exist yet.
+        await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm",
+            raw_target="dm:@kana",
+            body="hello in private",
+            created_at_ms=2,
+        )
+
+        # The conversation is named after the peer, and the handle rides along
+        # as what opens a chat that is not there yet.
+        minted = storage.channel_sessions["channel-dm-peer-1"]
+        assert minted.provider_thread_id == "test:dm:peer-1"
+        await wait_until(
+            lambda: any(
+                sent.delivery_handle == "kana" and sent.body == "hello in private"
+                for sent in channel.sent_messages
+            )
+        )
+        # the chat has been spoken in now, so its id reaches it and the name
+        # that opened it is done
+        await wait_until(
+            lambda: (
+                "delivery_handle"
+                not in storage.channel_sessions["channel-dm-peer-1"].metadata
+            )
+        )
+
+        # so the peer answering under its own id reaches that same conversation
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=2,
+                message_id="message-dm-1",
+                thread_id="bcn-dm-inbound",
+                channel_session_id="channel-dm-inbound",
+                channel="test",
+                provider_thread_id="test:dm:peer-1",
+                provider_message_id="provider-dm-1",
+                received_at_ms=3,
+                sender=SenderIdentity(id="peer-1", name="kana"),
+                message_type="text",
+                target="dm:channel-dm-inbound",
+                target_kind=ChannelTargetKind.DM,
+                body="hello back",
+                metadata={"sender_kind": SenderKind.AGENT.value},
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "thread-dm-peer-1", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 1
+            )
+        )
+        # the group and the one DM, not a second half of it
+        assert len(storage.channel_sessions) == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
     orchestrator, channel, _, storage, _ = await make_node(
         mode=Mode.DANGEROUS_INDIVIDUAL

@@ -63,6 +63,7 @@ class TestChannel(IChannel):
         self.stopped = False
         self.injected_messages: list[Message] = []
         self.send_requests: list[ChannelSendRequest] = []
+        self.delivered_thread_ids: dict[str, str] = {}
         self.send_attempts: list[ChannelSendRequest] = []
         self.send_gate: asyncio.Event | None = None
         self.queued_messages: list[ChannelSendRequest] = []
@@ -91,13 +92,13 @@ class TestChannel(IChannel):
     def dm_address(
         self, sender: SenderIdentity, *, sender_kind: SenderKind
     ) -> DmAddress | None:
-        del sender_kind
         if sender.id is None:
             return None
         return DmAddress(
             channel_session_id=f"channel-dm-{sender.id}",
             thread_id=f"thread-dm-{sender.id}",
             provider_thread_id=f"test:dm:{sender.id}",
+            delivery_handle=(sender.name if sender_kind is SenderKind.AGENT else None),
         )
 
     async def start(self, *, timeout: float) -> None:
@@ -208,7 +209,11 @@ class TestChannel(IChannel):
             result = ProviderCallResult(
                 status=ProviderCallStatus.CONFIRMED,
                 value=ChannelDeliveryReceipt(
-                    provider_message_id=f"test-message-{len(self.send_attempts)}"
+                    provider_message_id=f"test-message-{len(self.send_attempts)}",
+                    # a chat addressed by handle answers under the peer's id
+                    provider_thread_id=self.delivered_thread_ids.get(
+                        request.provider_thread_id, request.provider_thread_id
+                    ),
                 ),
             )
         if result.status is ProviderCallStatus.CONFIRMED:

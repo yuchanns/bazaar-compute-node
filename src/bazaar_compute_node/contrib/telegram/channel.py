@@ -446,29 +446,26 @@ class TelegramChannel(IChannel):
         bot_id = self._bot_id
         if bot_id is None:
             return None
-        chat_id: int | str
-        # sendMessage accepts an @username only for a bot, supergroup or
-        # channel; a person is still addressable by numeric id alone.
-        if sender_kind is SenderKind.AGENT and sender.name is not None:
-            chat_id = f"@{sender.name}"
         # A message a channel or an anonymous admin posted to a group carries
         # that chat's id and no `from`, so its kind is unknown; addressing it
         # would publish the DM back into the group it came from.
-        elif (
-            sender_kind in {SenderKind.HUMAN, SenderKind.AGENT}
-            and sender.id is not None
-        ):
-            try:
-                chat_id = int(sender.id)
-            except ValueError:
-                return None
-        else:
+        if sender_kind not in {SenderKind.HUMAN, SenderKind.AGENT} or sender.id is None:
+            return None
+        # The peer's own id is what its messages arrive under, so it is the one
+        # name this conversation can keep. A username only opens a chat that
+        # does not exist yet, which is a matter of delivery.
+        try:
+            chat_id = int(sender.id)
+        except ValueError:
             return None
         identity = TelegramThreadIdentity(bot_id=bot_id, chat_id=chat_id, topic_id=0)
         return DmAddress(
             channel_session_id=identity.channel_session_id,
             thread_id=identity.session_id,
             provider_thread_id=identity.provider_thread_id,
+            # a chat with a bot that has never been spoken to is only reachable
+            # by its username; a person is not addressable that way at all
+            delivery_handle=(sender.name if sender_kind is SenderKind.AGENT else None),
         )
 
     async def send(

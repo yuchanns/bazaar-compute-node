@@ -44,6 +44,26 @@ class SessionOperations(RepositoryBase):
         )
         return channel_session_from_row(row) if row is not None else None
 
+    async def rebind_channel_session(
+        self,
+        channel_session_id: str,
+        *,
+        provider_thread_id: str,
+        updated_at_ms: int,
+    ) -> None:
+        """Let the provider rename a conversation this node opened blind.
+
+        Addressing a chat that does not exist yet takes a name rather than an
+        id, and the provider answers with the id it keeps. Everything already
+        written stays where it is; only the name this row answers to moves.
+        """
+
+        await self.execute(
+            "UPDATE channel_sessions SET provider_thread_id = ?, updated_at_ms = ? "
+            "WHERE agent_id = /*agent_id*/? AND id = ?",
+            (provider_thread_id, updated_at_ms, channel_session_id),
+        )
+
     async def get_channel_session(
         self, channel_session_id: str
     ) -> ChannelSession | None:

@@ -334,6 +334,22 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     ) -> ChannelSession | None:
         return self._storage.channel_sessions.get(channel_session_id)
 
+    async def rebind_channel_session(
+        self,
+        channel_session_id: str,
+        *,
+        provider_thread_id: str,
+        updated_at_ms: int,
+    ) -> None:
+        session = self._storage.channel_sessions.get(channel_session_id)
+        if session is None:
+            return
+        self._storage.channel_sessions[channel_session_id] = replace(
+            session,
+            provider_thread_id=provider_thread_id,
+            updated_at_ms=updated_at_ms,
+        )
+
     async def get_thread(self, thread_id: str) -> Thread | None:
         session = self._storage.threads.get(thread_id)
         if session is None or not self._in_scope(session):

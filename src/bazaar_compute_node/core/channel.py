@@ -51,6 +51,9 @@ class ChannelDeliveryReceipt:
 
     provider_message_id: str | None = None
     provider_receipt_ref: str | None = None
+    # the conversation the provider says this landed in, which is the only
+    # authority on a chat that was addressed by a name rather than by its id
+    provider_thread_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.provider_message_id is None and self.provider_receipt_ref is None:
@@ -69,6 +72,9 @@ class ChannelSendRequest:
     target_kind: ChannelTargetKind
     provider_thread_id: str
     provider_reply_to_message_id: str | None = None
+    # a chat this node has never spoken in cannot be reached by its id yet, and
+    # this is the name that opens it
+    delivery_handle: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +140,9 @@ class DmAddress:
     channel_session_id: str
     thread_id: str
     provider_thread_id: str
+    # what it takes to open this chat while its id cannot reach it yet, for a
+    # channel where that is a different thing from naming it
+    delivery_handle: str | None = None
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
@@ -258,6 +267,7 @@ class Channel(IChannel):
             ),
             thread_id=thread_id,
             provider_thread_id=address.provider_thread_id,
+            delivery_handle=address.delivery_handle,
         )
 
     async def send(
