@@ -51,6 +51,9 @@ class ChannelDeliveryReceipt:
 
     provider_message_id: str | None = None
     provider_receipt_ref: str | None = None
+    # the conversation the provider says this landed in, which is the only
+    # authority on a chat that had to be opened by name
+    provider_thread_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.provider_message_id is None and self.provider_receipt_ref is None:
@@ -69,6 +72,7 @@ class ChannelSendRequest:
     target_kind: ChannelTargetKind
     provider_thread_id: str
     provider_reply_to_message_id: str | None = None
+    delivery_handle: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,11 +133,16 @@ class DmAddress:
     Both ids come from the channel's own identity string rather than from the
     provider thread id, so a later inbound message from the same peer lands on
     this conversation instead of creating a second one.
+
+    `delivery_handle` is what it takes to open a chat this node has never
+    spoken in, where the channel cannot reach it by id yet. Only the channel
+    knows whether such a name is needed and which one counts.
     """
 
     channel_session_id: str
     thread_id: str
     provider_thread_id: str
+    delivery_handle: str | None = None
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
@@ -258,6 +267,7 @@ class Channel(IChannel):
             ),
             thread_id=thread_id,
             provider_thread_id=address.provider_thread_id,
+            delivery_handle=address.delivery_handle,
         )
 
     async def send(

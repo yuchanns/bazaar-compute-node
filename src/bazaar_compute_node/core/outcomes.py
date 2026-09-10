@@ -60,6 +60,7 @@ class OutboundDeliveryResult:
     state: OutboundDeliveryState
     provider_message_id: str | None = None
     provider_receipt_ref: str | None = None
+    provider_thread_id: str | None = None
     error_kind: str | None = None
     error_message: str | None = None
     next_action: str | None = None

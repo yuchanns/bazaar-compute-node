@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
+from uuid import uuid7
 
 from .command import (
     InboxListResult,
@@ -376,23 +377,21 @@ class StorageOperationMixin:
             if reply_message is not None and reply_message.target == payload.target:
                 reply_to_message_id = payload.reply_to_message_id
                 reply_to_provider_message_id = reply_message.provider_message_id
-        outcome = await self.save_message(
-            Message(
-                direction=MessageDirection.OUTBOUND,
-                seq=0,
-                message_id=f"outbound-{target_id}-{command_id}",
-                command_id=command_id,
-                thread_id=target_id,
-                channel_session_id=channel_session.id,
-                target=payload.target,
-                body=payload.body,
-                attachments=payload.attachments,
-                target_kind=channel_session.target_kind,
-                delivery_state=OutboundDeliveryState.PENDING,
-                created_at_ms=payload.created_at_ms,
-                provider_attempted_at_ms=attempted_at_ms,
-                reply_to_message_id=reply_to_message_id,
-            )
+        outcome = Message(
+            direction=MessageDirection.OUTBOUND,
+            seq=0,
+            message_id=str(uuid7()),
+            command_id=command_id,
+            thread_id=target_id,
+            channel_session_id=channel_session.id,
+            target=payload.target,
+            body=payload.body,
+            attachments=payload.attachments,
+            target_kind=channel_session.target_kind,
+            delivery_state=OutboundDeliveryState.PENDING,
+            created_at_ms=payload.created_at_ms,
+            provider_attempted_at_ms=attempted_at_ms,
+            reply_to_message_id=reply_to_message_id,
         )
         return MaterializeOutboundResult(
             channel_session=channel_session,
@@ -632,6 +631,14 @@ class _StorageOperations(Protocol):
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
+
+    async def has_outbound_for_command(self, command_id: str) -> bool:
+        """Say whether this command already reached the peer.
+
+        An attempt that never left may be made again; one that did would arrive
+        twice, and only an attempt that arrived is written down.
+        """
+        ...
 
     async def get_owned_message(
         self,

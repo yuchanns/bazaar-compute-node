@@ -626,6 +626,16 @@ class MessageOperations(RepositoryBase):
                 raise ValueError("Agent-scoped message id is already in use")
         return message_id
 
+    async def has_outbound_for_command(self, command_id: str) -> bool:
+        return (
+            await self.fetchone(
+                "SELECT 1 FROM messages WHERE agent_id = /*agent_id*/? "
+                "AND command_id = ? AND direction = 'outbound'",
+                (command_id,),
+            )
+            is not None
+        )
+
     async def _resolve_reply(
         self, canonical: Message[InboundAttachment]
     ) -> Message[InboundAttachment]:
@@ -949,7 +959,7 @@ class MessageOperations(RepositoryBase):
 
         canonical = replace(
             message,
-            message_id=str(uuid7()),
+            message_id=message.message_id or str(uuid7()),
             seq=await self._next_message_seq(),
             channel=channel_session.channel,
             provider_thread_id=channel_session.provider_thread_id,

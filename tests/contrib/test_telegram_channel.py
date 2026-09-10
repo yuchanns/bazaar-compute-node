@@ -244,19 +244,21 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
         )
         assert human is not None
         assert human.provider_thread_id == f"telegram:{bot_id}:{TEST_USER_ID}:0"
-        # Bots reach each other by username; a numeric id does not apply.
+        assert human.delivery_handle is None
+        # A bot is named by its own id too, and reached by username only for as
+        # long as that chat does not exist.
         bot = channel.dm_address(
             SenderIdentity(id="7", name="kana"), sender_kind=SenderKind.AGENT
         )
         assert bot is not None
-        assert bot.provider_thread_id == f"telegram:{bot_id}:@kana:0"
-        # A bot without a username falls back to the numeric id rather than
-        # minting an address Telegram would reject.
+        assert bot.provider_thread_id == f"telegram:{bot_id}:7:0"
+        assert bot.delivery_handle == "kana"
         nameless_bot = channel.dm_address(
             SenderIdentity(id="7"), sender_kind=SenderKind.AGENT
         )
         assert nameless_bot is not None
         assert nameless_bot.provider_thread_id == f"telegram:{bot_id}:7:0"
+        assert nameless_bot.delivery_handle is None
         assert (
             channel.dm_address(
                 SenderIdentity(id="ou_not_numeric"), sender_kind=SenderKind.HUMAN
@@ -389,6 +391,29 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
     assert not isinstance(in_group, str)
     # Only the stranger was recorded; the two accepted messages were not.
     assert len(audit.events) == 1
+
+
+def test_telegram_reads_the_chat_a_send_landed_in() -> None:
+    from bazaar_compute_node.contrib.telegram.identity import TelegramThreadIdentity
+    from bazaar_compute_node.contrib.telegram.outbound import TelegramOutboundChannel
+
+    # a chat opened by name answers under its own id, and the send
+    # acknowledgement is where that id first appears
+    opened_by_name = TelegramThreadIdentity(bot_id=1, chat_id="@kana", topic_id=0)
+    assert (
+        TelegramOutboundChannel._acknowledged_thread_id(
+            {"message_id": 5, "chat": {"id": 7, "type": "private"}}, opened_by_name
+        )
+        == "telegram:1:7:0"
+    )
+
+    # an acknowledgement that names no chat leaves the conversation as it is
+    assert (
+        TelegramOutboundChannel._acknowledged_thread_id(
+            {"message_id": 5}, opened_by_name
+        )
+        is None
+    )
 
 
 def test_telegram_identity_round_trips_numeric_and_username_chats() -> None:
