@@ -691,7 +691,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1217,7 +1217,162 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v27_names_a_dm_by_the_peer_it_belongs_to() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-1")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Agent 1")
+        for migration in MIGRATIONS[:26]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        # kana answered, so its DM is stored twice; mika has not answered yet,
+        # so the one opened by handle is all it has
+        await connection.executemany(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "provider_identity_ref_json, target_handle, target_handle_key, "
+            "created_at_ms, updated_at_ms, agent_id"
+            ") VALUES (?, 'telegram', ?, ?, 1, '{}', ?, ?, 1, 1, 'agent-1')",
+            (
+                ("channel-group", "telegram:1:-100:0", "group", None, None),
+                ("channel-kana-handle", "telegram:1:@kana:0", "dm", "kana", "kana"),
+                ("channel-kana-chat", "telegram:1:7:0", "dm", "kana", "kana"),
+                ("channel-mika-handle", "telegram:1:@mika:0", "dm", "mika", "mika"),
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO threads ("
+            "id, channel_session_id, workspace_id, created_at_ms, updated_at_ms, "
+            "agent_id"
+            ") VALUES (?, ?, 'agent-1', 1, 1, 'agent-1')",
+            (
+                ("thread-group", "channel-group"),
+                ("thread-kana-handle", "channel-kana-handle"),
+                ("thread-kana-chat", "channel-kana-chat"),
+                ("thread-mika-handle", "channel-mika-handle"),
+            ),
+        )
+        await connection.executemany(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, provider_message_id, received_at_ms, "
+            "sender, sender_id, message_type, target, target_kind, body, "
+            "mentions_agent, notifies_runtime, metadata_json"
+            ") VALUES (?, ?, 'inbound', 'agent-1', ?, ?, 'telegram', ?, ?, 1, ?, ?, "
+            "'text', ?, ?, 'hello', 0, 1, '{\"sender_kind\":\"agent\"}')",
+            (
+                (
+                    "group-from-kana",
+                    1,
+                    "thread-group",
+                    "channel-group",
+                    "telegram:1:-100:0",
+                    "11",
+                    "kana",
+                    "7",
+                    "group:channel-group",
+                    "group",
+                ),
+                (
+                    "group-from-mika",
+                    2,
+                    "thread-group",
+                    "channel-group",
+                    "telegram:1:-100:0",
+                    "12",
+                    "mika",
+                    "8",
+                    "group:channel-group",
+                    "group",
+                ),
+                (
+                    "dm-from-kana",
+                    5,
+                    "thread-kana-chat",
+                    "channel-kana-chat",
+                    "telegram:1:7:0",
+                    "13",
+                    "kana",
+                    "7",
+                    "dm:channel-kana-chat",
+                    "dm",
+                ),
+            ),
+        )
+        await connection.execute(
+            "INSERT INTO messages ("
+            "message_id, seq, direction, agent_id, thread_id, channel_session_id, "
+            "channel, provider_thread_id, message_type, target, target_kind, body, "
+            "command_id, delivery_state, created_at_ms, provider_attempted_at_ms, "
+            "attachments_json"
+            ") VALUES ('dm-to-kana', 9, 'outbound', 'agent-1', 'thread-kana-handle', "
+            "'channel-kana-handle', 'telegram', 'telegram:1:@kana:0', 'text', "
+            "'dm:channel-kana-handle', 'dm', 'hello in private', 'command-1', 'sent', "
+            "9, 9, '[]')"
+        )
+        # the half opened by handle has read further than the peer's own thread,
+        # where seq 5 is still waiting
+        await connection.executemany(
+            "INSERT INTO consumer_cursors ("
+            "thread_id, delivered_through_seq, updated_at_ms"
+            ") VALUES (?, ?, 1)",
+            (("thread-kana-handle", 9), ("thread-kana-chat", 4)),
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        async with database.reader() as session, session.transaction():
+            sessions = await session.fetchall(
+                "SELECT id, provider_thread_id FROM channel_sessions"
+            )
+            threads = await session.fetchall("SELECT id FROM threads")
+            moved = await session.fetchone(
+                "SELECT thread_id, channel_session_id, provider_thread_id, target "
+                "FROM messages WHERE message_id = 'dm-to-kana'"
+            )
+            cursors = await session.fetchall(
+                "SELECT thread_id, delivered_through_seq FROM consumer_cursors"
+            )
+
+        # every DM now answers to the peer it belongs to
+        named = {row["id"]: row["provider_thread_id"] for row in sessions}
+        assert named["channel-kana-chat"] == "telegram:1:7:0"
+        assert named["channel-mika-handle"] == "telegram:1:8:0"
+        # the half opened by handle is gone, folded into the peer's own
+        assert "channel-kana-handle" not in named
+        thread_ids = {row["id"] for row in threads}
+        assert "thread-kana-chat" in thread_ids
+        assert "thread-kana-handle" not in thread_ids
+        assert moved is not None
+        assert moved["thread_id"] == "thread-kana-chat"
+        assert moved["channel_session_id"] == "channel-kana-chat"
+        assert moved["target"] == "dm:channel-kana-chat"
+        # how this message was addressed is a fact about the message
+        assert moved["provider_thread_id"] == "telegram:1:@kana:0"
+        # the message waiting at seq 5 is still waiting
+        read_through = {
+            row["thread_id"]: row["delivered_through_seq"] for row in cursors
+        }
+        assert read_through["thread-kana-chat"] == 4
+        assert "thread-kana-handle" not in read_through
     finally:
         await database.stop(timeout=2)
 
@@ -1291,7 +1446,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1400,7 +1555,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 26
+        assert schema_version["version"] == 27
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
