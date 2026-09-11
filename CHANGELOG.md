@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 - 2026-09-11
+
+## What's Changed
+* feat: let one runtime answer for every conversation an Agent has by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/68
+* fix: let a Telegram private chat answer only an allowed sender by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/70
+* feat: resolve dm:@name to a peer already heard from by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/69
+* fix: leave the changelog to stable releases by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/71
+* fix: report the Lark provider code with a failed send by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/72
+* refactor: remove redundant code and tests by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/73
+* Check background jobs when the idle timer expires by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/74
+* Let go of a process that will not die by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/75
+* Record an outbound once the provider has answered by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/78
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.1.39...v0.2.0
+
 ## 0.1.39 - 2026-09-03
 
 ## What's Changed
