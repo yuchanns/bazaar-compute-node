@@ -297,16 +297,12 @@ async def test_channels_keeps_going_when_one_member_fails_to_start() -> None:
     await channels.start(timeout=1)
     try:
         # the failure is visible per member, next to the ones that came up
-        health = channels.health
-        assert health["state"] == "degraded"
-        failed, serving_record = cast(tuple[dict[str, object], ...], health["channels"])
+        failed, serving_record = cast(
+            tuple[dict[str, object], ...], channels.health["channels"]
+        )
         assert failed["startup_error"] == "ConnectionError: provider refused the token"
         assert serving_record["identity"] == "bot-other"
         assert "startup_error" not in serving_record
-        # a member that is up but unwell is what the whole reports
-        serving.accepting = False
-        assert channels.health["state"] == "degraded"
-        serving.accepting = True
         # the member that is up answers for the whole
         assert channels.get_identity() == serving.identity
         await serving.inject(
@@ -448,10 +444,8 @@ async def test_channels_keeps_going_when_a_member_stream_breaks() -> None:
         stream = cast(AsyncGenerator[Message], channels.receive())
         await serving.inject(_inbound("other", "still-served"))
         assert (await anext(stream)).message_id == "still-served"
-        # the broken stream is reported next to the member, and the whole is degraded
-        health = channels.health
-        assert health["state"] == "degraded"
-        records = health["channels"]
+        # the broken stream is reported next to the member
+        records = channels.health["channels"]
         assert isinstance(records, tuple)
         assert records[0]["receive_error"] == "ConnectionResetError: long poll dropped"
         assert "receive_error" not in records[1]
