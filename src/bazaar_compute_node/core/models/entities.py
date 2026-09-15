@@ -33,6 +33,7 @@ class ChannelSession:
     provider_thread_id: str
     created_at_ms: int
     updated_at_ms: int
+    channel_identity: str | None = None
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
     following: bool = True
     last_inbound_at_ms: int | None = None
@@ -296,6 +297,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     attachments: tuple[AttachmentT, ...] = ()
     reply_to_message_id: str | None = None
     channel: str | None = None
+    channel_identity: str | None = None
     provider_thread_id: str | None = None
     provider_message_id: str | None = None
     provider_time_ms: int | None = None
@@ -303,7 +305,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     mentions_agent: bool = False
     notifies_runtime: bool = True
     provider_payload_ref: str | None = None
-    command_id: str | None = None
     delivery_state: OutboundDeliveryState | None = None
     created_at_ms: int | None = None
     provider_attempted_at_ms: int | None = None
@@ -329,7 +330,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
         if self.received_at_ms is None:
             raise ValueError("received_at_ms is required for inbound messages")
         outbound_fields = (
-            self.command_id,
             self.delivery_state,
             self.created_at_ms,
             self.provider_attempted_at_ms,
@@ -344,7 +344,6 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     def _validate_outbound(self) -> None:
         _ = self.system_message_kind
         for value, field_name in (
-            (self.command_id, "command_id"),
             (self.delivery_state, "delivery_state"),
             (self.created_at_ms, "created_at_ms"),
             (self.provider_attempted_at_ms, "provider_attempted_at_ms"),

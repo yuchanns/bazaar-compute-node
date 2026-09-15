@@ -151,7 +151,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
             response = await connection.client.start_thread(
                 DeveloperInstructionContext(
                     agent_name=self._context.agent_name,
-                    bot_name=self._context.bot_name(),
+                    bot_names=self._context.bot_names(),
                     agent_id=self._context.agent_id,
                     runtime_session_id=session.id,
                     runtime=session.runtime,

@@ -102,6 +102,8 @@ class RuntimeErrorReporter:
                 provider_reply_to_message_id=(
                     anchor.provider_message_id if anchor is not None else None
                 ),
+                channel=message.channel,
+                channel_identity=message.channel_identity,
             )
         )
         metadata: dict[str, object] = {

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import replace
+from typing import cast
 
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
@@ -8,12 +11,16 @@ from bcn_test_support import TestChannel, TestRuntime
 from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     Channel,
+    ChannelApprovalRequest,
     ChannelIdentity,
+    Channels,
     ChannelSendRequest,
 )
 from bazaar_compute_node.core.concurrency import ThreadLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
+    ApprovalRequest,
     ChannelTargetKind,
     Message,
     MessageDirection,
@@ -29,16 +36,16 @@ from bazaar_compute_node.core.runtime import (
 )
 
 
-def test_channel_identity_requires_one_safe_provider_field() -> None:
+def test_channel_identity_requires_safe_provider_fields() -> None:
     assert ChannelIdentity(id="provider-id") == ChannelIdentity(id="provider-id")
-    assert ChannelIdentity(name="Provider Name").name == "Provider Name"
+    assert ChannelIdentity(id="provider-id", name="Provider Name").name == (
+        "Provider Name"
+    )
 
-    with pytest.raises(ValueError, match="requires an id or name"):
-        ChannelIdentity()
     with pytest.raises(ValueError, match="id must be non-empty"):
         ChannelIdentity(id="")
     with pytest.raises(ValueError, match="name must not contain line breaks"):
-        ChannelIdentity(name="Provider\nName")
+        ChannelIdentity(id="provider-id", name="Provider\nName")
 
 
 @pytest.mark.asyncio
@@ -264,3 +271,406 @@ async def test_different_sessions_do_not_share_the_lock() -> None:
     await asyncio.wait_for(second_entered.wait(), timeout=0.1)
     release_first.set()
     await asyncio.gather(first_task, second_task)
+
+
+class _OtherKindChannel(TestChannel):
+    @property
+    def name(self) -> str:
+        return "other"
+
+
+class _RefusingChannel(TestChannel):
+    async def start(self, *, timeout: float) -> None:
+        del timeout
+        raise ConnectionError("provider refused the token")
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_going_when_one_member_fails_to_start() -> None:
+    refusing = _RefusingChannel()
+    serving = _OtherKindChannel()
+    serving.identity = ChannelIdentity(id="bot-other")
+    channels = Channels((refusing, serving))
+
+    assert channels.name == "test,other"
+    assert channels.members == (refusing, serving)
+    await channels.start(timeout=1)
+    try:
+        # the failure is visible per member, next to the ones that came up
+        health = channels.health
+        assert health["state"] == "degraded"
+        failed, serving_record = cast(tuple[dict[str, object], ...], health["channels"])
+        assert failed["startup_error"] == "ConnectionError: provider refused the token"
+        assert serving_record["identity"] == "bot-other"
+        assert "startup_error" not in serving_record
+        # a member that is up but unwell is what the whole reports
+        serving.accepting = False
+        assert channels.health["state"] == "degraded"
+        serving.accepting = True
+        # the member that is up answers for the whole
+        assert channels.get_identity() == serving.identity
+        await serving.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-1",
+                thread_id="thread-1",
+                channel_session_id="channel-1",
+                channel="other",
+                provider_thread_id="other:thread-1",
+                provider_message_id="provider-1",
+                received_at_ms=1,
+                sender=SenderIdentity(id="sender-id"),
+                target="dm:channel-1",
+                body="hello",
+            )
+        )
+        received = await anext(channels.receive())
+        assert received.message_id == "message-1"
+    finally:
+        await channels.stop(timeout=1)
+    assert serving.stopped is True
+    assert refusing.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_channels_with_no_member_up_does_not_start() -> None:
+    channels = Channels((_RefusingChannel(), _RefusingChannel()))
+
+    with pytest.raises(RuntimeError, match="no channel started"):
+        await channels.start(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_refuses_two_bots_of_one_kind_sharing_an_identity() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    twin = TestChannel()
+    twin.identity = ChannelIdentity(id="bot-1")
+    channels = Channels((first, twin))
+
+    with pytest.raises(ValueError, match="identity bot-1 is configured twice"):
+        await channels.start(timeout=1)
+    assert first.stopped is True
+    assert twin.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_channels_refuses_a_member_that_does_not_know_its_bot() -> None:
+    named = TestChannel()
+    nameless = _OtherKindChannel()
+    nameless.identity = None
+    channels = Channels((named, nameless))
+
+    with pytest.raises(RuntimeError, match="other channel #2 has no identity"):
+        await channels.start(timeout=1)
+    assert named.stopped is True
+    assert nameless.stopped is True
+
+
+def test_channels_needs_at_least_one_member() -> None:
+    with pytest.raises(ValueError, match="at least one channel"):
+        Channels(())
+
+
+def _inbound(kind: str, message_id: str) -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
+        seq=1,
+        message_id=message_id,
+        thread_id=f"thread-{kind}",
+        channel_session_id=f"channel-{kind}",
+        channel=kind,
+        provider_thread_id=f"{kind}:thread",
+        provider_message_id=message_id,
+        received_at_ms=1,
+        sender=SenderIdentity(id="sender-id"),
+        target=f"dm:channel-{kind}",
+        body="hello",
+    )
+
+
+class _BrokenStreamChannel(TestChannel):
+    async def receive(self) -> AsyncIterator[Message]:
+        for message in ():
+            yield message
+        raise ConnectionResetError("long poll dropped")
+
+
+@pytest.mark.asyncio
+async def test_channels_merges_every_member_into_one_stream() -> None:
+    first = TestChannel()
+    second = _OtherKindChannel()
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await first.inject(_inbound("test", "from-first"))
+        await second.inject(_inbound("other", "from-second"))
+        await first.inject(_inbound("test", "from-first-again"))
+        received = {(await anext(stream)).message_id for _ in range(3)}
+        assert received == {"from-first", "from-second", "from-first-again"}
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_reading_the_others_when_one_member_floods() -> None:
+    flooding = TestChannel()
+    quiet = _OtherKindChannel()
+    channels = Channels((flooding, quiet))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        # nobody is draining yet: the flood's reader holds one message and waits
+        for number in range(100):
+            await flooding.inject(_inbound("test", f"flood-{number}"))
+        await quiet.inject(_inbound("other", "from-quiet"))
+        # the quiet member's message comes through without the flood draining first
+        seen: list[str] = []
+        async with asyncio.timeout(1):
+            while "from-quiet" not in seen:
+                seen.append((await anext(stream)).message_id)
+        assert len(seen) <= 3
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_going_when_a_member_stream_breaks() -> None:
+    broken = _BrokenStreamChannel()
+    serving = _OtherKindChannel()
+    channels = Channels((broken, serving))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await serving.inject(_inbound("other", "still-served"))
+        assert (await anext(stream)).message_id == "still-served"
+        # the broken stream is reported next to the member, and the whole is degraded
+        health = channels.health
+        assert health["state"] == "degraded"
+        records = health["channels"]
+        assert isinstance(records, tuple)
+        assert records[0]["receive_error"] == "ConnectionResetError: long poll dropped"
+        assert "receive_error" not in records[1]
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_stream_ends_when_every_member_has_stopped() -> None:
+    first = TestChannel()
+    second = _OtherKindChannel()
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    stream = cast(AsyncGenerator[Message], channels.receive())
+    await first.inject(_inbound("test", "last-words"))
+    assert (await anext(stream)).message_id == "last-words"
+    await channels.stop(timeout=1)
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+
+def _turn_event(thread_id: str) -> RuntimeOutputEvent:
+    return RuntimeOutputEvent(
+        envelope=RuntimeEventEnvelope(
+            actor=Thread(thread_id),
+            runtime_session_id="runtime-1",
+            turn_id="turn-1",
+            provider_turn_id=None,
+            occurred_at_ms=1,
+        ),
+        payload=TurnCompleted(event_name="bcn.turn.completed"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_channels_answers_on_the_bot_a_conversation_lives_on() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        # an outbound goes to the bot recorded on its conversation, whichever
+        # member happens to come first
+        await channels.send(
+            ChannelSendRequest(
+                session_id="thread-on-second",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-2",
+            ),
+            timeout=1,
+        )
+        assert [request.session_id for request in first.send_requests] == []
+        assert [request.session_id for request in second.send_requests] == [
+            "thread-on-second"
+        ]
+
+        # so does an approval card
+        await channels.request_approval(
+            ChannelApprovalRequest(
+                approval=ApprovalRequest(
+                    request_id="approval-1",
+                    actor=Thread("thread-on-second"),
+                    runtime_session_id="runtime-1",
+                    action="rm -rf build",
+                    created_at_ms=1,
+                ),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-2",
+            ),
+            timeout=1,
+        )
+        assert first.approval_requests == []
+        assert [request.request_id for request in second.approval_requests] == [
+            "approval-1"
+        ]
+
+        # a turn's progress and anchor follow the member its message came in on
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await second.inject(_inbound("test", "from-second"))
+        received = await anext(stream)
+        channels.accept_turn_event(
+            _turn_event(received.thread_id), session_id=received.thread_id
+        )
+        channels.anchor_turn(received.thread_id, received)
+        assert first.event_sessions == []
+        assert second.event_sessions == [received.thread_id]
+        assert [anchor for anchor, _ in second.turn_anchors] == [received.thread_id]
+        await stream.aclose()
+
+        # a conversation that names no bot and has not been seen here is not
+        # guessed at
+        unowned = await channels.send(
+            ChannelSendRequest(
+                session_id="thread-unknown",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+            ),
+            timeout=1,
+        )
+        assert unowned.status is ProviderCallStatus.FAILED
+        assert unowned.error_kind == "channel_unavailable"
+        assert first.send_requests == []
+
+        # a conversation whose bot is not up is not spoken for by another bot
+        failed = await channels.send(
+            ChannelSendRequest(
+                session_id="thread-on-gone",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-gone",
+            ),
+            timeout=1,
+        )
+        assert failed.status is ProviderCallStatus.FAILED
+        assert failed.error_kind == "channel_unavailable"
+        refused = await channels.request_approval(
+            ChannelApprovalRequest(
+                approval=ApprovalRequest(
+                    request_id="approval-gone",
+                    actor=Thread("thread-on-gone"),
+                    runtime_session_id="runtime-1",
+                    action="rm -rf build",
+                    created_at_ms=1,
+                ),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-gone",
+            ),
+            timeout=1,
+        )
+        assert refused.decision is ApprovalDecision.REJECTED
+        assert refused.reason == "channel_unavailable"
+        assert first.send_requests == []
+        assert [request.session_id for request in second.send_requests] == [
+            "thread-on-second"
+        ]
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_opens_a_dm_from_the_bot_that_heard_the_sender() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        address = channels.dm_address(
+            SenderIdentity(id="sender-id"),
+            sender_kind=SenderKind.HUMAN,
+            channel="test",
+            channel_identity="bot-2",
+        )
+        assert address is not None
+        await channels.send(
+            ChannelSendRequest(
+                session_id=address.thread_id,
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id=address.provider_thread_id,
+            ),
+            timeout=1,
+        )
+        assert first.send_requests == []
+        assert [request.session_id for request in second.send_requests] == [
+            address.thread_id
+        ]
+
+        # the bot that heard the sender being down does not hand the DM to
+        # another one
+        assert (
+            channels.dm_address(
+                SenderIdentity(id="sender-id"),
+                sender_kind=SenderKind.HUMAN,
+                channel="test",
+                channel_identity="bot-gone",
+            )
+            is None
+        )
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_learns_a_conversation_from_a_reminder_anchor() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        # a reminder wakes a conversation nothing has come in on this run
+        anchor = replace(_inbound("test", "woken"), channel_identity="bot-2")
+        channels.anchor_turn(anchor.thread_id, anchor)
+        channels.accept_turn_event(
+            _turn_event(anchor.thread_id), session_id=anchor.thread_id
+        )
+        assert first.turn_anchors == []
+        assert first.event_sessions == []
+        assert [session for session, _ in second.turn_anchors] == [anchor.thread_id]
+        assert second.event_sessions == [anchor.thread_id]
+    finally:
+        await channels.stop(timeout=1)

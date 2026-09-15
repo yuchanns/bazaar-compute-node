@@ -219,6 +219,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             message = cast(Message, existing_message)
         channel_session = await self.find_channel_session(
             channel=channel,
+            channel_identity=message.channel_identity,
             provider_thread_id=provider_thread_id,
         )
         channel_session_created = channel_session is None
@@ -226,6 +227,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             channel_session = ChannelSession(
                 id=message.channel_session_id,
                 channel=channel,
+                channel_identity=message.channel_identity,
                 provider_thread_id=provider_thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
@@ -315,6 +317,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         self,
         *,
         channel: str,
+        channel_identity: str | None,
         provider_thread_id: str,
     ) -> ChannelSession | None:
         matches = [
@@ -322,12 +325,46 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             for session in self._storage.channel_sessions.values()
             if (
                 session.channel == channel
+                and session.channel_identity == channel_identity
                 and session.provider_thread_id == provider_thread_id
             )
         ]
         if len(matches) > 1:
             raise ValueError("multiple rows violate channel provider identity")
         return matches[0] if matches else None
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]:
+        return tuple(
+            session
+            for session in self._storage.channel_sessions.values()
+            if session.channel == channel and session.channel_identity is None
+        )
+
+    async def backfill_channel_identity(
+        self,
+        channel_session_id: str,
+        *,
+        channel_identity: str,
+        provider_thread_id: str,
+    ) -> None:
+        session = self._storage.channel_sessions.get(channel_session_id)
+        if session is None or session.channel_identity is not None:
+            return
+        self._storage.channel_sessions[channel_session_id] = replace(
+            session,
+            channel_identity=channel_identity,
+            provider_thread_id=provider_thread_id,
+        )
+        for thread_id, messages in self._storage.messages.items():
+            self._storage.messages[thread_id] = [
+                replace(message, provider_thread_id=provider_thread_id)
+                if message.channel_session_id == channel_session_id
+                and message.provider_thread_id == session.provider_thread_id
+                else message
+                for message in messages
+            ]
 
     async def get_channel_session(
         self, channel_session_id: str
@@ -386,14 +423,6 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def count_unread_messages(self) -> int:
         return len(await self._unread_in_scope())
 
-    async def has_outbound_for_command(self, command_id: str) -> bool:
-        return any(
-            message.command_id == command_id
-            and message.direction is MessageDirection.OUTBOUND
-            for thread in self._storage.messages.values()
-            for message in thread
-        )
-
     async def find_known_sender(self, token: str) -> KnownSender | None:
         inbound: list[Message] = []
         for thread in self._scoped_threads():
@@ -416,11 +445,22 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 return KnownSender(
                     sender=sender,
                     channel=message.channel,
+                    channel_identity=message.channel_identity,
                     sender_kind=message.sender_kind,
                 )
         return None
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        target, *others = await self.resolve_inbox_targets(raw_target)
+        if others:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        return target
+
+    async def resolve_inbox_targets(
+        self, raw_target: str
+    ) -> tuple[ResolvedInboxTarget, ...]:
         matches: list[tuple[Thread, ChannelSession]] = []
         for session in self._scoped_threads():
             channel_session = self._storage.channel_sessions.get(
@@ -444,36 +484,37 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 )
             if matched:
                 matches.append((session, channel_session))
-        if len(matches) > 1:
-            raise AmbiguousInboxTargetError(
-                "inbox target resolves to more than one owned session"
-            )
         if not matches:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to an owned session"
             )
-        target, channel_session = matches[0]
-        handle_is_unique = True
-        if channel_session.target_handle_key is not None:
-            handle_is_unique = (
-                sum(
-                    candidate.target_kind is ChannelTargetKind.DM
-                    and candidate.target_handle_key == channel_session.target_handle_key
-                    for candidate_session in self._scoped_threads()
-                    if (
-                        candidate := self._storage.channel_sessions.get(
-                            candidate_session.channel_session_id
+        targets: list[ResolvedInboxTarget] = []
+        for target, channel_session in sorted(matches, key=lambda pair: pair[0].id):
+            handle_is_unique = True
+            if channel_session.target_handle_key is not None:
+                handle_is_unique = (
+                    sum(
+                        candidate.target_kind is ChannelTargetKind.DM
+                        and candidate.target_handle_key
+                        == channel_session.target_handle_key
+                        for candidate_session in self._scoped_threads()
+                        if (
+                            candidate := self._storage.channel_sessions.get(
+                                candidate_session.channel_session_id
+                            )
                         )
+                        is not None
                     )
-                    is not None
+                    == 1
                 )
-                == 1
+            targets.append(
+                ResolvedInboxTarget(
+                    thread=target,
+                    channel_session=channel_session,
+                    handle_is_unique=handle_is_unique,
+                )
             )
-        return ResolvedInboxTarget(
-            thread=target,
-            channel_session=channel_session,
-            handle_is_unique=handle_is_unique,
-        )
+        return tuple(targets)
 
     async def find_thread(self, channel_session_id: str) -> Thread | None:
         matches = [
@@ -739,6 +780,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if existing is not None:
             if (
                 existing.channel != session.channel
+                or existing.channel_identity != session.channel_identity
                 or existing.provider_thread_id != session.provider_thread_id
                 or existing.created_at_ms != session.created_at_ms
             ):
@@ -747,6 +789,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         else:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
+                channel_identity=session.channel_identity,
                 provider_thread_id=session.provider_thread_id,
             )
             if duplicate is not None:
@@ -933,8 +976,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             self._storage.messages.setdefault(canonical.thread_id, []).append(canonical)
             return canonical
         if (
-            existing.command_id != message.command_id
-            or existing.thread_id != message.thread_id
+            existing.thread_id != message.thread_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id

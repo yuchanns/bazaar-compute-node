@@ -20,7 +20,6 @@ def make_outbound_message() -> Message:
         direction=MessageDirection.OUTBOUND,
         seq=0,
         message_id="outbound-1",
-        command_id="command-1",
         thread_id="bcn-1",
         channel_session_id="channel-1",
         target="#test:message-1",

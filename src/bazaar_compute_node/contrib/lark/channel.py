@@ -954,9 +954,14 @@ class LarkChannel(IChannel):
             self._typing_failures += 1
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
-        del sender_kind
+        del sender_kind, channel, channel_identity
         identity = self._identity
         if identity is None or sender.id is None:
             return None

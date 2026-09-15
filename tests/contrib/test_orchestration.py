@@ -54,12 +54,14 @@ from bazaar_compute_node.core.audit import AuditEvent, AuditRecorder, ErrorKind
 from bazaar_compute_node.core.channel import (
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
+    MessageBroadcast,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -67,6 +69,7 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ChannelSession,
     ChannelTargetKind,
     ChannelTargetPresentation,
     ContentDelta,
@@ -136,12 +139,11 @@ class _AcceptanceRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._runtime for kind in runtimes},
         )
 
@@ -377,7 +379,9 @@ async def make_node(
     return orchestrator, channel, runtime, storage, audit
 
 
-async def make_sqlite_node() -> tuple[
+async def make_sqlite_node(
+    *, mode: Mode = Mode.SESSION
+) -> tuple[
     AgentOrchestrator,
     TestChannel,
     TestRuntime,
@@ -391,7 +395,7 @@ async def make_sqlite_node() -> tuple[
     await storage.start(timeout=2)
     storage_scope = storage.scope("workspace-1", "Test Agent")
     orchestrator = AgentOrchestrator(
-        actors=Actors(agent_id="workspace-1", mode=Mode.SESSION),
+        actors=Actors(agent_id="workspace-1", mode=mode),
         channel=channel,
         runtimes=(runtime,),
         storage=storage_scope,
@@ -658,7 +662,7 @@ async def run_natural_conversation_contract(
                     AgentConfiguration(
                         id=ACCEPTANCE_AGENT_ID,
                         name="Test Agent",
-                        channel=ChannelConfiguration(kind="test"),
+                        channels=(ChannelConfiguration(kind="test"),),
                         runtimes=(RuntimeConfiguration(kind="test"),),
                     ),
                 ),
@@ -922,7 +926,6 @@ async def test_runtime_can_run_real_command_service_behavior() -> None:
             raise AssertionError("history command did not observe the inbound message")
         outbound = await commands.send(
             actor=Thread(session_id),
-            command_id="command-1",
             raw_target=checked.messages[0].target,
             body="runtime-generated reply",
             created_at_ms=2,
@@ -1332,7 +1335,6 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
 
         held_without_snapshot = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-before-check",
             raw_target="dm:channel-bcn-1",
             body="reply",
             created_at_ms=2,
@@ -1362,7 +1364,6 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert checked.messages
         delivered = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-after-check",
             raw_target="dm:channel-bcn-1",
             body="",
             created_at_ms=3,
@@ -1383,7 +1384,6 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         with pytest.raises(ValueError, match="no active draft"):
             await orchestrator.command_service.send(
                 actor=Thread("bcn-1"),
-                command_id="command-consumed-draft",
                 raw_target="dm:channel-bcn-1",
                 body="",
                 created_at_ms=4,
@@ -1405,7 +1405,6 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         )
         stale = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-stale",
             raw_target="dm:channel-bcn-1",
             body="stale draft",
             created_at_ms=5,
@@ -1414,7 +1413,6 @@ async def test_fresh_check_holds_draft_until_context_is_reviewed() -> None:
         assert stale.draft_replaced is False
         revised = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-revised",
             raw_target="dm:channel-bcn-1",
             body="revised draft",
             created_at_ms=6,
@@ -1436,7 +1434,6 @@ async def test_sqlite_freshness_hold_returns_latest_bounded_context() -> None:
 
         held = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-bounded-context",
             raw_target="dm:channel-bcn-1",
             body="reply",
             created_at_ms=26,
@@ -1495,7 +1492,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         await orchestrator.command_service.check(Thread("readable-dm"))
         delivered = await orchestrator.command_service.send(
             actor=Thread("readable-dm"),
-            command_id="readable-target-send",
             raw_target="dm:@Alice",
             body="Readable target reply",
             created_at_ms=2,
@@ -1793,7 +1789,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         )
         held = await orchestrator.command_service.send(
             actor=Thread("readable-dm"),
-            command_id="readable-target-hold",
             raw_target="dm:@Alice",
             body="Held readable target reply",
             created_at_ms=5,
@@ -1808,7 +1803,6 @@ async def test_readable_target_contract(tmp_path: Path) -> None:
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.send(
                 actor=Thread("readable-dm"),
-                command_id="readable-target-out-of-reach",
                 raw_target=lark_target.display_target,
                 body="reply",
                 created_at_ms=6,
@@ -1852,14 +1846,12 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
 
         first_hold = await orchestrator.command_service.send(
             actor=Thread("bcn-a"),
-            command_id="command-hold-a",
             raw_target="dm:channel-bcn-a",
             body="draft a",
             created_at_ms=2,
         )
         second_hold = await orchestrator.command_service.send(
             actor=Thread("bcn-b"),
-            command_id="command-hold-b",
             raw_target="dm:channel-bcn-b",
             body="draft b",
             created_at_ms=2,
@@ -1871,7 +1863,6 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         await orchestrator.command_service.check(Thread("bcn-b"))
         first_sent = await orchestrator.command_service.send(
             actor=Thread("bcn-a"),
-            command_id="command-send-a",
             raw_target="dm:channel-bcn-a",
             body="",
             created_at_ms=3,
@@ -1879,7 +1870,6 @@ async def test_active_drafts_are_isolated_by_resolved_session() -> None:
         )
         second_sent = await orchestrator.command_service.send(
             actor=Thread("bcn-b"),
-            command_id="command-send-b",
             raw_target="dm:channel-bcn-b",
             body="",
             created_at_ms=3,
@@ -1923,7 +1913,6 @@ async def test_send_delivers_ordered_attachments_to_the_channel(
 
         delivered = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-with-attachments",
             raw_target="dm:channel-bcn-1",
             body="Attached reports.",
             created_at_ms=2,
@@ -1968,7 +1957,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.send(
                 actor=Thread("bcn-1"),
-                command_id="command-other-conversation",
                 raw_target="dm:channel-bcn-other",
                 body="reply",
                 created_at_ms=2,
@@ -1985,7 +1973,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
 
         unusable_reply = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-invalid-reply",
             raw_target="dm:channel-bcn-1",
             body="invalid reply",
             created_at_ms=3,
@@ -2010,7 +1997,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         failed = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-failed",
             raw_target="dm:channel-bcn-1",
             body="failed reply",
             created_at_ms=3,
@@ -2023,13 +2009,12 @@ async def test_send_preserves_provider_delivery_states() -> None:
         with pytest.raises(ValueError, match="must not be empty"):
             await orchestrator.command_service.send(
                 actor=Thread("bcn-1"),
-                command_id="command-empty-body",
                 raw_target="dm:channel-bcn-1",
                 body=" \t",
                 created_at_ms=3,
             )
         assert all(
-            message.command_id != "command-empty-body"
+            message.body.strip()
             for message in _stored_message_index(
                 storage,
                 direction=MessageDirection.OUTBOUND,
@@ -2045,7 +2030,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         queued = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-queued",
             raw_target="dm:channel-bcn-1",
             body="queued reply",
             created_at_ms=4,
@@ -2066,7 +2050,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         unknown = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-unknown",
             raw_target="dm:channel-bcn-1",
             body="unknown reply",
             created_at_ms=5,
@@ -2100,7 +2083,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         partial = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-partial",
             raw_target="dm:channel-bcn-1",
             body="partial reply",
             created_at_ms=6,
@@ -2134,7 +2116,6 @@ async def test_send_preserves_provider_delivery_states() -> None:
         )
         failed = await orchestrator.command_service.send(
             actor=Thread("bcn-1"),
-            command_id="command-failed",
             raw_target="dm:channel-bcn-1",
             body="failed reply",
             created_at_ms=7,
@@ -2566,7 +2547,6 @@ async def test_a_check_returns_what_every_thread_brought_in_arrival_order() -> N
         orchestrator.command_service,
         actors=Actors(agent_id="workspace-1", mode=Mode.DANGEROUS_INDIVIDUAL),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=UpgradeService(
             available_version=lambda: None,
             installed_version="0.1.0",
@@ -2639,7 +2619,6 @@ async def test_an_individual_actor_drains_and_answers_every_conversation() -> No
         await orchestrator._record_inbound(make_message(session_id="bcn-b", seq=2))
         sent = await orchestrator.command_service.send(
             actor=agent,
-            command_id="command-individual",
             raw_target="dm:channel-bcn-a",
             body="reply",
             created_at_ms=2,
@@ -2649,7 +2628,6 @@ async def test_an_individual_actor_drains_and_answers_every_conversation() -> No
 
         held = await orchestrator.command_service.send(
             actor=agent,
-            command_id="command-individual-held",
             raw_target="dm:channel-bcn-b",
             body="reply",
             created_at_ms=3,
@@ -3851,7 +3829,6 @@ async def test_terminal_wait_completes_while_the_runtime_is_marked_expired() -> 
         (checked,) = await commands.check(Thread(session_id))
         await commands.send(
             actor=Thread(session_id),
-            command_id="terminal-wait",
             raw_target=checked.messages[0].target,
             body="terminal reply",
             created_at_ms=2,
@@ -4173,15 +4150,14 @@ class _MultiRuntimeRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         missing = [kind for kind in runtimes if kind not in self._kinds]
         if missing:
             raise AssertionError(f"unexpected runtime kinds: {missing}")
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._factory(kind) for kind in dict.fromkeys(runtimes)},
         )
 
@@ -4223,7 +4199,7 @@ async def test_multi_runtime_agents(
                 AgentConfiguration(
                     id=ACCEPTANCE_AGENT_ID,
                     name="Multi Runtime Agent",
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="test",
@@ -4748,7 +4724,6 @@ async def test_a_dm_is_minted_for_a_sender_seen_in_a_group() -> None:
         # yet; its address has to come from that group message.
         await orchestrator.command_service.send(
             actor=Agent("workspace-1"),
-            command_id="command-dm",
             raw_target="dm:@kana",
             body="hello in private",
             created_at_ms=2,
@@ -4768,7 +4743,6 @@ async def test_a_dm_is_minted_for_a_sender_seen_in_a_group() -> None:
         # name the provider gave this conversation outranks the lookup token.
         await orchestrator.command_service.send(
             actor=Agent("workspace-1"),
-            command_id="command-dm-again",
             raw_target="dm:@peer-1",
             body="hello again",
             created_at_ms=3,
@@ -4808,7 +4782,6 @@ async def test_a_dm_is_minted_for_a_sender_seen_in_a_group() -> None:
         )
         await orchestrator.command_service.send(
             actor=Agent("workspace-1"),
-            command_id="command-dm-by-id",
             raw_target="dm:@peer-2",
             body="hello mika",
             created_at_ms=5,
@@ -4860,7 +4833,6 @@ async def test_a_sender_the_channel_cannot_address_stays_not_found() -> None:
         with pytest.raises(InboxTargetResolutionError):
             await orchestrator.command_service.send(
                 actor=Agent("workspace-1"),
-                command_id="command-dm-2",
                 raw_target="dm:@nameless",
                 body="hello in private",
                 created_at_ms=2,
@@ -4911,7 +4883,6 @@ async def test_an_opened_dm_answers_to_the_conversation_it_was_delivered_into() 
         # This peer has only spoken in a group, so its DM does not exist yet.
         await orchestrator.command_service.send(
             actor=Agent("workspace-1"),
-            command_id="command-dm",
             raw_target="dm:@kana",
             body="hello in private",
             created_at_ms=2,
@@ -4996,10 +4967,326 @@ async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
         with pytest.raises(AmbiguousInboxTargetError):
             await orchestrator.command_service.send(
                 actor=Agent("workspace-1"),
-                command_id="command-dm-ambiguous",
                 raw_target="dm:@kana",
                 body="which one?",
                 created_at_ms=3,
             )
     finally:
         await orchestrator.stop(timeout=1)
+
+
+class _KnownBotChannel(TestChannel):
+    """A channel that knows its bot before it starts, the way WeCom does."""
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return self.identity
+
+
+@pytest.mark.asyncio
+async def test_agent_backfills_conversations_written_before_bots_were_told_apart(
+    tmp_path: Path,
+) -> None:
+    first = _KnownBotChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = _KnownBotChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    storage = MemoryStorage()
+    audit = RecordingAudit()
+    scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
+    await storage.start(timeout=1)
+    # a conversation from before the column existed, and one of another kind
+    for session in (
+        ChannelSession(
+            id="channel-legacy",
+            channel="test",
+            provider_thread_id="thread-legacy",
+            created_at_ms=1,
+            updated_at_ms=1,
+        ),
+        ChannelSession(
+            id="channel-elsewhere",
+            channel="other",
+            provider_thread_id="thread-elsewhere",
+            created_at_ms=1,
+            updated_at_ms=1,
+        ),
+    ):
+        await scope.save_channel_session(session)
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            version_check=False,
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=ACCEPTANCE_AGENT_ID,
+                    name="Test Agent",
+                    channels=(
+                        ChannelConfiguration(kind="test"),
+                        ChannelConfiguration(kind="test"),
+                    ),
+                    runtimes=(RuntimeConfiguration(kind="test"),),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, storage),
+            audit=lambda: audit,
+        ),
+        registry=_MembersRegistry(channels=(first, second)),
+        endpoint_path=tmp_path / "backfill.sock",
+        timeout_budget=make_budget(),
+    )
+    await node.start()
+    try:
+        assert node.agents[ACCEPTANCE_AGENT_ID].started is True
+        # the first bot of the kind takes the rows, the other kind is untouched
+        assert storage.channel_sessions["channel-legacy"].channel_identity == "bot-1"
+        assert storage.channel_sessions["channel-elsewhere"].channel_identity is None
+        # its next inbound lands on the claimed conversation instead of a new one
+        inbound = replace(
+            make_message(session_id="fresh", seq=1),
+            channel_identity="bot-1",
+            provider_thread_id="thread-legacy",
+        )
+        turn = await node.agents[ACCEPTANCE_AGENT_ID].orchestrator.handle_inbound(
+            inbound
+        )
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.COMPLETED
+        assert "channel-fresh" not in storage.channel_sessions
+    finally:
+        await node.stop()
+
+
+class _MembersRegistry(AdapterRegistry):
+    """Hands out the given channels one per [[agent.channel]] entry."""
+
+    def __init__(self, *, channels: Sequence[IChannel]) -> None:
+        self._channels = list(channels)
+
+    def load_agent(
+        self,
+        *,
+        channels: Sequence[str],
+        runtimes: Sequence[str],
+    ) -> AgentAdapterFactories:
+        del channels
+
+        def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
+            del context
+            return TestRuntime()
+
+        return AgentAdapterFactories(
+            channels={"test": _NextChannelBuilder(self._channels)},
+            runtimes={kind: runtime_factory for kind in runtimes},
+        )
+
+
+class _NextChannelBuilder:
+    def __init__(self, channels: list[IChannel]) -> None:
+        self._channels = channels
+
+    def build(self, context: ChannelContext) -> IChannel:
+        del context
+        return self._channels.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_a_handle_held_on_two_bots_is_answered_on_both() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        # the same peer speaks to the agent through two bots of one kind
+        for index, bot in ((1, "bot-1"), (2, "bot-2")):
+            await channel.inject(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=index,
+                    message_id=f"message-dm-{index}",
+                    thread_id=f"bcn-dm-{index}",
+                    channel_session_id=f"channel-dm-{index}",
+                    channel="test",
+                    channel_identity=bot,
+                    provider_thread_id=f"test:{bot}:dm:kana",
+                    provider_message_id=f"provider-dm-{index}",
+                    received_at_ms=index,
+                    sender=SenderIdentity(id="kana-id", name="kana"),
+                    message_type="text",
+                    target=f"dm:channel-dm-{index}",
+                    target_kind=ChannelTargetKind.DM,
+                    target_presentation=ChannelTargetPresentation(handle="kana"),
+                    body="hello",
+                )
+            )
+        await wait_until(lambda: len(storage.channel_sessions) == 2)
+
+        # only one conversation has been read: the unread one holds the whole send
+        await orchestrator.command_service.check(Agent("workspace-1"))
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=3,
+                message_id="message-dm-2-again",
+                thread_id="bcn-dm-2",
+                channel_session_id="channel-dm-2",
+                channel="test",
+                channel_identity="bot-2",
+                provider_thread_id="test:bot-2:dm:kana",
+                provider_message_id="provider-dm-2-again",
+                received_at_ms=3,
+                sender=SenderIdentity(id="kana-id", name="kana"),
+                message_type="text",
+                target="dm:channel-dm-2",
+                target_kind=ChannelTargetKind.DM,
+                target_presentation=ChannelTargetPresentation(handle="kana"),
+                body="one more thing",
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-dm-2", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 2
+            )
+        )
+        held = await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            raw_target="dm:@kana",
+            body="hi on both",
+            created_at_ms=4,
+        )
+        assert isinstance(held, MessageSendFreshnessHold)
+        # the hold names what was asked for, which is what finds the draft again
+        assert held.target == "dm:@kana"
+        assert channel.send_requests == []
+
+        # once caught up, the draft goes out on both bots, one message each
+        await orchestrator.command_service.check(Agent("workspace-1"))
+        sent = await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            raw_target="dm:@kana",
+            body="",
+            created_at_ms=5,
+            send_draft=True,
+        )
+        assert isinstance(sent, MessageBroadcast)
+        assert all(
+            isinstance(delivery, MessageSendSuccess) for delivery in sent.deliveries
+        )
+        assert {request.channel_identity for request in channel.send_requests} == {
+            "bot-1",
+            "bot-2",
+        }
+        assert {request.body for request in channel.send_requests} == {"hi on both"}
+        outbound = [
+            message
+            for thread_id in ("bcn-dm-1", "bcn-dm-2")
+            for message in _stored_messages(
+                storage, thread_id, direction=MessageDirection.OUTBOUND
+            )
+        ]
+        assert len(outbound) == 2
+        assert {message.body for message in outbound} == {"hi on both"}
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_is_stored_once_per_conversation() -> None:
+    orchestrator, channel, _, storage, _ = await make_sqlite_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        for index, bot in ((1, "bot-1"), (2, "bot-2")):
+            await orchestrator.handle_inbound(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=index,
+                    message_id=f"message-dm-{index}",
+                    thread_id=f"bcn-dm-{index}",
+                    channel_session_id=f"channel-dm-{index}",
+                    channel="test",
+                    channel_identity=bot,
+                    provider_thread_id=f"test:{bot}:dm:kana",
+                    provider_message_id=f"provider-dm-{index}",
+                    received_at_ms=index,
+                    sender=SenderIdentity(id="kana-id", name="kana"),
+                    message_type="text",
+                    target=f"dm:channel-dm-{index}",
+                    target_kind=ChannelTargetKind.DM,
+                    target_presentation=ChannelTargetPresentation(handle="kana"),
+                    body="hello",
+                )
+            )
+        await orchestrator.command_service.check(Agent("workspace-1"))
+        sent = await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            raw_target="dm:@kana",
+            body="hi on both",
+            created_at_ms=3,
+        )
+        assert isinstance(sent, MessageBroadcast)
+        assert all(
+            isinstance(delivery, MessageSendSuccess) for delivery in sent.deliveries
+        )
+        assert {request.channel_identity for request in channel.send_requests} == {
+            "bot-1",
+            "bot-2",
+        }
+        scope = storage.scope("workspace-1", "Test Agent")
+        for thread_id in ("bcn-dm-1", "bcn-dm-2"):
+            outbound = await scope.list_messages(
+                thread_id, direction=MessageDirection.OUTBOUND
+            )
+            assert [message.body for message in outbound] == ["hi on both"]
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_agent_introduces_itself_by_every_name_it_goes_by(
+    tmp_path: Path,
+) -> None:
+    named = _KnownBotChannel()
+    named.identity = ChannelIdentity(id="bot-1", name="Kana on Telegram")
+    unnamed = _KnownBotChannel()
+    unnamed.identity = ChannelIdentity(id="bot-2")
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            version_check=False,
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=ACCEPTANCE_AGENT_ID,
+                    name="Test Agent",
+                    channels=(
+                        ChannelConfiguration(kind="test"),
+                        ChannelConfiguration(kind="test"),
+                    ),
+                    runtimes=(RuntimeConfiguration(kind="test"),),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, storage),
+            audit=RecordingAudit,
+        ),
+        registry=_MembersRegistry(channels=(named, unnamed)),
+        endpoint_path=tmp_path / "names.sock",
+        timeout_budget=make_budget(),
+    )
+    await node.start()
+    try:
+        (context,) = node.agents[ACCEPTANCE_AGENT_ID]._runtime_contexts
+        # a bot without a display name is introduced by its id
+        assert context.bot_names() == ("Kana on Telegram", "bot-2")
+    finally:
+        await node.stop()

@@ -75,7 +75,7 @@ class TestChannel(IChannel):
         self.approval_results: list[ApprovalResult] = []
         self.events: list[RuntimeOutputEvent] = []
         self.event_sessions: list[str] = []
-        self.identity: ChannelIdentity | None = None
+        self.identity: ChannelIdentity | None = ChannelIdentity(id="test-bot")
         self.stream_events: list[RuntimeOutputEvent] = []
         self.stream_event_error: Exception | None = None
         self._inbound: asyncio.Queue[Message | object] = asyncio.Queue()
@@ -90,8 +90,14 @@ class TestChannel(IChannel):
         return self.identity if self.accepting else None
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
+        del channel, channel_identity
         if sender.id is None:
             return None
         return DmAddress(

@@ -312,7 +312,14 @@ class TurnCoordinator:
         self._clock = clock
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.turn")
 
-    async def join_turn(self, turn_id: str, thread_id: str, message: Message) -> None:
+    async def join_turn(
+        self,
+        turn_id: str,
+        thread_id: str,
+        message: Message,
+        *,
+        channel_session: ChannelSession,
+    ) -> None:
         """Take a conversation into a turn, and say where its output belongs."""
 
         threads = self._turn_threads.setdefault(turn_id, {})
@@ -321,7 +328,12 @@ class TurnCoordinator:
         threads[thread_id] = message
         anchor = await resolve_reminder_anchor(self._storage, self._agent_id, message)
         if anchor is not None:
-            self._channel.anchor_turn(thread_id, anchor)
+            # a stored anchor names its conversation but not the bot it lives
+            # on, which the conversation row knows
+            self._channel.anchor_turn(
+                thread_id,
+                replace(anchor, channel_identity=channel_session.channel_identity),
+            )
 
     def threads_in_turn(self, turn_id: str) -> tuple[Message, ...]:
         """Return one message from each conversation a turn has taken one from."""
@@ -369,6 +381,8 @@ class TurnCoordinator:
                 approval=request,
                 target_kind=context.channel_session.target_kind,
                 provider_thread_id=context.channel_session.provider_thread_id,
+                channel=context.channel_session.channel,
+                channel_identity=context.channel_session.channel_identity,
                 provider_reply_to_message_id=(approval_target.provider_message_id),
                 provider_sender_id=(
                     approval_target.sender.id
@@ -532,7 +546,12 @@ class TurnCoordinator:
         turn_correlation = self.turn_correlation(message, context, turn)
         stream: IRuntimeTurnStream | None = None
         try:
-            await self.join_turn(turn.turn_id, context.thread.id, message)
+            await self.join_turn(
+                turn.turn_id,
+                context.thread.id,
+                message,
+                channel_session=context.channel_session,
+            )
             approval_handler = self.approval_handler(message, context, turn)
             await self._audit.append(
                 event_name="runtime.request.turn.started",
@@ -774,7 +793,12 @@ class TurnCoordinator:
             )
             accepted = False
         if accepted:
-            await self.join_turn(turn.turn_id, context.thread.id, message)
+            await self.join_turn(
+                turn.turn_id,
+                context.thread.id,
+                message,
+                channel_session=context.channel_session,
+            )
         try:
             await self._audit.append(
                 event_name=(

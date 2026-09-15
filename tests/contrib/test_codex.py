@@ -118,12 +118,11 @@ class _StaticRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._runtime for kind in runtimes},
         )
 
@@ -679,7 +678,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
             run_command=run_command,
             environment_for_session=environment,
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
             runtime_options={"model": TEST_MODEL, "effort": TEST_EFFORT},
             sandbox_mode=RuntimeSandboxMode.DANGER_FULL_ACCESS,
@@ -691,7 +690,7 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
             run_command=run_command,
             environment_for_session=environment,
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -720,7 +719,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
             run_command=run_command,
             environment_for_session=lambda _: {},
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -767,7 +766,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
             run_command=run_command,
             environment_for_session=lambda _: {},
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -824,7 +823,7 @@ async def test_codex_runtime_stops_session(
             run_command=run_command,
             environment_for_session=lambda _: {},
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -892,7 +891,7 @@ async def test_codex_runtime_reports_background_job_when_the_query_fails(
             run_command=run_command,
             environment_for_session=lambda _: {},
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -949,7 +948,7 @@ async def test_codex_runtime_reports_background_job(
             run_command=run_command,
             environment_for_session=lambda _: {},
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
         )
     )
@@ -1378,7 +1377,7 @@ async def test_real_codex_background_job_defers_idle_recycling(
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="codex",
@@ -1540,7 +1539,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="codex",
@@ -1652,7 +1651,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
             run_command=unexpected_command,
             environment_for_session=lambda _: dict(os.environ),
             agent_name="Test Agent",
-            bot_name=lambda: "provider_bot",
+            bot_names=lambda: ("provider_bot",),
             agent_id=agent_id,
         ),
         executable=codex,
@@ -1783,7 +1782,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
         run_command=unexpected_command,
         environment_for_session=lambda _: dict(os.environ),
         agent_name="Test Agent",
-        bot_name=lambda: "provider_bot",
+        bot_names=lambda: ("provider_bot",),
         agent_id=agent_id,
     )
     first_runtime = Runtime(

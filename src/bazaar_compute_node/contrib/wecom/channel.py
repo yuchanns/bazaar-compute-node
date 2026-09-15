@@ -43,6 +43,7 @@ from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 from ...core.utils.markdown import split_markdown, utf8_bytes
 from ...i18n import ENGLISH, Translator, create_translator
+from .identity import conversation_thread_id, parse_provider_thread_id
 from .outbound import (
     AttachmentReader,
     PreparedAttachment,
@@ -486,22 +487,30 @@ class WeComChannel(IChannel):
         return None
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
-        del sender_kind
+        del sender_kind, channel, channel_identity
         if sender.id is None:
             return None
-        identity = f"wecom:dm:{sender.id}"
+        identity = f"wecom:bot:{self._bot_id}:dm:{sender.id}"
         return DmAddress(
             channel_session_id=str(uuid5(NAMESPACE_URL, identity)),
             thread_id=str(uuid5(NAMESPACE_URL, f"bcn:{identity}")),
-            provider_thread_id=sender.id,
+            provider_thread_id=conversation_thread_id(self._bot_id, sender.id),
         )
+
+    def backfill_provider_thread_id(self, provider_thread_id: str) -> str:
+        return conversation_thread_id(self._bot_id, provider_thread_id)
 
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        target_id = request.provider_thread_id
+        _, target_id = parse_provider_thread_id(request.provider_thread_id)
         try:
             batches = (
                 split_markdown(
@@ -969,7 +978,9 @@ class WeComChannel(IChannel):
                     connection,
                     command="aibot_send_msg",
                     body=visible_message_body(
-                        target_id=request.provider_thread_id,
+                        target_id=parse_provider_thread_id(request.provider_thread_id)[
+                            1
+                        ],
                         target_kind=request.target_kind,
                         message_type="template_card",
                         content=self._approval_card(pending),
@@ -1239,7 +1250,8 @@ class WeComChannel(IChannel):
         reply_to_message_id = str(
             uuid5(
                 NAMESPACE_URL,
-                f"bcn:wecom:quoted-message:{conversation}:{quote_content.fingerprint}",
+                f"bcn:wecom:{self._bot_id}:quoted-message:{conversation}:"
+                f"{quote_content.fingerprint}",
             )
         )
         await self._inbound.put(
@@ -1250,7 +1262,7 @@ class WeComChannel(IChannel):
                 thread_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
-                provider_thread_id=conversation,
+                provider_thread_id=conversation_thread_id(self._bot_id, conversation),
                 provider_message_id=quote_content.fingerprint,
                 received_at_ms=received_at_ms,
                 sender=None,
@@ -1405,7 +1417,7 @@ class WeComChannel(IChannel):
         target_kind = route.target_kind
         target_prefix = route.target_prefix
         mentions_agent = route.mentions_agent
-        identity = f"wecom:{target_prefix}:{conversation}"
+        identity = f"wecom:bot:{self._bot_id}:{target_prefix}:{conversation}"
         channel_session_id = str(uuid5(NAMESPACE_URL, identity))
         session_id = str(uuid5(NAMESPACE_URL, f"bcn:{identity}"))
         canonical_target = f"{target_prefix}:{channel_session_id}"
@@ -1432,13 +1444,13 @@ class WeComChannel(IChannel):
                 message_id=str(
                     uuid5(
                         NAMESPACE_URL,
-                        f"bcn:wecom:message:{provider_message_id}",
+                        f"bcn:wecom:{self._bot_id}:message:{provider_message_id}",
                     )
                 ),
                 thread_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
-                provider_thread_id=conversation,
+                provider_thread_id=conversation_thread_id(self._bot_id, conversation),
                 provider_message_id=provider_message_id,
                 received_at_ms=received_at_ms,
                 sender=SenderIdentity(id=sender_id),

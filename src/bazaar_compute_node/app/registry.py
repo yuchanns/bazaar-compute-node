@@ -29,7 +29,7 @@ class SharedAdapterFactories:
 
 @dataclass(frozen=True, slots=True)
 class AgentAdapterFactories:
-    channel: IChannelBuilder
+    channels: Mapping[str, IChannelBuilder]
     runtimes: Mapping[str, RuntimeFactory]
 
 
@@ -61,11 +61,14 @@ class AdapterRegistry:
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
         return AgentAdapterFactories(
-            channel=self._load_channel_builder(channel),
+            channels={
+                kind: self._load_channel_builder(kind)
+                for kind in dict.fromkeys(channels)
+            },
             runtimes={
                 kind: cast(
                     RuntimeFactory,

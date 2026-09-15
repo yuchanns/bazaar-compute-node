@@ -13,6 +13,8 @@ _READ_OPERATIONS = frozenset(
         "count_messages",
         "find_thread",
         "find_channel_session",
+        "list_channel_sessions_without_identity",
+        "resolve_inbox_targets",
         "find_known_sender",
         "has_outbound_for_command",
         "find_message",
@@ -49,6 +51,7 @@ _SNAPSHOT_READ_OPERATIONS = frozenset(
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(
     {
+        "backfill_channel_identity",
         "check_messages",
         "check_outbound_freshness",
         "finalize_outbound_delivery",

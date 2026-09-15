@@ -33,7 +33,7 @@ def main() -> None:
 
     instructions = DeveloperInstructionContext(
         agent_name="Package Smoke Agent",
-        bot_name="Package Smoke Bot",
+        bot_names=("Package Smoke Bot",),
         agent_id="agent-1",
         runtime_session_id="runtime-1",
         runtime="codex",

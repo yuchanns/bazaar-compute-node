@@ -441,8 +441,14 @@ class TelegramChannel(IChannel):
         )
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
+        del channel, channel_identity
         bot_id = self._bot_id
         if bot_id is None:
             return None

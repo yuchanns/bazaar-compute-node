@@ -26,6 +26,7 @@ from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
+    MessageBroadcast,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -50,7 +51,7 @@ def make_configuration(mode: Mode = Mode.SESSION) -> NodeConfiguration:
             AgentConfiguration(
                 id=AGENT_ID,
                 name="Test Agent",
-                channel=ChannelConfiguration(kind="test"),
+                channels=(ChannelConfiguration(kind="test"),),
                 runtimes=(RuntimeConfiguration(kind="test"),),
                 mode=mode,
             ),
@@ -202,7 +203,6 @@ async def test_message_send_renders_freshness_hold() -> None:
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -213,7 +213,6 @@ async def test_message_send_renders_freshness_hold() -> None:
         "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
-        "command_id": "message-command-1",
         "created_at_ms": 1_100,
     }
 
@@ -229,7 +228,6 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
     assert set(service.send.await_args.kwargs) == {
         "actor",
-        "command_id",
         "raw_target",
         "body",
         "created_at_ms",
@@ -246,7 +244,6 @@ async def test_message_send_renders_provider_outcomes() -> None:
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -257,7 +254,6 @@ async def test_message_send_renders_provider_outcomes() -> None:
         "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
-        "command_id": "message-command-1",
         "created_at_ms": 1_100,
     }
     outcomes = (
@@ -310,13 +306,91 @@ async def test_message_send_renders_provider_outcomes() -> None:
             assert expected_text in cast(str, response["next_action"])
 
 
+def _delivery(target: str, state: OutboundDeliveryState) -> MessageSendSuccess:
+    return MessageSendSuccess(
+        message=cast(
+            Message,
+            SimpleNamespace(
+                delivery_state=state,
+                message_id=f"outbound-{target}",
+                error_message="provider outcome",
+            ),
+        ),
+        target=target,
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
+    service = SimpleNamespace(send=AsyncMock())
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, service),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
+        reminder_service=cast(IReminderService, object()),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+    request = {
+        "kind": "command",
+        "resource": "message",
+        "command": "send",
+        "actor_id": "session-source",
+        "target": "dm:@kana",
+        "body": "Hello.",
+        "created_at_ms": 1_100,
+    }
+
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.QUEUED),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is True
+    result = cast(Mapping[str, object], response["result"])
+    assert result["text"] == "Message sent to dm:one. Message ID: outbound-dm:one"
+
+    # one conversation reached and one refused: the failure is the answer,
+    # and it says who already has the message
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.FAILED),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is False
+    assert response["code"] == "SEND_FAILED"
+    assert response["error"] == "provider outcome Already reached dm:one."
+    assert response["next_action"] == (
+        "Fix the provider error before retrying. "
+        "A resend reaches the conversations already reached again."
+    )
+
+    # a partly delivered conversation has been reached too, and keeps its
+    # own advice against resending
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.PARTIAL),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is False
+    assert response["code"] == "SEND_PARTIAL"
+    assert response["error"] == "provider outcome Already reached dm:one, dm:two."
+    assert cast(str, response["next_action"]).startswith(
+        "Do not retry the complete message automatically"
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=None,
     )
     dispatcher.start_accepting()
@@ -342,7 +416,6 @@ async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -369,7 +442,6 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -396,7 +468,6 @@ async def test_version_reports_the_process_and_not_the_disk() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(installed_version="0.1.0"),
     )
     dispatcher.start_accepting()

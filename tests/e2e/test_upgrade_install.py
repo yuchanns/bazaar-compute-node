@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -51,17 +51,15 @@ class _StaticRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: tuple[str, ...] | list[str],
     ) -> AgentAdapterFactories:
-        del channel
-
         def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
             del context
             return self._runtime
 
         return AgentAdapterFactories(
-            channel=_StaticChannel(self._channel),
+            channels={kind: _StaticChannel(self._channel) for kind in channels},
             runtimes={kind: runtime_factory for kind in runtimes},
         )
 
@@ -87,7 +85,7 @@ def _upgrade_node(tmp_path: Path) -> tuple[NodeApplication, TestChannel, TestRun
                 AgentConfiguration(
                     id=AGENT_ID,
                     name="Test Agent",
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(RuntimeConfiguration(kind="test"),),
                 ),
             ),
@@ -241,7 +239,6 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
             application.orchestrator.command_service,
             actors=application._actors,
             reminder_service=application.reminder_service,
-            timeout_budget=application.timeout_budget,
             session_binding_validator=application._validate_actor_binding,
             upgrade_service=upgrade,
         )
@@ -325,7 +322,6 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
             application.orchestrator.command_service,
             actors=application._actors,
             reminder_service=application.reminder_service,
-            timeout_budget=application.timeout_budget,
             session_binding_validator=application._validate_actor_binding,
             upgrade_service=upgrade,
         )

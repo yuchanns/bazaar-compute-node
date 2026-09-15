@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..core.actor import Actor, Actors, Agent, Thread
 from ..core.audit import AuditRecorder
-from ..core.channel import Channel, ChannelContext, IChannel
+from ..core.channel import Channel, ChannelContext, Channels, IChannel
 from ..core.concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -111,18 +111,25 @@ class AgentApplication:
             timeout_budget=timeout_budget,
             clock=now_ms,
         )
-        provider_channel = factories.channel.build(
-            ChannelContext(
-                agent_id=self.agent_id,
-                attachments=self._attachment_materializer,
-                options=dict(configuration.channel.options),
-                workspace=self.workspace_path,
-                translator=self.translator,
-                timer_wheel=self.timer_wheel,
-                audit=self._audit_recorder,
+        self.channel: IChannel = Channels(
+            tuple(
+                Channel(
+                    self.agent_id,
+                    factories.channels[channel_configuration.kind].build(
+                        ChannelContext(
+                            agent_id=self.agent_id,
+                            attachments=self._attachment_materializer,
+                            options=dict(channel_configuration.options),
+                            workspace=self.workspace_path,
+                            translator=self.translator,
+                            timer_wheel=self.timer_wheel,
+                            audit=self._audit_recorder,
+                        )
+                    ),
+                )
+                for channel_configuration in configuration.channels
             )
         )
-        self.channel: IChannel = Channel(self.agent_id, provider_channel)
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
@@ -142,7 +149,7 @@ class AgentApplication:
                 environment_for_session=partial(self._runtime_environment, index),
                 agent_id=self.agent_id,
                 agent_name=self.name,
-                bot_name=self._bot_name,
+                bot_names=self._bot_names,
                 runtime_options=runtime_options,
                 mode=configuration.mode,
                 sandbox_mode=runtime_configuration.sandbox_mode,
@@ -194,7 +201,6 @@ class AgentApplication:
             self.orchestrator.command_service,
             actors=self._actors,
             reminder_service=self.reminder_service,
-            timeout_budget=self.timeout_budget,
             session_binding_validator=self._validate_actor_binding,
             upgrade_service=upgrade_service,
         )
@@ -228,6 +234,7 @@ class AgentApplication:
                 mode=self._actors.mode,
             )
             await self._attachment_materializer.reconcile()
+            await self._backfill_channel_identity()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
@@ -237,14 +244,38 @@ class AgentApplication:
         self._started = True
         self.command_dispatcher.start_accepting()
 
-    def _bot_name(self) -> str | None:
-        identity = self.channel.get_identity()
-        if identity is not None:
-            if identity.name is not None:
-                return identity.name
-            if identity.id is not None:
-                return identity.id
-        return None
+    async def _backfill_channel_identity(self) -> None:
+        """Give conversations written before bots were told apart to this one.
+
+        Only a channel that knows its bot before it starts can do this here;
+        the kinds that carry the bot in the thread id were filled by migration.
+        A kind with several bots hands them to the first, in configuration
+        order.
+        """
+
+        for member in self.channel.members:
+            identity = member.get_identity()
+            if identity is None:
+                continue
+            for session in await self.storage.list_channel_sessions_without_identity(
+                member.name
+            ):
+                await self.storage.backfill_channel_identity(
+                    session.id,
+                    channel_identity=identity.id,
+                    provider_thread_id=member.backfill_provider_thread_id(
+                        session.provider_thread_id
+                    ),
+                )
+
+    def _bot_names(self) -> tuple[str, ...]:
+        names: dict[str, None] = {}
+        for member in self.channel.members:
+            identity = member.get_identity()
+            if identity is None:
+                continue
+            names[identity.name or identity.id] = None
+        return tuple(names)
 
     async def stop(self) -> None:
         if self._stopping:
@@ -291,7 +322,7 @@ class AgentApplication:
             "agent_id": self.agent_id,
             "name": self.name,
             "status": "started" if self.started else "stopped",
-            "channel": self.channel.name,
+            "channels": tuple(member.name for member in self.channel.members),
             "runtimes": tuple(runtime.name for runtime in self.runtimes),
             "channel_health": dict(self.channel.health),
             "orchestrator_health": self.orchestrator.health,

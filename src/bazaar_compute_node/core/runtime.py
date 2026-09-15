@@ -53,7 +53,7 @@ class RuntimeCommandContext:
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]]
     agent_id: str
     agent_name: str
-    bot_name: Callable[[], str | None]
+    bot_names: Callable[[], tuple[str, ...]]
     runtime_options: Mapping[str, str] = field(default_factory=dict)
     mode: Mode = Mode.SESSION
     sandbox_mode: RuntimeSandboxMode = RuntimeSandboxMode.WORKSPACE_WRITE

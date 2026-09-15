@@ -17,7 +17,6 @@ class CorrelationContext:
     runtime_session_id: str | None = None
     turn_id: str | None = None
     request_id: str | None = None
-    command_id: str | None = None
     inbound_seq: int | None = None
     outbound_message_id: str | None = None
     provider_request_id: str | None = None

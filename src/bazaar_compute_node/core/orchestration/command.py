@@ -6,7 +6,8 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
@@ -17,6 +18,7 @@ from ..channel import ChannelSendRequest, DmAddress, IChannel
 from ..command import (
     ICommandService,
     InboxListResult,
+    MessageBroadcast,
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
@@ -157,6 +159,20 @@ def _answered(
     )
 
 
+def _named_as_called(
+    hold: MessageSendFreshnessHold,
+    raw_target: str,
+    targets: Sequence[ResolvedInboxTarget],
+) -> MessageSendFreshnessHold:
+    """Name a hold on several conversations the way the caller named them.
+
+    The draft behind it belongs to all of them, and only the caller's own
+    target resolves to that same set again.
+    """
+
+    return hold if len(targets) == 1 else replace(hold, target=raw_target)
+
+
 def _reached_the_peer(delivery_result: OutboundDeliveryResult) -> bool:
     """Say whether any of this message is with the peer.
 
@@ -183,6 +199,16 @@ _DELIVERY_OUTCOMES: dict[
     ),
     OutboundDeliveryState.FAILED: (ErrorKind.PROVIDER_FAILED, RuntimeEventState.FAILED),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedDelivery:
+    """A conversation that passed its last freshness look, ready to send to."""
+
+    target: ResolvedInboxTarget
+    expected_target_seq: int
+    outbound: Message[OutboundAttachment]
+    materialized: MaterializeOutboundResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,10 +243,11 @@ class CommandService(ICommandService):
         self._concurrency = concurrency
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
-        self._drafts: dict[str, MessageDraft] = {}
+        # one draft per conversation as the caller names it, which may be a
+        # peer reached on several bots: the key is the set of threads it spans
+        self._drafts: dict[tuple[str, ...], MessageDraft] = {}
         # an outbound is written down once the provider answers, so until then
         # only this holds a command to its one attempt
-        self._sending: set[str] = set()
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
@@ -315,7 +342,12 @@ class CommandService(ICommandService):
         known = await self._storage.find_known_sender(raw_target[4:])
         if known is None:
             return None
-        address = self._channel.dm_address(known.sender, sender_kind=known.sender_kind)
+        address = self._channel.dm_address(
+            known.sender,
+            sender_kind=known.sender_kind,
+            channel=known.channel,
+            channel_identity=known.channel_identity,
+        )
         if address is None:
             return None
         # The name the provider calls the peer comes first, then the token that
@@ -326,7 +358,6 @@ class CommandService(ICommandService):
     async def _open_dm(
         self,
         *,
-        command_id: str,
         raw_target: str,
         opening: _DmOpening,
         body: str,
@@ -351,12 +382,15 @@ class CommandService(ICommandService):
                 target_kind=ChannelTargetKind.DM,
                 provider_thread_id=address.provider_thread_id,
                 delivery_handle=address.delivery_handle,
+                channel=opening.channel,
+                channel_identity=address.channel_identity,
             )
         )
         now = self._clock()
         session = ChannelSession(
             id=address.channel_session_id,
             channel=opening.channel,
+            channel_identity=address.channel_identity,
             provider_thread_id=(
                 delivery_result.provider_thread_id or address.provider_thread_id
             ),
@@ -370,7 +404,6 @@ class CommandService(ICommandService):
             direction=MessageDirection.OUTBOUND,
             seq=0,
             message_id=str(uuid7()),
-            command_id=command_id,
             thread_id=address.thread_id,
             channel_session_id=session.id,
             target=session.canonical_target,
@@ -389,7 +422,6 @@ class CommandService(ICommandService):
             thread_id=address.thread_id,
             channel=session.channel,
             channel_session_id=session.id,
-            command_id=command_id,
             outbound_message_id=outbound.message_id,
         )
         # a chat that was never opened is not a conversation, and writing one
@@ -400,7 +432,6 @@ class CommandService(ICommandService):
                 audit_context,
                 outbound,
                 delivery_result,
-                command_id=command_id,
                 canonical_target=raw_target,
             )
             return MessageSendSuccess(message=outbound, target=raw_target)
@@ -419,7 +450,6 @@ class CommandService(ICommandService):
             audit_context,
             outbound,
             delivery_result,
-            command_id=command_id,
             canonical_target=session.canonical_target,
         )
         resolved = await self._storage.resolve_inbox_target(session.canonical_target)
@@ -446,36 +476,14 @@ class CommandService(ICommandService):
     async def _stage_draft(
         self,
         *,
-        command_id: str,
-        raw_target: str,
         target: ResolvedInboxTarget,
-        body: str,
-        created_at_ms: int,
-        attachments: tuple[OutboundAttachment, ...],
-        reply_to_message_id: str | None,
-        send_draft: bool,
+        payload: MessageDraft,
+        draft_replaced: bool,
     ) -> tuple[MessageDraft, int] | MessageSendFreshnessHold:
-        """Settle what will be sent, and that nothing arrived while it was written."""
+        """Settle that nothing arrived in this conversation while the draft was written."""
 
         target_id = target.thread.id
         async with self._concurrency.for_thread(target_id):
-            if send_draft:
-                draft = self._drafts.get(target_id)
-                if draft is None:
-                    raise ValueError(f"no active draft for target: {raw_target}")
-                payload = draft
-            else:
-                payload = MessageDraft(
-                    target=target.canonical_target,
-                    target_id=target_id,
-                    body=body,
-                    attachments=attachments,
-                    reply_to_message_id=reply_to_message_id,
-                    created_at_ms=created_at_ms,
-                )
-            draft_replaced = not send_draft and self._drafts.get(target_id) is not None
-            if not send_draft:
-                self._drafts[target_id] = payload
             freshness = await self._storage.check_outbound_freshness(
                 target_id,
                 snapshot_seq=self._freshness_snapshots.get(target_id),
@@ -485,7 +493,6 @@ class CommandService(ICommandService):
             if isinstance(freshness, MessageSendFreshnessHold):
                 return await self._hold(
                     freshness,
-                    command_id=command_id,
                     target=target,
                 )
             return payload, freshness.current_inbound_seq
@@ -494,7 +501,6 @@ class CommandService(ICommandService):
         self,
         hold: MessageSendFreshnessHold,
         *,
-        command_id: str,
         target: ResolvedInboxTarget,
     ) -> MessageSendFreshnessHold:
         """Record that something arrived while the message was being written."""
@@ -503,7 +509,6 @@ class CommandService(ICommandService):
         self._observe_freshness(target_id, hold.current_inbound_seq)
         await self._audit_freshness_hold(
             thread_id=target_id,
-            command_id=command_id,
             target=target.canonical_target,
             result=hold,
         )
@@ -525,6 +530,8 @@ class CommandService(ICommandService):
                 target_kind=channel_session.target_kind,
                 provider_thread_id=channel_session.provider_thread_id,
                 provider_reply_to_message_id=prepared.reply_to_provider_message_id,
+                channel=channel_session.channel,
+                channel_identity=channel_session.channel_identity,
             )
         )
         return _answered(
@@ -537,7 +544,6 @@ class CommandService(ICommandService):
         outbound: Message[OutboundAttachment],
         delivery_result: OutboundDeliveryResult,
         *,
-        command_id: str,
         canonical_target: str,
     ) -> None:
         """Write down what the channel did with the message, twice over."""
@@ -565,7 +571,6 @@ class CommandService(ICommandService):
             state=terminal_state,
             correlation=audit_context,
             arguments={
-                "command_id": command_id,
                 "target": canonical_target,
                 "delivery_state": delivery_state.value,
             },
@@ -575,80 +580,83 @@ class CommandService(ICommandService):
 
     async def _deliver(
         self,
-        *,
-        command_id: str,
-        target: ResolvedInboxTarget,
-        expected_target_seq: int,
-        payload: MessageDraft,
-    ) -> Message[OutboundAttachment] | MessageSendFreshnessHold:
-        """Hand the message to its channel and record what the channel made of it."""
+        staged: Sequence[tuple[ResolvedInboxTarget, MessageDraft, int]],
+    ) -> tuple[Message[OutboundAttachment], ...] | MessageSendFreshnessHold:
+        """Hand the message to its channels and record what each made of it.
 
-        canonical_target = target.canonical_target
-        target_id = target.thread.id
-        async with self._concurrency.for_thread(target_id):
-            prepared = await self._storage.materialize_outbound_if_fresh(
-                target_id,
-                expected_target_seq,
-                command_id=command_id,
-                payload=payload,
-                attempted_at_ms=self._clock(),
-            )
-            result = prepared.outcome
-            if isinstance(result, MessageSendFreshnessHold):
-                return await self._hold(
-                    result,
-                    command_id=command_id,
-                    target=target,
+        Every conversation gets its last look under its own lock before
+        anything goes out, so something new in any of them holds the whole
+        while nothing has been sent yet.
+        """
+
+        async with AsyncExitStack() as locks:
+            for target, _, _ in sorted(staged, key=lambda item: item[0].thread.id):
+                await locks.enter_async_context(
+                    self._concurrency.for_thread(target.thread.id)
                 )
-            outbound = result
-            channel_session = prepared.channel_session
-            audit_context = self._correlation(
-                thread_id=target_id,
-                channel=channel_session.channel,
-                channel_session_id=channel_session.id,
-                command_id=command_id,
-                inbound_seq=expected_target_seq,
-                outbound_message_id=outbound.message_id,
+            prepared: list[_PreparedDelivery] = []
+            for target, payload, expected_target_seq in staged:
+                materialized = await self._storage.materialize_outbound_if_fresh(
+                    target.thread.id,
+                    expected_target_seq,
+                    payload=payload,
+                    attempted_at_ms=self._clock(),
+                )
+                outcome = materialized.outcome
+                if isinstance(outcome, MessageSendFreshnessHold):
+                    return await self._hold(outcome, target=target)
+                prepared.append(
+                    _PreparedDelivery(
+                        target, expected_target_seq, outcome, materialized
+                    )
+                )
+            # the conversations are delivered side by side, so the send takes
+            # as long as the slowest one rather than all of them added up
+            return tuple(
+                await asyncio.gather(*(self._deliver_one(item) for item in prepared))
             )
-            await self._audit.append(
-                event_name="bcc.send.fresh_check.passed",
-                state=RuntimeEventState.COMPLETED,
-                correlation=audit_context,
-            )
-            await self._audit.append(
-                event_name="channel.outbound.pending",
-                state=RuntimeEventState.STARTED,
-                correlation=audit_context,
-            )
-            outbound, delivery_result = await self._transmit(outbound, prepared)
-            delivery_state = outbound.delivery_state
-            if delivery_state is None:
-                raise RuntimeError("outbound message has no delivery state")
-            if _reached_the_peer(delivery_result):
-                outbound = await self._storage.finalize_outbound_delivery(outbound)
-            if (
-                delivery_state
-                in {
-                    OutboundDeliveryState.SENT,
-                    OutboundDeliveryState.QUEUED,
-                }
-                and self._drafts.get(target_id) is payload
-            ):
-                self._drafts.pop(target_id, None)
-            await self._record_delivery(
-                audit_context,
-                outbound,
-                delivery_result,
-                command_id=command_id,
-                canonical_target=canonical_target,
-            )
-            return outbound
+
+    async def _deliver_one(
+        self, item: _PreparedDelivery
+    ) -> Message[OutboundAttachment]:
+        target = item.target
+        outbound = item.outbound
+        channel_session = item.materialized.channel_session
+        audit_context = self._correlation(
+            thread_id=target.thread.id,
+            channel=channel_session.channel,
+            channel_session_id=channel_session.id,
+            inbound_seq=item.expected_target_seq,
+            outbound_message_id=outbound.message_id,
+        )
+        await self._audit.append(
+            event_name="bcc.send.fresh_check.passed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=audit_context,
+        )
+        await self._audit.append(
+            event_name="channel.outbound.pending",
+            state=RuntimeEventState.STARTED,
+            correlation=audit_context,
+        )
+        outbound, delivery_result = await self._transmit(outbound, item.materialized)
+        delivery_state = outbound.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        if _reached_the_peer(delivery_result):
+            outbound = await self._storage.finalize_outbound_delivery(outbound)
+        await self._record_delivery(
+            audit_context,
+            outbound,
+            delivery_result,
+            canonical_target=target.canonical_target,
+        )
+        return outbound
 
     async def send(
         self,
         *,
         actor: Actor,
-        command_id: str,
         raw_target: str,
         body: str,
         created_at_ms: int,
@@ -667,30 +675,20 @@ class CommandService(ICommandService):
             )
         if not send_draft and not body.strip() and not attachments:
             raise ValueError("outbound message must not be empty")
-        if command_id in self._sending:
-            raise ValueError(f"command was already sent: {command_id}")
-        self._sending.add(command_id)
-        try:
-            if await self._storage.has_outbound_for_command(command_id):
-                raise ValueError(f"command was already sent: {command_id}")
-            return await self._send(
-                actor=actor,
-                command_id=command_id,
-                raw_target=raw_target,
-                body=body,
-                created_at_ms=created_at_ms,
-                attachments=attachments,
-                reply_to_message_id=reply_to_message_id,
-                send_draft=send_draft,
-            )
-        finally:
-            self._sending.discard(command_id)
+        return await self._send(
+            actor=actor,
+            raw_target=raw_target,
+            body=body,
+            created_at_ms=created_at_ms,
+            attachments=attachments,
+            reply_to_message_id=reply_to_message_id,
+            send_draft=send_draft,
+        )
 
     async def _send(
         self,
         *,
         actor: Actor,
-        command_id: str,
         raw_target: str,
         body: str,
         created_at_ms: int,
@@ -699,11 +697,7 @@ class CommandService(ICommandService):
         send_draft: bool,
     ) -> MessageSendResult:
         try:
-            target = await self._storage.resolve_inbox_target(raw_target)
-        except AmbiguousInboxTargetError:
-            # Several conversations answer to this handle. Opening another one
-            # would silently pick a peer for the caller.
-            raise
+            targets = await self._storage.resolve_inbox_targets(raw_target)
         except InboxTargetResolutionError:
             opening = await self._dm_opening(actor, raw_target)
             if opening is None or send_draft:
@@ -712,6 +706,7 @@ class CommandService(ICommandService):
             # not answer to, and then there is nothing to open
             held = await self._storage.find_channel_session(
                 channel=opening.channel,
+                channel_identity=opening.address.channel_identity,
                 provider_thread_id=opening.address.provider_thread_id,
             )
             # a conversation whose thread never made it is not open yet, and
@@ -720,39 +715,83 @@ class CommandService(ICommandService):
                 held = None
             if held is None:
                 return await self._open_dm(
-                    command_id=command_id,
                     raw_target=raw_target,
                     opening=opening,
                     body=body,
                     attachments=attachments,
                     created_at_ms=created_at_ms,
                 )
-            target = await self._storage.resolve_inbox_target(held.canonical_target)
-        self._require_in_reach(actor, target.thread.id, raw_target)
+            targets = (await self._storage.resolve_inbox_target(held.canonical_target),)
+        for target in targets:
+            self._require_in_reach(actor, target.thread.id, raw_target)
+        # a handle held on several bots names the same peer everywhere, so the
+        # message goes to every conversation; two conversations on one bot
+        # are two different peers wearing the same name, and picking would
+        # be guessing
+        bots = {
+            (target.channel_session.channel, target.channel_session.channel_identity)
+            for target in targets
+        }
+        if len(bots) != len(targets):
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one conversation on one bot"
+            )
 
-        staged = await self._stage_draft(
-            command_id=command_id,
-            raw_target=raw_target,
-            target=target,
-            body=body,
-            created_at_ms=created_at_ms,
-            attachments=attachments,
-            reply_to_message_id=reply_to_message_id,
-            send_draft=send_draft,
-        )
-        if isinstance(staged, MessageSendFreshnessHold):
-            return staged
-        payload, expected_target_seq = staged
+        # the draft belongs to the conversation as the caller named it, however
+        # many threads that spans; something new in any of them holds the whole
+        # send and the one draft waits for the next attempt
+        draft_key = tuple(sorted(target.thread.id for target in targets))
+        if send_draft:
+            draft = self._drafts.get(draft_key)
+            if draft is None:
+                raise ValueError(f"no active draft for target: {raw_target}")
+        else:
+            draft = MessageDraft(
+                target=targets[0].canonical_target,
+                target_id=targets[0].thread.id,
+                body=body,
+                attachments=attachments,
+                reply_to_message_id=reply_to_message_id,
+                created_at_ms=created_at_ms,
+            )
+        draft_replaced = not send_draft and draft_key in self._drafts
+        if not send_draft:
+            self._drafts[draft_key] = draft
+        staged: list[tuple[ResolvedInboxTarget, MessageDraft, int]] = []
+        hold: MessageSendFreshnessHold | None = None
+        for target in targets:
+            payload = replace(
+                draft, target=target.canonical_target, target_id=target.thread.id
+            )
+            settled = await self._stage_draft(
+                target=target,
+                payload=payload,
+                draft_replaced=draft_replaced,
+            )
+            if isinstance(settled, MessageSendFreshnessHold):
+                hold = hold or settled
+                continue
+            payload, expected_target_seq = settled
+            staged.append((target, payload, expected_target_seq))
+        if hold is not None:
+            return _named_as_called(hold, raw_target, targets)
 
-        delivered = await self._deliver(
-            command_id=command_id,
-            target=target,
-            expected_target_seq=expected_target_seq,
-            payload=payload,
-        )
+        delivered = await self._deliver(staged)
         if isinstance(delivered, MessageSendFreshnessHold):
-            return delivered
-        return MessageSendSuccess(message=delivered, target=target.display_target)
+            return _named_as_called(delivered, raw_target, targets)
+        deliveries = tuple(
+            MessageSendSuccess(message=outbound, target=target.display_target)
+            for (target, _, _), outbound in zip(staged, delivered, strict=True)
+        )
+        if self._drafts.get(draft_key) is draft and all(
+            outcome.message.delivery_state
+            in {OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED}
+            for outcome in deliveries
+        ):
+            self._drafts.pop(draft_key, None)
+        if len(deliveries) == 1:
+            return deliveries[0]
+        return MessageBroadcast(deliveries=deliveries)
 
     def _observe_freshness(self, thread_id: str, seq: int) -> None:
         previous = self._freshness_snapshots.get(thread_id)
@@ -763,13 +802,11 @@ class CommandService(ICommandService):
         self,
         *,
         thread_id: str,
-        command_id: str,
         target: str,
         result: MessageSendFreshnessHold,
     ) -> None:
         audit_context = self._correlation(
             thread_id=thread_id,
-            command_id=command_id,
             inbound_seq=result.current_inbound_seq,
         )
         await self._audit.append(
@@ -791,7 +828,6 @@ class CommandService(ICommandService):
             state=RuntimeEventState.COMPLETED,
             correlation=audit_context,
             arguments={
-                "command_id": command_id,
                 "target": target,
                 "shown": len(result.messages),
                 "total": result.newer_message_total,
@@ -848,7 +884,6 @@ class CommandService(ICommandService):
         actor: Actor | None = None,
         channel: str | None = None,
         channel_session_id: str | None = None,
-        command_id: str | None = None,
         inbound_seq: int | None = None,
         outbound_message_id: str | None = None,
     ) -> CorrelationContext:
@@ -858,7 +893,6 @@ class CommandService(ICommandService):
             channel_session_id=channel_session_id,
             thread_id=thread_id,
             actor=actor,
-            command_id=command_id,
             inbound_seq=inbound_seq,
             outbound_message_id=outbound_message_id,
         )

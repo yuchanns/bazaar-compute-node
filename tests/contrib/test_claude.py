@@ -617,7 +617,7 @@ def test_claude_runtime_factory_preserves_runtime_options() -> None:
         environment_for_session=environment_for_session,
         agent_id="agent-1",
         agent_name="Agent One",
-        bot_name=lambda: "Bot One",
+        bot_names=lambda: ("Bot One",),
         runtime_options={"model": "model-1", "effort": "high"},
         sandbox_mode=RuntimeSandboxMode.WORKSPACE_WRITE,
         network_access=False,

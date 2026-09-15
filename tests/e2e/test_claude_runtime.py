@@ -79,12 +79,11 @@ class _StaticRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._runtime for kind in runtimes},
         )
 
@@ -111,7 +110,7 @@ def _node(
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="claudecode",
@@ -217,7 +216,7 @@ def _claude_environment() -> Mapping[str, str]:
             environment_for_session=_empty_environment,
             agent_id="claude-e2e-environment",
             agent_name="Claude E2E",
-            bot_name=lambda: None,
+            bot_names=lambda: (),
         )
     ).environment_variable_names()
     return {
@@ -870,12 +869,11 @@ class _PerConfigurationRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={
                 kind: lambda context: Runtime(
                     context,
@@ -930,7 +928,7 @@ def _multi_runtime_node(
                 AgentConfiguration(
                     id=agent_id,
                     name="Claude Multi Runtime E2E",
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="claudecode",

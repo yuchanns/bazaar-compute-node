@@ -33,7 +33,7 @@ from .version_check import VersionWatcher
 class AgentStartupResult:
     agent_id: str
     name: str
-    channel: str
+    channels: tuple[str, ...]
     runtimes: tuple[str, ...]
     status: str
     error_type: str | None = None
@@ -44,7 +44,7 @@ class AgentStartupResult:
             "agent_id": self.agent_id,
             "name": self.name,
             "status": self.status,
-            "channel": self.channel,
+            "channels": self.channels,
             "runtimes": self.runtimes,
         }
         if self.error_type is not None:
@@ -52,6 +52,10 @@ class AgentStartupResult:
         if self.error is not None:
             record["error"] = self.error
         return record
+
+
+def _channel_kinds(configuration: AgentConfiguration) -> tuple[str, ...]:
+    return tuple(channel.kind for channel in configuration.channels)
 
 
 def _runtime_kinds(configuration: AgentConfiguration) -> tuple[str, ...]:
@@ -182,7 +186,7 @@ class NodeApplication:
             async with asyncio.timeout(self.timeout_budget.startup_seconds):
                 factories = await asyncio.to_thread(
                     self._registry.load_agent,
-                    channel=configuration.channel.kind,
+                    channels=_channel_kinds(configuration),
                     runtimes=_runtime_kinds(configuration),
                 )
                 storage_scope = self.storage.scope(configuration.id, configuration.name)
@@ -211,7 +215,7 @@ class NodeApplication:
             result = AgentStartupResult(
                 agent_id=configuration.id,
                 name=configuration.name,
-                channel=configuration.channel.kind,
+                channels=_channel_kinds(configuration),
                 runtimes=_runtime_kinds(configuration),
                 status="failed",
                 error_type=type(error).__name__,
@@ -225,7 +229,7 @@ class NodeApplication:
         result = AgentStartupResult(
             agent_id=configuration.id,
             name=configuration.name,
-            channel=configuration.channel.kind,
+            channels=_channel_kinds(configuration),
             runtimes=_runtime_kinds(configuration),
             status="started",
         )
@@ -438,7 +442,7 @@ class NodeApplication:
                     "agent_id": configuration.id,
                     "name": configuration.name,
                     "status": "pending",
-                    "channel": configuration.channel.kind,
+                    "channels": _channel_kinds(configuration),
                     "runtimes": _runtime_kinds(configuration),
                 }
             )

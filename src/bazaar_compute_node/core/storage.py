@@ -81,6 +81,7 @@ class KnownSender:
 
     sender: SenderIdentity
     channel: str
+    channel_identity: str | None
     sender_kind: SenderKind
 
 
@@ -317,7 +318,6 @@ class StorageOperationMixin:
         target_id: str,
         expected_target_seq: int,
         *,
-        command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult:
@@ -381,7 +381,6 @@ class StorageOperationMixin:
             direction=MessageDirection.OUTBOUND,
             seq=0,
             message_id=str(uuid7()),
-            command_id=command_id,
             thread_id=target_id,
             channel_session_id=channel_session.id,
             target=payload.target,
@@ -558,7 +557,6 @@ class _StorageOperations(Protocol):
         target_id: str,
         expected_target_seq: int,
         *,
-        command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult: ...
@@ -569,8 +567,20 @@ class _StorageOperations(Protocol):
     ) -> Message[OutboundAttachment]: ...
 
     async def find_channel_session(
-        self, *, channel: str, provider_thread_id: str
+        self, *, channel: str, channel_identity: str | None, provider_thread_id: str
     ) -> ChannelSession | None: ...
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]: ...
+
+    async def backfill_channel_identity(
+        self,
+        channel_session_id: str,
+        *,
+        channel_identity: str,
+        provider_thread_id: str,
+    ) -> None: ...
 
     async def get_channel_session(
         self, channel_session_id: str
@@ -612,6 +622,12 @@ class _StorageOperations(Protocol):
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 
+    async def resolve_inbox_targets(
+        self, raw_target: str
+    ) -> tuple[ResolvedInboxTarget, ...]:
+        """Every conversation a target names; a handle may be held on several bots."""
+        ...
+
     async def find_known_sender(self, token: str) -> KnownSender | None: ...
 
     async def find_message(
@@ -631,14 +647,6 @@ class _StorageOperations(Protocol):
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
-
-    async def has_outbound_for_command(self, command_id: str) -> bool:
-        """Say whether this command already reached the peer.
-
-        An attempt that never left may be made again; one that did would arrive
-        twice, and only an attempt that arrived is written down.
-        """
-        ...
 
     async def get_owned_message(
         self,

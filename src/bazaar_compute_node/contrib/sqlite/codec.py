@@ -39,6 +39,7 @@ def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
         ),
         created_at_ms=cast(int, row["created_at_ms"]),
         updated_at_ms=cast(int, row["updated_at_ms"]),
+        channel_identity=_optional_text(row["channel_identity"], "channel_identity"),
         target_kind=ChannelTargetKind(
             _required_text(row["target_kind"], "channel_session.target_kind")
         ),
@@ -162,7 +163,6 @@ def message_from_row(
     return Message(
         **common,
         attachments=_decode_outbound_attachments(row["attachments_json"]),
-        command_id=_required_text(row["command_id"], "command_id"),
         delivery_state=OutboundDeliveryState(
             _required_text(row["delivery_state"], "message.delivery_state")
         ),
@@ -444,6 +444,7 @@ def validate_channel_session_update(
 ) -> ChannelSession:
     if (
         existing.channel != incoming.channel
+        or existing.channel_identity != incoming.channel_identity
         or existing.provider_thread_id != incoming.provider_thread_id
         or existing.target_kind is not incoming.target_kind
     ):
