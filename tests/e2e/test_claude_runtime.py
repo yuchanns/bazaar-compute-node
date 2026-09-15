@@ -216,7 +216,7 @@ def _claude_environment() -> Mapping[str, str]:
             environment_for_session=_empty_environment,
             agent_id="claude-e2e-environment",
             agent_name="Claude E2E",
-            bot_name=lambda: None,
+            bot_names=lambda: (),
         )
     ).environment_variable_names()
     return {

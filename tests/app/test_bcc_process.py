@@ -145,7 +145,7 @@ async def _wait_for_runtime_session(runtime: TestRuntime) -> RuntimeSession:
 
 
 @pytest.mark.asyncio
-async def test_runtime_bot_name_prefers_channel_name_with_id_fallback(
+async def test_runtime_bot_names_prefer_channel_name_with_id_fallback(
     tmp_path: Path,
 ) -> None:
     node, channels, _ = _make_node(tmp_path)
@@ -156,13 +156,13 @@ async def test_runtime_bot_name_prefers_channel_name_with_id_fallback(
     try:
         (context,) = node.agents[AGENT_A_ID]._runtime_contexts
         assert context.agent_name == AGENT_NAMES[AGENT_A_ID]
-        assert context.bot_name() == "Provider Name"
+        assert context.bot_names() == ("Provider Name",)
 
         channel.identity = ChannelIdentity(id="provider-id")
-        assert context.bot_name() == "provider-id"
+        assert context.bot_names() == ("provider-id",)
 
         channel.identity = None
-        assert context.bot_name() is None
+        assert context.bot_names() == ()
     finally:
         await node.stop()
 

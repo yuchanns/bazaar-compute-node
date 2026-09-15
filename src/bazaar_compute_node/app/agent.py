@@ -149,7 +149,7 @@ class AgentApplication:
                 environment_for_session=partial(self._runtime_environment, index),
                 agent_id=self.agent_id,
                 agent_name=self.name,
-                bot_name=self._bot_name,
+                bot_names=self._bot_names,
                 runtime_options=runtime_options,
                 mode=configuration.mode,
                 sandbox_mode=runtime_configuration.sandbox_mode,
@@ -269,11 +269,14 @@ class AgentApplication:
                     ),
                 )
 
-    def _bot_name(self) -> str | None:
-        identity = self.channel.get_identity()
-        if identity is None:
-            return None
-        return identity.name or identity.id
+    def _bot_names(self) -> tuple[str, ...]:
+        names: dict[str, None] = {}
+        for member in self.channel.members:
+            identity = member.get_identity()
+            if identity is None:
+                continue
+            names[identity.name or identity.id] = None
+        return tuple(names)
 
     async def stop(self) -> None:
         if self._stopping:

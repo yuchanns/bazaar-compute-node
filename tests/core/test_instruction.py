@@ -10,7 +10,7 @@ def test_developer_instructions_render_identity() -> None:
     # runtime context and identity are rendered
     context = DeveloperInstructionContext(
         agent_name="Test {{ agent }}",
-        bot_name="Test Bot",
+        bot_names=("Test Bot",),
         agent_id="agent-1",
         runtime_session_id="runtime-1",
         runtime="test",
@@ -31,7 +31,7 @@ def test_developer_instructions_render_identity() -> None:
     # identity renders without a bot name
     rendered = DeveloperInstructionContext(
         agent_name="Test Agent",
-        bot_name=None,
+        bot_names=(),
         agent_id="agent-1",
         runtime_session_id="runtime-1",
         runtime="test",
@@ -39,6 +39,30 @@ def test_developer_instructions_render_identity() -> None:
     ).render()
 
     assert rendered.startswith("You're Test Agent, an AI agent in bcn ")
+
+    # an agent on several bots is introduced by every name it goes by
+    rendered = DeveloperInstructionContext(
+        agent_name="Test Agent",
+        bot_names=("Bot One", "Bot Two", "Bot Three"),
+        agent_id="agent-1",
+        runtime_session_id="runtime-1",
+        runtime="test",
+        workspace="/workspace",
+    ).render()
+
+    assert rendered.startswith(
+        "You're Bot One, Bot Two and Bot Three, A.K.A Test Agent, an AI agent in bcn "
+    )
+
+    with pytest.raises(ValueError, match="bot_names must not contain line breaks"):
+        DeveloperInstructionContext(
+            agent_name="Test Agent",
+            bot_names=("Bot One", "Bot\nTwo"),
+            agent_id="agent-1",
+            runtime_session_id="runtime-1",
+            runtime="test",
+            workspace="/workspace",
+        )
 
 
 def test_text_template_requires_exact_argument_keys() -> None:

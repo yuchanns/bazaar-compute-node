@@ -5227,3 +5227,47 @@ async def test_a_handle_held_on_two_bots_is_answered_on_both() -> None:
         assert {message.command_id for message in outbound} == {"command-dm-both-draft"}
     finally:
         await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_agent_introduces_itself_by_every_name_it_goes_by(
+    tmp_path: Path,
+) -> None:
+    named = _KnownBotChannel()
+    named.identity = ChannelIdentity(id="bot-1", name="Kana on Telegram")
+    unnamed = _KnownBotChannel()
+    unnamed.identity = ChannelIdentity(id="bot-2")
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            version_check=False,
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=ACCEPTANCE_AGENT_ID,
+                    name="Test Agent",
+                    channels=(
+                        ChannelConfiguration(kind="test"),
+                        ChannelConfiguration(kind="test"),
+                    ),
+                    runtimes=(RuntimeConfiguration(kind="test"),),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, storage),
+            audit=RecordingAudit,
+        ),
+        registry=_MembersRegistry(channels=(named, unnamed)),
+        endpoint_path=tmp_path / "names.sock",
+        timeout_budget=make_budget(),
+    )
+    await node.start()
+    try:
+        (context,) = node.agents[ACCEPTANCE_AGENT_ID]._runtime_contexts
+        # a bot without a display name is introduced by its id
+        assert context.bot_names() == ("Kana on Telegram", "bot-2")
+    finally:
+        await node.stop()
