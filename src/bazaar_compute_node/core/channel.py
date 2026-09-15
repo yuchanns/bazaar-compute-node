@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
+import asyncio
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -322,6 +330,162 @@ class Channel(IChannel):
                 f"bcn:{self._agent_id}:{kind}:{provider_local_id}",
             )
         )
+
+
+class Channels(IChannel):
+    """One channel made of several, so an agent listens and answers on all of them."""
+
+    def __init__(self, members: Sequence[IChannel]) -> None:
+        if not members:
+            raise ValueError("an agent needs at least one channel")
+        self._members = tuple(members)
+        # members that did not come up, by position, with what stopped them
+        self._failures: dict[int, str] = {}
+        self._bots: dict[int, tuple[str, str]] = {}
+
+    @property
+    def members(self) -> tuple[IChannel, ...]:
+        return self._members
+
+    @property
+    def name(self) -> str:
+        return ",".join(dict.fromkeys(member.name for member in self._members))
+
+    @property
+    def health(self) -> Mapping[str, object]:
+        records: list[dict[str, object]] = []
+        for index, member in enumerate(self._members):
+            bot = self._bots.get(index)
+            record: dict[str, object] = {
+                "kind": member.name,
+                "identity": bot[1] if bot is not None else None,
+                "health": dict(member.health),
+            }
+            if index in self._failures:
+                record["startup_error"] = self._failures[index]
+            records.append(record)
+        # a member that is up but not well drags the whole down with it, as
+        # it did when it was the only channel
+        unwell = any(member.health.get("state") != "ready" for _, member in self._up())
+        return {
+            "state": "degraded" if self._failures or unwell else "ready",
+            "channels": tuple(records),
+        }
+
+    def get_identity(self) -> ChannelIdentity | None:
+        for _, member in self._up():
+            return member.get_identity()
+        return None
+
+    async def start(self, *, timeout: float) -> None:
+        """Bring up every member; one that fails is marked, not fatal."""
+
+        self._failures.clear()
+        # members come up together, so the whole takes one timeout, not one
+        # per member
+        outcomes = await asyncio.gather(
+            *(member.start(timeout=timeout) for member in self._members),
+            return_exceptions=True,
+        )
+        for index, outcome in enumerate(outcomes):
+            if isinstance(outcome, Exception):
+                self._failures[index] = f"{type(outcome).__name__}: {outcome}"
+        if len(self._failures) == len(self._members):
+            raise RuntimeError(
+                "no channel started: "
+                + "; ".join(
+                    f"{self._members[index].name}: {reason}"
+                    for index, reason in self._failures.items()
+                )
+            )
+        # a member knows its bot once it is up; two bots of one kind with the
+        # same identity would answer each other's conversations, so that
+        # pairing is refused rather than left to run
+        self._bots.clear()
+        seen: dict[tuple[str, str], int] = {}
+        for index, member in self._up():
+            identity = member.get_identity()
+            if identity is None:
+                await self.stop(timeout=timeout)
+                raise RuntimeError(
+                    f"{member.name} channel #{index + 1} has no identity after start"
+                )
+            bot = (member.name, identity.id)
+            if bot in seen:
+                await self.stop(timeout=timeout)
+                raise ValueError(
+                    f"channel {member.name} identity {identity.id} is configured "
+                    f"twice (positions {seen[bot] + 1} and {index + 1})"
+                )
+            seen[bot] = index
+            self._bots[index] = bot
+
+    async def stop(self, *, timeout: float) -> None:
+        # members go down together, so the whole takes one timeout, not one
+        # per member
+        up = list(self._up())
+        outcomes = await asyncio.gather(
+            *(member.stop(timeout=timeout) for _, member in up),
+            return_exceptions=True,
+        )
+        failed = [
+            f"{member.name} #{index + 1}: {type(outcome).__name__}"
+            for (index, member), outcome in zip(up, outcomes, strict=True)
+            if isinstance(outcome, Exception)
+        ]
+        if failed:
+            raise RuntimeError("channel stop failed: " + "; ".join(failed))
+
+    async def receive(self) -> AsyncIterator[Message[InboundAttachment]]:
+        # one reader until the members are merged into a single stream
+        async for message in self._first().receive():
+            yield message
+
+    def accept_turn_event(
+        self,
+        item: RuntimeOutputEvent,
+        *,
+        session_id: str,
+    ) -> None:
+        self._first().accept_turn_event(item, session_id=session_id)
+
+    def anchor_turn(self, session_id: str, anchor: Message) -> None:
+        self._first().anchor_turn(session_id, anchor)
+
+    def dm_address(
+        self, sender: SenderIdentity, *, sender_kind: SenderKind
+    ) -> DmAddress | None:
+        for _, member in self._up():
+            address = member.dm_address(sender, sender_kind=sender_kind)
+            if address is not None:
+                return address
+        return None
+
+    async def send(
+        self,
+        request: ChannelSendRequest,
+        *,
+        timeout: float,
+    ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        return await self._first().send(request, timeout=timeout)
+
+    async def request_approval(
+        self,
+        request: ChannelApprovalRequest,
+        *,
+        timeout: float,
+    ) -> ApprovalResult:
+        return await self._first().request_approval(request, timeout=timeout)
+
+    def _up(self) -> Iterator[tuple[int, IChannel]]:
+        for index, member in enumerate(self._members):
+            if index not in self._failures:
+                yield index, member
+
+    def _first(self) -> IChannel:
+        for _, member in self._up():
+            return member
+        raise RuntimeError("no channel started")
 
 
 class IChannelBuilder(Protocol):

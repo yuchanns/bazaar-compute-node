@@ -79,12 +79,11 @@ class _StaticRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._runtime for kind in runtimes},
         )
 
@@ -870,12 +869,11 @@ class _PerConfigurationRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={
                 kind: lambda context: Runtime(
                     context,

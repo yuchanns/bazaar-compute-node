@@ -186,7 +186,7 @@ class NodeApplication:
             async with asyncio.timeout(self.timeout_budget.startup_seconds):
                 factories = await asyncio.to_thread(
                     self._registry.load_agent,
-                    channel=configuration.channels[0].kind,
+                    channels=_channel_kinds(configuration),
                     runtimes=_runtime_kinds(configuration),
                 )
                 storage_scope = self.storage.scope(configuration.id, configuration.name)

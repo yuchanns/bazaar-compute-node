@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -51,17 +51,15 @@ class _StaticRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: tuple[str, ...] | list[str],
     ) -> AgentAdapterFactories:
-        del channel
-
         def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
             del context
             return self._runtime
 
         return AgentAdapterFactories(
-            channel=_StaticChannel(self._channel),
+            channels={kind: _StaticChannel(self._channel) for kind in channels},
             runtimes={kind: runtime_factory for kind in runtimes},
         )
 

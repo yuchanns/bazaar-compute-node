@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..core.actor import Actor, Actors, Agent, Thread
 from ..core.audit import AuditRecorder
-from ..core.channel import Channel, ChannelContext, IChannel
+from ..core.channel import Channel, ChannelContext, Channels, IChannel
 from ..core.concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
@@ -111,18 +111,25 @@ class AgentApplication:
             timeout_budget=timeout_budget,
             clock=now_ms,
         )
-        provider_channel = factories.channel.build(
-            ChannelContext(
-                agent_id=self.agent_id,
-                attachments=self._attachment_materializer,
-                options=dict(configuration.channels[0].options),
-                workspace=self.workspace_path,
-                translator=self.translator,
-                timer_wheel=self.timer_wheel,
-                audit=self._audit_recorder,
+        self.channel: IChannel = Channels(
+            tuple(
+                Channel(
+                    self.agent_id,
+                    factories.channels[channel_configuration.kind].build(
+                        ChannelContext(
+                            agent_id=self.agent_id,
+                            attachments=self._attachment_materializer,
+                            options=dict(channel_configuration.options),
+                            workspace=self.workspace_path,
+                            translator=self.translator,
+                            timer_wheel=self.timer_wheel,
+                            audit=self._audit_recorder,
+                        )
+                    ),
+                )
+                for channel_configuration in configuration.channels
             )
         )
-        self.channel: IChannel = Channel(self.agent_id, provider_channel)
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
@@ -313,7 +320,7 @@ class AgentApplication:
             "agent_id": self.agent_id,
             "name": self.name,
             "status": "started" if self.started else "stopped",
-            "channel": self.channel.name,
+            "channels": tuple(member.name for member in self.channel.members),
             "runtimes": tuple(runtime.name for runtime in self.runtimes),
             "channel_health": dict(self.channel.health),
             "orchestrator_health": self.orchestrator.health,

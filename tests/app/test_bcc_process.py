@@ -64,16 +64,16 @@ class _RoutingRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
-
         def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
             return self._runtimes[context.agent_id]
 
         return AgentAdapterFactories(
-            channel=_RoutingChannelBuilder(self._channels),
+            channels={
+                kind: _RoutingChannelBuilder(self._channels) for kind in channels
+            },
             runtimes={kind: runtime_factory for kind in runtimes},
         )
 

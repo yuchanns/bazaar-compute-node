@@ -138,12 +138,11 @@ class _AcceptanceRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._runtime for kind in runtimes},
         )
 
@@ -4175,15 +4174,14 @@ class _MultiRuntimeRegistry(AdapterRegistry):
     def load_agent(
         self,
         *,
-        channel: str,
+        channels: Sequence[str],
         runtimes: Sequence[str],
     ) -> AgentAdapterFactories:
-        del channel
         missing = [kind for kind in runtimes if kind not in self._kinds]
         if missing:
             raise AssertionError(f"unexpected runtime kinds: {missing}")
         return AgentAdapterFactories(
-            channel=StaticChannelBuilder(self._channel),
+            channels={kind: StaticChannelBuilder(self._channel) for kind in channels},
             runtimes={kind: self._factory(kind) for kind in dict.fromkeys(runtimes)},
         )
 
@@ -5007,11 +5005,6 @@ async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
         await orchestrator.stop(timeout=1)
 
 
-def _test_runtime(context: RuntimeCommandContext) -> IRuntime:
-    del context
-    return TestRuntime()
-
-
 class _KnownBotChannel(TestChannel):
     """A channel that knows its bot before it starts, the way WeCom does."""
 
@@ -5023,8 +5016,10 @@ class _KnownBotChannel(TestChannel):
 async def test_agent_backfills_conversations_written_before_bots_were_told_apart(
     tmp_path: Path,
 ) -> None:
-    channel = _KnownBotChannel()
-    channel.identity = ChannelIdentity(id="bot-1")
+    first = _KnownBotChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = _KnownBotChannel()
+    second.identity = ChannelIdentity(id="bot-2")
     storage = MemoryStorage()
     audit = RecordingAudit()
     scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
@@ -5056,7 +5051,10 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
                 AgentConfiguration(
                     id=ACCEPTANCE_AGENT_ID,
                     name="Test Agent",
-                    channels=(ChannelConfiguration(kind="test"),),
+                    channels=(
+                        ChannelConfiguration(kind="test"),
+                        ChannelConfiguration(kind="test"),
+                    ),
                     runtimes=(RuntimeConfiguration(kind="test"),),
                 ),
             ),
@@ -5065,14 +5063,14 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
             storage=lambda: cast(IStorage, storage),
             audit=lambda: audit,
         ),
-        registry=_AcceptanceRegistry(channel=channel, runtime=_test_runtime),
+        registry=_MembersRegistry(channels=(first, second)),
         endpoint_path=tmp_path / "backfill.sock",
         timeout_budget=make_budget(),
     )
     await node.start()
     try:
         assert node.agents[ACCEPTANCE_AGENT_ID].started is True
-        # the bot takes the rows of its own kind, and only those
+        # the first bot of the kind takes the rows, the other kind is untouched
         assert storage.channel_sessions["channel-legacy"].channel_identity == "bot-1"
         assert storage.channel_sessions["channel-elsewhere"].channel_identity is None
         # its next inbound lands on the claimed conversation instead of a new one
@@ -5089,3 +5087,36 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
         assert "channel-fresh" not in storage.channel_sessions
     finally:
         await node.stop()
+
+
+class _MembersRegistry(AdapterRegistry):
+    """Hands out the given channels one per [[agent.channel]] entry."""
+
+    def __init__(self, *, channels: Sequence[IChannel]) -> None:
+        self._channels = list(channels)
+
+    def load_agent(
+        self,
+        *,
+        channels: Sequence[str],
+        runtimes: Sequence[str],
+    ) -> AgentAdapterFactories:
+        del channels
+
+        def runtime_factory(context: RuntimeCommandContext) -> IRuntime:
+            del context
+            return TestRuntime()
+
+        return AgentAdapterFactories(
+            channels={"test": _NextChannelBuilder(self._channels)},
+            runtimes={kind: runtime_factory for kind in runtimes},
+        )
+
+
+class _NextChannelBuilder:
+    def __init__(self, channels: list[IChannel]) -> None:
+        self._channels = channels
+
+    def build(self, context: ChannelContext) -> IChannel:
+        del context
+        return self._channels.pop(0)

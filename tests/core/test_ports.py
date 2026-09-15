@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 import pytest
 from bcn_test_support import TestChannel, TestRuntime
@@ -9,6 +10,7 @@ from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     Channel,
     ChannelIdentity,
+    Channels,
     ChannelSendRequest,
 )
 from bazaar_compute_node.core.concurrency import ThreadLockRegistry
@@ -264,3 +266,103 @@ async def test_different_sessions_do_not_share_the_lock() -> None:
     await asyncio.wait_for(second_entered.wait(), timeout=0.1)
     release_first.set()
     await asyncio.gather(first_task, second_task)
+
+
+class _OtherKindChannel(TestChannel):
+    @property
+    def name(self) -> str:
+        return "other"
+
+
+class _RefusingChannel(TestChannel):
+    async def start(self, *, timeout: float) -> None:
+        del timeout
+        raise ConnectionError("provider refused the token")
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_going_when_one_member_fails_to_start() -> None:
+    refusing = _RefusingChannel()
+    serving = _OtherKindChannel()
+    serving.identity = ChannelIdentity(id="bot-other")
+    channels = Channels((refusing, serving))
+
+    assert channels.name == "test,other"
+    assert channels.members == (refusing, serving)
+    await channels.start(timeout=1)
+    try:
+        # the failure is visible per member, next to the ones that came up
+        health = channels.health
+        assert health["state"] == "degraded"
+        failed, serving_record = cast(tuple[dict[str, object], ...], health["channels"])
+        assert failed["startup_error"] == "ConnectionError: provider refused the token"
+        assert serving_record["identity"] == "bot-other"
+        assert "startup_error" not in serving_record
+        # a member that is up but unwell is what the whole reports
+        serving.accepting = False
+        assert channels.health["state"] == "degraded"
+        serving.accepting = True
+        # the member that is up answers for the whole
+        assert channels.get_identity() == serving.identity
+        await serving.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=1,
+                message_id="message-1",
+                thread_id="thread-1",
+                channel_session_id="channel-1",
+                channel="other",
+                provider_thread_id="other:thread-1",
+                provider_message_id="provider-1",
+                received_at_ms=1,
+                sender=SenderIdentity(id="sender-id"),
+                target="dm:channel-1",
+                body="hello",
+            )
+        )
+        received = await anext(channels.receive())
+        assert received.message_id == "message-1"
+    finally:
+        await channels.stop(timeout=1)
+    assert serving.stopped is True
+    assert refusing.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_channels_with_no_member_up_does_not_start() -> None:
+    channels = Channels((_RefusingChannel(), _RefusingChannel()))
+
+    with pytest.raises(RuntimeError, match="no channel started"):
+        await channels.start(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_refuses_two_bots_of_one_kind_sharing_an_identity() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    twin = TestChannel()
+    twin.identity = ChannelIdentity(id="bot-1")
+    channels = Channels((first, twin))
+
+    with pytest.raises(ValueError, match="identity bot-1 is configured twice"):
+        await channels.start(timeout=1)
+    assert first.stopped is True
+    assert twin.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_channels_refuses_a_member_that_does_not_know_its_bot() -> None:
+    named = TestChannel()
+    nameless = _OtherKindChannel()
+    nameless.identity = None
+    channels = Channels((named, nameless))
+
+    with pytest.raises(RuntimeError, match="other channel #2 has no identity"):
+        await channels.start(timeout=1)
+    assert named.stopped is True
+    assert nameless.stopped is True
+
+
+def test_channels_needs_at_least_one_member() -> None:
+    with pytest.raises(ValueError, match="at least one channel"):
+        Channels(())
