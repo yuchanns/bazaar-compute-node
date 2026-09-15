@@ -9,7 +9,6 @@ from pydantic import Field, StrictBool, StrictInt, StrictStr
 
 from ..core.actor import Actor, Actors
 from ..core.command import ICommandService, IReminderService
-from ..core.lifecycle import TimeoutBudget
 from ..core.models import Reminder, ReminderState
 from ..core.orchestration.reminder_command import ReminderCommandFailure
 from ..core.reminder import (
@@ -242,26 +241,17 @@ class CommandDispatcher(_MessageCommandDispatcher):
         *,
         actors: Actors,
         reminder_service: IReminderService,
-        timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
         upgrade_service: UpgradeService | None,
     ) -> None:
         super().__init__(
             service,
             actors=actors,
-            timeout_budget=timeout_budget,
             session_binding_validator=session_binding_validator,
         )
         self._reminder_service = reminder_service
         self._upgrade_service = upgrade_service
         self._logger = logging.getLogger("bazaar_compute_node.application.upgrade")
-
-    def _command_timeout(self, request: Mapping[str, object]) -> float | None:
-        # installing a release takes as long as it takes; nothing is served by
-        # giving up on a command whose work would carry on regardless
-        if request.get("resource") == "node":
-            return None
-        return super()._command_timeout(request)
 
     async def _dispatch_command(
         self,

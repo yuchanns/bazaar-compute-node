@@ -201,7 +201,6 @@ class AgentApplication:
             self.orchestrator.command_service,
             actors=self._actors,
             reminder_service=self.reminder_service,
-            timeout_budget=self.timeout_budget,
             session_binding_validator=self._validate_actor_binding,
             upgrade_service=upgrade_service,
         )

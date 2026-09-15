@@ -40,6 +40,7 @@ from .v26_remove_handoff_messages import HANDOFF_MESSAGE_REMOVAL_MIGRATION
 from .v27_name_dms_by_the_peer_id import NAME_DM_BY_PEER_ID_MIGRATION
 from .v28_channel_session_identity import CHANNEL_SESSION_IDENTITY_MIGRATION
 from .v29_backfill_channel_identity import BACKFILL_CHANNEL_IDENTITY_MIGRATION
+from .v30_remove_command_id import COMMAND_ID_REMOVAL_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -91,6 +92,7 @@ MIGRATIONS = _migration_ledger(
     NAME_DM_BY_PEER_ID_MIGRATION,
     CHANNEL_SESSION_IDENTITY_MIGRATION,
     BACKFILL_CHANNEL_IDENTITY_MIGRATION,
+    COMMAND_ID_REMOVAL_MIGRATION,
 )
 
 

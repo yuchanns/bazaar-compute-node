@@ -35,10 +35,12 @@ async def request(
     resource: str,
     command: str,
     payload: Mapping[str, object] = {},
-    *,
-    timeout: float | None = 10,
 ) -> Mapping[str, object]:
-    """Send one session-scoped command to the node this agent runs under."""
+    """Send one session-scoped command to the node this agent runs under.
+
+    The node bounds every command by its own budgets, so the caller waits for
+    the answer rather than giving up on a send that may already have landed.
+    """
 
     endpoint = _environment("BCN_ENDPOINT", "LOCAL_ENDPOINT_REQUIRED")
     request: dict[str, object] = {
@@ -54,7 +56,7 @@ async def request(
         ),
         **payload,
     }
-    response = await LocalCommandClient.request(endpoint, request, timeout=timeout)
+    response = await LocalCommandClient.request(endpoint, request)
     if response.get("ok") is not True:
         raise BccCommandError(
             str(response.get("error", "command failed")),

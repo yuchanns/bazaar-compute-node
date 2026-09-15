@@ -46,7 +46,7 @@ _MESSAGE_COLUMNS = (
     "received_at_ms, sender, sender_id, sender_display_name, "
     "message_type, target, target_kind, "
     "reply_to_message_id, body, mentions_agent, notifies_runtime, "
-    "provider_payload_ref, command_id, delivery_state, provider_receipt_ref, created_at_ms, "
+    "provider_payload_ref, delivery_state, provider_receipt_ref, created_at_ms, "
     "provider_attempted_at_ms, completed_at_ms, error_kind, error_message, "
     "metadata_json, attachments_json"
 )
@@ -642,16 +642,6 @@ class MessageOperations(RepositoryBase):
                 raise ValueError("Agent-scoped message id is already in use")
         return message_id
 
-    async def has_outbound_for_command(self, command_id: str) -> bool:
-        return (
-            await self.fetchone(
-                "SELECT 1 FROM messages WHERE agent_id = /*agent_id*/? "
-                "AND command_id = ? AND direction = 'outbound'",
-                (command_id,),
-            )
-            is not None
-        )
-
     async def _resolve_reply(
         self, canonical: Message[InboundAttachment]
     ) -> Message[InboundAttachment]:
@@ -995,10 +985,10 @@ class MessageOperations(RepositoryBase):
             "channel_session_id, channel, provider_thread_id, "
             "provider_message_id, sender, sender_id, sender_display_name, "
             "message_type, target, target_kind, "
-            "reply_to_message_id, body, command_id, delivery_state, "
+            "reply_to_message_id, body, delivery_state, "
             "provider_receipt_ref, created_at_ms, provider_attempted_at_ms, completed_at_ms, "
             "error_kind, error_message, metadata_json, attachments_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 canonical.message_id,
                 canonical.seq,
@@ -1017,7 +1007,6 @@ class MessageOperations(RepositoryBase):
                 canonical.target_kind.value,
                 canonical.reply_to_message_id,
                 canonical.body,
-                canonical.command_id,
                 delivery_state.value,
                 canonical.provider_receipt_ref,
                 canonical.created_at_ms,
@@ -1051,8 +1040,7 @@ class MessageOperations(RepositoryBase):
         """Record what became of an outbound message already written down."""
 
         if (
-            existing.command_id != message.command_id
-            or existing.thread_id != message.thread_id
+            existing.thread_id != message.thread_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id

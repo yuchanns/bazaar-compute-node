@@ -239,7 +239,6 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
             application.orchestrator.command_service,
             actors=application._actors,
             reminder_service=application.reminder_service,
-            timeout_budget=application.timeout_budget,
             session_binding_validator=application._validate_actor_binding,
             upgrade_service=upgrade,
         )
@@ -323,7 +322,6 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
             application.orchestrator.command_service,
             actors=application._actors,
             reminder_service=application.reminder_service,
-            timeout_budget=application.timeout_budget,
             session_binding_validator=application._validate_actor_binding,
             upgrade_service=upgrade,
         )

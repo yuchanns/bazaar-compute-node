@@ -195,7 +195,7 @@ class LocalCommandClient:
         endpoint: str,
         payload: Mapping[str, object],
         *,
-        timeout: float | None = 10,
+        timeout: float | None = None,
     ) -> Mapping[str, object]:
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be positive")

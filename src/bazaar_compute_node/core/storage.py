@@ -318,7 +318,6 @@ class StorageOperationMixin:
         target_id: str,
         expected_target_seq: int,
         *,
-        command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult:
@@ -382,7 +381,6 @@ class StorageOperationMixin:
             direction=MessageDirection.OUTBOUND,
             seq=0,
             message_id=str(uuid7()),
-            command_id=command_id,
             thread_id=target_id,
             channel_session_id=channel_session.id,
             target=payload.target,
@@ -559,7 +557,6 @@ class _StorageOperations(Protocol):
         target_id: str,
         expected_target_seq: int,
         *,
-        command_id: str,
         payload: MessageDraft,
         attempted_at_ms: int,
     ) -> MaterializeOutboundResult: ...
@@ -650,14 +647,6 @@ class _StorageOperations(Protocol):
         direction: MessageDirection | None = None,
         delivery_states: frozenset[OutboundDeliveryState] | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
-
-    async def has_outbound_for_command(self, command_id: str) -> bool:
-        """Say whether this command already reached the peer.
-
-        An attempt that never left may be made again; one that did would arrive
-        twice, and only an attempt that arrived is written down.
-        """
-        ...
 
     async def get_owned_message(
         self,

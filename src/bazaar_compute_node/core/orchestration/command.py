@@ -7,6 +7,7 @@ import mimetypes
 import os
 import stat
 from collections.abc import Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
@@ -201,6 +202,16 @@ _DELIVERY_OUTCOMES: dict[
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedDelivery:
+    """A conversation that passed its last freshness look, ready to send to."""
+
+    target: ResolvedInboxTarget
+    expected_target_seq: int
+    outbound: Message[OutboundAttachment]
+    materialized: MaterializeOutboundResult
+
+
+@dataclass(frozen=True, slots=True)
 class _DmOpening:
     """Where a DM that has never been held would be sent, and what to call it."""
 
@@ -237,7 +248,6 @@ class CommandService(ICommandService):
         self._drafts: dict[tuple[str, ...], MessageDraft] = {}
         # an outbound is written down once the provider answers, so until then
         # only this holds a command to its one attempt
-        self._sending: set[str] = set()
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
@@ -348,7 +358,6 @@ class CommandService(ICommandService):
     async def _open_dm(
         self,
         *,
-        command_id: str,
         raw_target: str,
         opening: _DmOpening,
         body: str,
@@ -395,7 +404,6 @@ class CommandService(ICommandService):
             direction=MessageDirection.OUTBOUND,
             seq=0,
             message_id=str(uuid7()),
-            command_id=command_id,
             thread_id=address.thread_id,
             channel_session_id=session.id,
             target=session.canonical_target,
@@ -414,7 +422,6 @@ class CommandService(ICommandService):
             thread_id=address.thread_id,
             channel=session.channel,
             channel_session_id=session.id,
-            command_id=command_id,
             outbound_message_id=outbound.message_id,
         )
         # a chat that was never opened is not a conversation, and writing one
@@ -425,7 +432,6 @@ class CommandService(ICommandService):
                 audit_context,
                 outbound,
                 delivery_result,
-                command_id=command_id,
                 canonical_target=raw_target,
             )
             return MessageSendSuccess(message=outbound, target=raw_target)
@@ -444,7 +450,6 @@ class CommandService(ICommandService):
             audit_context,
             outbound,
             delivery_result,
-            command_id=command_id,
             canonical_target=session.canonical_target,
         )
         resolved = await self._storage.resolve_inbox_target(session.canonical_target)
@@ -471,7 +476,6 @@ class CommandService(ICommandService):
     async def _stage_draft(
         self,
         *,
-        command_id: str,
         target: ResolvedInboxTarget,
         payload: MessageDraft,
         draft_replaced: bool,
@@ -489,7 +493,6 @@ class CommandService(ICommandService):
             if isinstance(freshness, MessageSendFreshnessHold):
                 return await self._hold(
                     freshness,
-                    command_id=command_id,
                     target=target,
                 )
             return payload, freshness.current_inbound_seq
@@ -498,7 +501,6 @@ class CommandService(ICommandService):
         self,
         hold: MessageSendFreshnessHold,
         *,
-        command_id: str,
         target: ResolvedInboxTarget,
     ) -> MessageSendFreshnessHold:
         """Record that something arrived while the message was being written."""
@@ -507,7 +509,6 @@ class CommandService(ICommandService):
         self._observe_freshness(target_id, hold.current_inbound_seq)
         await self._audit_freshness_hold(
             thread_id=target_id,
-            command_id=command_id,
             target=target.canonical_target,
             result=hold,
         )
@@ -543,7 +544,6 @@ class CommandService(ICommandService):
         outbound: Message[OutboundAttachment],
         delivery_result: OutboundDeliveryResult,
         *,
-        command_id: str,
         canonical_target: str,
     ) -> None:
         """Write down what the channel did with the message, twice over."""
@@ -571,7 +571,6 @@ class CommandService(ICommandService):
             state=terminal_state,
             correlation=audit_context,
             arguments={
-                "command_id": command_id,
                 "target": canonical_target,
                 "delivery_state": delivery_state.value,
             },
@@ -581,71 +580,83 @@ class CommandService(ICommandService):
 
     async def _deliver(
         self,
-        *,
-        command_id: str,
-        target: ResolvedInboxTarget,
-        expected_target_seq: int,
-        payload: MessageDraft,
-    ) -> Message[OutboundAttachment] | MessageSendFreshnessHold:
-        """Hand the message to its channel and record what the channel made of it."""
+        staged: Sequence[tuple[ResolvedInboxTarget, MessageDraft, int]],
+    ) -> tuple[Message[OutboundAttachment], ...] | MessageSendFreshnessHold:
+        """Hand the message to its channels and record what each made of it.
 
-        canonical_target = target.canonical_target
-        target_id = target.thread.id
-        async with self._concurrency.for_thread(target_id):
-            prepared = await self._storage.materialize_outbound_if_fresh(
-                target_id,
-                expected_target_seq,
-                command_id=command_id,
-                payload=payload,
-                attempted_at_ms=self._clock(),
-            )
-            result = prepared.outcome
-            if isinstance(result, MessageSendFreshnessHold):
-                return await self._hold(
-                    result,
-                    command_id=command_id,
-                    target=target,
+        Every conversation gets its last look under its own lock before
+        anything goes out, so something new in any of them holds the whole
+        while nothing has been sent yet.
+        """
+
+        async with AsyncExitStack() as locks:
+            for target, _, _ in sorted(staged, key=lambda item: item[0].thread.id):
+                await locks.enter_async_context(
+                    self._concurrency.for_thread(target.thread.id)
                 )
-            outbound = result
-            channel_session = prepared.channel_session
-            audit_context = self._correlation(
-                thread_id=target_id,
-                channel=channel_session.channel,
-                channel_session_id=channel_session.id,
-                command_id=command_id,
-                inbound_seq=expected_target_seq,
-                outbound_message_id=outbound.message_id,
+            prepared: list[_PreparedDelivery] = []
+            for target, payload, expected_target_seq in staged:
+                materialized = await self._storage.materialize_outbound_if_fresh(
+                    target.thread.id,
+                    expected_target_seq,
+                    payload=payload,
+                    attempted_at_ms=self._clock(),
+                )
+                outcome = materialized.outcome
+                if isinstance(outcome, MessageSendFreshnessHold):
+                    return await self._hold(outcome, target=target)
+                prepared.append(
+                    _PreparedDelivery(
+                        target, expected_target_seq, outcome, materialized
+                    )
+                )
+            # the conversations are delivered side by side, so the send takes
+            # as long as the slowest one rather than all of them added up
+            return tuple(
+                await asyncio.gather(*(self._deliver_one(item) for item in prepared))
             )
-            await self._audit.append(
-                event_name="bcc.send.fresh_check.passed",
-                state=RuntimeEventState.COMPLETED,
-                correlation=audit_context,
-            )
-            await self._audit.append(
-                event_name="channel.outbound.pending",
-                state=RuntimeEventState.STARTED,
-                correlation=audit_context,
-            )
-            outbound, delivery_result = await self._transmit(outbound, prepared)
-            delivery_state = outbound.delivery_state
-            if delivery_state is None:
-                raise RuntimeError("outbound message has no delivery state")
-            if _reached_the_peer(delivery_result):
-                outbound = await self._storage.finalize_outbound_delivery(outbound)
-            await self._record_delivery(
-                audit_context,
-                outbound,
-                delivery_result,
-                command_id=command_id,
-                canonical_target=canonical_target,
-            )
-            return outbound
+
+    async def _deliver_one(
+        self, item: _PreparedDelivery
+    ) -> Message[OutboundAttachment]:
+        target = item.target
+        outbound = item.outbound
+        channel_session = item.materialized.channel_session
+        audit_context = self._correlation(
+            thread_id=target.thread.id,
+            channel=channel_session.channel,
+            channel_session_id=channel_session.id,
+            inbound_seq=item.expected_target_seq,
+            outbound_message_id=outbound.message_id,
+        )
+        await self._audit.append(
+            event_name="bcc.send.fresh_check.passed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=audit_context,
+        )
+        await self._audit.append(
+            event_name="channel.outbound.pending",
+            state=RuntimeEventState.STARTED,
+            correlation=audit_context,
+        )
+        outbound, delivery_result = await self._transmit(outbound, item.materialized)
+        delivery_state = outbound.delivery_state
+        if delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        if _reached_the_peer(delivery_result):
+            outbound = await self._storage.finalize_outbound_delivery(outbound)
+        await self._record_delivery(
+            audit_context,
+            outbound,
+            delivery_result,
+            canonical_target=target.canonical_target,
+        )
+        return outbound
 
     async def send(
         self,
         *,
         actor: Actor,
-        command_id: str,
         raw_target: str,
         body: str,
         created_at_ms: int,
@@ -664,30 +675,20 @@ class CommandService(ICommandService):
             )
         if not send_draft and not body.strip() and not attachments:
             raise ValueError("outbound message must not be empty")
-        if command_id in self._sending:
-            raise ValueError(f"command was already sent: {command_id}")
-        self._sending.add(command_id)
-        try:
-            if await self._storage.has_outbound_for_command(command_id):
-                raise ValueError(f"command was already sent: {command_id}")
-            return await self._send(
-                actor=actor,
-                command_id=command_id,
-                raw_target=raw_target,
-                body=body,
-                created_at_ms=created_at_ms,
-                attachments=attachments,
-                reply_to_message_id=reply_to_message_id,
-                send_draft=send_draft,
-            )
-        finally:
-            self._sending.discard(command_id)
+        return await self._send(
+            actor=actor,
+            raw_target=raw_target,
+            body=body,
+            created_at_ms=created_at_ms,
+            attachments=attachments,
+            reply_to_message_id=reply_to_message_id,
+            send_draft=send_draft,
+        )
 
     async def _send(
         self,
         *,
         actor: Actor,
-        command_id: str,
         raw_target: str,
         body: str,
         created_at_ms: int,
@@ -714,7 +715,6 @@ class CommandService(ICommandService):
                 held = None
             if held is None:
                 return await self._open_dm(
-                    command_id=command_id,
                     raw_target=raw_target,
                     opening=opening,
                     body=body,
@@ -764,7 +764,6 @@ class CommandService(ICommandService):
                 draft, target=target.canonical_target, target_id=target.thread.id
             )
             settled = await self._stage_draft(
-                command_id=command_id,
                 target=target,
                 payload=payload,
                 draft_replaced=draft_replaced,
@@ -777,29 +776,15 @@ class CommandService(ICommandService):
         if hold is not None:
             return _named_as_called(hold, raw_target, targets)
 
-        # the conversations are delivered side by side, each under its own
-        # lock, so the send takes as long as the slowest one rather than all
-        # of them added up
-        delivered = await asyncio.gather(
-            *(
-                self._deliver(
-                    command_id=command_id,
-                    target=target,
-                    expected_target_seq=expected_target_seq,
-                    payload=payload,
-                )
-                for target, payload, expected_target_seq in staged
-            )
-        )
+        delivered = await self._deliver(staged)
+        if isinstance(delivered, MessageSendFreshnessHold):
+            return _named_as_called(delivered, raw_target, targets)
         deliveries = tuple(
-            _named_as_called(outcome, raw_target, targets)
-            if isinstance(outcome, MessageSendFreshnessHold)
-            else MessageSendSuccess(message=outcome, target=target.display_target)
-            for (target, _, _), outcome in zip(staged, delivered, strict=True)
+            MessageSendSuccess(message=outbound, target=target.display_target)
+            for (target, _, _), outbound in zip(staged, delivered, strict=True)
         )
         if self._drafts.get(draft_key) is draft and all(
-            isinstance(outcome, MessageSendSuccess)
-            and outcome.message.delivery_state
+            outcome.message.delivery_state
             in {OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED}
             for outcome in deliveries
         ):
@@ -817,13 +802,11 @@ class CommandService(ICommandService):
         self,
         *,
         thread_id: str,
-        command_id: str,
         target: str,
         result: MessageSendFreshnessHold,
     ) -> None:
         audit_context = self._correlation(
             thread_id=thread_id,
-            command_id=command_id,
             inbound_seq=result.current_inbound_seq,
         )
         await self._audit.append(
@@ -845,7 +828,6 @@ class CommandService(ICommandService):
             state=RuntimeEventState.COMPLETED,
             correlation=audit_context,
             arguments={
-                "command_id": command_id,
                 "target": target,
                 "shown": len(result.messages),
                 "total": result.newer_message_total,
@@ -902,7 +884,6 @@ class CommandService(ICommandService):
         actor: Actor | None = None,
         channel: str | None = None,
         channel_session_id: str | None = None,
-        command_id: str | None = None,
         inbound_seq: int | None = None,
         outbound_message_id: str | None = None,
     ) -> CorrelationContext:
@@ -912,7 +893,6 @@ class CommandService(ICommandService):
             channel_session_id=channel_session_id,
             thread_id=thread_id,
             actor=actor,
-            command_id=command_id,
             inbound_seq=inbound_seq,
             outbound_message_id=outbound_message_id,
         )

@@ -163,7 +163,6 @@ def message_from_row(
     return Message(
         **common,
         attachments=_decode_outbound_attachments(row["attachments_json"]),
-        command_id=_required_text(row["command_id"], "command_id"),
         delivery_state=OutboundDeliveryState(
             _required_text(row["delivery_state"], "message.delivery_state")
         ),

@@ -31,9 +31,7 @@ async def upgrade(message_id: str | None) -> None:
     # the node installs the release before it answers, and neither side
     # gives up on work the other would carry on doing
     echo(
-        serialize_upgrade(
-            await request("node", "upgrade", {"message_id": message_id}, timeout=None)
-        )
+        serialize_upgrade(await request("node", "upgrade", {"message_id": message_id}))
     )
 
 

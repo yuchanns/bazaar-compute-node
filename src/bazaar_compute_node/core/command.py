@@ -151,7 +151,7 @@ class MessageSendSuccess:
 class MessageBroadcast:
     """One send that named several conversations, with what became of each."""
 
-    deliveries: tuple[MessageSendSuccess | MessageSendFreshnessHold, ...]
+    deliveries: tuple[MessageSendSuccess, ...]
 
     def __post_init__(self) -> None:
         if len(self.deliveries) < 2:
@@ -199,7 +199,6 @@ class ICommandService(Protocol):
         self,
         *,
         actor: Actor,
-        command_id: str,
         raw_target: str,
         body: str,
         created_at_ms: int,

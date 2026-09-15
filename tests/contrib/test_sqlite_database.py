@@ -135,7 +135,6 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
             direction=MessageDirection.OUTBOUND,
             seq=0,
             message_id="outbound-1",
-            command_id="command-1",
             thread_id=bcn_session.id,
             channel_session_id=channel_session.id,
             target="dm:channel-1",
@@ -295,14 +294,14 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
         stale_recheck = await scope.materialize_outbound_if_fresh(
             target_thread.id,
             fresh.current_inbound_seq,
-            command_id="command-raced",
             payload=draft,
             attempted_at_ms=12,
         )
         assert isinstance(stale_recheck.outcome, MessageSendFreshnessHold)
         assert stale_recheck.outcome.messages == (newer_target_message,)
+        # a held send writes nothing down
         assert not any(
-            message.command_id == "command-raced"
+            message.body == draft.body
             for message in await scope.list_messages(
                 target_thread.id,
                 direction=MessageDirection.OUTBOUND,
@@ -313,7 +312,6 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
                 direction=MessageDirection.OUTBOUND,
                 seq=0,
                 message_id="outbound-target",
-                command_id="command-target",
                 thread_id=target_thread.id,
                 channel_session_id=target_channel.id,
                 target="dm:channel-target",
@@ -678,7 +676,6 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             "idx_messages_agent_direction_seq",
             "idx_messages_agent_thread_target_seq",
             "idx_messages_inbound_provider_identity",
-            "idx_messages_outbound_command",
             "idx_messages_outbound_state_created",
             "idx_messages_reply_to_message",
             "idx_threads_channel",
@@ -691,7 +688,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 29
+        assert schema_version["version"] == 30
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1023,14 +1020,13 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             session_indexes = await session.fetchall(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'index' "
-                "AND name IN (?, ?, ?, ?, ?, ?, ?, ?) ORDER BY name",
+                "AND name IN (?, ?, ?, ?, ?, ?, ?) ORDER BY name",
                 (
                     "idx_threads_channel",
                     "idx_channel_sessions_provider_identity",
                     "idx_messages_agent_direction_seq",
                     "idx_messages_agent_thread_target_seq",
                     "idx_messages_inbound_provider_identity",
-                    "idx_messages_outbound_command",
                     "idx_messages_outbound_state_created",
                     "idx_messages_reply_to_message",
                 ),
@@ -1047,7 +1043,6 @@ async def test_sqlite_applies_new_migration_to_existing_v1_database() -> None:
             "idx_messages_agent_direction_seq",
             "idx_messages_agent_thread_target_seq",
             "idx_messages_inbound_provider_identity",
-            "idx_messages_outbound_command",
             "idx_messages_outbound_state_created",
             "idx_messages_reply_to_message",
         }
@@ -1217,7 +1212,7 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 29
+        assert schema_version["version"] == 30
     finally:
         await database.stop(timeout=2)
 
@@ -1446,7 +1441,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 29
+        assert schema_version["version"] == 30
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1555,7 +1550,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 29
+        assert schema_version["version"] == 30
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -1719,7 +1714,6 @@ async def test_sqlite_v16_fixture_upgrades_without_ownership_triggers() -> None:
             }
         )
         assert {row["name"] for row in indexes} >= {
-            "idx_messages_outbound_command",
             "idx_messages_outbound_state_created",
         }
         assert triggers == []

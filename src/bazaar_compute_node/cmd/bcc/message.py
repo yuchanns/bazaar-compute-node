@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from uuid import uuid7
 
 import click
 
@@ -110,7 +109,6 @@ async def send(
                 {
                     "target": target,
                     "body": body,
-                    "command_id": f"bcc-{uuid7().hex}",
                     "reply_to_message_id": reply_to,
                     "send_draft": send_draft,
                     "attachment_paths": await asyncio.to_thread(

@@ -203,7 +203,6 @@ async def test_message_send_renders_freshness_hold() -> None:
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -214,7 +213,6 @@ async def test_message_send_renders_freshness_hold() -> None:
         "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
-        "command_id": "message-command-1",
         "created_at_ms": 1_100,
     }
 
@@ -230,7 +228,6 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
     assert set(service.send.await_args.kwargs) == {
         "actor",
-        "command_id",
         "raw_target",
         "body",
         "created_at_ms",
@@ -247,7 +244,6 @@ async def test_message_send_renders_provider_outcomes() -> None:
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -258,7 +254,6 @@ async def test_message_send_renders_provider_outcomes() -> None:
         "actor_id": "session-source",
         "target": "dm:source",
         "body": "Hello.",
-        "command_id": "message-command-1",
         "created_at_ms": 1_100,
     }
     outcomes = (
@@ -332,7 +327,6 @@ async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -343,7 +337,6 @@ async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
         "actor_id": "session-source",
         "target": "dm:@kana",
         "body": "Hello.",
-        "command_id": "message-command-1",
         "created_at_ms": 1_100,
     }
 
@@ -398,7 +391,6 @@ async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> No
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=None,
     )
     dispatcher.start_accepting()
@@ -424,7 +416,6 @@ async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -451,7 +442,6 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -478,7 +468,6 @@ async def test_version_reports_the_process_and_not_the_disk() -> None:
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
         reminder_service=cast(IReminderService, object()),
-        timeout_budget=make_budget(),
         upgrade_service=make_upgrade_service(installed_version="0.1.0"),
     )
     dispatcher.start_accepting()

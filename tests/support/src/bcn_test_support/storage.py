@@ -423,14 +423,6 @@ class _MemoryStorageTransaction(StorageOperationMixin):
     async def count_unread_messages(self) -> int:
         return len(await self._unread_in_scope())
 
-    async def has_outbound_for_command(self, command_id: str) -> bool:
-        return any(
-            message.command_id == command_id
-            and message.direction is MessageDirection.OUTBOUND
-            for thread in self._storage.messages.values()
-            for message in thread
-        )
-
     async def find_known_sender(self, token: str) -> KnownSender | None:
         inbound: list[Message] = []
         for thread in self._scoped_threads():
@@ -984,8 +976,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             self._storage.messages.setdefault(canonical.thread_id, []).append(canonical)
             return canonical
         if (
-            existing.command_id != message.command_id
-            or existing.thread_id != message.thread_id
+            existing.thread_id != message.thread_id
             or existing.channel_session_id != message.channel_session_id
             or existing.target != message.target
             or existing.reply_to_message_id != message.reply_to_message_id

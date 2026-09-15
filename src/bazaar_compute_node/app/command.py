@@ -26,7 +26,6 @@ from ..core.command import (
     TargetProjection,
     ThreadNotFoundError,
 )
-from ..core.lifecycle import TimeoutBudget
 from ..core.models import (
     InboundAttachment,
     InboxTargetSummary,
@@ -212,7 +211,6 @@ class _MessageSendRequest(_CommandRequest):
     command: Literal["send"]
     target: NonEmptyText
     body: StrictStr
-    command_id: NonEmptyText
     attachment_paths: list[NonEmptyText] = Field(default_factory=list)
     reply_to_message_id: NonEmptyText | None = None
     send_draft: StrictBool = False
@@ -283,10 +281,6 @@ _REQUEST_ERRORS: dict[str, tuple[str, str]] = {
         "around_message_id must be a string",
     ),
     "body": ("BODY_REQUIRED", "body must be text"),
-    "command_id": (
-        "COMMAND_ID_REQUIRED",
-        "command_id must be a non-empty string",
-    ),
     "attachment_paths": (
         "INVALID_ATTACHMENTS",
         "attachment_paths must be a list of non-empty strings",
@@ -340,12 +334,10 @@ class CommandDispatcher:
         service: ICommandService,
         *,
         actors: Actors,
-        timeout_budget: TimeoutBudget,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
         self._actors = actors
         self._service = service
-        self._timeout_budget = timeout_budget
         self._session_binding_validator = session_binding_validator
         self._accepting = False
         self._in_flight: set[asyncio.Task[object]] = set()
@@ -393,10 +385,6 @@ class CommandDispatcher:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    def _command_timeout(self, request: Mapping[str, object]) -> float | None:
-        del request
-        return self._timeout_budget.command_seconds
-
     async def __call__(self, request: Mapping[str, object]) -> Mapping[str, object]:
         if not self._accepting:
             return {
@@ -410,9 +398,10 @@ class CommandDispatcher:
             self._drained.clear()
         try:
             kind = request.get("kind")
+            # a command takes as long as its work takes: giving up on one
+            # whose work carries on regardless only hides what became of it
             if kind == "command":
-                async with asyncio.timeout(self._command_timeout(request)):
-                    return await self._dispatch_command(request)
+                return await self._dispatch_command(request)
             raise CommandDispatchError(
                 "INVALID_COMMAND", "request kind is not supported"
             )
@@ -573,7 +562,6 @@ class CommandDispatcher:
     ) -> Mapping[str, object]:
         result = await self._service.send(
             actor=actor,
-            command_id=request.command_id,
             raw_target=request.target,
             body=request.body,
             created_at_ms=request.created_at_ms,
@@ -581,20 +569,12 @@ class CommandDispatcher:
             reply_to_message_id=request.reply_to_message_id,
             send_draft=request.send_draft,
         )
+        if isinstance(result, MessageSendFreshnessHold):
+            return {"ok": True, "result": {"text": format_freshness_hold(result)}}
         # the handle may have named one peer on several bots; to the caller
-        # that is one conversation, so it hears about one delivery, and a hold
-        # or failure on any of them is the answer for all
-        deliveries = (
-            result.deliveries if isinstance(result, MessageBroadcast) else (result,)
-        )
-        for delivery in deliveries:
-            if isinstance(delivery, MessageSendFreshnessHold):
-                return {"ok": True, "result": {"text": format_freshness_hold(delivery)}}
-        sent = [
-            delivery
-            for delivery in deliveries
-            if isinstance(delivery, MessageSendSuccess)
-        ]
+        # that is one conversation, so it hears about one delivery, and a
+        # failure on any of them is the answer for all
+        sent = result.deliveries if isinstance(result, MessageBroadcast) else (result,)
         reached: list[str] = []
         failure: CommandDispatchError | None = None
         for delivery in sent:
