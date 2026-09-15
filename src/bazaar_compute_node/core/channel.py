@@ -391,17 +391,7 @@ class Channels(IChannel):
             if index in self._reader_failures:
                 record["receive_error"] = self._reader_failures[index]
             records.append(record)
-        # a member that is up but not well drags the whole down with it, as
-        # it did when it was the only channel
-        unwell = any(member.health.get("state") != "ready" for _, member in self._up())
-        return {
-            "state": (
-                "degraded"
-                if self._failures or self._reader_failures or unwell
-                else "ready"
-            ),
-            "channels": tuple(records),
-        }
+        return {"channels": tuple(records)}
 
     def get_identity(self) -> ChannelIdentity | None:
         for _, member in self._up():
