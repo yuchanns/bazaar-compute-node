@@ -283,6 +283,9 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         if channel_session is None:
             raise ValueError(f"unknown channel session: {thread.channel_session_id}")
+        # a wake is made from the conversation row rather than arriving on a
+        # channel, so it learns the bot the conversation lives on here
+        message = replace(message, channel_identity=channel_session.channel_identity)
         self._runtime_queue_for_actor(
             self._actors.for_thread(message.thread_id)
         ).put_nowait(
@@ -1105,6 +1108,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 turn_id,
                 taken.context.thread.id,
                 taken.message,
+                channel_session=taken.context.channel_session,
             )
         if await self._storage.get_runtime_attempt(turn_id) is not None:
             return self._runtime_turns.get(turn_id)

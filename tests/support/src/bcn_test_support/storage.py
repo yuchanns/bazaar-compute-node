@@ -453,11 +453,22 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 return KnownSender(
                     sender=sender,
                     channel=message.channel,
+                    channel_identity=message.channel_identity,
                     sender_kind=message.sender_kind,
                 )
         return None
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        target, *others = await self.resolve_inbox_targets(raw_target)
+        if others:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        return target
+
+    async def resolve_inbox_targets(
+        self, raw_target: str
+    ) -> tuple[ResolvedInboxTarget, ...]:
         matches: list[tuple[Thread, ChannelSession]] = []
         for session in self._scoped_threads():
             channel_session = self._storage.channel_sessions.get(
@@ -481,36 +492,37 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 )
             if matched:
                 matches.append((session, channel_session))
-        if len(matches) > 1:
-            raise AmbiguousInboxTargetError(
-                "inbox target resolves to more than one owned session"
-            )
         if not matches:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to an owned session"
             )
-        target, channel_session = matches[0]
-        handle_is_unique = True
-        if channel_session.target_handle_key is not None:
-            handle_is_unique = (
-                sum(
-                    candidate.target_kind is ChannelTargetKind.DM
-                    and candidate.target_handle_key == channel_session.target_handle_key
-                    for candidate_session in self._scoped_threads()
-                    if (
-                        candidate := self._storage.channel_sessions.get(
-                            candidate_session.channel_session_id
+        targets: list[ResolvedInboxTarget] = []
+        for target, channel_session in sorted(matches, key=lambda pair: pair[0].id):
+            handle_is_unique = True
+            if channel_session.target_handle_key is not None:
+                handle_is_unique = (
+                    sum(
+                        candidate.target_kind is ChannelTargetKind.DM
+                        and candidate.target_handle_key
+                        == channel_session.target_handle_key
+                        for candidate_session in self._scoped_threads()
+                        if (
+                            candidate := self._storage.channel_sessions.get(
+                                candidate_session.channel_session_id
+                            )
                         )
+                        is not None
                     )
-                    is not None
+                    == 1
                 )
-                == 1
+            targets.append(
+                ResolvedInboxTarget(
+                    thread=target,
+                    channel_session=channel_session,
+                    handle_is_unique=handle_is_unique,
+                )
             )
-        return ResolvedInboxTarget(
-            thread=target,
-            channel_session=channel_session,
-            handle_is_unique=handle_is_unique,
-        )
+        return tuple(targets)
 
     async def find_thread(self, channel_session_id: str) -> Thread | None:
         matches = [

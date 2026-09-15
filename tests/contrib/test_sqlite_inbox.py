@@ -31,6 +31,7 @@ async def _create_session(
     channel_session_id: str,
     target_kind: ChannelTargetKind = ChannelTargetKind.DM,
     last_activity_at_ms: int | None,
+    channel_identity: str | None = None,
 ) -> tuple[ChannelSession, Thread]:
     channel_session = ChannelSession(
         id=channel_session_id,
@@ -38,6 +39,7 @@ async def _create_session(
         provider_thread_id=f"thread-{channel_session_id}",
         created_at_ms=1,
         updated_at_ms=last_activity_at_ms or 1,
+        channel_identity=channel_identity,
         target_kind=target_kind,
     )
     thread = Thread(
@@ -411,6 +413,7 @@ async def test_sqlite_known_sender_matches_handle_then_provider_id() -> None:
             session_id="session-known",
             channel_session_id="channel-known",
             last_activity_at_ms=1,
+            channel_identity="bot-1",
         )
         await _append_message(
             repository,
@@ -440,6 +443,7 @@ async def test_sqlite_known_sender_matches_handle_then_provider_id() -> None:
         assert by_handle is not None
         assert by_handle.sender.id == "11111"
         assert by_handle.channel == channel_session.channel
+        assert by_handle.channel_identity == "bot-1"
         assert by_handle.sender_kind is SenderKind.AGENT
 
         by_provider_id = await repository.find_known_sender("ou_open_id")

@@ -61,6 +61,7 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
+    MessageBroadcast,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -5120,3 +5121,109 @@ class _NextChannelBuilder:
     def build(self, context: ChannelContext) -> IChannel:
         del context
         return self._channels.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_a_handle_held_on_two_bots_is_answered_on_both() -> None:
+    orchestrator, channel, _, storage, _ = await make_node(
+        mode=Mode.DANGEROUS_INDIVIDUAL
+    )
+    try:
+        # the same peer speaks to the agent through two bots of one kind
+        for index, bot in ((1, "bot-1"), (2, "bot-2")):
+            await channel.inject(
+                Message(
+                    direction=MessageDirection.INBOUND,
+                    seq=index,
+                    message_id=f"message-dm-{index}",
+                    thread_id=f"bcn-dm-{index}",
+                    channel_session_id=f"channel-dm-{index}",
+                    channel="test",
+                    channel_identity=bot,
+                    provider_thread_id=f"test:{bot}:dm:kana",
+                    provider_message_id=f"provider-dm-{index}",
+                    received_at_ms=index,
+                    sender=SenderIdentity(id="kana-id", name="kana"),
+                    message_type="text",
+                    target=f"dm:channel-dm-{index}",
+                    target_kind=ChannelTargetKind.DM,
+                    target_presentation=ChannelTargetPresentation(handle="kana"),
+                    body="hello",
+                )
+            )
+        await wait_until(lambda: len(storage.channel_sessions) == 2)
+
+        # only one conversation has been read: the unread one holds the whole send
+        await orchestrator.command_service.check(Agent("workspace-1"))
+        await channel.inject(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=3,
+                message_id="message-dm-2-again",
+                thread_id="bcn-dm-2",
+                channel_session_id="channel-dm-2",
+                channel="test",
+                channel_identity="bot-2",
+                provider_thread_id="test:bot-2:dm:kana",
+                provider_message_id="provider-dm-2-again",
+                received_at_ms=3,
+                sender=SenderIdentity(id="kana-id", name="kana"),
+                message_type="text",
+                target="dm:channel-dm-2",
+                target_kind=ChannelTargetKind.DM,
+                target_presentation=ChannelTargetPresentation(handle="kana"),
+                body="one more thing",
+            )
+        )
+        await wait_until(
+            lambda: (
+                len(
+                    _stored_messages(
+                        storage, "bcn-dm-2", direction=MessageDirection.INBOUND
+                    )
+                )
+                == 2
+            )
+        )
+        held = await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm-both",
+            raw_target="dm:@kana",
+            body="hi on both",
+            created_at_ms=4,
+        )
+        assert isinstance(held, MessageSendFreshnessHold)
+        # the hold names what was asked for, which is what finds the draft again
+        assert held.target == "dm:@kana"
+        assert channel.send_requests == []
+
+        # once caught up, the draft goes out on both bots, one message each
+        await orchestrator.command_service.check(Agent("workspace-1"))
+        sent = await orchestrator.command_service.send(
+            actor=Agent("workspace-1"),
+            command_id="command-dm-both-draft",
+            raw_target="dm:@kana",
+            body="",
+            created_at_ms=5,
+            send_draft=True,
+        )
+        assert isinstance(sent, MessageBroadcast)
+        assert all(
+            isinstance(delivery, MessageSendSuccess) for delivery in sent.deliveries
+        )
+        assert {request.channel_identity for request in channel.send_requests} == {
+            "bot-1",
+            "bot-2",
+        }
+        assert {request.body for request in channel.send_requests} == {"hi on both"}
+        outbound = [
+            message
+            for thread_id in ("bcn-dm-1", "bcn-dm-2")
+            for message in _stored_messages(
+                storage, thread_id, direction=MessageDirection.OUTBOUND
+            )
+        ]
+        assert len(outbound) == 2
+        assert {message.command_id for message in outbound} == {"command-dm-both-draft"}
+    finally:
+        await orchestrator.stop(timeout=1)

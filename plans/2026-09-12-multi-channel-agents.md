@@ -182,6 +182,7 @@ wecom 的存量行由 `Agent` 启动时回填，分配给配置中该 kind 的�
 ### Task 5：出站路由与同名广播
 
 `Channels.send` 按会话选择成员。`accept_turn_event`、`anchor_turn`、`request_approval` 同步改造。
+`dm:@` 开启新私聊时从收到该发送者消息的实例发出。
 target 命中多个会话时全部投递，结果按会话分别记录。
 
 ### Task 6：身份渲染

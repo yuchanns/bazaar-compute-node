@@ -14,6 +14,7 @@ _READ_OPERATIONS = frozenset(
         "find_thread",
         "find_channel_session",
         "list_channel_sessions_without_identity",
+        "resolve_inbox_targets",
         "find_known_sender",
         "has_outbound_for_command",
         "find_message",

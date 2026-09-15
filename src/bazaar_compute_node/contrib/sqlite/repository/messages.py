@@ -301,6 +301,16 @@ class MessageOperations(RepositoryBase):
         )
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        target, *others = await self.resolve_inbox_targets(raw_target)
+        if others:
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one owned session"
+            )
+        return target
+
+    async def resolve_inbox_targets(
+        self, raw_target: str
+    ) -> tuple[ResolvedInboxTarget, ...]:
         parameters: tuple[object, ...]
         if raw_target.startswith("#"):
             label, separator, channel_session_id = raw_target.rpartition(":")
@@ -333,41 +343,42 @@ class MessageOperations(RepositoryBase):
             f"AND ({predicate}) ORDER BY thread.id",
             parameters,
         )
-        if len(rows) > 1:
-            raise AmbiguousInboxTargetError(
-                "inbox target resolves to more than one owned session"
-            )
         if not rows:
             raise InboxTargetResolutionError(
                 "inbox target does not resolve to an owned session"
             )
-        target = thread_from_row(rows[0])
-        channel_session = cast(
-            ChannelSession,
-            await self.get_channel_session(target.channel_session_id),
-        )
-        handle_is_unique = True
-        if channel_session.target_handle_key is not None:
-            count_row = cast(
-                aiosqlite.Row,
-                await self.fetchone(
-                    "SELECT COUNT(*) AS target_count "
-                    "FROM threads AS thread "
-                    "JOIN channel_sessions AS channel "
-                    "ON channel.agent_id = /*agent_id*/? "
-                    "AND channel.id = thread.channel_session_id "
-                    "WHERE thread.agent_id = /*agent_id*/? "
-                    "AND channel.target_kind = 'dm' "
-                    "AND channel.target_handle_key = ?",
-                    (channel_session.target_handle_key,),
-                ),
+        targets: list[ResolvedInboxTarget] = []
+        for row in rows:
+            target = thread_from_row(row)
+            channel_session = cast(
+                ChannelSession,
+                await self.get_channel_session(target.channel_session_id),
             )
-            handle_is_unique = cast(int, count_row["target_count"]) == 1
-        return ResolvedInboxTarget(
-            thread=target,
-            channel_session=channel_session,
-            handle_is_unique=handle_is_unique,
-        )
+            handle_is_unique = True
+            if channel_session.target_handle_key is not None:
+                count_row = cast(
+                    aiosqlite.Row,
+                    await self.fetchone(
+                        "SELECT COUNT(*) AS target_count "
+                        "FROM threads AS thread "
+                        "JOIN channel_sessions AS channel "
+                        "ON channel.agent_id = /*agent_id*/? "
+                        "AND channel.id = thread.channel_session_id "
+                        "WHERE thread.agent_id = /*agent_id*/? "
+                        "AND channel.target_kind = 'dm' "
+                        "AND channel.target_handle_key = ?",
+                        (channel_session.target_handle_key,),
+                    ),
+                )
+                handle_is_unique = cast(int, count_row["target_count"]) == 1
+            targets.append(
+                ResolvedInboxTarget(
+                    thread=target,
+                    channel_session=channel_session,
+                    handle_is_unique=handle_is_unique,
+                )
+            )
+        return tuple(targets)
 
     async def find_known_sender(self, token: str) -> KnownSender | None:
         """Find a sender this Agent has heard from, by what its `@` renders as.
@@ -380,17 +391,21 @@ class MessageOperations(RepositoryBase):
         """
 
         for predicate, parameter in (
-            ("LOWER(sender) = LOWER(?)", token),
-            ("sender_id = ?", token),
+            ("LOWER(message.sender) = LOWER(?)", token),
+            ("message.sender_id = ?", token),
         ):
             row = await self.fetchone(
-                "SELECT sender, sender_id, sender_display_name, channel, "
-                "metadata_json "
-                "FROM messages "
-                "WHERE agent_id = /*agent_id*/? "
-                "AND direction = ? "
+                "SELECT message.sender, message.sender_id, "
+                "message.sender_display_name, message.channel, "
+                "channel.channel_identity, message.metadata_json "
+                "FROM messages AS message "
+                "JOIN channel_sessions AS channel "
+                "ON channel.agent_id = /*agent_id*/? "
+                "AND channel.id = message.channel_session_id "
+                "WHERE message.agent_id = /*agent_id*/? "
+                "AND message.direction = ? "
                 f"AND {predicate} "
-                "ORDER BY seq DESC LIMIT 1",
+                "ORDER BY message.seq DESC LIMIT 1",
                 (MessageDirection.INBOUND.value, parameter),
             )
             if row is None:
@@ -413,6 +428,7 @@ class MessageOperations(RepositoryBase):
                     display_name=cast(str | None, row["sender_display_name"]),
                 ),
                 channel=cast(str, row["channel"]),
+                channel_identity=cast(str | None, row["channel_identity"]),
                 sender_kind=sender_kind,
             )
         return None

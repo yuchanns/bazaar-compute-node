@@ -26,6 +26,7 @@ from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.command import (
     ICommandService,
     IReminderService,
+    MessageBroadcast,
     MessageSendFreshnessHold,
     MessageSendSuccess,
 )
@@ -308,6 +309,87 @@ async def test_message_send_renders_provider_outcomes() -> None:
         else:
             assert response["code"] == code
             assert expected_text in cast(str, response["next_action"])
+
+
+def _delivery(target: str, state: OutboundDeliveryState) -> MessageSendSuccess:
+    return MessageSendSuccess(
+        message=cast(
+            Message,
+            SimpleNamespace(
+                delivery_state=state,
+                message_id=f"outbound-{target}",
+                error_message="provider outcome",
+            ),
+        ),
+        target=target,
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
+    service = SimpleNamespace(send=AsyncMock())
+    dispatcher = CommandDispatcher(
+        cast(ICommandService, service),
+        actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
+        reminder_service=cast(IReminderService, object()),
+        timeout_budget=make_budget(),
+        upgrade_service=make_upgrade_service(),
+    )
+    dispatcher.start_accepting()
+    request = {
+        "kind": "command",
+        "resource": "message",
+        "command": "send",
+        "actor_id": "session-source",
+        "target": "dm:@kana",
+        "body": "Hello.",
+        "command_id": "message-command-1",
+        "created_at_ms": 1_100,
+    }
+
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.QUEUED),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is True
+    result = cast(Mapping[str, object], response["result"])
+    assert result["text"] == "Message sent to dm:one. Message ID: outbound-dm:one"
+
+    # one conversation reached and one refused: the failure is the answer,
+    # and it says who already has the message
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.FAILED),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is False
+    assert response["code"] == "SEND_FAILED"
+    assert response["error"] == "provider outcome Already reached dm:one."
+    assert response["next_action"] == (
+        "Fix the provider error before retrying. "
+        "A resend reaches the conversations already reached again."
+    )
+
+    # a partly delivered conversation has been reached too, and keeps its
+    # own advice against resending
+    service.send.return_value = MessageBroadcast(
+        (
+            _delivery("dm:one", OutboundDeliveryState.SENT),
+            _delivery("dm:two", OutboundDeliveryState.PARTIAL),
+        )
+    )
+    response = await dispatcher(request)
+    assert response["ok"] is False
+    assert response["code"] == "SEND_PARTIAL"
+    assert response["error"] == "provider outcome Already reached dm:one, dm:two."
+    assert cast(str, response["next_action"]).startswith(
+        "Do not retry the complete message automatically"
+    )
 
 
 @pytest.mark.asyncio

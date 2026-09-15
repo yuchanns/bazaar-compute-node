@@ -487,9 +487,14 @@ class WeComChannel(IChannel):
         return None
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
-        del sender_kind
+        del sender_kind, channel, channel_identity
         if sender.id is None:
             return None
         identity = f"wecom:bot:{self._bot_id}:dm:{sender.id}"

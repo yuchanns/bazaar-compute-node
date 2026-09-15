@@ -81,6 +81,7 @@ class KnownSender:
 
     sender: SenderIdentity
     channel: str
+    channel_identity: str | None
     sender_kind: SenderKind
 
 
@@ -623,6 +624,12 @@ class _StorageOperations(Protocol):
     async def count_unread_messages(self) -> int: ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
+
+    async def resolve_inbox_targets(
+        self, raw_target: str
+    ) -> tuple[ResolvedInboxTarget, ...]:
+        """Every conversation a target names; a handle may be held on several bots."""
+        ...
 
     async def find_known_sender(self, token: str) -> KnownSender | None: ...
 

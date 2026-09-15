@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
@@ -17,6 +17,7 @@ from ..channel import ChannelSendRequest, DmAddress, IChannel
 from ..command import (
     ICommandService,
     InboxListResult,
+    MessageBroadcast,
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
@@ -157,6 +158,20 @@ def _answered(
     )
 
 
+def _named_as_called(
+    hold: MessageSendFreshnessHold,
+    raw_target: str,
+    targets: Sequence[ResolvedInboxTarget],
+) -> MessageSendFreshnessHold:
+    """Name a hold on several conversations the way the caller named them.
+
+    The draft behind it belongs to all of them, and only the caller's own
+    target resolves to that same set again.
+    """
+
+    return hold if len(targets) == 1 else replace(hold, target=raw_target)
+
+
 def _reached_the_peer(delivery_result: OutboundDeliveryResult) -> bool:
     """Say whether any of this message is with the peer.
 
@@ -217,7 +232,9 @@ class CommandService(ICommandService):
         self._concurrency = concurrency
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
         self._clock = clock
-        self._drafts: dict[str, MessageDraft] = {}
+        # one draft per conversation as the caller names it, which may be a
+        # peer reached on several bots: the key is the set of threads it spans
+        self._drafts: dict[tuple[str, ...], MessageDraft] = {}
         # an outbound is written down once the provider answers, so until then
         # only this holds a command to its one attempt
         self._sending: set[str] = set()
@@ -315,7 +332,12 @@ class CommandService(ICommandService):
         known = await self._storage.find_known_sender(raw_target[4:])
         if known is None:
             return None
-        address = self._channel.dm_address(known.sender, sender_kind=known.sender_kind)
+        address = self._channel.dm_address(
+            known.sender,
+            sender_kind=known.sender_kind,
+            channel=known.channel,
+            channel_identity=known.channel_identity,
+        )
         if address is None:
             return None
         # The name the provider calls the peer comes first, then the token that
@@ -351,6 +373,8 @@ class CommandService(ICommandService):
                 target_kind=ChannelTargetKind.DM,
                 provider_thread_id=address.provider_thread_id,
                 delivery_handle=address.delivery_handle,
+                channel=opening.channel,
+                channel_identity=address.channel_identity,
             )
         )
         now = self._clock()
@@ -448,35 +472,14 @@ class CommandService(ICommandService):
         self,
         *,
         command_id: str,
-        raw_target: str,
         target: ResolvedInboxTarget,
-        body: str,
-        created_at_ms: int,
-        attachments: tuple[OutboundAttachment, ...],
-        reply_to_message_id: str | None,
-        send_draft: bool,
+        payload: MessageDraft,
+        draft_replaced: bool,
     ) -> tuple[MessageDraft, int] | MessageSendFreshnessHold:
-        """Settle what will be sent, and that nothing arrived while it was written."""
+        """Settle that nothing arrived in this conversation while the draft was written."""
 
         target_id = target.thread.id
         async with self._concurrency.for_thread(target_id):
-            if send_draft:
-                draft = self._drafts.get(target_id)
-                if draft is None:
-                    raise ValueError(f"no active draft for target: {raw_target}")
-                payload = draft
-            else:
-                payload = MessageDraft(
-                    target=target.canonical_target,
-                    target_id=target_id,
-                    body=body,
-                    attachments=attachments,
-                    reply_to_message_id=reply_to_message_id,
-                    created_at_ms=created_at_ms,
-                )
-            draft_replaced = not send_draft and self._drafts.get(target_id) is not None
-            if not send_draft:
-                self._drafts[target_id] = payload
             freshness = await self._storage.check_outbound_freshness(
                 target_id,
                 snapshot_seq=self._freshness_snapshots.get(target_id),
@@ -526,6 +529,8 @@ class CommandService(ICommandService):
                 target_kind=channel_session.target_kind,
                 provider_thread_id=channel_session.provider_thread_id,
                 provider_reply_to_message_id=prepared.reply_to_provider_message_id,
+                channel=channel_session.channel,
+                channel_identity=channel_session.channel_identity,
             )
         )
         return _answered(
@@ -627,15 +632,6 @@ class CommandService(ICommandService):
                 raise RuntimeError("outbound message has no delivery state")
             if _reached_the_peer(delivery_result):
                 outbound = await self._storage.finalize_outbound_delivery(outbound)
-            if (
-                delivery_state
-                in {
-                    OutboundDeliveryState.SENT,
-                    OutboundDeliveryState.QUEUED,
-                }
-                and self._drafts.get(target_id) is payload
-            ):
-                self._drafts.pop(target_id, None)
             await self._record_delivery(
                 audit_context,
                 outbound,
@@ -700,11 +696,7 @@ class CommandService(ICommandService):
         send_draft: bool,
     ) -> MessageSendResult:
         try:
-            target = await self._storage.resolve_inbox_target(raw_target)
-        except AmbiguousInboxTargetError:
-            # Several conversations answer to this handle. Opening another one
-            # would silently pick a peer for the caller.
-            raise
+            targets = await self._storage.resolve_inbox_targets(raw_target)
         except InboxTargetResolutionError:
             opening = await self._dm_opening(actor, raw_target)
             if opening is None or send_draft:
@@ -729,32 +721,92 @@ class CommandService(ICommandService):
                     attachments=attachments,
                     created_at_ms=created_at_ms,
                 )
-            target = await self._storage.resolve_inbox_target(held.canonical_target)
-        self._require_in_reach(actor, target.thread.id, raw_target)
+            targets = (await self._storage.resolve_inbox_target(held.canonical_target),)
+        for target in targets:
+            self._require_in_reach(actor, target.thread.id, raw_target)
+        # a handle held on several bots names the same peer everywhere, so the
+        # message goes to every conversation; two conversations on one bot
+        # are two different peers wearing the same name, and picking would
+        # be guessing
+        bots = {
+            (target.channel_session.channel, target.channel_session.channel_identity)
+            for target in targets
+        }
+        if len(bots) != len(targets):
+            raise AmbiguousInboxTargetError(
+                "inbox target resolves to more than one conversation on one bot"
+            )
 
-        staged = await self._stage_draft(
-            command_id=command_id,
-            raw_target=raw_target,
-            target=target,
-            body=body,
-            created_at_ms=created_at_ms,
-            attachments=attachments,
-            reply_to_message_id=reply_to_message_id,
-            send_draft=send_draft,
-        )
-        if isinstance(staged, MessageSendFreshnessHold):
-            return staged
-        payload, expected_target_seq = staged
+        # the draft belongs to the conversation as the caller named it, however
+        # many threads that spans; something new in any of them holds the whole
+        # send and the one draft waits for the next attempt
+        draft_key = tuple(sorted(target.thread.id for target in targets))
+        if send_draft:
+            draft = self._drafts.get(draft_key)
+            if draft is None:
+                raise ValueError(f"no active draft for target: {raw_target}")
+        else:
+            draft = MessageDraft(
+                target=targets[0].canonical_target,
+                target_id=targets[0].thread.id,
+                body=body,
+                attachments=attachments,
+                reply_to_message_id=reply_to_message_id,
+                created_at_ms=created_at_ms,
+            )
+        draft_replaced = not send_draft and draft_key in self._drafts
+        if not send_draft:
+            self._drafts[draft_key] = draft
+        staged: list[tuple[ResolvedInboxTarget, MessageDraft, int]] = []
+        hold: MessageSendFreshnessHold | None = None
+        for target in targets:
+            payload = replace(
+                draft, target=target.canonical_target, target_id=target.thread.id
+            )
+            settled = await self._stage_draft(
+                command_id=command_id,
+                target=target,
+                payload=payload,
+                draft_replaced=draft_replaced,
+            )
+            if isinstance(settled, MessageSendFreshnessHold):
+                hold = hold or settled
+                continue
+            payload, expected_target_seq = settled
+            staged.append((target, payload, expected_target_seq))
+        if hold is not None:
+            return _named_as_called(hold, raw_target, targets)
 
-        delivered = await self._deliver(
-            command_id=command_id,
-            target=target,
-            expected_target_seq=expected_target_seq,
-            payload=payload,
+        # the conversations are delivered side by side, each under its own
+        # lock, so the send takes as long as the slowest one rather than all
+        # of them added up
+        delivered = await asyncio.gather(
+            *(
+                self._deliver(
+                    command_id=command_id,
+                    target=target,
+                    expected_target_seq=expected_target_seq,
+                    payload=payload,
+                )
+                for target, payload, expected_target_seq in staged
+            )
         )
-        if isinstance(delivered, MessageSendFreshnessHold):
-            return delivered
-        return MessageSendSuccess(message=delivered, target=target.display_target)
+        deliveries = tuple(
+            _named_as_called(outcome, raw_target, targets)
+            if isinstance(outcome, MessageSendFreshnessHold)
+            else MessageSendSuccess(message=outcome, target=target.display_target)
+            for (target, _, _), outcome in zip(staged, delivered, strict=True)
+        )
+        if self._drafts.get(draft_key) is draft and all(
+            isinstance(outcome, MessageSendSuccess)
+            and outcome.message.delivery_state
+            in {OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED}
+            for outcome in deliveries
+        ):
+            self._drafts.pop(draft_key, None)
+        if len(deliveries) == 1:
+            return deliveries[0]
+        return MessageBroadcast(deliveries=deliveries)
 
     def _observe_freshness(self, thread_id: str, seq: int) -> None:
         previous = self._freshness_snapshots.get(thread_id)

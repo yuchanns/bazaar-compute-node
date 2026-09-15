@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -10,6 +11,7 @@ from bcn_test_support import TestChannel, TestRuntime
 from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.channel import (
     Channel,
+    ChannelApprovalRequest,
     ChannelIdentity,
     Channels,
     ChannelSendRequest,
@@ -17,6 +19,8 @@ from bazaar_compute_node.core.channel import (
 from bazaar_compute_node.core.concurrency import ThreadLockRegistry
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
+    ApprovalDecision,
+    ApprovalRequest,
     ChannelTargetKind,
     Message,
     MessageDirection,
@@ -468,3 +472,205 @@ async def test_channels_stream_ends_when_every_member_has_stopped() -> None:
     await channels.stop(timeout=1)
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
+
+
+def _turn_event(thread_id: str) -> RuntimeOutputEvent:
+    return RuntimeOutputEvent(
+        envelope=RuntimeEventEnvelope(
+            actor=Thread(thread_id),
+            runtime_session_id="runtime-1",
+            turn_id="turn-1",
+            provider_turn_id=None,
+            occurred_at_ms=1,
+        ),
+        payload=TurnCompleted(event_name="bcn.turn.completed"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_channels_answers_on_the_bot_a_conversation_lives_on() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        # an outbound goes to the bot recorded on its conversation, whichever
+        # member happens to come first
+        await channels.send(
+            ChannelSendRequest(
+                session_id="thread-on-second",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-2",
+            ),
+            timeout=1,
+        )
+        assert [request.session_id for request in first.send_requests] == []
+        assert [request.session_id for request in second.send_requests] == [
+            "thread-on-second"
+        ]
+
+        # so does an approval card
+        await channels.request_approval(
+            ChannelApprovalRequest(
+                approval=ApprovalRequest(
+                    request_id="approval-1",
+                    actor=Thread("thread-on-second"),
+                    runtime_session_id="runtime-1",
+                    action="rm -rf build",
+                    created_at_ms=1,
+                ),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-2",
+            ),
+            timeout=1,
+        )
+        assert first.approval_requests == []
+        assert [request.request_id for request in second.approval_requests] == [
+            "approval-1"
+        ]
+
+        # a turn's progress and anchor follow the member its message came in on
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await second.inject(_inbound("test", "from-second"))
+        received = await anext(stream)
+        channels.accept_turn_event(
+            _turn_event(received.thread_id), session_id=received.thread_id
+        )
+        channels.anchor_turn(received.thread_id, received)
+        assert first.event_sessions == []
+        assert second.event_sessions == [received.thread_id]
+        assert [anchor for anchor, _ in second.turn_anchors] == [received.thread_id]
+        await stream.aclose()
+
+        # a conversation that names no bot and has not been seen here is not
+        # guessed at
+        unowned = await channels.send(
+            ChannelSendRequest(
+                session_id="thread-unknown",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+            ),
+            timeout=1,
+        )
+        assert unowned.status is ProviderCallStatus.FAILED
+        assert unowned.error_kind == "channel_unavailable"
+        assert first.send_requests == []
+
+        # a conversation whose bot is not up is not spoken for by another bot
+        failed = await channels.send(
+            ChannelSendRequest(
+                session_id="thread-on-gone",
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-gone",
+            ),
+            timeout=1,
+        )
+        assert failed.status is ProviderCallStatus.FAILED
+        assert failed.error_kind == "channel_unavailable"
+        refused = await channels.request_approval(
+            ChannelApprovalRequest(
+                approval=ApprovalRequest(
+                    request_id="approval-gone",
+                    actor=Thread("thread-on-gone"),
+                    runtime_session_id="runtime-1",
+                    action="rm -rf build",
+                    created_at_ms=1,
+                ),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id="test:thread",
+                channel="test",
+                channel_identity="bot-gone",
+            ),
+            timeout=1,
+        )
+        assert refused.decision is ApprovalDecision.REJECTED
+        assert refused.reason == "channel_unavailable"
+        assert first.send_requests == []
+        assert [request.session_id for request in second.send_requests] == [
+            "thread-on-second"
+        ]
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_opens_a_dm_from_the_bot_that_heard_the_sender() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        address = channels.dm_address(
+            SenderIdentity(id="sender-id"),
+            sender_kind=SenderKind.HUMAN,
+            channel="test",
+            channel_identity="bot-2",
+        )
+        assert address is not None
+        await channels.send(
+            ChannelSendRequest(
+                session_id=address.thread_id,
+                body="hello",
+                attachments=(),
+                target_kind=ChannelTargetKind.DM,
+                provider_thread_id=address.provider_thread_id,
+            ),
+            timeout=1,
+        )
+        assert first.send_requests == []
+        assert [request.session_id for request in second.send_requests] == [
+            address.thread_id
+        ]
+
+        # the bot that heard the sender being down does not hand the DM to
+        # another one
+        assert (
+            channels.dm_address(
+                SenderIdentity(id="sender-id"),
+                sender_kind=SenderKind.HUMAN,
+                channel="test",
+                channel_identity="bot-gone",
+            )
+            is None
+        )
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_learns_a_conversation_from_a_reminder_anchor() -> None:
+    first = TestChannel()
+    first.identity = ChannelIdentity(id="bot-1")
+    second = TestChannel()
+    second.identity = ChannelIdentity(id="bot-2")
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        # a reminder wakes a conversation nothing has come in on this run
+        anchor = replace(_inbound("test", "woken"), channel_identity="bot-2")
+        channels.anchor_turn(anchor.thread_id, anchor)
+        channels.accept_turn_event(
+            _turn_event(anchor.thread_id), session_id=anchor.thread_id
+        )
+        assert first.turn_anchors == []
+        assert first.event_sessions == []
+        assert [session for session, _ in second.turn_anchors] == [anchor.thread_id]
+        assert second.event_sessions == [anchor.thread_id]
+    finally:
+        await channels.stop(timeout=1)

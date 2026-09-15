@@ -147,7 +147,20 @@ class MessageSendSuccess:
     target: str
 
 
-type MessageSendResult = MessageSendSuccess | MessageSendFreshnessHold
+@dataclass(frozen=True, slots=True)
+class MessageBroadcast:
+    """One send that named several conversations, with what became of each."""
+
+    deliveries: tuple[MessageSendSuccess | MessageSendFreshnessHold, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.deliveries) < 2:
+            raise ValueError("a broadcast names at least two conversations")
+
+
+type MessageSendResult = (
+    MessageSendSuccess | MessageSendFreshnessHold | MessageBroadcast
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -90,8 +90,14 @@ class TestChannel(IChannel):
         return self.identity if self.accepting else None
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
+        del channel, channel_identity
         if sender.id is None:
             return None
         return DmAddress(

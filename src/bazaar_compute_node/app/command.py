@@ -20,7 +20,9 @@ from pydantic import (
 from ..core.actor import Actor, Actors
 from ..core.command import (
     ICommandService,
+    MessageBroadcast,
     MessageSendFreshnessHold,
+    MessageSendSuccess,
     TargetProjection,
     ThreadNotFoundError,
 )
@@ -239,6 +241,16 @@ _REQUEST_MODELS: dict[tuple[str, str], _RequestModel] = {
     ("inbox", "check"): _InboxCheckRequest,
     ("thread", "unfollow"): _ThreadUnfollowRequest,
 }
+
+# the states in which some of the message is with the peer, which is when
+# a resend would put it there twice
+_REACHED_STATES = frozenset(
+    {
+        OutboundDeliveryState.SENT,
+        OutboundDeliveryState.QUEUED,
+        OutboundDeliveryState.PARTIAL,
+    }
+)
 
 _SEND_FAILURES: dict[OutboundDeliveryState, tuple[str, str, str]] = {
     OutboundDeliveryState.PARTIAL: (
@@ -569,35 +581,45 @@ class CommandDispatcher:
             reply_to_message_id=request.reply_to_message_id,
             send_draft=request.send_draft,
         )
-        if isinstance(result, MessageSendFreshnessHold):
-            return {"ok": True, "result": {"text": format_freshness_hold(result)}}
-        message = result.message
-        delivery_state = message.delivery_state
-        if delivery_state is None:
-            raise RuntimeError("outbound message has no delivery state")
-        if delivery_state not in {
-            OutboundDeliveryState.SENT,
-            OutboundDeliveryState.QUEUED,
-        }:
-            failure = _SEND_FAILURES.get(delivery_state)
-            if failure is None:
-                raise AssertionError(
-                    f"message send returned unsupported state: {delivery_state.value}"
-                )
-            code, fallback, next_action = failure
-            raise CommandDispatchError(
-                code,
-                message.error_message or fallback,
-                next_action=next_action,
-            )
-        text = _SEND_RESULT.render(
-            {
-                "delivery_state": delivery_state.value,
-                "target": result.target,
-                "message_id": message.message_id,
-            }
+        # the handle may have named one peer on several bots; to the caller
+        # that is one conversation, so it hears about one delivery, and a hold
+        # or failure on any of them is the answer for all
+        deliveries = (
+            result.deliveries if isinstance(result, MessageBroadcast) else (result,)
         )
-        return {"ok": True, "result": {"text": text}}
+        for delivery in deliveries:
+            if isinstance(delivery, MessageSendFreshnessHold):
+                return {"ok": True, "result": {"text": format_freshness_hold(delivery)}}
+        sent = [
+            delivery
+            for delivery in deliveries
+            if isinstance(delivery, MessageSendSuccess)
+        ]
+        reached: list[str] = []
+        failure: CommandDispatchError | None = None
+        for delivery in sent:
+            refused = _send_failure(delivery)
+            if refused is not None and failure is None:
+                failure = refused
+            if delivery.message.delivery_state in _REACHED_STATES:
+                reached.append(delivery.target)
+        if failure is None:
+            return {"ok": True, "result": {"text": _format_send_success(sent[0])}}
+        if reached:
+            # a resend would reach these again, so the caller is told which
+            raise CommandDispatchError(
+                failure.code,
+                f"{failure.message} Already reached {', '.join(reached)}.",
+                next_action=" ".join(
+                    part
+                    for part in (
+                        failure.next_action,
+                        "A resend reaches the conversations already reached again.",
+                    )
+                    if part is not None
+                ),
+            )
+        raise failure
 
     async def _unfollow_thread(
         self, actor: Actor, request: _ThreadUnfollowRequest
@@ -621,6 +643,42 @@ _ATTACHMENT_SUFFIX = TextTemplate.from_resource("command/attachment_suffix.tpl")
 _SENDER = TextTemplate.from_resource("command/sender.tpl")
 _CHECK_MESSAGE = TextTemplate.from_resource("command/check_message.tpl")
 _READ_MESSAGE = TextTemplate.from_resource("command/read_message.tpl")
+
+
+def _send_failure(result: MessageSendSuccess) -> CommandDispatchError | None:
+    message = result.message
+    delivery_state = message.delivery_state
+    if delivery_state is None:
+        raise RuntimeError("outbound message has no delivery state")
+    if delivery_state in {OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED}:
+        return None
+    failure = _SEND_FAILURES.get(delivery_state)
+    if failure is None:
+        raise AssertionError(
+            f"message send returned unsupported state: {delivery_state.value}"
+        )
+    code, fallback, next_action = failure
+    return CommandDispatchError(
+        code,
+        message.error_message or fallback,
+        next_action=next_action,
+    )
+
+
+def _format_send_success(result: MessageSendSuccess) -> str:
+    message = result.message
+    delivery_state = message.delivery_state
+    if delivery_state is None:
+        raise RuntimeError("outbound message has no delivery state")
+    return _SEND_RESULT.render(
+        {
+            "delivery_state": delivery_state.value,
+            "target": result.target,
+            "message_id": message.message_id,
+        }
+    )
+
+
 _SEND_RESULT = TextTemplate.from_resource("command/send_result.tpl")
 _FRESHNESS_HOLD = TextTemplate.from_resource("command/freshness_hold.tpl")
 

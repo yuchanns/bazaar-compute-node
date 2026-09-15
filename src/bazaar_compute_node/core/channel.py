@@ -11,6 +11,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import time_ns
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -18,6 +19,7 @@ from ..i18n import Translator
 from .audit import AuditRecorder
 from .lifecycle import IAsyncLifecycle
 from .models import (
+    ApprovalDecision,
     ApprovalRequest,
     ApprovalResult,
     ChannelTargetKind,
@@ -28,7 +30,7 @@ from .models import (
     SenderIdentity,
     SenderKind,
 )
-from .outcomes import ProviderCallResult
+from .outcomes import ProviderCallResult, ProviderCallStatus
 from .timerwheel import TimerWheel
 
 
@@ -79,6 +81,9 @@ class ChannelSendRequest:
     provider_thread_id: str
     provider_reply_to_message_id: str | None = None
     delivery_handle: str | None = None
+    # the channel and bot the conversation lives on, for an agent that holds several
+    channel: str | None = None
+    channel_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +95,8 @@ class ChannelApprovalRequest:
     provider_thread_id: str
     provider_reply_to_message_id: str | None = None
     provider_sender_id: str | None = None
+    channel: str | None = None
+    channel_identity: str | None = None
 
 
 class IAttachmentMaterializer(Protocol):
@@ -185,12 +192,19 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         return
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
         """Return where a DM to this sender lives, if this channel has one.
 
-        `None` means the sender cannot be turned into a DM address here, and the
-        caller reports the target as not found.
+        `channel` and `channel_identity` say which bot the sender was heard
+        by, so the DM opens from that bot. `None` means the sender cannot be
+        turned into a DM address here, and the caller reports the target as
+        not found.
         """
 
         return None
@@ -272,8 +286,14 @@ class Channel(IChannel):
         )
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
+        del channel, channel_identity
         address = self._channel.dm_address(sender, sender_kind=sender_kind)
         if address is None:
             return None
@@ -344,6 +364,9 @@ class Channels(IChannel):
         self._bots: dict[int, tuple[str, str]] = {}
         # members whose inbound stream broke, by position, with what broke it
         self._reader_failures: dict[int, str] = {}
+        # the member each live conversation came in on, for the calls that
+        # only carry the conversation
+        self._routes: dict[str, IChannel] = {}
 
     @property
     def members(self) -> tuple[IChannel, ...]:
@@ -476,7 +499,9 @@ class Channels(IChannel):
                     if future.exception() is not None:
                         continue
                     pull(index)
-                    yield future.result()
+                    message = future.result()
+                    self._routes[message.thread_id] = self._members[index]
+                    yield message
         finally:
             for future in pending:
                 future.cancel()
@@ -498,17 +523,33 @@ class Channels(IChannel):
         *,
         session_id: str,
     ) -> None:
-        self._first().accept_turn_event(item, session_id=session_id)
+        member = self._owner(None, None, session_id)
+        if member is not None:
+            member.accept_turn_event(item, session_id=session_id)
 
     def anchor_turn(self, session_id: str, anchor: Message) -> None:
-        self._first().anchor_turn(session_id, anchor)
+        member = self._owner(anchor.channel, anchor.channel_identity, session_id)
+        if member is not None:
+            self._routes[session_id] = member
+            member.anchor_turn(session_id, anchor)
 
     def dm_address(
-        self, sender: SenderIdentity, *, sender_kind: SenderKind
+        self,
+        sender: SenderIdentity,
+        *,
+        sender_kind: SenderKind,
+        channel: str | None = None,
+        channel_identity: str | None = None,
     ) -> DmAddress | None:
-        for _, member in self._up():
+        if channel_identity is not None:
+            member = self._owner(channel, channel_identity)
+            members = () if member is None else (member,)
+        else:
+            members = tuple(member for _, member in self._up())
+        for member in members:
             address = member.dm_address(sender, sender_kind=sender_kind)
             if address is not None:
+                self._routes[address.thread_id] = member
                 return address
         return None
 
@@ -518,7 +559,20 @@ class Channels(IChannel):
         *,
         timeout: float,
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
-        return await self._first().send(request, timeout=timeout)
+        member = self._owner(
+            request.channel, request.channel_identity, request.session_id
+        )
+        if member is None:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="channel_unavailable",
+                error_message=(
+                    f"{request.channel} bot {request.channel_identity} is not up"
+                    if request.channel_identity is not None
+                    else f"conversation {request.session_id} has no channel here"
+                ),
+            )
+        return await member.send(request, timeout=timeout)
 
     async def request_approval(
         self,
@@ -526,17 +580,40 @@ class Channels(IChannel):
         *,
         timeout: float,
     ) -> ApprovalResult:
-        return await self._first().request_approval(request, timeout=timeout)
+        member = self._owner(request.channel, request.channel_identity)
+        if member is None:
+            return ApprovalResult(
+                request_id=request.approval.request_id,
+                decision=ApprovalDecision.REJECTED,
+                decided_at_ms=time_ns() // 1_000_000,
+                reason="channel_unavailable",
+            )
+        return await member.request_approval(request, timeout=timeout)
+
+    def _owner(
+        self,
+        channel: str | None,
+        channel_identity: str | None,
+        session_id: str | None = None,
+    ) -> IChannel | None:
+        """The member a conversation belongs to, or None when that bot is not up.
+
+        The bot recorded on the conversation decides, and no other member
+        speaks for it. A conversation named only by its id is answered by the
+        member it was last seen on here; one never seen has no owner.
+        """
+
+        if channel_identity is not None:
+            for index, member in self._up():
+                if self._bots[index] == (channel, channel_identity):
+                    return member
+            return None
+        return self._routes.get(session_id) if session_id is not None else None
 
     def _up(self) -> Iterator[tuple[int, IChannel]]:
         for index, member in enumerate(self._members):
             if index not in self._failures:
                 yield index, member
-
-    def _first(self) -> IChannel:
-        for _, member in self._up():
-            return member
-        raise RuntimeError("no channel started")
 
 
 class IChannelBuilder(Protocol):
