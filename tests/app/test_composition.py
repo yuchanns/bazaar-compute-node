@@ -32,7 +32,7 @@ def make_configuration(
             AgentConfiguration(
                 id=AGENT_ID,
                 name="Test Agent",
-                channel=ChannelConfiguration(kind="test"),
+                channels=(ChannelConfiguration(kind="test"),),
                 runtimes=(RuntimeConfiguration(kind="test"),),
             ),
         ),

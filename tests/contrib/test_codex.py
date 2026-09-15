@@ -1378,7 +1378,7 @@ async def test_real_codex_background_job_defers_idle_recycling(
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="codex",
@@ -1540,7 +1540,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="codex",

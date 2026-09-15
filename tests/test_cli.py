@@ -96,19 +96,19 @@ def test_help_and_version_output() -> None:
     assert CLIENT_INFO.version == distribution_version
 
 
-def test_cli_loads_v3_agent_configuration_and_defaults_node_options(
+def test_cli_loads_v4_agent_configuration_and_defaults_node_options(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-version = "3"
+version = "4"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
 
-[agent.channel]
+[[agent.channel]]
 kind = "test"
 
 [[agent.runtime]]
@@ -128,8 +128,8 @@ kind = "test"
 
     assert args.storage == "sqlite"
     assert args.audit == "logging"
-    assert args.configuration.version == "3"
-    assert args.configuration.agents[0].channel.kind == "test"
+    assert args.configuration.version == "4"
+    assert args.configuration.agents[0].channels[0].kind == "test"
     (runtime,) = args.configuration.agents[0].runtimes
     assert runtime.kind == "test"
     assert runtime.sandbox_mode is RuntimeSandboxMode.WORKSPACE_WRITE
@@ -143,7 +143,7 @@ def test_explicit_config_path_creates_default_configuration(tmp_path: Path) -> N
     configuration = load_node_configuration(config_path)
 
     assert config_path.is_file()
-    assert configuration.version == "3"
+    assert configuration.version == "4"
     assert configuration.agents == ()
     assert configuration.storage == "sqlite"
     assert configuration.audit == "logging"
@@ -162,13 +162,13 @@ def test_node_configuration_rejects_invalid_runtime_sandbox_settings() -> None:
     config_path = data_dir / "config.toml"
     config_path.write_text(
         """
-version = "3"
+version = "4"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -182,13 +182,13 @@ sandbox_mode = "host-unrestricted"
 
     config_path.write_text(
         """
-version = "3"
+version = "4"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -210,14 +210,14 @@ def test_node_configuration_rejects_invalid_agent_idle_timeout(value: str) -> No
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
         f"""
-version = "3"
+version = "4"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
 idle_timeout = {value}
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -242,14 +242,14 @@ def test_node_configuration_parses_agent_idle_timeout(
     data_dir.mkdir(parents=True)
     (data_dir / "config.toml").write_text(
         f"""
-version = "3"
+version = "4"
 
 [[agent]]
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "default"
 idle_timeout = {value}
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -277,7 +277,7 @@ def test_help_works_in_a_real_process() -> None:
 
 def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
     config_path = tmp_path / "empty-config.toml"
-    config_path.write_text('version = "3"\n', encoding="utf-8")
+    config_path.write_text('version = "4"\n', encoding="utf-8")
 
     args = arguments(
         storage=None,
@@ -297,7 +297,7 @@ def test_agent_list_reports_empty_configuration(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "3"\n', encoding="utf-8")
+    config_path.write_text('version = "4"\n', encoding="utf-8")
 
     assert main(["agent", "list", "--config", str(config_path)]) == 0
 
@@ -314,13 +314,13 @@ def test_agent_list_joins_runtime_kinds_in_configuration_order(
     agent_id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
     config_path.write_text(
         f"""
-version = "3"
+version = "4"
 
 [[agent]]
 id = "{agent_id}"
 name = "Tifa"
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -385,11 +385,13 @@ def test_agent_add_preserves_typed_options_and_round_trips(
     assert UUID(agent["id"]).version == 7
     assert agent["name"] == "Tifa"
     assert agent["idle_timeout"] == 600.0
-    assert agent["channel"] == {
-        "kind": "telegram",
-        "bot_id": "bot-id",
-        "token_env": "BCN_TELEGRAM_TIFA_TOKEN",
-    }
+    assert agent["channel"] == [
+        {
+            "kind": "telegram",
+            "bot_id": "bot-id",
+            "token_env": "BCN_TELEGRAM_TIFA_TOKEN",
+        }
+    ]
     assert agent["runtime"] == [
         {
             "kind": "codex",
@@ -550,7 +552,7 @@ def test_agent_add_rejects_invalid_options(
 ) -> None:
     # duplicate and kind options are refused
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "3"\n', encoding="utf-8")
+    config_path.write_text('version = "4"\n', encoding="utf-8")
 
     for option in ("runtime.model=first", "runtime.kind=codex"):
         with pytest.raises(SystemExit):
@@ -577,7 +579,7 @@ def test_agent_add_rejects_invalid_options(
 
     # daemon options do not belong to agent commands
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "3"\n', encoding="utf-8")
+    config_path.write_text('version = "4"\n', encoding="utf-8")
 
     with pytest.raises(SystemExit):
         main(
@@ -638,7 +640,7 @@ def test_agent_add_rejects_invalid_options(
 def test_agent_remove(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # removing by name or id only rewrites the configuration
     config_path = tmp_path / "config.toml"
-    config_path.write_text('version = "3"\n', encoding="utf-8")
+    config_path.write_text('version = "4"\n', encoding="utf-8")
     add_arguments = [
         "agent",
         "add",
@@ -670,13 +672,13 @@ def test_agent_remove(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     second_id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
     config_path.write_text(
         f"""
-version = "3"
+version = "4"
 
 [[agent]]
 id = "{first_id}"
 name = "Tifa"
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 
 [[agent.runtime]]
@@ -686,7 +688,7 @@ kind = "codex"
 id = "{second_id}"
 name = "{first_id}"
 
-[agent.channel]
+[[agent.channel]]
 kind = "wecom"
 
 [[agent.runtime]]
@@ -737,5 +739,5 @@ model = "gpt-5.6"
     )
 
     document = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert document["version"] == "3"
+    assert document["version"] == "4"
     assert [agent["name"] for agent in document["agent"]] == ["default", "Tifa"]

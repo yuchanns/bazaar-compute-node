@@ -95,7 +95,7 @@ def start_test_process(
     config_path = data_dir / "test_config.toml"
     config_path.write_text(
         f"""
-version = "3"
+version = "4"
 
 [node]
 storage = "test"
@@ -105,7 +105,7 @@ endpoint = "{endpoint_text}"
 id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "test-agent"
 
-[agent.channel]
+[[agent.channel]]
 kind = "test"
 
 [[agent.runtime]]

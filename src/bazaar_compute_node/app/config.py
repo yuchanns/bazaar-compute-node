@@ -17,7 +17,7 @@ from ..core.paths import resolve_data_dir
 from ..core.runtime import RuntimeSandboxMode
 
 CONFIG_FILENAME = "config.toml"
-CONFIG_VERSION = "3"
+CONFIG_VERSION = "4"
 DEFAULT_AUDIT = "logging"
 DEFAULT_STORAGE = "sqlite"
 DEFAULT_DATABASE_FILENAME = "bcn.sqlite3"
@@ -68,7 +68,7 @@ class RuntimeConfiguration:
 class AgentConfiguration:
     id: str
     name: str
-    channel: ChannelConfiguration
+    channels: tuple[ChannelConfiguration, ...]
     runtimes: tuple[RuntimeConfiguration, ...]
     mode: Mode = Mode.SESSION
     idle_timeout_seconds: float = 0
@@ -76,6 +76,8 @@ class AgentConfiguration:
     def __post_init__(self) -> None:
         _validate_agent_id(self.id, "agent.id")
         _required_text(self.name, "agent.name")
+        if not self.channels:
+            raise ConfigurationError("agent.channel must define at least one channel")
         if not self.runtimes:
             raise ConfigurationError("agent.runtime must define at least one runtime")
         if (
@@ -91,7 +93,7 @@ class AgentConfiguration:
 
 @dataclass(frozen=True, slots=True)
 class NodeConfiguration:
-    """Version 3 persistent node configuration."""
+    """Version 4 persistent node configuration."""
 
     agents: tuple[AgentConfiguration, ...] = ()
     storage: str = DEFAULT_STORAGE
@@ -173,15 +175,15 @@ def resolve_config_path() -> Path:
 def load_node_configuration(
     path: Path | None = None,
 ) -> NodeConfiguration:
-    """Load v3 configuration, advancing older input through the upgrade states."""
+    """Load v4 configuration, advancing older input through the upgrade states."""
 
     path = (path or resolve_config_path()).expanduser()
     payload = _read_configuration(path)
     state = _configuration_state(_payload_version(payload))
     if state.is_current:
-        return _parse_v3_configuration(payload)
+        return _parse_v4_configuration(payload)
 
-    configuration = _parse_v3_configuration(state.advance(payload))
+    configuration = _parse_v4_configuration(state.advance(payload))
     _write_configuration(path, configuration)
     return configuration
 
@@ -261,17 +263,17 @@ def _read_legacy_workspace_id(
         connection.close()
 
 
-def _parse_v3_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
+def _parse_v4_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     node = _table(payload.get("node", {}), "[node]")
     if "channel" in node or "runtime" in node:
         raise ConfigurationError(
-            "version 3 configuration cannot define node.channel or node.runtime"
+            "version 4 configuration cannot define node.channel or node.runtime"
         )
     raw_agents = payload.get("agent", [])
     if not isinstance(raw_agents, list):
         raise ConfigurationError("[[agent]] must be an array of TOML tables")
     agents = tuple(
-        _parse_v3_agent(item, index=index)
+        _parse_v4_agent(item, index=index)
         for index, item in enumerate(raw_agents, start=1)
     )
     version_check = node.get("version_check", True)
@@ -289,10 +291,26 @@ def _parse_v3_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     )
 
 
-def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
+def _parse_v4_agent(value: object, *, index: int) -> AgentConfiguration:
     table = _table(value, f"agent #{index}")
-    channel = _table(table.get("channel"), f"agent #{index}.channel")
-    channel_kind = _required_text(channel.get("kind"), f"agent #{index}.channel.kind")
+    raw_channels = table.get("channel")
+    if not isinstance(raw_channels, list):
+        raise ConfigurationError(
+            f"agent #{index}.channel must be an array of TOML tables"
+        )
+    channels: list[ChannelConfiguration] = []
+    for position, item in enumerate(raw_channels, start=1):
+        channel = _table(item, f"agent #{index}.channel #{position}")
+        channels.append(
+            ChannelConfiguration(
+                kind=_required_text(
+                    channel.get("kind"), f"agent #{index}.channel #{position}.kind"
+                ),
+                options=MappingProxyType(
+                    {key: option for key, option in channel.items() if key != "kind"}
+                ),
+            )
+        )
     raw_runtimes = table.get("runtime")
     if not isinstance(raw_runtimes, list):
         raise ConfigurationError(
@@ -333,12 +351,7 @@ def _parse_v3_agent(value: object, *, index: int) -> AgentConfiguration:
     return AgentConfiguration(
         id=_required_text(table.get("id"), f"agent #{index}.id"),
         name=_required_text(table.get("name"), f"agent #{index}.name"),
-        channel=ChannelConfiguration(
-            kind=channel_kind,
-            options=MappingProxyType(
-                {key: item for key, item in channel.items() if key != "kind"}
-            ),
-        ),
+        channels=tuple(channels),
         runtimes=tuple(runtimes),
         mode=mode,
         idle_timeout_seconds=float(idle_timeout),
@@ -533,10 +546,28 @@ def _v2_to_v3_payload(payload: Mapping[str, object]) -> dict[str, object]:
     return dict(payload) | {"version": "3", "agent": agents}
 
 
+def _v3_to_v4_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    raw_agents = payload.get("agent", [])
+    if not isinstance(raw_agents, list):
+        raise ConfigurationError("[[agent]] must be an array of TOML tables")
+
+    agents: list[dict[str, object]] = []
+    for index, item in enumerate(raw_agents, start=1):
+        agent = dict(_table(item, f"agent #{index}"))
+        agent["channel"] = [_table(agent.get("channel"), f"agent #{index}.channel")]
+        agents.append(agent)
+
+    return dict(payload) | {"version": "4", "agent": agents}
+
+
 # The upgrade states, newest first so each one can name the state it moves to.
 # Adding a version means writing its upgrade, declaring it as the new terminal
 # state, and giving the state that used to be terminal an upgrade into it.
-_CONFIGURATION_V3 = _ConfigurationState(version="3", upgrade=None)
+_CONFIGURATION_V4 = _ConfigurationState(version="4", upgrade=None)
+_CONFIGURATION_V3 = _ConfigurationState(
+    version="3",
+    upgrade=_ConfigurationUpgrade(apply=_v3_to_v4_payload, state=_CONFIGURATION_V4),
+)
 _CONFIGURATION_V2 = _ConfigurationState(
     version="2",
     upgrade=_ConfigurationUpgrade(apply=_v2_to_v3_payload, state=_CONFIGURATION_V3),
@@ -549,6 +580,7 @@ _CONFIGURATION_STATES = (
     _CONFIGURATION_V1,
     _CONFIGURATION_V2,
     _CONFIGURATION_V3,
+    _CONFIGURATION_V4,
 )
 
 
@@ -614,15 +646,18 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
                 f"name = {_toml_value(agent.name)}",
                 f"mode = {_toml_value(agent.mode.value)}",
                 f"idle_timeout = {_toml_value(agent.idle_timeout_seconds)}",
-                "",
-                "[agent.channel]",
-                f"kind = {_toml_value(agent.channel.kind)}",
             )
         )
-        for key in sorted(agent.channel.options):
-            lines.append(
-                f"{_toml_key(key)} = {_toml_value(agent.channel.options[key])}"
+        for channel in agent.channels:
+            lines.extend(
+                (
+                    "",
+                    "[[agent.channel]]",
+                    f"kind = {_toml_value(channel.kind)}",
+                )
             )
+            for key in sorted(channel.options):
+                lines.append(f"{_toml_key(key)} = {_toml_value(channel.options[key])}")
         for runtime in agent.runtimes:
             lines.extend(
                 (

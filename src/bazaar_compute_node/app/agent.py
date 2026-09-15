@@ -115,7 +115,7 @@ class AgentApplication:
             ChannelContext(
                 agent_id=self.agent_id,
                 attachments=self._attachment_materializer,
-                options=dict(configuration.channel.options),
+                options=dict(configuration.channels[0].options),
                 workspace=self.workspace_path,
                 translator=self.translator,
                 timer_wheel=self.timer_wheel,

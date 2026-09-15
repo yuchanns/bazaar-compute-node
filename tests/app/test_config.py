@@ -18,17 +18,17 @@ LEGACY_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 FALLBACK_AGENT_ID = "0198d4e7-2a28-7448-8228-388be1bf70b7"
 
 
-def test_empty_legacy_config_is_upgraded_to_zero_agent_v3(tmp_path: Path) -> None:
+def test_empty_legacy_config_is_upgraded_to_zero_agent_v4(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     configuration = load_node_configuration(config_path)
 
-    assert configuration.version == "3"
+    assert configuration.version == "4"
     assert configuration.agents == ()
     assert configuration.lang is None
     assert configuration.version_check is True
     assert tomllib.loads(config_path.read_text(encoding="utf-8")) == {
-        "version": "3",
+        "version": "4",
         "node": {"storage": "sqlite", "audit": "logging", "version_check": True},
     }
     if os.name != "nt":
@@ -86,8 +86,9 @@ include = ["CUSTOM_CA"]
     agent = configuration.agents[0]
     assert agent.id == LEGACY_AGENT_ID
     assert agent.name == "default"
-    assert agent.channel.kind == "wecom"
-    assert agent.channel.options == {
+    (channel,) = agent.channels
+    assert channel.kind == "wecom"
+    assert channel.options == {
         "bot_id": "wecom-bot",
         "secret_env": "WECOM_SECRET",
         "websocket_url": "wss://wecom.example.test",
@@ -106,11 +107,19 @@ include = ["CUSTOM_CA"]
     text = config_path.read_text(encoding="utf-8")
     assert '[agent.runtime.env]\nCUSTOM_CA = "CUSTOM_CA"' in text
     written = tomllib.loads(text)
-    assert written["version"] == "3"
+    assert written["version"] == "4"
     assert written["agent"][0]["id"] == LEGACY_AGENT_ID
     assert written["agent"][0]["name"] == "default"
     assert written["agent"][0]["idle_timeout"] == 12.5
-    assert written["agent"][0]["channel"]["kind"] == "wecom"
+    # the v3 -> v4 step wraps the single channel table into the channel array
+    assert written["agent"][0]["channel"] == [
+        {
+            "kind": "wecom",
+            "bot_id": "wecom-bot",
+            "secret_env": "WECOM_SECRET",
+            "websocket_url": "wss://wecom.example.test",
+        }
+    ]
     assert written["agent"][0]["runtime"] == [
         {
             "kind": "codex",
@@ -142,8 +151,9 @@ def test_telegram_legacy_config_uses_uuid7_and_default_token_env(
 
     agent = configuration.agents[0]
     assert agent.id == FALLBACK_AGENT_ID
-    assert agent.channel.kind == "telegram"
-    assert agent.channel.options == {"token_env": "BCN_TELEGRAM_BOT_TOKEN"}
+    (channel,) = agent.channels
+    assert channel.kind == "telegram"
+    assert channel.options == {"token_env": "BCN_TELEGRAM_BOT_TOKEN"}
 
 
 def test_v2_configuration_is_migrated_to_a_single_element_runtime_array(
@@ -178,7 +188,7 @@ provider_option = "kept"
 
     configuration = load_node_configuration(config_path)
 
-    assert configuration.version == "3"
+    assert configuration.version == "4"
     (agent,) = configuration.agents
     (runtime,) = agent.runtimes
     assert runtime.kind == "codex"
@@ -191,18 +201,70 @@ provider_option = "kept"
     # non-standard runtime keys still reach the provider options untouched
     assert runtime.options == {"provider_option": "kept"}
     written = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert written["version"] == "3"
+    assert written["version"] == "4"
     assert written["agent"][0]["runtime"][0]["env"] == {
         "CODEX_HOME": "BCN_CODEX_HOME_WORK",
         "CUSTOM_CA": "CUSTOM_CA",
     }
 
 
-def test_v3_configuration_round_trips_multiple_runtimes(tmp_path: Path) -> None:
+def test_v3_configuration_is_migrated_to_a_single_element_channel_array(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
 version = "3"
+
+[node]
+storage = "sqlite"
+audit = "logging"
+
+[[agent]]
+id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
+name = "CloudStrife"
+idle_timeout = 60
+
+[agent.channel]
+kind = "telegram"
+token_env = "TELEGRAM_TOKEN"
+
+[[agent.runtime]]
+kind = "codex"
+model = "gpt-5.6-luna"
+
+[agent.runtime.env]
+CODEX_HOME = "BCN_CODEX_HOME_WORK"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration(config_path)
+
+    assert configuration.version == "4"
+    (agent,) = configuration.agents
+    (channel,) = agent.channels
+    assert channel.kind == "telegram"
+    assert channel.options == {"token_env": "TELEGRAM_TOKEN"}
+    # everything beside the channel keeps its v3 shape
+    assert agent.idle_timeout_seconds == 60
+    (runtime,) = agent.runtimes
+    assert runtime.model == "gpt-5.6-luna"
+    assert runtime.env == {"CODEX_HOME": "BCN_CODEX_HOME_WORK"}
+    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert written["version"] == "4"
+    assert written["agent"][0]["channel"] == [
+        {"kind": "telegram", "token_env": "TELEGRAM_TOKEN"}
+    ]
+
+
+def test_v4_configuration_round_trips_multiple_channels_and_runtimes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "4"
 
 [node]
 storage = "sqlite"
@@ -214,9 +276,17 @@ id = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 name = "CloudStrife"
 idle_timeout = 60
 
-[agent.channel]
+[[agent.channel]]
 kind = "telegram"
 token_env = "TELEGRAM_TOKEN"
+
+[[agent.channel]]
+kind = "telegram"
+token_env = "TELEGRAM_TOKEN_SECOND"
+
+[[agent.channel]]
+kind = "lark"
+app_id = "cli_a1"
 
 [[agent.runtime]]
 kind = "claudecode"
@@ -239,7 +309,7 @@ id = "0198d4e7-2a28-7448-8228-388be1bf70b7"
 name = "Tifa"
 mode = "dangerous_individual"
 
-[agent.channel]
+[[agent.channel]]
 kind = "wecom"
 secret_env = "WECOM_SECRET"
 
@@ -256,6 +326,14 @@ kind = "codex"
     assert first == second
     assert first.lang == "zh-CN"
     assert [agent.name for agent in first.agents] == ["CloudStrife", "Tifa"]
+    # the same kind may appear more than once, each with its own options
+    assert [channel.kind for channel in first.agents[0].channels] == [
+        "telegram",
+        "telegram",
+        "lark",
+    ]
+    assert first.agents[0].channels[1].options == {"token_env": "TELEGRAM_TOKEN_SECOND"}
+    assert first.agents[0].channels[2].options == {"app_id": "cli_a1"}
     assert [runtime.kind for runtime in first.agents[0].runtimes] == [
         "claudecode",
         "codex",
@@ -283,19 +361,19 @@ kind = "codex"
     assert load_node_configuration(round_trip_path) == first
 
 
-def test_v3_lang_is_kept_verbatim_and_must_be_non_empty(tmp_path: Path) -> None:
+def test_v4_lang_is_kept_verbatim_and_must_be_non_empty(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     # a lang the node does not ship is still preserved
     config_path.write_text(
-        'version = "3"\n\n[node]\nlang = "ja"\n',
+        'version = "4"\n\n[node]\nlang = "ja"\n',
         encoding="utf-8",
     )
     assert load_node_configuration(config_path).lang == "ja"
 
     # an empty lang is refused
     config_path.write_text(
-        'version = "3"\n\n[node]\nlang = ""\n',
+        'version = "4"\n\n[node]\nlang = ""\n',
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="node.lang must be non-empty text"):
@@ -306,7 +384,7 @@ def test_future_configuration_version_is_rejected_without_rewrite(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    original = 'version = "4"\n'
+    original = 'version = "5"\n'
     config_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="unsupported configuration version"):
@@ -335,17 +413,17 @@ def test_failed_atomic_replace_preserves_legacy_configuration(
     assert not tuple(tmp_path.glob(".config.toml.*.tmp"))
 
 
-def test_v3_rejects_invalid_agent_tables() -> None:
+def test_v4_rejects_invalid_agent_tables() -> None:
     def agent(**overrides: object) -> dict[str, object]:
         return {
             "id": LEGACY_AGENT_ID,
             "name": "default",
-            "channel": {"kind": "telegram"},
+            "channel": [{"kind": "telegram"}],
             "runtime": [{"kind": "codex"}],
         } | overrides
 
     def parse(*agents: dict[str, object]) -> None:
-        config_module._parse_v3_configuration({"version": "3", "agent": list(agents)})
+        config_module._parse_v4_configuration({"version": "4", "agent": list(agents)})
 
     # agent ids must be unique
     with pytest.raises(ConfigurationError, match="agent.id values must be unique"):
@@ -362,7 +440,22 @@ def test_v3_rejects_invalid_agent_tables() -> None:
     # environment names must be valid identifiers
     for value in ("bad-name", "", "1INVALID"):
         with pytest.raises(ConfigurationError, match="agent.channel.token_env"):
-            parse(agent(channel={"kind": "telegram", "token_env": value}))
+            parse(agent(channel=[{"kind": "telegram", "token_env": value}]))
+
+    # the channel array carries every channel of one agent
+    with pytest.raises(
+        ConfigurationError, match=r"agent #1\.channel must be an array of TOML tables"
+    ):
+        parse(agent(channel={"kind": "telegram"}))
+
+    # an agent without any channel cannot be reached
+    with pytest.raises(
+        ConfigurationError, match="agent.channel must define at least one channel"
+    ):
+        parse(agent(channel=[]))
+
+    with pytest.raises(ConfigurationError, match=r"agent #1\.channel #2\.kind"):
+        parse(agent(channel=[{"kind": "telegram"}, {"token_env": "SECOND"}]))
 
     # a mode names one of the execution models bcn knows
     with pytest.raises(ConfigurationError, match=r"agent #1\.mode"):
@@ -413,11 +506,11 @@ def test_v3_rejects_invalid_agent_tables() -> None:
         parse(agent(runtime=[{"kind": "codex", "env": ["CODEX_HOME"]}]))
 
 
-def test_v3_version_check_can_be_turned_off(tmp_path: Path) -> None:
+def test_v4_version_check_can_be_turned_off(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-version = "3"
+version = "4"
 
 [node]
 storage = "sqlite"
@@ -440,11 +533,11 @@ version_check = false
     assert load_node_configuration(round_trip_path) == configuration
 
 
-def test_v3_version_check_must_be_a_boolean(tmp_path: Path) -> None:
+def test_v4_version_check_must_be_a_boolean(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-version = "3"
+version = "4"
 
 [node]
 storage = "sqlite"

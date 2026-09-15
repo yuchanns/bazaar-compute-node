@@ -87,7 +87,7 @@ def _upgrade_node(tmp_path: Path) -> tuple[NodeApplication, TestChannel, TestRun
                 AgentConfiguration(
                     id=AGENT_ID,
                     name="Test Agent",
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(RuntimeConfiguration(kind="test"),),
                 ),
             ),

@@ -97,7 +97,7 @@ def _make_node(
             AgentConfiguration(
                 id=agent_id,
                 name=AGENT_NAMES[agent_id],
-                channel=ChannelConfiguration(kind="test"),
+                channels=(ChannelConfiguration(kind="test"),),
                 runtimes=(RuntimeConfiguration(kind="test", env=env or {}),),
             )
             for agent_id in (AGENT_A_ID, AGENT_B_ID)

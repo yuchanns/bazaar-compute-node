@@ -50,7 +50,7 @@ def make_configuration(mode: Mode = Mode.SESSION) -> NodeConfiguration:
             AgentConfiguration(
                 id=AGENT_ID,
                 name="Test Agent",
-                channel=ChannelConfiguration(kind="test"),
+                channels=(ChannelConfiguration(kind="test"),),
                 runtimes=(RuntimeConfiguration(kind="test"),),
                 mode=mode,
             ),

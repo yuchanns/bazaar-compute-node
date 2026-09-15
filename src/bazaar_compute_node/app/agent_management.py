@@ -101,7 +101,7 @@ def _list_agents(configuration: NodeConfiguration) -> int:
     for agent in configuration.agents:
         print(
             f"id={agent.id} name={agent.name} "
-            f"channel={agent.channel.kind} runtime={_runtime_kinds(agent)}",
+            f"channel={_channel_kinds(agent)} runtime={_runtime_kinds(agent)}",
             flush=True,
         )
     return 0
@@ -123,9 +123,11 @@ def _add_agent(
         agent = AgentConfiguration(
             id=str(uuid7()),
             name=args.name,
-            channel=ChannelConfiguration(
-                kind=args.channel,
-                options=MappingProxyType(options.channel),
+            channels=(
+                ChannelConfiguration(
+                    kind=args.channel,
+                    options=MappingProxyType(options.channel),
+                ),
             ),
             runtimes=(_runtime_configuration(args.runtime, options, parser),),
             idle_timeout_seconds=idle_timeout,
@@ -139,7 +141,7 @@ def _add_agent(
         parser.error(str(error))
     print(
         f"Agent added id={agent.id} name={agent.name} "
-        f"channel={agent.channel.kind} runtime={_runtime_kinds(agent)}",
+        f"channel={_channel_kinds(agent)} runtime={_runtime_kinds(agent)}",
         flush=True,
     )
     print("Run `bcn restart` to apply.", flush=True)
@@ -204,6 +206,10 @@ def run_agent_command(
             return _remove_agent(args, parser, configuration, config_path)
         case unsupported:
             raise AssertionError(f"unsupported Agent command: {unsupported}")
+
+
+def _channel_kinds(agent: AgentConfiguration) -> str:
+    return ",".join(channel.kind for channel in agent.channels)
 
 
 def _runtime_kinds(agent: AgentConfiguration) -> str:

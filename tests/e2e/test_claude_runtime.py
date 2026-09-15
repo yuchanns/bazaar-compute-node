@@ -111,7 +111,7 @@ def _node(
                 AgentConfiguration(
                     id=agent_id,
                     name=agent_name,
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="claudecode",
@@ -930,7 +930,7 @@ def _multi_runtime_node(
                 AgentConfiguration(
                     id=agent_id,
                     name="Claude Multi Runtime E2E",
-                    channel=ChannelConfiguration(kind="test"),
+                    channels=(ChannelConfiguration(kind="test"),),
                     runtimes=(
                         RuntimeConfiguration(
                             kind="claudecode",
