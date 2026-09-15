@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import cast
 
 import pytest
@@ -366,3 +367,104 @@ async def test_channels_refuses_a_member_that_does_not_know_its_bot() -> None:
 def test_channels_needs_at_least_one_member() -> None:
     with pytest.raises(ValueError, match="at least one channel"):
         Channels(())
+
+
+def _inbound(kind: str, message_id: str) -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
+        seq=1,
+        message_id=message_id,
+        thread_id=f"thread-{kind}",
+        channel_session_id=f"channel-{kind}",
+        channel=kind,
+        provider_thread_id=f"{kind}:thread",
+        provider_message_id=message_id,
+        received_at_ms=1,
+        sender=SenderIdentity(id="sender-id"),
+        target=f"dm:channel-{kind}",
+        body="hello",
+    )
+
+
+class _BrokenStreamChannel(TestChannel):
+    async def receive(self) -> AsyncIterator[Message]:
+        for message in ():
+            yield message
+        raise ConnectionResetError("long poll dropped")
+
+
+@pytest.mark.asyncio
+async def test_channels_merges_every_member_into_one_stream() -> None:
+    first = TestChannel()
+    second = _OtherKindChannel()
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await first.inject(_inbound("test", "from-first"))
+        await second.inject(_inbound("other", "from-second"))
+        await first.inject(_inbound("test", "from-first-again"))
+        received = {(await anext(stream)).message_id for _ in range(3)}
+        assert received == {"from-first", "from-second", "from-first-again"}
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_reading_the_others_when_one_member_floods() -> None:
+    flooding = TestChannel()
+    quiet = _OtherKindChannel()
+    channels = Channels((flooding, quiet))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        # nobody is draining yet: the flood's reader holds one message and waits
+        for number in range(100):
+            await flooding.inject(_inbound("test", f"flood-{number}"))
+        await quiet.inject(_inbound("other", "from-quiet"))
+        # the quiet member's message comes through without the flood draining first
+        seen: list[str] = []
+        async with asyncio.timeout(1):
+            while "from-quiet" not in seen:
+                seen.append((await anext(stream)).message_id)
+        assert len(seen) <= 3
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_keeps_going_when_a_member_stream_breaks() -> None:
+    broken = _BrokenStreamChannel()
+    serving = _OtherKindChannel()
+    channels = Channels((broken, serving))
+    await channels.start(timeout=1)
+    try:
+        stream = cast(AsyncGenerator[Message], channels.receive())
+        await serving.inject(_inbound("other", "still-served"))
+        assert (await anext(stream)).message_id == "still-served"
+        # the broken stream is reported next to the member, and the whole is degraded
+        health = channels.health
+        assert health["state"] == "degraded"
+        records = health["channels"]
+        assert isinstance(records, tuple)
+        assert records[0]["receive_error"] == "ConnectionResetError: long poll dropped"
+        assert "receive_error" not in records[1]
+        await stream.aclose()
+    finally:
+        await channels.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_channels_stream_ends_when_every_member_has_stopped() -> None:
+    first = TestChannel()
+    second = _OtherKindChannel()
+    channels = Channels((first, second))
+    await channels.start(timeout=1)
+    stream = cast(AsyncGenerator[Message], channels.receive())
+    await first.inject(_inbound("test", "last-words"))
+    assert (await anext(stream)).message_id == "last-words"
+    await channels.stop(timeout=1)
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)

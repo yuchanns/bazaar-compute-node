@@ -342,6 +342,8 @@ class Channels(IChannel):
         # members that did not come up, by position, with what stopped them
         self._failures: dict[int, str] = {}
         self._bots: dict[int, tuple[str, str]] = {}
+        # members whose inbound stream broke, by position, with what broke it
+        self._reader_failures: dict[int, str] = {}
 
     @property
     def members(self) -> tuple[IChannel, ...]:
@@ -363,12 +365,18 @@ class Channels(IChannel):
             }
             if index in self._failures:
                 record["startup_error"] = self._failures[index]
+            if index in self._reader_failures:
+                record["receive_error"] = self._reader_failures[index]
             records.append(record)
         # a member that is up but not well drags the whole down with it, as
         # it did when it was the only channel
         unwell = any(member.health.get("state") != "ready" for _, member in self._up())
         return {
-            "state": "degraded" if self._failures or unwell else "ready",
+            "state": (
+                "degraded"
+                if self._failures or self._reader_failures or unwell
+                else "ready"
+            ),
             "channels": tuple(records),
         }
 
@@ -437,9 +445,52 @@ class Channels(IChannel):
             raise RuntimeError("channel stop failed: " + "; ".join(failed))
 
     async def receive(self) -> AsyncIterator[Message[InboundAttachment]]:
-        # one reader until the members are merged into a single stream
-        async for message in self._first().receive():
-            yield message
+        """Merge every member's inbound into one stream, first come first out.
+
+        Each member is pulled one message at a time, the way a single channel
+        always was, so one that stalls, floods or breaks holds back only
+        itself; the stream ends when every member's has.
+        """
+
+        self._reader_failures.clear()
+        streams = {index: member.receive() for index, member in self._up()}
+        pending: dict[asyncio.Future[Message[InboundAttachment]], int] = {}
+
+        def pull(index: int) -> None:
+            future = asyncio.ensure_future(anext(streams[index]))
+            # a break shows in health as soon as it happens, not once the
+            # consumer next comes round for a message
+            future.add_done_callback(lambda done: self._note_broken_stream(index, done))
+            pending[future] = index
+
+        for index in streams:
+            pull(index)
+        try:
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for future in done:
+                    index = pending.pop(future)
+                    # a member whose stream ended or broke is not pulled again
+                    if future.exception() is not None:
+                        continue
+                    pull(index)
+                    yield future.result()
+        finally:
+            for future in pending:
+                future.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def _note_broken_stream(
+        self, index: int, future: asyncio.Future[Message[InboundAttachment]]
+    ) -> None:
+        if future.cancelled():
+            return
+        error = future.exception()
+        if error is None or isinstance(error, StopAsyncIteration):
+            return
+        self._reader_failures[index] = f"{type(error).__name__}: {error}"
 
     def accept_turn_event(
         self,
