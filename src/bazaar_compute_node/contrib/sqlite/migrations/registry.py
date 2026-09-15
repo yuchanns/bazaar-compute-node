@@ -38,6 +38,8 @@ from .v24_persist_sender_display_name import SENDER_DISPLAY_NAME_MIGRATION
 from .v25_rename_sessions_to_threads import THREAD_RENAME_MIGRATION
 from .v26_remove_handoff_messages import HANDOFF_MESSAGE_REMOVAL_MIGRATION
 from .v27_name_dms_by_the_peer_id import NAME_DM_BY_PEER_ID_MIGRATION
+from .v28_channel_session_identity import CHANNEL_SESSION_IDENTITY_MIGRATION
+from .v29_backfill_channel_identity import BACKFILL_CHANNEL_IDENTITY_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -87,6 +89,8 @@ MIGRATIONS = _migration_ledger(
     THREAD_RENAME_MIGRATION,
     HANDOFF_MESSAGE_REMOVAL_MIGRATION,
     NAME_DM_BY_PEER_ID_MIGRATION,
+    CHANNEL_SESSION_IDENTITY_MIGRATION,
+    BACKFILL_CHANNEL_IDENTITY_MIGRATION,
 )
 
 

@@ -37,12 +37,14 @@ class SqliteRepository(
 
         channel_session = await self.find_channel_session(
             channel=channel,
+            channel_identity=message.channel_identity,
             provider_thread_id=provider_thread_id,
         )
         if channel_session is None:
             channel_session = ChannelSession(
                 id=message.channel_session_id,
                 channel=channel,
+                channel_identity=message.channel_identity,
                 provider_thread_id=provider_thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,

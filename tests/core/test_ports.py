@@ -29,16 +29,16 @@ from bazaar_compute_node.core.runtime import (
 )
 
 
-def test_channel_identity_requires_one_safe_provider_field() -> None:
+def test_channel_identity_requires_safe_provider_fields() -> None:
     assert ChannelIdentity(id="provider-id") == ChannelIdentity(id="provider-id")
-    assert ChannelIdentity(name="Provider Name").name == "Provider Name"
+    assert ChannelIdentity(id="provider-id", name="Provider Name").name == (
+        "Provider Name"
+    )
 
-    with pytest.raises(ValueError, match="requires an id or name"):
-        ChannelIdentity()
     with pytest.raises(ValueError, match="id must be non-empty"):
         ChannelIdentity(id="")
     with pytest.raises(ValueError, match="name must not contain line breaks"):
-        ChannelIdentity(name="Provider\nName")
+        ChannelIdentity(id="provider-id", name="Provider\nName")
 
 
 @pytest.mark.asyncio

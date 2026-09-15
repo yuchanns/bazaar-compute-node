@@ -14,6 +14,7 @@ from bazaar_compute_node.contrib.wecom.channel import (
     WeComChannel,
     _Delivery,
 )
+from bazaar_compute_node.contrib.wecom.identity import parse_provider_thread_id
 from bazaar_compute_node.contrib.wecom.outbound import (
     CHUNK_SIZE,
     AttachmentReader,
@@ -61,6 +62,103 @@ def test_wecom_exposes_provider_id_without_display_name(tmp_path: Path) -> None:
     )
 
     assert channel.get_identity() == ChannelIdentity(id="bot-id")
+
+
+def test_wecom_addresses_a_conversation_by_the_bot_it_lives_on(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    def make_channel(bot_id: str) -> WeComChannel:
+        return WeComChannel(
+            ChannelContext(
+                agent_id="agent-test",
+                attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+                options={},
+                workspace=lambda: tmp_path,
+            ),
+            bot_id=bot_id,
+            secret="secret",
+            websocket_url="wss://example.invalid",
+        )
+
+    first = make_channel("bot-a")
+    second = make_channel("bot-b")
+    sender = SenderIdentity(id="user-1")
+
+    # two bots in one company keep separate conversations with the same peer
+    on_first = first.dm_address(sender, sender_kind=SenderKind.HUMAN)
+    on_second = second.dm_address(sender, sender_kind=SenderKind.HUMAN)
+    assert on_first is not None and on_second is not None
+    assert on_first.provider_thread_id == "wecom:bot-a:user-1"
+    assert on_second.provider_thread_id == "wecom:bot-b:user-1"
+    assert on_first.channel_session_id != on_second.channel_session_id
+    assert on_first.thread_id != on_second.thread_id
+    # the WeCom chat id is what the bot sends to, and it comes back out whole
+    assert parse_provider_thread_id(on_first.provider_thread_id) == (
+        "bot-a",
+        "user-1",
+    )
+    assert parse_provider_thread_id("wecom:bot-a:wr:with:colons") == (
+        "bot-a",
+        "wr:with:colons",
+    )
+    with pytest.raises(ValueError, match="invalid format"):
+        parse_provider_thread_id("user-1")
+
+    # a conversation written before bots were told apart is named by this bot
+    assert first.backfill_provider_thread_id("wrk-group") == "wecom:bot-a:wrk-group"
+
+
+@pytest.mark.asyncio
+async def test_wecom_bots_in_one_group_each_keep_their_own_copy_of_a_message(
+    tmp_path: Path,
+) -> None:
+    async def referenced_paths() -> set[str]:
+        return set()
+
+    def make_channel(bot_id: str) -> WeComChannel:
+        return WeComChannel(
+            ChannelContext(
+                agent_id="agent-test",
+                attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
+                options={},
+                workspace=lambda: tmp_path,
+            ),
+            bot_id=bot_id,
+            secret="secret",
+            websocket_url="wss://example.invalid",
+        )
+
+    # both bots sit in the same group and WeCom hands each the same callback
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "inbound-request-id"},
+        "body": {
+            "msgid": "message-1",
+            "create_time": 123,
+            "from": {"userid": "user-id"},
+            "chattype": "group",
+            "chatid": "wrk-group",
+            "msgtype": "text",
+            "text": {"content": "hello"},
+        },
+    }
+    received: list[Message] = []
+    for bot_id in ("bot-a", "bot-b"):
+        channel = make_channel(bot_id)
+        await channel._receive_message(
+            {**frame, "body": {**frame["body"], "aibotid": bot_id}}
+        )
+        inbound = channel._inbound.get_nowait()
+        assert isinstance(inbound, Message)
+        received.append(inbound)
+    on_a, on_b = received
+    # two conversations, two messages: neither bot's copy shadows the other's
+    assert on_a.channel_session_id != on_b.channel_session_id
+    assert on_a.message_id != on_b.message_id
+    assert on_a.provider_message_id == on_b.provider_message_id == "message-1"
 
 
 def test_wecom_markdown_split() -> None:
@@ -196,7 +294,7 @@ async def test_wecom_approval_card_event_updates_card_and_wakes_request(
             ChannelApprovalRequest(
                 approval=approval,
                 target_kind=ChannelTargetKind.DM,
-                provider_thread_id="user-id",
+                provider_thread_id="wecom:bot-id:user-id",
             ),
             timeout=1,
         )
@@ -335,7 +433,7 @@ async def test_wecom_slow_card_update_does_not_block_another_session(
                         details={"reason": "x" * (16 * 1024 * 1024)},
                     ),
                     target_kind=ChannelTargetKind.DM,
-                    provider_thread_id="user-id",
+                    provider_thread_id="wecom:bot-id:user-id",
                 ),
                 timeout=5,
             )
@@ -439,7 +537,7 @@ async def test_wecom_approval_cancellation_cleans_pending_request(
             created_at_ms=1,
         ),
         target_kind=ChannelTargetKind.GROUP,
-        provider_thread_id="group-id",
+        provider_thread_id="wecom:bot-id:group-id",
     )
     approval_task: asyncio.Task[ApprovalResult] | None = None
     try:
@@ -517,7 +615,7 @@ async def test_wecom_stop_rejects_pending_approval(tmp_path: Path) -> None:
                         created_at_ms=1,
                     ),
                     target_kind=ChannelTargetKind.DM,
-                    provider_thread_id="user-id",
+                    provider_thread_id="wecom:bot-id:user-id",
                 ),
                 timeout=1,
             )
@@ -836,7 +934,7 @@ async def test_wecom_send_lock_timeout_does_not_block_later_delivery(
         body="hello",
         attachments=(),
         target_kind=ChannelTargetKind.DM,
-        provider_thread_id="user-id",
+        provider_thread_id="wecom:bot-id:user-id",
     )
     await channel._send_lock.acquire()
 

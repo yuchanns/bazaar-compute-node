@@ -30,28 +30,67 @@ class SessionOperations(RepositoryBase):
         self,
         *,
         channel: str,
+        channel_identity: str | None,
         provider_thread_id: str,
     ) -> ChannelSession | None:
         row = await self._fetch_one_or_conflict(
-            "SELECT id, channel, provider_thread_id, target_kind, following, "
-            "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
-            "target_display_name, target_handle, target_handle_key, "
-            "provider_identity_ref_json FROM channel_sessions "
+            "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
+            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "last_outbound_at_ms, target_display_name, target_handle, "
+            "target_handle_key, provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
-            "AND provider_thread_id = ? ORDER BY rowid",
-            (channel, provider_thread_id),
+            "AND channel_identity IS ? AND provider_thread_id = ? ORDER BY rowid",
+            (channel, channel_identity, provider_thread_id),
             "channel provider identity",
         )
         return channel_session_from_row(row) if row is not None else None
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]:
+        rows = await self.fetchall(
+            "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
+            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "last_outbound_at_ms, target_display_name, target_handle, "
+            "target_handle_key, provider_identity_ref_json FROM channel_sessions "
+            "WHERE agent_id = /*agent_id*/? AND channel = ? "
+            "AND channel_identity IS NULL ORDER BY rowid",
+            (channel,),
+        )
+        return tuple(channel_session_from_row(row) for row in rows)
+
+    async def backfill_channel_identity(
+        self,
+        channel_session_id: str,
+        *,
+        channel_identity: str,
+        provider_thread_id: str,
+    ) -> None:
+        session = await self.get_channel_session(channel_session_id)
+        if session is None or session.channel_identity is not None:
+            return
+        await self.execute(
+            "UPDATE channel_sessions SET channel_identity = ?, provider_thread_id = ? "
+            "WHERE agent_id = /*agent_id*/? AND id = ?",
+            (channel_identity, provider_thread_id, channel_session_id),
+        )
+        # a message is found again by the thread it arrived on, so the ones
+        # already written move with their conversation
+        await self.execute(
+            "UPDATE messages SET provider_thread_id = ? "
+            "WHERE agent_id = /*agent_id*/? AND channel_session_id = ? "
+            "AND provider_thread_id = ?",
+            (provider_thread_id, channel_session_id, session.provider_thread_id),
+        )
 
     async def get_channel_session(
         self, channel_session_id: str
     ) -> ChannelSession | None:
         row = await self.fetchone(
-            "SELECT id, channel, provider_thread_id, target_kind, following, "
-            "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms, "
-            "target_display_name, target_handle, target_handle_key, "
-            "provider_identity_ref_json FROM channel_sessions "
+            "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
+            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "last_outbound_at_ms, target_display_name, target_handle, "
+            "target_handle_key, provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND id = ?",
             (channel_session_id,),
         )
@@ -142,6 +181,7 @@ class SessionOperations(RepositoryBase):
         if existing is None:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
+                channel_identity=session.channel_identity,
                 provider_thread_id=session.provider_thread_id,
             )
             if duplicate is not None:
@@ -150,15 +190,16 @@ class SessionOperations(RepositoryBase):
                 )
             await self.execute(
                 "INSERT INTO channel_sessions ("
-                "agent_id, id, channel, provider_thread_id, target_kind, following, "
-                "provider_identity_ref_json, target_display_name, target_handle, "
-                "target_handle_key, created_at_ms, updated_at_ms, "
-                "last_inbound_at_ms, last_outbound_at_ms"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_id, id, channel, channel_identity, provider_thread_id, "
+                "target_kind, following, provider_identity_ref_json, "
+                "target_display_name, target_handle, target_handle_key, "
+                "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._require_agent_id(),
                     session.id,
                     session.channel,
+                    session.channel_identity,
                     session.provider_thread_id,
                     session.target_kind.value,
                     int(session.following),

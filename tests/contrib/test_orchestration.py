@@ -54,6 +54,7 @@ from bazaar_compute_node.core.audit import AuditEvent, AuditRecorder, ErrorKind
 from bazaar_compute_node.core.channel import (
     ChannelContext,
     ChannelDeliveryReceipt,
+    ChannelIdentity,
     ChannelSendRequest,
     IChannel,
 )
@@ -67,6 +68,7 @@ from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ChannelSession,
     ChannelTargetKind,
     ChannelTargetPresentation,
     ContentDelta,
@@ -5003,3 +5005,87 @@ async def test_a_handle_two_conversations_answer_to_stays_an_error() -> None:
             )
     finally:
         await orchestrator.stop(timeout=1)
+
+
+def _test_runtime(context: RuntimeCommandContext) -> IRuntime:
+    del context
+    return TestRuntime()
+
+
+class _KnownBotChannel(TestChannel):
+    """A channel that knows its bot before it starts, the way WeCom does."""
+
+    def get_identity(self) -> ChannelIdentity | None:
+        return self.identity
+
+
+@pytest.mark.asyncio
+async def test_agent_backfills_conversations_written_before_bots_were_told_apart(
+    tmp_path: Path,
+) -> None:
+    channel = _KnownBotChannel()
+    channel.identity = ChannelIdentity(id="bot-1")
+    storage = MemoryStorage()
+    audit = RecordingAudit()
+    scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
+    await storage.start(timeout=1)
+    # a conversation from before the column existed, and one of another kind
+    for session in (
+        ChannelSession(
+            id="channel-legacy",
+            channel="test",
+            provider_thread_id="thread-legacy",
+            created_at_ms=1,
+            updated_at_ms=1,
+        ),
+        ChannelSession(
+            id="channel-elsewhere",
+            channel="other",
+            provider_thread_id="thread-elsewhere",
+            created_at_ms=1,
+            updated_at_ms=1,
+        ),
+    ):
+        await scope.save_channel_session(session)
+    node = NodeApplication(
+        configuration=NodeConfiguration(
+            version_check=False,
+            storage="sqlite",
+            audit="test",
+            agents=(
+                AgentConfiguration(
+                    id=ACCEPTANCE_AGENT_ID,
+                    name="Test Agent",
+                    channels=(ChannelConfiguration(kind="test"),),
+                    runtimes=(RuntimeConfiguration(kind="test"),),
+                ),
+            ),
+        ),
+        shared_factories=SharedAdapterFactories(
+            storage=lambda: cast(IStorage, storage),
+            audit=lambda: audit,
+        ),
+        registry=_AcceptanceRegistry(channel=channel, runtime=_test_runtime),
+        endpoint_path=tmp_path / "backfill.sock",
+        timeout_budget=make_budget(),
+    )
+    await node.start()
+    try:
+        assert node.agents[ACCEPTANCE_AGENT_ID].started is True
+        # the bot takes the rows of its own kind, and only those
+        assert storage.channel_sessions["channel-legacy"].channel_identity == "bot-1"
+        assert storage.channel_sessions["channel-elsewhere"].channel_identity is None
+        # its next inbound lands on the claimed conversation instead of a new one
+        inbound = replace(
+            make_message(session_id="fresh", seq=1),
+            channel_identity="bot-1",
+            provider_thread_id="thread-legacy",
+        )
+        turn = await node.agents[ACCEPTANCE_AGENT_ID].orchestrator.handle_inbound(
+            inbound
+        )
+        assert turn is not None
+        assert turn.state is RuntimeTurnState.COMPLETED
+        assert "channel-fresh" not in storage.channel_sessions
+    finally:
+        await node.stop()

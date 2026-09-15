@@ -691,7 +691,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 27
+        assert schema_version["version"] == 29
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1217,7 +1217,7 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 27
+        assert schema_version["version"] == 29
     finally:
         await database.stop(timeout=2)
 
@@ -1446,7 +1446,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 27
+        assert schema_version["version"] == 29
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1555,7 +1555,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 27
+        assert schema_version["version"] == 29
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
@@ -2592,3 +2592,170 @@ async def test_sqlite_scheduler_survives_a_failed_cycle() -> None:
 async def _never_published(agent_id: str, message: Message) -> bool:
     del agent_id, message
     return True
+
+
+@pytest.mark.asyncio
+async def test_sqlite_channel_session_identity_is_claimed_once_and_kept_apart() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        scope = database.scope("agent-1", "Test Agent")
+        # a conversation written before bots were told apart carries no identity
+        legacy = ChannelSession(
+            id="channel-legacy",
+            channel="wecom",
+            provider_thread_id="wrk-group",
+            created_at_ms=1,
+            updated_at_ms=1,
+            target_kind=ChannelTargetKind.GROUP,
+        )
+        await scope.save_channel_session(legacy)
+        await scope.save_thread(
+            Thread(
+                id="thread-legacy",
+                channel_session_id=legacy.id,
+                workspace_id="agent-1",
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+        )
+        spoken = await scope.save_message(
+            Message(
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id="message-legacy",
+                thread_id="thread-legacy",
+                channel_session_id=legacy.id,
+                channel="wecom",
+                provider_thread_id="wrk-group",
+                provider_message_id="provider-legacy",
+                received_at_ms=1,
+                sender=SenderIdentity(id="peer"),
+                target="group:channel-legacy",
+                target_kind=ChannelTargetKind.GROUP,
+                body="hello",
+            )
+        )
+        assert await scope.list_channel_sessions_without_identity("wecom") == (legacy,)
+        assert await scope.list_channel_sessions_without_identity("telegram") == ()
+
+        await scope.backfill_channel_identity(
+            legacy.id,
+            channel_identity="bot-a",
+            provider_thread_id="wecom:bot-a:wrk-group",
+        )
+        claimed = await scope.get_channel_session(legacy.id)
+        assert claimed is not None
+        assert claimed.channel_identity == "bot-a"
+        assert claimed.provider_thread_id == "wecom:bot-a:wrk-group"
+        # what was already said moved with the conversation, so a replay of it
+        # is still recognised
+        assert await scope.find_message(
+            "wecom",
+            "wecom:bot-a:wrk-group",
+            "provider-legacy",
+            direction=MessageDirection.INBOUND,
+        ) == replace(spoken, provider_thread_id="wecom:bot-a:wrk-group")
+        assert await scope.list_channel_sessions_without_identity("wecom") == ()
+        # the next inbound on that bot finds the very same row
+        assert (
+            await scope.find_channel_session(
+                channel="wecom",
+                channel_identity="bot-a",
+                provider_thread_id="wecom:bot-a:wrk-group",
+            )
+            == claimed
+        )
+
+        # a claim is one-shot: a second bot cannot take the row over
+        await scope.backfill_channel_identity(
+            legacy.id,
+            channel_identity="bot-b",
+            provider_thread_id="wecom:bot-b:wrk-group",
+        )
+        assert await scope.get_channel_session(legacy.id) == claimed
+
+        # the other bot keeps its own conversation with the same peer
+        other = ChannelSession(
+            id="channel-other",
+            channel="wecom",
+            channel_identity="bot-b",
+            provider_thread_id="wecom:bot-b:wrk-group",
+            created_at_ms=2,
+            updated_at_ms=2,
+            target_kind=ChannelTargetKind.GROUP,
+        )
+        await scope.save_channel_session(other)
+        assert (
+            await scope.find_channel_session(
+                channel="wecom",
+                channel_identity="bot-b",
+                provider_thread_id="wecom:bot-b:wrk-group",
+            )
+            == other
+        )
+        # the same bot may not open the same conversation twice
+        with pytest.raises(ValueError, match="already bound"):
+            await scope.save_channel_session(replace(other, id="channel-twin"))
+    finally:
+        await database.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_v29_names_the_bot_a_conversation_lives_on() -> None:
+    data_dir = resolve_data_dir()
+    data_dir.mkdir()
+    database_path = data_dir / "bcn.sqlite3"
+
+    async with aiosqlite.connect(database_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        await connection.create_function("bcn_agent_id", 0, lambda: "agent-1")
+        await connection.create_function("bcn_agent_name", 0, lambda: "Agent 1")
+        for migration in MIGRATIONS[:28]:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations "
+                "(version, migration_name, checksum, applied_at_ms, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (migration.version, migration.name, migration.checksum, 1, 0),
+            )
+        await connection.executemany(
+            "INSERT INTO channel_sessions ("
+            "id, channel, provider_thread_id, target_kind, following, "
+            "provider_identity_ref_json, created_at_ms, updated_at_ms, agent_id"
+            ") VALUES (?, ?, ?, 'group', 1, '{}', 1, 1, 'agent-1')",
+            (
+                ("channel-telegram", "telegram", "telegram:8890726934:-100:14223"),
+                ("channel-lark", "lark", "lark:bot:ou_abc:chat:oc_x:thread:om_1"),
+                ("channel-wecom", "wecom", "wrk-group"),
+                ("channel-other", "other", "telegram:1234:-100:1"),
+            ),
+        )
+        await connection.commit()
+
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        async with database.reader() as session, session.transaction():
+            rows = await session.fetchall(
+                "SELECT id, channel_identity, provider_thread_id FROM channel_sessions"
+            )
+        named = {row["id"]: row["channel_identity"] for row in rows}
+        # the kinds that write the bot into the thread id are filled from it
+        assert named["channel-telegram"] == "8890726934"
+        assert named["channel-lark"] == "ou_abc"
+        # a WeCom row only knows its chat, so it waits for the channel to start
+        assert named["channel-wecom"] is None
+        # a thread id that merely looks like telegram's is not read as one
+        assert named["channel-other"] is None
+        assert {row["provider_thread_id"] for row in rows} == {
+            "telegram:8890726934:-100:14223",
+            "lark:bot:ou_abc:chat:oc_x:thread:om_1",
+            "wrk-group",
+            "telegram:1234:-100:1",
+        }
+    finally:
+        await database.stop(timeout=2)

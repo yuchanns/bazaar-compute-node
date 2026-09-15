@@ -28,12 +28,10 @@ from .timerwheel import TimerWheel
 class ChannelIdentity:
     """Provider account identity exposed after Channel startup."""
 
-    id: str | None = None
+    id: str
     name: str | None = None
 
     def __post_init__(self) -> None:
-        if self.id is None and self.name is None:
-            raise ValueError("a channel identity requires an id or name")
         for value, field_name in ((self.id, "id"), (self.name, "name")):
             if value is None:
                 continue
@@ -143,6 +141,7 @@ class DmAddress:
     thread_id: str
     provider_thread_id: str
     delivery_handle: str | None = None
+    channel_identity: str | None = None
 
 
 class IChannel(IAsyncLifecycle, IApproval, Protocol):
@@ -153,6 +152,12 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
     def health(self) -> Mapping[str, object]: ...
 
     def get_identity(self) -> ChannelIdentity | None: ...
+
+    @property
+    def members(self) -> tuple[IChannel, ...]:
+        """The channels this one speaks through; itself unless it is made of several."""
+
+        return (self,)
 
     def receive(self) -> AsyncIterator[Message[InboundAttachment]]: ...
 
@@ -181,6 +186,11 @@ class IChannel(IAsyncLifecycle, IApproval, Protocol):
         """
 
         return None
+
+    def backfill_provider_thread_id(self, provider_thread_id: str) -> str:
+        """Name a conversation written before this channel could tell bots apart."""
+
+        return provider_thread_id
 
     async def send(
         self,
@@ -233,6 +243,7 @@ class Channel(IChannel):
                 message,
                 thread_id=thread_id,
                 channel_session_id=channel_session_id,
+                channel_identity=self._identity_id(),
                 target=f"{message.target_kind.value}:{channel_session_id}",
             )
 
@@ -268,7 +279,11 @@ class Channel(IChannel):
             thread_id=thread_id,
             provider_thread_id=address.provider_thread_id,
             delivery_handle=address.delivery_handle,
+            channel_identity=self._identity_id(),
         )
+
+    def backfill_provider_thread_id(self, provider_thread_id: str) -> str:
+        return self._channel.backfill_provider_thread_id(provider_thread_id)
 
     async def send(
         self,
@@ -291,6 +306,12 @@ class Channel(IChannel):
         timeout: float,
     ) -> ApprovalResult:
         return await self._channel.request_approval(request, timeout=timeout)
+
+    def _identity_id(self) -> str:
+        identity = self._channel.get_identity()
+        if identity is None:
+            raise RuntimeError(f"{self.name} channel has no identity after start")
+        return identity.id
 
     def _local_id(self, kind: str, provider_local_id: str) -> str:
         if not isinstance(provider_local_id, str) or not provider_local_id:

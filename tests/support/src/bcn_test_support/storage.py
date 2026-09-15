@@ -219,6 +219,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             message = cast(Message, existing_message)
         channel_session = await self.find_channel_session(
             channel=channel,
+            channel_identity=message.channel_identity,
             provider_thread_id=provider_thread_id,
         )
         channel_session_created = channel_session is None
@@ -226,6 +227,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             channel_session = ChannelSession(
                 id=message.channel_session_id,
                 channel=channel,
+                channel_identity=message.channel_identity,
                 provider_thread_id=provider_thread_id,
                 created_at_ms=now_ms,
                 updated_at_ms=now_ms,
@@ -315,6 +317,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         self,
         *,
         channel: str,
+        channel_identity: str | None,
         provider_thread_id: str,
     ) -> ChannelSession | None:
         matches = [
@@ -322,12 +325,46 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             for session in self._storage.channel_sessions.values()
             if (
                 session.channel == channel
+                and session.channel_identity == channel_identity
                 and session.provider_thread_id == provider_thread_id
             )
         ]
         if len(matches) > 1:
             raise ValueError("multiple rows violate channel provider identity")
         return matches[0] if matches else None
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]:
+        return tuple(
+            session
+            for session in self._storage.channel_sessions.values()
+            if session.channel == channel and session.channel_identity is None
+        )
+
+    async def backfill_channel_identity(
+        self,
+        channel_session_id: str,
+        *,
+        channel_identity: str,
+        provider_thread_id: str,
+    ) -> None:
+        session = self._storage.channel_sessions.get(channel_session_id)
+        if session is None or session.channel_identity is not None:
+            return
+        self._storage.channel_sessions[channel_session_id] = replace(
+            session,
+            channel_identity=channel_identity,
+            provider_thread_id=provider_thread_id,
+        )
+        for thread_id, messages in self._storage.messages.items():
+            self._storage.messages[thread_id] = [
+                replace(message, provider_thread_id=provider_thread_id)
+                if message.channel_session_id == channel_session_id
+                and message.provider_thread_id == session.provider_thread_id
+                else message
+                for message in messages
+            ]
 
     async def get_channel_session(
         self, channel_session_id: str
@@ -739,6 +776,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         if existing is not None:
             if (
                 existing.channel != session.channel
+                or existing.channel_identity != session.channel_identity
                 or existing.provider_thread_id != session.provider_thread_id
                 or existing.created_at_ms != session.created_at_ms
             ):
@@ -747,6 +785,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         else:
             duplicate = await self.find_channel_session(
                 channel=session.channel,
+                channel_identity=session.channel_identity,
                 provider_thread_id=session.provider_thread_id,
             )
             if duplicate is not None:

@@ -33,6 +33,7 @@ class ChannelSession:
     provider_thread_id: str
     created_at_ms: int
     updated_at_ms: int
+    channel_identity: str | None = None
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
     following: bool = True
     last_inbound_at_ms: int | None = None
@@ -296,6 +297,7 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     attachments: tuple[AttachmentT, ...] = ()
     reply_to_message_id: str | None = None
     channel: str | None = None
+    channel_identity: str | None = None
     provider_thread_id: str | None = None
     provider_message_id: str | None = None
     provider_time_ms: int | None = None

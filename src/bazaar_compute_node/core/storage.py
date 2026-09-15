@@ -569,8 +569,20 @@ class _StorageOperations(Protocol):
     ) -> Message[OutboundAttachment]: ...
 
     async def find_channel_session(
-        self, *, channel: str, provider_thread_id: str
+        self, *, channel: str, channel_identity: str | None, provider_thread_id: str
     ) -> ChannelSession | None: ...
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]: ...
+
+    async def backfill_channel_identity(
+        self,
+        channel_session_id: str,
+        *,
+        channel_identity: str,
+        provider_thread_id: str,
+    ) -> None: ...
 
     async def get_channel_session(
         self, channel_session_id: str

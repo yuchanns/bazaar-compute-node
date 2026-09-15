@@ -357,6 +357,7 @@ class CommandService(ICommandService):
         session = ChannelSession(
             id=address.channel_session_id,
             channel=opening.channel,
+            channel_identity=address.channel_identity,
             provider_thread_id=(
                 delivery_result.provider_thread_id or address.provider_thread_id
             ),
@@ -712,6 +713,7 @@ class CommandService(ICommandService):
             # not answer to, and then there is nothing to open
             held = await self._storage.find_channel_session(
                 channel=opening.channel,
+                channel_identity=opening.address.channel_identity,
                 provider_thread_id=opening.address.provider_thread_id,
             )
             # a conversation whose thread never made it is not open yet, and

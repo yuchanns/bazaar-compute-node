@@ -228,6 +228,7 @@ class AgentApplication:
                 mode=self._actors.mode,
             )
             await self._attachment_materializer.reconcile()
+            await self._backfill_channel_identity()
             await self.orchestrator.start(
                 timeout=self.timeout_budget.startup_seconds,
             )
@@ -237,14 +238,35 @@ class AgentApplication:
         self._started = True
         self.command_dispatcher.start_accepting()
 
+    async def _backfill_channel_identity(self) -> None:
+        """Give conversations written before bots were told apart to this one.
+
+        Only a channel that knows its bot before it starts can do this here;
+        the kinds that carry the bot in the thread id were filled by migration.
+        A kind with several bots hands them to the first, in configuration
+        order.
+        """
+
+        for member in self.channel.members:
+            identity = member.get_identity()
+            if identity is None:
+                continue
+            for session in await self.storage.list_channel_sessions_without_identity(
+                member.name
+            ):
+                await self.storage.backfill_channel_identity(
+                    session.id,
+                    channel_identity=identity.id,
+                    provider_thread_id=member.backfill_provider_thread_id(
+                        session.provider_thread_id
+                    ),
+                )
+
     def _bot_name(self) -> str | None:
         identity = self.channel.get_identity()
-        if identity is not None:
-            if identity.name is not None:
-                return identity.name
-            if identity.id is not None:
-                return identity.id
-        return None
+        if identity is None:
+            return None
+        return identity.name or identity.id
 
     async def stop(self) -> None:
         if self._stopping:
