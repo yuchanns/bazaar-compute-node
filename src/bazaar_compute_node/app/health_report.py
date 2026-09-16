@@ -12,13 +12,14 @@ from ..core.correlation import CorrelationContext
 from ..core.models import RuntimeEventState
 from ..core.timerwheel import TimerWheel, TimerWheelClosedError
 
-# the telegram long-poll timeout, so one beat is one poll: a consumer that
-# sees no event for two beats knows the node is gone rather than quiet
-HEALTH_INTERVAL_MS = 50_000
-
 
 class HealthReporter:
-    """Append a `node.health` event now and then every interval."""
+    """Append a `node.health` event now and then every interval.
+
+    The interval is the node's own startup budget: a node that stays silent
+    for longer than it allows itself to come up is one a consumer may treat
+    as gone, so two silent beats mean offline.
+    """
 
     def __init__(
         self,
@@ -27,11 +28,13 @@ class HealthReporter:
         audit: AuditRecorder,
         health: Callable[[], Mapping[str, object]],
         version: str,
+        interval_seconds: float,
     ) -> None:
         self._timer_wheel = timer_wheel
         self._audit = audit
         self._health = health
         self._version = version
+        self._interval_ms = int(interval_seconds * 1000)
         self._task: asyncio.Task[None] | None = None
 
     async def start(self, *, timeout: float) -> None:
@@ -66,14 +69,14 @@ class HealthReporter:
                 "gil_enabled": _gil_enabled(),
                 # a consumer that sees two of these go by without a beat may
                 # treat the node as gone
-                "interval_ms": HEALTH_INTERVAL_MS,
+                "interval_ms": self._interval_ms,
             },
         )
 
     async def _run(self) -> None:
         while True:
             try:
-                await self._timer_wheel.create(HEALTH_INTERVAL_MS).wait()
+                await self._timer_wheel.create(self._interval_ms).wait()
             except TimerWheelClosedError:
                 return
             await self.report()
@@ -84,4 +87,4 @@ def _gil_enabled() -> bool:
     return True if is_gil_enabled is None else bool(is_gil_enabled())
 
 
-__all__ = ["HEALTH_INTERVAL_MS", "HealthReporter"]
+__all__ = ["HealthReporter"]

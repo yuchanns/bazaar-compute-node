@@ -162,7 +162,7 @@ async def test_node_runs_the_audit_sink_and_reports_its_own_health(
         assert health["ready"] is True
         assert health["version"] == __version__
         assert isinstance(health["gil_enabled"], bool)
-        assert health["interval_ms"] == 50_000
+        assert health["interval_ms"] == 2_000
         assert health["audit"] == {"name": "test", "events": 0}
 
         # case: the health record carries what the sink says about itself

@@ -38,6 +38,7 @@ sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
 
 [project.entry-points."bazaar_compute_node.audits"]
 logging = "bazaar_compute_node.contrib.logging.plugin:create_audit"
+server = "bazaar_compute_node.contrib.server.plugin:create_audit"
 
 [dependency-groups]
 dev = [

@@ -75,6 +75,26 @@ def test_system_service_command_tree_carries_install_start_and_status() -> None:
     assert context.params["env_file"] == Path("/tmp/bcn.env")
 
 
+def test_a_service_installed_without_an_env_file_reads_the_default_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    args = Namespace(
+        storage=None,
+        audit=None,
+        database_name=None,
+        endpoint=None,
+        foreground=False,
+        config=None,
+    )
+    context = system_service._build_context(
+        args, UsageReporter(), require_executable=False
+    )
+    # case: the file `bcn server connect` writes to, whether or not it exists yet
+    assert context.env_file == system_service.default_env_file().resolve()
+    assert context.env_file.is_relative_to(tmp_path)
+
+
 def test_native_command_uses_system_encoding_without_decode_failures() -> None:
     completed = subprocess.CompletedProcess(
         ["native-service"],

@@ -606,7 +606,16 @@ def _configuration_state(version: str) -> _ConfigurationState:
 
 
 def _write_configuration(path: Path, configuration: NodeConfiguration) -> None:
-    content = _serialize_configuration(configuration)
+    try:
+        _replace_file(path, _serialize_configuration(configuration))
+    except OSError as error:
+        raise ConfigurationError(f"cannot write {path}: {error}") from error
+
+
+def _replace_file(path: Path, content: str) -> None:
+    """Put the content in place all at once, readable by the owner only: the
+    old file stays whole until the new one is safely on disk."""
+
     temporary = path.with_name(f".{path.name}.{uuid7().hex}.tmp")
     descriptor: int | None = None
     try:
@@ -628,8 +637,6 @@ def _write_configuration(path: Path, configuration: NodeConfiguration) -> None:
                 os.fsync(parent_descriptor)
             finally:
                 os.close(parent_descriptor)
-    except OSError as error:
-        raise ConfigurationError(f"cannot write {path}: {error}") from error
     finally:
         if descriptor is not None:
             os.close(descriptor)

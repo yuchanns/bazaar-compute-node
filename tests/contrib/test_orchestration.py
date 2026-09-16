@@ -677,7 +677,7 @@ async def run_natural_conversation_contract(
             ),
             shared_factories=SharedAdapterFactories(
                 storage=lambda storage=storage: cast(IStorage, storage),
-                audit=lambda audit=audit: audit,
+                audit=lambda _, audit=audit: audit,
             ),
             registry=_AcceptanceRegistry(
                 channel=cast(IChannel, channel_instance),
@@ -4315,7 +4315,7 @@ async def test_multi_runtime_agents(
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, SqliteDatabase()),
-            audit=lambda: RecordingAudit(),
+            audit=lambda _: RecordingAudit(),
         ),
         registry=registry,
         endpoint_path=tmp_path / "multi-runtime.sock",
@@ -5123,7 +5123,7 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=lambda: audit,
+            audit=lambda _: audit,
         ),
         registry=_MembersRegistry(channels=(first, second)),
         endpoint_path=tmp_path / "backfill.sock",
@@ -5369,7 +5369,7 @@ async def test_agent_introduces_itself_by_every_name_it_goes_by(
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=RecordingAudit,
+            audit=lambda _: RecordingAudit(),
         ),
         registry=_MembersRegistry(channels=(named, unnamed)),
         endpoint_path=tmp_path / "names.sock",

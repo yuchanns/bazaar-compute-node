@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import platform
+import shlex
+import stat
 import subprocess
 import sys
 import tomllib
@@ -10,6 +14,7 @@ from uuid import UUID
 import click
 import pytest
 
+import bazaar_compute_node.app.system_service as system_service_module
 from bazaar_compute_node import __version__
 from bazaar_compute_node.app.config import ConfigurationError, load_node_configuration
 from bazaar_compute_node.cli import main
@@ -741,3 +746,144 @@ model = "gpt-5.6"
     document = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert document["version"] == "4"
     assert [agent["name"] for agent in document["agent"]] == ["default", "Tifa"]
+
+
+def test_server_connect_records_the_server_and_keeps_the_token_out_of_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "4"\n', encoding="utf-8")
+    env_file = tmp_path / "env" / "runtime.env"
+    token = "0198d4e6-29c5-7465-b74b-88db31f0c118:first"
+
+    assert (
+        main(
+            [
+                "server",
+                "connect",
+                "--config",
+                str(config_path),
+                "--url",
+                "http://127.0.0.1:8765/",
+                "--token",
+                token,
+                "--env-file",
+                str(env_file),
+            ]
+        )
+        == 0
+    )
+
+    # case: the configuration names the sink and where its token lives
+    payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["node"]["audit"] == "server"
+    assert payload["node"]["server"] == {
+        "url": "http://127.0.0.1:8765",
+        "token_env": "BCN_SERVER_TOKEN",
+    }
+    assert token not in config_path.read_text(encoding="utf-8")
+
+    # case: the token itself went to the environment file, readable only by us
+    assert env_file.read_text(encoding="utf-8") == f"BCN_SERVER_TOKEN={token}\n"
+    if os.name != "nt":
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert "bcn system-service restart" in capsys.readouterr().out
+
+    # case: connecting again replaces the token and keeps other variables
+    env_file.write_text(f"OTHER=kept\nBCN_SERVER_TOKEN={token}\n", encoding="utf-8")
+    assert (
+        main(
+            [
+                "server",
+                "connect",
+                "--config",
+                str(config_path),
+                "--url",
+                "http://127.0.0.1:8765",
+                "--token",
+                "0198d4e6-29c5-7465-b74b-88db31f0c118:second",
+                "--env-file",
+                str(env_file),
+            ]
+        )
+        == 0
+    )
+    assert env_file.read_text(encoding="utf-8") == (
+        "OTHER=kept\nBCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:second\n"
+    )
+    # case: nothing of the write is left beside the file
+    assert sorted(path.name for path in env_file.parent.iterdir()) == ["runtime.env"]
+
+    # case: an address without its scheme is refused before anything is written
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "server",
+                "connect",
+                "--config",
+                str(config_path),
+                "--url",
+                "127.0.0.1:8765",
+                "--token",
+                token,
+                "--env-file",
+                str(env_file),
+            ]
+        )
+    assert "second" in env_file.read_text(encoding="utf-8")
+
+
+def test_server_connect_takes_the_env_file_from_the_registered_service(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "4"\n', encoding="utf-8")
+    arguments_ = [
+        "server",
+        "connect",
+        "--config",
+        str(config_path),
+        "--url",
+        "http://127.0.0.1:8765",
+        "--token",
+        "0198d4e6-29c5-7465-b74b-88db31f0c118:secret",
+    ]
+
+    # case: before any registration the default file is ours to define, and
+    # the output says which file the install must be given
+    assert system_service_module.installed_env_file() is None
+    assert main(arguments_) == 0
+    default_file = Path.home() / ".config" / "bcn" / "runtime.env"
+    assert default_file.is_relative_to(tmp_path.parent)
+    # the service reads that file without being told, so the hint says so
+    out = capsys.readouterr().out
+    assert "bcn system-service install`" in out and "--env-file" not in out
+    assert default_file.read_text(encoding="utf-8") == (
+        "BCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:secret\n"
+    )
+
+    # case: the file the service was installed with is the one that gets the
+    # token; the unit sits where an install puts it, under the test's home
+    if platform.system() != "Linux":
+        pytest.skip("the registered file is read from a systemd unit here")
+    capsys.readouterr()
+    unit_path = Path.home() / ".config" / "systemd" / "user" / "bcn.service"
+    unit_path.parent.mkdir(parents=True)
+    env_file = tmp_path / "service env" / "vars.env"
+    unit_path.write_text(
+        f"[Service]\nEnvironmentFile=-{shlex.quote(str(env_file))}\n",
+        encoding="utf-8",
+    )
+    # case: a unit at our path that is not ours is somebody else's; its file is left alone
+    assert system_service_module.installed_env_file() is None
+    unit_path.write_text(
+        f"# {system_service_module.MANAGED_MARKER}\n[Service]\n"
+        f"EnvironmentFile=-{shlex.quote(str(env_file))}\n",
+        encoding="utf-8",
+    )
+    assert main(arguments_) == 0
+    assert env_file.read_text(encoding="utf-8") == (
+        "BCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:secret\n"
+    )
+    assert "bcn system-service restart" in capsys.readouterr().out

@@ -10,6 +10,7 @@ from ...i18n import Translator, create_translator
 from ._options import node_options, remember
 from .agent import build_agent_group
 from .node import build_node_commands
+from .server import build_server_group
 from .service import build_service_group
 
 
@@ -37,6 +38,7 @@ def build_cli(translator: Translator) -> click.Group:
     for command in build_node_commands(translator):
         bcn.add_command(command)
     bcn.add_command(build_agent_group(translator))
+    bcn.add_command(build_server_group(translator))
     bcn.add_command(build_service_group(translator))
     return bcn
 

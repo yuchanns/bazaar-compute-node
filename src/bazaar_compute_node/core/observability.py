@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from .lifecycle import IAsyncLifecycle
+from .lifecycle import IAsyncLifecycle, TimeoutBudget
+from .timerwheel import TimerWheel
 
 if TYPE_CHECKING:
     from .audit import AuditEvent
@@ -15,6 +17,15 @@ class LogLevel(StrEnum):
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class AuditContext:
+    """What the node hands an audit sink when it builds one."""
+
+    options: Mapping[str, object]
+    timer_wheel: TimerWheel
+    timeout_budget: TimeoutBudget
 
 
 class IAudit(IAsyncLifecycle, Protocol):

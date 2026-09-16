@@ -14,7 +14,7 @@ from ..core.audit import AuditRecorder
 from ..core.concurrency import ThreadLockRegistry
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
-from ..core.observability import IAudit
+from ..core.observability import AuditContext, IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
 from ..core.restart import RESTART_EXIT_CODE
@@ -87,8 +87,14 @@ class NodeApplication:
             shutdown_seconds=5,
         )
         self.storage: IStorage = shared_factories.storage()
-        self.audit: IAudit = shared_factories.audit()
         self.timer_wheel = TimerWheel()
+        self.audit: IAudit = shared_factories.audit(
+            AuditContext(
+                options=configuration.audit_options,
+                timer_wheel=self.timer_wheel,
+                timeout_budget=self.timeout_budget,
+            )
+        )
         self._reminder_concurrency = ThreadLockRegistry()
         audit_recorder = AuditRecorder(
             sink=self.audit,
@@ -112,6 +118,7 @@ class NodeApplication:
             audit=audit_recorder,
             health=self._health,
             version=__version__,
+            interval_seconds=self.timeout_budget.startup_seconds,
         )
         self._restart_requested = False
         # Windows has nothing that brings the node back after it exits, so

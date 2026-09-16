@@ -90,7 +90,6 @@ def _load_shared_factories(
             storage_options={"database_name": args.database_name}
             if args.storage == "sqlite" and args.database_name is not None
             else None,
-            audit_options=_configuration(parser, args).audit_options,
         )
     except ProviderLoadError as error:
         parser.error(str(error))
