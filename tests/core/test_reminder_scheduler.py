@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from bcn_test_support import MemoryStorage
+from bcn_test_support import MemoryStorage, RecordingAudit, recorder_for
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.config import (
@@ -37,7 +37,12 @@ from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
 from bazaar_compute_node.core.orchestration.reminder_command import (
     ReminderCommandService,
 )
-from bazaar_compute_node.core.reminder import ReminderSnoozeRequest
+from bazaar_compute_node.core.reminder import (
+    ReminderCancelRequest,
+    ReminderScheduleRequest,
+    ReminderSnoozeRequest,
+    ReminderUpdateRequest,
+)
 from bazaar_compute_node.core.storage import IStorage
 from bazaar_compute_node.core.timerwheel import TimerWheel
 
@@ -128,6 +133,7 @@ async def start_scheduler(
     *,
     publish_wake: Callable[[str, Message[InboundAttachment]], bool],
     clock: Callable[[], int] = lambda: 100,
+    audit: RecordingAudit | None = None,
 ) -> tuple[ReminderScheduler, TimerWheel]:
     async def publish(agent_id: str, message: Message[InboundAttachment]) -> bool:
         return publish_wake(agent_id, message)
@@ -139,6 +145,7 @@ async def start_scheduler(
         timer_wheel=timer_wheel,
         concurrency=ThreadLockRegistry(),
         publish_wake=publish,
+        audit=recorder_for(audit or RecordingAudit()),
         clock=clock,
     )
     await scheduler.start(timeout=1)
@@ -166,9 +173,11 @@ async def test_a_snooze_sees_what_happened_while_it_waited_for_the_lock() -> Non
     storage.reminders[_REMINDER_A] = scheduled
     concurrency = ThreadLockRegistry()
     service = ReminderCommandService(
+        agent_id=_AGENT_A,
         storage=cast(IStorage, storage),
         concurrency=concurrency,
         poke=lambda: None,
+        audit=recorder_for(RecordingAudit()),
         clock=lambda: 1_000,
     )
     try:
@@ -437,6 +446,7 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
         timer_wheel=timer_wheel,
         concurrency=ThreadLockRegistry(),
         publish_wake=_recording_publish(wakes),
+        audit=recorder_for(RecordingAudit()),
         clock=lambda: 100,
     )
     try:
@@ -451,3 +461,100 @@ async def test_committed_wakes_are_published_when_a_later_reminder_fails() -> No
         ]
     finally:
         await timer_wheel.close()
+
+
+@pytest.mark.asyncio
+async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
+    """Every step of a Reminder's life is an audit event that names the
+    Reminder and the conversation it belongs to."""
+
+    storage = MemoryStorage()
+    await storage.start(timeout=1)
+    anchor_id = add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
+    audit = RecordingAudit()
+    service = ReminderCommandService(
+        agent_id=_AGENT_A,
+        storage=cast(IStorage, storage),
+        concurrency=ThreadLockRegistry(),
+        poke=lambda: None,
+        audit=recorder_for(audit),
+        clock=lambda: 1_000,
+    )
+    actor = ThreadActor(_SESSION_A)
+    scheduled = (
+        await service.schedule(
+            actor,
+            ReminderScheduleRequest(
+                title="check the build",
+                message_id=anchor_id,
+                next_fire_at_ms=5_000,
+                repeat_rule=None,
+                timezone="UTC",
+            ),
+        )
+    ).reminder
+    await service.update(
+        actor,
+        ReminderUpdateRequest(
+            reminder_id=scheduled.reminder_id,
+            title="check the build again",
+            evaluated_at_ms=1_500,
+        ),
+    )
+    await service.snooze(
+        actor,
+        ReminderSnoozeRequest(
+            reminder_id=scheduled.reminder_id,
+            duration_ms=100,
+            evaluated_at_ms=2_000,
+        ),
+    )
+    assert [event.event_name for event in audit.events] == [
+        "reminder.scheduled",
+        "reminder.updated",
+        "reminder.snoozed",
+    ]
+    first = audit.events[0]
+    assert first.correlation.node_id == _AGENT_A
+    assert first.correlation.thread_id == _SESSION_A
+    assert first.metadata["reminder_id"] == scheduled.reminder_id
+    assert first.metadata["title"] == "check the build"
+    assert first.metadata["target"] == f"dm:{_SESSION_A}"
+    assert first.metadata["next_fire_at_ms"] == 5_000
+    assert audit.events[1].metadata["title"] == "check the build again"
+    assert audit.events[2].metadata["next_fire_at_ms"] == 5_100
+
+    # a scheduler that finds it due fires it, and says so
+    fired_audit = RecordingAudit()
+    scheduler, timer_wheel = await start_scheduler(
+        storage, publish_wake=lambda *_: True, clock=lambda: 6_000, audit=fired_audit
+    )
+    try:
+        assert [event.event_name for event in fired_audit.events] == ["reminder.fired"]
+        fired = fired_audit.events[0]
+        assert fired.metadata["state"] == ReminderState.FIRED.value
+        assert fired.metadata["scheduled_for_ms"] == 5_100
+    finally:
+        await stop_scheduler(scheduler, timer_wheel)
+
+    another = (
+        await service.schedule(
+            actor,
+            ReminderScheduleRequest(
+                title="never mind",
+                message_id=anchor_id,
+                next_fire_at_ms=9_000,
+                repeat_rule=None,
+                timezone="UTC",
+            ),
+        )
+    ).reminder
+    await service.cancel(
+        actor,
+        ReminderCancelRequest(reminder_id=another.reminder_id, evaluated_at_ms=3_500),
+    )
+    assert [event.event_name for event in audit.events[-2:]] == [
+        "reminder.scheduled",
+        "reminder.canceled",
+    ]
+    assert audit.events[-1].metadata["state"] == ReminderState.CANCELED.value

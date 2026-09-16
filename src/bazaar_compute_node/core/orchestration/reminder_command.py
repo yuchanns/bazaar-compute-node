@@ -3,9 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..actor import Actor
+from ..audit import AuditRecorder
 from ..command import IReminderService
 from ..concurrency import IThreadConcurrency
-from ..models import Message, MessageDirection, Reminder, ReminderState
+from ..models import (
+    Message,
+    MessageDirection,
+    Reminder,
+    ReminderState,
+    RuntimeEventState,
+)
 from ..reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
@@ -20,6 +27,7 @@ from ..reminder import (
 )
 from ..storage import IStorage
 from ..utils.clock import now_ms
+from .reminder import reminder_audit_metadata, reminder_correlation
 from .services import threads_in_reach
 
 
@@ -43,14 +51,18 @@ class ReminderCommandService(IReminderService):
     def __init__(
         self,
         *,
+        agent_id: str,
         storage: IStorage,
         concurrency: IThreadConcurrency,
         poke: Callable[[], None],
+        audit: AuditRecorder,
         clock: Callable[[], int] | None = None,
     ) -> None:
+        self._agent_id = agent_id
         self._storage = storage
         self._concurrency = concurrency
         self._poke = poke
+        self._audit = audit
         self._clock = clock or now_ms
 
     async def schedule(
@@ -81,6 +93,9 @@ class ReminderCommandService(IReminderService):
             )
             reminder = await self._storage.save_new_reminder(reminder)
         self._poke()
+        await self._announce(
+            event_name="reminder.scheduled", reminder=reminder, anchor=anchor
+        )
         return ReminderScheduleResult(reminder)
 
     async def list(
@@ -118,11 +133,17 @@ class ReminderCommandService(IReminderService):
                     str(error),
                     next_action="Create a new Reminder if this Reminder is no longer reusable.",
                 ) from error
+            # what the audit will say about it is gathered before the change
+            # is committed, so a read that fails cannot fail a change that stood
+            anchor = await self._anchor_of(reminder)
             updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
         self._poke()
+        await self._announce(
+            event_name="reminder.snoozed", reminder=updated, anchor=anchor
+        )
         return ReminderSnoozeResult(updated)
 
     async def update(
@@ -171,11 +192,17 @@ class ReminderCommandService(IReminderService):
                     "REMINDER_UPDATE_FAILED",
                     str(error),
                 ) from error
+            # what the audit will say about it is gathered before the change
+            # is committed, so a read that fails cannot fail a change that stood
+            anchor = await self._anchor_of(reminder)
             updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
         self._poke()
+        await self._announce(
+            event_name="reminder.updated", reminder=updated, anchor=anchor
+        )
         return ReminderUpdateResult(updated)
 
     async def cancel(
@@ -202,12 +229,39 @@ class ReminderCommandService(IReminderService):
                     "REMINDER_NOT_SCHEDULED",
                     str(error),
                 ) from error
+            # what the audit will say about it is gathered before the change
+            # is committed, so a read that fails cannot fail a change that stood
+            anchor = await self._anchor_of(reminder)
             updated = await self._storage.save_reminder_transition(
                 reminder.revision,
                 updated,
             )
         self._poke()
+        await self._announce(
+            event_name="reminder.canceled", reminder=updated, anchor=anchor
+        )
         return ReminderCancelResult(updated)
+
+    async def _anchor_of(self, reminder: Reminder) -> Message | None:
+        return await self._storage.resolve_message(
+            reminder.owner_thread_id,
+            reminder.anchor_message_id,
+            direction=MessageDirection.INBOUND,
+        )
+
+    async def _announce(
+        self,
+        *,
+        event_name: str,
+        reminder: Reminder,
+        anchor: Message | None,
+    ) -> None:
+        await self._audit.append(
+            event_name=event_name,
+            state=RuntimeEventState.COMPLETED,
+            correlation=reminder_correlation(self._agent_id, reminder, anchor),
+            metadata=reminder_audit_metadata(reminder, anchor),
+        )
 
     @staticmethod
     async def _resolve_anchor(

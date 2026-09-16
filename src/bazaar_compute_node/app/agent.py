@@ -193,9 +193,11 @@ class AgentApplication:
             concurrency=self._concurrency,
         )
         self.reminder_service = ReminderCommandService(
+            agent_id=self.agent_id,
             storage=self.storage,
             concurrency=reminder_concurrency,
             poke=reminder_poke,
+            audit=self._audit_recorder,
         )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,

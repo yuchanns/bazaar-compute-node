@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from bcn_test_support import RecordingAudit
 
+from bazaar_compute_node import __version__
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
@@ -132,3 +134,40 @@ async def test_node_skips_the_version_watcher_when_the_operator_turns_it_off(
         assert node.version_watcher.available_version() is None
     finally:
         await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_node_runs_the_audit_sink_and_reports_its_own_health(
+    tmp_path: Path,
+) -> None:
+    shared_factories = AdapterRegistry().load_shared(storage="sqlite", audit="test")
+    node = NodeApplication(
+        configuration=make_configuration(),
+        shared_factories=shared_factories,
+        endpoint_path=tmp_path / "bcn.sock",
+        timeout_budget=make_budget(),
+    )
+    audit = node.audit
+    assert isinstance(audit, RecordingAudit)
+
+    await node.start()
+    try:
+        # case: the sink has a lifecycle now and the node drives it
+        assert audit.started is True
+
+        # case: the first health beat goes out once the node is ready
+        beats = [event for event in audit.events if event.event_name == "node.health"]
+        assert len(beats) == 1
+        health = beats[0].metadata
+        assert health["ready"] is True
+        assert health["version"] == __version__
+        assert isinstance(health["gil_enabled"], bool)
+        assert health["interval_ms"] == 50_000
+        assert health["audit"] == {"name": "test", "events": 0}
+
+        # case: the health record carries what the sink says about itself
+        record = node._health()
+        assert record["audit"] == {"name": "test", "events": len(audit.events)}
+    finally:
+        await node.stop()
+    assert audit.started is False

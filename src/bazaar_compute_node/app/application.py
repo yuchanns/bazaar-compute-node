@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
+from ..core.audit import AuditRecorder
 from ..core.concurrency import ThreadLockRegistry
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
@@ -19,10 +20,12 @@ from ..core.paths import resolve_data_dir
 from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
+from ..core.utils.clock import now_ms
 from ..core.utils.text import format_exception
 from ..i18n import create_translator
 from .agent import AgentApplication
 from .config import AgentConfiguration, NodeConfiguration
+from .health_report import HealthReporter
 from .registry import AdapterRegistry, SharedAdapterFactories
 from .transport import LocalCommandServer
 from .upgrade import UpgradeService
@@ -87,16 +90,28 @@ class NodeApplication:
         self.audit: IAudit = shared_factories.audit()
         self.timer_wheel = TimerWheel()
         self._reminder_concurrency = ThreadLockRegistry()
+        audit_recorder = AuditRecorder(
+            sink=self.audit,
+            timeout_budget=self.timeout_budget,
+            clock=now_ms,
+        )
         self.reminder_scheduler = ReminderScheduler(
             storage=self.storage,
             timer_wheel=self.timer_wheel,
             concurrency=self._reminder_concurrency,
             publish_wake=self._publish_inbox_wake,
+            audit=audit_recorder,
         )
         self.version_watcher = VersionWatcher(
             timer_wheel=self.timer_wheel,
             current_version=__version__,
             request_timeout_seconds=self.timeout_budget.command_seconds,
+        )
+        self.health_reporter = HealthReporter(
+            timer_wheel=self.timer_wheel,
+            audit=audit_recorder,
+            health=self._health,
+            version=__version__,
         )
         self._restart_requested = False
         # Windows has nothing that brings the node back after it exits, so
@@ -139,6 +154,7 @@ class NodeApplication:
             await asyncio.to_thread(self.data_dir.chmod, 0o700)
         try:
             await self.storage.start(timeout=self.timeout_budget.startup_seconds)
+            await self.audit.start(timeout=self.timeout_budget.startup_seconds)
             await self.timer_wheel.start()
             await self.command_server.start()
         except BaseException:
@@ -166,6 +182,9 @@ class NodeApplication:
             raise
         self._ready = True
         self._accepting = True
+        # the first beat goes out once the node is ready, so it describes the
+        # state a consumer can act on rather than a node still coming up
+        await self.health_reporter.start(timeout=self.timeout_budget.startup_seconds)
         started_count = len(self.agents)
         failed_count = len(self.configuration.agents) - started_count
         self._log(
@@ -244,6 +263,12 @@ class NodeApplication:
         self._accepting = False
         errors: list[str] = []
         try:
+            await self.health_reporter.stop(
+                timeout=self.timeout_budget.shutdown_seconds,
+            )
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"health_reporter.stop:{type(error).__name__}")
+        try:
             await self.version_watcher.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
             )
@@ -275,6 +300,10 @@ class NodeApplication:
             await self.timer_wheel.close()
         except Exception as error:  # noqa: BLE001
             errors.append(f"timer_wheel.close:{type(error).__name__}")
+        try:
+            await self.audit.stop(timeout=self.timeout_budget.shutdown_seconds)
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"audit.stop:{type(error).__name__}")
         try:
             await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
         except Exception as error:  # noqa: BLE001
@@ -451,7 +480,7 @@ class NodeApplication:
             "ready": self._ready,
             "accepting": self._accepting,
             "storage": self.storage.name,
-            "audit": self.audit.name,
+            "audit": {"name": self.audit.name, **self.audit.health},
             "configured": len(self.configuration.agents),
             "started_agents": len(self.agents),
             "failed_agents": sum(
@@ -488,6 +517,10 @@ class NodeApplication:
             await self.timer_wheel.close()
         except BaseException as error:
             self._logger.debug("timer wheel cleanup failed", exc_info=error)
+        try:
+            await self.audit.stop(timeout=self.timeout_budget.shutdown_seconds)
+        except BaseException as error:
+            self._logger.debug("audit cleanup failed", exc_info=error)
         try:
             await self.storage.stop(timeout=self.timeout_budget.shutdown_seconds)
         except BaseException as error:

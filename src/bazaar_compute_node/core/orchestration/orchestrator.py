@@ -1071,6 +1071,36 @@ class AgentOrchestrator(IAsyncLifecycle):
                     "thread_mapping": (
                         "created" if recorded.thread_created else "reused"
                     ),
+                    # the sanitizer drops any key called body, and rightly so
+                    # for provider payloads; the message text goes by its own name
+                    "text": message.body,
+                    "target": message.target,
+                    "target_kind": message.target_kind.value,
+                    "target_name": (
+                        None
+                        if message.target_presentation is None
+                        else message.target_presentation.display_name
+                    ),
+                    "message_type": message.message_type,
+                    "sender": (
+                        None
+                        if message.sender is None
+                        else {
+                            "id": message.sender.id,
+                            "name": message.sender.name,
+                            "display_name": message.sender.display_name,
+                            "kind": message.sender_kind.value,
+                        }
+                    ),
+                    "reply_to_message_id": message.reply_to_message_id,
+                    "attachments": [
+                        {
+                            "name": attachment.name,
+                            "media_type": attachment.media_type,
+                            "size_bytes": attachment.size_bytes,
+                        }
+                        for attachment in message.attachments
+                    ],
                 },
             )
         return context, message, recorded.message_created

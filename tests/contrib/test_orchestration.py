@@ -73,6 +73,9 @@ from bazaar_compute_node.core.models import (
     ChannelTargetKind,
     ChannelTargetPresentation,
     ContentDelta,
+    ContentDeltaKind,
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
     Message,
     MessageDirection,
     OutboundDeliveryState,
@@ -86,11 +89,16 @@ from bazaar_compute_node.core.models import (
     SenderIdentity,
     SenderKind,
     SystemMessageKind,
+    TokenUsage,
+    ToolCall,
+    ToolCallCompleted,
+    ToolCallStarted,
     TurnCancelled,
     TurnCompleted,
     TurnFailed,
     TurnStarted,
     TurnUnknown,
+    UsageUpdated,
 )
 from bazaar_compute_node.core.orchestration import AgentOrchestrator
 from bazaar_compute_node.core.orchestration.orchestrator import (
@@ -748,8 +756,8 @@ async def run_natural_conversation_contract(
                 turn_id=f"turn-{third_row.message_id}",
             )
             for inbound in (second_row, third_row):
-                delivery_ids = {
-                    event.correlation.outbound_message_id
+                deliveries = [
+                    event
                     for event in audit.events
                     if (
                         event.correlation.thread_id == scoped_session_id
@@ -757,8 +765,18 @@ async def run_natural_conversation_contract(
                         and event.correlation.inbound_seq == inbound.seq
                         and event.correlation.outbound_message_id is not None
                     )
+                ]
+                delivery_ids = {
+                    event.correlation.outbound_message_id for event in deliveries
                 }
                 assert delivery_ids
+                # the audit keeps what was said, not only that it was said
+                assert all(
+                    isinstance(event.metadata["text"], str)
+                    and event.metadata["text"].strip()
+                    and event.metadata["attachments"] == []
+                    for event in deliveries
+                )
                 assert delivery_ids.issubset(
                     {
                         event.correlation.outbound_message_id
@@ -829,6 +847,80 @@ async def test_channel_storage_runtime_turn_path() -> None:
         )
         assert unfollowed.changed is False
         assert storage.channel_sessions["channel-bcn-1"].following is True
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_turn_work_is_audited_with_the_message_bodies() -> None:
+    # what a turn did reaches the audit stream; what it streamed does not
+    orchestrator, channel, runtime, _, audit = await make_node()
+    call = ToolCall(
+        call_id="call-1",
+        name="Bash",
+        input={"command": "git status"},
+    )
+    runtime.queue_turn_plan(
+        TestTurnPlan(
+            stream_payloads=(
+                ContentDelta(kind=ContentDeltaKind.AGENT_MESSAGE, text="thinking"),
+                ToolCallStarted(call=call),
+                ToolCallCompleted(call=replace(call, output="clean")),
+                UsageUpdated(total=TokenUsage(total_tokens=1234), cost_usd=0.5),
+                ContextCompactionStarted(compaction_id="c-1"),
+                ContextCompactionCompleted(compaction_id="c-1"),
+            ),
+        )
+    )
+    try:
+        await channel.inject(make_message(body="看下仓库状态"))
+        await wait_until(
+            lambda: any(
+                event.event_name == "runtime.turn.completed" for event in audit.events
+            )
+        )
+        by_name = {event.event_name: event for event in audit.events}
+        inbound = by_name["channel.inbound.persisted"].metadata
+        assert inbound["text"] == "看下仓库状态"
+        assert inbound["target"] == "dm:channel-bcn-1"
+        assert inbound["target_kind"] == "dm"
+        assert inbound["target_name"] is None
+        assert inbound["sender"] == {
+            "id": "sender-id",
+            "name": "Sender",
+            "display_name": None,
+            "kind": "human",
+        }
+        assert inbound["attachments"] == []
+        started = by_name["tool_call.started"]
+        assert started.metadata["name"] == "Bash"
+        assert started.metadata["call_id"] == "call-1"
+        # what the tool was given and what it answered stay in the transcript
+        assert "input" not in started.metadata and "output" not in started.metadata
+        assert started.correlation.turn_id == "turn-message-bcn-1-1"
+        completed = by_name["tool_call.completed"]
+        assert completed.metadata["call_id"] == started.metadata["call_id"]
+        assert "output" not in completed.metadata
+        usage = by_name["usage.updated"].metadata
+        assert usage["total"] == {
+            "input_tokens": None,
+            "cached_input_tokens": None,
+            "cache_write_input_tokens": None,
+            "output_tokens": None,
+            "reasoning_output_tokens": None,
+            "total_tokens": 1234,
+        }
+        assert usage["cost_usd"] == 0.5
+        assert by_name["context.compaction.started"].metadata == {
+            "compaction_id": "c-1"
+        }
+        assert by_name["context.compaction.completed"].metadata == {
+            "compaction_id": "c-1"
+        }
+        assert not any(
+            event.metadata.get("text") == "thinking" for event in audit.events
+        )
+        assert len(channel.stream_events) == 6
     finally:
         await orchestrator.stop(timeout=1)
 

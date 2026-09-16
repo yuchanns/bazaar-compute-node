@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import cast
 
+from .actor import Actor
 from .correlation import CorrelationContext
 from .lifecycle import TimeoutBudget
 from .models import RuntimeEventState
@@ -70,6 +71,35 @@ class AuditEvent:
                     pending.append(item)
             elif isinstance(value, list | tuple):
                 pending.extend(value)
+
+    def as_payload(self) -> dict[str, object]:
+        """The JSON shape every sink writes, so they all agree on it."""
+
+        correlation = {
+            # an actor is a value on the way in and an id in the payload
+            f"{item.name}_id" if isinstance(value, Actor) else item.name: (
+                value.id if isinstance(value, Actor) else value
+            )
+            for item in fields(self.correlation)
+            if (value := getattr(self.correlation, item.name)) is not None
+        }
+        payload: dict[str, object] = {
+            "event_name": self.event_name,
+            "state": self.state.value,
+            "created_at_ms": self.created_at_ms,
+            "correlation": correlation,
+            "metadata": dict(self.metadata),
+        }
+        for key, value in (
+            ("duration_ms", self.duration_ms),
+            ("error_kind", self.error_kind.value if self.error_kind else None),
+            ("error_type", self.error_type),
+            ("error_message", self.error_message),
+            ("traceback_ref", self.traceback_ref),
+        ):
+            if value is not None:
+                payload[key] = value
+        return payload
 
 
 class AuditRecorder:

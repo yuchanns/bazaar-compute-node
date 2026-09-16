@@ -563,7 +563,18 @@ class CommandService(ICommandService):
             correlation=audit_context,
             error_kind=terminal_kind,
             error_message=error_message,
-            metadata=receipt,
+            metadata={
+                **receipt,
+                "text": outbound.body,
+                "attachments": [
+                    {
+                        "name": attachment.name,
+                        "media_type": attachment.media_type,
+                        "size_bytes": attachment.size_bytes,
+                    }
+                    for attachment in outbound.attachments
+                ],
+            },
         )
         await self._audit.append_tool(
             operation="bcc.message.send",

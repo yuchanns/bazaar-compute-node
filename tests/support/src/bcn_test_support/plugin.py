@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 from bazaar_compute_node.core.observability import IAudit
@@ -35,8 +35,8 @@ def create_storage() -> IStorage:
     return cast(IStorage, MemoryStorage())
 
 
-def create_audit() -> IAudit:
-    return RecordingAudit()
+def create_audit(options: Mapping[str, object] | None = None) -> IAudit:
+    return RecordingAudit(options=options)
 
 
 __all__ = [

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 from ... import __distribution__
 from ...rendering import TextTemplate
@@ -36,6 +36,7 @@ from ..models import (
     RuntimeTurnState,
     SenderKind,
     Thread,
+    ToolCall,
     ToolCallCompleted,
     ToolCallFailed,
     ToolCallInteraction,
@@ -179,6 +180,14 @@ def _with_a_reason(event: RuntimeOutputEvent) -> RuntimeOutputEvent:
             )
         case _:
             return event
+
+
+def _tool_call_metadata(call: ToolCall) -> dict[str, object]:
+    return {
+        "call_id": call.call_id,
+        "name": call.name,
+        "parent_call_id": call.parent_call_id,
+    }
 
 
 def _is_terminal_turn_event(payload: TurnPayload) -> bool:
@@ -680,19 +689,79 @@ class TurnCoordinator:
                         observed_terminal = True
                         break
                 case (
-                    ContentDelta()
-                    | ToolCallStarted()
+                    ToolCallStarted()
                     | ToolCallCompleted()
                     | ToolCallFailed()
-                    | ToolCallTextDelta()
-                    | ToolCallPatchUpdated()
-                    | ToolCallInteraction()
                     | UsageUpdated()
                     | ContextCompactionStarted()
                     | ContextCompactionCompleted()
+                ) as payload:
+                    await self._audit_stream_event(payload, message, context, turn)
+                    self._forward(event, turn.turn_id, context.thread.id)
+                case (
+                    ContentDelta()
+                    | ToolCallTextDelta()
+                    | ToolCallPatchUpdated()
+                    | ToolCallInteraction()
                 ):
                     self._forward(event, turn.turn_id, context.thread.id)
         return turn, observed_terminal
+
+    async def _audit_stream_event(
+        self,
+        payload: (
+            ToolCallStarted
+            | ToolCallCompleted
+            | ToolCallFailed
+            | UsageUpdated
+            | ContextCompactionStarted
+            | ContextCompactionCompleted
+        ),
+        message: Message,
+        context: TurnContext,
+        turn: RuntimeTurn,
+    ) -> None:
+        """Keep what a turn did, not what it streamed."""
+
+        error_kind: ErrorKind | None = None
+        error_message: str | None = None
+        match payload:
+            case ToolCallStarted(call=call):
+                event_name = "tool_call.started"
+                # which tool ran is the record; what it was asked and what it
+                # answered belong to the runtime's own transcript
+                metadata = _tool_call_metadata(call)
+            case ToolCallCompleted(call=call):
+                event_name = "tool_call.completed"
+                metadata = _tool_call_metadata(call)
+            case ToolCallFailed(call=call):
+                # the tool's answer, failed or not, stays in the runtime
+                # transcript; the audit only learns that it failed
+                event_name = "tool_call.failed"
+                metadata = _tool_call_metadata(call)
+                error_kind = ErrorKind.PROVIDER_FAILED
+                error_message = "tool call failed"
+            case UsageUpdated():
+                event_name = "usage.updated"
+                metadata = asdict(payload)
+            case ContextCompactionStarted(compaction_id=compaction_id):
+                event_name = "context.compaction.started"
+                metadata = {"compaction_id": compaction_id}
+            case ContextCompactionCompleted(compaction_id=compaction_id):
+                event_name = "context.compaction.completed"
+                metadata = {"compaction_id": compaction_id}
+        await self._audit.append(
+            event_name=event_name,
+            state=(
+                RuntimeEventState.FAILED
+                if error_kind is not None
+                else RuntimeEventState.COMPLETED
+            ),
+            correlation=self.turn_correlation(message, context, turn),
+            error_kind=error_kind,
+            error_message=error_message,
+            metadata=metadata,
+        )
 
     def _forward(
         self,
@@ -974,13 +1043,15 @@ class TurnCoordinator:
         except ValueError:
             audit_kind = ErrorKind.INTERNAL
         audit_error_message = error_message if audit_kind else None
+        # the audit hears the turn in one vocabulary whichever runtime ran it;
+        # the runtime's own word for what happened rides along
         await self._audit.append(
-            event_name=event_name,
+            event_name=f"runtime.turn.{state.value}",
             state=state,
             correlation=self.turn_correlation(message, context, updated_turn),
             error_kind=audit_kind,
             error_message=audit_error_message,
-            metadata=metadata,
+            metadata={**metadata, "provider_event": event_name},
         )
         return updated_turn
 

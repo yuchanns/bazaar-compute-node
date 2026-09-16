@@ -5,7 +5,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from uuid import uuid7
 
+from ..audit import AuditRecorder, ErrorKind
 from ..concurrency import IThreadConcurrency
+from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TaskFailureSignal
 from ..models import (
     InboundAttachment,
@@ -14,6 +16,7 @@ from ..models import (
     OwnedReminder,
     Reminder,
     ReminderState,
+    RuntimeEventState,
     SenderIdentity,
     SenderKind,
     SystemMessageKind,
@@ -31,6 +34,42 @@ from ..utils.clock import now_ms
 _WALL_CLOCK_RECHECK_MS = 60_000
 _CYCLE_RETRY_MS = 5_000
 _DUE_BATCH_SIZE = 100
+
+
+def reminder_audit_metadata(
+    reminder: Reminder, anchor: Message | None
+) -> dict[str, object]:
+    """What every Reminder audit event says about the Reminder it concerns."""
+
+    return {
+        "reminder_id": reminder.reminder_id,
+        "title": reminder.title,
+        "state": reminder.state.value,
+        "next_fire_at_ms": reminder.next_fire_at_ms,
+        "repeat_rule": reminder.repeat_rule,
+        "timezone": reminder.timezone,
+        "revision": reminder.revision,
+        "last_fired_at_ms": reminder.last_fired_at_ms,
+        "anchor_message_id": reminder.anchor_message_id,
+        "target": None if anchor is None else anchor.target,
+        "target_kind": None if anchor is None else anchor.target_kind.value,
+        "target_name": (
+            None
+            if anchor is None or anchor.target_presentation is None
+            else anchor.target_presentation.display_name
+        ),
+    }
+
+
+def reminder_correlation(
+    agent_id: str, reminder: Reminder, anchor: Message | None
+) -> CorrelationContext:
+    return CorrelationContext(
+        node_id=agent_id,
+        channel=None if anchor is None else anchor.channel,
+        channel_session_id=None if anchor is None else anchor.channel_session_id,
+        thread_id=reminder.owner_thread_id,
+    )
 
 
 async def resolve_reminder_anchor(
@@ -74,12 +113,14 @@ class ReminderScheduler(IAsyncLifecycle):
         timer_wheel: TimerWheel,
         concurrency: IThreadConcurrency,
         publish_wake: Callable[[str, Message[InboundAttachment]], Awaitable[bool]],
+        audit: AuditRecorder,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self._storage = storage
         self._timer_wheel = timer_wheel
         self._concurrency = concurrency
         self._publish_wake = publish_wake
+        self._audit = audit
         self._clock = clock or now_ms
         self._poke = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -344,6 +385,15 @@ class ReminderScheduler(IAsyncLifecycle):
             )
             if materialized is None:
                 return None
+            await self._audit.append(
+                event_name="reminder.fired",
+                state=RuntimeEventState.COMPLETED,
+                correlation=reminder_correlation(owner.agent_id, fired, anchor),
+                metadata={
+                    **reminder_audit_metadata(fired, anchor),
+                    "scheduled_for_ms": scheduled_for_ms,
+                },
+            )
             return owner.agent_id, materialized
 
     async def _cancel_unusable_reminder(
@@ -364,6 +414,14 @@ class ReminderScheduler(IAsyncLifecycle):
         )
         if retired is None:
             return
+        await self._audit.append(
+            event_name="reminder.canceled",
+            state=RuntimeEventState.FAILED,
+            correlation=reminder_correlation(agent_id, retired, None),
+            error_kind=ErrorKind.INTERNAL,
+            error_message=reason,
+            metadata=reminder_audit_metadata(retired, None),
+        )
         self._logger.error(
             "%s; reminder canceled",
             reason,
@@ -395,4 +453,9 @@ class ReminderScheduler(IAsyncLifecycle):
             )
 
 
-__all__ = ["ReminderScheduler", "resolve_reminder_anchor"]
+__all__ = [
+    "ReminderScheduler",
+    "reminder_audit_metadata",
+    "reminder_correlation",
+    "resolve_reminder_anchor",
+]

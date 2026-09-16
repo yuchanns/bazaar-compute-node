@@ -98,6 +98,9 @@ class NodeConfiguration:
     agents: tuple[AgentConfiguration, ...] = ()
     storage: str = DEFAULT_STORAGE
     audit: str = DEFAULT_AUDIT
+    audit_options: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     lang: str | None = None
     endpoint: str | None = None
     database_name: str | None = None
@@ -113,6 +116,13 @@ class NodeConfiguration:
             raise ConfigurationError("node.version_check must be a boolean")
         _required_text(self.storage, "node.storage")
         _required_text(self.audit, "node.audit")
+        for key, value in self.audit_options.items():
+            if key.endswith("_env"):
+                environment_name = _required_text(value, f"node.{self.audit}.{key}")
+                if not _ENVIRONMENT_NAME.fullmatch(environment_name):
+                    raise ConfigurationError(
+                        f"node.{self.audit}.{key} must be a valid environment name"
+                    )
         _optional_text(self.lang, "node.lang")
         _optional_text(self.endpoint, "node.endpoint")
         _optional_text(self.database_name, "node.database_name")
@@ -279,11 +289,15 @@ def _parse_v4_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     version_check = node.get("version_check", True)
     if not isinstance(version_check, bool):
         raise ConfigurationError("node.version_check must be a boolean")
+    audit = _optional_text(node.get("audit"), "node.audit") or DEFAULT_AUDIT
+    # a sink's own settings live in a table named after it, [node.<audit>]
+    audit_options = _table(node.get(audit, {}), f"[node.{audit}]")
     return NodeConfiguration(
         version=CONFIG_VERSION,
         agents=agents,
         storage=_optional_text(node.get("storage"), "node.storage") or DEFAULT_STORAGE,
-        audit=_optional_text(node.get("audit"), "node.audit") or DEFAULT_AUDIT,
+        audit=audit,
+        audit_options=MappingProxyType(dict(audit_options)),
         lang=_optional_text(node.get("lang"), "node.lang"),
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         database_name=_optional_text(node.get("database_name"), "node.database_name"),
@@ -636,6 +650,12 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
     if configuration.endpoint is not None:
         lines.append(f"endpoint = {_toml_value(configuration.endpoint)}")
     lines.append(f"version_check = {_toml_value(configuration.version_check)}")
+    if configuration.audit_options:
+        lines.extend(("", f"[node.{_toml_key(configuration.audit)}]"))
+        for key in sorted(configuration.audit_options):
+            lines.append(
+                f"{_toml_key(key)} = {_toml_value(configuration.audit_options[key])}"
+            )
 
     for agent in configuration.agents:
         lines.extend(

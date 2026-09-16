@@ -474,6 +474,34 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
         assert channel.approval_requests
         assert channel.approval_results[-1].decision is ApprovalDecision.APPROVED
         assert "release checklist" in approved_note.read_text(encoding="utf-8").lower()
+        # the audit stream now keeps the turn's work: what came in, which
+        # tools ran under which turn, and what the model consumed
+        turn_events = [
+            event
+            for event in audit.events
+            if event.correlation.turn_id == f"turn-{approved.message_id}"
+        ]
+        names = [event.event_name for event in turn_events]
+        assert "tool_call.started" in names
+        assert "tool_call.completed" in names
+        assert names.index("tool_call.started") < names.index("tool_call.completed")
+        assert all(
+            isinstance(event.metadata["name"], str)
+            and set(event.metadata) == {"call_id", "name", "parent_call_id"}
+            for event in turn_events
+            if event.event_name.startswith("tool_call.")
+        )
+        usage = [event for event in turn_events if event.event_name == "usage.updated"]
+        assert usage
+        assert all(isinstance(event.metadata["total"], dict) for event in usage)
+        inbound = [
+            event
+            for event in audit.events
+            if event.event_name == "channel.inbound.persisted"
+            and event.correlation.inbound_seq == approved.seq
+            and event.correlation.thread_id == scoped_session_id
+        ]
+        assert inbound[0].metadata["text"] == approved.body
 
         channel.set_approval_decision(
             ApprovalDecision.REJECTED,

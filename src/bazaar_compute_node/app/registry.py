@@ -46,6 +46,7 @@ class AdapterRegistry:
         storage: str = "sqlite",
         audit: str = "logging",
         storage_options: Mapping[str, object] | None = None,
+        audit_options: Mapping[str, object] | None = None,
     ) -> SharedAdapterFactories:
         storage_factory = cast(
             Callable[[Mapping[str, object]], IStorage] | StorageFactory,
@@ -53,9 +54,15 @@ class AdapterRegistry:
         )
         if storage_options:
             storage_factory = partial(storage_factory, dict(storage_options))
+        audit_factory = cast(
+            Callable[[Mapping[str, object]], IAudit] | AuditFactory,
+            self._load(AUDIT_ENTRY_POINT_GROUP, audit),
+        )
+        if audit_options:
+            audit_factory = partial(audit_factory, dict(audit_options))
         return SharedAdapterFactories(
             storage=cast(StorageFactory, storage_factory),
-            audit=cast(AuditFactory, self._load(AUDIT_ENTRY_POINT_GROUP, audit)),
+            audit=cast(AuditFactory, audit_factory),
         )
 
     def load_agent(
