@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 智能体 · 素白 + 多巴胺</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#eef0f3; color:#1b1f24; font:14px/1.5 -apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif; }
+  .intro { padding:26px 40px 6px; }
+  .intro h1 { margin:0 0 4px; font-size:21px; font-weight:600; }
+  .intro p { margin:0; color:#6b7280; }
+  .wrap { padding:16px 40px 48px; display:flex; flex-direction:column; gap:28px; }
+  .opt { border-radius:14px; overflow:hidden; border:2px solid transparent; cursor:pointer; background:#fff; box-shadow:0 1px 3px rgba(16,24,40,.08); }
+  .opt.sel { border-color:#2563eb; box-shadow:0 0 0 4px rgba(37,99,235,.15); }
+  .cap { display:flex; align-items:center; gap:10px; padding:12px 18px; border-top:1px solid #e5e7eb; background:#fff; }
+  .cap .letter { width:24px; height:24px; border-radius:7px; background:#1b1f24; color:#fff; font-size:12px; display:flex; align-items:center; justify-content:center; }
+  .opt.sel .letter { background:#2563eb; }
+  .cap b { font-size:14px; }
+  .cap span { color:#6b7280; font-size:13px; }
+  footer { padding:0 40px 40px; color:#6b7280; font-size:13px; }
+
+  /* ===== shared app skeleton, themed by variables ===== */
+  .app { height:560px; display:flex; background:var(--bg); color:var(--fg); font-family:var(--font); font-size:var(--fs); }
+  .rail { width:56px; background:var(--rail); border-right:1px solid var(--line); display:flex; flex-direction:column; align-items:center; padding:12px 0; gap:6px; }
+  .rail .logo.sign { width:48px; height:26px; display:flex; align-items:center; justify-content:center; margin-bottom:8px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+  .rail .ic { width:36px; height:36px; border-radius:var(--r-sm); display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .rail .ic svg { width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+  .rail .ic.on { background:var(--hi); color:var(--accent); }
+  .rail .sp { flex:1; }
+  .rail .me { width:28px; height:28px; border-radius:50%; }
+  .col { display:flex; flex-direction:column; border-right:1px solid var(--line); background:var(--panel); min-width:0; }
+  .col:last-child { border-right:0; }
+  .hd { height:52px; display:flex; align-items:center; gap:8px; padding:0 14px; border-bottom:1px solid var(--line); font-weight:600; flex:none; }
+  .hd .n { margin-left:auto; color:var(--muted); font-weight:400; font-size:.86em; }
+  .hd .sub { color:var(--muted); font-weight:400; font-size:.86em; margin-left:4px; }
+  .search { margin:10px 12px 4px; height:30px; border-radius:var(--r-sm); background:var(--input); border:1px solid var(--line); color:var(--muted); font-size:.9em; display:flex; align-items:center; padding:0 10px; gap:6px; }
+  .search svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:2; }
+  .list { padding:6px 8px; overflow:hidden; }
+  .li { display:flex; align-items:center; gap:10px; padding:8px 8px; border-radius:var(--r-sm); }
+  .li.on { background:var(--hi); }
+  .li .t { flex:1; min-width:0; }
+  .li .t b { display:block; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .li .t small { display:block; color:var(--muted); font-size:.84em; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .li .tm { color:var(--muted); font-size:.8em; align-self:flex-start; margin-top:2px; }
+  .av { width:34px; height:34px; border-radius:var(--r-av); flex:none; image-rendering:pixelated; background:#fff; border:1px solid var(--line); }
+  .av.sm { width:28px; height:28px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .dot.run { background:var(--ok); box-shadow:0 0 0 2px var(--panel); }
+  .dot.busy { background:var(--warn); }
+  .dot.off { background:var(--muted); opacity:.5; }
+  .badge { font-size:.78em; padding:1px 7px; border-radius:999px; background:var(--warn-bg); color:var(--warn-fg); font-weight:500; }
+  .chip { font-size:.78em; padding:0 6px; border-radius:4px; background:var(--chip); color:var(--muted); }
+  .chat { flex:1; padding:14px 22px; display:flex; flex-direction:column; gap:16px; overflow:hidden; background:var(--chat); }
+  .older { text-align:center; color:var(--muted); font-size:.8em; }
+  .g { display:flex; gap:12px; max-width:860px; }
+  .g .av.sm { width:30px; height:30px; margin-top:2px; }
+  .g .body { min-width:0; }
+  .g .nm { display:flex; align-items:baseline; gap:8px; font-weight:600; margin-bottom:2px; }
+  .g .k { font-size:.72em; font-weight:500; padding:0 5px; border-radius:4px; border:1px solid var(--line); color:var(--muted); background:var(--panel); line-height:1.5; }
+  .g .ts { font-size:.78em; color:var(--muted); font-weight:400; }
+  .g .msg { line-height:1.6; padding:1px 0; }
+  .g .msg + .msg { margin-top:4px; }
+  .col { position:relative; }
+  .hover { position:absolute; left:250px; top:96px; width:300px; background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(16,24,40,.12); padding:12px 14px; z-index:3; font-size:.92em; }
+  .hover .h { display:flex; align-items:center; gap:8px; font-weight:600; margin-bottom:8px; }
+  .hover .h .dot { margin-left:auto; }
+  .hover .st { color:var(--muted); font-size:.9em; margin-bottom:8px; }
+  .hover .ev { font-size:.92em; line-height:1.75; color:var(--fg); }
+  .hover .ev span { color:var(--muted); margin-right:8px; }
+  .hover .more { margin-top:8px; font-size:.9em; color:var(--muted); }
+  .hover .live { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--ok); margin-right:6px; vertical-align:1px; }
+  .compose { height:46px; border-top:1px solid var(--line); display:flex; align-items:center; padding:0 16px; color:var(--muted); font-size:.9em; gap:8px; flex:none; background:var(--panel); }
+  .compose .box { flex:1; height:30px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--input); padding:0 10px; display:flex; align-items:center; }
+
+  /* ===== A1 点睛 ===== */
+  .ta1 { --font:-apple-system,"PingFang SC","Noto Sans CJK SC","Inter","Helvetica Neue",sans-serif; --fs:13px; --bg:#fff; --panel:#fff; --rail:#fafafa; --chat:#fff; --fg:#18181b; --muted:#71717a; --line:#ececef; --hi:#f4f4f5; --input:#fafafa; --chip:#f4f4f5; --accent:#ff5a5f; --ok:#84cc16; --warn:#f59e0b; --warn-bg:#ffe4e6; --warn-fg:#be123c; --r-sm:6px; --r-av:6px; --r-bb:8px; }
+  .ta1 .rail .ic.on { background:#ffe4e6; color:#ff5a5f; }
+  .ta1 .li.on { background:#ffe4e6; }
+  /* ===== A1 暗色 ===== */
+  .ta1d { --font:-apple-system,"PingFang SC","Noto Sans CJK SC","Inter","Helvetica Neue",sans-serif; --fs:13px; --bg:#0f1114; --panel:#15181d; --rail:#0f1114; --chat:#121519; --fg:#e6e8ee; --muted:#8b93a1; --line:#23272f; --hi:#3a1f22; --input:#0f1114; --chip:#23272f; --accent:#ff6b6f; --ok:#a3e635; --warn:#fbbf24; --warn-bg:#4a1d22; --warn-fg:#ff9a9e; --r-sm:6px; --r-av:6px; }
+  .ta1d .rail .ic.on { background:#3a1f22; color:#ff6b6f; }
+  .ta1d .li.on { background:#3a1f22; }
+  .ta1d .av { background:#1b1f26; border-color:#2a2f38; }
+  .ta1d .ch-tg { color:#38bdf8; } .ta1d .ch-lark { color:#a3e635; } .ta1d .ch-wecom { color:#fbbf24; }
+  .ta1d .hover { box-shadow:0 8px 24px rgba(0,0,0,.5); }
+  .ta1d .g .k { background:#1b1f26; }
+  .ta1d .search { color:var(--muted); }
+  /* channel chips coloured in both */
+  .ch-tg { color:#0284c7; } .ch-lark { color:#65a30d; } .ch-wecom { color:#d97706; }
+</style>
+</head>
+<body>
+<div class="intro">
+  <h1>A1 定稿 + 暗色主题</h1>
+  <p>上面是定稿的浅色 A1，下面是它的暗色版：同一套变量换值，没有别的差异。看看暗色哪里不对。</p>
+</div>
+<div class="wrap" id="wrap"></div>
+<footer>已选：<span id="chosen">（还没选）</span></footer>
+
+<template id="screen">
+<div class="app">
+  <div class="rail">
+    <div class="logo sign"><svg viewBox="0 0 48 26" style="width:48px;height:26px;overflow:visible"><g transform="rotate(-8 24 13)"><rect x="3" y="4" width="42" height="18" rx="2" fill="#6b1f1f" stroke="#4a1414" stroke-width="1"/><path d="M6 9 q10 -1.5 20 0 t16 0 M6 14 q12 1.5 24 0 t12 0 M6 19 q9 -1.5 18 0 t18 0" stroke="#4a1414" stroke-opacity=".5" stroke-width=".7" fill="none"/><circle cx="6.5" cy="7.5" r="1" fill="#d4a017"/><circle cx="41.5" cy="7.5" r="1" fill="#d4a017"/><circle cx="6.5" cy="18.5" r="1" fill="#d4a017"/><circle cx="41.5" cy="18.5" r="1" fill="#d4a017"/><text x="24" y="17" text-anchor="middle" font-size="9" fill="#f2c14e" font-family="Helvetica Neue,Arial,sans-serif" font-weight="700" font-style="italic">Bazaar</text></g></svg></div>
+    <div class="ic on" title="智能体"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5c3 0 6 2 6 5.5"/></svg></div>
+    <div class="ic" title="活动"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div>
+    <div class="ic" title="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div>
+    <div class="sp"></div>
+    <div class="ic" title="电脑"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
+    <canvas class="av me id" data-name="yuchanns"></canvas>
+  </div>
+  <div class="col" style="width:236px">
+    <div class="hd">智能体 <span class="n">5</span></div>
+    <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>搜索</div>
+    <div class="hover">
+      <div class="h"><canvas class="av sm id" data-name="有马佳奈"></canvas>有马佳奈 <div class="dot busy"></div></div>
+      <div class="st">正在处理 B小町 #bcn 的消息 · 开始于 01:19 · 第 3 轮工具调用</div>
+      <div class="ev"><span class="live"></span><span>01:19:58</span>开始工具调用 · bcc message send<br><span>01:19:55</span>工具调用完成 · Bash<br><span>01:19:41</span>开始工具调用 · Bash<br><span>01:19:40</span>开始处理消息<br><span>01:19:39</span>收到消息 · B小町 #bcn</div>
+      <div class="more">今天 token 1.2M · $9.12 · 点开看全部活动</div>
+    </div>
+    <div class="list">
+      <div class="li on"><canvas class="av id" data-name="有马佳奈"></canvas><div class="t"><b>有马佳奈</b><small>kana · claudecode</small></div><div class="dot busy"></div></div>
+      <div class="li"><canvas class="av id" data-name="IE"></canvas><div class="t"><b>IE</b><small>ie · codex</small></div><div class="dot run"></div></div>
+      <div class="li"><canvas class="av id" data-name="Tifa"></canvas><div class="t"><b>Tifa</b><small>ie · codex</small></div><div class="dot off"></div></div>
+      <div class="li"><canvas class="av id" data-name="bkakuaBot"></canvas><div class="t"><b>bkakuaBot</b><small>bkaku · 离线</small></div><div class="dot off"></div></div>
+      <div class="li"><canvas class="av id" data-name="gobugobot"></canvas><div class="t"><b>gobugobot</b><small>gobu · codex</small></div><div class="dot run"></div></div>
+    </div>
+  </div>
+  <div class="col" style="width:272px">
+    <div class="hd">联系人 <span class="n">14</span></div>
+    <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>搜索</div>
+    <div class="list">
+      <div class="li on"><canvas class="av id" data-name="B小町"></canvas><div class="t"><b>B小町 #bcn</b><small><span class="ch-tg">telegram</span> · 群</small></div><span class="tm">2 分钟前</span></div>
+      <div class="li"><canvas class="av id" data-name="yuchanns"></canvas><div class="t"><b>yuchanns</b><small><span class="ch-lark">lark</span> · DM</small></div><span class="tm">12 分钟前</span></div>
+      <div class="li"><canvas class="av id" data-name="张三"></canvas><div class="t"><b>张三</b><small><span class="ch-tg">telegram</span> · DM</small></div><span class="badge">待审核</span></div>
+      <div class="li"><canvas class="av id" data-name="B小町 general"></canvas><div class="t"><b>B小町 #general</b><small><span class="ch-tg">telegram</span> · 群</small></div><span class="tm">昨天</span></div>
+      <div class="li"><canvas class="av id" data-name="李四"></canvas><div class="t"><b>李四 <span class="chip">备注</span></b><small><span class="ch-wecom">wecom</span> · DM · woiA3k…9f</small></div><span class="tm">昨天</span></div>
+      <div class="li"><canvas class="av id" data-name="yuchanns tg"></canvas><div class="t"><b>yuchanns</b><small><span class="ch-tg">telegram</span> · DM</small></div><span class="tm">昨天</span></div>
+    </div>
+  </div>
+  <div class="col" style="flex:1">
+    <div class="hd">B小町 #bcn <span class="sub">telegram · 群 · 14 人</span><span class="n">有马佳奈 正在处理</span></div>
+    <div class="chat">
+      <div class="older">↑ 向上滚动加载更早的消息</div>
+      <div class="g"><canvas class="av sm id" data-name="yuchanns"></canvas><div class="body"><div class="nm">yuchanns <span class="k">Human</span><span class="ts">22:45</span></div><div class="msg">切个分支，作为计划和开发分支</div></div></div>
+      <div class="g agent"><canvas class="av sm id" data-name="有马佳奈"></canvas><div class="body"><div class="nm">有马佳奈 <span class="k">Agent</span><span class="ts">22:45</span></div><div class="msg">切好了：f-20260915-bcs，从 main 48b01ba（0.2.1rc2）切出，工作树干净，没推。</div><div class="msg">接下来我写计划到 plans/ 提交一次给你看。范围我先按今晚定的这些写：bcs 模块与 bcs 命令、[bcs] 配置、node 侧 contrib/bcs……</div></div></div>
+      <div class="g"><canvas class="av sm id" data-name="yuchanns"></canvas><div class="body"><div class="nm">yuchanns <span class="k">Human</span><span class="ts">22:46</span></div><div class="msg">另外，虽然 bcs 需要和 bcn 一起发版，但是内部协议应该有自己的版本，就像 telegram 那样。因为我们设计上是可以在不同的端分别部署 node 和 server 的</div><div class="msg">包括改动 bcn 配置</div></div></div>
+      <div class="g agent"><canvas class="av sm id" data-name="有马佳奈"></canvas><div class="body"><div class="nm">有马佳奈 <span class="k">Agent</span><span class="ts">22:47</span></div><div class="msg">好，进计划：协议版本独立于包版本，两边各有一个常量；node 每次请求带上自己的协议版本，bcs 在信封里回自己的。</div></div></div>
+    </div>
+  </div>
+</div>
+</template>
+
+<script>
+  window.__events = [];
+  const themes = [
+    ['A1','ta1','点睛 · 浅色','定稿的浅色。'],
+    ['A1D','ta1d','点睛 · 暗色','同一套规则翻成暗色：近黑底、面板略亮、细线更暗；珊瑚红高亮变成深红底 + 亮珊瑚字；状态点和 channel 色都提亮一档保证对比。'],
+  ];
+  const tpl = document.getElementById('screen');
+  const wrap = document.getElementById('wrap');
+  for (const [letter, cls, name, desc] of themes) {
+    const opt = document.createElement('div');
+    opt.className = 'opt ' + cls; opt.dataset.choice = letter;
+    opt.appendChild(tpl.content.cloneNode(true));
+    const cap = document.createElement('div'); cap.className = 'cap';
+    cap.innerHTML = `<div class="letter">${letter}</div><b>${name}</b><span>${desc}</span>`;
+    opt.appendChild(cap);
+    opt.onclick = () => {
+      document.querySelectorAll('.opt').forEach(o => o.classList.remove('sel'));
+      opt.classList.add('sel');
+      document.getElementById('chosen').textContent = letter;
+      window.__events.push({ type:'click', choice: letter, at: Date.now() });
+    };
+    wrap.appendChild(opt);
+  }
+  function hash(str){let h=2166136261;for(const c of str){h^=c.codePointAt(0);h=Math.imul(h,16777619)>>>0;}return h;}
+  document.querySelectorAll('canvas.id').forEach(c=>{
+    const n=c.dataset.name, h=hash(n); c.width=c.height=5; const ctx=c.getContext('2d');
+    ctx.fillStyle=`hsl(${h%360} 55% 48%)`; let bits=h;
+    for(let y=0;y<5;y++)for(let x=0;x<3;x++){bits=(bits*1103515245+12345)>>>0; if((bits>>>16)&1){ctx.fillRect(x,y,1,1);ctx.fillRect(4-x,y,1,1);}}
+  });
+</script>
+</body>
+</html>
