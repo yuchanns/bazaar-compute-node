@@ -21,6 +21,12 @@ def main() -> None:
         check=True,
         text=True,
     )
+    server_result = subprocess.run(
+        ["bcs", "--version"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
 
     if distribution_version != expected_version:
         raise SystemExit(
@@ -30,6 +36,8 @@ def main() -> None:
         raise SystemExit(f"runtime version {__version__!r} != {expected_version!r}")
     if result.stdout.strip() != f"bcn {expected_version}":
         raise SystemExit(f"unexpected bcn --version output: {result.stdout!r}")
+    if server_result.stdout.strip() != f"bcs {expected_version}":
+        raise SystemExit(f"unexpected bcs --version output: {server_result.stdout!r}")
 
     instructions = DeveloperInstructionContext(
         agent_name="Package Smoke Agent",

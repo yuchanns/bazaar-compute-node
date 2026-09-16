@@ -16,6 +16,10 @@ dependencies = [
     "pydantic>=2.0.0",
     "protobug==1.0.0",
     "tzdata>=2024.1; sys_platform == 'win32'",
+    "starlette>=1.6.0",
+    "uvicorn>=0.53.0",
+    "uvloop>=0.22.1 ; sys_platform != 'win32'",
+    "httptools>=0.8.0",
 ]
 
 [project.urls]
@@ -23,6 +27,7 @@ Repository = "https://github.com/yuchanns/bazaar-compute-node"
 
 [project.scripts]
 bcn = "bazaar_compute_node.cli:main"
+bcs = "bazaar_compute_server.cli:main"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
 codex = "bazaar_compute_node.contrib.codex.plugin:create_runtime"
@@ -35,6 +40,9 @@ lark = "bazaar_compute_node.contrib.lark.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.storages"]
 sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
+
+[project.entry-points."bazaar_compute_server.storages"]
+sqlite = "bazaar_compute_server.contrib.sqlite.plugin:create_storage"
 
 [project.entry-points."bazaar_compute_node.audits"]
 logging = "bazaar_compute_node.contrib.logging.plugin:create_audit"
@@ -53,7 +61,9 @@ dev = [
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.pytest.ini_options]
-addopts = "-m 'not e2e'"
+# anyio arrives with starlette and brings a pytest plugin that fights
+# pytest-asyncio over the event loop; the suite runs on pytest-asyncio alone
+addopts = "-m 'not e2e' -p no:anyio"
 markers = [
     "e2e: requires a real external provider",
 ]
@@ -61,3 +71,6 @@ markers = [
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["bazaar_compute_node", "bazaar_compute_server"]
