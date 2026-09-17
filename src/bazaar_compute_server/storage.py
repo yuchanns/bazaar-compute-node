@@ -97,8 +97,11 @@ class IStorage(Protocol):
         """The account the credentials belong to, or nothing for any other pair."""
         ...
 
-    async def change_password(self, account_id: str, password: str) -> Account:
-        """The account with its new password hash."""
+    async def change_password(
+        self, account_id: str, password: str, *, expected_hash: str
+    ) -> Account | None:
+        """The account with its new password hash, or nothing when its hash
+        is no longer the one the caller verified against."""
         ...
 
     async def set_preferences(
@@ -107,23 +110,37 @@ class IStorage(Protocol):
         """The account with how it reads the pages from now on."""
         ...
 
-    async def add_computer(self, name: str) -> Enrolment: ...
+    async def add_computer(self, name: str, *, owner_id: str) -> Enrolment:
+        """A new computer, owned by the account that enrolled it."""
+        ...
 
     async def remove_computer(self, computer_id: str) -> bool:
-        """Forget a computer and everything it reported; false if unknown."""
+        """Forget a computer, everything it reported and who could see it;
+        false if unknown."""
         ...
 
     async def find_computer(self, computer_id: str) -> Computer | None: ...
 
     async def list_computers(
         self,
+        subject_id: str,
         *,
         after: str | None = None,
         until: str | None = None,
         limit: int | None = None,
     ) -> list[Computer]:
-        """Computers in enrolment order: those past the id `after`, up to and
-        including the id `until`, at most `limit` of them."""
+        """The subject's computers in enrolment order: those past the id
+        `after`, up to and including the id `until`, at most `limit` of them."""
+        ...
+
+    async def has_relation(self, subject_id: str, kind: str, target_id: str) -> bool:
+        """Whether the subject stands in that relation to the target."""
+        ...
+
+    async def related(
+        self, subject_id: str, kind: str, target_ids: Sequence[str]
+    ) -> set[str]:
+        """Which of the targets the subject stands in that relation to."""
         ...
 
     async def authenticate(self, token: str) -> Computer | None:
@@ -157,14 +174,13 @@ class IStorage(Protocol):
     async def latest_per_agent(
         self, computer_ids: Sequence[str], names: Sequence[str]
     ) -> list[StoredEvent]:
-        """For every agent on the computers, its newest event with one of
-        the names; agents with none are simply absent."""
+        """For every thread of every agent on the computers, its newest event
+        with one of the names; threads with none are simply absent."""
         ...
 
-    async def latest_per_thread(
-        self, name: str, threads: Sequence[ThreadKey]
-    ) -> list[StoredEvent]:
-        """For every thread named, its newest event with the name."""
+    async def thread_names(self, threads: Sequence[ThreadKey]) -> dict[ThreadKey, str]:
+        """What each thread is called, from the newest message seen in it;
+        threads no message named are absent."""
         ...
 
     async def usage_around(

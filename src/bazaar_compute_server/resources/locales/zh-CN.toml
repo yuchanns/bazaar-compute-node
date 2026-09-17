@@ -28,7 +28,6 @@
 "computers.on_unix" = "Linux / macOS"
 "computers.on_windows" = "Windows"
 "computers.first_time" = "首次接入这台电脑：注册并启动服务"
-"computers.already_running" = "已在运行的节点改为执行 bcn system-service restart"
 "computers.copy" = "复制"
 "computers.last_report" = "最近活跃：{{ when }}"
 "computers.never_reported" = "尚未上线"

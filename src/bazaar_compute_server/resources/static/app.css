@@ -7,8 +7,8 @@
   /* a warm paper canvas, near-white panels on it, and the rail in the sign's rosewood */
   --canvas: light-dark(#f4f1ec, #0c0e11); --panel: light-dark(#fdfcfa, #15181d); --float: light-dark(#fbf8f3, #1a1d23);
   --rail: light-dark(#3b1a1a, #24100f); --rail-fg: light-dark(#d9c9b3, #b8a68f); --rail-on: #f2c14e; --rail-on-bg: rgba(255, 255, 255, .10);
-  --fg: light-dark(#18181b, #e6e8ee); --muted: light-dark(#71717a, #8b93a1); --line: light-dark(#ececef, #23272f);
-  --hi: light-dark(#ffe4e6, #3a1f22); --input: light-dark(#fafafa, #0f1114); --chip: light-dark(#f4f4f5, #23272f); --accent: light-dark(#ff5a5f, #ff6b6f);
+  --fg: light-dark(#18181b, #e6e8ee); --muted: light-dark(#71717a, #8b93a1); --line: light-dark(#ececef, #23272f); --edge: light-dark(#cfc9bf, #3a404b);
+  --hi: light-dark(#ffe4e6, #3a1f22); --input: light-dark(#efece6, #0f1114); --chip: light-dark(#f4f4f5, #23272f); --accent: light-dark(#ff5a5f, #ff6b6f);
   --ok: light-dark(#84cc16, #a3e635); --warn: light-dark(#f59e0b, #fbbf24); --warn-bg: light-dark(#ffe4e6, #4a1d22); --warn-fg: light-dark(#be123c, #ff9a9e);
   --danger: light-dark(#be123c, #e11d48); --danger-bg: light-dark(#fff1f2, #3a1418);
   --tg: light-dark(#0284c7, #38bdf8); --lark: light-dark(#65a30d, #a3e635); --wecom: light-dark(#d97706, #fbbf24);
@@ -24,7 +24,7 @@ a { color: inherit; text-decoration: none; }
 
 /* rail */
 .rail { width: 56px; background: var(--rail); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 6px; flex: none; }
-.rail .sign { width: 48px; height: 26px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+.rail .sign { width: 48px; height: 26px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; filter: drop-shadow(1px 3px 3px rgba(0,0,0,.7)); }
 .rail .sign svg { width: 48px; height: 26px; overflow: visible; }
 .rail .ic { width: 36px; height: 36px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--rail-fg); }
 .rail .ic .i svg { width: 18px; height: 18px; }
@@ -34,8 +34,9 @@ a { color: inherit; text-decoration: none; }
 .rail .sp { flex: 1; }
 
 /* columns */
-.main { flex: 1; display: flex; min-width: 0; padding: 10px 10px 10px 0; gap: 10px; }
-.col { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; overflow: hidden; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.main { flex: 1; display: flex; min-width: 0; }
+.col { display: flex; flex-direction: column; background: var(--panel); min-width: 0; overflow: hidden; }
+.col.list { border-right: 1px solid var(--line); }
 .col.list { width: 300px; flex: none; }
 .col.wide { flex: 1; }
 .hd { height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--line); font-weight: 600; flex: none; }
@@ -110,9 +111,9 @@ a { color: inherit; text-decoration: none; }
 .btn.icon .i svg { width: 16px; height: 16px; }
 .field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { width: 64px; color: var(--muted); }
-.field input, .field select { flex: 1; max-width: 260px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
+.field input, .field select { flex: 1; max-width: 260px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
 /* forms are short: a card no wider than it needs, inputs no longer than what goes in them */
-.dialog { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--float); max-width: 420px; }
+.dialog { border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--panel); max-width: 420px; box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
 .dialog.wide { max-width: 720px; }
 .dialog h3 { margin: 0 0 8px; font-size: 1em; }
 /* a command to copy: wraps rather than scrolls, with the copy button in its corner */
@@ -128,7 +129,7 @@ a { color: inherit; text-decoration: none; }
 .tabs .snippet pre { border-top-left-radius: 0; }
 .tabs:has(#snippet-unix:checked) #for-unix, .tabs:has(#snippet-windows:checked) #for-windows { display: block; }
 .snippet { position: relative; margin: 8px 0; }
-.snippet pre { margin: 0; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 40px 10px 12px; font-size: .92em; white-space: pre-wrap; word-break: break-all; }
+.snippet pre { margin: 0; background: var(--input); border: 1px solid var(--edge); border-radius: var(--r-sm); padding: 10px 40px 10px 12px; font-size: .92em; white-space: pre-wrap; word-break: break-all; }
 .snippet .copy { position: absolute; top: 6px; right: 6px; margin: 0; }
 .snippet .copy .i + .i, .snippet .copy.done .i:first-child { display: none; }
 .snippet .copy.done .i + .i { display: inline-flex; color: var(--ok); }
@@ -163,7 +164,7 @@ a { color: inherit; text-decoration: none; }
    and where the browser allows (appearance: base-select) the open list drawn
    like the page's own cards; elsewhere the list stays the system's */
 .select { position: relative; display: inline-flex; flex: 1; max-width: 260px; }
-.select select { appearance: none; width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 30px 6px 9px; font: inherit; cursor: pointer; }
+.select select { appearance: none; width: 100%; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 30px 6px 9px; font: inherit; cursor: pointer; }
 .select select:focus, .field input:focus { outline: none; border-color: var(--accent); }
 .select .i { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
 @supports (appearance: base-select) {

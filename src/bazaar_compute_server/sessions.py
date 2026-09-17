@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from .clock import now_ms
+from .config import write_private
 from .storage import Account
 
 COOKIE = "bcs_session"
@@ -83,19 +84,16 @@ async def load_session_key(data_dir: Path) -> bytes:
 
 
 def _load_or_create(path: Path) -> bytes:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
+    if path.exists():
         key = path.read_bytes()
-        # a key of another size was never written whole; signing with it
-        # would fail quietly, so the start fails loudly instead
+        # a key of another size is not one of ours; signing with it would
+        # fail quietly, so the start fails loudly instead
         if len(key) != _KEY_BYTES:
-            raise RuntimeError(f"{path} does not hold a session key") from None
+            raise RuntimeError(f"{path} does not hold a session key")
         return key
     key = os.urandom(_KEY_BYTES)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(key)
+    # written whole or not at all: a start cut short leaves no half a key
+    write_private(path, key)
     return key
 
 

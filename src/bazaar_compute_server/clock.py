@@ -6,8 +6,12 @@ from datetime import UTC, datetime, tzinfo
 from time import time_ns
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# where the server sits: the zone a viewer gets when it did not say its own
-LOCAL: tzinfo = datetime.now().astimezone().tzinfo or UTC
+
+def local() -> tzinfo:
+    """Where the server sits, as of now: the zone a viewer gets when it did
+    not say its own. Read each time, so a change of daylight time is seen."""
+
+    return datetime.now().astimezone().tzinfo or UTC
 
 
 def now_ms() -> int:
@@ -22,7 +26,7 @@ def zone(name: str | None) -> tzinfo:
             return ZoneInfo(name)
         except ZoneInfoNotFoundError, ValueError:
             pass
-    return LOCAL
+    return local()
 
 
 def start_of_today_ms(tz: tzinfo) -> int:
@@ -34,4 +38,4 @@ def clock_text(at_ms: int, tz: tzinfo) -> str:
     return datetime.fromtimestamp(at_ms / 1000, tz).strftime("%H:%M:%S")
 
 
-__all__ = ["LOCAL", "clock_text", "now_ms", "start_of_today_ms", "zone"]
+__all__ = ["clock_text", "local", "now_ms", "start_of_today_ms", "zone"]

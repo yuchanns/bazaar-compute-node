@@ -15,6 +15,8 @@ PROTOCOL_HEADER = "X-BCS-Protocol"
 _AGENT_ID = r"^[A-Za-z0-9_-]{1,64}$"
 # what fits on one row of the list
 MAX_NAME_CHARS = 100
+# a run is named by a UUID; nothing longer is one
+MAX_RUN_ID_CHARS = 64
 # the pages turn a timestamp into a datetime in the viewer's zone; the last
 # year one can hold is the last one that works in every zone
 _LATEST_MS = int(datetime(9999, 1, 1, tzinfo=UTC).timestamp() * 1000)
@@ -61,7 +63,6 @@ class Health(BaseModel):
     agents: list[AgentRecord] = Field(default_factory=list)
     version: str | None = None
     system: str | None = None
-    interval_ms: int | None = Field(default=None, gt=0)
     audit: AuditHealth = Field(default_factory=AuditHealth)
 
 
@@ -79,7 +80,7 @@ class Usage(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
     total: TokenTotal = Field(default_factory=TokenTotal)
-    cost_usd: float | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class Inbound(BaseModel):
@@ -113,7 +114,7 @@ class Event(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    seq: int = Field(ge=1)
+    seq: int = Field(ge=1, le=2**63 - 1)
     event_name: str = Field(min_length=1)
     state: str
     created_at_ms: int = Field(ge=0, le=_LATEST_MS)
@@ -133,7 +134,7 @@ class Event(BaseModel):
 class ReportEventsRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    run_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1, max_length=MAX_RUN_ID_CHARS)
     events: list[Event]
 
 

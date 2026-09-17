@@ -783,11 +783,12 @@ def test_server_connect_records_the_server_and_keeps_the_token_out_of_config(
     }
     assert token not in config_path.read_text(encoding="utf-8")
 
-    # case: the token itself went to the environment file, readable only by us
-    assert env_file.read_text(encoding="utf-8") == f"BCN_SERVER_TOKEN={token}\n"
+    # case: the token itself went to the environment file, readable only by
+    # us, as a literal the shell will not expand
+    assert env_file.read_text(encoding="utf-8") == f"BCN_SERVER_TOKEN='{token}'\n"
     if os.name != "nt":
         assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
-    assert "bcn system-service restart" in capsys.readouterr().out
+    assert "bcn system-service start" in capsys.readouterr().out
 
     # case: connecting again replaces the token and keeps other variables
     env_file.write_text(f"OTHER=kept\nBCN_SERVER_TOKEN={token}\n", encoding="utf-8")
@@ -809,28 +810,70 @@ def test_server_connect_records_the_server_and_keeps_the_token_out_of_config(
         == 0
     )
     assert env_file.read_text(encoding="utf-8") == (
-        "OTHER=kept\nBCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:second\n"
+        "OTHER=kept\nBCN_SERVER_TOKEN='0198d4e6-29c5-7465-b74b-88db31f0c118:second'\n"
     )
     # case: nothing of the write is left beside the file
     assert sorted(path.name for path in env_file.parent.iterdir()) == ["runtime.env"]
 
-    # case: an address without its scheme is refused before anything is written
-    with pytest.raises(SystemExit):
-        main(
+    # case: a token a shell could read as more than a value is refused
+    for bad in ("a'b", "a\nb"):
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "server",
+                    "connect",
+                    "--config",
+                    str(config_path),
+                    "--url",
+                    "http://127.0.0.1:8765",
+                    "--token",
+                    bad,
+                    "--env-file",
+                    str(env_file),
+                ]
+            )
+    assert "second" in env_file.read_text(encoding="utf-8")
+
+    # case: the configuration cannot be written: the token goes back too.
+    # the disk "fills" between the two writes: a process-wide file size
+    # limit that the short environment file fits under and the longer
+    # configuration does not
+    if os.name != "nt":
+        kept = env_file.read_text(encoding="utf-8")
+        limit = len(kept.encode("utf-8")) + 16
+        assert limit < config_path.stat().st_size
+        connect_under_limit = "\n".join(
+            (
+                "import resource, sys",
+                f"resource.setrlimit(resource.RLIMIT_FSIZE, ({limit}, {limit}))",
+                "from bazaar_compute_node.cli import main",
+                "sys.exit(main(sys.argv[1:]))",
+            )
+        )
+        result = subprocess.run(
             [
+                sys.executable,
+                "-c",
+                connect_under_limit,
                 "server",
                 "connect",
                 "--config",
                 str(config_path),
                 "--url",
-                "127.0.0.1:8765",
+                "http://127.0.0.1:8765",
                 "--token",
-                token,
+                "0198d4e6-29c5-7465-b74b-88db31f0c118:third",
                 "--env-file",
                 str(env_file),
-            ]
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    assert "second" in env_file.read_text(encoding="utf-8")
+        assert result.returncode != 0, result.stdout
+        assert "cannot write" in result.stderr
+        assert env_file.read_text(encoding="utf-8") == kept
+        assert 'version = "4"' in config_path.read_text(encoding="utf-8")
 
 
 def test_server_connect_takes_the_env_file_from_the_registered_service(
@@ -860,7 +903,7 @@ def test_server_connect_takes_the_env_file_from_the_registered_service(
     out = capsys.readouterr().out
     assert "bcn system-service install`" in out and "--env-file" not in out
     assert default_file.read_text(encoding="utf-8") == (
-        "BCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:secret\n"
+        "BCN_SERVER_TOKEN='0198d4e6-29c5-7465-b74b-88db31f0c118:secret'\n"
     )
 
     # case: the file the service was installed with is the one that gets the
@@ -884,6 +927,6 @@ def test_server_connect_takes_the_env_file_from_the_registered_service(
     )
     assert main(arguments_) == 0
     assert env_file.read_text(encoding="utf-8") == (
-        "BCN_SERVER_TOKEN=0198d4e6-29c5-7465-b74b-88db31f0c118:secret\n"
+        "BCN_SERVER_TOKEN='0198d4e6-29c5-7465-b74b-88db31f0c118:secret'\n"
     )
-    assert "bcn system-service restart" in capsys.readouterr().out
+    assert "bcn system-service start" in capsys.readouterr().out

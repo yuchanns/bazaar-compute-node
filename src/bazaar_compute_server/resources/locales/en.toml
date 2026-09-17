@@ -28,7 +28,6 @@
 "computers.on_unix" = "Linux / macOS"
 "computers.on_windows" = "Windows"
 "computers.first_time" = "first time on this machine: register and start the service"
-"computers.already_running" = "a node already running: run bcn system-service restart instead"
 "computers.copy" = "Copy"
 "computers.last_report" = "Last seen {{ when }}"
 "computers.never_reported" = "Not yet online"

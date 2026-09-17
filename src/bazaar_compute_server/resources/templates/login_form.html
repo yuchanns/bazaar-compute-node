@@ -9,5 +9,5 @@
      already has htmx running #}
   {% if failed %}<button class="btn p" type="submit">{{ t.text("login.submit") }}</button>
   {% else %}<button class="btn p" type="submit" disabled>{{ t.text("login.submit") }}</button>
-  <script>document.querySelector("#login button[type=submit]").disabled = false</script>{% endif %}
+  <script>if (window.htmx) document.querySelector("#login button[type=submit]").disabled = false</script>{% endif %}
 </form>

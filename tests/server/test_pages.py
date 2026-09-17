@@ -9,12 +9,12 @@ import aiohttp
 import aiosqlite
 import pytest
 
-from bazaar_compute_server.clock import LOCAL, clock_text, now_ms, start_of_today_ms
+from bazaar_compute_server.clock import clock_text, local, now_ms, start_of_today_ms
 from bazaar_compute_server.fleet import PAGE_SIZE
 from bazaar_compute_server.protocol import Event
 from bazaar_compute_server.rendering import identicon
 
-from ._serving import serving, signed_in
+from ._serving import TESTER, enrol, root_id, serving, signed_in, with_password
 
 
 def _health(agents: list[dict[str, Any]], seq: int) -> dict[str, Any]:
@@ -64,7 +64,7 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         serving(tmp_path) as (base, storage),
         signed_in(base, storage) as session,
     ):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         agents = [
             {
                 "agent_id": "agent-1",
@@ -189,7 +189,7 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
         serving(tmp_path) as (base, storage),
         signed_in(base, storage) as session,
     ):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         agents = [{"agent_id": "agent-1", "name": "IE", "status": "started"}]
         turn = _event(2, "runtime.request.turn.started", "agent-1")
         turn["created_at_ms"] = moment
@@ -208,7 +208,7 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
         assert "1K token" in on_early and "0 token" in on_late
         assert clock_text(moment, early) in on_early
         assert clock_text(moment, late) in on_late
-        assert clock_text(moment, LOCAL) in unsaid
+        assert clock_text(moment, local()) in unsaid
 
         # case: the same session keeps running past midnight; its running total
         # counts for today only by what it grew, a fresh session in full
@@ -267,7 +267,7 @@ async def test_a_long_turn_still_reads_as_busy(tmp_path: Path) -> None:
         serving(tmp_path) as (base, storage),
         signed_in(base, storage) as session,
     ):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         agents = [{"agent_id": "agent-1", "name": "IE", "status": "started"}]
         await storage.record_events(
             enrolment.computer.id,
@@ -289,12 +289,45 @@ async def test_a_long_turn_still_reads_as_busy(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_turn_open_in_another_conversation_keeps_the_agent_busy(
+    tmp_path: Path,
+) -> None:
+    """One conversation's turn ending says nothing about the other's."""
+
+    async with (
+        serving(tmp_path) as (base, storage),
+        signed_in(base, storage) as session,
+    ):
+        enrolment = await enrol(storage, "kana")
+        agents = [{"agent_id": "agent-1", "name": "IE", "status": "started"}]
+        second_start = _event(3, "runtime.request.turn.started", "agent-1")
+        second_end = _event(4, "runtime.turn.completed", "agent-1")
+        for item in (second_start, second_end):
+            item["correlation"]["thread_id"] = "thread-2"
+        await storage.record_events(
+            enrolment.computer.id,
+            "run-1",
+            [
+                Event.model_validate(item)
+                for item in (
+                    _health(agents, 1),
+                    _event(2, "runtime.request.turn.started", "agent-1"),
+                    second_start,
+                    second_end,
+                )
+            ],
+        )
+        _, page = await _get(session, f"{base}/agents")
+        assert 'class="dot busy"' in page
+
+
+@pytest.mark.asyncio
 async def test_a_silent_computer_shows_offline(tmp_path: Path) -> None:
     async with (
         serving(tmp_path) as (base, storage),
         signed_in(base, storage) as session,
     ):
-        enrolment = await storage.add_computer("ie")
+        enrolment = await enrol(storage, "ie")
         stale = _health(
             [
                 {
@@ -358,7 +391,7 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
         ) as response:
             assert response.status == 200
             page = await response.text()
-        computers = await storage.list_computers(limit=10)
+        computers = await storage.list_computers(await root_id(storage), limit=10)
         assert [item.name for item in computers] == ["kana"]
         token_prefix = f"{computers[0].id}:"
         # case: the snippet carries the token and the server's own address,
@@ -397,10 +430,12 @@ async def test_a_computer_is_removed_with_everything_it_said(tmp_path: Path) -> 
         serving(tmp_path) as (base, storage),
         signed_in(base, storage) as session,
     ):
-        enrolment = await storage.add_computer("old")
+        enrolment = await enrol(storage, "old")
         computer_id = enrolment.computer.id
+        # an agent that has only ever been named in a health beat
+        idle = [{"agent_id": "agent-idle", "name": "idle", "status": "started"}]
         await storage.record_events(
-            computer_id, "run-1", [Event.model_validate(_health([], 1))]
+            computer_id, "run-1", [Event.model_validate(_health(idle, 1))]
         )
 
         # case: the button asks first, then the computer and its events go
@@ -416,8 +451,14 @@ async def test_a_computer_is_removed_with_everything_it_said(tmp_path: Path) -> 
             assert response.status == 200
             assert response.headers["HX-Push-Url"] == "/computers"
             assert "old" not in await response.text()
-        assert await storage.list_computers(limit=10) == []
+        assert await storage.list_computers(await root_id(storage), limit=10) == []
         assert await storage.count_events(computer_id) == 0
+        # case: nobody stands in any relation to it or its agents any more
+        async with (
+            aiosqlite.connect(tmp_path / "bcs.sqlite3") as connection,
+            connection.execute("SELECT COUNT(*) FROM relations") as cursor,
+        ):
+            assert await cursor.fetchone() == (0,)
 
         # case: removing it again is nothing
         async with session.delete(f"{base}/computers/{computer_id}") as response:
@@ -438,7 +479,7 @@ async def test_long_lists_come_a_page_at_a_time_as_the_end_scrolls_in(
     ):
         ids = []
         for index in range(PAGE_SIZE + 5):
-            enrolment = await storage.add_computer(f"computer-{index}")
+            enrolment = await enrol(storage, f"computer-{index}")
             ids.append(enrolment.computer.id)
             await storage.record_events(
                 enrolment.computer.id,
@@ -458,34 +499,72 @@ async def test_long_lists_come_a_page_at_a_time_as_the_end_scrolls_in(
                     )
                 ],
             )
-        edge = ids[PAGE_SIZE - 1]
+        # a computer's cursor is its id; an agent's is its computer's and its own
+        edges = {
+            "/computers": (ids[PAGE_SIZE - 1], ids[-1]),
+            "/agents": (
+                f"{ids[PAGE_SIZE - 1]}/agent-{PAGE_SIZE - 1}",
+                f"{ids[-1]}/agent-{PAGE_SIZE + 4}",
+            ),
+        }
 
-        # case: a page shows the first computers and where the next page starts
-        for url in ("/agents", "/computers"):
+        # case: a page shows the first rows and where the next page starts
+        for url, (edge, _) in edges.items():
             _, html = await _get(session, base + url)
             assert f'data-after="{edge}"' in html, url
-        for url in ("/agents/list", "/computers/list"):
-            _, html = await _get(session, base + url)
+            _, html = await _get(session, f"{base}{url}/list")
             assert _rows(html) == PAGE_SIZE, url
             assert f'data-after="{edge}"' in html, url
 
-        # case: the page past the edge is the rest; it ends at the last computer
+        # case: the page past the edge is the rest; it ends at the last row
         # and says so without asking for more
-        for url in ("/agents/list", "/computers/list"):
-            _, html = await _get(session, f"{base}{url}?after={edge}")
+        for url, (edge, last) in edges.items():
+            _, html = await _get(session, f"{base}{url}/list?after={edge}")
             assert _rows(html) == 5, url
-            assert f'data-after="{ids[-1]}"' in html, url
+            assert f'data-after="{last}"' in html, url
             assert "revealed" not in html, url
 
         # case: the refresh brings back everything loaded so far, edge included
-        for url in ("/agents/list", "/computers/list"):
-            _, html = await _get(session, f"{base}{url}?until={edge}")
+        for url, (edge, last) in edges.items():
+            _, html = await _get(session, f"{base}{url}/list?until={edge}")
             assert _rows(html) == PAGE_SIZE, url
             assert f'data-after="{edge}"' in html and "revealed" in html, url
-            _, html = await _get(session, f"{base}{url}?until={ids[-1]}")
+            _, html = await _get(session, f"{base}{url}/list?until={last}")
             assert _rows(html) == PAGE_SIZE + 5, url
-            assert f'data-after="{ids[-1]}"' in html, url
+            assert f'data-after="{last}"' in html, url
             assert "revealed" not in html, url
+
+        # case: agents page by agent: one computer with many of them fills
+        # pages of its own
+        crowd = await enrol(storage, "crowd")
+        await storage.record_events(
+            crowd.computer.id,
+            "run-1",
+            [
+                Event.model_validate(
+                    _health(
+                        [
+                            {
+                                "agent_id": f"z{index:03d}",
+                                "name": "z",
+                                "status": "started",
+                            }
+                            for index in range(PAGE_SIZE + 1)
+                        ],
+                        1,
+                    )
+                )
+            ],
+        )
+        _, html = await _get(session, f"{base}/agents/list?after={edges['/agents'][1]}")
+        assert _rows(html) == PAGE_SIZE
+        assert f'data-after="{crowd.computer.id}/z{PAGE_SIZE - 1:03d}"' in html
+        assert "revealed" in html
+        _, html = await _get(
+            session,
+            f"{base}/agents/list?after={crowd.computer.id}/z{PAGE_SIZE - 1:03d}",
+        )
+        assert _rows(html) == 1 and "revealed" not in html
 
         # case: a computer on a later page still has its own pages
         last = ids[-1]
@@ -497,3 +576,68 @@ async def test_long_lists_come_a_page_at_a_time_as_the_end_scrolls_in(
             session, f"{base}/agents/{last}/agent-{PAGE_SIZE + 4}/activity"
         )
         assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_an_account_sees_what_it_enrolled_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    async with serving(tmp_path) as (base, storage):
+        await with_password(storage, "other", TESTER[1])
+        mine = await enrol(storage, "mine")
+        theirs = await enrol(storage, "theirs", owner="other")
+        for enrolment, agent_id in ((mine, "agent-mine"), (theirs, "agent-theirs")):
+            await storage.record_events(
+                enrolment.computer.id,
+                "run-1",
+                [
+                    Event.model_validate(
+                        _health(
+                            [
+                                {
+                                    "agent_id": agent_id,
+                                    "name": agent_id,
+                                    "status": "started",
+                                }
+                            ],
+                            1,
+                        )
+                    )
+                ],
+            )
+
+        async with signed_in(base, storage) as session:
+            # case: the lists carry root's computer and agent only
+            _, computers = await _get(session, f"{base}/computers/list")
+            assert "mine" in computers and "theirs" not in computers
+            _, agents = await _get(session, f"{base}/agents/list")
+            assert "agent-mine" in agents and "agent-theirs" not in agents
+
+            # case: the other account's things are not there to open, remove or enrol against
+            for method, url in (
+                ("GET", f"/computers/{theirs.computer.id}"),
+                ("GET", f"/computers/{theirs.computer.id}/detail"),
+                ("GET", f"/computers/{theirs.computer.id}/presence"),
+                ("GET", f"/computers/{theirs.computer.id}/remove"),
+                ("DELETE", f"/computers/{theirs.computer.id}"),
+                ("GET", f"/agents/{theirs.computer.id}/agent-theirs"),
+                ("GET", f"/agents/{theirs.computer.id}/agent-theirs/activity"),
+            ):
+                async with session.request(method, base + url) as response:
+                    assert response.status == 404, (method, url)
+            assert await storage.find_computer(theirs.computer.id) is not None
+
+            # case: a computer enrolled from the page belongs to whoever enrolled it
+            async with session.post(
+                f"{base}/computers", data={"name": "fresh"}
+            ) as response:
+                assert response.status == 200
+            _, computers = await _get(session, f"{base}/computers/list")
+            assert "fresh" in computers
+
+        async with signed_in(base, storage, "other") as session:
+            _, computers = await _get(session, f"{base}/computers/list")
+            assert "theirs" in computers
+            assert "mine" not in computers and "fresh" not in computers
+            _, agents = await _get(session, f"{base}/agents/list")
+            assert "agent-theirs" in agents and "agent-mine" not in agents

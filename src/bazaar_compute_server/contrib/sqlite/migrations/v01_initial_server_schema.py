@@ -57,6 +57,19 @@ SCHEMA_MIGRATION = Migration(
             "CREATE INDEX events_by_thread"
             " ON events (computer_id, agent_id, thread_id, created_at_ms)"
         ),
+        # who may touch what: a subject (an account; a role, later) and the
+        # computer or agent it owns or is shared; ext holds a share's rights
+        """
+        CREATE TABLE relations (
+            subject_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            ext TEXT,
+            created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (subject_id, kind, target_id)
+        )
+        """,
+        "CREATE INDEX relations_by_target ON relations (kind, target_id)",
     ),
 )
 

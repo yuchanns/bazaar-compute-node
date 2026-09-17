@@ -40,6 +40,11 @@ class Gate:
             if account is None:
                 await _to_login(request)(scope, bounded, send)
                 return
+            if not _same_origin(request):
+                # a session's cookie proves the browser, not the page that
+                # made the browser send it; a write comes from our own page
+                await Response(status_code=403)(scope, bounded, send)
+                return
             scope.setdefault("state", {})["account"] = account
             await self._app(scope, bounded, send)
         except _TooLarge:
@@ -75,6 +80,21 @@ def _bounded(receive: Receive) -> Receive:
         return message
 
     return receiving
+
+
+def _same_origin(request: Request) -> bool:
+    """Whether a request that changes something came from this site: what
+    the browser says of where it was sent from, when it says anything."""
+
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return True
+    site = request.headers.get("Sec-Fetch-Site")
+    if site is not None:
+        return site in ("same-origin", "none")
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return True
+    return origin.partition("://")[2] == request.headers.get("Host", "")
 
 
 def _is_open(path: str) -> bool:

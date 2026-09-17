@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from .access import AccessGate
 from .accounts import ensure_admin
 from .config import ServerConfiguration
 from .gate import MAX_BODY_BYTES, Gate
@@ -51,8 +52,8 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         await storage.start()
-        sessions.key = await load_session_key(data_dir)
         try:
+            sessions.key = await load_session_key(data_dir)
             account, password = await ensure_admin(storage)
             if password is not None:
                 # the only time the password exists in the clear; log it
@@ -93,7 +94,10 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
                 name="static",
             ),
         ],
-        middleware=[Middleware(Gate, storage=storage, sessions=sessions)],
+        middleware=[
+            Middleware(Gate, storage=storage, sessions=sessions),
+            Middleware(AccessGate, storage=storage),
+        ],
         exception_handlers={HTTPException: closed, Exception: closed},
         lifespan=lifespan,
     )

@@ -15,7 +15,7 @@ from bazaar_compute_node.core.correlation import CorrelationContext
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import RuntimeEventState
 
-from ._serving import free_port, serving
+from ._serving import enrol, free_port, serving
 
 BUDGET = TimeoutBudget(
     startup_seconds=5, provider_call_seconds=5, command_seconds=5, shutdown_seconds=1
@@ -59,7 +59,7 @@ async def test_events_reach_the_server_in_order_under_the_node_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with serving(tmp_path) as (base, storage):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
         audit = _sink(base + "/")
         try:
@@ -96,7 +96,7 @@ async def test_what_the_server_cannot_take_is_dropped_and_the_node_goes_on(
     port = free_port()
     # the sink starts before the server exists: the first report goes nowhere
     async with serving(tmp_path) as (_, storage):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
     monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
     audit = _sink(f"http://127.0.0.1:{port}")
     try:
@@ -122,7 +122,7 @@ async def test_a_batch_the_server_refuses_is_dropped_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with serving(tmp_path) as (base, storage):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
         audit = _sink(base)
         try:
@@ -138,7 +138,8 @@ async def test_a_batch_the_server_refuses_is_dropped_not_retried(
                 _event("event.bad", at_ms=2, agent_id="not an id"), timeout=1
             )
             await _wait_until(lambda: audit.health["dropped"] == 2)
-            assert "400" in str(audit.health["last_error"])
+            # the server's own reason comes along with the status
+            assert "400 invalid_request" in str(audit.health["last_error"])
 
             # case: the next event is not held up by either
             await audit.append(_event("event.after", at_ms=3), timeout=1)
@@ -161,7 +162,7 @@ async def test_a_backlog_goes_over_in_requests_the_server_will_accept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with serving(tmp_path) as (base, storage):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
         audit = _sink(base)
         # each event is a fifth of a request; while nothing is being sent the
@@ -192,9 +193,8 @@ async def test_a_sink_that_cannot_report_says_so_and_lets_the_node_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("BCN_SERVER_TOKEN", "kana:secret")
-    # case: an address that is not one; the local form with its scheme is fine
-    assert _sink("http://localhost:8765").health["last_error"] is None
-    for url in ("localhost:8765", "http://", "", None):
+    # case: no address at all
+    for url in ("", None):
         audit = _sink(url)
         await audit.start(timeout=1)
         await audit.append(_event("event.lost", at_ms=1), timeout=1)

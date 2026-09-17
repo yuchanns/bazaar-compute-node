@@ -437,10 +437,6 @@ def _install(context: SystemServiceContext) -> None:
         raise RuntimeError(f"unsupported host service platform: {system}")
 
 
-def _start_linux() -> None:
-    _run_native_command(["systemctl", "--user", "start", SYSTEMD_UNIT_NAME])
-
-
 def _start_macos() -> None:
     plist_path, _ = _launchd_paths()
     if not plist_path.exists():
@@ -459,18 +455,6 @@ def _start_macos() -> None:
 
 def _start_windows() -> None:
     _run_native_command(["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME])
-
-
-def _start() -> None:
-    system = platform.system()
-    if system == "Linux":
-        _start_linux()
-    elif system == "Darwin":
-        _start_macos()
-    elif system == "Windows":
-        _start_windows()
-    else:
-        raise RuntimeError(f"unsupported host service platform: {system}")
 
 
 def _stop_linux() -> None:
@@ -846,7 +830,9 @@ async def run_system_service_command(
             conflict = await _check_endpoint_conflict(context, native_status)
             if conflict is not None:
                 parser.error(f"system service did not start: {conflict}")
-            await asyncio.to_thread(_start)
+            # a running service starts over, so what was just configured
+            # is what runs
+            await asyncio.to_thread(_restart, context)
             health = await _wait_for_managed_service_health(context)
             if health != "ready":
                 parser.error(f"system service did not become ready: {health}")

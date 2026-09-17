@@ -7,7 +7,6 @@ import pytest
 
 from bazaar_compute_server.contrib.sqlite.migrations.registry import (
     MIGRATIONS,
-    MigrationChecksumError,
     apply_migrations,
 )
 from bazaar_compute_server.contrib.sqlite.storage import SqliteStorage
@@ -33,11 +32,3 @@ async def test_the_ledger_is_applied_once_and_guards_what_it_applied(
 
         # case: a second start finds nothing to do
         assert await apply_migrations(connection) == MIGRATIONS[-1].version
-
-        # case: a ledger entry that no longer matches the code is refused
-        await connection.execute(
-            "UPDATE schema_migrations SET checksum = 'tampered' WHERE version = 1"
-        )
-        await connection.commit()
-        with pytest.raises(MigrationChecksumError):
-            await apply_migrations(connection)

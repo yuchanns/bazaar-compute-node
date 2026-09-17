@@ -320,10 +320,12 @@ class TurnEventStream(IRuntimeTurnStream):
             items.append(
                 self._output_event(
                     UsageUpdated(
+                        # the session's total is only what modelUsage says;
+                        # one turn's usage is not it and is not passed off as it
                         total=(
                             _session_usage(model_usage)
                             if model_usage is not None
-                            else last or TokenUsage()
+                            else TokenUsage()
                         ),
                         last=last,
                         cost_usd=float(cost) if cost is not None else None,

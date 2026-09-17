@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -39,17 +40,21 @@ def isolate_home(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
-) -> Path | None:
+) -> Iterator[Path | None]:
     """Keep every test, and the processes it spawns, out of the developer's home.
 
     A real-provider test keeps its home: the claude and codex children read
-    their own credentials from there.
+    their own credentials from there. What such a test leaves under it, its
+    own data directory, goes when the test does.
     """
 
-    monkeypatch.setenv("BCN_DATA_NAME", f".bcn-test-{os.getpid()}-{uuid4().hex[:8]}")
+    data_name = f".bcn-test-{os.getpid()}-{uuid4().hex[:8]}"
+    monkeypatch.setenv("BCN_DATA_NAME", data_name)
     if request.node.get_closest_marker("e2e") is not None:
-        return None
+        yield None
+        shutil.rmtree(Path.home() / data_name, ignore_errors=True)
+        return
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    return home
+    yield home

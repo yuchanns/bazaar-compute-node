@@ -12,7 +12,7 @@ from bazaar_compute_node.core.correlation import CorrelationContext
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.models import RuntimeEventState
 
-from ._serving import serving
+from ._serving import enrol, serving
 
 
 @pytest.mark.asyncio
@@ -21,7 +21,7 @@ async def test_a_node_sink_and_the_server_agree_on_the_wire(
 ) -> None:
     # the two sides share no code; this is the one place they meet
     async with serving(tmp_path) as (base, storage):
-        enrolment = await storage.add_computer("kana")
+        enrolment = await enrol(storage, "kana")
         monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
         audit = ServerAudit(
             {"url": base, "token_env": "BCN_SERVER_TOKEN"},

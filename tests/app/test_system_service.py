@@ -443,7 +443,7 @@ def test_macos_launchd_lifecycle(tmp_path: Path) -> None:
     ):
         system_service._restart_macos()
 
-    start.assert_called_once_with()
+    start.assert_called_once()
     stop.assert_not_called()
 
 
@@ -522,7 +522,7 @@ async def test_system_service_start_waits_for_ready_health(
                 ),
             ],
         ),
-        patch.object(system_service, "_start") as start,
+        patch.object(system_service, "_restart") as start,
         patch.object(
             system_service,
             "_bcn_health",
@@ -532,7 +532,7 @@ async def test_system_service_start_waits_for_ready_health(
         result = await system_service.run_system_service_command(args, parser)
 
     assert result == 0
-    start.assert_called_once_with()
+    start.assert_called_once()
     assert "system service started" in capsys.readouterr().out
 
 
@@ -555,7 +555,7 @@ async def test_system_service_start_rejects_external_healthy_endpoint(
                 "state=ready",
             ),
         ),
-        patch.object(system_service, "_start") as start,
+        patch.object(system_service, "_restart") as start,
         patch.object(system_service, "_bcn_health", return_value="ready"),
         pytest.raises(click.UsageError, match="endpoint is healthy"),
     ):

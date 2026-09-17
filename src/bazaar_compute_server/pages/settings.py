@@ -61,11 +61,18 @@ class SettingsPages:
             return self._render.fragment(
                 request, "password_form.html", outcome="short", status_code=422
             )
-        if await self._storage.verify_login(account.name, current) is None:
+        verified = await self._storage.verify_login(account.name, current)
+        changed = None
+        if verified is not None:
+            # replaced only while the hash is still the one just verified: a
+            # change that lands in between makes this current password wrong
+            changed = await self._storage.change_password(
+                account.id, new, expected_hash=verified.password_hash
+            )
+        if changed is None:
             return self._render.fragment(
                 request, "password_form.html", outcome="wrong", status_code=401
             )
-        changed = await self._storage.change_password(account.id, new)
         # every other session was issued under the old password and is now
         # refused; this one continues under the new
         response = self._render.fragment(

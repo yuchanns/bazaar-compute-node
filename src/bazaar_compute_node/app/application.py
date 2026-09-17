@@ -184,14 +184,16 @@ class NodeApplication:
                 await self.version_watcher.start(
                     timeout=self.timeout_budget.startup_seconds,
                 )
+            self._ready = True
+            self._accepting = True
+            # the first beat goes out once the node is ready, so it describes
+            # the state a consumer can act on rather than a node still coming up
+            await self.health_reporter.start(
+                timeout=self.timeout_budget.startup_seconds
+            )
         except BaseException:
             await self.stop()
             raise
-        self._ready = True
-        self._accepting = True
-        # the first beat goes out once the node is ready, so it describes the
-        # state a consumer can act on rather than a node still coming up
-        await self.health_reporter.start(timeout=self.timeout_budget.startup_seconds)
         started_count = len(self.agents)
         failed_count = len(self.configuration.agents) - started_count
         self._log(

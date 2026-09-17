@@ -16,10 +16,13 @@ _R = 8
 _P = 1
 _LENGTH = 32
 # a derivation takes a core and 128·n·r bytes (32 MiB) for as long as it runs;
-# one per core is all the machine can do at once, the rest wait their turn
-# instead of piling up in memory, however many logins arrive together
+# a few at once is all a login page needs, and a few times 32 MiB is what the
+# server may hold for them, whatever the core count and however many logins
+# arrive together: the rest wait their turn instead of piling up in memory
+_MAX_DERIVING = 4
 _DERIVING = ThreadPoolExecutor(
-    max_workers=os.process_cpu_count() or 1, thread_name_prefix="bcs-scrypt"
+    max_workers=min(os.process_cpu_count() or 1, _MAX_DERIVING),
+    thread_name_prefix="bcs-scrypt",
 )
 
 

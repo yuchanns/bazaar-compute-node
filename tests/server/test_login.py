@@ -108,6 +108,23 @@ async def test_logging_in_and_out(tmp_path: Path) -> None:
             async with session.get(f"{base}/agents") as response:
                 assert response.status == 200
 
+            # case: a write the browser says came from another site is
+            # refused, whatever cookie it carries; our own pages get through
+            for headers in (
+                {"Sec-Fetch-Site": "cross-site"},
+                {"Origin": "http://evil.example"},
+            ):
+                async with session.post(
+                    f"{base}/computers", data={"name": "intruder"}, headers=headers
+                ) as response:
+                    assert response.status == 403, headers
+            async with session.post(
+                f"{base}/computers",
+                data={"name": "ours"},
+                headers={"Sec-Fetch-Site": "same-origin"},
+            ) as response:
+                assert response.status == 200
+
             # case: logging out clears it
             async with session.post(f"{base}/logout") as response:
                 assert response.headers["HX-Redirect"] == "/login"
@@ -128,11 +145,18 @@ async def test_changing_the_password_ends_every_other_session(tmp_path: Path) ->
         ) as response:
             assert response.status == 204
 
-        # case: a password shorter than eight characters is not one
+        # case: the page's form cannot submit until its script runs
+        async with first.get(f"{base}/settings/security") as response:
+            assert 'type="submit" disabled' in await response.text()
+
+        # case: a password shorter than eight characters is not one; the
+        # form that comes back is live
         async with first.post(
             f"{base}/settings/password", data={"current": password, "new": "short"}
         ) as response:
-            assert response.status == 422 and "8" in await response.text()
+            text = await response.text()
+            assert response.status == 422 and "8" in text
+            assert "disabled" not in text
 
         # case: the current password has to be right
         async with first.post(
@@ -157,6 +181,16 @@ async def test_changing_the_password_ends_every_other_session(tmp_path: Path) ->
                 f"{base}/login", data={"name": name, "password": attempt}
             ) as response:
                 assert response.status == expected
+
+        # case: a change that verified against a hash since replaced does
+        # not land
+        account = await storage.find_account(name)
+        assert account is not None
+        stale = await storage.change_password(
+            account.id, "stale change", expected_hash="not the hash any more"
+        )
+        assert stale is None
+        assert await storage.verify_login(name, "fresh one") is not None
 
 
 @pytest.mark.asyncio

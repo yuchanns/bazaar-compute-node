@@ -12,7 +12,7 @@ from starlette.applications import Starlette
 
 from bazaar_compute_server.app import create_app
 from bazaar_compute_server.config import ServerConfiguration
-from bazaar_compute_server.storage import IStorage
+from bazaar_compute_server.storage import Enrolment, IStorage
 
 
 def free_port() -> int:
@@ -48,21 +48,46 @@ async def serving(
 TESTER = ("admin", "a password for tests")
 
 
+async def root_id(storage: IStorage) -> str:
+    """Root's id; a store the server has not opened gets its root here."""
+
+    account = await storage.find_account(TESTER[0])
+    if account is None:
+        account = await storage.add_account(*TESTER)
+    return account.id
+
+
+async def enrol(storage: IStorage, name: str, owner: str | None = None) -> Enrolment:
+    """A computer enrolled by root, or by the named account."""
+
+    owner_id = await root_id(storage)
+    if owner is not None:
+        account = await storage.find_account(owner)
+        assert account is not None, owner
+        owner_id = account.id
+    return await storage.add_computer(name, owner_id=owner_id)
+
+
 async def with_password(storage: IStorage, name: str, password: str) -> None:
-    """Give the account a password the tests know."""
+    """Give an account a password the tests know; a second account, which
+    the server itself never makes, is written straight into the store."""
 
     account = await storage.find_account(name)
-    assert account is not None, name
-    await storage.change_password(account.id, password)
+    if account is None:
+        await storage.add_account(name, password)
+    else:
+        await storage.change_password(
+            account.id, password, expected_hash=account.password_hash
+        )
 
 
 @asynccontextmanager
 async def signed_in(
-    base: str, storage: IStorage
+    base: str, storage: IStorage, name: str | None = None
 ) -> AsyncIterator[aiohttp.ClientSession]:
-    """A browser session that has logged in as root."""
+    """A browser session that has logged in, as root unless told."""
 
-    name, password = TESTER
+    name, password = (name or TESTER[0]), TESTER[1]
     await with_password(storage, name, password)
     # the jar must be told to keep cookies for a bare IP host
     async with aiohttp.ClientSession(

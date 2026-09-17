@@ -6,7 +6,7 @@
   "unix": "curl -LsSf https://astral.sh/uv/install.sh | sh",
   "windows": "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\""
 } %}
-{% set rest = "uv tool install bazaar-compute-node\nbcn server connect --url " ~ base_url ~ " --token " ~ enrolment.token ~ "\n# " ~ t.text("computers.first_time") ~ "\nbcn system-service install\nbcn system-service start\n# " ~ t.text("computers.already_running") %}
+{% set rest = "uv tool install bazaar-compute-node\nbcn server connect --url " ~ base_url ~ " --token " ~ enrolment.token ~ "\n# " ~ t.text("computers.first_time") ~ "\nbcn system-service install\nbcn system-service start" %}
 <div class="body">
   <div class="dialog wide">
     <h3>{{ enrolment.computer.name }}</h3>

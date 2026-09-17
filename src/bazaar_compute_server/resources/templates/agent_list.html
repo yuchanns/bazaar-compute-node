@@ -6,5 +6,5 @@
    they have loaded #}
 <div class="list-items" id="agent-list" hx-get="/agents/list{% if selected_key %}?selected={{ selected_key }}{% endif %}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
   {% include "agent_rows.html" %}
-  {% if not agents %}{{ c.empty(t.text("agents.empty")) }}{% endif %}
+  {% if not page.agents %}{{ c.empty(t.text("agents.empty")) }}{% endif %}
 </div>

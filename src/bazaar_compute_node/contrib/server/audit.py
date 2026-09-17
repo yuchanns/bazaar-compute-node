@@ -7,7 +7,6 @@ import json
 import logging
 import os
 from collections.abc import Mapping
-from urllib.parse import urlsplit
 from uuid import uuid7
 
 import aiohttp
@@ -24,16 +23,10 @@ BATCH_BYTES = 512 * 1024
 
 
 def endpoint(url: object) -> str | None:
-    """Where reports go for a configured address, or nothing when the address
-    is not an absolute http(s) URL."""
+    """Where reports go for a configured address, or nothing when there is
+    no address. What the address is worth shows when a report is sent."""
 
-    if not isinstance(url, str):
-        return None
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return None
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    if not isinstance(url, str) or not url:
         return None
     return f"{url.rstrip('/')}/node/reportEvents"
 
@@ -189,12 +182,23 @@ class ServerAudit(IAudit):
                 headers={"Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=self._request_timeout),
             ) as response:
+                # a reply is a few short fields, read whole however the
+                # network splits it; whatever comes past that is not read
+                body = b""
+                while len(body) < _REPLY_BYTES:
+                    chunk = await response.content.read(_REPLY_BYTES - len(body))
+                    if not chunk:
+                        break
+                    body += chunk
                 if response.status != 200:
+                    # the server says why in its envelope, when it is the
+                    # server answering and not something in front of it
                     self._last_error = (
-                        f"http {response.status}: {len(batch)} events dropped"
+                        f"http {response.status} {_error_code(body)}:"
+                        f" {len(batch)} events dropped"
                     )
                     return False
-                reply = await response.json()
+                reply = json.loads(body)
         except (aiohttp.ClientError, TimeoutError, ValueError) as error:
             self._last_error = f"{type(error).__name__}: {error}"
             return False
@@ -209,6 +213,20 @@ class ServerAudit(IAudit):
 
 def _encode(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), default=str)
+
+
+_REPLY_BYTES = 4096
+
+
+def _error_code(body: bytes) -> str:
+    """The error code in a server's envelope, or what kind of body it was."""
+
+    try:
+        reply = json.loads(body)
+    except ValueError:
+        return "unexpected body"
+    code = reply.get("error_code") if isinstance(reply, Mapping) else None
+    return str(code) if code else "no error code"
 
 
 __all__ = ["BATCH_BYTES", "PROTOCOL_VERSION", "ServerAudit", "endpoint"]

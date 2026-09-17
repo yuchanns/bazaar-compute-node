@@ -8,7 +8,6 @@ from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 
-from ..contrib.server.audit import endpoint
 from .config import (
     ConfigurationError,
     NodeConfiguration,
@@ -52,10 +51,14 @@ def _connect(
 ) -> int:
     url = args.url.rstrip("/")
     token = args.token
-    if endpoint(url) is None:
-        parser.error("--url must be an absolute http(s) URL")
+    if not url:
+        parser.error("--url must not be empty")
     if not token:
         parser.error("--token must not be empty")
+    if any(character in token for character in "'\r\n"):
+        # the file is read by a shell; a quote or a line break in the value
+        # would end the assignment early
+        parser.error("--token must not contain quotes or line breaks")
     # a registered service already said which file it reads; before any
     # registration the default is ours to set, and the install must match it
     registered = installed_env_file()
@@ -66,40 +69,52 @@ def _connect(
         audit_options=MappingProxyType({"url": url, "token_env": TOKEN_ENV}),
     )
     # the token goes first: a configuration that names the server sink is
-    # only right once the credential it reads exists
-    _write_env_value(env_file, TOKEN_ENV, token)
+    # only right once the credential it reads exists; and it goes back when
+    # the configuration cannot follow, so the two never disagree
+    before = _write_env_value(env_file, TOKEN_ENV, token)
     try:
         _write_configuration(config_path, updated)
     except ConfigurationError as error:
+        if before is None:
+            env_file.unlink(missing_ok=True)
+        else:
+            _replace_file(env_file, before)
         parser.error(str(error))
     print(f"Connected to {url}", flush=True)
-    if registered is None and args.env_file is None:
+    if registered is None:
+        install = "bcn system-service install"
+        if args.env_file is not None:
+            install += f" --env-file {env_file}"
         print(
-            "Register the service with `bcn system-service install`, which"
-            " reads this file, then `bcn system-service start`.",
+            f"Register the service with `{install}`, then `bcn system-service start`.",
             flush=True,
         )
     else:
-        print("Run `bcn system-service restart` to apply.", flush=True)
+        print("Run `bcn system-service start` to apply.", flush=True)
     return 0
 
 
-def _write_env_value(path: Path, name: str, value: str) -> None:
-    """Set one variable in the service's environment file, keeping the rest."""
+def _write_env_value(path: Path, name: str, value: str) -> str | None:
+    """Set one variable in the service's environment file, keeping the rest;
+    what the file held before, or nothing when there was no file."""
 
-    line = f"$env:{name} = '{value}'" if os.name == "nt" else f"{name}={value}"
+    # single quotes: a literal to sh, PowerShell, and systemd alike
+    line = f"$env:{name} = '{value}'" if os.name == "nt" else f"{name}='{value}'"
     prefix = f"$env:{name} " if os.name == "nt" else f"{name}="
+    before = None
     kept = []
     if path.exists():
+        before = path.read_text(encoding="utf-8")
         kept = [
             existing
-            for existing in path.read_text(encoding="utf-8").splitlines()
+            for existing in before.splitlines()
             if not existing.startswith(prefix)
         ]
     path.parent.mkdir(parents=True, exist_ok=True)
     # the file also holds the channel credentials: it is replaced whole, never
     # left half written
     _replace_file(path, "\n".join((*kept, line)) + "\n")
+    return before
 
 
 __all__ = ["TOKEN_ENV", "default_env_file", "run_server_command"]
