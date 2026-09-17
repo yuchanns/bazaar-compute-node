@@ -546,9 +546,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"pyright-lsp-check: {error}", file=sys.stderr)
         return 2
 
-    return int(
-        any(counts[level] for level in ("error", "warning", "information", "hint"))
-    )
+    found = {
+        level: counts[level]
+        for level in ("error", "warning", "information", "hint")
+        if counts[level]
+    }
+    if found:
+        # the verdict is the last line whatever the output mode, so a reader
+        # of the output alone cannot mistake a report full of hints for a pass
+        raise SystemExit(
+            "pyright-lsp-check: FAILED with "
+            + ", ".join(f"{count} {level}s" for level, count in found.items())
+        )
+    return 0
 
 
 if __name__ == "__main__":
