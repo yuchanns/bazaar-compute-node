@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import os
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
@@ -12,6 +15,18 @@ _N = 2**15
 _R = 8
 _P = 1
 _LENGTH = 32
+# a derivation takes a core and 128·n·r bytes (32 MiB) for as long as it runs;
+# one per core is all the machine can do at once, the rest wait their turn
+# instead of piling up in memory, however many logins arrive together
+_DERIVING = ThreadPoolExecutor(
+    max_workers=os.process_cpu_count() or 1, thread_name_prefix="bcs-scrypt"
+)
+
+
+async def derive[T](operation: Callable[..., T], *args: object) -> T:
+    """Run one of the derivations below off the loop, in its turn."""
+
+    return await asyncio.get_running_loop().run_in_executor(_DERIVING, operation, *args)
 
 
 def hash_secret(secret: str) -> str:
@@ -47,4 +62,4 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-__all__ = ["hash_secret", "new_secret", "verify_secret"]
+__all__ = ["derive", "hash_secret", "new_secret", "verify_secret"]

@@ -11,7 +11,7 @@ _NODE_SRC = Path(__file__).resolve().parents[2] / "src" / "bazaar_compute_node"
 _DYNAMIC = (
     *(
         f"runtime.turn.{state}"
-        for state in ("completed", "failed", "cancelled", "unknown")
+        for state in ("started", "completed", "failed", "cancelled", "unknown")
     ),
     *(
         f"channel.outbound.{state}"
@@ -33,11 +33,20 @@ _DYNAMIC = (
 )
 
 
+# a runtime's own word for a turn event rides in metadata; the audit names it
+# runtime.turn.<state> whichever runtime it was
+_RUNTIME_WORDS = re.compile(r"^(claudecode|codex|bcn)\.turn\.")
+
+
 def _literal_event_names() -> set[str]:
     names: set[str] = set()
     for path in _NODE_SRC.rglob("*.py"):
         names.update(
-            re.findall(r'event_name\s*=\s*"([a-z_.]+)"', path.read_text("utf-8"))
+            name
+            for name in re.findall(
+                r'event_name\s*=\s*"([a-z_.]+)"', path.read_text("utf-8")
+            )
+            if not _RUNTIME_WORDS.match(name)
         )
     return names
 

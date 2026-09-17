@@ -6,6 +6,7 @@ import os
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -19,9 +20,10 @@ class ServerConfiguration(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    listen: str = Field(default="127.0.0.1:8765", pattern=r"^.+:\d{1,5}$")
+    # host and port, read the way a URL is: `127.0.0.1:8765`, `[::1]:8765`,
+    # or the same with a scheme in front
+    listen: str = "127.0.0.1:8765"
     retention_days: int = Field(default=30, ge=1, strict=True)
-    lang: str | None = Field(default=None, min_length=1)
     storage: str = Field(default="sqlite", min_length=1)
     # a storage's own settings live in a table named after it
     storage_options: dict[str, Any] = Field(default_factory=dict)
@@ -35,13 +37,30 @@ class ServerConfiguration(BaseModel):
             return {**payload, "storage_options": table}
         return payload
 
+    @model_validator(mode="after")
+    def _listen_names_a_host_and_port(self) -> ServerConfiguration:
+        try:
+            parts = _parsed(self.listen)
+            host, port = parts.hostname, parts.port
+        except ValueError as error:
+            raise ValueError(
+                f"listen {self.listen!r} is not host:port: {error}"
+            ) from error
+        if not host or port is None:
+            raise ValueError(f"listen {self.listen!r} is not host:port")
+        return self
+
     @property
     def listen_host(self) -> str:
-        return self.listen.rpartition(":")[0]
+        return _parsed(self.listen).hostname or ""
 
     @property
     def listen_port(self) -> int:
-        return int(self.listen.rpartition(":")[2])
+        return _parsed(self.listen).port or 0
+
+
+def _parsed(listen: str) -> SplitResult:
+    return urlsplit(listen if "//" in listen else f"//{listen}")
 
 
 def resolve_data_dir() -> Path:
@@ -76,8 +95,6 @@ def _serialize(configuration: ServerConfiguration) -> str:
         f"retention_days = {configuration.retention_days}",
         f'storage = "{configuration.storage}"',
     ]
-    if configuration.lang is not None:
-        lines.append(f'lang = "{configuration.lang}"')
     return "\n".join(lines) + "\n"
 
 

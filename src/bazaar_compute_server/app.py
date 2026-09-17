@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.resources import files
@@ -10,12 +11,16 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from .accounts import ensure_admin
 from .config import ServerConfiguration
+from .gate import MAX_BODY_BYTES, Gate
 from .pages import routes
 from .protocol import (
     PROTOCOL_HEADER,
@@ -25,9 +30,11 @@ from .protocol import (
     ok,
 )
 from .registry import load_storage_factory
+from .rendering import Renderer
+from .sessions import Sessions, load_session_key
 from .storage import Computer, IStorage, StorageContext
 
-MAX_REPORT_BYTES = 1024 * 1024
+_log = logging.getLogger("bazaar_compute_server")
 
 
 def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
@@ -39,18 +46,43 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         )
     )
 
+    sessions = Sessions()
+
     @asynccontextmanager
-    async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    async def lifespan(_: Starlette) -> AsyncIterator[None]:
         await storage.start()
+        sessions.key = await load_session_key(data_dir)
         try:
+            account, password = await ensure_admin(storage)
+            if password is not None:
+                # the only time the password exists in the clear; log it
+                # where whoever started the server is looking
+                _log.warning(
+                    "created account %s with password %s; log in and change it",
+                    account.name,
+                    password,
+                )
             yield
         finally:
             await storage.stop()
 
+    renderer = Renderer()
+
+    async def closed(request: Request, exc: Exception) -> Response:
+        """An error as a page for people and as the envelope for nodes."""
+
+        status = exc.status_code if isinstance(exc, HTTPException) else 500
+        if request.url.path.startswith("/node/"):
+            return JSONResponse(
+                error("internal_error" if status == 500 else "not_found", str(exc)),
+                status_code=status,
+            )
+        return renderer.error(request, status)
+
     app = Starlette(
         routes=[
             Route("/node/reportEvents", report_events, methods=["POST"]),
-            *routes(storage, configuration.lang),
+            *routes(storage, sessions),
             Mount(
                 "/static",
                 StaticFiles(
@@ -61,6 +93,8 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
                 name="static",
             ),
         ],
+        middleware=[Middleware(Gate, storage=storage, sessions=sessions)],
+        exception_handlers={HTTPException: closed, Exception: closed},
         lifespan=lifespan,
     )
     app.state.storage = storage
@@ -113,11 +147,9 @@ async def _read_report(request: Request) -> bytes | Response:
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_REPORT_BYTES:
+        if size > MAX_BODY_BYTES:
             return _reply(
-                error(
-                    "invalid_request", f"a report is at most {MAX_REPORT_BYTES} bytes"
-                ),
+                error("invalid_request", f"a report is at most {MAX_BODY_BYTES} bytes"),
                 status=413,
             )
         chunks.append(chunk)
@@ -132,4 +164,4 @@ def _reply(payload: dict[str, object], *, status: int = 200) -> JSONResponse:
     return JSONResponse(payload, status_code=status)
 
 
-__all__ = ["MAX_REPORT_BYTES", "create_app", "report_events"]
+__all__ = ["MAX_BODY_BYTES", "create_app", "report_events"]

@@ -20,7 +20,9 @@ SCHEMA_MIGRATION = Migration(
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL
+            created_at_ms INTEGER NOT NULL,
+            language TEXT,
+            theme TEXT
         )
         """,
         """
@@ -46,7 +48,11 @@ SCHEMA_MIGRATION = Migration(
             UNIQUE (computer_id, run_id, seq)
         )
         """,
-        "CREATE INDEX events_by_agent ON events (computer_id, agent_id, created_at_ms)",
+        # an agent's latest events, in the order they arrived
+        "CREATE INDEX events_by_agent ON events (computer_id, agent_id, id)",
+        # the newest event of a name per computer or agent: health beats,
+        # turn boundaries, usage; sought every time a page refreshes
+        "CREATE INDEX events_by_name ON events (computer_id, event_name, agent_id, id)",
         (
             "CREATE INDEX events_by_thread"
             " ON events (computer_id, agent_id, thread_id, created_at_ms)"

@@ -79,22 +79,29 @@ async def apply_migrations(connection: aiosqlite.Connection) -> int:
         if migration.version <= latest:
             continue
         started_at_ns = monotonic_ns()
-        for statement in migration.statements:
-            await connection.execute(statement)
-        await connection.execute(
-            "INSERT INTO schema_migrations"
-            " (version, migration_name, checksum, applied_at_ms, duration_ms)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (
-                migration.version,
-                migration.name,
-                migration.checksum,
-                now_ms(),
-                (monotonic_ns() - started_at_ns) // 1_000_000,
-            ),
-        )
+        # the statements and the ledger entry land together or not at all;
+        # sqlite's DDL is transactional, so a start cut short leaves nothing
+        await connection.execute("BEGIN")
+        try:
+            for statement in migration.statements:
+                await connection.execute(statement)
+            await connection.execute(
+                "INSERT INTO schema_migrations"
+                " (version, migration_name, checksum, applied_at_ms, duration_ms)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    migration.version,
+                    migration.name,
+                    migration.checksum,
+                    now_ms(),
+                    (monotonic_ns() - started_at_ns) // 1_000_000,
+                ),
+            )
+        except Exception:
+            await connection.rollback()
+            raise
+        await connection.commit()
         latest = migration.version
-    await connection.commit()
     return latest
 
 

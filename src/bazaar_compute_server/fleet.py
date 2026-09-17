@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .clock import now_ms
-from .fields import integer, text
 from .storage import Computer, ComputerHealth, IStorage, StoredEvent
 
-PAGE_SIZE = 200
+# a page is what one scroll of the list asks for; the next page is asked for
+# when the end of this one comes into view
+PAGE_SIZE = 50
 # the beat a node promises when it has not said otherwise
 DEFAULT_INTERVAL_MS = 60_000
 
@@ -46,17 +47,59 @@ class ComputerView:
     online: bool
     last_event_at_ms: int | None
     version: str | None
-    python: str | None
-    protocol: int | None
+    system: str | None
     queued: int | None
     agents: tuple[AgentView, ...]
 
 
-async def fleet(storage: IStorage) -> list[ComputerView]:
-    """Every computer with its agents, in a fixed handful of reads however
-    many there are."""
+@dataclass(frozen=True, slots=True)
+class Fleet:
+    """A stretch of the computer list with their agents. `edge` is the id
+    it ends at, nothing when it is empty; `more` says whether the list goes
+    on past it."""
 
-    computers = await storage.list_computers(limit=PAGE_SIZE)
+    computers: list[ComputerView]
+    edge: str | None
+    more: bool
+
+
+async def fleet(
+    storage: IStorage, *, after: str | None = None, until: str | None = None
+) -> Fleet:
+    """The page of computers past `after`, or everything up to `until`, with
+    their agents, in a fixed handful of reads however many there are."""
+
+    if until is None:
+        # one past the page says whether there is a next one
+        computers = await storage.list_computers(after=after, limit=PAGE_SIZE + 1)
+        more = len(computers) > PAGE_SIZE
+        computers = computers[:PAGE_SIZE]
+    else:
+        computers, beyond = await asyncio.gather(
+            storage.list_computers(until=until),
+            storage.list_computers(after=until, limit=1),
+        )
+        more = bool(beyond)
+    return Fleet(
+        computers=await _views(storage, computers),
+        edge=computers[-1].id if computers else None,
+        more=more,
+    )
+
+
+async def computer_view(storage: IStorage, computer_id: str) -> ComputerView | None:
+    """One computer with its agents, whichever page it is on."""
+
+    computer = await storage.find_computer(computer_id)
+    if computer is None:
+        return None
+    views = await _views(storage, [computer])
+    return views[0]
+
+
+async def _views(
+    storage: IStorage, computers: Sequence[Computer]
+) -> list[ComputerView]:
     health, boundary_rows = await asyncio.gather(
         storage.computer_health(computers),
         storage.latest_per_agent(
@@ -82,25 +125,20 @@ def agents_of(computers: Sequence[ComputerView]) -> list[AgentView]:
     return [agent for computer in computers for agent in computer.agents]
 
 
-def find_agent(
-    computers: Sequence[ComputerView], computer_id: str | None, agent_id: str | None
+async def agent_view(
+    storage: IStorage, computer_id: str, agent_id: str
 ) -> AgentView | None:
-    return next(
-        (
-            agent
-            for computer in computers
-            for agent in computer.agents
-            if computer.computer.id == computer_id and agent.id == agent_id
-        ),
-        None,
-    )
+    computer = await computer_view(storage, computer_id)
+    if computer is None:
+        return None
+    return next((agent for agent in computer.agents if agent.id == agent_id), None)
 
 
 def _target_name(message: StoredEvent) -> str | None:
     """What a conversation is called, from a message seen in it."""
 
-    metadata = message.payload.get("metadata", {})
-    return text(metadata.get("target_name")) or text(metadata.get("target"))
+    metadata = message.payload["metadata"]
+    return metadata.get("target_name") or metadata.get("target")
 
 
 def _computer_view(
@@ -108,17 +146,15 @@ def _computer_view(
     boundaries: Mapping[tuple[str, str | None], StoredEvent],
     names: Mapping[tuple[str, str | None, str | None], str | None],
 ) -> ComputerView:
-    health = {} if item.health is None else item.health.payload.get("metadata", {})
-    interval = integer(health.get("interval_ms")) or DEFAULT_INTERVAL_MS
+    health = {} if item.health is None else item.health.payload["metadata"]
+    interval = health.get("interval_ms") or DEFAULT_INTERVAL_MS
     online = (
         item.last_event_at_ms is not None
         and now_ms() - item.last_event_at_ms <= 2 * interval
     )
     agents: list[AgentView] = []
     for record in health.get("agents", []):
-        if not isinstance(record, Mapping):
-            continue
-        agent_id = str(record.get("agent_id", ""))
+        agent_id = record["agent_id"]
         boundary = boundaries.get((item.computer.id, agent_id))
         agents.append(
             _agent_view(
@@ -133,17 +169,13 @@ def _computer_view(
                 ),
             )
         )
-    audit = health.get("audit")
-    if not isinstance(audit, Mapping):
-        audit = {}
     return ComputerView(
         computer=item.computer,
         online=online,
         last_event_at_ms=item.last_event_at_ms,
-        version=text(health.get("version")),
-        python=text(health.get("python")),
-        protocol=integer(health.get("protocol")),
-        queued=integer(audit.get("queued")),
+        version=health.get("version"),
+        system=health.get("system"),
+        queued=health.get("audit", {}).get("queued"),
         agents=tuple(agents),
     )
 
@@ -169,22 +201,25 @@ def _agent_view(
     else:
         working_on = None
     return AgentView(
-        id=str(record.get("agent_id", "")),
-        name=str(record.get("name", "")),
+        id=record["agent_id"],
+        name=record["name"],
         computer_id=computer.id,
         computer_name=computer.name,
         status=status,
-        channels=tuple(str(kind) for kind in record.get("channels", [])),
-        runtimes=tuple(str(kind) for kind in record.get("runtimes", [])),
+        channels=tuple(record.get("channels", [])),
+        runtimes=tuple(record.get("runtimes", [])),
         working_on=working_on,
         working_since_ms=working_since_ms,
     )
 
 
 __all__ = [
+    "PAGE_SIZE",
     "AgentView",
     "ComputerView",
+    "Fleet",
+    "agent_view",
     "agents_of",
-    "find_agent",
+    "computer_view",
     "fleet",
 ]

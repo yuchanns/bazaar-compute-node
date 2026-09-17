@@ -10,6 +10,7 @@
   --fg: light-dark(#18181b, #e6e8ee); --muted: light-dark(#71717a, #8b93a1); --line: light-dark(#ececef, #23272f);
   --hi: light-dark(#ffe4e6, #3a1f22); --input: light-dark(#fafafa, #0f1114); --chip: light-dark(#f4f4f5, #23272f); --accent: light-dark(#ff5a5f, #ff6b6f);
   --ok: light-dark(#84cc16, #a3e635); --warn: light-dark(#f59e0b, #fbbf24); --warn-bg: light-dark(#ffe4e6, #4a1d22); --warn-fg: light-dark(#be123c, #ff9a9e);
+  --danger: light-dark(#be123c, #e11d48); --danger-bg: light-dark(#fff1f2, #3a1418);
   --tg: light-dark(#0284c7, #38bdf8); --lark: light-dark(#65a30d, #a3e635); --wecom: light-dark(#d97706, #fbbf24);
   --r-sm: 6px; --r-av: 6px;
 }
@@ -24,8 +25,11 @@ a { color: inherit; text-decoration: none; }
 /* rail */
 .rail { width: 56px; background: var(--rail); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 6px; flex: none; }
 .rail .sign { width: 48px; height: 26px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+.rail .sign svg { width: 48px; height: 26px; overflow: visible; }
 .rail .ic { width: 36px; height: 36px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--rail-fg); }
-.rail .ic svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.rail .ic .i svg { width: 18px; height: 18px; }
+.rail button.ic { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; }
+.rail a.ic:hover, .rail button.ic:hover { background: var(--rail-on-bg); color: var(--rail-on); }
 .rail .ic.on { background: var(--rail-on-bg); color: var(--rail-on); }
 .rail .sp { flex: 1; }
 
@@ -42,15 +46,27 @@ a { color: inherit; text-decoration: none; }
 
 /* list items */
 .li { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: var(--r-sm); position: relative; }
-.li.on { background: var(--hi); }
-.li:hover { background: var(--hi); }
+/* hover is a whisper of grey; the pink is for the one that is selected */
+.li:hover { background: var(--chip); }
+.li.on, .li.on:hover { background: var(--hi); }
+.list-items .li + .li { margin-top: 2px; }
+/* a clicked row keeps no ring; keyboard focus gets the accent instead of the browser's black */
+.li:focus { outline: none; }
+.li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .li.off { opacity: .5; }
 .li.off:hover { background: none; }
+.li .in { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+/* rows off screen keep their height but are not laid out or painted until
+   they scroll near; the anchor and the card are on the row, outside the box */
+.list-items .li .in { content-visibility: auto; contain-intrinsic-size: auto 34px; }
 .li .t { flex: 1; min-width: 0; }
 .li .t b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .li .t small { display: block; color: var(--muted); font-size: .84em; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .av { width: 34px; height: 34px; border-radius: var(--r-av); flex: none; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
 .av.sm { width: 28px; height: 28px; }
+/* a computer wears its operating system where an agent wears its face */
+.av.mark { display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--chip); border: 0; }
+.av.mark .i svg { width: 18px; height: 18px; }
 .av svg { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dot.running { background: var(--ok); }
@@ -62,8 +78,9 @@ a { color: inherit; text-decoration: none; }
 .k { font-size: .72em; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
 
 /* hover activity card */
-/* the card is fixed and anchored to its avatar, so the scrolling list does not clip it */
-.agent .card { display: none; position: fixed; top: anchor(top); left: anchor(right); margin: -8px 0 0 12px; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; }
+/* the card is fixed and anchored to its row: it opens beside the list, level
+   with the row, never over the other rows, and the scrolling list cannot clip it */
+.agent .card { display: none; position: fixed; top: anchor(top); left: anchor(right); margin: 0 0 0 14px; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; }
 .agent:hover .card, .agent .card:hover { display: block; }
 .card .h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .card .h .dot { margin-left: auto; }
@@ -72,17 +89,97 @@ a { color: inherit; text-decoration: none; }
 .card .ev span.t { color: var(--muted); margin-right: 8px; }
 .card .ev .live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
 .card .more { margin-top: 8px; font-size: .9em; color: var(--muted); }
+/* until the card's first load arrives, a turning ring where the words will be */
+.loading { display: flex; justify-content: center; align-items: center; min-height: 140px; color: var(--muted); }
+.loading .i svg { width: 20px; height: 20px; animation: turn 1s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
 
 /* forms and buttons */
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
 .btn.p { background: var(--fg); color: var(--panel); border-color: var(--fg); }
 .btn.sm { padding: 2px 9px; font-size: .9em; }
+/* the one action that cannot be undone: big, red, and asked twice */
+.btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); padding: 8px 16px; font-weight: 500; }
+.btn.danger:hover { filter: brightness(1.08); }
+.dialog.danger { border-color: var(--danger); background: var(--danger-bg); margin-top: 24px; }
+.dialog.danger h3 { color: var(--danger); }
+/* an action that is only its icon; the words are its tooltip */
+.btn.icon { width: 28px; height: 28px; padding: 0; justify-content: center; margin-left: auto; color: var(--muted); }
+.btn.icon:hover { color: var(--fg); background: var(--chip); }
+.btn.icon .i { margin: 0; }
+.btn.icon .i svg { width: 16px; height: 16px; }
 .field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { width: 64px; color: var(--muted); }
-.field input, .field select { flex: 1; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
-.dialog { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--float); }
+.field input, .field select { flex: 1; max-width: 260px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
+/* forms are short: a card no wider than it needs, inputs no longer than what goes in them */
+.dialog { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--float); max-width: 420px; }
+.dialog.wide { max-width: 720px; }
 .dialog h3 { margin: 0 0 8px; font-size: 1em; }
-pre.snippet { background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; overflow: auto; font-size: .92em; margin: 8px 0; }
+/* a command to copy: wraps rather than scrolls, with the copy button in its corner */
+/* two commands, one per kind of machine: flat tabs, the open one in the
+   panel's own colour, no script to switch them */
+.tabs { margin: 8px 0; }
+.tabs input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs label { display: inline-block; padding: 4px 10px; border: 1px solid var(--line); border-bottom: 0; border-radius: var(--r-sm) var(--r-sm) 0 0; color: var(--muted); font-size: .9em; cursor: pointer; background: var(--chip); }
+.tabs label + input + label { margin-left: -1px; }
+.tabs input:checked + label { color: var(--fg); background: var(--input); }
+.tabs input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tabs .snippet { display: none; margin: 0; }
+.tabs .snippet pre { border-top-left-radius: 0; }
+.tabs:has(#snippet-unix:checked) #for-unix, .tabs:has(#snippet-windows:checked) #for-windows { display: block; }
+.snippet { position: relative; margin: 8px 0; }
+.snippet pre { margin: 0; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 40px 10px 12px; font-size: .92em; white-space: pre-wrap; word-break: break-all; }
+.snippet .copy { position: absolute; top: 6px; right: 6px; margin: 0; }
+.snippet .copy .i + .i, .snippet .copy.done .i:first-child { display: none; }
+.snippet .copy.done .i + .i { display: inline-flex; color: var(--ok); }
+.presence { display: flex; align-items: center; gap: 8px; color: var(--muted); margin-top: 10px; }
 .section { font-weight: 600; padding: 0 0 8px; }
 .rows { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
 .rows .k { border: 0; background: none; padding: 0; font-size: 1em; }
+
+/* the login page: one dialog, centred, the sign above it */
+.gate { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
+.gate .sign.big { width: 144px; height: 78px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.25)); }
+.gate .sign.big svg { width: 100%; height: 100%; overflow: visible; }
+.gate .dialog { width: 320px; margin: 0; }
+.field label { width: 72px; }
+.err { color: var(--warn-fg); margin: 6px 0; }
+.ok { color: var(--ok); margin: 6px 0; }
+
+/* icons: Lucide, inlined, sized to the text around them */
+.i { display: inline-flex; vertical-align: -.15em; }
+.i svg { width: 1.15em; height: 1.15em; stroke-width: 1.75; }
+.btn .i { margin-left: -2px; }
+
+/* a list of pages, as in settings: roomy rows, an icon in front of each */
+.li.plain { gap: 12px; padding: 12px 14px; }
+.li.plain .in { gap: 12px; }
+.li.plain .i { order: -1; color: var(--muted); }
+.li.plain .i svg { width: 20px; height: 20px; stroke-width: 1.5; }
+.li.plain.on .i { color: var(--accent); }
+.li.plain .t b { font-size: 1.05em; }
+
+/* a select drawn like the inputs: the native control with its own arrow hidden,
+   and where the browser allows (appearance: base-select) the open list drawn
+   like the page's own cards; elsewhere the list stays the system's */
+.select { position: relative; display: inline-flex; flex: 1; max-width: 260px; }
+.select select { appearance: none; width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 30px 6px 9px; font: inherit; cursor: pointer; }
+.select select:focus, .field input:focus { outline: none; border-color: var(--accent); }
+.select .i { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
+@supports (appearance: base-select) {
+  .select select, .select select::picker(select) { appearance: base-select; }
+  .select select::picker-icon { display: none; }
+  .select select::picker(select) { margin-top: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--float); color: var(--fg); box-shadow: 0 8px 24px rgba(16,24,40,.12); }
+  .select option { padding: 6px 9px; border-radius: 4px; }
+  .select option:hover, .select option:focus-visible { background: var(--hi); outline: none; }
+  .select option:checked { color: var(--accent); font-weight: 500; }
+  .select option::checkmark { display: none; }
+}
+
+
+/* the closed stall: a board on ropes where a page should have been */
+.col.closed { align-items: center; justify-content: center; text-align: center; }
+.stall { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 24px; }
+.stall .board { width: 260px; height: 195px; filter: drop-shadow(0 6px 10px rgba(0,0,0,.18)); }
+.stall h2 { margin: 8px 0 0; font-size: 1.15em; font-weight: 600; }
+.stall p { margin: 0 0 12px; color: var(--muted); max-width: 320px; }

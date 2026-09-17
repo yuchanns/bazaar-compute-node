@@ -1,0 +1,11 @@
+{% import "components.html" as c with context %}
+{% set key = "error." ~ (code or "unreachable") %}
+<div class="col wide closed">
+  <div class="stall">
+    {% include "board.svg" %}
+    <h2>{{ t.text(key ~ ".title") if t.has(key ~ ".title") else t.text("error.title") }}</h2>
+    <p>{{ t.text(key ~ ".text") if t.has(key ~ ".text") else t.text("error.text") }}</p>
+    {% if code %}<a class="btn" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true">{{ t.text("error.home") }}</a>
+    {% else %}<button class="btn" type="button" onclick="location.reload()">{{ t.text("error.retry") }}</button>{% endif %}
+  </div>
+</div>

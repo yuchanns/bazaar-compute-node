@@ -20,12 +20,15 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 from .clock import clock_text, now_ms, zone
-from .i18n import Translator, create_translator, language_from_header
+from .i18n import LANGUAGES, Translator, create_translator, language_from_header
+from .storage import Account
+
+# the looks an account may choose; anything else follows the system
+THEMES = ("light", "dark")
 
 
 class Renderer:
-    def __init__(self, lang: str | None) -> None:
-        self._lang = lang
+    def __init__(self) -> None:
         # templates and static files ship inside the package, so they are
         # read through the package, never from a directory that may not exist
         self._templates = Environment(
@@ -36,10 +39,18 @@ class Renderer:
         self._templates.filters["identicon"] = identicon
         self._templates.filters["ago"] = _ago
         self._templates.filters["clock"] = _clock
+        self._templates.globals["languages"] = LANGUAGES
+        self._templates.globals["themes"] = THEMES
 
-    def translator(self, request: Request) -> Translator:
+    @staticmethod
+    def translator(request: Request) -> Translator:
+        """The words of whoever is looking: their chosen language once they
+        are logged in and chose one, the browser's otherwise."""
+
+        account: Account | None = getattr(request.state, "account", None)
+        chosen = None if account is None else account.language
         return create_translator(
-            self._lang or language_from_header(request.headers.get("Accept-Language"))
+            chosen or language_from_header(request.headers.get("Accept-Language"))
         )
 
     @staticmethod
@@ -55,15 +66,42 @@ class Renderer:
 
         values = {**self._viewer(request), "module": module, **values}
         if request.headers.get("HX-Request") == "true":
-            return HTMLResponse(self._templates.get_template(template).render(**values))
-        return HTMLResponse(
+            # the rail stays outside the swapped region, so it rides along
+            # out of band to move its highlight
+            return _personal(
+                self._templates.get_template(template).render(**values)
+                + self._templates.get_template("rail.html").render(oob=True, **values)
+            )
+        return _personal(
             self._templates.get_template("shell.html").render(
                 content=template, **values
             )
         )
 
-    def fragment(self, request: Request, template: str, **values: Any) -> HTMLResponse:
-        return HTMLResponse(
+    def fragment(
+        self, request: Request, template: str, *, status_code: int = 200, **values: Any
+    ) -> HTMLResponse:
+        return _personal(
+            self._templates.get_template(template).render(
+                **self._viewer(request), **values
+            ),
+            status_code=status_code,
+        )
+
+    def error(self, request: Request, status_code: int) -> HTMLResponse:
+        """The closed-stall board for a status, whole or as the fragment
+        htmx will swap in."""
+
+        response = self.page(request, "", "error.html", code=status_code)
+        response.status_code = status_code
+        return response
+
+    def standalone(
+        self, request: Request, template: str, **values: Any
+    ) -> HTMLResponse:
+        """A whole page that is not inside the shell, such as the login page."""
+
+        return _personal(
             self._templates.get_template(template).render(
                 **self._viewer(request), **values
             )
@@ -72,7 +110,23 @@ class Renderer:
     def _viewer(self, request: Request) -> dict[str, Any]:
         """What every template knows about who is looking: their words, their clock."""
 
-        return {"t": self.translator(request), "tz": self.zone(request)}
+        account: Account | None = getattr(request.state, "account", None)
+        return {
+            "t": self.translator(request),
+            "tz": self.zone(request),
+            "theme": None if account is None else account.theme,
+        }
+
+
+def _personal(body: str, *, status_code: int = 200) -> HTMLResponse:
+    """A response made for whoever asked: not for any cache to keep, and a
+    different body for htmx than for a browser loading the page whole."""
+
+    return HTMLResponse(
+        body,
+        status_code=status_code,
+        headers={"Cache-Control": "private, no-store", "Vary": "HX-Request"},
+    )
 
 
 @pass_context

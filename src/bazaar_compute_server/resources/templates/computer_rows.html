@@ -1,0 +1,7 @@
+{% import "components.html" as c with context %}
+{% for item in fleet.computers %}
+{% set report = t.text("computers.last_report", {"when": item.last_event_at_ms|ago}) if item.last_event_at_ms else t.text("computers.never_reported") %}
+{% set version = t.text("computers.version", {"version": item.version}) ~ " · " if item.version else "" %}
+{{ c.list_item(item.computer.name, version ~ report, status="running" if item.online else "offline", icon_name=c.os_icons.get(item.system), href="/computers/" ~ item.computer.id, extra_class="" if item.online else "off", on=(selected_key == item.computer.id)) }}
+{% endfor %}
+{% if fleet.edge %}{{ c.edge(fleet, "/computers/list?after=" ~ fleet.edge ~ ("&selected=" ~ selected_key if selected_key else "")) }}{% endif %}

@@ -18,6 +18,20 @@ class Computer:
 
 
 @dataclass(frozen=True, slots=True)
+class Account:
+    """Someone who may log in; the hash is what a session is checked against."""
+
+    id: str
+    name: str
+    password_hash: str
+    created_at_ms: int
+    # how this person reads the pages; none means the browser's language
+    # and the system's theme
+    language: str | None = None
+    theme: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Enrolment:
     """A new computer and the one-time token that proves it."""
 
@@ -71,12 +85,45 @@ class IStorage(Protocol):
 
     async def stop(self) -> None: ...
 
+    async def add_account(self, name: str, password: str) -> Account:
+        """A new account; the name must be unused."""
+        ...
+
+    async def find_account(self, name: str) -> Account | None: ...
+
+    async def get_account(self, account_id: str) -> Account | None: ...
+
+    async def verify_login(self, name: str, password: str) -> Account | None:
+        """The account the credentials belong to, or nothing for any other pair."""
+        ...
+
+    async def change_password(self, account_id: str, password: str) -> Account:
+        """The account with its new password hash."""
+        ...
+
+    async def set_preferences(
+        self, account_id: str, *, language: str | None, theme: str | None
+    ) -> Account:
+        """The account with how it reads the pages from now on."""
+        ...
+
     async def add_computer(self, name: str) -> Enrolment: ...
 
+    async def remove_computer(self, computer_id: str) -> bool:
+        """Forget a computer and everything it reported; false if unknown."""
+        ...
+
+    async def find_computer(self, computer_id: str) -> Computer | None: ...
+
     async def list_computers(
-        self, *, limit: int, after: Computer | None = None
+        self,
+        *,
+        after: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
     ) -> list[Computer]:
-        """A page of computers in enrolment order, starting past `after`."""
+        """Computers in enrolment order: those past the id `after`, up to and
+        including the id `until`, at most `limit` of them."""
         ...
 
     async def authenticate(self, token: str) -> Computer | None:
@@ -120,14 +167,16 @@ class IStorage(Protocol):
         """For every thread named, its newest event with the name."""
         ...
 
-    async def usage_since(
-        self, computer_id: str, agent_id: str, since_ms: int
+    async def usage_around(
+        self, computer_id: str, agent_id: str, at_ms: int
     ) -> list[StoredEvent]:
-        """The latest `usage.updated` per runtime session reported since a time."""
+        """Per runtime session, the latest `usage.updated` before a moment and
+        the latest one from that moment on."""
         ...
 
 
 __all__ = [
+    "Account",
     "Computer",
     "ComputerHealth",
     "Enrolment",

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import click
 import uvicorn
 
 from . import __version__
-from .config import ConfigurationError, load_configuration
+from .app import create_app
+from .config import ConfigurationError, load_configuration, resolve_data_dir
 
 
 @click.group("bcs", context_settings={"help_option_names": ["-h", "--help"]})
@@ -29,12 +29,10 @@ def run(config: Path | None) -> None:
         configuration = load_configuration(config)
     except ConfigurationError as failure:
         raise click.UsageError(str(failure)) from failure
-    if config is not None:
-        os.environ["BCS_CONFIG"] = str(config.expanduser())
-    # the import string is how uvicorn wants an app: it builds the loop and
-    # loads the module itself, the same way it would for several workers
+    # the app is built here from the configuration just read and handed
+    # over whole; uvicorn still builds the loop itself
     uvicorn.run(
-        "bazaar_compute_server.asgi:app",
+        create_app(configuration, resolve_data_dir()),
         host=configuration.listen_host,
         port=configuration.listen_port,
         log_level="info",

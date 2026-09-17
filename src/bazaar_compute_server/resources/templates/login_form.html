@@ -1,0 +1,13 @@
+<form class="dialog" id="login" hx-post="/login" hx-target="this" hx-swap="outerMorph">
+  <h3>{{ t.text("login.title") }}</h3>
+  <div class="field"><label for="name">{{ t.text("login.name") }}</label><input id="name" name="name" required autofocus autocomplete="username"></div>
+  <div class="field"><label for="password">{{ t.text("login.password") }}</label><input id="password" name="password" type="password" required autocomplete="current-password"></div>
+  {% if failed %}<p class="err">{{ t.text("login.failed") }}</p>{% endif %}
+  {# the form has no native action: with htmx not yet loaded, or not at all,
+     a disabled submit button is what stops the browser from sending the
+     credentials as a query string. a form swapped in after a failed try
+     already has htmx running #}
+  {% if failed %}<button class="btn p" type="submit">{{ t.text("login.submit") }}</button>
+  {% else %}<button class="btn p" type="submit" disabled>{{ t.text("login.submit") }}</button>
+  <script>document.querySelector("#login button[type=submit]").disabled = false</script>{% endif %}
+</form>

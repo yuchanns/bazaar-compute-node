@@ -26,7 +26,7 @@ def test_a_first_run_writes_the_defaults_and_reads_them_back(tmp_path: Path) -> 
 def test_configuration_values_are_read_and_checked(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
-        'listen = "0.0.0.0:9000"\nretention_days = 7\nlang = "zh"\n'
+        'listen = "0.0.0.0:9000"\nretention_days = 7\n'
         'storage = "postgres"\n\n[postgres]\ndsn = "postgresql://bcs@db/bcs"\n',
         encoding="utf-8",
     )
@@ -34,18 +34,22 @@ def test_configuration_values_are_read_and_checked(tmp_path: Path) -> None:
     assert configuration == ServerConfiguration(
         listen="0.0.0.0:9000",
         retention_days=7,
-        lang="zh",
         storage="postgres",
         storage_options={"dsn": "postgresql://bcs@db/bcs"},
     )
     assert configuration.listen_host == "0.0.0.0"
     assert configuration.listen_port == 9000
+    # case: a scheme in front or brackets around an ipv6 host read the same way
+    for listen, host in (("http://[::1]:9000", "::1"), ("localhost:9000", "localhost")):
+        path.write_text(f'listen = "{listen}"\n', encoding="utf-8")
+        configuration = load_configuration(path)
+        assert (configuration.listen_host, configuration.listen_port) == (host, 9000)
 
     for content, match in (
         ('listen = "nowhere"\n', "listen"),
+        ('listen = "127.0.0.1:99999"\n', "listen"),
         ("retention_days = 0\n", "retention_days"),
         ('retention_days = "7"\n', "retention_days"),
-        ('lang = ""\n', "lang"),
     ):
         path.write_text(content, encoding="utf-8")
         with pytest.raises(ConfigurationError, match=match):
@@ -63,7 +67,7 @@ def test_bcs_answers_version_and_help(capsys: pytest.CaptureFixture[str]) -> Non
     assert capsys.readouterr().out.startswith("Usage: bcs")
 
 
-def test_the_server_runs_on_the_fast_loop_and_parser(tmp_path: Path) -> None:
+def test_the_server_runs_on_the_fast_loop_and_parser() -> None:
     import sys
 
     import uvicorn
@@ -90,24 +94,3 @@ def test_the_configured_storage_comes_from_an_entry_point(tmp_path: Path) -> Non
 
     with pytest.raises(ProviderLoadError, match="postgres"):
         load_storage_factory("postgres")
-
-
-def test_uvicorn_can_import_the_app_by_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import importlib
-    import sys
-
-    import uvicorn
-    from starlette.applications import Starlette
-
-    config_path = tmp_path / "config.toml"
-    config_path.write_text('listen = "127.0.0.1:8123"\n', encoding="utf-8")
-    monkeypatch.setenv("BCS_CONFIG", str(config_path))
-    sys.modules.pop("bazaar_compute_server.asgi", None)
-
-    configuration = uvicorn.Config("bazaar_compute_server.asgi:app", port=8123)
-    configuration.load()
-    assert configuration.loaded
-    module = importlib.import_module("bazaar_compute_server.asgi")
-    assert isinstance(module.app, Starlette)

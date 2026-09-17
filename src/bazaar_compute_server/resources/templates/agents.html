@@ -1,16 +1,7 @@
 {% import "components.html" as c with context %}
 <div class="col list">
   {{ c.column_header(t.text("agents.title")) }}
-  <div class="list-items">
-    {% for agent in agents %}
-    {% set index = loop.index %}
-    {% set hover = 'style="anchor-name: --agent-' ~ index ~ '" hx-get="/agents/' ~ agent.computer_id ~ '/' ~ agent.id ~ '/activity" hx-trigger="mouseenter once" hx-target="next .card" hx-swap="innerHTML"' %}
-    {% call c.list_item(agent.name, agent.computer_name ~ " · " ~ agent.runtimes|join(", "), status=agent.status, name=agent.name, href="/agents/" ~ agent.computer_id ~ "/" ~ agent.id, on=(selected and selected.computer_id == agent.computer_id and selected.id == agent.id), off=(agent.status == "offline"), extra_class="agent", attrs='id="agent-' ~ agent.computer_id ~ '-' ~ agent.id ~ '"', avatar_attrs=hover) %}
-      <div class="card" style="position-anchor: --agent-{{ index }}"></div>
-    {% endcall %}
-    {% endfor %}
-    {% if not agents %}{{ c.empty(t.text("agents.empty")) }}{% endif %}
-  </div>
+  {% include "agent_list.html" %}
 </div>
 <div class="col wide">
   {% if selected %}
