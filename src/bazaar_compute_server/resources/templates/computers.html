@@ -1,0 +1,18 @@
+{% import "components.html" as c with context %}
+<div class="col list">
+  {% call c.column_header(t.text("computers.title")) %}
+    <button class="btn sm" hx-get="/computers/new" hx-target="#computer-detail" hx-swap="innerHTML">+ {{ t.text("computers.add") }}</button>
+  {% endcall %}
+  <div class="list-items">
+    {% for item in computers %}
+    {% set report = t.text("computers.last_report", {"when": item.last_event_at_ms|ago}) if item.last_event_at_ms else t.text("computers.never_reported") %}
+    {% set version = t.text("computers.version", {"version": item.version}) ~ " · " if item.version else "" %}
+    {{ c.list_item(item.computer.name, version ~ report, status="running" if item.online else "offline", href="/computers/" ~ item.computer.id, off=(not item.online), on=(selected and item.computer.id == selected.computer.id)) }}
+    {% endfor %}
+    {% if not computers %}{{ c.empty(t.text("computers.empty")) }}{% endif %}
+  </div>
+</div>
+<div class="col wide" id="computer-detail">
+  {% if enrolment %}{% include "enrolled.html" %}{% endif %}
+  {% if selected %}{% include "computer_detail.html" %}{% endif %}
+</div>

@@ -1,0 +1,39 @@
+{# the pieces every module is built from; a page composes, it does not restate #}
+
+{% macro avatar(name, small=false, attrs="") -%}
+<div class="av{% if small %} sm{% endif %}" {{ attrs|safe }}>{{ name|identicon|safe }}</div>
+{%- endmacro %}
+
+{% macro dot(status) -%}
+<div class="dot {{ status }}" title="{{ t.text('status.' ~ status) }}"></div>
+{%- endmacro %}
+
+{% macro column_header(title) -%}
+<div class="hd">{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
+{%- endmacro %}
+
+{% macro channels(kinds) -%}
+{% for kind in kinds %}<span class="ch-{{ kind }}">{{ kind }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+
+{# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
+   with an href it navigates through htmx, otherwise it is a plain row.
+   an off row is greyed and does not navigate: there is nothing live behind it #}
+{% macro list_item(title, subtitle, status=none, name=none, href=none, push=none, on=false, off=false, extra_class="", attrs="", avatar_attrs="") -%}
+{% set href = none if off else href %}
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="#main" hx-push-url="{{ push or 'true' }}"{% endif %} {{ attrs|safe }}>
+  {% if name is not none %}{{ avatar(name, attrs=avatar_attrs) }}{% endif %}
+  <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
+  {% if status %}{{ dot(status) }}{% endif %}
+  {% if caller is defined %}{{ caller() }}{% endif %}
+</{{ "a" if href else "div" }}>
+{%- endmacro %}
+
+{# a heading inside a body, for the groups a detail pane is made of #}
+{% macro section_title(text) -%}
+<div class="section">{{ text }}</div>
+{%- endmacro %}
+
+{% macro empty(text) -%}
+<div class="empty">{{ text }}</div>
+{%- endmacro %}

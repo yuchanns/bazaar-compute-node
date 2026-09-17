@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.resources import files
 from pathlib import Path
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from .config import ServerConfiguration
+from .pages import routes
 from .protocol import (
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
@@ -45,7 +48,19 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
             await storage.stop()
 
     app = Starlette(
-        routes=[Route("/node/reportEvents", report_events, methods=["POST"])],
+        routes=[
+            Route("/node/reportEvents", report_events, methods=["POST"]),
+            *routes(storage, configuration.lang),
+            Mount(
+                "/static",
+                StaticFiles(
+                    directory=str(
+                        files("bazaar_compute_server").joinpath("resources", "static")
+                    )
+                ),
+                name="static",
+            ),
+        ],
         lifespan=lifespan,
     )
     app.state.storage = storage

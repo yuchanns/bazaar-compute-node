@@ -1,0 +1,88 @@
+/* every colour is a light/dark pair; which half shows follows the system,
+   unless the page says otherwise with data-theme */
+:root {
+  color-scheme: light dark;
+  --font: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Inter", "Helvetica Neue", sans-serif;
+  --fs: 13px;
+  /* a warm paper canvas, near-white panels on it, and the rail in the sign's rosewood */
+  --canvas: light-dark(#f4f1ec, #0c0e11); --panel: light-dark(#fdfcfa, #15181d); --float: light-dark(#fbf8f3, #1a1d23);
+  --rail: light-dark(#3b1a1a, #24100f); --rail-fg: light-dark(#d9c9b3, #b8a68f); --rail-on: #f2c14e; --rail-on-bg: rgba(255, 255, 255, .10);
+  --fg: light-dark(#18181b, #e6e8ee); --muted: light-dark(#71717a, #8b93a1); --line: light-dark(#ececef, #23272f);
+  --hi: light-dark(#ffe4e6, #3a1f22); --input: light-dark(#fafafa, #0f1114); --chip: light-dark(#f4f4f5, #23272f); --accent: light-dark(#ff5a5f, #ff6b6f);
+  --ok: light-dark(#84cc16, #a3e635); --warn: light-dark(#f59e0b, #fbbf24); --warn-bg: light-dark(#ffe4e6, #4a1d22); --warn-fg: light-dark(#be123c, #ff9a9e);
+  --tg: light-dark(#0284c7, #38bdf8); --lark: light-dark(#65a30d, #a3e635); --wecom: light-dark(#d97706, #fbbf24);
+  --r-sm: 6px; --r-av: 6px;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--canvas); color: var(--fg); font: var(--fs)/1.5 var(--font); }
+a { color: inherit; text-decoration: none; }
+.app { height: 100vh; display: flex; }
+
+/* rail */
+.rail { width: 56px; background: var(--rail); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 6px; flex: none; }
+.rail .sign { width: 48px; height: 26px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+.rail .ic { width: 36px; height: 36px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--rail-fg); }
+.rail .ic svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.rail .ic.on { background: var(--rail-on-bg); color: var(--rail-on); }
+.rail .sp { flex: 1; }
+
+/* columns */
+.main { flex: 1; display: flex; min-width: 0; padding: 10px 10px 10px 0; gap: 10px; }
+.col { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; overflow: hidden; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.col.list { width: 300px; flex: none; }
+.col.wide { flex: 1; }
+.hd { height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--line); font-weight: 600; flex: none; }
+.hd .sub { color: var(--muted); font-weight: 400; font-size: .86em; }
+.body { padding: 14px 18px; overflow: auto; }
+.list-items { padding: 6px 8px; overflow-y: auto; flex: 1; }
+.empty { color: var(--muted); padding: 24px 18px; }
+
+/* list items */
+.li { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: var(--r-sm); position: relative; }
+.li.on { background: var(--hi); }
+.li:hover { background: var(--hi); }
+.li.off { opacity: .5; }
+.li.off:hover { background: none; }
+.li .t { flex: 1; min-width: 0; }
+.li .t b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.li .t small { display: block; color: var(--muted); font-size: .84em; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.av { width: 34px; height: 34px; border-radius: var(--r-av); flex: none; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+.av.sm { width: 28px; height: 28px; }
+.av svg { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.running { background: var(--ok); }
+.dot.busy { background: var(--warn); }
+.dot.offline, .dot.failed { background: var(--muted); opacity: .5; }
+.chip { font-size: .78em; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--muted); }
+.ch-telegram { color: var(--tg); } .ch-lark { color: var(--lark); } .ch-wecom { color: var(--wecom); }
+.badge { font-size: .78em; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-fg); font-weight: 500; }
+.k { font-size: .72em; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
+
+/* hover activity card */
+/* the card is fixed and anchored to its avatar, so the scrolling list does not clip it */
+.agent .card { display: none; position: fixed; top: anchor(top); left: anchor(right); margin: -8px 0 0 12px; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; }
+.agent:hover .card, .agent .card:hover { display: block; }
+.card .h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
+.card .h .dot { margin-left: auto; }
+.card .st { color: var(--muted); font-size: .9em; margin-bottom: 8px; }
+.card .ev { line-height: 1.75; }
+.card .ev span.t { color: var(--muted); margin-right: 8px; }
+.card .ev .live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+.card .more { margin-top: 8px; font-size: .9em; color: var(--muted); }
+
+/* forms and buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
+.btn.p { background: var(--fg); color: var(--panel); border-color: var(--fg); }
+.btn.sm { padding: 2px 9px; font-size: .9em; }
+.field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.field label { width: 64px; color: var(--muted); }
+.field input, .field select { flex: 1; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
+.dialog { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--float); }
+.dialog h3 { margin: 0 0 8px; font-size: 1em; }
+pre.snippet { background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; overflow: auto; font-size: .92em; margin: 8px 0; }
+.section { font-weight: 600; padding: 0 0 8px; }
+.rows { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+.rows .k { border: 0; background: none; padding: 0; font-size: 1em; }

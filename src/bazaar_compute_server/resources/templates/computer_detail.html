@@ -1,0 +1,11 @@
+{% import "components.html" as c with context %}
+{% call c.column_header(selected.computer.name) %}
+  <span class="sub">{% if selected.python %}Python {{ selected.python }}{% endif %}{% if selected.protocol %} · {{ t.text("computers.protocol", {"protocol": selected.protocol}) }}{% endif %}{% if selected.queued is not none %} · {{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
+{% endcall %}
+<div class="body">
+  {{ c.section_title(t.text("computers.agents")) }}
+  {% for agent in selected.agents %}
+  {{ c.list_item(agent.name, agent.runtimes|join(", ") ~ " · " ~ c.channels(agent.channels), status=agent.status, name=agent.name, href="/agents/" ~ selected.computer.id ~ "/" ~ agent.id, off=(agent.status == "offline")) }}
+  {% endfor %}
+  {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+</div>

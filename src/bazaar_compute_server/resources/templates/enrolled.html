@@ -1,0 +1,10 @@
+<div class="body">
+  <div class="dialog">
+    <h3>{{ enrolment.computer.name }}</h3>
+    <p class="st">{{ t.text("computers.added") }}</p>
+<pre class="snippet" id="snippet">uv tool install bazaar-compute-node
+bcn server connect --url {{ base_url }} --token {{ enrolment.token }}
+bcn system-service restart</pre>
+    <button class="btn sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('snippet').textContent)">{{ t.text("computers.copy") }}</button>
+  </div>
+</div>

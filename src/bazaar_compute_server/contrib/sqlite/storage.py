@@ -14,7 +14,14 @@ import aiosqlite
 from ...clock import now_ms
 from ...protocol import Event
 from ...secrets import hash_secret, new_secret, verify_secret
-from ...storage import Computer, Enrolment, IStorage
+from ...storage import (
+    Computer,
+    ComputerHealth,
+    Enrolment,
+    IStorage,
+    StoredEvent,
+    ThreadKey,
+)
 from .migrations.registry import apply_migrations
 
 _DAY_MS = 24 * 60 * 60 * 1000
@@ -23,6 +30,10 @@ _DAY_MS = 24 * 60 * 60 * 1000
 # readers kept open between requests; more are opened while they are needed
 # and closed on return, the same shape as the node's own sqlite layer
 _IDLE_READERS = 2
+_COLUMNS = (
+    "id, computer_id, agent_id, event_name, thread_id,"
+    " created_at_ms, received_at_ms, payload"
+)
 
 
 class SqliteStorage(IStorage):
@@ -211,6 +222,117 @@ class SqliteStorage(IStorage):
             row = await cursor.fetchone()
         return 0 if row is None else int(row["n"])
 
+    async def computer_health(
+        self, computers: Sequence[Computer]
+    ) -> list[ComputerHealth]:
+        if not computers:
+            return []
+        ids = [computer.id for computer in computers]
+        # two independent reads, each on its own reader
+        health, last = await asyncio.gather(
+            self._latest_health(ids), self._last_received(ids)
+        )
+        return [
+            ComputerHealth(
+                computer=computer,
+                health=health.get(computer.id),
+                last_event_at_ms=last.get(computer.id),
+            )
+            for computer in computers
+        ]
+
+    async def _latest_health(self, ids: Sequence[str]) -> dict[str, StoredEvent]:
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                f"SELECT {_COLUMNS} FROM events WHERE id IN ("
+                " SELECT MAX(id) FROM events WHERE event_name = 'node.health'"
+                f" AND computer_id IN ({_marks(ids)}) GROUP BY computer_id)",
+                ids,
+            ) as cursor,
+        ):
+            return {row["computer_id"]: _stored(row) async for row in cursor}
+
+    async def _last_received(self, ids: Sequence[str]) -> dict[str, int]:
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                "SELECT computer_id, MAX(received_at_ms) AS at FROM events"
+                f" WHERE computer_id IN ({_marks(ids)}) GROUP BY computer_id",
+                ids,
+            ) as cursor,
+        ):
+            return {row["computer_id"]: row["at"] async for row in cursor}
+
+    async def recent_activity(
+        self, computer_id: str, agent_id: str, *, limit: int
+    ) -> list[StoredEvent]:
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                f"SELECT {_COLUMNS} FROM events"
+                " WHERE computer_id = ? AND agent_id = ?"
+                " AND event_name != 'node.health'"
+                " ORDER BY id DESC LIMIT ?",
+                (computer_id, agent_id, limit),
+            ) as cursor,
+        ):
+            return [_stored(row) async for row in cursor]
+
+    async def latest_per_agent(
+        self, computer_ids: Sequence[str], names: Sequence[str]
+    ) -> list[StoredEvent]:
+        if not computer_ids or not names:
+            return []
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                f"SELECT {_COLUMNS} FROM events WHERE id IN ("
+                f" SELECT MAX(id) FROM events WHERE event_name IN ({_marks(names)})"
+                f" AND computer_id IN ({_marks(computer_ids)})"
+                " GROUP BY computer_id, agent_id)",
+                (*names, *computer_ids),
+            ) as cursor,
+        ):
+            return [_stored(row) async for row in cursor]
+
+    async def latest_per_thread(
+        self, name: str, threads: Sequence[ThreadKey]
+    ) -> list[StoredEvent]:
+        if not threads:
+            return []
+        rows = ", ".join("(?, ?, ?)" for _ in threads)
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                f"SELECT {_COLUMNS} FROM events WHERE id IN ("
+                " SELECT MAX(id) FROM events WHERE event_name = ?"
+                f" AND (computer_id, agent_id, thread_id) IN (VALUES {rows})"
+                " GROUP BY computer_id, agent_id, thread_id)",
+                (name, *(part for key in threads for part in key)),
+            ) as cursor,
+        ):
+            return [_stored(row) async for row in cursor]
+
+    async def usage_since(
+        self, computer_id: str, agent_id: str, since_ms: int
+    ) -> list[StoredEvent]:
+        # the newest usage row per runtime session is that session's running
+        # total, so one row per session is the whole picture
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                f"SELECT {_COLUMNS} FROM events"
+                " WHERE id IN ("
+                "  SELECT MAX(id) FROM events"
+                "  WHERE computer_id = ? AND agent_id = ?"
+                "  AND event_name = 'usage.updated' AND created_at_ms >= ?"
+                "  GROUP BY json_extract(payload, '$.correlation.runtime_session_id'))",
+                (computer_id, agent_id, since_ms),
+            ) as cursor,
+        ):
+            return [_stored(row) async for row in cursor]
+
     @property
     def _db(self) -> aiosqlite.Connection:
         """The one connection that writes."""
@@ -218,6 +340,25 @@ class SqliteStorage(IStorage):
         if self._writer is None:
             raise RuntimeError("storage is not started")
         return self._writer
+
+
+def _marks(values: Sequence[object]) -> str:
+    """One placeholder per value, for an IN list."""
+
+    return ", ".join("?" for _ in values)
+
+
+def _stored(row: aiosqlite.Row) -> StoredEvent:
+    return StoredEvent(
+        id=row["id"],
+        computer_id=row["computer_id"],
+        agent_id=row["agent_id"],
+        event_name=row["event_name"],
+        thread_id=row["thread_id"],
+        created_at_ms=row["created_at_ms"],
+        received_at_ms=row["received_at_ms"],
+        payload=json.loads(row["payload"]),
+    )
 
 
 __all__ = ["SqliteStorage"]
