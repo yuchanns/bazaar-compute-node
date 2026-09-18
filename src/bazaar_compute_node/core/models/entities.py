@@ -261,6 +261,7 @@ class InboxTargetSummary:
     target_kind: ChannelTargetKind
     pending_count: int
     last_activity_at_ms: int
+    channel: str = ""
     latest_message_id: str | None = None
     latest_sender: SenderIdentity | None = None
     latest_provider_time_ms: int | None = None

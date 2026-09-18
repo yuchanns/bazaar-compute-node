@@ -86,6 +86,7 @@ def test_inbox_target_serializer_selects_one_latest_time() -> None:
         target="dm:user-1",
         thread_id="session-1",
         target_kind=ChannelTargetKind.DM,
+        channel="telegram",
         pending_count=0,
         last_activity_at_ms=100,
         latest_message_id="message-1",
@@ -96,6 +97,7 @@ def test_inbox_target_serializer_selects_one_latest_time() -> None:
     result = serialize_inbox_target(summary)
 
     assert result["latest_time_ms"] == 99
+    assert result["channel"] == "telegram"
 
 
 @pytest.mark.asyncio
