@@ -302,39 +302,32 @@ class TurnEventStream(IRuntimeTurnStream):
             return ()
         metadata = _result_metadata(message)
         items: list[RuntimeOutputEvent] = []
+        # `usage` is this turn's; `modelUsage` and `total_cost_usd` are the
+        # session's running totals, which is what a usage event carries
         usage = message.get("usage")
+        model_usage = message.get("modelUsage")
         cost = message.get("total_cost_usd")
         if usage is not None and not isinstance(usage, Mapping):
             raise ClaudeProtocolError("Claude result usage must be an object")
+        if model_usage is not None and not isinstance(model_usage, Mapping):
+            raise ClaudeProtocolError("Claude result modelUsage must be an object")
         if cost is not None and (
             not isinstance(cost, (int, float)) or isinstance(cost, bool)
         ):
             raise ClaudeProtocolError("Claude result total_cost_usd must be numeric")
-        if isinstance(usage, Mapping) or cost is not None:
-            fields = {
-                "input_tokens": usage.get("input_tokens") if usage else None,
-                "cached_input_tokens": (
-                    usage.get("cache_read_input_tokens") if usage else None
-                ),
-                "cache_write_input_tokens": (
-                    usage.get("cache_creation_input_tokens") if usage else None
-                ),
-                "output_tokens": usage.get("output_tokens") if usage else None,
-                "reasoning_output_tokens": (
-                    usage.get("reasoning_output_tokens") if usage else None
-                ),
-                "total_tokens": usage.get("total_tokens") if usage else None,
-            }
-            if any(
-                value is not None
-                and (not isinstance(value, int) or isinstance(value, bool))
-                for value in fields.values()
-            ):
-                raise ClaudeProtocolError("Claude result usage values must be integers")
+        if usage is not None or model_usage is not None or cost is not None:
+            last = _token_usage(usage) if usage is not None else None
             items.append(
                 self._output_event(
                     UsageUpdated(
-                        total=TokenUsage(**cast(dict[str, int | None], fields)),
+                        # the session's total is only what modelUsage says;
+                        # one turn's usage is not it and is not passed off as it
+                        total=(
+                            _session_usage(model_usage)
+                            if model_usage is not None
+                            else TokenUsage()
+                        ),
+                        last=last,
                         cost_usd=float(cost) if cost is not None else None,
                     )
                 )
@@ -570,6 +563,67 @@ class TurnEventStream(IRuntimeTurnStream):
 
 def _stream_id(message: Mapping[str, object]) -> str | None:
     return _text(message.get("parent_tool_use_id")) or _text(message.get("uuid"))
+
+
+def _token_usage(usage: Mapping[str, object]) -> TokenUsage:
+    """One turn's usage as Claude reports it; it never says the total, which
+    is what its parts add up to."""
+
+    counts = _counts(
+        usage,
+        input_tokens="input_tokens",
+        cached_input_tokens="cache_read_input_tokens",
+        cache_write_input_tokens="cache_creation_input_tokens",
+        output_tokens="output_tokens",
+        reasoning_output_tokens="reasoning_output_tokens",
+    )
+    return TokenUsage(**counts, total_tokens=_sum_of(counts))
+
+
+def _session_usage(model_usage: Mapping[str, object]) -> TokenUsage:
+    """The session's usage so far, which Claude keeps per model."""
+
+    totals: dict[str, int | None] = {}
+    for entry in model_usage.values():
+        if not isinstance(entry, Mapping):
+            raise ClaudeProtocolError(
+                "Claude result modelUsage entries must be objects"
+            )
+        counts = _counts(
+            entry,
+            input_tokens="inputTokens",
+            cached_input_tokens="cacheReadInputTokens",
+            cache_write_input_tokens="cacheCreationInputTokens",
+            output_tokens="outputTokens",
+            reasoning_output_tokens="thinkingTokens",
+        )
+        for name, count in counts.items():
+            if count is not None:
+                totals[name] = (totals.get(name) or 0) + count
+    return TokenUsage(**totals, total_tokens=_sum_of(totals))
+
+
+def _counts(source: Mapping[str, object], **names: str) -> dict[str, int | None]:
+    counts: dict[str, int | None] = {}
+    for field_name, key in names.items():
+        value = source.get(key)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool)
+        ):
+            raise ClaudeProtocolError(f"Claude result usage {key} must be an integer")
+        counts[field_name] = value
+    return counts
+
+
+def _sum_of(counts: Mapping[str, int | None]) -> int | None:
+    """Every token the model read or wrote; nothing when nothing was counted."""
+
+    known = [
+        count
+        for name, count in counts.items()
+        if count is not None and name != "reasoning_output_tokens"
+    ]
+    return sum(known) if known else None
 
 
 def _result_metadata(message: Mapping[str, object]) -> dict[str, JsonValue]:

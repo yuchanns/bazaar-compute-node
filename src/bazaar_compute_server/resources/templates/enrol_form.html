@@ -1,0 +1,8 @@
+<div class="body">
+  <form class="dialog" hx-post="/computers" hx-target="#main" hx-swap="innerMorph">
+    <h3>{{ t.text("computers.add_title") }}</h3>
+    <div class="field"><label for="name">{{ t.text("computers.name") }}</label><input id="name" name="name" placeholder="{{ t.text('computers.name_placeholder') }}" required autofocus autocomplete="off"></div>
+    <button class="btn p" type="submit">{{ t.text("computers.create") }}</button>
+    <a class="btn" href="/computers" hx-get="/computers" hx-target="#main">{{ t.text("computers.cancel") }}</a>
+  </form>
+</div>

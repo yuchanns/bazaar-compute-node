@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>bcs · 页面组织（粗块）</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#6b7280; --line:#d9dce1; --box:#eceef2; --hi:#dbeafe; --hif:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"PingFang SC","Helvetica Neue",Arial,sans-serif; }
+  header { padding:26px 40px 8px; }
+  header h1 { margin:0 0 4px; font-size:21px; font-weight:600; }
+  header p { margin:0; color:var(--muted); }
+  main { padding:12px 40px 40px; display:grid; grid-template-columns:1fr 1fr; gap:26px; align-items:start; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px 18px; }
+  .panel.wide { grid-column:1 / -1; }
+  .panel h2 { margin:0 0 2px; font-size:15px; }
+  .panel .note { color:var(--muted); font-size:12.5px; margin:0 0 12px; }
+  .wf { border:1px solid var(--line); border-radius:6px; background:#fafbfc; display:flex; height:300px; overflow:hidden; font-size:12px; }
+  .wf.tall { height:360px; }
+  .rail { width:52px; border-right:1px solid var(--line); background:#f1f3f6; display:flex; flex-direction:column; align-items:center; padding:10px 0; gap:8px; }
+  .rail .ic { width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .rail .ic svg { width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .rail .ic.on { background:var(--hi); color:var(--hif); }
+  .rail .sp { flex:1; }
+  .av.id { image-rendering:pixelated; background:#fff; border:1px solid var(--line); }
+  .chat { flex:1; padding:12px 14px; display:flex; flex-direction:column; position:relative; }
+  .pc { position:absolute; right:24px; top:44px; width:230px; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(16,24,40,.12); padding:12px; font-size:11.5px; z-index:2; }
+  .pc .top { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .pc .top .av { width:34px; height:34px; border-radius:8px; }
+  .pc .top small { display:block; color:var(--muted); font-size:10.5px; }
+  .pc .f span { width:34px; }
+  .chat .older { text-align:center; color:var(--muted); font-size:10.5px; padding:4px 0 8px; }
+  .m { display:flex; gap:8px; margin:0 0 12px; max-width:78%; }
+  .m .av { width:26px; height:26px; border-radius:6px; flex:none; }
+  .m .nm { font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .m .nm .k { display:inline-block; margin-left:5px; font-size:9.5px; padding:0 4px; border-radius:3px; border:1px solid var(--line); color:var(--muted); background:#fff; vertical-align:1px; }
+  .m.me .nm .k { margin-left:0; margin-right:5px; }
+  .m .bb { background:#fff; border:1px solid var(--line); border-radius:10px; padding:6px 10px; font-size:11.5px; }
+  .m.me { margin-left:auto; flex-direction:row-reverse; }
+  .m.me .nm { text-align:right; }
+  .m.me .bb { background:var(--hi); border-color:#bfdbfe; }
+  .f { display:flex; align-items:center; gap:8px; margin:5px 0; font-size:11px; }
+  .f span { width:58px; color:var(--muted); }
+  .sk { padding:6px 0; border-top:1px solid #eceef2; }
+  .sk:first-of-type { border-top:0; }
+  .sk b { font-size:11.5px; display:inline; margin-right:6px; }
+  .sk span { font-size:10px; color:var(--muted); background:var(--box); border-radius:4px; padding:0 5px; }
+  .sk p { margin:2px 0 0; font-size:11px; color:#4b5563; }
+  .grp { border-top:1px solid #eceef2; margin-top:8px; padding-top:6px; }
+  .gh { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; margin-bottom:2px; }
+  .gh .ib { width:18px; height:18px; font-size:12px; }
+  .f select { flex:1; border:1px solid var(--line); border-radius:4px; padding:3px 6px; font-size:11px; font-family:inherit; background:#fff; }
+  .f .ib { width:18px; height:18px; font-size:12px; }
+  .sw { width:30px; height:16px; border-radius:8px; background:#d1d5db; position:relative; display:inline-block; }
+  .sw i { position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:#fff; }
+  .sw.on { background:#2563eb; } .sw.on i { left:16px; }
+  .f input { flex:1; border:1px solid var(--line); border-radius:4px; padding:3px 6px; font-size:11px; font-family:inherit; }
+  .ib { width:26px; height:26px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center; color:var(--muted); border:1px solid transparent; }
+  .ib:hover { background:var(--box); }
+  .ib.danger { color:#b91c1c; }
+  .del { margin-left:auto; color:#b91c1c; font-size:11px; border:1px solid #fecaca; border-radius:5px; padding:1px 7px; background:#fff; }
+  .col { border-right:1px solid var(--line); display:flex; flex-direction:column; }
+  .col:last-child { border-right:0; }
+  .col .hd { padding:8px 10px; border-bottom:1px solid var(--line); font-weight:600; background:#fff; display:flex; align-items:center; gap:6px; }
+  .col .hd .pill { margin-left:auto; font-weight:400; color:var(--muted); font-size:11px; }
+  .li { padding:7px 10px; border-bottom:1px solid #eceef2; display:flex; align-items:center; gap:8px; }
+  .li.on { background:var(--hi); }
+  .li .av { width:22px; height:22px; border-radius:6px; background:var(--box); flex:none; }
+  .li .av.r { border-radius:50%; }
+  .li .t { flex:1; min-width:0; }
+  .li .t small { display:block; color:var(--muted); font-size:10.5px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:#22c55e; flex:none; }
+  .dot.idle { background:#9ca3af; }
+  .dot.busy { background:#f59e0b; }
+  .badge { background:#fde68a; color:#92400e; font-size:10px; padding:0 5px; border-radius:4px; }
+  .fill { flex:1; padding:10px; color:var(--muted); }
+  .blk { background:var(--box); border-radius:4px; height:14px; margin:6px 0; }
+  .blk.w40 { width:40%; } .blk.w60 { width:60%; } .blk.w80 { width:80%; }
+  .msg { max-width:70%; padding:6px 9px; border-radius:8px; margin:6px 0; font-size:11.5px; background:#fff; border:1px solid var(--line); }
+  .msg.me { margin-left:auto; background:var(--hi); border-color:#bfdbfe; }
+  .tabs { display:flex; gap:14px; padding:8px 12px 0; border-bottom:1px solid var(--line); background:#fff; }
+  .tabs span { padding-bottom:6px; color:var(--muted); }
+  .tabs span.on { color:var(--fg); border-bottom:2px solid var(--fg); font-weight:600; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:10px; flex:1; }
+  .cell { border:1px dashed var(--line); border-radius:6px; padding:8px; background:#fff; }
+  .cell b { display:block; font-size:11.5px; margin-bottom:4px; }
+  .tree div { padding-left:12px; line-height:1.7; color:#374151; }
+  .card { border:1px solid var(--line); border-radius:8px; background:#fff; padding:10px 12px; margin:10px; font-size:11.5px; }
+  .card b { display:block; margin-bottom:6px; }
+  .btn { display:inline-block; padding:3px 10px; border-radius:5px; border:1px solid var(--line); background:#fff; margin-right:6px; font-size:11px; }
+  .btn.p { background:var(--fg); color:#fff; border-color:var(--fg); }
+  .ev { font-family:Menlo,Consolas,monospace; font-size:10.5px; color:#374151; line-height:1.7; padding:8px 10px; }
+  .ev span { color:var(--muted); margin-right:8px; }
+  footer { padding:0 40px 40px; color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>整体怎么组织（第 17 版）：图标模块栏，主体是 IM 式的三栏</h1>
+  <p>灰块只表示位置和层级，不表示样式。下面四张图是同一个壳子里的不同模块 / 不同深度。</p>
+</header>
+<main>
+
+  <div class="panel wide">
+    <h2>① 智能体（默认进入）</h2>
+    <p class="note">左边是图标模块栏（智能体 / 活动 / 设置，电脑在最下面）；主体三栏：智能体通讯录 → 该智能体的联系人（线程 / DM）→ 聊天记录。记录最新在底部，向上滚动加载更早的。备注设在「人」上：点聊天里的头像或名字弹出名片（右图叠在聊天上的那张），名片里改备注；DM 联系人的头像也开同一张名片。备注后列表和聊天都显示备注名，原始 id 变小字。</p>
+    <div class="wf tall">
+      <div class="rail"><div class="ic on" title="智能体"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5c3 0 6 2 6 5.5"/></svg></div><div class="ic" title="活动"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><div class="ic" title="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div><div class="sp"></div><div class="ic" title="电脑"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div></div>
+      <div class="col" style="width:200px">
+        <div class="hd">智能体 <span class="pill">5</span></div>
+        <div class="li on"><canvas class="av id" data-name="有马佳奈"></canvas><div class="t">有马佳奈<small>kana · claudecode</small></div><div class="dot busy"></div></div>
+        <div class="li"><canvas class="av id" data-name="IE"></canvas><div class="t">IE<small>ie · codex</small></div><div class="dot"></div></div>
+        <div class="li"><canvas class="av id" data-name="Tifa"></canvas><div class="t">Tifa<small>ie · codex</small></div><div class="dot idle"></div></div>
+        <div class="li"><canvas class="av id" data-name="bkakuaBot"></canvas><div class="t">bkakuaBot<small>bkaku · 离线</small></div><div class="dot idle"></div></div>
+        <div class="fill"></div>
+      </div>
+      <div class="col" style="width:240px">
+        <div class="hd">有马佳奈 的联系人 <span class="pill">14</span></div>
+        <div class="li on"><div class="av r"></div><div class="t">B小町 #bcn<small>telegram · 群 · 2 分钟前</small></div></div>
+        <div class="li"><div class="av r"></div><div class="t">yuchanns<small>lark · DM · 12 分钟前</small></div></div>
+        <div class="li"><div class="av r"></div><div class="t">张三<small>telegram · DM</small></div><span class="badge">待审核</span></div>
+        <div class="li"><div class="av r"></div><div class="t">B小町 #general<small>telegram · 群 · 昨天</small></div></div>
+        <div class="li"><div class="av r"></div><div class="t">yuchanns<small>telegram · DM · 昨天</small></div></div>
+        <div class="li"><div class="av r"></div><div class="t">李四 <small style="display:inline">备注</small><small>wecom · DM · woiA3k…9f · 昨天</small></div></div>
+        <div class="fill"></div>
+      </div>
+      <div class="col" style="flex:1">
+        <div class="hd">B小町 #bcn <span class="pill">telegram · 群</span></div>
+        <div class="chat">
+          <div class="pc">
+            <div class="top"><canvas class="av id" data-name="yuchanns"></canvas><div><b>yuchanns</b><span class="k" style="margin-left:5px;font-size:9.5px;padding:0 4px;border:1px solid var(--line);border-radius:3px;color:var(--muted)">Human</span><small>telegram · 1956760814</small></div></div>
+            <div class="f"><span>备注</span><input placeholder="给他起个名字"></div>
+            <div class="f"><span>状态</span>已允许</div>
+            <div style="margin-top:8px"><span class="btn p">保存</span><span class="btn" style="color:#b91c1c;border-color:#fecaca">移除</span></div>
+          </div>
+          <div class="older">↑ 向上滚动加载更早的消息</div>
+          <div class="m"><canvas class="av id" data-name="yuchanns"></canvas><div><div class="nm">yuchanns<span class="k">Human</span></div><div class="bb">切个分支，作为计划和开发分支</div></div></div>
+          <div class="m me"><canvas class="av id" data-name="有马佳奈"></canvas><div><div class="nm"><span class="k">Agent</span>有马佳奈</div><div class="bb">切好了：f-20260915-bcs，从 main 48b01ba 切出，工作树干净，没推。</div></div></div>
+          <div class="m"><canvas class="av id" data-name="yuchanns"></canvas><div><div class="nm">yuchanns<span class="k">Human</span></div><div class="bb">另外，虽然 bcs 需要和 bcn 一起发版，但是内部协议应该有自己的版本，就像 telegram 那样。</div></div></div>
+          <div class="m me"><canvas class="av id" data-name="有马佳奈"></canvas><div><div class="nm"><span class="k">Agent</span>有马佳奈</div><div class="bb">好，进计划：协议版本独立于包版本，两边各有一个常量……</div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>② 联系人的允许状态</h2>
+    <p class="note">联系人只有待审核和已允许两种。待审核的点进去是审核卡，允许或拒绝；已允许的可以在名片里移除，移除后他下次再联系就重新进待审核。</p>
+    <div class="wf">
+      <div class="col" style="width:200px">
+        <div class="hd">有马佳奈 的联系人</div>
+        <div class="li"><div class="av r"></div><div class="t">B小町 #bcn<small>telegram · 群</small></div></div>
+        <div class="li on"><div class="av r"></div><div class="t">张三<small>telegram · DM</small></div><span class="badge">待审核</span></div>
+        <div class="fill"></div>
+      </div>
+      <div class="col" style="flex:1">
+        <div class="hd">张三 <span class="pill">首次联系 · 待审核</span></div>
+        <div class="card">
+          <b>张三 想和 有马佳奈 私聊</b>
+          <div>telegram · id 7181589532 · 首条消息 23:41</div>
+          <div class="blk w80"></div>
+          <div style="margin-top:8px"><span class="btn p">允许</span><span class="btn">拒绝</span></div>
+        </div>
+        <div class="card" style="margin-top:0;border-style:dashed">
+          <b>已允许的联系人 · 名片里</b>
+          <div>yuchanns · telegram · 已允许</div>
+          <div style="margin-top:8px"><span class="btn" style="color:#b91c1c;border-color:#fecaca">移除</span></div>
+        </div>
+        <div class="fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>③ 智能体资料页</h2>
+    <p class="note">从智能体列表进入（或聊天栏顶部点名字）。五个标签：配置、技能、工作区、状态、活动。配置可以直接改；技能列出它有哪些、来自哪里；活动是实时滚动的事件流。</p>
+    <div class="wf" style="height:auto;min-height:300px">
+      <div class="col" style="flex:1">
+        <div class="hd"><div class="av" style="width:22px;height:22px;border-radius:6px;background:var(--box)"></div>有马佳奈 <span class="pill">kana · claudecode · 运行中</span></div>
+        <div class="tabs"><span class="on">配置</span><span>技能</span><span>工作区</span><span>状态</span><span>活动</span></div>
+        <div class="grid2" style="grid-template-columns:1.1fr 1fr 1fr">
+          <div class="cell"><b>配置</b>
+            <div class="f"><span>名字</span><input value="有马佳奈"></div>
+            <div class="f"><span>模式</span><select><option>session</option><option>individual</option><option selected>dangerous_individual</option></select></div>
+            <div class="f"><span>空闲回收</span><select><option selected>不回收</option><option>5 分钟</option><option>30 分钟</option><option>2 小时</option></select></div>
+            <div class="grp"><div class="gh">Channel <span class="ib" title="添加">+</span></div>
+              <div class="f"><span>类型</span><select><option selected>telegram</option><option>lark</option><option>wecom</option></select><span class="ib danger" title="移除">×</span></div>
+              <div class="f"><span>Token</span><input type="password" value="placeholder-only" readonly style="letter-spacing:2px"><span class="btn" style="margin:0">更换</span></div>
+              <div class="f"><span>类型</span><select><option>telegram</option><option selected>lark</option><option>wecom</option></select><span class="ib danger" title="移除">×</span></div>
+              <div class="f"><span>App ID</span><input value="cli_aa1cebc76d79dcba"></div>
+              <div class="f"><span>App Secret</span><input type="password" placeholder="填写后保存" style="letter-spacing:2px"></div>
+            </div>
+            <div class="grp"><div class="gh">Runtime <span class="ib" title="添加">+</span></div>
+              <div class="f"><span>类型</span><select><option selected>claudecode</option><option>codex</option></select><span class="ib danger" title="移除">×</span></div>
+              <div class="f"><span>模型</span><select><option selected>claude-opus-5</option><option>claude-sonnet-5</option><option>claude-haiku-4-5</option></select></div>
+              <div class="f"><span>沙箱</span><select><option>workspace-write</option><option>read-only</option><option selected>danger-full-access</option></select></div>
+              <div class="f"><span>联网</span><label class="sw on"><i></i></label></div>
+            </div>
+            <div style="margin-top:8px"><span class="btn p">保存</span><span class="btn">取消</span></div>
+          </div>
+          <div class="cell"><b>技能</b>
+            <div class="sk"><b>brainstorming</b><span>个人</span><p>把想法整理成设计和规格，先问清楚再动手。</p></div>
+            <div class="sk"><b>mars-cdp-workflow</b><span>工作区</span><p>通过浏览器操作 Mars 控制台做接测。</p></div>
+            <div class="sk"><b>code-review</b><span>内置</span><p>审查当前分支的改动。</p></div>
+            <div class="sk"><b>security-review</b><span>内置</span><p>对待提交改动做安全审查。</p></div>
+          </div>
+          <div class="cell"><b>活动（实时）</b>
+            <div class="ev"><span>23:43:31</span>channel.inbound.persisted<br><span>23:43:33</span>runtime.turn.started<br><span>23:43:40</span>tool_call.started bcc<br><span>23:43:41</span>tool_call.completed<br><span>23:43:52</span>usage.updated 1.2M</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel wide">
+    <h2>④ 电脑（不常用）</h2>
+    <p class="note">电脑列表和每台电脑上的智能体；「+ 接入」把新电脑接进来（生成一段 token 贴到那台电脑的配置里）；智能体在这里新建、编辑、删除，点名字跳到「智能体」页。</p>
+    <div class="wf" style="height:200px">
+      <div class="rail"><div class="ic" title="智能体"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5c3 0 6 2 6 5.5"/></svg></div><div class="ic" title="活动"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><div class="ic" title="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div><div class="sp"></div><div class="ic on" title="电脑"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div></div>
+      <div class="col" style="width:200px">
+        <div class="hd">电脑 <span class="pill">3</span><span class="btn" style="margin-left:8px">+ 接入</span></div>
+        <div class="li on"><div class="t">kana<small>0.2.1rc2 · 12 秒前</small></div><div class="dot"></div></div>
+        <div class="li"><div class="t">ie<small>0.2.1rc2 · 40 秒前</small></div><div class="dot"></div></div>
+        <div class="li"><div class="t">bkaku<small>0.2.0 · 3 小时前</small></div><div class="dot idle"></div></div>
+      </div>
+      <div class="col" style="flex:1">
+        <div class="hd">kana <span class="pill">Python 3.14t · 协议 1 · 上报队列 0</span></div>
+        <div class="fill">
+          <div class="li" style="border:1px solid var(--line);border-radius:6px;background:#fff;margin-bottom:6px"><canvas class="av id" data-name="有马佳奈"></canvas><div class="t"><u>有马佳奈</u> <small style="display:inline">→ 智能体页</small><small>claudecode · telegram, lark</small></div><div class="dot busy"></div><span class="ib" style="margin-left:auto" title="编辑"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span class="ib danger" title="删除"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></svg></span></div>
+          <span class="btn p">+ 新建</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel wide">
+    <h2>⑤ 设置 · 登录与权限</h2>
+    <p class="note">bcs 自己要登录。首次启动生成超管 admin / 密码，账号密码登录；超管在设置里添加登录方式（OIDC / 飞书 …），登录页把已启用的列出来。超管添加账号、指定角色；角色决定能管理哪些电脑。</p>
+    <div style="display:grid;grid-template-columns:320px 1fr;gap:14px">
+      <div class="wf" style="height:260px;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:#fff">
+        <div style="font-weight:600;font-size:16px">bcs</div>
+        <div style="width:200px"><input placeholder="账号" style="width:100%;border:1px solid var(--line);border-radius:4px;padding:5px 8px;font-size:11px;margin-bottom:6px"><input type="password" placeholder="密码" style="width:100%;border:1px solid var(--line);border-radius:4px;padding:5px 8px;font-size:11px"></div>
+        <span class="btn p" style="padding:6px 18px;font-size:12px">登录</span>
+        <div style="color:var(--muted);font-size:10.5px">或</div>
+        <span class="btn" style="padding:5px 14px;font-size:11.5px">飞书登录</span>
+        <div style="color:var(--muted);font-size:10.5px;margin-top:2px">未登录看不到任何页面</div>
+      </div>
+      <div class="wf" style="height:260px">
+        <div class="rail"><div class="ic" title="智能体"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5c3 0 6 2 6 5.5"/></svg></div><div class="ic" title="活动"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><div class="ic on" title="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></div><div class="sp"></div><div class="ic" title="电脑"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div></div>
+        <div class="col" style="width:150px">
+          <div class="hd">设置</div>
+          <div class="li"><div class="t">登录方式</div></div>
+          <div class="li on"><div class="t">账号与角色</div></div>
+          <div class="fill"></div>
+        </div>
+        <div class="col" style="flex:1">
+          <div class="hd">账号 <span class="pill">3</span><span class="btn" style="margin-left:8px">+ 新建</span></div>
+          <div class="li"><canvas class="av id" data-name="yuchanns@apache.org"></canvas><div class="t">yuchanns<small>yuchanns@apache.org · 超级管理员</small></div></div>
+          <div class="li"><canvas class="av id" data-name="ops"></canvas><div class="t">ops<small>ops@example.com · 运维 → kana, ie</small></div></div>
+          <div class="li"><canvas class="av id" data-name="viewer"></canvas><div class="t">viewer<small>viewer@example.com · 只读 → 全部</small></div></div>
+        </div>
+        <div class="col" style="width:260px">
+          <div class="hd">角色 · 运维</div>
+          <div style="padding:8px 10px;font-size:11px">
+            <div class="f"><span style="width:50px">可管理</span><label><input type="checkbox" checked> kana</label></div>
+            <div class="f"><span style="width:50px"></span><label><input type="checkbox" checked> ie</label></div>
+            <div class="f"><span style="width:50px"></span><label><input type="checkbox"> bkaku</label></div>
+            <div class="f"><span style="width:50px">权限</span><select><option>只读</option><option selected>管理</option></select></div>
+            <div style="margin-top:8px"><span class="btn p">保存</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+<footer>第 17 版：联系人只有待审核 / 已允许；审核卡只有允许 / 拒绝；已允许的在名片里「移除」，下次联系重新审核。看完在群里说哪里还不对。</footer>
+<script>
+window.__events = [];
+function hash(str){let h=2166136261;for(const c of str){h^=c.codePointAt(0);h=Math.imul(h,16777619)>>>0;}return h;}
+document.querySelectorAll('canvas.id').forEach(c=>{
+  const n=c.dataset.name, h=hash(n); c.width=c.height=5; const ctx=c.getContext('2d');
+  ctx.fillStyle=`hsl(${h%360} 55% 45%)`;
+  let bits=h;
+  for(let y=0;y<5;y++)for(let x=0;x<3;x++){bits=(bits*1103515245+12345)>>>0; if((bits>>>16)&1){ctx.fillRect(x,y,1,1);ctx.fillRect(4-x,y,1,1);}}
+});
+</script>
+</body>
+</html>

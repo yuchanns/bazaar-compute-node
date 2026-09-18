@@ -46,6 +46,13 @@ def _apply_runtime_configuration(
         configuration,
         storage=raw_storage or configuration.storage or DEFAULT_STORAGE,
         audit=raw_audit or configuration.audit or DEFAULT_AUDIT,
+        # the options table belongs to the sink named in the file; a sink
+        # picked on the command line starts without one
+        audit_options=(
+            {}
+            if raw_audit and raw_audit != configuration.audit
+            else configuration.audit_options
+        ),
         endpoint=(
             str(raw_endpoint) if raw_endpoint is not None else configuration.endpoint
         ),

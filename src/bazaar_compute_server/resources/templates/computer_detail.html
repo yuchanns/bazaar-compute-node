@@ -1,0 +1,18 @@
+{% import "components.html" as c with context %}
+<div id="computer-view" hx-get="/computers/{{ selected.computer.id }}/detail" hx-trigger="every 5s" hx-swap="outerMorph">
+{% call c.column_header(selected.computer.name) %}
+  <span class="sub">{% if selected.system %}{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}{% endif %}{% if selected.queued %} · {{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
+{% endcall %}
+<div class="body">
+  {{ c.section_title(t.text("computers.agents")) }}
+  {% for agent in selected.agents %}
+  {{ c.list_item(agent.name, agent.runtimes|join(", ") ~ " · " ~ c.channels(agent.channels), status=agent.status, name=agent.name, href="/agents/" ~ selected.computer.id ~ "/" ~ agent.id, off=(agent.status == "offline")) }}
+  {% endfor %}
+  {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+  <div class="dialog danger" id="remove" hx-morph-skip>
+    <h3>{{ t.text("computers.remove") }}</h3>
+    <p class="st">{{ t.text("computers.remove_hint") }}</p>
+    <button class="btn danger" hx-get="/computers/{{ selected.computer.id }}/remove" hx-target="#remove" hx-swap="outerMorph">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
+  </div>
+</div>
+</div>

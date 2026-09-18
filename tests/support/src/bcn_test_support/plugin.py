@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import cast
 
-from bazaar_compute_node.core.observability import IAudit
+from bazaar_compute_node.core.observability import AuditContext, IAudit
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 from bazaar_compute_node.core.storage import IStorage
 
@@ -35,8 +35,8 @@ def create_storage() -> IStorage:
     return cast(IStorage, MemoryStorage())
 
 
-def create_audit() -> IAudit:
-    return RecordingAudit()
+def create_audit(context: AuditContext) -> IAudit:
+    return RecordingAudit(options=context.options)
 
 
 __all__ = [

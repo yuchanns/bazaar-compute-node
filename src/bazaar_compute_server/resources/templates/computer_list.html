@@ -1,0 +1,5 @@
+{% import "components.html" as c with context %}
+<div class="list-items" id="computer-list" hx-get="/computers/list{% if selected_key %}?selected={{ selected_key }}{% endif %}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+  {% include "computer_rows.html" %}
+  {% if not fleet.computers %}{{ c.empty(t.text("computers.empty")) }}{% endif %}
+</div>

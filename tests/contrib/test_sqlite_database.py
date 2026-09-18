@@ -9,6 +9,7 @@ from typing import cast
 
 import aiosqlite
 import pytest
+from bcn_test_support import RecordingAudit, recorder_for
 
 from bazaar_compute_node.contrib.sqlite import (
     MigrationChecksumError,
@@ -2528,6 +2529,7 @@ async def test_sqlite_scheduler_fires_reminder_anchored_to_a_system_message() ->
             timer_wheel=wheel,
             concurrency=ThreadLockRegistry(),
             publish_wake=publish,
+            audit=recorder_for(RecordingAudit()),
             clock=lambda: 3_000,
         )
         await scheduler.start(timeout=2)
@@ -2563,6 +2565,7 @@ async def test_sqlite_scheduler_survives_a_failed_cycle() -> None:
         timer_wheel=wheel,
         concurrency=ThreadLockRegistry(),
         publish_wake=_never_published,
+        audit=recorder_for(RecordingAudit()),
         clock=lambda: 1_000,
     )
     try:

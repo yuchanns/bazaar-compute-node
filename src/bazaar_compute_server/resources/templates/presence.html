@@ -1,0 +1,5 @@
+{% import "components.html" as c with context %}
+<div class="presence" id="presence"{% if not item.online %} hx-get="/computers/{{ item.computer.id }}/presence" hx-trigger="every 5s" hx-swap="outerMorph"{% endif %}>
+  {{ c.dot("running" if item.online else "offline") }}
+  <span>{{ t.text("computers.online" if item.online else "computers.waiting") }}</span>
+</div>

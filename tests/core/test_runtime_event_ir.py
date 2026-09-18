@@ -118,10 +118,15 @@ async def test_turn_payloads_are_audited_forwarded_and_correlated(
             and event.metadata
         )
         assert runtime_audit.state is terminal_state
-        assert runtime_audit.metadata == {
-            "usage": {"input_tokens": 3, "output_tokens": 5},
-            "stop_reason": "end_turn",
+        assert runtime_audit.metadata["usage"] == {
+            "input_tokens": 3,
+            "output_tokens": 5,
         }
+        assert runtime_audit.metadata["stop_reason"] == "end_turn"
+        assert (
+            runtime_audit.metadata["provider_event"]
+            == f"runtime.turn.{terminal_state.value}"
+        )
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=1)

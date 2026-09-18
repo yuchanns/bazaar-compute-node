@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 
 import pytest
@@ -21,6 +22,16 @@ class _FailingAudit:
     @property
     def name(self) -> str:
         return "failing"
+
+    @property
+    def health(self) -> Mapping[str, object]:
+        return {}
+
+    async def start(self, *, timeout: float) -> None:
+        del timeout
+
+    async def stop(self, *, timeout: float) -> None:
+        del timeout
 
     async def append(self, event: AuditEvent, *, timeout: float) -> None:
         del event, timeout

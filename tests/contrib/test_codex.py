@@ -1391,7 +1391,7 @@ async def test_real_codex_background_job_defers_idle_recycling(
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=lambda: audit,
+            audit=lambda _: audit,
         ),
         registry=_StaticRegistry(
             channel=channel,
@@ -1552,7 +1552,7 @@ async def test_local_codex_runtime_writes_current_workspace_with_default_sandbox
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=lambda: audit,
+            audit=lambda _: audit,
         ),
         registry=_StaticRegistry(
             channel=channel,

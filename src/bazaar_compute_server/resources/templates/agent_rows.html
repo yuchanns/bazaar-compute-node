@@ -1,0 +1,8 @@
+{% import "components.html" as c with context %}
+{% for agent in page.agents %}
+{% call c.list_item(agent.name, agent.computer_name ~ " · " ~ agent.runtimes|join(", "), status=agent.status, name=agent.name, href="/agents/" ~ agent.computer_id ~ "/" ~ agent.id, on=(selected_key == agent.computer_id ~ "/" ~ agent.id), off=(agent.status == "offline"), extra_class="agent", id="agent-" ~ agent.computer_id ~ "-" ~ agent.id, anchor="--agent-" ~ agent.computer_id ~ "-" ~ agent.id) %}
+  {# the card fetches itself the first time the mouse enters its row, anywhere on the row #}
+  <div class="card" hx-morph-skip style="position-anchor: --agent-{{ agent.computer_id }}-{{ agent.id }}" hx-get="/agents/{{ agent.computer_id }}/{{ agent.id }}/activity" hx-trigger='mouseenter once from:"closest .agent"' hx-target="this" hx-swap="innerMorph"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+{% endcall %}
+{% endfor %}
+{% if page.edge %}{{ c.edge(page, "/agents/list?after=" ~ page.edge ~ ("&selected=" ~ selected_key if selected_key else "")) }}{% endif %}

@@ -1,0 +1,13 @@
+{# a shop board hanging from two ropes, the way a stall says it is closed #}
+<svg viewBox="0 0 320 240" class="board">
+  <g stroke="#8a6a3c" stroke-width="3" stroke-linecap="round" fill="none">
+    <path d="M96 0 v58"/><path d="M224 0 v58"/>
+  </g>
+  <g transform="rotate(-4 160 130)">
+    <rect x="40" y="60" width="240" height="130" rx="6" fill="#6b1f1f" stroke="#4a1414" stroke-width="3"/>
+    <path d="M56 84 q40 -5 80 0 t80 0 t48 0 M56 110 q50 6 100 0 t96 2 M56 136 q30 -4 60 0 t70 3 t66 -2 M56 162 q45 5 90 0 t106 0" stroke="#4a1414" stroke-opacity=".5" stroke-width="1.6" fill="none"/>
+    <circle cx="54" cy="74" r="3.5" fill="#d4a017"/><circle cx="266" cy="74" r="3.5" fill="#d4a017"/><circle cx="54" cy="176" r="3.5" fill="#d4a017"/><circle cx="266" cy="176" r="3.5" fill="#d4a017"/>
+    {% if code %}<text x="160" y="148" text-anchor="middle" font-size="64" fill="#f2c14e" font-family="Helvetica Neue,Arial,sans-serif" font-weight="700" font-style="italic">{{ code }}</text>
+    {% else %}<svg x="120" y="85" width="80" height="80" color="#f2c14e">{% include "icons/unplug.svg" %}</svg>{% endif %}
+  </g>
+</svg>

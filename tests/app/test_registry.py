@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from importlib.metadata import distribution
 
+from bcn_test_support import RecordingAudit
+
+from bazaar_compute_node.app.registry import AdapterRegistry
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
+from bazaar_compute_node.core.observability import AuditContext
+from bazaar_compute_node.core.timerwheel import TimerWheel
+
 PROVIDER_GROUPS = frozenset(
     {
         "bazaar_compute_node.audits",
@@ -28,3 +35,18 @@ def test_declared_provider_entry_points_load() -> None:
     assert test_support
     for entry_point in (*production, *test_support):
         entry_point.load()
+
+
+def test_audit_options_reach_the_sink_factory() -> None:
+    factories = AdapterRegistry().load_shared(storage="test", audit="test")
+
+    audit = factories.audit(
+        AuditContext(
+            options={"url": "http://127.0.0.1:8765"},
+            timer_wheel=TimerWheel(),
+            timeout_budget=TimeoutBudget(1, 1, 1, 1),
+        )
+    )
+
+    assert isinstance(audit, RecordingAudit)
+    assert audit.options == {"url": "http://127.0.0.1:8765"}

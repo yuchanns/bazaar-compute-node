@@ -1,0 +1,65 @@
+{# the pieces every module is built from; a page composes, it does not restate #}
+
+{# the mark for an operating system, as the node names it #}
+{% set os_icons = {"Linux": "si-linux", "Darwin": "si-apple", "Windows": "grid-2x2"} %}
+
+{# a Lucide icon by name, inlined so it takes the text colour; the set lives in icons/ #}
+{% macro icon(name) -%}
+<span class="i">{% include "icons/" ~ name ~ ".svg" %}</span>
+{%- endmacro %}
+
+{# a select that looks like the rest of the page: the native control, drawn over #}
+{% macro select(id, name, options, selected, attrs="") -%}
+<span class="select"><select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>{% for value, label in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>{{ icon("chevron-down") }}</span>
+{%- endmacro %}
+
+{% macro avatar(name, small=false, attrs="") -%}
+<div class="av{% if small %} sm{% endif %}" {{ attrs|safe }}>{{ name|identicon|safe }}</div>
+{%- endmacro %}
+
+{% macro dot(status) -%}
+<div class="dot {{ status }}" title="{{ t.text('status.' ~ status) }}"></div>
+{%- endmacro %}
+
+{% macro column_header(title) -%}
+<div class="hd">{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
+{%- endmacro %}
+
+{% macro channels(kinds) -%}
+{% for kind in kinds %}<span class="ch-{{ kind }}">{{ kind }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endmacro %}
+
+{# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
+   with an href it navigates through htmx, otherwise it is a plain row.
+   an off row is greyed and does not navigate: there is nothing live behind it
+   (an agent); a row that only looks off (extra_class="off") still opens, the way
+   an offline computer does, since removing it happens from its page.
+   what the row shows sits in its own box, so a long list can leave the rows
+   off screen unrendered while the row itself, and what is anchored to it, stay #}
+{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, anchor=none) -%}
+{% set href = none if off else href %}
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="#main" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if anchor %} style="anchor-name: {{ anchor }}"{% endif %}>
+  <div class="in">
+    {% if name is not none %}{{ avatar(name) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
+    <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
+    {% if status %}{{ dot(status) }}{% endif %}
+  </div>
+  {% if caller is defined %}{{ caller() }}{% endif %}
+</{{ "a" if href else "div" }}>
+{%- endmacro %}
+
+{# the end of what a list has loaded, carrying the id it ends at so a refresh
+   can ask for the same stretch; while the list goes on, scrolling it into
+   view asks for the next page, which takes its place #}
+{% macro edge(fleet, url) -%}
+<div class="edge" id="edge-{{ fleet.edge }}" data-after="{{ fleet.edge }}"{% if fleet.more %} hx-get="{{ url }}" hx-trigger="revealed" hx-swap="outerHTML"{% endif %}></div>
+{%- endmacro %}
+
+{# a heading inside a body, for the groups a detail pane is made of #}
+{% macro section_title(text) -%}
+<div class="section">{{ text }}</div>
+{%- endmacro %}
+
+{% macro empty(text) -%}
+<div class="empty">{{ text }}</div>
+{%- endmacro %}

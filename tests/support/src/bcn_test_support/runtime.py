@@ -16,6 +16,7 @@ from bazaar_compute_node.core.models import (
     ContentDeltaKind,
     JsonValue,
     RuntimeEventEnvelope,
+    RuntimeEventPayload,
     RuntimeEventState,
     RuntimeOutputEvent,
     RuntimeSession,
@@ -58,6 +59,8 @@ class TestTurnPlan:
     update_count: int = 0
     stream_session_id: str | None = None
     terminal_metadata: Mapping[str, JsonValue] | None = None
+    # what the runtime streams between started and the terminal event
+    stream_payloads: tuple[RuntimeEventPayload, ...] = ()
 
 
 class TestRuntime(IRuntime):
@@ -299,6 +302,23 @@ class TestRuntime(IRuntime):
             payload=payload,
         )
 
+    def _stream_payload(
+        self,
+        session: RuntimeSession,
+        turn: RuntimeTurn,
+        payload: RuntimeEventPayload,
+    ) -> RuntimeOutputEvent:
+        return RuntimeOutputEvent(
+            envelope=RuntimeEventEnvelope(
+                actor=session.actor,
+                runtime_session_id=session.id,
+                turn_id=turn.turn_id,
+                provider_turn_id=f"test-provider-{turn.turn_id}",
+                occurred_at_ms=time_ns() // 1_000_000,
+            ),
+            payload=payload,
+        )
+
     def _next_update(
         self,
         session: RuntimeSession,
@@ -342,6 +362,7 @@ class _TestTurnStream(IRuntimeTurnStream):
         self.plan = plan
         self.index = 0
         self.update_index = 0
+        self.payload_index = 0
         self.approval_done = False
         self.command_done = False
         self.error_raised = False
@@ -386,6 +407,10 @@ class _TestTurnStream(IRuntimeTurnStream):
                 self.turn,
                 self.plan.stream_session_id,
             )
+        if self.index == 1 and self.payload_index < len(self.plan.stream_payloads):
+            payload = self.plan.stream_payloads[self.payload_index]
+            self.payload_index += 1
+            return self.runtime._stream_payload(self.session, self.turn, payload)
         if self.index >= len(self.plan.states):
             if self.plan.block_until_release and not self.released.is_set():
                 await self.released.wait()

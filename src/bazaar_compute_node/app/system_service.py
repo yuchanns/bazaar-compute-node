@@ -6,6 +6,7 @@ import getpass
 import locale
 import os
 import platform
+import plistlib
 import shlex
 import shutil
 import subprocess
@@ -44,7 +45,7 @@ class SystemServiceContext:
     executable: Path | None
     config_path: Path
     data_dir: Path
-    env_file: Path | None
+    env_file: Path
     log_path: Path
     user: str
 
@@ -88,9 +89,10 @@ def _build_context(
         )
     executable = _resolve_executable() if require_executable else None
     config_path = (args.config or resolve_config_path()).expanduser().resolve()
-    env_file = getattr(args, "env_file", None)
-    if env_file is not None:
-        env_file = env_file.expanduser().resolve()
+    # the service reads the same file `bcn server connect` writes to unless
+    # told another; none of the platforms minds the file not existing yet
+    env_file = (getattr(args, "env_file", None) or default_env_file()).expanduser()
+    env_file = env_file.resolve()
     data_dir = resolve_data_dir()
     return SystemServiceContext(
         executable=executable,
@@ -137,9 +139,7 @@ def _render_systemd_unit(context: SystemServiceContext) -> str:
             "executable": _systemd_quote(_require_executable(context)),
             "config_path": _systemd_quote(context.config_path),
             "data_dir": _systemd_quote(context.data_dir),
-            "environment_file": (
-                "" if context.env_file is None else _systemd_quote(context.env_file)
-            ),
+            "environment_file": _systemd_quote(context.env_file),
         }
     )
 
@@ -159,9 +159,7 @@ def _render_launchd_plist(
             "wrapper_path": str(wrapper_path),
             "data_dir": str(context.data_dir),
             "config_path": str(context.config_path),
-            "environment_file": (
-                "" if context.env_file is None else str(context.env_file)
-            ),
+            "environment_file": str(context.env_file),
             "executable": str(_require_executable(context)),
             "log_path": str(context.log_path),
         }
@@ -253,6 +251,10 @@ def _remove_managed_file(path: Path) -> None:
     path.unlink()
 
 
+def _is_managed(path: Path) -> bool:
+    return path.is_file() and _contains_managed_marker(path.read_bytes())
+
+
 def _contains_managed_marker(content: bytes) -> bool:
     if MANAGED_MARKER.encode("utf-8") in content:
         return True
@@ -302,11 +304,11 @@ def _launchd_paths() -> tuple[Path, Path]:
     )
 
 
-def _windows_paths(context: SystemServiceContext) -> tuple[Path, Path, Path]:
+def _windows_paths(data_dir: Path) -> tuple[Path, Path, Path]:
     return (
-        context.data_dir / "bcn-system-service.xml",
-        context.data_dir / "bcn-system-service.ps1",
-        context.data_dir / "bcn-system-service.vbs",
+        data_dir / "bcn-system-service.xml",
+        data_dir / "bcn-system-service.ps1",
+        data_dir / "bcn-system-service.vbs",
     )
 
 
@@ -342,7 +344,7 @@ def _install_macos(context: SystemServiceContext) -> None:
 
 
 def _install_windows(context: SystemServiceContext) -> None:
-    xml_path, wrapper_path, launcher_path = _windows_paths(context)
+    xml_path, wrapper_path, launcher_path = _windows_paths(context.data_dir)
     context.data_dir.mkdir(parents=True, exist_ok=True)
     _write_managed_file(
         wrapper_path,
@@ -377,6 +379,52 @@ def _install_windows(context: SystemServiceContext) -> None:
     print(f"Start with: schtasks /Run /TN {WINDOWS_TASK_NAME}", flush=True)
 
 
+def default_env_file() -> Path:
+    """The environment file a service reads unless told another, in the
+    platform's format."""
+
+    name = "runtime.ps1" if os.name == "nt" else "runtime.env"
+    return Path.home() / ".config" / "bcn" / name
+
+
+def installed_env_file() -> Path | None:
+    """The environment file the registered service was told to read, if any;
+    a service file at our path that is not ours says nothing."""
+
+    system = platform.system()
+    if system == "Linux":
+        unit_path = _systemd_unit_path()
+        if not _is_managed(unit_path):
+            return None
+        for line in unit_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("EnvironmentFile="):
+                value = line.removeprefix("EnvironmentFile=").removeprefix("-")
+                return Path(shlex.split(value)[0]) if value else None
+        return None
+    if system == "Darwin":
+        plist_path, _ = _launchd_paths()
+        if not _is_managed(plist_path):
+            return None
+        with plist_path.open("rb") as stream:
+            value = (
+                plistlib.load(stream)
+                .get("EnvironmentVariables", {})
+                .get("BCN_ENV_FILE")
+            )
+        return Path(value) if isinstance(value, str) and value else None
+    if system == "Windows":
+        _, script_path, _ = _windows_paths(resolve_data_dir())
+        if not _is_managed(script_path):
+            return None
+        for line in script_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("$environmentScript = '"):
+                value = line.removeprefix("$environmentScript = '").removesuffix("'")
+                value = value.replace("''", "'")
+                return Path(value) if value else None
+        return None
+    return None
+
+
 def _install(context: SystemServiceContext) -> None:
     system = platform.system()
     if system == "Linux":
@@ -387,10 +435,6 @@ def _install(context: SystemServiceContext) -> None:
         _install_windows(context)
     else:
         raise RuntimeError(f"unsupported host service platform: {system}")
-
-
-def _start_linux() -> None:
-    _run_native_command(["systemctl", "--user", "start", SYSTEMD_UNIT_NAME])
 
 
 def _start_macos() -> None:
@@ -411,18 +455,6 @@ def _start_macos() -> None:
 
 def _start_windows() -> None:
     _run_native_command(["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME])
-
-
-def _start() -> None:
-    system = platform.system()
-    if system == "Linux":
-        _start_linux()
-    elif system == "Darwin":
-        _start_macos()
-    elif system == "Windows":
-        _start_windows()
-    else:
-        raise RuntimeError(f"unsupported host service platform: {system}")
 
 
 def _stop_linux() -> None:
@@ -571,7 +603,7 @@ def _uninstall_macos() -> None:
 
 
 def _uninstall_windows(context: SystemServiceContext) -> None:
-    xml_path, wrapper_path, launcher_path = _windows_paths(context)
+    xml_path, wrapper_path, launcher_path = _windows_paths(context.data_dir)
     _stop_windows(context)
     _run_native_command(
         ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
@@ -798,7 +830,9 @@ async def run_system_service_command(
             conflict = await _check_endpoint_conflict(context, native_status)
             if conflict is not None:
                 parser.error(f"system service did not start: {conflict}")
-            await asyncio.to_thread(_start)
+            # a running service starts over, so what was just configured
+            # is what runs
+            await asyncio.to_thread(_restart, context)
             health = await _wait_for_managed_service_health(context)
             if health != "ready":
                 parser.error(f"system service did not become ready: {health}")
@@ -864,5 +898,7 @@ __all__ = [
     "SYSTEMD_UNIT_NAME",
     "WINDOWS_TASK_NAME",
     "SystemServiceContext",
+    "default_env_file",
+    "installed_env_file",
     "run_system_service_command",
 ]

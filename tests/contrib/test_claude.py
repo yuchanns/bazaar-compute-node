@@ -432,6 +432,25 @@ async def test_claude_result_emits_usage_before_terminal() -> None:
             "num_turns": 1,
             "session_id": "provider-session-1",
             "usage": usage,
+            "modelUsage": {
+                "claude-opus-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 40,
+                    "thinkingTokens": 10,
+                    "cacheReadInputTokens": 30,
+                    "cacheCreationInputTokens": 20,
+                    "webSearchRequests": 0,
+                    "costUSD": 0.003,
+                },
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 5,
+                    "outputTokens": 1,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "webSearchRequests": 0,
+                    "costUSD": 0.001,
+                },
+            },
             "total_cost_usd": 0.004,
             "stop_reason": "end_turn",
             "permission_denials": [
@@ -447,10 +466,20 @@ async def test_claude_result_emits_usage_before_terminal() -> None:
     completed = await anext(stream)
 
     assert isinstance(usage_event.payload, UsageUpdated)
-    assert usage_event.payload.total.input_tokens == 12
-    assert usage_event.payload.total.cached_input_tokens == 4
-    assert usage_event.payload.total.cache_write_input_tokens == 3
-    assert usage_event.payload.total.output_tokens == 5
+    # case: this turn's counts, with the total Claude leaves unsaid
+    last = usage_event.payload.last
+    assert last is not None
+    assert last.input_tokens == 12
+    assert last.cached_input_tokens == 4
+    assert last.cache_write_input_tokens == 3
+    assert last.output_tokens == 5
+    assert last.total_tokens == 24
+    # case: the session's running total is the models' usage added up
+    total = usage_event.payload.total
+    assert total.input_tokens == 105 and total.output_tokens == 41
+    assert total.cached_input_tokens == 30 and total.cache_write_input_tokens == 20
+    assert total.reasoning_output_tokens == 10
+    assert total.total_tokens == 196
     assert usage_event.payload.cost_usd == 0.004
     assert isinstance(completed.payload, TurnCompleted)
     assert completed.payload.metadata["usage"] == usage

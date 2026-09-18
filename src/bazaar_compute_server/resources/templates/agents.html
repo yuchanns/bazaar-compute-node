@@ -1,0 +1,12 @@
+{% import "components.html" as c with context %}
+<div class="col list">
+  {{ c.column_header(t.text("agents.title")) }}
+  {% include "agent_list.html" %}
+</div>
+<div class="col wide">
+  {% if selected %}
+  {% call c.column_header(selected.name) %}
+    <span class="sub">{{ selected.computer_name }} · {{ selected.runtimes|join(", ") }} · {{ c.channels(selected.channels) }}</span>
+  {% endcall %}
+  {% endif %}
+</div>

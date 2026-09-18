@@ -1,0 +1,18 @@
+{% import "components.html" as c with context %}
+<div class="col list">
+  {{ c.column_header(t.text("settings.title")) }}
+  <div class="list-items">
+    {% set icons = {"appearance": "sun-moon", "security": "key-round"} %}
+    {% for key in sections %}{% set icon_name = icons[key] %}
+    {% call c.list_item(t.text("settings." ~ key), t.text("settings." ~ key ~ ".hint"), href="/settings/" ~ key, on=(section == key), extra_class="plain") %}
+      {{ c.icon(icon_name) }}
+    {% endcall %}
+    {% endfor %}
+  </div>
+</div>
+<div class="col wide">
+  {{ c.column_header(t.text("settings." ~ section)) }}
+  <div class="body">
+    {% include "settings_" ~ section ~ ".html" %}
+  </div>
+</div>

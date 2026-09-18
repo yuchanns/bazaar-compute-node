@@ -1,0 +1,10 @@
+{% import "components.html" as c with context %}
+<nav class="rail" id="rail"{% if oob is defined and oob %} hx-swap-oob="outerMorph"{% endif %}>
+  <a class="sign" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true" aria-label="Bazaar">{% include "sign.svg" %}</a>
+  <a class="ic{% if module == 'agents' %} on{% endif %}" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true" title="{{ t.text('nav.agents') }}">{{ c.icon("users") }}</a>
+  <span class="ic" title="{{ t.text('nav.activity') }}">{{ c.icon("activity") }}</span>
+  <a class="ic{% if module == 'settings' %} on{% endif %}" href="/settings" hx-get="/settings" hx-target="#main" hx-push-url="true" title="{{ t.text('nav.settings') }}">{{ c.icon("settings") }}</a>
+  <span class="sp"></span>
+  <button class="ic" type="button" hx-post="/logout" title="{{ t.text('settings.logout') }}">{{ c.icon("log-out") }}</button>
+  <a class="ic{% if module == 'computers' %} on{% endif %}" href="/computers" hx-get="/computers" hx-target="#main" hx-push-url="true" title="{{ t.text('nav.computers') }}">{{ c.icon("monitor") }}</a>
+</nav>

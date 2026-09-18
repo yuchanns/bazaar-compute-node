@@ -124,7 +124,7 @@ def _node(
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=lambda: audit,
+            audit=lambda _: audit,
         ),
         registry=_StaticRegistry(
             channel=channel,
@@ -175,8 +175,10 @@ async def _wait_for_turn_completion(
     session_id: str,
     turn_id: str,
     timeout: float = 180,
-    expected_event_name: str = "claudecode.turn.completed",
+    expected_provider_event: str = "claudecode.turn.completed",
 ) -> None:
+    # the audit names every runtime's turn end runtime.turn.<state>; the
+    # runtime's own word for it rides in the metadata
     terminal_event = None
     async with asyncio.timeout(timeout):
         while terminal_event is None:
@@ -187,21 +189,19 @@ async def _wait_for_turn_completion(
                     if event.correlation.thread_id == session_id
                     and event.event_name
                     in {
-                        "claudecode.turn.completed",
-                        "claudecode.turn.failed",
-                        "claudecode.turn.cancelled",
-                        "claudecode.turn.unknown",
-                        "claudecode.turn.transport.unknown",
-                        "claudecode.turn.protocol.unknown",
-                        "claudecode.turn.start.unknown",
-                        "claudecode.turn.conversation_reset",
+                        "runtime.turn.completed",
+                        "runtime.turn.failed",
+                        "runtime.turn.cancelled",
+                        "runtime.turn.unknown",
                     }
                     and event.correlation.turn_id == turn_id
                 ),
                 None,
             )
             await asyncio.sleep(0.05)
-    assert terminal_event.event_name == expected_event_name, terminal_event
+    assert terminal_event.metadata.get("provider_event") == expected_provider_event, (
+        terminal_event
+    )
 
 
 def _empty_environment(session: RuntimeSession) -> Mapping[str, str]:
@@ -370,7 +370,7 @@ async def test_real_claude_active_child_exit_is_terminal_unknown(
             audit,
             session_id=scoped_session_id,
             turn_id=f"turn-{message.message_id}",
-            expected_event_name="claudecode.turn.transport.unknown",
+            expected_provider_event="claudecode.turn.transport.unknown",
         )
         assert runtime_session.id not in agent.runtimes[0]._connections
 
@@ -474,6 +474,33 @@ async def test_real_claude_approval_lifecycle_uses_test_channel(
         assert channel.approval_requests
         assert channel.approval_results[-1].decision is ApprovalDecision.APPROVED
         assert "release checklist" in approved_note.read_text(encoding="utf-8").lower()
+        # the audit stream now keeps the turn's work: what came in, which
+        # tools ran under which turn, and what the model consumed
+        turn_events = [
+            event
+            for event in audit.events
+            if event.correlation.turn_id == f"turn-{approved.message_id}"
+        ]
+        names = [event.event_name for event in turn_events]
+        assert "tool_call.started" in names
+        assert "tool_call.completed" in names
+        assert names.index("tool_call.started") < names.index("tool_call.completed")
+        assert all(
+            isinstance(event.metadata["name"], str) and "call_id" in event.metadata
+            for event in turn_events
+            if event.event_name.startswith("tool_call.")
+        )
+        usage = [event for event in turn_events if event.event_name == "usage.updated"]
+        assert usage
+        assert all(isinstance(event.metadata["total"], dict) for event in usage)
+        inbound = [
+            event
+            for event in audit.events
+            if event.event_name == "channel.inbound.persisted"
+            and event.correlation.inbound_seq == approved.seq
+            and event.correlation.thread_id == scoped_session_id
+        ]
+        assert inbound[0].metadata["text"] == approved.body
 
         channel.set_approval_decision(
             ApprovalDecision.REJECTED,
@@ -946,7 +973,7 @@ def _multi_runtime_node(
         ),
         shared_factories=SharedAdapterFactories(
             storage=lambda: cast(IStorage, storage),
-            audit=lambda: audit,
+            audit=lambda _: audit,
         ),
         registry=_PerConfigurationRegistry(channel),
         endpoint_path=endpoint,

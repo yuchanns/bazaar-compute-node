@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="{{ t.language }}"{% if theme %} data-theme="{{ theme }}"{% endif %}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ t.text("app.title") }}</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+{# every swap on the page morphs by default: what is on screen is diffed into
+   what came back, so scroll, hover and focus survive a change of page #}
+<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone}'>
+<div class="app">
+  {% include "rail.html" %}
+  <div id="main" class="main">{% include content %}</div>
+</div>
+{# when the server cannot be reached at all, nothing can come from it; the
+   board for that case is carried in the page from the start #}
+<template id="unreachable">{% with code=none %}{% include "error.html" %}{% endwith %}</template>
+<script>
+document.addEventListener("htmx:error", (event) => {
+  if (!(event.detail?.error instanceof TypeError)) return;
+  const main = document.getElementById("main");
+  main.replaceChildren(document.getElementById("unreachable").content.cloneNode(true));
+});
+</script>
+</body>
+</html>

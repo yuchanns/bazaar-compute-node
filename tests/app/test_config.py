@@ -549,3 +549,69 @@ version_check = "yes"
 
     with pytest.raises(ConfigurationError, match="node.version_check"):
         load_node_configuration(config_path)
+
+
+def test_v4_audit_options_live_in_a_table_named_after_the_sink(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "4"
+
+[node]
+storage = "sqlite"
+audit = "server"
+version_check = false
+
+[node.server]
+url = "http://127.0.0.1:8765"
+token_env = "BCN_SERVER_TOKEN"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    configuration = load_node_configuration(config_path)
+
+    # case: the sink's own settings arrive as its options
+    assert configuration.audit == "server"
+    assert dict(configuration.audit_options) == {
+        "url": "http://127.0.0.1:8765",
+        "token_env": "BCN_SERVER_TOKEN",
+    }
+
+    # case: the table survives a serialize and re-read round trip
+    round_trip_path = tmp_path / "round-trip.toml"
+    round_trip_path.write_text(
+        config_module._serialize_configuration(configuration), encoding="utf-8"
+    )
+    assert load_node_configuration(round_trip_path) == configuration
+
+    # case: a sink without a table has no options and writes none
+    plain_path = tmp_path / "plain.toml"
+    plain_path.write_text(
+        'version = "4"\n\n[node]\naudit = "logging"\n', encoding="utf-8"
+    )
+    plain = load_node_configuration(plain_path)
+    assert dict(plain.audit_options) == {}
+    assert "[node.logging]" not in config_module._serialize_configuration(plain)
+
+
+def test_v4_audit_option_env_names_are_validated(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+version = "4"
+
+[node]
+audit = "server"
+
+[node.server]
+url = "http://127.0.0.1:8765"
+token_env = "not an env name"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="node.server.token_env"):
+        load_node_configuration(config_path)

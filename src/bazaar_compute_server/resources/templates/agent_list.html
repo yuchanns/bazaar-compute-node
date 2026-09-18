@@ -1,0 +1,10 @@
+{% import "components.html" as c with context %}
+{# the list asks for itself again every few seconds, as far as it has been
+   scrolled (`until` is where the last loaded page ends), keeping its
+   selection; the new list is morphed into the old one, so rows keep their
+   identity (hover, focus) and the cards, marked to be skipped, keep whatever
+   they have loaded #}
+<div class="list-items" id="agent-list" hx-get="/agents/list{% if selected_key %}?selected={{ selected_key }}{% endif %}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+  {% include "agent_rows.html" %}
+  {% if not page.agents %}{{ c.empty(t.text("agents.empty")) }}{% endif %}
+</div>

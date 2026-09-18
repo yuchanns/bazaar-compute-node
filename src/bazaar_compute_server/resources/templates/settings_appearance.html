@@ -1,0 +1,13 @@
+{% import "components.html" as c with context %}
+{% set language_options = [("", t.text("language.browser"))] %}
+{% for code in languages %}{% set _ = language_options.append((code, t.text("language." ~ code))) %}{% endfor %}
+{% set theme_options = [("", t.text("theme.system"))] %}
+{% for code in themes %}{% set _ = theme_options.append((code, t.text("theme." ~ code))) %}{% endfor %}
+<form class="dialog" hx-post="/settings/preferences" hx-swap="none">
+  <div class="field"><label for="language">{{ t.text("settings.language") }}</label>
+    {{ c.select("language", "language", language_options, account.language or "", attrs='onchange="this.form.requestSubmit()"') }}
+  </div>
+  <div class="field"><label for="theme">{{ t.text("settings.theme") }}</label>
+    {{ c.select("theme", "theme", theme_options, account.theme or "", attrs='onchange="this.form.requestSubmit()"') }}
+  </div>
+</form>

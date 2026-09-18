@@ -7,7 +7,7 @@ from importlib.metadata import EntryPoint, entry_points
 from typing import Any, cast
 
 from ..core.channel import IChannelBuilder
-from ..core.observability import IAudit
+from ..core.observability import AuditContext, IAudit
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage
 
@@ -18,7 +18,7 @@ AUDIT_ENTRY_POINT_GROUP = "bazaar_compute_node.audits"
 
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
-AuditFactory = Callable[[], IAudit]
+AuditFactory = Callable[[AuditContext], IAudit]
 
 
 @dataclass(frozen=True, slots=True)
