@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -21,11 +22,14 @@ from starlette.staticfiles import StaticFiles
 from .access import AccessGate
 from .accounts import ensure_admin
 from .config import ServerConfiguration
+from .consumers import Consumers
+from .control import Controls
 from .gate import MAX_BODY_BYTES, Gate
 from .pages import routes
 from .protocol import (
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
+    GetUpdatesRequest,
     ReportEventsRequest,
     error,
     ok,
@@ -48,6 +52,9 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
     )
 
     sessions = Sessions()
+    controls = Controls()
+    consumers = Consumers()
+    consumers.on("control.result", controls.result)
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
@@ -65,6 +72,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
                 )
             yield
         finally:
+            await controls.close()
             await storage.stop()
 
     renderer = Renderer()
@@ -83,6 +91,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
     app = Starlette(
         routes=[
             Route("/node/reportEvents", report_events, methods=["POST"]),
+            Route("/node/getUpdates", get_updates, methods=["POST"]),
             *routes(storage, sessions),
             Mount(
                 "/static",
@@ -102,6 +111,8 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         lifespan=lifespan,
     )
     app.state.storage = storage
+    app.state.controls = controls
+    app.state.consumers = consumers
     return app
 
 
@@ -119,7 +130,35 @@ async def report_events(request: Request) -> Response:
     accepted = await _storage(request).record_events(
         computer.id, report.run_id, report.events
     )
+    consumers: Consumers = request.app.state.consumers
+    consumers.consume(computer, report.events)
     return _reply(ok({"accepted": accepted}))
+
+
+async def get_updates(request: Request) -> Response:
+    computer = await _node(request)
+    if isinstance(computer, Response):
+        return computer
+    body = await _read_report(request)
+    if isinstance(body, Response):
+        return body
+    try:
+        poll = GetUpdatesRequest.model_validate(json.loads(body))
+    except (json.JSONDecodeError, ValidationError, UnicodeDecodeError) as failure:
+        return _reply(error("invalid_request", str(failure)), status=400)
+    controls: Controls = request.app.state.controls
+    # a node that hangs up while its poll is held is not kept waiting for;
+    # the next message on the connection after the body is its going away
+    waiting = asyncio.create_task(controls.updates(computer.id, after=poll.offset))
+    gone = asyncio.ensure_future(request.receive())
+    done, _ = await asyncio.wait({waiting, gone}, return_when=asyncio.FIRST_COMPLETED)
+    if waiting not in done:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        return _reply(ok({"updates": []}))
+    gone.cancel()
+    await asyncio.gather(gone, return_exceptions=True)
+    return _reply(ok({"updates": waiting.result()}))
 
 
 async def _node(request: Request) -> Computer | Response:
@@ -168,4 +207,4 @@ def _reply(payload: dict[str, object], *, status: int = 200) -> JSONResponse:
     return JSONResponse(payload, status_code=status)
 
 
-__all__ = ["MAX_BODY_BYTES", "create_app", "report_events"]
+__all__ = ["MAX_BODY_BYTES", "create_app", "get_updates", "report_events"]

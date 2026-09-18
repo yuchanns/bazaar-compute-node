@@ -7,6 +7,7 @@ from importlib.metadata import EntryPoint, entry_points
 from typing import Any, cast
 
 from ..core.channel import IChannelBuilder
+from ..core.control import ControlContext, IControl
 from ..core.observability import AuditContext, IAudit
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorage
@@ -15,16 +16,21 @@ CHANNEL_ENTRY_POINT_GROUP = "bazaar_compute_node.channels"
 RUNTIME_ENTRY_POINT_GROUP = "bazaar_compute_node.runtimes"
 STORAGE_ENTRY_POINT_GROUP = "bazaar_compute_node.storages"
 AUDIT_ENTRY_POINT_GROUP = "bazaar_compute_node.audits"
+CONTROL_ENTRY_POINT_GROUP = "bazaar_compute_node.controls"
 
 RuntimeFactory = Callable[[RuntimeCommandContext], IRuntime]
 StorageFactory = Callable[[], IStorage]
 AuditFactory = Callable[[AuditContext], IAudit]
+ControlFactory = Callable[[ControlContext], IControl]
+# what a node without a management plane says for its control
+NO_CONTROL = "none"
 
 
 @dataclass(frozen=True, slots=True)
 class SharedAdapterFactories:
     storage: StorageFactory
     audit: AuditFactory
+    control: ControlFactory | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +51,7 @@ class AdapterRegistry:
         *,
         storage: str = "sqlite",
         audit: str = "logging",
+        control: str = "none",
         storage_options: Mapping[str, object] | None = None,
     ) -> SharedAdapterFactories:
         storage_factory = cast(
@@ -56,6 +63,13 @@ class AdapterRegistry:
         return SharedAdapterFactories(
             storage=cast(StorageFactory, storage_factory),
             audit=cast(AuditFactory, self._load(AUDIT_ENTRY_POINT_GROUP, audit)),
+            control=(
+                None
+                if control == NO_CONTROL
+                else cast(
+                    ControlFactory, self._load(CONTROL_ENTRY_POINT_GROUP, control)
+                )
+            ),
         )
 
     def load_agent(

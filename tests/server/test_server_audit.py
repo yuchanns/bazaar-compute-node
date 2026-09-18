@@ -50,7 +50,8 @@ async def _stored(path: Path) -> list[tuple[int, str]]:
 
 def _sink(url: object) -> ServerAudit:
     return ServerAudit(
-        {"url": url, "token_env": "BCN_SERVER_TOKEN"}, timeout_budget=BUDGET
+        {"url": url, "token_env": "BCN_SERVER_TOKEN"},
+        timeout_budget=BUDGET,
     )
 
 

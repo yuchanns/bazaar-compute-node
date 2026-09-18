@@ -774,9 +774,11 @@ def test_server_connect_records_the_server_and_keeps_the_token_out_of_config(
         == 0
     )
 
-    # case: the configuration names the sink and where its token lives
+    # case: the configuration names the server as sink and as the source of
+    # requests, and where its token lives, in one table
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert payload["node"]["audit"] == "server"
+    assert payload["node"]["control"] == "server"
     assert payload["node"]["server"] == {
         "url": "http://127.0.0.1:8765",
         "token_env": "BCN_SERVER_TOKEN",

@@ -87,6 +87,7 @@ def _load_shared_factories(
         return AdapterRegistry().load_shared(
             storage=args.storage,
             audit=args.audit,
+            control=args.configuration.control,
             storage_options={"database_name": args.database_name}
             if args.storage == "sqlite" and args.database_name is not None
             else None,

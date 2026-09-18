@@ -131,6 +131,12 @@ class Event(BaseModel):
         return self
 
 
+class GetUpdatesRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    offset: int = Field(ge=0, le=2**63 - 1)
+
+
 class ReportEventsRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

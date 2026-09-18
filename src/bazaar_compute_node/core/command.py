@@ -176,8 +176,17 @@ class ThreadNotFoundError(ValueError):
 class ICommandService(Protocol):
     """Session-scoped command surface used by the local wrapper."""
 
-    async def pending_targets(self, actor: Actor) -> InboxListResult:
-        """List the conversations with unread messages, draining nothing."""
+    async def pending_targets(
+        self,
+        actor: Actor,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        pending_only: bool = True,
+    ) -> InboxListResult:
+        """List the conversations with unread messages, draining nothing; or,
+        for whoever looks at the agent from outside, every conversation it
+        has, newest activity first, a page at a time."""
         ...
 
     async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
