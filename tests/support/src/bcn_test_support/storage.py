@@ -638,6 +638,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             target=target,
             thread_id=session.id,
             target_kind=channel_session.target_kind,
+            channel=channel_session.channel,
             pending_count=pending_count,
             last_activity_at_ms=last_activity_at_ms,
             latest_message_id=latest.message_id if latest is not None else None,

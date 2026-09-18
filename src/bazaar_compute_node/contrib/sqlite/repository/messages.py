@@ -108,6 +108,7 @@ target_catalog AS (
             channel.target_kind || ':' || channel.id
         ) AS target,
         channel.target_kind AS target_kind,
+        channel.channel AS channel,
         COALESCE(pending.pending_count, 0) AS pending_count,
         MAX(
             COALESCE(thread.last_activity_at_ms, 0),
@@ -177,6 +178,7 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
         target=cast(str, row["target"]),
         thread_id=cast(str, row["thread_id"]),
         target_kind=ChannelTargetKind(cast(str, row["target_kind"])),
+        channel=cast(str, row["channel"]),
         pending_count=cast(int, row["pending_count"]),
         last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
         latest_message_id=latest_message_id,
@@ -285,7 +287,7 @@ class MessageOperations(RepositoryBase):
             raise RuntimeError("SQLite inbox target count query returned no row")
         rows = await self.fetchall(
             _INBOX_TARGET_CATALOG_CTE
-            + "SELECT target, thread_id, target_kind, pending_count, "
+            + "SELECT target, thread_id, target_kind, channel, pending_count, "
             "last_activity_at_ms, latest_message_id, latest_sender, latest_sender_id, "
             "latest_sender_display_name, "
             "latest_provider_time_ms, latest_received_at_ms "
