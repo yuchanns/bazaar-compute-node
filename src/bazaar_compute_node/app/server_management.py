@@ -63,10 +63,13 @@ def _connect(
     # registration the default is ours to set, and the install must match it
     registered = installed_env_file()
     env_file = (args.env_file or registered or default_env_file()).expanduser()
+    options = MappingProxyType({"url": url, "token_env": TOKEN_ENV})
     updated = replace(
         configuration,
         audit="server",
-        audit_options=MappingProxyType({"url": url, "token_env": TOKEN_ENV}),
+        audit_options=options,
+        control="server",
+        control_options=options,
     )
     # the token goes first: a configuration that names the server sink is
     # only right once the credential it reads exists; and it goes back when

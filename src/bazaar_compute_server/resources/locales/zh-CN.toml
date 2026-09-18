@@ -137,6 +137,7 @@
 "event.context.compaction.started" = "开始压缩上下文"
 "event.context.compaction.completed" = "上下文压缩完成"
 "event.node.health" = "状态已更新"
+"event.control.result" = "回应了一次查看"
 "event.reminder.scheduled" = "提醒已创建"
 "event.reminder.updated" = "提醒已更新"
 "event.reminder.snoozed" = "提醒已延后"

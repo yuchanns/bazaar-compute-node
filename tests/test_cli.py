@@ -297,6 +297,39 @@ def test_run_accepts_a_zero_agent_configuration(tmp_path: Path) -> None:
     assert args.configuration.agents == ()
 
 
+def test_another_audit_sink_leaves_the_server_control_behind(tmp_path: Path) -> None:
+    """The server's requests are answered through its audit sink; a node run
+    with another sink has no server to take requests from."""
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'version = "4"\n\n[node]\naudit = "server"\ncontrol = "server"\n\n'
+        '[node.server]\nurl = "http://bcs.test"\ntoken = "t"\n',
+        encoding="utf-8",
+    )
+    kept = arguments(
+        storage=None,
+        audit=None,
+        config=config_path,
+        database_name=None,
+        endpoint=None,
+        foreground=True,
+    )
+    _apply_runtime_configuration(kept, UsageReporter())
+    assert kept.configuration.control == "server"
+
+    overridden = arguments(
+        storage=None,
+        audit="logging",
+        config=config_path,
+        database_name=None,
+        endpoint=None,
+        foreground=True,
+    )
+    _apply_runtime_configuration(overridden, UsageReporter())
+    assert overridden.configuration.control == "none"
+
+
 def test_agent_list_reports_empty_configuration(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -774,9 +807,11 @@ def test_server_connect_records_the_server_and_keeps_the_token_out_of_config(
         == 0
     )
 
-    # case: the configuration names the sink and where its token lives
+    # case: the configuration names the server as sink and as the source of
+    # requests, and where its token lives, in one table
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert payload["node"]["audit"] == "server"
+    assert payload["node"]["control"] == "server"
     assert payload["node"]["server"] == {
         "url": "http://127.0.0.1:8765",
         "token_env": "BCN_SERVER_TOKEN",

@@ -251,14 +251,22 @@ class CommandService(ICommandService):
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
-    async def pending_targets(self, actor: Actor) -> InboxListResult:
+    async def pending_targets(
+        self,
+        actor: Actor,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        pending_only: bool = True,
+    ) -> InboxListResult:
         reachable = frozenset(await threads_in_reach(self._storage, actor))
-        result = await self._storage.read_inbox_catalog(limit=None)
-        pending = [
+        result = await self._storage.read_inbox_catalog(limit=limit, offset=offset)
+        targets = tuple(
             summary
             for summary in result.targets
-            if summary.pending_count > 0 and summary.thread_id in reachable
-        ]
+            if summary.thread_id in reachable
+            and (summary.pending_count > 0 or not pending_only)
+        )
         await self._audit.append_tool(
             operation="bcc.inbox.check",
             status="completed",
@@ -266,11 +274,13 @@ class CommandService(ICommandService):
             correlation=self._correlation(actor=actor),
             arguments={"actor_id": actor.id},
         )
+        if not pending_only:
+            return replace(result, targets=targets, shown=len(targets))
         return replace(
             result,
-            targets=tuple(pending),
-            total=len(pending),
-            shown=len(pending),
+            targets=targets,
+            total=len(targets),
+            shown=len(targets),
             offset=0,
             has_more=False,
         )

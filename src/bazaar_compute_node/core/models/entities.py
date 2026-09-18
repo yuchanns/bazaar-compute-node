@@ -262,6 +262,9 @@ class InboxTargetSummary:
     pending_count: int
     last_activity_at_ms: int
     channel: str = ""
+    # the target as the store names it, once `target` is the form shown: a
+    # handle may be shared or change hands, a store's name does not
+    canonical_target: str | None = None
     latest_message_id: str | None = None
     latest_sender: SenderIdentity | None = None
     latest_provider_time_ms: int | None = None

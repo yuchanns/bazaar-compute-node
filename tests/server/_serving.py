@@ -27,6 +27,16 @@ async def serving(
 ) -> AsyncIterator[tuple[str, IStorage]]:
     """A real server on a loopback port, the way `bcs run` starts one."""
 
+    async with serving_app(data_dir, port) as (base, app):
+        yield base, app.state.storage
+
+
+@asynccontextmanager
+async def serving_app(
+    data_dir: Path, port: int | None = None
+) -> AsyncIterator[tuple[str, Starlette]]:
+    """The same server, with the application it runs in hand."""
+
     port = port or free_port()
     app: Starlette = create_app(
         ServerConfiguration(listen=f"127.0.0.1:{port}"), data_dir
@@ -38,7 +48,7 @@ async def serving(
     while not server.started:
         await asyncio.sleep(0.01)
     try:
-        yield f"http://127.0.0.1:{port}", app.state.storage
+        yield f"http://127.0.0.1:{port}", app
     finally:
         server.should_exit = True
         await task

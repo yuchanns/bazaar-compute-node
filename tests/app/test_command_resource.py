@@ -12,7 +12,6 @@ import pytest
 
 import bazaar_compute_node.app.upgrade as upgrade_module
 from bazaar_compute_node.app.application import NodeApplication
-from bazaar_compute_node.app.command import serialize_inbox_target
 from bazaar_compute_node.app.config import (
     AgentConfiguration,
     ChannelConfiguration,
@@ -38,6 +37,7 @@ from bazaar_compute_node.core.models import (
     MessageDirection,
     OutboundDeliveryState,
 )
+from bazaar_compute_node.core.serialize import serialize_inbox_target
 
 AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from uuid import uuid7
 
 import aiohttp
+from yarl import URL
 
 from ...core.audit import AuditEvent
 from ...core.lifecycle import TimeoutBudget
@@ -20,15 +21,6 @@ PROTOCOL_VERSION = 1
 # half of the server's request limit (1 MiB); a backlog goes over in requests
 # of this size instead of one request that is too big to ever get through
 BATCH_BYTES = 512 * 1024
-
-
-def endpoint(url: object) -> str | None:
-    """Where reports go for a configured address, or nothing when there is
-    no address. What the address is worth shows when a report is sent."""
-
-    if not isinstance(url, str) or not url:
-        return None
-    return f"{url.rstrip('/')}/node/reportEvents"
 
 
 class ServerAudit(IAudit):
@@ -49,7 +41,11 @@ class ServerAudit(IAudit):
     ) -> None:
         # one request gets what one command gets
         self._request_timeout = timeout_budget.command_seconds
-        self._endpoint = endpoint(options.get("url"))
+        # what the address is worth shows when it is called
+        url = options.get("url")
+        self._endpoint = (
+            URL(url) / "node" / "reportEvents" if isinstance(url, str) and url else None
+        )
         token_env = options.get("token_env")
         self._token = os.environ.get(token_env) if isinstance(token_env, str) else None
         self._unusable: str | None = None
@@ -173,23 +169,16 @@ class ServerAudit(IAudit):
         in `last_error`."""
 
         session = self._session
-        if session is None:
+        if session is None or self._endpoint is None:
             return False
         try:
             async with session.post(
-                self._endpoint or "",
+                self._endpoint,
                 data=f'{{"run_id":{_encode(self._run_id)},"events":[{",".join(batch)}]}}',
                 headers={"Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=self._request_timeout),
             ) as response:
-                # a reply is a few short fields, read whole however the
-                # network splits it; whatever comes past that is not read
-                body = b""
-                while len(body) < _REPLY_BYTES:
-                    chunk = await response.content.read(_REPLY_BYTES - len(body))
-                    if not chunk:
-                        break
-                    body += chunk
+                body = await _read(response, _REPLY_BYTES)
                 if response.status != 200:
                     # the server says why in its envelope, when it is the
                     # server answering and not something in front of it
@@ -215,6 +204,19 @@ def _encode(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), default=str)
 
 
+async def _read(response: aiohttp.ClientResponse, limit: int) -> bytes:
+    """The body up to the limit, whole however the network splits it;
+    whatever comes past the limit is not read."""
+
+    body = b""
+    while len(body) < limit:
+        chunk = await response.content.read(limit - len(body))
+        if not chunk:
+            break
+        body += chunk
+    return body
+
+
 _REPLY_BYTES = 4096
 
 
@@ -229,4 +231,4 @@ def _error_code(body: bytes) -> str:
     return str(code) if code else "no error code"
 
 
-__all__ = ["BATCH_BYTES", "PROTOCOL_VERSION", "ServerAudit", "endpoint"]
+__all__ = ["BATCH_BYTES", "PROTOCOL_VERSION", "ServerAudit"]

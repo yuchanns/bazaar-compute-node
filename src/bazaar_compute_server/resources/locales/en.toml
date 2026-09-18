@@ -137,6 +137,7 @@
 "event.context.compaction.started" = "Context compaction started"
 "event.context.compaction.completed" = "Context compaction completed"
 "event.node.health" = "Status updated"
+"event.control.result" = "answered a look"
 "event.reminder.scheduled" = "Reminder created"
 "event.reminder.updated" = "Reminder updated"
 "event.reminder.snoozed" = "Reminder postponed"

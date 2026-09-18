@@ -19,6 +19,7 @@ from ..core.runtime import RuntimeSandboxMode
 CONFIG_FILENAME = "config.toml"
 CONFIG_VERSION = "4"
 DEFAULT_AUDIT = "logging"
+DEFAULT_CONTROL = "none"
 DEFAULT_STORAGE = "sqlite"
 DEFAULT_DATABASE_FILENAME = "bcn.sqlite3"
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -101,6 +102,11 @@ class NodeConfiguration:
     audit_options: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # where requests for the node come from, if anywhere
+    control: str = DEFAULT_CONTROL
+    control_options: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     lang: str | None = None
     endpoint: str | None = None
     database_name: str | None = None
@@ -116,6 +122,7 @@ class NodeConfiguration:
             raise ConfigurationError("node.version_check must be a boolean")
         _required_text(self.storage, "node.storage")
         _required_text(self.audit, "node.audit")
+        _required_text(self.control, "node.control")
         for key, value in self.audit_options.items():
             if key.endswith("_env"):
                 environment_name = _required_text(value, f"node.{self.audit}.{key}")
@@ -290,14 +297,19 @@ def _parse_v4_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     if not isinstance(version_check, bool):
         raise ConfigurationError("node.version_check must be a boolean")
     audit = _optional_text(node.get("audit"), "node.audit") or DEFAULT_AUDIT
-    # a sink's own settings live in a table named after it, [node.<audit>]
+    # a sink's own settings live in a table named after it, [node.<audit>];
+    # a control's likewise, and the server's serves both when both are it
     audit_options = _table(node.get(audit, {}), f"[node.{audit}]")
+    control = _optional_text(node.get("control"), "node.control") or DEFAULT_CONTROL
+    control_options = _table(node.get(control, {}), f"[node.{control}]")
     return NodeConfiguration(
         version=CONFIG_VERSION,
         agents=agents,
         storage=_optional_text(node.get("storage"), "node.storage") or DEFAULT_STORAGE,
         audit=audit,
         audit_options=MappingProxyType(dict(audit_options)),
+        control=control,
+        control_options=MappingProxyType(dict(control_options)),
         lang=_optional_text(node.get("lang"), "node.lang"),
         endpoint=_optional_text(node.get("endpoint"), "node.endpoint"),
         database_name=_optional_text(node.get("database_name"), "node.database_name"),
@@ -650,6 +662,8 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
     lines = [f"version = {_toml_value(configuration.version)}", "", "[node]"]
     lines.append(f"storage = {_toml_value(configuration.storage)}")
     lines.append(f"audit = {_toml_value(configuration.audit)}")
+    if configuration.control != DEFAULT_CONTROL:
+        lines.append(f"control = {_toml_value(configuration.control)}")
     if configuration.lang is not None:
         lines.append(f"lang = {_toml_value(configuration.lang)}")
     if configuration.database_name is not None:
@@ -657,12 +671,16 @@ def _serialize_configuration(configuration: NodeConfiguration) -> str:
     if configuration.endpoint is not None:
         lines.append(f"endpoint = {_toml_value(configuration.endpoint)}")
     lines.append(f"version_check = {_toml_value(configuration.version_check)}")
-    if configuration.audit_options:
-        lines.extend(("", f"[node.{_toml_key(configuration.audit)}]"))
-        for key in sorted(configuration.audit_options):
-            lines.append(
-                f"{_toml_key(key)} = {_toml_value(configuration.audit_options[key])}"
-            )
+    # one table per name: the server's, when it is both sink and control,
+    # is written once
+    tables = {configuration.audit: configuration.audit_options}
+    tables.setdefault(configuration.control, configuration.control_options)
+    for name, options in tables.items():
+        if not options:
+            continue
+        lines.extend(("", f"[node.{_toml_key(name)}]"))
+        for key in sorted(options):
+            lines.append(f"{_toml_key(key)} = {_toml_value(options[key])}")
 
     for agent in configuration.agents:
         lines.extend(
