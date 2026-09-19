@@ -17,6 +17,22 @@
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
+/* scrollbars: a thin rounded thumb in the page's own colours, no track, and
+   out of sight until the pointer is over what scrolls. WebKit and Blink give
+   the pseudo-elements this much, but only when the standard properties are
+   left unset on the element; Firefox has the standard ones, so it gets a thin
+   bar in the same colours and nothing more */
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+  :hover::-webkit-scrollbar-thumb { background: var(--edge); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  ::-webkit-scrollbar-corner { background: transparent; }
+}
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
+}
 html, body { height: 100%; }
 body { margin: 0; background: var(--canvas); color: var(--fg); font: var(--fs)/1.5 var(--font); }
 a { color: inherit; text-decoration: none; }
