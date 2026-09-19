@@ -122,7 +122,7 @@ a { color: inherit; text-decoration: none; }
 .chat .edge { min-height: 28px; padding: 4px 0; }
 .li .in { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 /* rows off screen keep their height but are not laid out or painted until
-   they scroll near; the anchor and the card are on the row, outside the box */
+   they scroll near; the card is on the row, outside the box */
 .list-items .li .in { content-visibility: auto; contain-intrinsic-size: auto 34px; }
 .li .t { flex: 1; min-width: 0; }
 .li .t b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -145,10 +145,11 @@ a { color: inherit; text-decoration: none; }
 .k { font-size: .72em; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
 
 /* hover activity card */
-/* the card is fixed and anchored to its row: it opens beside the list, level
-   with the row, never over the other rows, and the scrolling list cannot clip it */
-.agent .card { display: none; position: fixed; top: anchor(top); left: anchor(right); margin: 0 0 0 14px; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; }
-.agent:hover .card, .agent .card:hover { display: block; }
+/* the card is fixed, shown while the pointer is on the agent's avatar and
+   kept by the pointer (the avatar moves it); never clipped by the scrolling
+   list it belongs to */
+.agent .card, .turn.own .card { display: none; position: fixed; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; pointer-events: none; }
+.agent:has(> .in > .av:hover) .card, .turn.own:has(> .av:hover) .card { display: block; }
 .card .h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .card .h .dot { margin-left: auto; }
 .card .st { color: var(--muted); font-size: .9em; margin-bottom: 8px; }

@@ -38,6 +38,10 @@ class Turn:
     kind: str
     at_ms: int
     lines: tuple[Line, ...]
+    # said by the agent whose conversation this is: the one thing on the page
+    # that can be looked into further, since another agent's doings are its
+    # own node's to know
+    own: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +225,7 @@ def _turns(messages: list[dict[str, Any]]) -> tuple[Turn, ...]:
             sender.get("display_name") or sender.get("name") or sender.get("id") or ""
         )
         kind = item["sender_kind"]
+        own = item["direction"] == "outbound"
         line = Line(
             message_id=item["message_id"],
             seq=item["seq"],
@@ -229,12 +234,14 @@ def _turns(messages: list[dict[str, Any]]) -> tuple[Turn, ...]:
             html=render(item["body"]) if kind != "system" else None,
         )
         if turns and turns[-1].speaker == speaker and turns[-1].kind == kind:
-            turns[-1] = Turn(speaker, kind, turns[-1].at_ms, (*turns[-1].lines, line))
+            turns[-1] = Turn(
+                speaker, kind, turns[-1].at_ms, (*turns[-1].lines, line), own
+            )
             continue
         at_ms = (
             item["provider_time_ms"] or item["received_at_ms"] or item["created_at_ms"]
         )
-        turns.append(Turn(speaker, kind, at_ms, (line,)))
+        turns.append(Turn(speaker, kind, at_ms, (line,), own))
     return tuple(turns)
 
 

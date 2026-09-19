@@ -284,11 +284,15 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # messages under their name, the agent's own marked
                 status, chat = await _get(session, f"{base}{messages_url}", **headers)
                 assert status == 200, chat
-                turns = chat.split('<div class="turn">')[1:]
+                turns = chat.split('<div class="turn')[1:]
                 assert len(turns) == 3, chat
                 assert turns[0].count('class="line md"') == 47
                 assert 'id="message-message-chat-6"' in turns[0]
                 assert '<b>Kana</b> <span class="k">Agent</span>' in turns[1]
+                # case: only the agent's own words carry its activity card
+                assert turns[1].startswith(" own")
+                assert f'hx-get="/agents/{computer_id}/{AGENT_ID}/activity"' in turns[1]
+                assert "/activity" not in turns[0] and "/activity" not in turns[2]
                 # case: what was written is read as Markdown, its code
                 # coloured by token and its HTML kept as text, whoever wrote it
                 agent_line = turns[1].split('class="line md"')[1]
