@@ -9,14 +9,19 @@ from starlette.responses import HTMLResponse, Response
 
 from ..access import Access, allowed, sees
 from ..activity import recent_lines, usage_today
-from ..fleet import AgentPage, AgentView, agent_page, agent_view
+from ..contacts import contacts
+from ..control import Controls
+from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..rendering import Renderer
 from ..storage import IStorage
 
 
 class AgentPages:
-    def __init__(self, storage: IStorage, renderer: Renderer) -> None:
+    def __init__(
+        self, storage: IStorage, controls: Controls, renderer: Renderer
+    ) -> None:
         self._storage = storage
+        self._controls = controls
         self._render = renderer
 
     @allowed("agents.view")
@@ -103,6 +108,49 @@ class AgentPages:
             return HTMLResponse("", status_code=404)
         return self._render.fragment(
             request, "activity_card.html", agent=agent, activity=activity, usage=usage
+        )
+
+    @allowed("agents.view")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def contacts(self, request: Request) -> Response:
+        """The agent's conversations: the column when it opens or retries, the
+        rows past `offset` for the scroll, or the column again for a refresh
+        past `since`, as far as `until` - which is nothing at all while no
+        message has arrived or left since."""
+
+        params = request.path_params
+        query = request.query_params
+        agent = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if agent is None:
+            return HTMLResponse("", status_code=404)
+        since = query.get("since")
+        # a computer gone quiet has no new event to show for it; the column
+        # is told it is offline instead of kept as it was
+        if since is not None and agent.status != "offline":
+            latest = await self._storage.latest_message_event(
+                agent.computer_id, agent.id
+            )
+            if latest <= int(since):
+                return Response(status_code=204)
+        offset = int(query.get("offset") or 0)
+        listing = await contacts(
+            self._storage,
+            self._controls,
+            agent,
+            offset=offset,
+            limit=max(int(query.get("until") or 0), PAGE_SIZE),
+        )
+        # a refresh that got no answer leaves the column as it was; it is
+        # asked for again when the next message event comes
+        if since is not None and listing.answer in ("silent", "refused"):
+            return Response(status_code=204)
+        return self._render.fragment(
+            request,
+            "contact_rows.html" if offset else "contacts.html",
+            listing=listing,
         )
 
 

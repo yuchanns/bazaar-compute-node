@@ -1,0 +1,8 @@
+{% import "components.html" as c with context %}
+{% for item in listing.contacts %}
+{% set when = " · " ~ item.last_activity_at_ms|ago if item.last_activity_at_ms else "" %}
+{% call c.list_item(item.name, item.channel ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, name=item.name, id="contact-" ~ item.thread_id) %}
+  {% if item.pending %}<span class="badge">{{ item.pending }}</span>{% endif %}
+{% endcall %}
+{% endfor %}
+{% if listing.edge %}{{ c.edge(listing, "/agents/" ~ listing.agent.computer_id ~ "/" ~ listing.agent.id ~ "/contacts?offset=" ~ listing.edge) }}{% endif %}

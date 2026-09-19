@@ -56,6 +56,7 @@ a { color: inherit; text-decoration: none; }
 .li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .li.off { opacity: .5; }
 .li.off:hover { background: none; }
+.li .badge { flex: none; }
 .li .in { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 /* rows off screen keep their height but are not laid out or painted until
    they scroll near; the anchor and the card are on the row, outside the box */

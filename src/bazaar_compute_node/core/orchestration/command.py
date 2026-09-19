@@ -259,12 +259,18 @@ class CommandService(ICommandService):
         offset: int = 0,
         pending_only: bool = True,
     ) -> InboxListResult:
-        reachable = frozenset(await threads_in_reach(self._storage, actor))
         result = await self._storage.read_inbox_catalog(limit=limit, offset=offset)
+        # the agent itself reaches every conversation; a page read as it is
+        # kept whole, its bounds the storage's own
+        reachable = (
+            None
+            if isinstance(actor, Agent)
+            else frozenset(await threads_in_reach(self._storage, actor))
+        )
         targets = tuple(
             summary
             for summary in result.targets
-            if summary.thread_id in reachable
+            if (reachable is None or summary.thread_id in reachable)
             and (summary.pending_count > 0 or not pending_only)
         )
         await self._audit.append_tool(

@@ -6,6 +6,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
+from ..control import Controls
 from ..rendering import Renderer
 from ..sessions import Sessions
 from ..storage import IStorage
@@ -20,9 +21,9 @@ async def home(request: Request) -> Response:
     return RedirectResponse("/agents")
 
 
-def routes(storage: IStorage, sessions: Sessions) -> list[Route]:
+def routes(storage: IStorage, sessions: Sessions, controls: Controls) -> list[Route]:
     renderer = Renderer()
-    agents = AgentPages(storage, renderer)
+    agents = AgentPages(storage, controls, renderer)
     computers = ComputerPages(storage, renderer)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
@@ -39,6 +40,7 @@ def routes(storage: IStorage, sessions: Sessions) -> list[Route]:
         Route("/agents/list", agents.list_fragment),
         Route("/agents/{computer_id}/{agent_id}", agents.show),
         Route("/agents/{computer_id}/{agent_id}/activity", agents.activity_card),
+        Route("/agents/{computer_id}/{agent_id}/contacts", agents.contacts),
         Route("/computers", computers.list),
         Route("/computers/new", computers.enrol_form),
         Route("/computers/list", computers.list_fragment),

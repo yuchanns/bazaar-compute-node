@@ -159,6 +159,13 @@ class IStorage(Protocol):
 
     async def count_events(self, computer_id: str) -> int: ...
 
+    async def latest_message_event(
+        self, computer_id: str, agent_id: str, *, thread_id: str | None = None
+    ) -> int:
+        """The id of the newest event that put a message into or out of the
+        agent's conversations, or one of them; 0 when there is none yet."""
+        ...
+
     async def computer_health(
         self, computers: Sequence[Computer]
     ) -> list[ComputerHealth]:
