@@ -114,6 +114,20 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         css = page.split('href="/static/app.css?v=')[1].split('"')[0]
         async with session.get(f"{base}/static/app.css?v={css}") as response:
             assert response.status == 200
+        # case: a page from another build asking for a piece is sent back for
+        # the whole page; one from this build gets its piece
+        build = page.split('"X-Build": "')[1].split('"')[0]
+        async with session.get(
+            f"{base}/agents/list",
+            headers={"HX-Request": "true", "X-Build": "elsewhen"},
+        ) as response:
+            assert response.status == 204
+            assert response.headers["HX-Trigger"] == "stale"
+        assert 'id="stale" hidden' in page
+        async with session.get(
+            f"{base}/agents/list", headers={"HX-Request": "true", "X-Build": build}
+        ) as response:
+            assert response.status == 200
         assert "智能体" in page and "有马佳奈" in page
         assert 'class="dot busy"' in page
 
