@@ -38,6 +38,10 @@ class Turn:
     kind: str
     at_ms: int
     lines: tuple[Line, ...]
+    # said by the agent whose conversation this is: the one thing on the page
+    # that can be looked into further, since another agent's doings are its
+    # own node's to know
+    own: bool = False
     # a run that goes on across the edge of a page: this turn leads into the
     # one after it that is on the page already, or follows the one before it
     leads: bool = False
@@ -278,11 +282,11 @@ def _turns(
         if turns and _same(turns[-1], item):
             turns[-1] = replace(turns[-1], lines=(*turns[-1].lines, line))
             continue
-        speaker, sender_id, kind = _who(item)
+        speaker, sender_id, kind, own = _who(item)
         at_ms = (
             item["provider_time_ms"] or item["received_at_ms"] or item["created_at_ms"]
         )
-        turns.append(Turn(speaker, sender_id, kind, at_ms, (line,)))
+        turns.append(Turn(speaker, sender_id, kind, at_ms, (line,), own))
     if turns and leads_into is not None and _same(turns[-1], leads_into):
         turns[-1] = replace(turns[-1], leads=True)
     if turns and follows_from is not None and _same(turns[0], follows_from):
@@ -290,17 +294,22 @@ def _turns(
     return tuple(turns)
 
 
-def _who(item: dict[str, Any]) -> tuple[str, str, str]:
+def _who(item: dict[str, Any]) -> tuple[str, str, str, bool]:
     """Who said a message: how they are named, and who they are - two people
     may be named alike."""
 
     sender = item["sender"] or {}
     speaker = sender.get("display_name") or sender.get("name") or sender.get("id") or ""
-    return speaker, sender.get("id") or "", item["sender_kind"]
+    return (
+        speaker,
+        sender.get("id") or "",
+        item["sender_kind"],
+        item["direction"] == "outbound",
+    )
 
 
 def _same(turn: Turn, item: dict[str, Any]) -> bool:
-    return (turn.speaker, turn.sender_id, turn.kind) == _who(item)
+    return (turn.speaker, turn.sender_id, turn.kind, turn.own) == _who(item)
 
 
 __all__ = ["Contact", "History", "Line", "Turn", "earlier", "later", "latest", "news"]

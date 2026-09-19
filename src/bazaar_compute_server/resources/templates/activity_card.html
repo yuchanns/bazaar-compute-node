@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-<div hx-get="/agents/{{ agent.computer_id }}/{{ agent.id }}/activity" hx-trigger="every[this.closest('.agent').matches(':hover')] 5s" hx-target="closest .card" hx-swap="innerMorph">
+<div hx-get="/agents/{{ agent.computer_id }}/{{ agent.id }}/activity" hx-trigger="every[this.closest('.agent, .turn').matches(':hover')] 5s" hx-target="closest .card" hx-swap="innerMorph">
   <div class="h">{{ c.avatar(agent.name, small=true) }}{{ agent.name }}{{ c.dot(agent.status) }}</div>
   <div class="st">
     {% if agent.working_on %}{{ t.text("activity.working_on", {"target": agent.working_on, "since": agent.working_since_ms|clock}) }}{% else %}{{ t.text("status." ~ agent.status) }}{% endif %}

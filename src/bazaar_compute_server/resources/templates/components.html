@@ -13,8 +13,10 @@
 <span class="select"><select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>{% for value, label in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>{{ icon("chevron-down") }}</span>
 {%- endmacro %}
 
-{% macro avatar(name, small=false, attrs="") -%}
-<div class="av{% if small %} sm{% endif %}" {{ attrs|safe }}>{{ name|identicon|safe }}</div>
+{# an avatar; one that `opens` a card keeps the card by the pointer while the
+   pointer is on it, within the window #}
+{% macro avatar(name, small=false, opens=none) -%}
+<div class="av{% if small %} sm{% endif %}"{% if opens %} hx-on:mousemove="const card = this.closest('{{ opens }}').querySelector('.card'); card.style.left = Math.min(event.clientX + 14, innerWidth - card.offsetWidth - 8) + 'px'; card.style.top = Math.min(event.clientY + 14, innerHeight - card.offsetHeight - 8) + 'px'"{% endif %}>{{ name|identicon|safe }}</div>
 {%- endmacro %}
 
 {% macro dot(status) -%}
@@ -40,12 +42,12 @@
    (an agent); a row that only looks off (extra_class="off") still opens, the way
    an offline computer does, since removing it happens from its page.
    what the row shows sits in its own box, so a long list can leave the rows
-   off screen unrendered while the row itself, and what is anchored to it, stay #}
-{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, anchor=none, target="#main", attrs="") -%}
+   off screen unrendered while the row itself, and what hangs off it, stay #}
+{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
 {% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if anchor %} style="anchor-name: {{ anchor }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
-    {% if name is not none %}{{ avatar(name) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
+    {% if name is not none %}{{ avatar(name, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
     <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
     {% if status %}{{ dot(status) }}{% endif %}
   </div>
