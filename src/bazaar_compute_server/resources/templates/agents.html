@@ -3,10 +3,14 @@
   {{ c.column_header(t.text("agents.title")) }}
   {% include "agent_list.html" %}
 </div>
-<div class="col wide">
-  {% if selected %}
+{% if selected %}
+<div class="col list">
   {% call c.column_header(selected.name) %}
-    <span class="sub">{{ selected.computer_name }} · {{ selected.runtimes|join(", ") }} · {{ c.channels(selected.channels) }}</span>
+    <span class="sub">{{ selected.computer_name }} · {{ c.channels(selected.channels) }}</span>
   {% endcall %}
-  {% endif %}
+  {# the conversations are the node's to list, so the page comes up first and
+     the column asks for them once it is there #}
+  <div class="list-items" id="contacts" hx-get="/agents/{{ selected.computer_id }}/{{ selected.id }}/contacts" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
 </div>
+{% endif %}
+<div class="col wide"></div>

@@ -92,7 +92,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         routes=[
             Route("/node/reportEvents", report_events, methods=["POST"]),
             Route("/node/getUpdates", get_updates, methods=["POST"]),
-            *routes(storage, sessions),
+            *routes(storage, sessions, controls),
             Mount(
                 "/static",
                 StaticFiles(
