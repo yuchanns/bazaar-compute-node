@@ -35,7 +35,7 @@ from .protocol import (
     ok,
 )
 from .registry import load_storage_factory
-from .rendering import Renderer
+from .rendering import Renderer, Stale
 from .sessions import Sessions, load_session_key
 from .storage import Computer, IStorage, StorageContext
 
@@ -104,6 +104,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
             ),
         ],
         middleware=[
+            Middleware(Stale),
             Middleware(Gate, storage=storage, sessions=sessions),
             Middleware(AccessGate, storage=storage),
         ],
