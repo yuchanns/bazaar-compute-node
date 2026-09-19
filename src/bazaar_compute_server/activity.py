@@ -24,6 +24,16 @@ class UsageView:
     cost: str
 
 
+# what the card does not read out: the beat, and the reads a viewer of this
+# very page causes on the node, which would otherwise fill it with themselves
+QUIET = (
+    "node.health",
+    "control.result",
+    "tool.bcc.inbox.check.completed",
+    "tool.bcc.message.read.completed",
+)
+
+
 async def recent_lines(
     storage: IStorage,
     translator: Translator,
@@ -31,7 +41,9 @@ async def recent_lines(
     computer_id: str,
     agent_id: str,
 ) -> list[ActivityLine]:
-    recent = await storage.recent_activity(computer_id, agent_id, limit=CARD_EVENTS)
+    recent = await storage.recent_activity(
+        computer_id, agent_id, limit=CARD_EVENTS, skipping=QUIET
+    )
     return [
         ActivityLine(
             time=clock_text(item.created_at_ms, tz), text=event_text(translator, item)

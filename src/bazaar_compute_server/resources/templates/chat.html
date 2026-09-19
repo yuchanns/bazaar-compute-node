@@ -1,0 +1,11 @@
+{% import "components.html" as c with context %}
+{# the right column: one conversation, or nothing yet; picking a contact
+   swaps this column alone, the two lists staying as they are #}
+<div class="col wide" id="chat">
+  {% if contact %}
+  {% call c.column_header(contact.name) %}
+    <span class="sub"><span class="ch-{{ contact.channel }}">{{ contact.channel }}</span> · {{ t.text("contacts." ~ contact.kind) }}</span>
+  {% endcall %}
+  <div class="chat" id="history" hx-get="/agents/{{ selected.computer_id }}/{{ selected.id }}/contacts/{{ contact.thread_id }}/messages?actor={{ contact.actor_id|urlencode }}&target={{ contact.target|urlencode }}&channel={{ contact.channel|urlencode }}&name={{ contact.name|urlencode }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+  {% endif %}
+</div>

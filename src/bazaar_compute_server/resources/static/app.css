@@ -57,6 +57,24 @@ a { color: inherit; text-decoration: none; }
 .li.off { opacity: .5; }
 .li.off:hover { background: none; }
 .li .badge { flex: none; }
+
+/* the chat: a run of one speaker's messages under their name, oldest at
+   the top, the newest end kept in view; no bubbles, no colour per speaker */
+.chat { flex: 1; overflow-y: auto; padding: 12px 16px; }
+.turn { display: flex; gap: 10px; margin: 10px 0; }
+.turn .said { flex: 1; min-width: 0; }
+.turn .who { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.turn .who .at { color: var(--muted); font-size: .84em; }
+/* a run that went on across the edge of a page keeps the one head it had */
+.turn.leads, .turn:has(+ .turn.follows) { margin-bottom: 0; }
+.turn.follows, .turn.leads + .turn { margin-top: 0; }
+.turn.follows > .av, .turn.leads + .turn > .av { visibility: hidden; }
+.turn.follows .who, .turn.leads + .turn .who { display: none; }
+.turn .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 0; }
+.turn .file { color: var(--muted); font-size: .9em; }
+.chat .tail { min-height: 1px; }
+/* the top of what is loaded turns while the page before it is fetched */
+.chat .edge { min-height: 28px; padding: 4px 0; }
 .li .in { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 /* rows off screen keep their height but are not laid out or painted until
    they scroll near; the anchor and the card are on the row, outside the box */

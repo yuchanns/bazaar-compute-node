@@ -173,9 +173,9 @@ class IStorage(Protocol):
         ...
 
     async def recent_activity(
-        self, computer_id: str, agent_id: str, *, limit: int
+        self, computer_id: str, agent_id: str, *, limit: int, skipping: Sequence[str]
     ) -> list[StoredEvent]:
-        """An agent's latest events, newest first, health beats left out."""
+        """An agent's latest events, newest first, those named left out."""
         ...
 
     async def latest_per_agent(
