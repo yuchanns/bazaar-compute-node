@@ -87,6 +87,40 @@ a { color: inherit; text-decoration: none; }
 .turn.follows > .av, .turn.leads + .turn > .av { visibility: hidden; }
 .turn.follows .who, .turn.leads + .turn .who { display: none; }
 .turn .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 0; }
+/* what an agent wrote, as Markdown: the page's own type, kept tight */
+.turn .line.md { white-space: normal; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md table, .md pre { margin: 0 0 6px; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 8px 0 4px; font-weight: 600; line-height: 1.3; }
+.md h1 { font-size: 1.25em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; } .md h4, .md h5, .md h6 { font-size: 1em; }
+.md ul, .md ol { padding-left: 22px; }
+.md li + li { margin-top: 2px; }
+.md blockquote { padding: 0 0 0 10px; border-left: 2px solid var(--line); color: var(--muted); }
+.md a { color: var(--accent); }
+.md a:hover { text-decoration: underline; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+.md code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+.md pre { white-space: pre; overflow-x: auto; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; }
+.md pre code { background: none; padding: 0; font-size: .9em; }
+/* a table scrolls within itself rather than widening the column */
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .95em; }
+.md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; white-space: nowrap; }
+.md th { background: var(--chip); font-weight: 600; }
+/* code coloured by token: GitHub's light and dark palettes, one for each half.
+   keywords and types; strings; comments; what is defined - functions, classes,
+   decorators; numbers, constants and the builtins; variables and parameters;
+   tags and attributes; what was removed or added; what did not parse */
+.code .tok-k, .code .tok-kd, .code .tok-kn, .code .tok-kr, .code .tok-kp, .code .tok-kt, .code .tok-ow { color: light-dark(#cf222e, #ff7b72); }
+.code .tok-s, .code .tok-s1, .code .tok-s2, .code .tok-sb, .code .tok-sc, .code .tok-sd, .code .tok-sh, .code .tok-si, .code .tok-sx, .code .tok-sr, .code .tok-ss, .code .tok-sa, .code .tok-se, .code .tok-dl { color: light-dark(#0a3069, #a5d6ff); }
+.code .tok-c, .code .tok-c1, .code .tok-cm, .code .tok-cp, .code .tok-cs, .code .tok-ch, .code .tok-cpf { color: light-dark(#6e7781, #8b949e); }
+.code .tok-nf, .code .tok-fm, .code .tok-nc, .code .tok-nd, .code .tok-ne { color: light-dark(#8250df, #d2a8ff); }
+.code .tok-m, .code .tok-mi, .code .tok-mf, .code .tok-mh, .code .tok-mo, .code .tok-mb, .code .tok-il, .code .tok-no, .code .tok-nb, .code .tok-bp, .code .tok-kc { color: light-dark(#0550ae, #79c0ff); }
+.code .tok-nv, .code .tok-vi, .code .tok-vc, .code .tok-vg, .code .tok-vm { color: light-dark(#953800, #ffa657); }
+.code .tok-nt, .code .tok-na { color: light-dark(#116329, #7ee787); }
+.code .tok-gd { color: light-dark(#82071e, #ffdcd7); background: light-dark(#ffebe9, #67060c); }
+.code .tok-gi { color: light-dark(#116329, #aff5b4); background: light-dark(#dafbe1, #033a16); }
+.code .tok-err { color: light-dark(#82071e, #ffa198); }
 .turn .file { color: var(--muted); font-size: .9em; }
 .chat .tail { min-height: 1px; }
 /* the top of what is loaded turns while the page before it is fetched */

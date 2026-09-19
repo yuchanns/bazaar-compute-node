@@ -20,8 +20,15 @@ from ._node import AGENT_ID, node_reporting_to
 from ._serving import enrol, serving_app, signed_in
 from .test_pages import _get, _health
 
+MARKDOWN = (
+    "## Plan\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+    "call `f()` <b>now</b>\n\n```python\nprint(1)  # hi\n```\n"
+)
 
-def _inbound(session_id: str, seq: int, sender_id: str = "sender-id") -> Message:
+
+def _inbound(
+    session_id: str, seq: int, body: str | None = None, sender_id: str = "sender-id"
+) -> Message:
     return Message(
         direction=MessageDirection.INBOUND,
         seq=seq,
@@ -35,7 +42,7 @@ def _inbound(session_id: str, seq: int, sender_id: str = "sender-id") -> Message
         sender=SenderIdentity(id=sender_id, name="Sender"),
         message_type="text",
         target=f"dm:channel-{session_id}",
-        body=f"inbound-{seq}",
+        body=body or f"inbound-{seq}",
         metadata={"sender_kind": "human"},
     )
 
@@ -226,7 +233,7 @@ def _reply(session_id: str, seq: int) -> Message:
         thread_id=session_id,
         channel_session_id=f"channel-{session_id}",
         target=f"dm:channel-{session_id}",
-        body=f"reply-{seq}",
+        body=MARKDOWN,
         delivery_state=OutboundDeliveryState.PENDING,
         created_at_ms=seq * 1_000,
         provider_attempted_at_ms=seq * 1_000,
@@ -259,7 +266,8 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     )
                     continue
                 await node_storage.record_inbound(
-                    _inbound("chat", seq), now_ms=seq * 1_000
+                    _inbound("chat", seq, MARKDOWN if seq == 54 else None),
+                    now_ms=seq * 1_000,
                 )
             async with asyncio.timeout(10):
                 while not (await storage.computer_health([enrolment.computer]))[
@@ -311,10 +319,24 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert status == 200, chat
                 turns = chat.split('<div class="turn">')[1:]
                 assert len(turns) == 3, chat
-                assert turns[0].count('class="line"') == 47
+                assert turns[0].count('class="line md"') == 47
                 assert 'id="message-message-chat-6"' in turns[0]
                 assert '<b>Kana</b> <span class="k">Agent</span>' in turns[1]
-                assert "reply-53" in turns[1]
+                # case: what was written is read as Markdown, its code
+                # coloured by token and its HTML kept as text, whoever wrote it
+                agent_line = turns[1].split('class="line md"')[1]
+                for rendered in (
+                    "<h2>Plan</h2>",
+                    "<li>one</li>",
+                    "<td>2</td>",
+                    "<code>f()</code>",
+                    "&lt;b&gt;now&lt;/b&gt;",
+                    '<pre class="code"><code><span class="tok-nb">print</span>',
+                    '<span class="tok-c1"># hi</span>',
+                ):
+                    assert rendered in agent_line, rendered
+                human_line = turns[2].split('class="line md"')[1]
+                assert "<h2>Plan</h2>" in human_line
                 assert 'id="message-message-chat-55"' in turns[2]
                 assert 'hx-trigger="revealed"' in chat
                 assert "&before=message-chat-6" in chat
@@ -326,7 +348,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     session, f"{base}{messages_url}&before=message-chat-6", **headers
                 )
                 assert status == 200
-                assert older.count('class="line"') == 5
+                assert older.count('class="line md"') == 5
                 assert 'hx-trigger="revealed"' not in older
                 # case: the same sender goes on past the edge of the page, so
                 # the run is marked to join the one already shown
@@ -393,7 +415,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     **headers,
                 )
                 assert status == 200, tail
-                assert tail.count('class="line"') == 2
+                assert tail.count('class="line md"') == 2
                 assert tail.count('<div class="turn') == 2
                 assert 'id="message-message-chat-56"' in tail
                 assert '<div class="turn follows">' in tail
