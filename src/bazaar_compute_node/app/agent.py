@@ -22,14 +22,12 @@ from ..core.models import (
     Message,
     RuntimeSession,
 )
-from ..core.observability import IAudit
 from ..core.orchestration import AgentOrchestrator
 from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
-from ..core.utils.clock import now_ms
 from ..i18n import Translator
 from .attachments import AttachmentMaterializer
 from .command import CommandDispatchError
@@ -75,7 +73,7 @@ class AgentApplication:
         configuration: AgentConfiguration,
         factories: AgentAdapterFactories,
         storage: IStorageScope,
-        audit: IAudit,
+        audit: AuditRecorder,
         timer_wheel: TimerWheel,
         reminder_concurrency: IThreadConcurrency,
         reminder_poke: Callable[[], None],
@@ -89,7 +87,6 @@ class AgentApplication:
         self.agent_id = configuration.id
         self.name = configuration.name
         self.storage = storage
-        self.audit = audit
         self.timer_wheel = timer_wheel
         self.timeout_budget = timeout_budget
         self.translator = translator
@@ -106,11 +103,6 @@ class AgentApplication:
             self.workspace_path,
             self._referenced_attachment_paths,
         )
-        self._audit_recorder = AuditRecorder(
-            sink=audit,
-            timeout_budget=timeout_budget,
-            clock=now_ms,
-        )
         self.channel: IChannel = Channels(
             tuple(
                 Channel(
@@ -123,7 +115,7 @@ class AgentApplication:
                             workspace=self.workspace_path,
                             translator=self.translator,
                             timer_wheel=self.timer_wheel,
-                            audit=self._audit_recorder,
+                            audit=audit,
                         )
                     ),
                 )
@@ -178,7 +170,7 @@ class AgentApplication:
             channel=self.channel,
             runtimes=self.runtimes,
             storage=self.storage,
-            audit=self._audit_recorder,
+            audit=audit,
             timeout_budget=self.timeout_budget,
             timer_wheel=self.timer_wheel,
             runtime_idle_timeout_ms=(
@@ -197,7 +189,7 @@ class AgentApplication:
             storage=self.storage,
             concurrency=reminder_concurrency,
             poke=reminder_poke,
-            audit=self._audit_recorder,
+            audit=audit,
         )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
