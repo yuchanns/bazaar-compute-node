@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import tzinfo
 from functools import lru_cache
 from hashlib import blake2b
+from importlib.resources import files
 from typing import Any
 
 from jinja2 import (
@@ -41,6 +42,7 @@ class Renderer:
         self._templates.filters["clock"] = _clock
         self._templates.globals["languages"] = LANGUAGES
         self._templates.globals["themes"] = THEMES
+        self._templates.globals["asset"] = _asset
 
     @staticmethod
     def translator(request: Request) -> Translator:
@@ -116,6 +118,16 @@ class Renderer:
             "tz": self.zone(request),
             "theme": None if account is None else account.theme,
         }
+
+
+@lru_cache
+def _asset(name: str) -> str:
+    """Where a static file is, under a name that changes with its content, so
+    a browser holding the last one comes for the new one."""
+
+    content = files("bazaar_compute_server").joinpath("resources", "static", name)
+    digest = blake2b(content.read_bytes(), digest_size=6).hexdigest()
+    return f"/static/{name}?v={digest}"
 
 
 def _personal(body: str, *, status_code: int = 200) -> HTMLResponse:

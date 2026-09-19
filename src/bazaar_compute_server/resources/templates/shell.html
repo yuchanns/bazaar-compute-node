@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ t.text("app.title") }}</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js"></script>
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+<script src="{{ asset('htmx.min.js') }}"></script>
 </head>
 {# every swap on the page morphs by default: what is on screen is diffed into
    what came back, so scroll, hover and focus survive a change of page #}
