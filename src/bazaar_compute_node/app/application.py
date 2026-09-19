@@ -109,7 +109,7 @@ class NodeApplication:
                 )
             )
         self._reminder_concurrency = ThreadLockRegistry()
-        audit_recorder = AuditRecorder(
+        self._audit_recorder = AuditRecorder(
             sink=self.audit,
             timeout_budget=self.timeout_budget,
             clock=now_ms,
@@ -119,7 +119,7 @@ class NodeApplication:
             timer_wheel=self.timer_wheel,
             concurrency=self._reminder_concurrency,
             publish_wake=self._publish_inbox_wake,
-            audit=audit_recorder,
+            audit=self._audit_recorder,
         )
         self.version_watcher = VersionWatcher(
             timer_wheel=self.timer_wheel,
@@ -128,7 +128,7 @@ class NodeApplication:
         )
         self.health_reporter = HealthReporter(
             timer_wheel=self.timer_wheel,
-            audit=audit_recorder,
+            audit=self._audit_recorder,
             health=self._health,
             version=__version__,
             interval_seconds=self.timeout_budget.startup_seconds,
@@ -238,7 +238,7 @@ class NodeApplication:
                     configuration=configuration,
                     factories=factories,
                     storage=storage_scope,
-                    audit=self.audit,
+                    audit=self._audit_recorder,
                     timer_wheel=self.timer_wheel,
                     reminder_concurrency=self._reminder_concurrency,
                     reminder_poke=self.reminder_scheduler.poke,
