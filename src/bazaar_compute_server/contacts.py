@@ -22,6 +22,8 @@ class Contact:
     name: str
     pending: int
     last_activity_at_ms: int | None
+    # where a read of the conversation starts: its newest message
+    latest_message_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,25 +80,28 @@ async def contacts(
     )
 
 
+def contact_name(target: str) -> str:
+    """The target without its scheme: `#title:id` names a group by its title,
+    `dm:@handle` a peer by handle; a bare `kind:id` is all the node has."""
+
+    if target.startswith("#"):
+        return target[1:].rsplit(":", 1)[0]
+    return target.split(":", 1)[1]
+
+
 def _contact(item: dict[str, Any]) -> Contact:
     target: str = item["target"]
-    kind: str = item["target_kind"]
-    # `#title:id` names a group by its title, `dm:@handle` a peer by handle;
-    # a bare `kind:id` is all the node has for it
-    if target.startswith("#"):
-        name = target[1:].rsplit(":", 1)[0]
-    else:
-        name = target.split(":", 1)[1]
     return Contact(
         target=target,
         thread_id=item["thread_id"],
         actor_id=item["actor_id"],
-        kind=kind,
+        kind=item["target_kind"],
         channel=item["channel"],
-        name=name,
+        name=contact_name(target),
+        latest_message_id=item["latest_message_id"],
         pending=item["pending_count"],
         last_activity_at_ms=item["last_activity_at_ms"],
     )
 
 
-__all__ = ["Contact", "Contacts", "contacts"]
+__all__ = ["Contact", "Contacts", "contact_name", "contacts"]

@@ -12,6 +12,7 @@ from ..activity import recent_lines, usage_today
 from ..contacts import contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
+from ..history import Contact, earlier, later, latest
 from ..rendering import Renderer
 from ..storage import IStorage
 
@@ -52,8 +53,52 @@ class AgentPages:
             return HTMLResponse("", status_code=404)
         return self._page(request, page, selected)
 
+    @allowed("agents.view")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def show_contact(self, request: Request) -> Response:
+        """The module, open on one of an agent's conversations; the row it
+        was opened from says what the conversation is called."""
+
+        params = request.path_params
+        contact = self._contact(request)
+        # htmx names the element it will swap as `tag#id`
+        if request.headers.get("HX-Target") == "div#chat":
+            # picked from the list: the column alone, the lists staying put
+            selected = await agent_view(
+                self._storage,
+                Access.of(request),
+                params["computer_id"],
+                params["agent_id"],
+            )
+            if selected is None:
+                return HTMLResponse("", status_code=404)
+            return self._render.fragment(
+                request,
+                "chat.html",
+                selected=selected,
+                contact=contact,
+                latest=request.query_params.get("latest"),
+            )
+        page, selected = await asyncio.gather(
+            agent_page(self._storage, Access.of(request)),
+            agent_view(
+                self._storage,
+                Access.of(request),
+                params["computer_id"],
+                params["agent_id"],
+            ),
+        )
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        return self._page(request, page, selected, contact)
+
     def _page(
-        self, request: Request, page: AgentPage, selected: AgentView | None
+        self,
+        request: Request,
+        page: AgentPage,
+        selected: AgentView | None,
+        contact: Contact | None = None,
     ) -> Response:
         return self._render.page(
             request,
@@ -64,6 +109,18 @@ class AgentPages:
             selected_key=(
                 None if selected is None else f"{selected.computer_id}/{selected.id}"
             ),
+            contact=contact,
+            latest=request.query_params.get("latest"),
+        )
+
+    @staticmethod
+    def _contact(request: Request) -> Contact:
+        query = request.query_params
+        return Contact(
+            thread_id=request.path_params["thread_id"],
+            actor_id=query["actor"],
+            target=query["target"],
+            channel=query["channel"],
         )
 
     @allowed("agents.view")
@@ -145,6 +202,52 @@ class AgentPages:
             request,
             "contact_rows.html" if offset else "contacts.html",
             listing=listing,
+            selected_thread=query.get("selected") or None,
+        )
+
+    @allowed("agents.view")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def messages(self, request: Request) -> Response:
+        """A conversation's messages: the page ending at `latest` when the
+        column opens, the page before `before` as the top scrolls in, or what
+        came after `last` once a message event newer than `since` says
+        something did - and nothing at all until one does."""
+
+        params = request.path_params
+        query = request.query_params
+        agent = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if agent is None:
+            return HTMLResponse("", status_code=404)
+        contact = self._contact(request)
+        since = query.get("since")
+        if since is not None:
+            history = await later(
+                self._storage,
+                self._controls,
+                agent,
+                contact,
+                after=query["last"],
+                since=int(since),
+            )
+            if history is None:
+                return Response(status_code=204)
+            return self._render.fragment(request, "history_tail.html", history=history)
+        before = query.get("before")
+        if before is not None:
+            history = await earlier(
+                self._storage, self._controls, agent, contact, before=before
+            )
+            return self._render.fragment(
+                request, "history_rows.html", history=history, earlier=True
+            )
+        history = await latest(
+            self._storage, self._controls, agent, contact, around=query["latest"]
+        )
+        return self._render.fragment(
+            request, "history.html", history=history, latest=query["latest"]
         )
 
 

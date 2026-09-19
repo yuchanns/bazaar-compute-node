@@ -1,0 +1,15 @@
+{% import "components.html" as c with context %}
+{% set url = "/agents/" ~ history.agent.computer_id ~ "/" ~ history.agent.id ~ "/contacts/" ~ history.contact.thread_id ~ "/messages?actor=" ~ history.contact.actor_id|urlencode ~ "&target=" ~ history.contact.target|urlencode ~ "&channel=" ~ history.contact.channel|urlencode %}
+<div class="chat" id="history">
+  {% if history.answer == "offline" %}
+  {{ c.empty(t.text("contacts.offline")) }}
+  {% elif history.answer != "listed" %}
+  <div class="empty">{{ t.text("contacts." ~ history.answer, {"code": history.code}) }} <button class="btn sm" hx-get="{{ url }}&latest={{ latest|urlencode }}" hx-target="#history" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
+  {% else %}
+  {% include "history_rows.html" %}
+  {% if not history.turns %}{{ c.empty(t.text("history.empty")) }}{% endif %}
+  {% include "history_end.html" %}
+  {% endif %}
+</div>
+{# the column opens at its newest message, the way a chat is picked up #}
+<script>document.getElementById("history").scrollTop = 1e9</script>

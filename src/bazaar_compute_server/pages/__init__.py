@@ -41,6 +41,13 @@ def routes(storage: IStorage, sessions: Sessions, controls: Controls) -> list[Ro
         Route("/agents/{computer_id}/{agent_id}", agents.show),
         Route("/agents/{computer_id}/{agent_id}/activity", agents.activity_card),
         Route("/agents/{computer_id}/{agent_id}/contacts", agents.contacts),
+        Route(
+            "/agents/{computer_id}/{agent_id}/contacts/{thread_id}", agents.show_contact
+        ),
+        Route(
+            "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/messages",
+            agents.messages,
+        ),
         Route("/computers", computers.list),
         Route("/computers/new", computers.enrol_form),
         Route("/computers/list", computers.list_fragment),

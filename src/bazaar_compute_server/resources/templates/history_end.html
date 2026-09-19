@@ -1,0 +1,4 @@
+{% set url = "/agents/" ~ history.agent.computer_id ~ "/" ~ history.agent.id ~ "/contacts/" ~ history.contact.thread_id ~ "/messages?actor=" ~ history.contact.actor_id|urlencode ~ "&target=" ~ history.contact.target|urlencode ~ "&channel=" ~ history.contact.channel|urlencode %}
+{# the end of what is loaded: it asks whether anything came after it, and
+   only then for what did, which is put here with a new end after it #}
+{% if history.last %}<div class="tail" id="tail" hx-get="{{ url }}&since={{ history.since }}&last={{ history.last|urlencode }}" hx-trigger="every 5s" hx-swap="outerHTML"></div>{% endif %}

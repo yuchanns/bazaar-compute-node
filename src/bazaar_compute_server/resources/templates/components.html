@@ -30,15 +30,16 @@
 {%- endmacro %}
 
 {# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
-   with an href it navigates through htmx, otherwise it is a plain row.
+   with an href it navigates through htmx, swapping `target` (the whole module
+   unless told otherwise), otherwise it is a plain row.
    an off row is greyed and does not navigate: there is nothing live behind it
    (an agent); a row that only looks off (extra_class="off") still opens, the way
    an offline computer does, since removing it happens from its page.
    what the row shows sits in its own box, so a long list can leave the rows
    off screen unrendered while the row itself, and what is anchored to it, stay #}
-{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, anchor=none) -%}
+{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, anchor=none, target="#main", attrs="") -%}
 {% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="#main" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if anchor %} style="anchor-name: {{ anchor }}"{% endif %}>
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if anchor %} style="anchor-name: {{ anchor }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
     {% if name is not none %}{{ avatar(name) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
     <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>

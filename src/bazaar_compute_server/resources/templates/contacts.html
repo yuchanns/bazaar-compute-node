@@ -1,14 +1,15 @@
 {% import "components.html" as c with context %}
 {% set url = "/agents/" ~ listing.agent.computer_id ~ "/" ~ listing.agent.id ~ "/contacts" %}
 {# the column asks whether anything has arrived or left since it was read,
-   and only then for itself again, as far as it has been scrolled; the new
-   column is morphed into the old one so the rows keep their identity #}
-<div class="list-items" id="contacts" hx-get="{{ url }}?since={{ listing.since }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+   and only then for itself again, as far as it has been scrolled and with
+   the row that is open now; the new column is morphed into the old one so
+   the rows keep their identity #}
+<div class="list-items" id="contacts" hx-get="{{ url }}?since={{ listing.since }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? "", selected: this.querySelector(".li.on")?.id.slice(8) ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
   {% include "contact_rows.html" %}
   {% if listing.answer == "offline" %}
   {{ c.empty(t.text("contacts.offline")) }}
   {% elif listing.answer != "listed" %}
-  <div class="empty">{{ t.text("contacts." ~ listing.answer, {"code": listing.code}) }} <button class="btn sm" hx-get="{{ url }}" hx-target="#contacts" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
+  <div class="empty">{{ t.text("contacts." ~ listing.answer, {"code": listing.code}) }} <button class="btn sm" hx-get="{{ url }}{% if selected_thread %}?selected={{ selected_thread }}{% endif %}" hx-target="#contacts" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
   {% elif not listing.contacts %}
   {{ c.empty(t.text("contacts.empty")) }}
   {% endif %}
