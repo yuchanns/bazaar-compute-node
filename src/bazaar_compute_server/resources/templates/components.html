@@ -25,8 +25,12 @@
 <div class="hd">{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
+{# the mark for a channel, in the channel's own colour; one this page has no
+   mark for is named instead #}
+{% set channel_icons = {"telegram": "si-telegram", "lark": "lark", "wecom": "wecom"} %}
+
 {% macro channels(kinds) -%}
-{% for kind in kinds %}<span class="ch-{{ kind }}">{{ kind }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{% for kind in kinds %}<span class="ch ch-{{ kind }}" title="{{ kind }}">{% if kind in channel_icons %}{{ icon(channel_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
 {%- endmacro %}
 
 {# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
