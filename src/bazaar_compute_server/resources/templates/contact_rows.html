@@ -4,7 +4,7 @@
 {% set href = "/agents/" ~ listing.agent.computer_id ~ "/" ~ listing.agent.id ~ "/contacts/" ~ item.thread_id ~ "?actor=" ~ item.actor_id|urlencode ~ "&target=" ~ item.target|urlencode ~ "&channel=" ~ item.channel|urlencode ~ "&latest=" ~ item.latest_message_id|urlencode if item.latest_message_id else none %}
 {# the conversation opens in the right column alone; the row takes the
    highlight itself, so the list is not asked for again #}
-{% call c.list_item(item.name, item.channel ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, name=item.name, href=href, on=(selected_thread == item.thread_id), id="contact-" ~ item.thread_id, target="#chat", attrs='hx-swap="outerHTML" hx-on:click="for (const row of this.parentElement.querySelectorAll(\'.on\')) row.classList.remove(\'on\'); this.classList.add(\'on\')"') %}
+{% call c.list_item(item.name, c.channels((item.channel,)) ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, name=item.name, href=href, on=(selected_thread == item.thread_id), id="contact-" ~ item.thread_id, target="#chat", attrs='hx-swap="outerHTML" hx-on:click="for (const row of this.parentElement.querySelectorAll(\'.on\')) row.classList.remove(\'on\'); this.classList.add(\'on\')"') %}
   {% if item.pending %}<span class="badge">{{ item.pending }}</span>{% endif %}
 {% endcall %}
 {% endfor %}
