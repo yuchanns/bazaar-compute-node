@@ -107,8 +107,13 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
             session, f"{base}/agents", **{"Accept-Language": "zh-CN"}
         )
         assert status == 200
-        assert "<html" in page and 'href="/static/htmx.min.js"' not in page
-        assert '<script src="/static/htmx.min.js">' in page
+        assert "<html" in page
+        # case: a static file is named by its content, so a browser holding
+        # the last one comes for the new one
+        assert '<script src="/static/htmx.min.js?v=' in page
+        css = page.split('href="/static/app.css?v=')[1].split('"')[0]
+        async with session.get(f"{base}/static/app.css?v={css}") as response:
+            assert response.status == 200
         assert "智能体" in page and "有马佳奈" in page
         assert 'class="dot busy"' in page
 
