@@ -6,7 +6,7 @@
 <div class="body">
   {{ c.section_title(t.text("computers.agents")) }}
   {% for agent in selected.agents %}
-  {{ c.list_item(agent.name, agent.runtimes|join(", ") ~ " · " ~ c.channels(agent.channels), status=agent.status, name=agent.name, href="/agents/" ~ selected.computer.id ~ "/" ~ agent.id, off=(agent.status == "offline")) }}
+  {{ c.list_item(agent.name, c.runtimes(agent.runtimes) ~ " · " ~ c.channels(agent.channels), status=agent.status, name=agent.name, href="/agents/" ~ selected.computer.id ~ "/" ~ agent.id, off=(agent.status == "offline")) }}
   {% endfor %}
   {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
   <div class="dialog danger" id="remove" hx-morph-skip>

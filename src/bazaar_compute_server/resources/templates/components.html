@@ -31,6 +31,14 @@
    mark for is named instead #}
 {% set channel_icons = {"telegram": "si-telegram", "lark": "lark", "wecom": "wecom"} %}
 
+{# the mark for a runtime, by the kind the node names it; one with no mark
+   is named instead #}
+{% set runtime_icons = {"codex": "openai", "claudecode": "si-claude"} %}
+
+{% macro runtimes(kinds) -%}
+{% for kind in kinds %}<span class="rt" title="{{ kind }}">{% if kind in runtime_icons %}{{ icon(runtime_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
+{%- endmacro %}
+
 {% macro channels(kinds) -%}
 {% for kind in kinds %}<span class="ch ch-{{ kind }}" title="{{ kind }}">{% if kind in channel_icons %}{{ icon(channel_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
 {%- endmacro %}
