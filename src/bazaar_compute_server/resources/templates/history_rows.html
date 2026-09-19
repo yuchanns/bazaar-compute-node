@@ -12,7 +12,7 @@
   <div class="said">
     <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human", "system") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|clock }}</span></div>
     {% for line in turn.lines %}
-    <div class="line" id="message-{{ line.message_id }}">{{ line.body }}{% for name in line.attachments %}<div class="file">{{ c.icon("paperclip") }} {{ name }}</div>{% endfor %}</div>
+    <div class="line{% if line.html %} md{% endif %}" id="message-{{ line.message_id }}">{% if line.html %}{{ line.html }}{% else %}{{ line.body }}{% endif %}{% for name in line.attachments %}<div class="file">{{ c.icon("paperclip") }} {{ name }}</div>{% endfor %}</div>
     {% endfor %}
   </div>
 </div>
