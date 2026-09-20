@@ -23,7 +23,6 @@ from ..core.models import (
     RuntimeSession,
 )
 from ..core.orchestration import AgentOrchestrator
-from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
 from ..core.review import ReviewPolicy
 from ..core.runtime import IRuntime, RuntimeCommandContext
@@ -193,18 +192,12 @@ class AgentApplication:
                 ),
                 reviewed,
             ),
-        )
-        self.reminder_service = ReminderCommandService(
-            agent_id=self.agent_id,
-            storage=self.storage,
-            concurrency=reminder_concurrency,
-            poke=reminder_poke,
-            audit=audit,
+            reminder_concurrency=reminder_concurrency,
+            reminder_poke=reminder_poke,
         )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             actors=self.actors,
-            reminder_service=self.reminder_service,
             session_binding_validator=self._validate_actor_binding,
             upgrade_service=upgrade_service,
         )

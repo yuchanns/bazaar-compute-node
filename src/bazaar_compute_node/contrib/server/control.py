@@ -26,8 +26,13 @@ from ...core.actor import Agent
 from ...core.audit import AuditEvent
 from ...core.control import AgentCommands, ControlContext, IControl
 from ...core.correlation import CorrelationContext
-from ...core.models import RuntimeEventState
-from ...core.serialize import serialize_inbox_target, serialize_message
+from ...core.models import ReminderState, Review, RuntimeEventState
+from ...core.reminder import ReminderListRequest
+from ...core.serialize import (
+    serialize_inbox_target,
+    serialize_message,
+    serialize_reminder,
+)
 from ...core.utils.clock import now_ms
 from ...core.utils.text import format_exception
 from .audit import BATCH_BYTES, PROTOCOL_VERSION
@@ -42,14 +47,17 @@ class _ContactsRead(BaseModel):
     agent_id: StrictStr
     limit: PositiveInt = 50
     offset: NonNegativeInt = 0
+    # the conversations in one review state; none given lists them all
+    review: Literal["pending", "approved", "denied"] | None = "approved"
 
     async def answer(self, commands: AgentCommands) -> dict[str, object]:
         # the whole agent is in reach of whoever looks at it from outside
-        result = await commands.service.pending_targets(
+        result = await commands.service.check_inbox(
             Agent(self.agent_id),
             limit=self.limit,
             offset=self.offset,
             pending_only=False,
+            review=None if self.review is None else Review(self.review),
         )
         return {
             "targets": [
@@ -65,6 +73,7 @@ class _ContactsRead(BaseModel):
             "shown": result.shown,
             "offset": result.offset,
             "has_more": result.has_more,
+            "pending_review": result.pending_review,
         }
 
 
@@ -82,11 +91,13 @@ class _HistoryRead(BaseModel):
     limit: PositiveInt = 100
 
     async def answer(self, commands: AgentCommands) -> dict[str, object]:
-        result = await commands.service.read(
+        # whoever looks from outside reads a conversation in any review state
+        result = await commands.service.read_messages(
             commands.actors.resolve(self.actor_id),
             raw_target=self.target,
             around_message_id=self.around_message_id,
             limit=self.limit,
+            review=None,
         )
         return {
             "messages": [
@@ -104,12 +115,84 @@ class _HistoryRead(BaseModel):
         }
 
 
-# what a server may ask a node to read: the same service the runtime's own
-# `bcc` reaches through the local command server, without the caller
-# checks that server does for a runtime, since the caller here is the node.
-# each read knows how it is answered; `read` tells them apart on the wire
-type _Read = _ContactsRead | _HistoryRead
-_READS: TypeAdapter[_Read] = TypeAdapter(_Read)
+class _RemindersRead(BaseModel):
+    """The reminders still to come that an actor can reach."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["reminders"]
+    agent_id: StrictStr
+    actor_id: StrictStr
+
+    async def answer(self, commands: AgentCommands) -> dict[str, object]:
+        result = await commands.service.list_reminders(
+            commands.actors.resolve(self.actor_id),
+            ReminderListRequest(statuses=frozenset({ReminderState.SCHEDULED})),
+        )
+        return {
+            "reminders": [serialize_reminder(reminder) for reminder in result.reminders]
+        }
+
+
+class _SettingRead(BaseModel):
+    """What the agent is set to do under a key."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["setting"]
+    agent_id: StrictStr
+    key: Literal["review.reply"]
+
+    async def answer(self, commands: AgentCommands) -> dict[str, object]:
+        return {"key": self.key, "value": await commands.service.setting(self.key)}
+
+
+class _ReviewWrite(BaseModel):
+    """Whether whoever is behind a conversation may talk to the agent."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    write: Literal["review"]
+    agent_id: StrictStr
+    thread_id: StrictStr
+    review: Literal["approved", "denied"]
+
+    async def answer(self, commands: AgentCommands) -> dict[str, object]:
+        session = await commands.service.review_contact(
+            self.thread_id, Review(self.review)
+        )
+        return {"thread_id": self.thread_id, "review": session.review.value}
+
+
+class _SettingWrite(BaseModel):
+    """Set what the agent does under a key."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    write: Literal["setting"]
+    agent_id: StrictStr
+    key: Literal["review.reply"]
+    value: StrictStr
+
+    async def answer(self, commands: AgentCommands) -> dict[str, object]:
+        await commands.service.set_setting(self.key, self.value)
+        return {"key": self.key, "value": self.value}
+
+
+# what a server may ask a node: the same services the runtime's own `bcc`
+# reaches through the local command server, without the caller checks that
+# server does for a runtime, since the caller here is the node - and what
+# only an operator may do, which `bcc` has no word for. each request knows
+# how it is answered; `read` or `write` tells them apart on the wire
+type _Request = (
+    _ContactsRead
+    | _HistoryRead
+    | _RemindersRead
+    | _SettingRead
+    | _ReviewWrite
+    | _SettingWrite
+)
+_REQUESTS: TypeAdapter[_Request] = TypeAdapter(_Request)
 
 # how long the server may hold a getUpdates before answering with nothing,
 # and how much longer than that the node waits for it
@@ -247,7 +330,7 @@ class ServerControl(IControl):
         # the answer rides the sink like any event, as text: it is the
         # server's to read, not the audit's to look into; one that would not
         # fit a report is answered with why instead
-        response = _encode(await self._read(request))
+        response = _encode(await self._answer_request(request))
         # sized as the event will carry it: text inside JSON, escaped again
         if len(_encode(response)) > BATCH_BYTES // 2:
             response = _encode(
@@ -273,11 +356,13 @@ class ServerControl(IControl):
         self._offset = max(self._offset, update_id)
         self._served += 1
 
-    async def _read(self, request: Mapping[str, object]) -> Mapping[str, object]:
+    async def _answer_request(
+        self, request: Mapping[str, object]
+    ) -> Mapping[str, object]:
         try:
-            read = _READS.validate_python(request)
+            read = _REQUESTS.validate_python(request)
         except ValidationError as error:
-            return {"ok": False, "code": "INVALID_READ", "error": str(error)}
+            return {"ok": False, "code": "INVALID_REQUEST", "error": str(error)}
         commands = self._commands_of(read.agent_id)
         if commands is None:
             return {
@@ -290,12 +375,12 @@ class ServerControl(IControl):
         except ValueError as error:
             return {"ok": False, "code": "TARGET_NOT_FOUND", "error": str(error)}
         except Exception as error:
-            # a read that failed is answered so, the way the local command
+            # a request that failed is answered so, the way the local command
             # server answers a caller; the poll goes on
-            self._logger.exception("read failed", extra={"request": dict(request)})
+            self._logger.exception("request failed", extra={"request": dict(request)})
             return {
                 "ok": False,
-                "code": "READ_FAILED",
+                "code": "REQUEST_FAILED",
                 "error": format_exception(error),
             }
 

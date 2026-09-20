@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from bcn_test_support import MemoryStorage, RecordingAudit, recorder_for
+from bcn_test_support import MemoryStorage, RecordingAudit, TestChannel, recorder_for
 
 from bazaar_compute_node.app.application import NodeApplication
 from bazaar_compute_node.app.config import (
@@ -16,8 +16,10 @@ from bazaar_compute_node.app.config import (
     RuntimeConfiguration,
 )
 from bazaar_compute_node.app.registry import AdapterRegistry
+from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.actor import Thread as ThreadActor
-from bazaar_compute_node.core.concurrency import ThreadLockRegistry
+from bazaar_compute_node.core.audit import AuditRecorder
+from bazaar_compute_node.core.concurrency import IThreadConcurrency, ThreadLockRegistry
 from bazaar_compute_node.core.models import (
     ChannelSession,
     ChannelTargetKind,
@@ -33,10 +35,9 @@ from bazaar_compute_node.core.models import (
     Thread,
 )
 from bazaar_compute_node.core.models.reminder_owner import OwnedReminder
+from bazaar_compute_node.core.orchestration.commands import CommandService
+from bazaar_compute_node.core.orchestration.delivery import OutboundDeliveryService
 from bazaar_compute_node.core.orchestration.reminder import ReminderScheduler
-from bazaar_compute_node.core.orchestration.reminder_command import (
-    ReminderCommandService,
-)
 from bazaar_compute_node.core.reminder import (
     ReminderCancelRequest,
     ReminderScheduleRequest,
@@ -160,6 +161,29 @@ async def stop_scheduler(
     await timer_wheel.close()
 
 
+def _commands(
+    storage: IStorage,
+    *,
+    audit: AuditRecorder,
+    reminder_concurrency: IThreadConcurrency,
+) -> CommandService:
+    """The one command service, with a channel nothing here sends through."""
+
+    channel = TestChannel()
+    return CommandService(
+        actors=Actors(agent_id=_AGENT_A, mode=Mode.SESSION),
+        storage=storage,
+        audit=audit,
+        concurrency=ThreadLockRegistry(),
+        clock=lambda: 1_000,
+        channel=channel,
+        delivery=OutboundDeliveryService(channel, timeout=1),
+        workspace=Path.cwd,
+        poke=lambda: None,
+        reminder_concurrency=reminder_concurrency,
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_snooze_sees_what_happened_while_it_waited_for_the_lock() -> None:
     storage = MemoryStorage()
@@ -172,19 +196,16 @@ async def test_a_snooze_sees_what_happened_while_it_waited_for_the_lock() -> Non
     )
     storage.reminders[_REMINDER_A] = scheduled
     concurrency = ThreadLockRegistry()
-    service = ReminderCommandService(
-        agent_id=_AGENT_A,
-        storage=cast(IStorage, storage),
-        concurrency=concurrency,
-        poke=lambda: None,
+    service = _commands(
+        cast(IStorage, storage),
         audit=recorder_for(RecordingAudit()),
-        clock=lambda: 1_000,
+        reminder_concurrency=concurrency,
     )
     try:
         held = concurrency.for_thread(_SESSION_A)
         await held.acquire()
         snoozing = asyncio.create_task(
-            service.snooze(
+            service.snooze_reminder(
                 ThreadActor(_SESSION_A),
                 ReminderSnoozeRequest(
                     reminder_id=_REMINDER_A,
@@ -472,17 +493,14 @@ async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
     await storage.start(timeout=1)
     anchor_id = add_session(storage, agent_id=_AGENT_A, session_id=_SESSION_A)
     audit = RecordingAudit()
-    service = ReminderCommandService(
-        agent_id=_AGENT_A,
-        storage=cast(IStorage, storage),
-        concurrency=ThreadLockRegistry(),
-        poke=lambda: None,
+    service = _commands(
+        cast(IStorage, storage),
         audit=recorder_for(audit),
-        clock=lambda: 1_000,
+        reminder_concurrency=ThreadLockRegistry(),
     )
     actor = ThreadActor(_SESSION_A)
     scheduled = (
-        await service.schedule(
+        await service.schedule_reminder(
             actor,
             ReminderScheduleRequest(
                 title="check the build",
@@ -493,7 +511,7 @@ async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
             ),
         )
     ).reminder
-    await service.update(
+    await service.update_reminder(
         actor,
         ReminderUpdateRequest(
             reminder_id=scheduled.reminder_id,
@@ -501,7 +519,7 @@ async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
             evaluated_at_ms=1_500,
         ),
     )
-    await service.snooze(
+    await service.snooze_reminder(
         actor,
         ReminderSnoozeRequest(
             reminder_id=scheduled.reminder_id,
@@ -538,7 +556,7 @@ async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
         await stop_scheduler(scheduler, timer_wheel)
 
     another = (
-        await service.schedule(
+        await service.schedule_reminder(
             actor,
             ReminderScheduleRequest(
                 title="never mind",
@@ -549,7 +567,7 @@ async def test_reminder_changes_are_spoken_to_the_audit_stream() -> None:
             ),
         )
     ).reminder
-    await service.cancel(
+    await service.cancel_reminder(
         actor,
         ReminderCancelRequest(reminder_id=another.reminder_id, evaluated_at_ms=3_500),
     )

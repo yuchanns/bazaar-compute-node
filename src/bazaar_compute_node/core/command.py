@@ -180,9 +180,11 @@ class ThreadNotFoundError(ValueError):
 
 
 class ICommandService(Protocol):
-    """Session-scoped command surface used by the local wrapper."""
+    """Everything the agent may be asked to do about its conversations and
+    reminders, and what an operator may ask of it from outside: one surface,
+    reached through the local wrapper or the node's control."""
 
-    async def pending_targets(
+    async def check_inbox(
         self,
         actor: Actor,
         *,
@@ -197,11 +199,11 @@ class ICommandService(Protocol):
         a time."""
         ...
 
-    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
+    async def check_messages(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
         """Read new messages and advance only the delivery cursor."""
         ...
 
-    async def read(
+    async def read_messages(
         self,
         actor: Actor,
         *,
@@ -214,7 +216,7 @@ class ICommandService(Protocol):
         not in the review state asked for is not there."""
         ...
 
-    async def send(
+    async def send_message(
         self,
         *,
         actor: Actor,
@@ -228,11 +230,13 @@ class ICommandService(Protocol):
         """Run the session fresh-check before calling the Channel port."""
         ...
 
-    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
+    async def unfollow_thread(
+        self, actor: Actor, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         """Disable future group notifications and report whether state changed."""
         ...
 
-    async def review(self, thread_id: str, decision: Review) -> ChannelSession:
+    async def review_contact(self, thread_id: str, decision: Review) -> ChannelSession:
         """Decide whether whoever is behind a conversation may talk to the
         agent. Not the agent's to call: the operator's, from outside."""
         ...
@@ -246,35 +250,31 @@ class ICommandService(Protocol):
         """Set what the agent does under a key. The operator's, from outside."""
         ...
 
-
-class IReminderService(Protocol):
-    """Session-scoped Reminder command surface used by the local wrapper."""
-
-    async def schedule(
+    async def schedule_reminder(
         self,
         actor: Actor,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult: ...
 
-    async def list(
+    async def list_reminders(
         self,
         actor: Actor,
         request: ReminderListRequest,
     ) -> ReminderListResult: ...
 
-    async def snooze(
+    async def snooze_reminder(
         self,
         actor: Actor,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult: ...
 
-    async def update(
+    async def update_reminder(
         self,
         actor: Actor,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult: ...
 
-    async def cancel(
+    async def cancel_reminder(
         self,
         actor: Actor,
         request: ReminderCancelRequest,

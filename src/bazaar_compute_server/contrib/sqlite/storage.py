@@ -707,6 +707,8 @@ _MESSAGE_EVENTS = (
     "channel.outbound.queued",
     "channel.outbound.sent",
     "channel.outbound.partial",
+    # a conversation let in or turned away moves between the lists
+    "channel.session.reviewed",
 )
 
 

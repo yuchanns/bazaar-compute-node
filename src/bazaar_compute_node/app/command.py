@@ -371,7 +371,7 @@ class CommandDispatcher:
                 raise AssertionError("validated command route has no handler")
 
     async def _check_messages(self, actor: Actor) -> Mapping[str, object]:
-        drained = await self._service.check(actor)
+        drained = await self._service.check_messages(actor)
         projections = tuple(
             projection for result in drained for projection in result.target_projections
         )
@@ -403,7 +403,7 @@ class CommandDispatcher:
         }
 
     async def _check_inbox(self, actor: Actor) -> Mapping[str, object]:
-        result = await self._service.pending_targets(actor)
+        result = await self._service.check_inbox(actor)
         return {
             "ok": True,
             "result": {
@@ -414,7 +414,7 @@ class CommandDispatcher:
     async def _read_messages(
         self, actor: Actor, request: _MessageReadRequest
     ) -> Mapping[str, object]:
-        result = await self._service.read(
+        result = await self._service.read_messages(
             actor,
             raw_target=request.target,
             around_message_id=request.around_message_id,
@@ -436,7 +436,7 @@ class CommandDispatcher:
     async def _send_message(
         self, actor: Actor, request: _MessageSendRequest
     ) -> Mapping[str, object]:
-        result = await self._service.send(
+        result = await self._service.send_message(
             actor=actor,
             raw_target=request.target,
             body=request.body,
@@ -480,7 +480,7 @@ class CommandDispatcher:
     async def _unfollow_thread(
         self, actor: Actor, request: _ThreadUnfollowRequest
     ) -> Mapping[str, object]:
-        result = await self._service.unfollow(actor, raw_target=request.target)
+        result = await self._service.unfollow_thread(actor, raw_target=request.target)
         return {
             "ok": True,
             "result": {"target": result.target, "changed": result.changed},

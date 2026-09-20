@@ -62,32 +62,34 @@ async def test_a_stranger_is_kept_but_not_heard_until_let_in() -> None:
 
         # case: to the agent the conversation is not there, though the
         # listing counts it as waiting
-        listing = await service.pending_targets(agent, pending_only=False)
+        listing = await service.check_inbox(agent, pending_only=False)
         assert listing.targets == () and listing.pending_review == 1
         with pytest.raises(InboxTargetResolutionError):
-            await service.read(agent, raw_target="dm:channel-bcn-1")
+            await service.read_messages(agent, raw_target="dm:channel-bcn-1")
         with pytest.raises(InboxTargetResolutionError):
-            await service.send(
+            await service.send_message(
                 actor=agent, raw_target="dm:channel-bcn-1", body="hi", created_at_ms=2
             )
         # whoever reviews sees it, first message and all
-        waiting = await service.pending_targets(
+        waiting = await service.check_inbox(
             agent, pending_only=False, review=Review.PENDING
         )
         assert [item.thread_id for item in waiting.targets] == ["bcn-1"]
-        history = await service.read(agent, raw_target="dm:channel-bcn-1", review=None)
+        history = await service.read_messages(
+            agent, raw_target="dm:channel-bcn-1", review=None
+        )
         assert [item.body for item in history.messages] == ["inbound-1"]
 
         # case: let in, the next message runs a turn and the conversation is listed
-        await service.review("bcn-1", Review.APPROVED)
+        await service.review_contact("bcn-1", Review.APPROVED)
         turn = await orchestrator.handle_inbound(make_message(seq=2))
         assert turn is not None and turn.state is RuntimeTurnState.COMPLETED
-        listing = await service.pending_targets(agent, pending_only=False)
+        listing = await service.check_inbox(agent, pending_only=False)
         assert [item.thread_id for item in listing.targets] == ["bcn-1"]
         assert listing.pending_review == 0
 
         # case: turned away, the next message is kept and asks again
-        await service.review("bcn-1", Review.DENIED)
+        await service.review_contact("bcn-1", Review.DENIED)
         assert await orchestrator.handle_inbound(make_message(seq=3)) is None
         session = await scope.get_channel_session("channel-bcn-1")
         assert session is not None and session.review is Review.PENDING
@@ -139,7 +141,7 @@ async def test_a_conversation_pending_review_is_answered_as_the_agent_is_set() -
         assert "setting.changed" in [event.event_name for event in audit.events]
 
         # case: let in, the reply stops
-        await service.review("bcn-1", Review.APPROVED)
+        await service.review_contact("bcn-1", Review.APPROVED)
         turn = await orchestrator.handle_inbound(make_message(seq=5))
         assert turn is not None and len(channel.send_requests) == 2
     finally:

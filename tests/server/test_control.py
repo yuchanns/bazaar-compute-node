@@ -3,9 +3,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from uuid import uuid7
 
 import pytest
 
+from bazaar_compute_node.core.models import Message, MessageDirection, SenderIdentity
+from bazaar_compute_node.core.reminder import ReminderScheduleRequest
+from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_server.control import Controls
 
 from ._node import AGENT_ID, node_reporting_to
@@ -47,7 +51,7 @@ async def test_a_request_goes_down_and_its_answer_comes_back(
             )
             assert refused is not None and refused["code"] == "AGENT_NOT_AVAILABLE"
             malformed = await controls.ask(enrolment.computer.id, {"read": "mind"})
-            assert malformed is not None and malformed["code"] == "INVALID_READ"
+            assert malformed is not None and malformed["code"] == "INVALID_REQUEST"
         finally:
             await node.stop()
 
@@ -110,3 +114,107 @@ async def test_a_server_that_is_not_there_is_asked_again_quietly(
         assert node.audit.health["queued"] == 0
     finally:
         await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_server_reviews_and_sets_what_an_agent_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From outside, a conversation pending review is listed and read, let
+    in or turned away, its members and reminders read, and what the agent
+    says to those still waiting set - all through the same door."""
+
+    async with serving_app(tmp_path) as (base, app):
+        storage = app.state.storage
+        controls: Controls = app.state.controls
+        enrolment = await enrol(storage, "kana")
+        monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
+        node = await node_reporting_to(base, tmp_path)
+        try:
+            agent = node.agents[AGENT_ID]
+            # a stranger writes twice; the node has a server, so they wait
+            anchor = str(uuid7())
+            for seq in (1, 2):
+                await agent.orchestrator.handle_inbound(_stranger(seq, anchor))
+            computer = enrolment.computer.id
+
+            async def ask(**request: object) -> dict[str, Any]:
+                answer = await controls.ask(computer, {"agent_id": AGENT_ID, **request})
+                assert answer is not None and answer["ok"] is True, answer
+                return answer["result"]
+
+            # case: to the listing they are pending, counted, and not among
+            # the approved
+            approved = await ask(read="contacts")
+            assert approved["targets"] == [] and approved["pending_review"] == 1
+            waiting = await ask(read="contacts", review="pending")
+            (row,) = waiting["targets"]
+            assert row["review"] == "pending" and row["thread_id"] == "stranger"
+            # case: the conversation reads, whatever its state, from outside
+            history = await ask(
+                read="history",
+                actor_id=row["actor_id"],
+                target=row["canonical_target"],
+                limit=1,
+            )
+            assert [item["body"] for item in history["messages"]] == ["hello 1"]
+
+            # case: let in, they move to the approved list; the server
+            # learns of it as an event
+            decided = await ask(write="review", thread_id="stranger", review="approved")
+            assert decided["review"] == "approved"
+            approved = await ask(read="contacts")
+            assert [item["thread_id"] for item in approved["targets"]] == ["stranger"]
+            assert approved["pending_review"] == 0
+            async with asyncio.timeout(10):
+                while not [
+                    event
+                    for event in await storage.recent_activity(
+                        computer, AGENT_ID, limit=20, skipping=()
+                    )
+                    if event.event_name == "channel.session.reviewed"
+                ]:
+                    await asyncio.sleep(0.05)
+
+            # case: what the agent says to those waiting is set and read back
+            unset = await ask(read="setting", key="review.reply")
+            assert unset["value"] is None
+            await ask(write="setting", key="review.reply", value="Not yet.")
+            assert (await ask(read="setting", key="review.reply"))[
+                "value"
+            ] == "Not yet."
+
+            # case: the reminders an actor can reach come as scheduled
+            await agent.orchestrator.command_service.schedule_reminder(
+                agent.actors.for_thread("stranger"),
+                ReminderScheduleRequest(
+                    title="follow up",
+                    message_id=anchor,
+                    next_fire_at_ms=now_ms() + 3_600_000,
+                    repeat_rule=None,
+                    timezone="UTC",
+                ),
+            )
+            reminders = await ask(read="reminders", actor_id=row["actor_id"])
+            assert [item["title"] for item in reminders["reminders"]] == ["follow up"]
+        finally:
+            await node.stop()
+
+
+def _stranger(seq: int, first_message_id: str) -> Message:
+    return Message(
+        direction=MessageDirection.INBOUND,
+        seq=seq,
+        message_id=first_message_id if seq == 1 else f"message-stranger-{seq}",
+        thread_id="stranger",
+        channel_session_id="channel-stranger",
+        channel="test",
+        provider_thread_id="thread-stranger",
+        provider_message_id=f"provider-stranger-{seq}",
+        received_at_ms=seq * 1_000,
+        sender=SenderIdentity(id="stranger-id", name="Stranger"),
+        message_type="text",
+        target="dm:channel-stranger",
+        body=f"hello {seq}",
+        metadata={"sender_kind": "human"},
+    )

@@ -47,7 +47,7 @@ from ..timerwheel import (
 )
 from ..utils.clock import now_ms
 from ..utils.text import format_exception
-from .command import CommandService
+from .commands import CommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
 from .services import unread_in_reach
@@ -164,6 +164,10 @@ class AgentOrchestrator(IAsyncLifecycle):
         concurrency: IThreadConcurrency | None = None,
         clock: Callable[[], int] | None = None,
         review: ReviewPolicy | None = None,
+        # what the reminder commands need of the node: the scheduler's locks
+        # and a way to wake it; alone, the orchestrator keeps its own
+        reminder_concurrency: IThreadConcurrency | None = None,
+        reminder_poke: Callable[[], None] = lambda: None,
     ) -> None:
         self._clock = clock or now_ms
         # who may talk to the agent as a conversation opens; with no policy
@@ -213,13 +217,15 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         self._command_service = CommandService(
             actors=actors,
-            channel=channel,
-            delivery=self._delivery,
             storage=storage,
             audit=self._audit,
             concurrency=self._concurrency,
-            workspace=workspace,
             clock=self._clock,
+            channel=channel,
+            delivery=self._delivery,
+            workspace=workspace,
+            poke=reminder_poke,
+            reminder_concurrency=reminder_concurrency or ThreadLockRegistry(),
         )
         self._turns = TurnCoordinator(
             agent_id=actors.agent_id,

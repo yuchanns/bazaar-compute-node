@@ -12,11 +12,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
 
-from ..actor import Actor, Actors, Agent, Thread
-from ..audit import AuditRecorder, ErrorKind
-from ..channel import ChannelSendRequest, DmAddress, IChannel
-from ..command import (
-    ICommandService,
+from ...actor import Actor, Agent
+from ...audit import ErrorKind
+from ...channel import ChannelSendRequest, DmAddress, IChannel
+from ...command import (
     InboxListResult,
     MessageBroadcast,
     MessageCheckResult,
@@ -27,9 +26,8 @@ from ..command import (
     MessageSendSuccess,
     ThreadUnfollowResult,
 )
-from ..concurrency import IThreadConcurrency
-from ..correlation import CorrelationContext
-from ..models import (
+from ...correlation import CorrelationContext
+from ...models import (
     ChannelSession,
     ChannelTargetKind,
     Message,
@@ -41,17 +39,17 @@ from ..models import (
 )
 
 # `Thread` here is the actor variant; the conversation row keeps its own name.
-from ..models import Thread as ConversationRow
-from ..outcomes import OutboundDeliveryResult
-from ..storage import (
+from ...models import Thread as ConversationRow
+from ...outcomes import OutboundDeliveryResult
+from ...storage import (
     AmbiguousInboxTargetError,
     InboxTargetResolutionError,
-    IStorage,
     MaterializeOutboundResult,
     ResolvedInboxTarget,
 )
-from .delivery import OutboundDeliveryService
-from .services import threads_in_reach
+from ..delivery import OutboundDeliveryService
+from ..services import threads_in_reach
+from .base import Commands
 
 
 class OutboundAttachmentResolver:
@@ -231,29 +229,20 @@ class _DmOpening:
     handle: str
 
 
-class CommandService(ICommandService):
-    """Execute session-scoped check, read, and send commands."""
+class MessageCommands(Commands):
+    """The commands about messages: what is unread, what was said, saying
+    something, and leaving a group's notifications."""
 
-    def __init__(
+    def _with_messages(
         self,
         *,
-        actors: Actors,
         channel: IChannel,
         delivery: OutboundDeliveryService,
-        storage: IStorage,
-        audit: AuditRecorder,
-        concurrency: IThreadConcurrency,
         workspace: Callable[[], Path],
-        clock: Callable[[], int],
     ) -> None:
-        self._actors = actors
         self._channel = channel
         self._delivery = delivery
-        self._storage = storage
-        self._audit = audit
-        self._concurrency = concurrency
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
-        self._clock = clock
         # one draft per conversation as the caller names it, which may be a
         # peer reached on several bots: the key is the set of threads it spans
         self._drafts: dict[tuple[str, ...], MessageDraft] = {}
@@ -262,7 +251,7 @@ class CommandService(ICommandService):
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
-    async def pending_targets(
+    async def check_inbox(
         self,
         actor: Actor,
         *,
@@ -305,7 +294,7 @@ class CommandService(ICommandService):
             has_more=False,
         )
 
-    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
+    async def check_messages(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
         thread_ids = await threads_in_reach(self._storage, actor)
         drained = await self._storage.check_messages(
             thread_ids,
@@ -322,7 +311,7 @@ class CommandService(ICommandService):
             )
         return drained
 
-    async def read(
+    async def read_messages(
         self,
         actor: Actor,
         *,
@@ -489,24 +478,6 @@ class CommandService(ICommandService):
         )
         resolved = await self._storage.resolve_inbox_target(session.canonical_target)
         return MessageSendSuccess(message=outbound, target=resolved.display_target)
-
-    def _require_in_reach(
-        self,
-        actor: Actor,
-        target_thread_id: str,
-        raw_target: str,
-    ) -> None:
-        """Refuse a target this actor does not answer for."""
-
-        match actor:
-            case Agent():
-                return
-            case Thread(id) if id == target_thread_id:
-                return
-            case Thread():
-                raise InboxTargetResolutionError(
-                    f"inbox target is not this conversation: {raw_target}"
-                )
 
     async def _stage_draft(
         self,
@@ -699,7 +670,7 @@ class CommandService(ICommandService):
         )
         return outbound
 
-    async def send(
+    async def send_message(
         self,
         *,
         actor: Actor,
@@ -882,7 +853,9 @@ class CommandService(ICommandService):
             },
         )
 
-    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
+    async def unfollow_thread(
+        self, actor: Actor, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         target = await self._storage.resolve_inbox_target(raw_target)
         thread_id = target.thread.id
         self._require_in_reach(actor, thread_id, raw_target)
@@ -924,59 +897,3 @@ class CommandService(ICommandService):
             },
         )
         return ThreadUnfollowResult(target=target.display_target, changed=changed)
-
-    async def review(self, thread_id: str, decision: Review) -> ChannelSession:
-        async with self._concurrency.for_thread(thread_id):
-            session = await self._storage.set_review(
-                thread_id, decision, now_ms=self._clock()
-            )
-        target = await self._storage.resolve_inbox_target(session.canonical_target)
-        await self._audit.append(
-            event_name="channel.session.reviewed",
-            state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(
-                thread_id=thread_id,
-                channel=session.channel,
-                channel_session_id=session.id,
-            ),
-            metadata={
-                "thread_id": thread_id,
-                "review": decision.value,
-                "target": session.canonical_target,
-                "target_name": target.display_target,
-            },
-        )
-        return session
-
-    async def setting(self, key: str) -> str | None:
-        return await self._storage.get_setting(key)
-
-    async def set_setting(self, key: str, value: str) -> None:
-        await self._storage.set_setting(key, value, now_ms=self._clock())
-        # the value is not recorded: it is the operator's words, not a fact
-        await self._audit.append(
-            event_name="setting.changed",
-            state=RuntimeEventState.COMPLETED,
-            correlation=self._correlation(),
-            metadata={"key": key},
-        )
-
-    def _correlation(
-        self,
-        *,
-        thread_id: str | None = None,
-        actor: Actor | None = None,
-        channel: str | None = None,
-        channel_session_id: str | None = None,
-        inbound_seq: int | None = None,
-        outbound_message_id: str | None = None,
-    ) -> CorrelationContext:
-        return CorrelationContext(
-            node_id=self._actors.agent_id,
-            channel=channel,
-            channel_session_id=channel_session_id,
-            thread_id=thread_id,
-            actor=actor,
-            inbound_seq=inbound_seq,
-            outbound_message_id=outbound_message_id,
-        )
