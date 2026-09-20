@@ -9,10 +9,13 @@
   {{ c.list_item(agent.name, c.runtimes(agent.runtimes) ~ " · " ~ c.channels(agent.channels), status=agent.status, name=agent.name, href="/agents/" ~ ref(selected.computer.id) ~ "/" ~ ref(agent.id), off=(agent.status == "offline")) }}
   {% endfor %}
   {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+  {# the question takes the button's place whole - a morph would leave a
+     box marked to be skipped as it is - and the mark then keeps the pane's
+     refresh from putting the button back #}
   <div class="dialog danger" id="remove" hx-morph-skip>
     <h3>{{ t.text("computers.remove") }}</h3>
     <p class="st">{{ t.text("computers.remove_hint") }}</p>
-    <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove" hx-swap="outerMorph">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
+    <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
   </div>
 </div>
 </div>
