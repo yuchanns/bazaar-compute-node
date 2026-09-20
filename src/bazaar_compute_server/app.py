@@ -25,6 +25,7 @@ from .config import ServerConfiguration
 from .consumers import Consumers
 from .control import Controls
 from .gate import MAX_BODY_BYTES, Gate
+from .images import Images
 from .pages import routes
 from .protocol import (
     PROTOCOL_HEADER,
@@ -52,6 +53,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
     )
 
     sessions = Sessions()
+    images = Images(sessions)
     controls = Controls()
     consumers = Consumers()
     consumers.on("control.result", controls.result)
@@ -72,10 +74,11 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
                 )
             yield
         finally:
+            await images.close()
             await controls.close()
             await storage.stop()
 
-    renderer = Renderer()
+    renderer = Renderer(images)
 
     async def closed(request: Request, exc: Exception) -> Response:
         """An error as a page for people and as the envelope for nodes."""
@@ -92,7 +95,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         routes=[
             Route("/node/reportEvents", report_events, methods=["POST"]),
             Route("/node/getUpdates", get_updates, methods=["POST"]),
-            *routes(storage, sessions, controls),
+            *routes(storage, sessions, controls, images),
             Mount(
                 "/static",
                 StaticFiles(
@@ -113,6 +116,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
     )
     app.state.storage = storage
     app.state.controls = controls
+    app.state.images = images
     app.state.consumers = consumers
     return app
 

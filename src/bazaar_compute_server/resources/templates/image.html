@@ -1,4 +1,4 @@
-{% import "components.html" as c with context %}
-{# a picture from outside is not fetched until asked for: where it lives would
-   learn who is looking #}
-<button class="btn sm img" type="button" title="{{ src }}" data-src="{{ src }}" onclick="const img = document.createElement('img'); img.src = this.dataset.src; img.alt = this.textContent.trim(); this.replaceWith(img)">{{ c.icon("image") }} {{ alt or t.text("history.image") }}</button>
+{# a picture from outside comes through the server, so where it lives sees
+   the server come for it and not who is looking; one not on the web is its
+   words alone #}
+{% set address = image_address(src) %}{% if address %}<img src="{{ address }}" alt="{{ alt }}" title="{{ src }}" loading="lazy">{% else %}{{ alt or t.text("history.image") }}{% endif %}

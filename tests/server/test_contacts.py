@@ -340,10 +340,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     '<span class="tok-c1"># hi</span>',
                 ):
                     assert rendered in agent_line, rendered
-                # case: a picture from outside is a button until clicked, so
-                # opening the chat fetches nothing from where it lives
-                assert "<img" not in agent_line
-                assert 'data-src="https://pixel.test/p.png"' in agent_line
+                # case: a picture from outside is asked for through the
+                # server, by an address only the server could have signed
+                assert "https://pixel.test/p.png" not in agent_line.split("title=")[0]
+                assert (
+                    '<img src="/images?u=https%3A%2F%2Fpixel.test%2Fp.png&amp;s='
+                    in agent_line
+                )
                 human_line = turns[2].split('class="line md"')[1]
                 assert "<h2>Plan</h2>" in human_line
                 assert 'id="message-message-chat-55"' in turns[2]
