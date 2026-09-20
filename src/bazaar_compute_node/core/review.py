@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from .channel import IChannel
 from .models import Review
 
+# the setting that holds what a conversation not yet let in is told, if
+# anything, each time it writes
+REVIEW_REPLY = "review.reply"
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewPolicy:
@@ -41,4 +45,4 @@ class ReviewPolicy:
         return Review.APPROVED
 
 
-__all__ = ["ReviewPolicy"]
+__all__ = ["REVIEW_REPLY", "ReviewPolicy"]

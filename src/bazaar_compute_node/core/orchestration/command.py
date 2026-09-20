@@ -948,6 +948,19 @@ class CommandService(ICommandService):
         )
         return session
 
+    async def setting(self, key: str) -> str | None:
+        return await self._storage.get_setting(key)
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self._storage.set_setting(key, value, now_ms=self._clock())
+        # the value is not recorded: it is the operator's words, not a fact
+        await self._audit.append(
+            event_name="setting.changed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(),
+            metadata={"key": key},
+        )
+
     def _correlation(
         self,
         *,

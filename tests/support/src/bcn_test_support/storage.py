@@ -46,6 +46,7 @@ class MemoryStorage:
         self.threads: dict[str, Thread] = {}
         self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
+        self.settings: dict[tuple[str | None, str], str] = {}
         self.messages: dict[str, list[Message]] = {}
         self.started = False
         self.stopped = False
@@ -426,6 +427,13 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 summary.review is Review.PENDING for summary in everything
             ),
         )
+
+    async def get_setting(self, key: str) -> str | None:
+        return self._storage.settings.get((self._agent_id, key))
+
+    async def set_setting(self, key: str, value: str, *, now_ms: int) -> None:
+        del now_ms
+        self._storage.settings[(self._agent_id, key)] = value
 
     async def set_review(
         self, thread_id: str, review: Review, *, now_ms: int

@@ -104,6 +104,8 @@
 "tag.system" = "System"
 "event.channel.inbound.persisted" = "Message received"
 "event.channel.session.reviewed" = "Contact reviewed"
+"event.channel.review.replied" = "Replied to a contact pending review"
+"event.setting.changed" = "Setting changed"
 "event.channel.inbound.rejected" = "Message rejected"
 "event.channel.outbound.pending" = "Preparing to send message"
 "event.channel.outbound.queued" = "Message awaiting delivery"

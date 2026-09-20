@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from bcn_test_support import TestChannel
 from test_orchestration import make_message, make_sqlite_node
 
+from bazaar_compute_node.app.config import ChannelConfiguration, ConfigurationError
 from bazaar_compute_node.core.actor import Agent
 from bazaar_compute_node.core.channel import ChannelIdentity
 from bazaar_compute_node.core.models import Review, RuntimeTurnState
-from bazaar_compute_node.core.review import ReviewPolicy
+from bazaar_compute_node.core.review import REVIEW_REPLY, ReviewPolicy
 from bazaar_compute_node.core.storage import InboxTargetResolutionError
 
 
@@ -97,3 +100,61 @@ async def test_a_stranger_is_kept_but_not_heard_until_let_in() -> None:
     finally:
         await orchestrator.stop(timeout=1)
         await storage.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_pending_review_is_answered_as_the_agent_is_set() -> None:
+    """With a reply set, every message into a conversation not let in gets
+    that one line and nothing else; with none set, silence."""
+
+    orchestrator, channel, _, storage, audit = await make_sqlite_node(
+        review=ReviewPolicy(reviewed=True)
+    )
+    service = orchestrator.command_service
+    try:
+        # case: nothing set, nothing said
+        assert await orchestrator.handle_inbound(make_message(seq=1)) is None
+        assert channel.send_requests == []
+
+        # case: set, said once per message, whether the first or the third -
+        # but not to one that would not have reached the agent anyway, as a
+        # message quoted from before is kept
+        await service.set_setting(REVIEW_REPLY, "Not yet: ask the operator.")
+        assert await service.setting(REVIEW_REPLY) == "Not yet: ask the operator."
+        assert await orchestrator.handle_inbound(make_message(seq=2)) is None
+        quoted = replace(make_message(seq=3), notifies_runtime=False)
+        assert await orchestrator.handle_inbound(quoted) is None
+        assert await orchestrator.handle_inbound(make_message(seq=4)) is None
+        assert [request.body for request in channel.send_requests] == [
+            "Not yet: ask the operator.",
+            "Not yet: ask the operator.",
+        ]
+        assert channel.send_requests[0].provider_thread_id == "thread-bcn-1"
+        replied = [
+            event
+            for event in audit.events
+            if event.event_name == "channel.review.replied"
+        ]
+        assert len(replied) == 2 and replied[0].metadata["review"] == "pending"
+        assert "setting.changed" in [event.event_name for event in audit.events]
+
+        # case: let in, the reply stops
+        await service.review("bcn-1", Review.APPROVED)
+        turn = await orchestrator.handle_inbound(make_message(seq=5))
+        assert turn is not None and len(channel.send_requests) == 2
+    finally:
+        await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=1)
+
+
+def test_the_chats_a_channel_lets_in_come_from_its_options() -> None:
+    """`allowed_chats` is read as text whatever the ids were written as, and
+    anything but a list of ids is refused at the door."""
+
+    listed = ChannelConfiguration(
+        kind="telegram", options={"allowed_chats": [42, "-100"]}
+    )
+    assert listed.allowed_chats == frozenset({"42", "-100"})
+    assert ChannelConfiguration(kind="telegram").allowed_chats == frozenset()
+    with pytest.raises(ConfigurationError):
+        ChannelConfiguration(kind="telegram", options={"allowed_chats": "42"})

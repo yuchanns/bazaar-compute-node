@@ -17,6 +17,7 @@ from ....core.storage import RecordInboundResult, StorageOperationMixin
 from .messages import MessageOperations
 from .reminders import ReminderOperations
 from .sessions import SessionOperations
+from .settings import SettingOperations
 
 
 class SqliteRepository(
@@ -24,6 +25,7 @@ class SqliteRepository(
     SessionOperations,
     MessageOperations,
     ReminderOperations,
+    SettingOperations,
 ):
     async def _inbound_channel_session(
         self,

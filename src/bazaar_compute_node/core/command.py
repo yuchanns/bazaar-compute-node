@@ -237,6 +237,15 @@ class ICommandService(Protocol):
         agent. Not the agent's to call: the operator's, from outside."""
         ...
 
+    async def setting(self, key: str) -> str | None:
+        """What the agent is set to do under a key, for whoever looks from
+        outside; nothing when unset."""
+        ...
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Set what the agent does under a key. The operator's, from outside."""
+        ...
+
 
 class IReminderService(Protocol):
     """Session-scoped Reminder command surface used by the local wrapper."""

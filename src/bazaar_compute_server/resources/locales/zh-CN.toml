@@ -104,6 +104,8 @@
 "tag.system" = "系统消息"
 "event.channel.inbound.persisted" = "消息已接收"
 "event.channel.session.reviewed" = "联系人已审核"
+"event.channel.review.replied" = "回复了待审核的联系人"
+"event.setting.changed" = "设置已更改"
 "event.channel.inbound.rejected" = "消息已拒收"
 "event.channel.outbound.pending" = "准备发送消息"
 "event.channel.outbound.queued" = "消息等待发送"
