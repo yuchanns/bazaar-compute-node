@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
@@ -13,7 +14,7 @@ from ..contacts import contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
-from ..refs import Refs
+from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
 
@@ -31,11 +32,12 @@ class AgentPages:
     async def list(self, request: Request) -> Response:
         """The module with nothing open."""
 
-        return self._page(
+        return await self._page(
             request, await agent_page(self._storage, Access.of(request)), None
         )
 
     @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show(self, request: Request) -> Response:
@@ -53,9 +55,10 @@ class AgentPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        return self._page(request, page, selected)
+        return await self._page(request, page, selected)
 
     @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show_contact(self, request: Request) -> Response:
@@ -75,6 +78,7 @@ class AgentPages:
             )
             if selected is None:
                 return HTMLResponse("", status_code=404)
+            await self.refs.load(_named([selected]))
             return self._render.fragment(
                 request,
                 "chat.html",
@@ -93,15 +97,16 @@ class AgentPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        return self._page(request, page, selected, contact)
+        return await self._page(request, page, selected, contact)
 
-    def _page(
+    async def _page(
         self,
         request: Request,
         page: AgentPage,
         selected: AgentView | None,
         contact: Contact | None = None,
     ) -> Response:
+        await self.refs.load(_named([*page.agents, *([selected] if selected else [])]))
         return self._render.page(
             request,
             "agents",
@@ -109,11 +114,22 @@ class AgentPages:
             page=page,
             selected=selected,
             selected_key=(
-                None if selected is None else f"{selected.computer_id}/{selected.id}"
+                None
+                if selected is None
+                else f"{self.refs.ref(selected.computer_id)}/{self.refs.ref(selected.id)}"
             ),
             contact=contact,
             latest=request.query_params.get("latest"),
         )
+
+    async def _ids(self, key: str | None) -> str | None:
+        """The ids behind a row key as a link names it; nothing for no key,
+        or one that names nothing."""
+
+        if not key:
+            return None
+        ids = await self.refs.values(key.split("/"))
+        return None if ids is None or len(ids) != 2 else "/".join(ids)
 
     @staticmethod
     def _contact(request: Request) -> Contact:
@@ -132,13 +148,13 @@ class AgentPages:
         of the page past `after`, for the scroll. `selected` names the open row."""
 
         query = request.query_params
-        after = query.get("after") or None
-        page = await agent_page(
-            self._storage,
-            Access.of(request),
-            after=after,
-            until=query.get("until") or None,
+        after, until = await asyncio.gather(
+            self._ids(query.get("after")), self._ids(query.get("until"))
         )
+        page = await agent_page(
+            self._storage, Access.of(request), after=after, until=until
+        )
+        await self.refs.load(_named(page.agents))
         return self._render.fragment(
             request,
             "agent_rows.html" if after else "agent_list.html",
@@ -147,6 +163,7 @@ class AgentPages:
         )
 
     @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def activity_card(self, request: Request) -> Response:
@@ -166,11 +183,13 @@ class AgentPages:
         )
         if agent is None:
             return HTMLResponse("", status_code=404)
+        await self.refs.load(_named([agent]))
         return self._render.fragment(
             request, "activity_card.html", agent=agent, activity=activity, usage=usage
         )
 
     @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def contacts(self, request: Request) -> Response:
@@ -208,6 +227,7 @@ class AgentPages:
         # asked for again when the next message event comes
         if since is not None and listing.answer in ("silent", "refused"):
             return Response(status_code=204)
+        await self.refs.load(_named([agent]))
         return self._render.fragment(
             request,
             "contact_rows.html" if offset else "contacts.html",
@@ -216,6 +236,7 @@ class AgentPages:
         )
 
     @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def messages(self, request: Request) -> Response:
@@ -231,6 +252,7 @@ class AgentPages:
         )
         if agent is None:
             return HTMLResponse("", status_code=404)
+        await self.refs.load(_named([agent]))
         contact = self._contact(request)
         since = query.get("since")
         last = query.get("last")
@@ -274,6 +296,12 @@ class AgentPages:
         return self._render.fragment(
             request, "history.html", history=history, latest=query.get("latest")
         )
+
+
+def _named(agents: Iterable[AgentView]) -> list[str]:
+    """What a page names agents by in a link: their computer, and them."""
+
+    return [value for agent in agents for value in (agent.computer_id, agent.id)]
 
 
 __all__ = ["AgentPages"]

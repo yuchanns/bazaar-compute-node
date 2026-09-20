@@ -18,7 +18,7 @@ from bazaar_compute_server.protocol import Event
 
 from ._node import AGENT_ID, node_reporting_to
 from ._serving import enrol, serving_app, signed_in
-from .test_pages import _get, _health
+from .test_pages import _get, _health, _short
 
 MARKDOWN = (
     "## Plan\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
@@ -75,22 +75,18 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
 
             async with signed_in(base, storage) as session:
                 headers = {"Accept-Language": "en"}
+                agent = await _short(storage, computer_id, AGENT_ID)
                 # case: the page opens without waiting for the node, and asks
                 # for the column once it is there
-                status, page = await _get(
-                    session, f"{base}/agents/{computer_id}/{AGENT_ID}", **headers
-                )
+                status, page = await _get(session, f"{base}/agents/{agent}", **headers)
                 assert status == 200
-                assert (
-                    f'hx-get="/agents/{computer_id}/{AGENT_ID}/contacts" hx-trigger="load"'
-                    in page
-                )
+                assert f'hx-get="/agents/{agent}/contacts" hx-trigger="load"' in page
 
                 # case: the column comes back from the node, a page of it,
                 # newest activity first
                 status, column = await _get(
                     session,
-                    f"{base}/agents/{computer_id}/{AGENT_ID}/contacts",
+                    f"{base}/agents/{agent}/contacts",
                     **headers,
                 )
                 assert status == 200, column
@@ -106,7 +102,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 # case: the rows past the edge
                 status, more = await _get(
                     session,
-                    f"{base}/agents/{computer_id}/{AGENT_ID}/contacts?offset={PAGE_SIZE}",
+                    f"{base}/agents/{agent}/contacts?offset={PAGE_SIZE}",
                     **headers,
                 )
                 assert status == 200
@@ -120,7 +116,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 served = node.control.health["served"]
                 status, _ = await _get(
                     session,
-                    f"{base}/agents/{computer_id}/{AGENT_ID}/contacts?since={since}&until={PAGE_SIZE}",
+                    f"{base}/agents/{agent}/contacts?since={since}&until={PAGE_SIZE}",
                     **headers,
                 )
                 assert status == 204
@@ -149,7 +145,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 )
                 status, refreshed = await _get(
                     session,
-                    f"{base}/agents/{computer_id}/{AGENT_ID}/contacts?since={since}&until={PAGE_SIZE + 2}",
+                    f"{base}/agents/{agent}/contacts?since={since}&until={PAGE_SIZE + 2}",
                     **headers,
                 )
                 assert status == 200
@@ -186,18 +182,14 @@ async def test_an_offline_computer_is_not_asked(tmp_path: Path) -> None:
             )
             await connection.commit()
         async with signed_in(base, storage) as session:
-            status, column = await _get(
-                session,
-                f"{base}/agents/{enrolment.computer.id}/a/contacts",
-                **{"Accept-Language": "en"},
-            )
+            url = f"{base}/agents/{await _short(storage, enrolment.computer.id, 'a')}/contacts"
+            status, column = await _get(session, url, **{"Accept-Language": "en"})
             assert status == 200
             assert "This computer is offline" in column
 
             # case: a column or tail that showed the computer as reachable is
             # told it went offline though no message event came; one that
             # already shows it offline is left alone
-            url = f"{base}/agents/{enrolment.computer.id}/a/contacts"
             status, column = await _get(
                 session, f"{url}?since=0&shown=listed", **{"Accept-Language": "en"}
             )
@@ -278,16 +270,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
 
             async with signed_in(base, storage) as session:
                 headers = {"Accept-Language": "en"}
+                agent = await _short(storage, computer_id, AGENT_ID)
                 status, column = await _get(
-                    session,
-                    f"{base}/agents/{computer_id}/{AGENT_ID}/contacts",
-                    **headers,
+                    session, f"{base}/agents/{agent}/contacts", **headers
                 )
                 assert status == 200, column
                 href = column.split('href="')[1].split('"')[0].replace("&amp;", "&")
-                assert href.startswith(
-                    f"/agents/{computer_id}/{AGENT_ID}/contacts/chat?"
-                )
+                assert href.startswith(f"/agents/{agent}/contacts/chat?")
 
                 # case: picked from the list, the conversation column alone
                 # comes back and the row takes the highlight itself
@@ -325,7 +314,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert '<b>Kana</b> <span class="k">Agent</span>' in turns[1]
                 # case: only the agent's own words carry its activity card
                 assert turns[1].startswith(" own")
-                assert f'hx-get="/agents/{computer_id}/{AGENT_ID}/activity"' in turns[1]
+                assert f'hx-get="/agents/{agent}/activity"' in turns[1]
                 assert "/activity" not in turns[0] and "/activity" not in turns[2]
                 # case: what was written is read as Markdown, its code
                 # coloured by token and its HTML kept as text, whoever wrote it

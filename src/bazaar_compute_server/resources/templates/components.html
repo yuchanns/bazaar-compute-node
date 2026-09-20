@@ -71,8 +71,8 @@
 {# the end of what a list has loaded, carrying the id it ends at so a refresh
    can ask for the same stretch; while the list goes on, scrolling it into
    view asks for the next page, which takes its place #}
-{% macro edge(fleet, url) -%}
-<div class="edge" id="edge-{{ fleet.edge }}" data-after="{{ fleet.edge }}"{% if fleet.more %} hx-get="{{ url }}" hx-trigger="revealed" hx-swap="outerHTML"{% endif %}></div>
+{% macro edge(at, more, url) -%}
+<div class="edge" id="edge-{{ at }}" data-after="{{ at }}"{% if more %} hx-get="{{ url }}" hx-trigger="revealed" hx-swap="outerHTML"{% endif %}></div>
 {%- endmacro %}
 
 {# a heading inside a body, for the groups a detail pane is made of #}

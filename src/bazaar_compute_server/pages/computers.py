@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
@@ -10,7 +11,7 @@ from starlette.responses import HTMLResponse, Response
 from ..access import Access, allowed, sees
 from ..fleet import ComputerView, Fleet, computer_view, fleet
 from ..protocol import MAX_NAME_CHARS
-from ..refs import Refs
+from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
 
@@ -26,9 +27,12 @@ class ComputerPages:
         """The module, open on the first computer when there is one."""
 
         page = await fleet(self._storage, Access.of(request))
-        return self._page(request, page, page.computers[0] if page.computers else None)
+        return await self._page(
+            request, page, page.computers[0] if page.computers else None
+        )
 
     @allowed("computers.view")
+    @expanded("computer_id")
     @sees("computer", "computer_id")
     async def show(self, request: Request) -> Response:
         """The module, open on one computer."""
@@ -41,18 +45,31 @@ class ComputerPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        return self._page(request, page, selected)
+        return await self._page(request, page, selected)
 
-    def _page(
+    async def _id(self, short: str | None) -> str | None:
+        """The id behind a number a link carries; nothing for none, or one
+        that stands for nothing."""
+
+        if not short:
+            return None
+        ids = await self.refs.values([short])
+        return None if ids is None else ids[0]
+
+    async def _page(
         self, request: Request, page: Fleet, selected: ComputerView | None
     ) -> Response:
+        await self.refs.load(_named(page.computers, selected))
         return self._render.page(
             request,
             "computers",
             "computers.html",
             fleet=page,
             selected=selected,
-            selected_key=None if selected is None else selected.computer.id,
+            # the key a refresh brings back is text; the row compares as text
+            selected_key=None
+            if selected is None
+            else str(self.refs.ref(selected.computer.id)),
             enrolment=None,
         )
 
@@ -62,13 +79,11 @@ class ComputerPages:
         of the page past `after`, for the scroll. `selected` names the open row."""
 
         query = request.query_params
-        after = query.get("after") or None
-        page = await fleet(
-            self._storage,
-            Access.of(request),
-            after=after,
-            until=query.get("until") or None,
+        after, until = await asyncio.gather(
+            self._id(query.get("after")), self._id(query.get("until"))
         )
+        page = await fleet(self._storage, Access.of(request), after=after, until=until)
+        await self.refs.load(_named(page.computers))
         return self._render.fragment(
             request,
             "computer_rows.html" if after else "computer_list.html",
@@ -77,6 +92,7 @@ class ComputerPages:
         )
 
     @allowed("computers.view")
+    @expanded("computer_id")
     @sees("computer", "computer_id")
     async def detail(self, request: Request) -> Response:
         """One computer's pane alone, for its own refresh."""
@@ -86,9 +102,11 @@ class ComputerPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
+        await self.refs.load(_named((), selected))
         return self._render.fragment(request, "computer_detail.html", selected=selected)
 
     @allowed("computers.view")
+    @expanded("computer_id")
     @sees("computer", "computer_id")
     async def presence(self, request: Request) -> Response:
         """Whether a computer has shown up yet; polled while it has not."""
@@ -101,6 +119,7 @@ class ComputerPages:
         return self._render.fragment(request, "presence.html", item=item)
 
     @allowed("computers.delete")
+    @expanded("computer_id")
     @sees("computer", "computer_id")
     async def remove_form(self, request: Request) -> Response:
         """The question before a computer is forgotten, in place of the button."""
@@ -110,6 +129,7 @@ class ComputerPages:
         )
 
     @allowed("computers.delete")
+    @expanded("computer_id")
     @sees("computer", "computer_id")
     async def remove(self, request: Request) -> Response:
         if not await self._storage.remove_computer(request.path_params["computer_id"]):
@@ -136,6 +156,7 @@ class ComputerPages:
             fleet(self._storage, Access.of(request)),
             computer_view(self._storage, Access.of(request), enrolment.computer.id),
         )
+        await self.refs.load(_named(page.computers, item))
         return self._render.page(
             request,
             "computers",
@@ -148,6 +169,19 @@ class ComputerPages:
             base_url=str(request.base_url).rstrip("/"),
             system=_system_of(request),
         )
+
+
+def _named(
+    computers: Iterable[ComputerView], selected: ComputerView | None = None
+) -> list[str]:
+    """What a page names in a link: the computers, and the agents of the one
+    it is open on."""
+
+    named = [item.computer.id for item in computers]
+    if selected is not None:
+        named.append(selected.computer.id)
+        named.extend(agent.id for agent in selected.agents)
+    return named
 
 
 def _system_of(request: Request) -> str:
