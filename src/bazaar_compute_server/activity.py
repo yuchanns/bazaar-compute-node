@@ -57,10 +57,12 @@ class _Counts:
         )
 
 
-# what the card does not read out: the beat, and the reads a viewer of this
-# very page causes on the node, which would otherwise fill it with themselves
+# what the card does not read out: the beat, the running total the card sums
+# up below anyway, and the reads a viewer of this very page causes on the
+# node, which would otherwise fill it with themselves
 QUIET = (
     "node.health",
+    "usage.updated",
     "control.result",
     "tool.bcc.inbox.check.completed",
     "tool.bcc.message.read.completed",

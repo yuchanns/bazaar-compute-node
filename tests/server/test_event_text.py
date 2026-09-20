@@ -22,14 +22,28 @@ _DYNAMIC = (
     *(
         f"tool.{operation}.completed"
         for operation in (
-            "bcc.message.send",
             "bcc.message.check",
             "bcc.message.read",
             "bcc.inbox.check",
             "bcc.thread.unfollow",
         )
     ),
-    "tool.bcc.message.send.freshness_hold",
+    # a send's status is its delivery state, or the hold that kept it
+    *(
+        f"tool.bcc.message.send.{state}"
+        for state in (
+            "pending",
+            "queued",
+            "sent",
+            "partial",
+            "failed",
+            "unknown",
+            "freshness_hold",
+        )
+    ),
+    "channel.session.reviewed",
+    "channel.review.replied",
+    "setting.changed",
 )
 
 

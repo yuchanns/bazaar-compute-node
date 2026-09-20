@@ -175,7 +175,8 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert "正在处理 B小町 #bcn" in card
         assert "开始工具调用 · Bash" in card
         assert "消息已接收 · B小町 #bcn" in card
-        assert "用量已更新 · 1,234" in card
+        # the running total is summed up below the list, not read out in it
+        assert "用量已更新" not in card
         assert "今日用量：输入 1K · 输出 200 · 缓存命中 34 · $0.50" in card
         assert "tool_call.started" not in card
 
