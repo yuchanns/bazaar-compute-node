@@ -58,6 +58,12 @@ class Contact:
     def kind(self) -> str:
         return "group" if self.target.startswith("group:") else "dm"
 
+    @property
+    def named(self) -> tuple[str, str, str]:
+        """What a link names the conversation by."""
+
+        return self.thread_id, self.actor_id, self.target
+
 
 @dataclass(frozen=True, slots=True)
 class History:

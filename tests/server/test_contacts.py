@@ -196,8 +196,10 @@ async def test_an_offline_computer_is_not_asked(tmp_path: Path) -> None:
             assert status == 200 and "This computer is offline" in column
             status, _ = await _get(session, f"{url}?since=0&shown=offline")
             assert status == 204
+            thread, actor, target = (await _short(storage, "t", "a", "dm:t")).split("/")
             messages = (
-                f"{url}/t/messages?actor=a&target=dm%3At&channel=telegram&name=t&last=m"
+                f"{url}/{thread}/messages?actor={actor}&target={target}"
+                "&channel=telegram&name=t&last=m"
             )
             status, tail = await _get(
                 session, f"{messages}&since=0&shown=listed", **{"Accept-Language": "en"}
@@ -276,7 +278,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 )
                 assert status == 200, column
                 href = column.split('href="')[1].split('"')[0].replace("&amp;", "&")
-                assert href.startswith(f"/agents/{agent}/contacts/chat?")
+                # case: the row names the conversation by numbers alone
+                thread, target = (
+                    await _short(storage, "chat", "dm:channel-chat")
+                ).split("/")
+                assert href.startswith(f"/agents/{agent}/contacts/{thread}?actor=")
+                assert f"&target={target}&" in href
+                assert "channel-chat" not in href.split("&name=")[0]
 
                 # case: picked from the list, the conversation column alone
                 # comes back and the row takes the highlight itself
@@ -343,6 +351,10 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert "&before=message-chat-6" in chat
                 assert "&last=message-chat-55" in chat
                 since = int(chat.split("&since=")[1].split("&")[0])
+                # case: the tail's link is numbers and the message id, short
+                tail_url = chat.split('id="tail" hx-get="')[1].split('"')[0]
+                assert AGENT_ID not in tail_url and computer_id not in tail_url
+                assert len(tail_url) < 160, tail_url
 
                 # case: the page before what is loaded, and no further
                 status, older = await _get(

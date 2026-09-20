@@ -58,7 +58,7 @@ class AgentPages:
         return await self._page(request, page, selected)
 
     @allowed("agents.view")
-    @expanded("computer_id", "agent_id")
+    @expanded("computer_id", "agent_id", "thread_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show_contact(self, request: Request) -> Response:
@@ -66,7 +66,9 @@ class AgentPages:
         was opened from says what the conversation is called."""
 
         params = request.path_params
-        contact = self._contact(request)
+        contact = await self._contact(request)
+        if contact is None:
+            return HTMLResponse("", status_code=404)
         # htmx names the element it will swap as `tag#id`
         if request.headers.get("HX-Target") == "div#chat":
             # picked from the list: the column alone, the lists staying put
@@ -78,7 +80,7 @@ class AgentPages:
             )
             if selected is None:
                 return HTMLResponse("", status_code=404)
-            await self.refs.load(_named([selected]))
+            await self.refs.load([*_named([selected]), *contact.named])
             return self._render.fragment(
                 request,
                 "chat.html",
@@ -106,7 +108,12 @@ class AgentPages:
         selected: AgentView | None,
         contact: Contact | None = None,
     ) -> Response:
-        await self.refs.load(_named([*page.agents, *([selected] if selected else [])]))
+        await self.refs.load(
+            [
+                *_named([*page.agents, *([selected] if selected else [])]),
+                *(contact.named if contact else []),
+            ]
+        )
         return self._render.page(
             request,
             "agents",
@@ -131,13 +138,22 @@ class AgentPages:
         ids = await self.refs.values(key.split("/"))
         return None if ids is None or len(ids) != 2 else "/".join(ids)
 
-    @staticmethod
-    def _contact(request: Request) -> Contact:
+    async def _contact(self, request: Request) -> Contact | None:
+        """The conversation a link names: its thread from the path, who it is
+        answered as and its target by their numbers; nothing for numbers
+        that name nothing."""
+
         query = request.query_params
+        named = await self.refs.values(
+            [query.get("actor", ""), query.get("target", "")]
+        )
+        if named is None:
+            return None
+        actor_id, target = named
         return Contact(
             thread_id=request.path_params["thread_id"],
-            actor_id=query["actor"],
-            target=query["target"],
+            actor_id=actor_id,
+            target=target,
             channel=query["channel"],
             name=query["name"],
         )
@@ -227,7 +243,12 @@ class AgentPages:
         # asked for again when the next message event comes
         if since is not None and listing.answer in ("silent", "refused"):
             return Response(status_code=204)
-        await self.refs.load(_named([agent]))
+        await self.refs.load(
+            [
+                *_named([agent]),
+                *(value for row in listing.contacts for value in row.named),
+            ]
+        )
         return self._render.fragment(
             request,
             "contact_rows.html" if offset else "contacts.html",
@@ -236,7 +257,7 @@ class AgentPages:
         )
 
     @allowed("agents.view")
-    @expanded("computer_id", "agent_id")
+    @expanded("computer_id", "agent_id", "thread_id")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def messages(self, request: Request) -> Response:
@@ -252,8 +273,10 @@ class AgentPages:
         )
         if agent is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load(_named([agent]))
-        contact = self._contact(request)
+        contact = await self._contact(request)
+        if contact is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load([*_named([agent]), *contact.named])
         since = query.get("since")
         last = query.get("last")
         if since is not None and last is not None:

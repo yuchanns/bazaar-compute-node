@@ -26,6 +26,12 @@ class Contact:
     # where a read of the conversation starts: its newest message
     latest_message_id: str | None
 
+    @property
+    def named(self) -> tuple[str, str, str]:
+        """What a link names the conversation by."""
+
+        return self.thread_id, self.actor_id, self.target
+
 
 @dataclass(frozen=True, slots=True)
 class Contacts:

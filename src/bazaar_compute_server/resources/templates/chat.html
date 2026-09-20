@@ -6,6 +6,6 @@
   {% call c.column_header(contact.name) %}
     <span class="sub">{{ c.channels((contact.channel,)) }} · {{ t.text("contacts." ~ contact.kind) }}</span>
   {% endcall %}
-  <div class="chat" id="history" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/contacts/{{ contact.thread_id }}/messages?actor={{ contact.actor_id|urlencode }}&target={{ contact.target|urlencode }}&channel={{ contact.channel|urlencode }}&name={{ contact.name|urlencode }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+  <div class="chat" id="history" hx-get="{{ c.messages_url(selected, contact) }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
   {% endif %}
 </div>

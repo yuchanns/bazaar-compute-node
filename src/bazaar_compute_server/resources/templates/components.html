@@ -75,6 +75,13 @@
 <div class="edge" id="edge-{{ at }}" data-after="{{ at }}"{% if more %} hx-get="{{ url }}" hx-trigger="revealed" hx-swap="outerHTML"{% endif %}></div>
 {%- endmacro %}
 
+{# where a conversation's messages are read from: the agent and the
+   conversation by their numbers, and what the row that opened it said the
+   conversation is called and is on #}
+{% macro messages_url(agent, contact) -%}
+/agents/{{ ref(agent.computer_id) }}/{{ ref(agent.id) }}/contacts/{{ ref(contact.thread_id) }}/messages?actor={{ ref(contact.actor_id) }}&target={{ ref(contact.target) }}&channel={{ contact.channel|urlencode }}&name={{ contact.name|urlencode }}
+{%- endmacro %}
+
 {# a heading inside a body, for the groups a detail pane is made of #}
 {% macro section_title(text) -%}
 <div class="section">{{ text }}</div>

@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-{% set url = "/agents/" ~ ref(history.agent.computer_id) ~ "/" ~ ref(history.agent.id) ~ "/contacts/" ~ history.contact.thread_id ~ "/messages?actor=" ~ history.contact.actor_id|urlencode ~ "&target=" ~ history.contact.target|urlencode ~ "&channel=" ~ history.contact.channel|urlencode ~ "&name=" ~ history.contact.name|urlencode %}
+{% set url = c.messages_url(history.agent, history.contact) %}
 {# the end of what is loaded: it asks whether anything came after it, and
    only then for what did, which is put here with a new end after it; a
    computer gone offline is said here, until it is back. a column with no
