@@ -17,6 +17,22 @@
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
+/* scrollbars: a thin rounded thumb in the page's own colours, no track, and
+   out of sight until the pointer is over what scrolls. WebKit and Blink give
+   the pseudo-elements this much, but only when the standard properties are
+   left unset on the element; Firefox has the standard ones, so it gets a thin
+   bar in the same colours and nothing more */
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+  :hover::-webkit-scrollbar-thumb { background: var(--edge); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  ::-webkit-scrollbar-corner { background: transparent; }
+}
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
+}
 html, body { height: 100%; }
 body { margin: 0; background: var(--canvas); color: var(--fg); font: var(--fs)/1.5 var(--font); }
 a { color: inherit; text-decoration: none; }
@@ -56,9 +72,69 @@ a { color: inherit; text-decoration: none; }
 .li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .li.off { opacity: .5; }
 .li.off:hover { background: none; }
+.li .badge { flex: none; }
+
+/* the chat: a run of one speaker's messages under their name, oldest at
+   the top, the newest end kept in view; no bubbles, no colour per speaker */
+.chat { flex: 1; overflow-y: auto; padding: 12px 16px; }
+.turn { display: flex; gap: 10px; margin: 10px 0; }
+.turn .said { flex: 1; min-width: 0; }
+.turn .who { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.turn .who .at { color: var(--muted); font-size: .84em; }
+/* a run that went on across the edge of a page keeps the one head it had */
+.turn.leads, .turn:has(+ .turn.follows) { margin-bottom: 0; }
+.turn.follows, .turn.leads + .turn { margin-top: 0; }
+.turn.follows > .av, .turn.leads + .turn > .av { visibility: hidden; }
+.turn.follows .who, .turn.leads + .turn .who { display: none; }
+/* each message is its own box, outlined under the pointer so where one ends
+   and the next begins can be seen */
+.turn .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
+.turn .line:hover { box-shadow: inset 0 0 0 1px var(--edge); }
+/* what an agent wrote, as Markdown: the page's own type, kept tight */
+.turn .line.md { white-space: normal; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md table, .md pre { margin: 0 0 6px; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 8px 0 4px; font-weight: 600; line-height: 1.3; }
+.md h1 { font-size: 1.25em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; } .md h4, .md h5, .md h6 { font-size: 1em; }
+.md ul, .md ol { padding-left: 22px; }
+.md li + li { margin-top: 2px; }
+.md blockquote { padding: 0 0 0 10px; border-left: 2px solid var(--line); color: var(--muted); }
+.md a { color: var(--accent); }
+.md a:hover { text-decoration: underline; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+.md code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+.md .snippet { margin: 0 0 6px; }
+/* code keeps its lines and scrolls sideways; the copy button sits in its corner */
+.md pre, .md .snippet pre { white-space: pre; word-break: normal; overflow-x: auto; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 36px 8px 10px; font-size: 1em; }
+.md pre code { background: none; padding: 0; font-size: .9em; }
+/* a picture, once asked for, fits the column */
+.md img { display: block; max-width: 100%; border-radius: var(--r-sm); }
+/* a table scrolls within itself rather than widening the column */
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .95em; }
+.md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; white-space: nowrap; }
+.md th { background: var(--chip); font-weight: 600; }
+/* code coloured by token: GitHub's light and dark palettes, one for each half.
+   keywords and types; strings; comments; what is defined - functions, classes,
+   decorators; numbers, constants and the builtins; variables and parameters;
+   tags and attributes; what was removed or added; what did not parse */
+.code .tok-k, .code .tok-kd, .code .tok-kn, .code .tok-kr, .code .tok-kp, .code .tok-kt, .code .tok-ow { color: light-dark(#cf222e, #ff7b72); }
+.code .tok-s, .code .tok-s1, .code .tok-s2, .code .tok-sb, .code .tok-sc, .code .tok-sd, .code .tok-sh, .code .tok-si, .code .tok-sx, .code .tok-sr, .code .tok-ss, .code .tok-sa, .code .tok-se, .code .tok-dl { color: light-dark(#0a3069, #a5d6ff); }
+.code .tok-c, .code .tok-c1, .code .tok-cm, .code .tok-cp, .code .tok-cs, .code .tok-ch, .code .tok-cpf { color: light-dark(#6e7781, #8b949e); }
+.code .tok-nf, .code .tok-fm, .code .tok-nc, .code .tok-nd, .code .tok-ne { color: light-dark(#8250df, #d2a8ff); }
+.code .tok-m, .code .tok-mi, .code .tok-mf, .code .tok-mh, .code .tok-mo, .code .tok-mb, .code .tok-il, .code .tok-no, .code .tok-nb, .code .tok-bp, .code .tok-kc { color: light-dark(#0550ae, #79c0ff); }
+.code .tok-nv, .code .tok-vi, .code .tok-vc, .code .tok-vg, .code .tok-vm { color: light-dark(#953800, #ffa657); }
+.code .tok-nt, .code .tok-na { color: light-dark(#116329, #7ee787); }
+.code .tok-gd { color: light-dark(#82071e, #ffdcd7); background: light-dark(#ffebe9, #67060c); }
+.code .tok-gi { color: light-dark(#116329, #aff5b4); background: light-dark(#dafbe1, #033a16); }
+.code .tok-err { color: light-dark(#82071e, #ffa198); }
+.turn .file { color: var(--muted); font-size: .9em; }
+.chat .tail { min-height: 1px; }
+/* the top of what is loaded turns while the page before it is fetched */
+.chat .edge { min-height: 28px; padding: 4px 0; }
 .li .in { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 /* rows off screen keep their height but are not laid out or painted until
-   they scroll near; the anchor and the card are on the row, outside the box */
+   they scroll near; the card is on the row, outside the box */
 .list-items .li .in { content-visibility: auto; contain-intrinsic-size: auto 34px; }
 .li .t { flex: 1; min-width: 0; }
 .li .t b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -75,14 +151,17 @@ a { color: inherit; text-decoration: none; }
 .dot.offline, .dot.failed { background: var(--muted); opacity: .5; }
 .chip { font-size: .78em; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--muted); }
 .ch-telegram { color: var(--tg); } .ch-lark { color: var(--lark); } .ch-wecom { color: var(--wecom); }
+.ch + .ch, .rt + .rt { margin-left: 4px; }
+.ch .i svg, .rt .i svg { width: 1em; height: 1em; }
 .badge { font-size: .78em; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-fg); font-weight: 500; }
 .k { font-size: .72em; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
 
 /* hover activity card */
-/* the card is fixed and anchored to its row: it opens beside the list, level
-   with the row, never over the other rows, and the scrolling list cannot clip it */
-.agent .card { display: none; position: fixed; top: anchor(top); left: anchor(right); margin: 0 0 0 14px; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; }
-.agent:hover .card, .agent .card:hover { display: block; }
+/* the card is fixed, shown while the pointer is on the agent's avatar and
+   kept by the pointer (the avatar moves it); never clipped by the scrolling
+   list it belongs to */
+.agent .card, .turn.own .card { display: none; position: fixed; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; pointer-events: none; }
+.agent:has(> .in > .av:hover) .card, .turn.own:has(> .av:hover) .card { display: block; }
 .card .h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .card .h .dot { margin-left: auto; }
 .card .st { color: var(--muted); font-size: .9em; margin-bottom: 8px; }
@@ -177,6 +256,12 @@ a { color: inherit; text-decoration: none; }
   .select option::checkmark { display: none; }
 }
 
+
+/* a page from a build gone by: covered until its reader refreshes it */
+.stale { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(16, 24, 40, .35); }
+.stale[hidden] { display: none; }
+.stale .dialog { margin: 0; }
+.stale p { margin: 0 0 12px; color: var(--muted); }
 
 /* the closed stall: a board on ropes where a page should have been */
 .col.closed { align-items: center; justify-content: center; text-align: center; }

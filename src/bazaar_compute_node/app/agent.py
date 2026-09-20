@@ -22,14 +22,12 @@ from ..core.models import (
     Message,
     RuntimeSession,
 )
-from ..core.observability import IAudit
 from ..core.orchestration import AgentOrchestrator
 from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
-from ..core.utils.clock import now_ms
 from ..i18n import Translator
 from .attachments import AttachmentMaterializer
 from .command import CommandDispatchError
@@ -75,7 +73,7 @@ class AgentApplication:
         configuration: AgentConfiguration,
         factories: AgentAdapterFactories,
         storage: IStorageScope,
-        audit: IAudit,
+        audit: AuditRecorder,
         timer_wheel: TimerWheel,
         reminder_concurrency: IThreadConcurrency,
         reminder_poke: Callable[[], None],
@@ -89,7 +87,6 @@ class AgentApplication:
         self.agent_id = configuration.id
         self.name = configuration.name
         self.storage = storage
-        self.audit = audit
         self.timer_wheel = timer_wheel
         self.timeout_budget = timeout_budget
         self.translator = translator
@@ -106,11 +103,6 @@ class AgentApplication:
             self.workspace_path,
             self._referenced_attachment_paths,
         )
-        self._audit_recorder = AuditRecorder(
-            sink=audit,
-            timeout_budget=timeout_budget,
-            clock=now_ms,
-        )
         self.channel: IChannel = Channels(
             tuple(
                 Channel(
@@ -123,7 +115,7 @@ class AgentApplication:
                             workspace=self.workspace_path,
                             translator=self.translator,
                             timer_wheel=self.timer_wheel,
-                            audit=self._audit_recorder,
+                            audit=audit,
                         )
                     ),
                 )
@@ -172,13 +164,13 @@ class AgentApplication:
             raise ValueError("agent idle timeout exceeds the timer horizon")
         self._runtime_contexts = tuple(runtime_contexts)
         self.runtimes: tuple[IRuntime, ...] = tuple(runtimes)
-        self._actors = Actors(agent_id=self.agent_id, mode=configuration.mode)
+        self.actors = Actors(agent_id=self.agent_id, mode=configuration.mode)
         self.orchestrator = AgentOrchestrator(
-            actors=self._actors,
+            actors=self.actors,
             channel=self.channel,
             runtimes=self.runtimes,
             storage=self.storage,
-            audit=self._audit_recorder,
+            audit=audit,
             timeout_budget=self.timeout_budget,
             timer_wheel=self.timer_wheel,
             runtime_idle_timeout_ms=(
@@ -197,11 +189,11 @@ class AgentApplication:
             storage=self.storage,
             concurrency=reminder_concurrency,
             poke=reminder_poke,
-            audit=self._audit_recorder,
+            audit=audit,
         )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
-            actors=self._actors,
+            actors=self.actors,
             reminder_service=self.reminder_service,
             session_binding_validator=self._validate_actor_binding,
             upgrade_service=upgrade_service,
@@ -233,7 +225,7 @@ class AgentApplication:
                 install_bcc_wrapper,
                 workspace / ".bcn" / "bin",
                 agent_id=self.agent_id,
-                mode=self._actors.mode,
+                mode=self.actors.mode,
             )
             await self._attachment_materializer.reconcile()
             await self._backfill_channel_identity()
@@ -484,7 +476,7 @@ class AgentApplication:
         return environment
 
     def _redact_session_secrets(self, thread_id: str, text: str) -> str:
-        binding = self._session_capabilities.get(self._actors.for_thread(thread_id).id)
+        binding = self._session_capabilities.get(self.actors.for_thread(thread_id).id)
         if binding is None:
             return text
         for token in binding.token_values:
@@ -508,7 +500,7 @@ class AgentApplication:
             raise RuntimeError("bcc wrapper is not installed")
         self.command_log.append((thread_id, tuple(arguments)))
         runtime_session = self.orchestrator.runtime_session(
-            self._actors.for_thread(thread_id)
+            self.actors.for_thread(thread_id)
         )
         if runtime_session is None:
             raise RuntimeError("runtime session is not live")

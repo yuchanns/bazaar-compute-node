@@ -3,9 +3,12 @@ choice between a whole page and the fragment htmx asked for."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import tzinfo
 from functools import lru_cache
 from hashlib import blake2b
+from importlib.resources import files
+from importlib.resources.abc import Traversable
 from typing import Any
 
 from jinja2 import (
@@ -16,11 +19,16 @@ from jinja2 import (
     select_autoescape,
 )
 from jinja2.runtime import Context
+from markupsafe import Markup
+from starlette.datastructures import Headers
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clock import clock_text, now_ms, zone
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
+from .images import Images
+from .markdown import render
 from .storage import Account
 
 # the looks an account may choose; anything else follows the system
@@ -28,7 +36,7 @@ THEMES = ("light", "dark")
 
 
 class Renderer:
-    def __init__(self) -> None:
+    def __init__(self, images: Images) -> None:
         # templates and static files ship inside the package, so they are
         # read through the package, never from a directory that may not exist
         self._templates = Environment(
@@ -39,8 +47,12 @@ class Renderer:
         self._templates.filters["identicon"] = identicon
         self._templates.filters["ago"] = _ago
         self._templates.filters["clock"] = _clock
+        self._templates.filters["markdown"] = _markdown
         self._templates.globals["languages"] = LANGUAGES
         self._templates.globals["themes"] = THEMES
+        self._templates.globals["asset"] = _asset
+        self._templates.globals["build"] = BUILD
+        self._templates.globals["image_address"] = images.address
 
     @staticmethod
     def translator(request: Request) -> Translator:
@@ -118,6 +130,81 @@ class Renderer:
         }
 
 
+@pass_context
+def _markdown(context: Context, text: str) -> Markup:
+    """What was written, as the Markdown a chat is written in; a code block
+    and a picture are drawn by the page's own templates."""
+
+    code = context.environment.get_template("code.html")
+    image = context.environment.get_template("image.html")
+    return render(
+        text,
+        code=lambda content: code.render(**context.get_all(), code=content),
+        image=lambda **fields: image.render(**context.get_all(), **fields),
+    )
+
+
+@lru_cache
+def _digest(name: str) -> str:
+    content = files("bazaar_compute_server").joinpath("resources", "static", name)
+    return blake2b(content.read_bytes(), digest_size=6).hexdigest()
+
+
+def _asset(name: str) -> str:
+    """Where a static file is, under a name that changes with its content, so
+    a browser holding the last one comes for the new one."""
+
+    return f"/static/{name}?v={_digest(name)}"
+
+
+def _build() -> str:
+    """The whole package - code, templates, stylesheet, script - as one
+    digest: a page holding another is out of date as a whole, whatever piece
+    of it asks."""
+
+    digest = blake2b(digest_size=6)
+    for entry in _walk(files("bazaar_compute_server")):
+        digest.update(entry.read_bytes())
+    return digest.hexdigest()
+
+
+def _walk(root: Traversable) -> Iterator[Traversable]:
+    """Every file under the package, in one order; what Python leaves behind
+    is not the package."""
+
+    for entry in sorted(root.iterdir(), key=lambda entry: entry.name):
+        if entry.is_dir():
+            if entry.name != "__pycache__":
+                yield from _walk(entry)
+        else:
+            yield entry
+
+
+BUILD = _build()
+
+
+class Stale:
+    """Tells a page from another build so, instead of handing it a piece of
+    this one: what a piece needs may no longer be there. The page then asks
+    its reader to refresh."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            headers = Headers(scope=scope)
+            if headers.get("HX-Request") == "true" and headers.get("X-Build") not in (
+                None,
+                BUILD,
+            ):
+                await Response(status_code=204, headers={"HX-Trigger": "stale"})(
+                    scope, receive, send
+                )
+                return
+        await self._app(scope, receive, send)
+
+
 def _personal(body: str, *, status_code: int = 200) -> HTMLResponse:
     """A response made for whoever asked: not for any cache to keep, and a
     different body for htmx than for a browser loading the page whole."""
@@ -177,4 +264,4 @@ def identicon(name: str) -> str:
     )
 
 
-__all__ = ["Renderer", "identicon"]
+__all__ = ["BUILD", "Renderer", "Stale", "identicon"]

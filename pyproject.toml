@@ -21,6 +21,9 @@ dependencies = [
     "uvloop>=0.22.1 ; sys_platform != 'win32'",
     "httptools>=0.8.0",
     "python-multipart>=0.0.32",
+    "yarl>=1.18",
+    "markdown-it-py>=4.2.0",
+    "pygments>=2.20.0",
 ]
 
 [project.urls]
@@ -48,6 +51,9 @@ sqlite = "bazaar_compute_server.contrib.sqlite.plugin:create_storage"
 [project.entry-points."bazaar_compute_node.audits"]
 logging = "bazaar_compute_node.contrib.logging.plugin:create_audit"
 server = "bazaar_compute_node.contrib.server.plugin:create_audit"
+
+[project.entry-points."bazaar_compute_node.controls"]
+server = "bazaar_compute_node.contrib.server.plugin:create_control"
 
 [dependency-groups]
 dev = [

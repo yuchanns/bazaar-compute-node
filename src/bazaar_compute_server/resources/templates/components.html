@@ -8,13 +8,20 @@
 <span class="i">{% include "icons/" ~ name ~ ".svg" %}</span>
 {%- endmacro %}
 
+{# a button that copies the text of what stands right before it, and ticks for a moment #}
+{% macro copy() -%}
+<button class="btn icon copy" type="button" title="{{ t.text("copy") }}" aria-label="{{ t.text("copy") }}" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent).then(() => { this.classList.add('done'); setTimeout(() => this.classList.remove('done'), 1500); })">{{ icon("copy") }}{{ icon("check") }}</button>
+{%- endmacro %}
+
 {# a select that looks like the rest of the page: the native control, drawn over #}
 {% macro select(id, name, options, selected, attrs="") -%}
 <span class="select"><select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>{% for value, label in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>{{ icon("chevron-down") }}</span>
 {%- endmacro %}
 
-{% macro avatar(name, small=false, attrs="") -%}
-<div class="av{% if small %} sm{% endif %}" {{ attrs|safe }}>{{ name|identicon|safe }}</div>
+{# an avatar; one that `opens` a card keeps the card by the pointer while the
+   pointer is on it, within the window #}
+{% macro avatar(name, small=false, opens=none) -%}
+<div class="av{% if small %} sm{% endif %}"{% if opens %} hx-on:mousemove="const card = this.closest('{{ opens }}').querySelector('.card'); card.style.left = Math.min(event.clientX + 14, innerWidth - card.offsetWidth - 8) + 'px'; card.style.top = Math.min(event.clientY + 14, innerHeight - card.offsetHeight - 8) + 'px'"{% endif %}>{{ name|identicon|safe }}</div>
 {%- endmacro %}
 
 {% macro dot(status) -%}
@@ -25,22 +32,35 @@
 <div class="hd">{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
+{# the mark for a channel, in the channel's own colour; one this page has no
+   mark for is named instead #}
+{% set channel_icons = {"telegram": "si-telegram", "lark": "lark", "wecom": "wecom"} %}
+
+{# the mark for a runtime, by the kind the node names it; one with no mark
+   is named instead #}
+{% set runtime_icons = {"codex": "openai", "claudecode": "si-claude"} %}
+
+{% macro runtimes(kinds) -%}
+{% for kind in kinds %}<span class="rt" title="{{ kind }}">{% if kind in runtime_icons %}{{ icon(runtime_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
+{%- endmacro %}
+
 {% macro channels(kinds) -%}
-{% for kind in kinds %}<span class="ch-{{ kind }}">{{ kind }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+{% for kind in kinds %}<span class="ch ch-{{ kind }}" title="{{ kind }}">{% if kind in channel_icons %}{{ icon(channel_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
 {%- endmacro %}
 
 {# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
-   with an href it navigates through htmx, otherwise it is a plain row.
+   with an href it navigates through htmx, swapping `target` (the whole module
+   unless told otherwise), otherwise it is a plain row.
    an off row is greyed and does not navigate: there is nothing live behind it
    (an agent); a row that only looks off (extra_class="off") still opens, the way
    an offline computer does, since removing it happens from its page.
    what the row shows sits in its own box, so a long list can leave the rows
-   off screen unrendered while the row itself, and what is anchored to it, stay #}
-{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, anchor=none) -%}
+   off screen unrendered while the row itself, and what hangs off it, stay #}
+{% macro list_item(title, subtitle, status=none, name=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
 {% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="#main" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if anchor %} style="anchor-name: {{ anchor }}"{% endif %}>
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
-    {% if name is not none %}{{ avatar(name) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
+    {% if name is not none %}{{ avatar(name, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
     <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
     {% if status %}{{ dot(status) }}{% endif %}
   </div>

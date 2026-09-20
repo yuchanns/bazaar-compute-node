@@ -1,0 +1,4 @@
+{# a picture from outside comes through the server, so where it lives sees
+   the server come for it and not who is looking; one not on the web is its
+   words alone #}
+{% set address = image_address(src) %}{% if address %}<img src="{{ address }}" alt="{{ alt }}" title="{{ src }}" loading="lazy">{% else %}{{ alt or t.text("history.image") }}{% endif %}

@@ -510,6 +510,26 @@ class SqliteStorage(IStorage):
             row = await cursor.fetchone()
         return 0 if row is None else int(row["n"])
 
+    async def latest_message_event(
+        self, computer_id: str, agent_id: str, *, thread_id: str | None = None
+    ) -> int:
+        predicates = ["computer_id = ?", "agent_id = ?"]
+        parameters: list[object] = [computer_id, agent_id]
+        if thread_id is not None:
+            predicates.append("thread_id = ?")
+            parameters.append(thread_id)
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                "SELECT MAX(id) AS id FROM events"
+                f" WHERE {' AND '.join(predicates)}"
+                f" AND event_name IN ({_marks(_MESSAGE_EVENTS)})",
+                (*parameters, *_MESSAGE_EVENTS),
+            ) as cursor,
+        ):
+            row = await cursor.fetchone()
+        return 0 if row is None or row["id"] is None else int(row["id"])
+
     async def computer_health(
         self, computers: Sequence[Computer]
     ) -> list[ComputerHealth]:
@@ -553,16 +573,16 @@ class SqliteStorage(IStorage):
             return {row["computer_id"]: row["at"] async for row in cursor}
 
     async def recent_activity(
-        self, computer_id: str, agent_id: str, *, limit: int
+        self, computer_id: str, agent_id: str, *, limit: int, skipping: Sequence[str]
     ) -> list[StoredEvent]:
         async with (
             self._reader() as reader,
             reader.execute(
                 f"SELECT {_COLUMNS} FROM events"
                 " WHERE computer_id = ? AND agent_id = ?"
-                " AND event_name != 'node.health'"
+                f" AND event_name NOT IN ({_marks(skipping)})"
                 " ORDER BY id DESC LIMIT ?",
-                (computer_id, agent_id, limit),
+                (computer_id, agent_id, *skipping, limit),
             ) as cursor,
         ):
             return [_stored(row) async for row in cursor]
@@ -640,6 +660,14 @@ class _Write[T]:
 
 _ACCOUNT_COLUMNS = "id, name, password_hash, created_at_ms, language, theme"
 _INBOUND = "channel.inbound.persisted"
+# what changes a conversation as a reader sees it: a message arriving, or
+# one of the agent's own reaching the channel
+_MESSAGE_EVENTS = (
+    _INBOUND,
+    "channel.outbound.queued",
+    "channel.outbound.sent",
+    "channel.outbound.partial",
+)
 
 
 def _account_row(row: aiosqlite.Row) -> Account:

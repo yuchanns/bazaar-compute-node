@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-<div hx-get="/agents/{{ agent.computer_id }}/{{ agent.id }}/activity" hx-trigger="every[this.closest('.agent').matches(':hover')] 5s" hx-target="closest .card" hx-swap="innerMorph">
+<div hx-get="/agents/{{ agent.computer_id }}/{{ agent.id }}/activity" hx-trigger="every[this.closest('.agent, .turn').matches(':hover')] 5s" hx-target="closest .card" hx-swap="innerMorph">
   <div class="h">{{ c.avatar(agent.name, small=true) }}{{ agent.name }}{{ c.dot(agent.status) }}</div>
   <div class="st">
     {% if agent.working_on %}{{ t.text("activity.working_on", {"target": agent.working_on, "since": agent.working_since_ms|clock}) }}{% else %}{{ t.text("status." ~ agent.status) }}{% endif %}
@@ -8,5 +8,6 @@
     {% for item in activity %}<div>{% if loop.first and agent.status == "busy" %}<span class="live"></span>{% endif %}<span class="t">{{ item.time }}</span>{{ item.text }}</div>{% endfor %}
     {% if not activity %}<div class="st">{{ t.text("activity.none") }}</div>{% endif %}
   </div>
-  <div class="more">{{ t.text("activity.usage_today", {"tokens": usage.tokens, "cost": usage.cost}) }}</div>
+  {# a runtime that does not price its tokens leaves the cost out #}
+  {% if usage %}<div class="more">{{ t.text("activity.usage_today", {"input": usage.input, "output": usage.output, "cached": usage.cached}) }}{% if usage.cost %} · ${{ usage.cost }}{% endif %}</div>{% endif %}
 </div>

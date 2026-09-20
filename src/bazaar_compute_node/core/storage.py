@@ -196,6 +196,12 @@ class StorageOperationMixin:
             delivery_states=_HISTORY_DELIVERY_STATES,
             limit=limit,
         )
+        oldest = await self.list_messages(
+            source_thread.id,
+            target=target.canonical_target,
+            delivery_states=_HISTORY_DELIVERY_STATES,
+            limit=1,
+        )
         references = await _referenced_messages(self, source_thread.id, messages)
         canonical_targets = {message.target for message in (*messages, *references)}
         canonical_targets.update(
@@ -223,6 +229,7 @@ class StorageOperationMixin:
                 snapshot_seq=latest_seq,
                 first_seq=messages[0].seq if messages else None,
                 last_seq=messages[-1].seq if messages else None,
+                has_before=bool(messages) and messages[0].seq > oldest[0].seq,
                 referenced_messages=references,
                 target_projections=tuple(target_projections),
             ),
@@ -239,7 +246,13 @@ class StorageOperationMixin:
         targets = []
         for summary in page.targets:
             target = await self.resolve_inbox_target(summary.target)
-            targets.append(replace(summary, target=target.display_target))
+            targets.append(
+                replace(
+                    summary,
+                    target=target.display_target,
+                    canonical_target=summary.target,
+                )
+            )
         return InboxListResult(
             targets=tuple(targets),
             total=page.total,

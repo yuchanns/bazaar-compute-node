@@ -251,14 +251,28 @@ class CommandService(ICommandService):
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
-    async def pending_targets(self, actor: Actor) -> InboxListResult:
-        reachable = frozenset(await threads_in_reach(self._storage, actor))
-        result = await self._storage.read_inbox_catalog(limit=None)
-        pending = [
+    async def pending_targets(
+        self,
+        actor: Actor,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        pending_only: bool = True,
+    ) -> InboxListResult:
+        result = await self._storage.read_inbox_catalog(limit=limit, offset=offset)
+        # the agent itself reaches every conversation; a page read as it is
+        # kept whole, its bounds the storage's own
+        reachable = (
+            None
+            if isinstance(actor, Agent)
+            else frozenset(await threads_in_reach(self._storage, actor))
+        )
+        targets = tuple(
             summary
             for summary in result.targets
-            if summary.pending_count > 0 and summary.thread_id in reachable
-        ]
+            if (reachable is None or summary.thread_id in reachable)
+            and (summary.pending_count > 0 or not pending_only)
+        )
         await self._audit.append_tool(
             operation="bcc.inbox.check",
             status="completed",
@@ -266,11 +280,13 @@ class CommandService(ICommandService):
             correlation=self._correlation(actor=actor),
             arguments={"actor_id": actor.id},
         )
+        if not pending_only:
+            return replace(result, targets=targets, shown=len(targets))
         return replace(
             result,
-            targets=tuple(pending),
-            total=len(pending),
-            shown=len(pending),
+            targets=targets,
+            total=len(targets),
+            shown=len(targets),
             offset=0,
             has_more=False,
         )

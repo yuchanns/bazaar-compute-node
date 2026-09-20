@@ -5,15 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ t.text("app.title") }}</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js"></script>
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+<script src="{{ asset('htmx.min.js') }}"></script>
 </head>
 {# every swap on the page morphs by default: what is on screen is diffed into
    what came back, so scroll, hover and focus survive a change of page #}
-<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone}'>
+{# every request says which build the page is; a page left open across an
+   upgrade is told so and covered until its reader refreshes it, rather than
+   patched with pieces of the new one - and from then on asks for nothing,
+   whatever on it would have #}
+<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}' hx-on:stale="document.body.classList.add('stale'); document.getElementById('stale').hidden = false" hx-on:htmx:before:request="if (document.body.classList.contains('stale')) event.preventDefault()">
 <div class="app">
   {% include "rail.html" %}
   <div id="main" class="main">{% include content %}</div>
+</div>
+<div class="stale" id="stale" hidden>
+  <div class="dialog">
+    <h3>{{ t.text("stale.title") }}</h3>
+    <p>{{ t.text("stale.text") }}</p>
+    <button class="btn p" type="button" hx-on:click="location.reload()">{{ t.text("stale.refresh") }}</button>
+  </div>
 </div>
 {# when the server cannot be reached at all, nothing can come from it; the
    board for that case is carried in the page from the start #}

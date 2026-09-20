@@ -12,6 +12,7 @@ from pathlib import Path
 from .. import __version__
 from ..core.audit import AuditRecorder
 from ..core.concurrency import ThreadLockRegistry
+from ..core.control import AgentCommands, ControlContext, IControl
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message
 from ..core.observability import AuditContext, IAudit
@@ -95,8 +96,20 @@ class NodeApplication:
                 timeout_budget=self.timeout_budget,
             )
         )
+        # where requests come from besides the socket, if anywhere
+        self.control: IControl | None = None
+        if shared_factories.control is not None:
+            self.control = shared_factories.control(
+                ControlContext(
+                    options=configuration.control_options,
+                    timer_wheel=self.timer_wheel,
+                    timeout_budget=self.timeout_budget,
+                    audit=self.audit,
+                    commands_of=self._agent_commands,
+                )
+            )
         self._reminder_concurrency = ThreadLockRegistry()
-        audit_recorder = AuditRecorder(
+        self._audit_recorder = AuditRecorder(
             sink=self.audit,
             timeout_budget=self.timeout_budget,
             clock=now_ms,
@@ -106,7 +119,7 @@ class NodeApplication:
             timer_wheel=self.timer_wheel,
             concurrency=self._reminder_concurrency,
             publish_wake=self._publish_inbox_wake,
-            audit=audit_recorder,
+            audit=self._audit_recorder,
         )
         self.version_watcher = VersionWatcher(
             timer_wheel=self.timer_wheel,
@@ -115,7 +128,7 @@ class NodeApplication:
         )
         self.health_reporter = HealthReporter(
             timer_wheel=self.timer_wheel,
-            audit=audit_recorder,
+            audit=self._audit_recorder,
             health=self._health,
             version=__version__,
             interval_seconds=self.timeout_budget.startup_seconds,
@@ -191,6 +204,9 @@ class NodeApplication:
             await self.health_reporter.start(
                 timeout=self.timeout_budget.startup_seconds
             )
+            # requests are taken once the node can answer them
+            if self.control is not None:
+                await self.control.start(timeout=self.timeout_budget.startup_seconds)
         except BaseException:
             await self.stop()
             raise
@@ -222,7 +238,7 @@ class NodeApplication:
                     configuration=configuration,
                     factories=factories,
                     storage=storage_scope,
-                    audit=self.audit,
+                    audit=self._audit_recorder,
                     timer_wheel=self.timer_wheel,
                     reminder_concurrency=self._reminder_concurrency,
                     reminder_poke=self.reminder_scheduler.poke,
@@ -271,6 +287,12 @@ class NodeApplication:
         self._ready = False
         self._accepting = False
         errors: list[str] = []
+        # requests stop being taken before anything they need goes
+        if self.control is not None:
+            try:
+                await self.control.stop(timeout=self.timeout_budget.shutdown_seconds)
+            except Exception as error:  # noqa: BLE001
+                errors.append(f"control.stop:{type(error).__name__}")
         try:
             await self.health_reporter.stop(
                 timeout=self.timeout_budget.shutdown_seconds,
@@ -421,6 +443,12 @@ class NodeApplication:
             return False
         return True
 
+    def _agent_commands(self, agent_id: str) -> AgentCommands | None:
+        agent = self.agents.get(agent_id)
+        if agent is None or not agent.started or not self._accepting:
+            return None
+        return AgentCommands(agent.orchestrator.command_service, agent.actors)
+
     async def _dispatch(
         self,
         request: Mapping[str, object],
@@ -490,6 +518,11 @@ class NodeApplication:
             "accepting": self._accepting,
             "storage": self.storage.name,
             "audit": {"name": self.audit.name, **self.audit.health},
+            "control": (
+                None
+                if self.control is None
+                else {"name": self.control.name, **self.control.health}
+            ),
             "configured": len(self.configuration.agents),
             "started_agents": len(self.agents),
             "failed_agents": sum(
@@ -522,6 +555,11 @@ class NodeApplication:
             await self.command_server.stop()
         except BaseException as error:
             self._logger.debug("command server cleanup failed", exc_info=error)
+        if self.control is not None:
+            try:
+                await self.control.stop(timeout=self.timeout_budget.shutdown_seconds)
+            except BaseException as error:
+                self._logger.debug("control cleanup failed", exc_info=error)
         try:
             await self.timer_wheel.close()
         except BaseException as error:

@@ -1,0 +1,9 @@
+{% import "components.html" as c with context %}
+{% set url = "/agents/" ~ history.agent.computer_id ~ "/" ~ history.agent.id ~ "/contacts/" ~ history.contact.thread_id ~ "/messages?actor=" ~ history.contact.actor_id|urlencode ~ "&target=" ~ history.contact.target|urlencode ~ "&channel=" ~ history.contact.channel|urlencode ~ "&name=" ~ history.contact.name|urlencode %}
+{# the end of what is loaded: it asks whether anything came after it, and
+   only then for what did, which is put here with a new end after it; a
+   computer gone offline is said here, until it is back. a column with no
+   message to read after - empty, or one that got none - asks the same way,
+   and is read afresh as a whole when something is new #}
+{% if history.last %}<div class="tail" id="tail" hx-get="{{ url }}&since={{ history.since }}&last={{ history.last|urlencode }}&shown={{ history.answer }}" hx-trigger="every 5s" hx-swap="outerHTML">{% if history.answer == "offline" %}{{ c.empty(t.text("contacts.offline")) }}{% endif %}</div>
+{% else %}<div class="tail" id="tail" hx-get="{{ url }}&since={{ history.since }}&shown={{ history.answer }}{% if latest is defined and latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="every 5s" hx-target="#history" hx-swap="outerHTML"></div>{% endif %}

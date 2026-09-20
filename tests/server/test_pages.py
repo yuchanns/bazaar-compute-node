@@ -95,7 +95,12 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
                         5,
                         "usage.updated",
                         "agent-1",
-                        total={"total_tokens": 1234},
+                        total={
+                            "input_tokens": 1000,
+                            "output_tokens": 200,
+                            "cached_input_tokens": 34,
+                            "total_tokens": 1234,
+                        },
                         cost_usd=0.5,
                     ),
                 )
@@ -107,8 +112,27 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
             session, f"{base}/agents", **{"Accept-Language": "zh-CN"}
         )
         assert status == 200
-        assert "<html" in page and 'href="/static/htmx.min.js"' not in page
-        assert '<script src="/static/htmx.min.js">' in page
+        assert "<html" in page
+        # case: a static file is named by its content, so a browser holding
+        # the last one comes for the new one
+        assert '<script src="/static/htmx.min.js?v=' in page
+        css = page.split('href="/static/app.css?v=')[1].split('"')[0]
+        async with session.get(f"{base}/static/app.css?v={css}") as response:
+            assert response.status == 200
+        # case: a page from another build asking for a piece is sent back for
+        # the whole page; one from this build gets its piece
+        build = page.split('"X-Build": "')[1].split('"')[0]
+        async with session.get(
+            f"{base}/agents/list",
+            headers={"HX-Request": "true", "X-Build": "elsewhen"},
+        ) as response:
+            assert response.status == 204
+            assert response.headers["HX-Trigger"] == "stale"
+        assert 'id="stale" hidden' in page
+        async with session.get(
+            f"{base}/agents/list", headers={"HX-Request": "true", "X-Build": build}
+        ) as response:
+            assert response.status == 200
         assert "智能体" in page and "有马佳奈" in page
         assert 'class="dot busy"' in page
 
@@ -137,7 +161,7 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert "开始工具调用 · Bash" in card
         assert "消息已接收 · B小町 #bcn" in card
         assert "用量已更新 · 1,234" in card
-        assert "今日用量：1K token · $0.50" in card
+        assert "今日用量：输入 1K · 输出 200 · 缓存命中 34 · $0.50" in card
         assert "tool_call.started" not in card
 
         # case: a computer wears its system as its mark, and says it in words
@@ -193,7 +217,16 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
         agents = [{"agent_id": "agent-1", "name": "IE", "status": "started"}]
         turn = _event(2, "runtime.request.turn.started", "agent-1")
         turn["created_at_ms"] = moment
-        usage = _event(3, "usage.updated", "agent-1", total={"total_tokens": 1234})
+        usage = _event(
+            3,
+            "usage.updated",
+            "agent-1",
+            total={
+                "input_tokens": 1000,
+                "output_tokens": 234,
+                "cached_input_tokens": 0,
+            },
+        )
         usage["created_at_ms"] = moment
         await storage.record_events(
             enrolment.computer.id,
@@ -205,20 +238,33 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
         _, on_late = await _get(session, url, **{"X-Timezone": str(late)})
         _, unsaid = await _get(session, url, **{"X-Timezone": "Mars/Olympus"})
 
-        assert "1K token" in on_early and "0 token" in on_late
+        # nothing used today on the late side: the card says nothing of it
+        assert "1K in · 234 out · 0 cached" in on_early and "Today:" not in on_late
+        assert "$" not in on_early
         assert clock_text(moment, early) in on_early
         assert clock_text(moment, late) in on_late
         assert clock_text(moment, local()) in unsaid
 
         # case: the same session keeps running past midnight; its running total
-        # counts for today only by what it grew, a fresh session in full
-        grown = _event(4, "usage.updated", "agent-1", total={"total_tokens": 5234})
+        # counts for today only by what it grew, a fresh session in full; the
+        # cost shows once a runtime that prices its tokens reports one
+        grown = _event(
+            4,
+            "usage.updated",
+            "agent-1",
+            total={
+                "input_tokens": 4000,
+                "cache_write_input_tokens": 1000,
+                "output_tokens": 234,
+            },
+        )
         grown["created_at_ms"] = starts[late] + 60_000
         fresh = _event(
             5,
             "usage.updated",
             "agent-1",
-            total={"total_tokens": 2000},
+            total={"input_tokens": 2000, "cached_input_tokens": 300},
+            cost_usd=1.5,
             runtime_session_id="rs-2",
         )
         fresh["created_at_ms"] = starts[late] + 120_000
@@ -228,14 +274,14 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
             [Event.model_validate(item) for item in (grown, fresh)],
         )
         _, on_late = await _get(session, url, **{"X-Timezone": str(late)})
-        assert "6K token" in on_late
+        assert "6K in · 0 out · 300 cached · $1.50" in on_late
 
         # case: the count reads in K, M, B and T as it grows
         huge = _event(
             6,
             "usage.updated",
             "agent-1",
-            total={"total_tokens": 2_500_000_000},
+            total={"input_tokens": 2_500_000_000},
             runtime_session_id="rs-3",
         )
         huge["created_at_ms"] = starts[late] + 180_000
@@ -243,12 +289,12 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
             enrolment.computer.id, "run-1", [Event.model_validate(huge)]
         )
         _, on_late = await _get(session, url, **{"X-Timezone": str(late)})
-        assert "2.5B token" in on_late
+        assert "2.5B in" in on_late
         vast = _event(
             7,
             "usage.updated",
             "agent-1",
-            total={"total_tokens": 3_000_000_000_000},
+            total={"input_tokens": 3_000_000_000_000},
             runtime_session_id="rs-4",
         )
         vast["created_at_ms"] = starts[late] + 240_000
@@ -256,7 +302,7 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
             enrolment.computer.id, "run-1", [Event.model_validate(vast)]
         )
         _, on_late = await _get(session, url, **{"X-Timezone": str(late)})
-        assert "3.0T token" in on_late
+        assert "3.0T in" in on_late
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ import click
 from ...app.application import NodeApplication
 from ...app.config import (
     DEFAULT_AUDIT,
+    DEFAULT_CONTROL,
     DEFAULT_STORAGE,
     ConfigurationError,
     NodeConfiguration,
@@ -42,16 +43,24 @@ def _apply_runtime_configuration(
     except ConfigurationError as error:
         parser.error(str(error))
 
+    audit = raw_audit or configuration.audit or DEFAULT_AUDIT
     configuration = replace(
         configuration,
         storage=raw_storage or configuration.storage or DEFAULT_STORAGE,
-        audit=raw_audit or configuration.audit or DEFAULT_AUDIT,
+        audit=audit,
         # the options table belongs to the sink named in the file; a sink
         # picked on the command line starts without one
         audit_options=(
             {}
             if raw_audit and raw_audit != configuration.audit
             else configuration.audit_options
+        ),
+        # the server's requests are answered through its audit sink: with
+        # another sink in its place there is no server to take requests from
+        control=(
+            DEFAULT_CONTROL
+            if configuration.control == "server" and audit != "server"
+            else configuration.control
         ),
         endpoint=(
             str(raw_endpoint) if raw_endpoint is not None else configuration.endpoint
@@ -87,6 +96,7 @@ def _load_shared_factories(
         return AdapterRegistry().load_shared(
             storage=args.storage,
             audit=args.audit,
+            control=args.configuration.control,
             storage_options={"database_name": args.database_name}
             if args.storage == "sqlite" and args.database_name is not None
             else None,
