@@ -35,7 +35,11 @@ def start_of_today_ms(tz: tzinfo) -> int:
 
 
 def clock_text(at_ms: int, tz: tzinfo) -> str:
-    return datetime.fromtimestamp(at_ms / 1000, tz).strftime("%H:%M:%S")
+    """A moment on the viewer's clock: the time of day, with the date before
+    it when the day is not today's."""
+
+    form = "%H:%M:%S" if at_ms >= start_of_today_ms(tz) else "%Y-%m-%d %H:%M:%S"
+    return datetime.fromtimestamp(at_ms / 1000, tz).strftime(form)
 
 
 __all__ = ["clock_text", "local", "now_ms", "start_of_today_ms", "zone"]

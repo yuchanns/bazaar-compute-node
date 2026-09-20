@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import aiosqlite
@@ -320,6 +321,10 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert turns[0].count('class="line md"') == 47
                 assert 'id="message-message-chat-6"' in turns[0]
                 assert '<b>Kana</b> <span class="k">Agent</span>' in turns[1]
+                # case: a day that is not today is named with its date
+                assert re.search(
+                    r'class="at">\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<', turns[1]
+                )
                 # case: only the agent's own words carry its activity card
                 assert turns[1].startswith(" own")
                 assert f'hx-get="/agents/{agent}/activity"' in turns[1]
