@@ -5,5 +5,6 @@
   {# the column is filled afresh: a morph would carry this question, marked
      to be skipped, over to whichever computer the page opens on next #}
   <button class="btn danger confirm" hx-delete="/computers/{{ ref(computer_id) }}" hx-target="#main" hx-swap="innerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove_yes") }}</button>
-  <a class="btn" href="/computers/{{ ref(computer_id) }}" hx-get="/computers/{{ ref(computer_id) }}" hx-target="#main">{{ t.text("computers.cancel") }}</a>
+  {# taking it back draws the pane afresh, whole: a morph would keep this box #}
+  <a class="btn" href="/computers/{{ ref(computer_id) }}" hx-get="/computers/{{ ref(computer_id) }}/detail" hx-target="#computer-view" hx-swap="outerHTML">{{ t.text("computers.cancel") }}</a>
 </div>
