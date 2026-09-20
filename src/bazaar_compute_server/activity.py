@@ -20,8 +20,41 @@ class ActivityLine:
 
 @dataclass(frozen=True, slots=True)
 class UsageView:
-    tokens: str
-    cost: str
+    """What an agent used today: the tokens it read fresh, read from cache
+    and wrote, and what that cost where its runtime prices it."""
+
+    input: str
+    output: str
+    cached: str
+    cost: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Counts:
+    input: int = 0
+    output: int = 0
+    cached: int = 0
+    cost: float | None = None
+
+    def since(self, earlier: _Counts) -> _Counts:
+        return _Counts(
+            self.input - earlier.input,
+            self.output - earlier.output,
+            self.cached - earlier.cached,
+            None if self.cost is None else self.cost - (earlier.cost or 0.0),
+        )
+
+    def plus(self, other: _Counts) -> _Counts:
+        return _Counts(
+            self.input + other.input,
+            self.output + other.output,
+            self.cached + other.cached,
+            (
+                None
+                if self.cost is None and other.cost is None
+                else (self.cost or 0.0) + (other.cost or 0.0)
+            ),
+        )
 
 
 # what the card does not read out: the beat, and the reads a viewer of this
@@ -54,7 +87,9 @@ async def recent_lines(
 
 async def usage_today(
     storage: IStorage, tz: tzinfo, computer_id: str, agent_id: str
-) -> UsageView:
+) -> UsageView | None:
+    """Today's usage, or nothing when there was none to speak of."""
+
     midnight = start_of_today_ms(tz)
     rows = await storage.usage_around(computer_id, agent_id, midnight)
     # a session that ran across midnight already counted part of its total
@@ -62,16 +97,19 @@ async def usage_today(
     before = {
         _session(item): _usage(item) for item in rows if item.created_at_ms < midnight
     }
-    tokens = 0
-    cost = 0.0
+    today = _Counts()
     for item in rows:
         if item.created_at_ms < midnight:
             continue
-        earlier_tokens, earlier_cost = before.get(_session(item), (0, 0.0))
-        latest_tokens, latest_cost = _usage(item)
-        tokens += latest_tokens - earlier_tokens
-        cost += latest_cost - earlier_cost
-    return UsageView(tokens=_compact(tokens), cost=f"{cost:.2f}")
+        today = today.plus(_usage(item).since(before.get(_session(item), _Counts())))
+    if not (today.input or today.output or today.cached) and today.cost is None:
+        return None
+    return UsageView(
+        input=_compact(today.input),
+        output=_compact(today.output),
+        cached=_compact(today.cached),
+        cost=None if today.cost is None else f"{today.cost:.2f}",
+    )
 
 
 def event_text(translator: Translator, item: StoredEvent) -> str:
@@ -93,11 +131,19 @@ def _session(item: StoredEvent) -> str | None:
     return item.payload["correlation"].get("runtime_session_id")
 
 
-def _usage(item: StoredEvent) -> tuple[int, float]:
+def _usage(item: StoredEvent) -> _Counts:
+    """A session's running totals, by kind: what was written into the cache
+    was read fresh first, so it counts as input; reasoning is part of the
+    output already."""
+
     metadata = item.payload["metadata"]
-    return (
-        metadata.get("total", {}).get("total_tokens") or 0,
-        metadata.get("cost_usd") or 0.0,
+    total = metadata.get("total", {})
+    return _Counts(
+        input=(total.get("input_tokens") or 0)
+        + (total.get("cache_write_input_tokens") or 0),
+        output=total.get("output_tokens") or 0,
+        cached=total.get("cached_input_tokens") or 0,
+        cost=metadata.get("cost_usd"),
     )
 
 

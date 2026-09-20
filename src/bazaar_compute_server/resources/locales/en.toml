@@ -26,7 +26,7 @@
 "activity.idle" = "Idle"
 "activity.recent" = "Recent activity"
 "activity.none" = "No activity recorded."
-"activity.usage_today" = "Today: {{ tokens }} tokens · ${{ cost }}"
+"activity.usage_today" = "Today: {{ input }} in · {{ output }} out · {{ cached }} cached"
 "activity.open" = "View all activity"
 "computers.title" = "Computers"
 "computers.empty" = "No computers connected. Add a computer to view its status and agents."

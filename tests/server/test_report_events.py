@@ -147,6 +147,8 @@ async def test_only_a_known_token_on_a_known_protocol_gets_in(tmp_path: Path) ->
             ("node.health", {"agents": [{"agent_id": "a", "name": "A"}]}),
             ("usage.updated", {"total": {"total_tokens": "many"}}),
             ("usage.updated", {"total": {"total_tokens": 2**63}}),
+            ("usage.updated", {"total": {"input_tokens": "1000"}}),
+            ("usage.updated", {"total": {"output_tokens": -1}}),
             # a number spelled as text would pass a lenient check and be kept as text
             ("node.health", {"version": 1}),
         ):

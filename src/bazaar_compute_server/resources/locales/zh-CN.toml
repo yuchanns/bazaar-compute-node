@@ -26,7 +26,7 @@
 "activity.idle" = "空闲"
 "activity.recent" = "最近活动"
 "activity.none" = "暂无活动记录。"
-"activity.usage_today" = "今日用量：{{ tokens }} token · ${{ cost }}"
+"activity.usage_today" = "今日用量：输入 {{ input }} · 输出 {{ output }} · 缓存命中 {{ cached }}"
 "activity.open" = "查看全部活动"
 "computers.title" = "电脑"
 "computers.empty" = "尚未接入电脑。接入后可查看电脑及智能体状态。"

@@ -66,12 +66,22 @@ class Health(BaseModel):
     audit: AuditHealth = Field(default_factory=AuditHealth)
 
 
+# a count the store's INTEGER column can hold, which is also what the pages
+# can do arithmetic on
+_MAX_COUNT = 2**63 - 1
+
+
 class TokenTotal(BaseModel):
+    """The counts the pages read: what was read fresh, from the cache, written
+    into it, and written out, and their sum."""
+
     model_config = ConfigDict(extra="allow", strict=True)
 
-    # a count the store's INTEGER column can hold, which is also what the
-    # pages can do arithmetic on
-    total_tokens: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    input_tokens: int | None = Field(default=None, ge=0, le=_MAX_COUNT)
+    cached_input_tokens: int | None = Field(default=None, ge=0, le=_MAX_COUNT)
+    cache_write_input_tokens: int | None = Field(default=None, ge=0, le=_MAX_COUNT)
+    output_tokens: int | None = Field(default=None, ge=0, le=_MAX_COUNT)
+    total_tokens: int | None = Field(default=None, ge=0, le=_MAX_COUNT)
 
 
 class Usage(BaseModel):
