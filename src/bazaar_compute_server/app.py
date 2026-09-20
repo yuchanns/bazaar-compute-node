@@ -35,6 +35,7 @@ from .protocol import (
     error,
     ok,
 )
+from .refs import Refs
 from .registry import load_storage_factory
 from .rendering import Renderer, Stale
 from .sessions import Sessions, load_session_key
@@ -54,6 +55,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
 
     sessions = Sessions()
     images = Images(sessions)
+    refs = Refs(storage)
     controls = Controls()
     consumers = Consumers()
     consumers.on("control.result", controls.result)
@@ -78,7 +80,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
             await controls.close()
             await storage.stop()
 
-    renderer = Renderer(images)
+    renderer = Renderer(images, refs)
 
     async def closed(request: Request, exc: Exception) -> Response:
         """An error as a page for people and as the envelope for nodes."""
@@ -95,7 +97,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         routes=[
             Route("/node/reportEvents", report_events, methods=["POST"]),
             Route("/node/getUpdates", get_updates, methods=["POST"]),
-            *routes(storage, sessions, controls, images),
+            *routes(storage, sessions, controls, images, refs),
             Mount(
                 "/static",
                 StaticFiles(

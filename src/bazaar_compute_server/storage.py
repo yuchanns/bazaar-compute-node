@@ -197,6 +197,16 @@ class IStorage(Protocol):
         the latest one from that moment on."""
         ...
 
+    async def shorten(self, values: Sequence[str]) -> list[int]:
+        """A short number for each value, given once and kept for good; one
+        not seen before gets its number here. In the order given."""
+        ...
+
+    async def expand(self, ids: Sequence[int]) -> list[str | None]:
+        """The value behind each number, nothing where there is none. In the
+        order given."""
+        ...
+
 
 __all__ = [
     "Account",

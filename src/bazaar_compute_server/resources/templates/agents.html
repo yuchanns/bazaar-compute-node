@@ -10,7 +10,7 @@
   {% endcall %}
   {# the conversations are the node's to list, so the page comes up first and
      the column asks for them once it is there #}
-  <div class="list-items" id="contacts" hx-get="/agents/{{ selected.computer_id }}/{{ selected.id }}/contacts{% if contact %}?selected={{ contact.thread_id }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+  <div class="list-items" id="contacts" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/contacts{% if contact %}?selected={{ ref(contact.thread_id) }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
 </div>
 {% endif %}
 {% include "chat.html" %}

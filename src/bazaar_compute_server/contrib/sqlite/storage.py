@@ -651,6 +651,46 @@ class SqliteStorage(IStorage):
         ):
             return [_stored(row) async for row in cursor]
 
+    # ---- refs ------------------------------------------------------------
+
+    async def shorten(self, values: Sequence[str]) -> list[int]:
+        distinct = list(dict.fromkeys(values))
+
+        async def number(db: aiosqlite.Connection) -> dict[str, int]:
+            # a value seen before keeps its number; the rest take the next
+            await db.executemany(
+                "INSERT OR IGNORE INTO refs (value) VALUES (?)",
+                [(value,) for value in distinct],
+            )
+            numbers: dict[str, int] = {}
+            for start in range(0, len(distinct), _CHUNK):
+                chunk = distinct[start : start + _CHUNK]
+                async with db.execute(
+                    f"SELECT id, value FROM refs WHERE value IN ({_marks(chunk)})",
+                    chunk,
+                ) as cursor:
+                    async for row in cursor:
+                        numbers[row["value"]] = row["id"]
+            return numbers
+
+        numbers = await self._write(number) if distinct else {}
+        return [numbers[value] for value in values]
+
+    async def expand(self, ids: Sequence[int]) -> list[str | None]:
+        async def part(chunk: Sequence[int]) -> dict[int, str]:
+            async with (
+                self._reader() as reader,
+                reader.execute(
+                    f"SELECT id, value FROM refs WHERE id IN ({_marks(chunk)})", chunk
+                ) as cursor,
+            ):
+                return {row["id"]: row["value"] async for row in cursor}
+
+        values: dict[int, str] = {}
+        for chunk_values in await _gather_chunks(part, list(dict.fromkeys(ids))):
+            values |= chunk_values
+        return [values.get(ref) for ref in ids]
+
 
 @dataclass(frozen=True, slots=True)
 class _Write[T]:

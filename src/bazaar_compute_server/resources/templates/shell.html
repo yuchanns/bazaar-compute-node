@@ -14,7 +14,7 @@
    upgrade is told so and covered until its reader refreshes it, rather than
    patched with pieces of the new one - and from then on asks for nothing,
    whatever on it would have #}
-<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}' hx-on:stale="document.body.classList.add('stale'); document.getElementById('stale').hidden = false" hx-on:htmx:before:request="if (document.body.classList.contains('stale')) event.preventDefault()">
+<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}' hx-on:stale="document.getElementById('stale').hidden = false" hx-on:htmx:before:request="if (!document.getElementById('stale').hidden) event.preventDefault()">
 <div class="app">
   {% include "rail.html" %}
   <div id="main" class="main">{% include content %}</div>

@@ -13,6 +13,7 @@ from bazaar_compute_server.clock import clock_text, local, now_ms, start_of_toda
 from bazaar_compute_server.fleet import PAGE_SIZE
 from bazaar_compute_server.protocol import Event
 from bazaar_compute_server.rendering import identicon
+from bazaar_compute_server.storage import IStorage
 
 from ._serving import TESTER, enrol, root_id, serving, signed_in, with_password
 
@@ -49,6 +50,12 @@ def _event(seq: int, event_name: str, agent_id: str, **fields: Any) -> dict[str,
         },
         "metadata": fields,
     }
+
+
+async def _short(storage: IStorage, *values: str) -> str:
+    """The values as a link names them: their numbers, joined with slashes."""
+
+    return "/".join(str(number) for number in await storage.shorten(values))
 
 
 async def _get(
@@ -136,11 +143,19 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert "智能体" in page and "有马佳奈" in page
         assert 'class="dot busy"' in page
 
-        # case: a running agent can be opened; its name heads the right column
-        status, opened = await _get(
-            session, f"{base}/agents/{enrolment.computer.id}/agent-1"
-        )
+        # case: a running agent can be opened by the numbers its row carries;
+        # its name heads the right column. a number that names nothing, or
+        # anything that is not a number, is not there
+        one = await _short(storage, enrolment.computer.id, "agent-1")
+        assert f'href="/agents/{one}"' in page
+        assert enrolment.computer.id not in page
+        status, opened = await _get(session, f"{base}/agents/{one}")
         assert status == 200 and opened.count("有马佳奈") >= 2
+        status, _ = await _get(session, f"{base}/agents/{one.split('/')[0]}/999999")
+        assert status == 404
+        for odd in ("²", "9" * 30):
+            status, _ = await _get(session, f"{base}/computers/{odd}")
+            assert status == 404, odd
         status, _ = await _get(session, f"{base}/agents/{enrolment.computer.id}/nobody")
         assert status == 404
 
@@ -153,7 +168,7 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         # case: the activity card reads as words, with the turn and today's usage
         status, card = await _get(
             session,
-            f"{base}/agents/{enrolment.computer.id}/agent-1/activity",
+            f"{base}/agents/{one}/activity",
             **{"Accept-Language": "zh-CN"},
         )
         assert status == 200
@@ -173,10 +188,8 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
 
         # case: the lists and the detail pane ask for themselves again, keeping
         # the selected row, so what they show follows the computers
-        cid = enrolment.computer.id
-        status, fragment = await _get(
-            session, f"{base}/agents/list?selected={cid}/agent-1"
-        )
+        cid = await _short(storage, enrolment.computer.id)
+        status, fragment = await _get(session, f"{base}/agents/list?selected={one}")
         assert (
             status == 200
             and 'id="agent-list"' in fragment
@@ -184,7 +197,8 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         )
         assert 'class="li agent on"' in fragment and "<html" not in fragment
         status, fragment = await _get(session, f"{base}/computers/list?selected={cid}")
-        assert status == 200 and 'id="computer-list"' in fragment and "on" in fragment
+        assert status == 200 and 'id="computer-list"' in fragment
+        assert 'class="li on"' in fragment
         status, fragment = await _get(session, f"{base}/computers/{cid}/detail")
         assert (
             status == 200
@@ -233,7 +247,7 @@ async def test_the_card_keeps_the_viewers_clock(tmp_path: Path) -> None:
             "run-1",
             [Event.model_validate(item) for item in (_health(agents, 1), turn, usage)],
         )
-        url = f"{base}/agents/{enrolment.computer.id}/agent-1/activity"
+        url = f"{base}/agents/{await _short(storage, enrolment.computer.id, 'agent-1')}/activity"
         _, on_early = await _get(session, url, **{"X-Timezone": str(early)})
         _, on_late = await _get(session, url, **{"X-Timezone": str(late)})
         _, unsaid = await _get(session, url, **{"X-Timezone": "Mars/Olympus"})
@@ -405,13 +419,19 @@ async def test_a_silent_computer_shows_offline(tmp_path: Path) -> None:
         # case: an offline computer is greyed but still opens: removing it
         # happens from its page
         assert '<a class="li off on"' in page
-        assert f'href="/computers/{enrolment.computer.id}"' in page
+        assert (
+            f'href="/computers/{await _short(storage, enrolment.computer.id)}"' in page
+        )
+        assert enrolment.computer.id not in page
         status, agents = await _get(
             session, f"{base}/agents", **{"Accept-Language": "en"}
         )
         assert 'class="dot offline"' in agents
         assert 'class="li agent off"' in agents
-        assert f'href="/agents/{enrolment.computer.id}/a"' not in agents
+        assert (
+            f'href="/agents/{await _short(storage, enrolment.computer.id, "a")}"'
+            not in agents
+        )
 
 
 @pytest.mark.asyncio
@@ -454,7 +474,9 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
             assert 'id="snippet-windows" checked' in await response.text()
 
         # case: the token is not shown again anywhere
-        status, again = await _get(session, f"{base}/computers/{computers[0].id}")
+        status, again = await _get(
+            session, f"{base}/computers/{await _short(storage, computers[0].id)}"
+        )
         assert status == 200 and token_prefix not in again and "kana" in again
 
 
@@ -485,14 +507,13 @@ async def test_a_computer_is_removed_with_everything_it_said(tmp_path: Path) -> 
         )
 
         # case: the button asks first, then the computer and its events go
+        short = await _short(storage, computer_id)
         status, question = await _get(
-            session,
-            f"{base}/computers/{computer_id}/remove",
-            **{"Accept-Language": "zh-CN"},
+            session, f"{base}/computers/{short}/remove", **{"Accept-Language": "zh-CN"}
         )
-        assert status == 200 and f'hx-delete="/computers/{computer_id}"' in question
+        assert status == 200 and f'hx-delete="/computers/{short}"' in question
         async with session.delete(
-            f"{base}/computers/{computer_id}", headers={"HX-Request": "true"}
+            f"{base}/computers/{short}", headers={"HX-Request": "true"}
         ) as response:
             assert response.status == 200
             assert response.headers["HX-Push-Url"] == "/computers"
@@ -507,7 +528,7 @@ async def test_a_computer_is_removed_with_everything_it_said(tmp_path: Path) -> 
             assert await cursor.fetchone() == (0,)
 
         # case: removing it again is nothing
-        async with session.delete(f"{base}/computers/{computer_id}") as response:
+        async with session.delete(f"{base}/computers/{short}") as response:
             assert response.status == 404
 
 
@@ -545,12 +566,16 @@ async def test_long_lists_come_a_page_at_a_time_as_the_end_scrolls_in(
                     )
                 ],
             )
-        # a computer's cursor is its id; an agent's is its computer's and its own
+        # a computer's cursor is its number; an agent's is its computer's and
+        # its own
         edges = {
-            "/computers": (ids[PAGE_SIZE - 1], ids[-1]),
+            "/computers": (
+                await _short(storage, ids[PAGE_SIZE - 1]),
+                await _short(storage, ids[-1]),
+            ),
             "/agents": (
-                f"{ids[PAGE_SIZE - 1]}/agent-{PAGE_SIZE - 1}",
-                f"{ids[-1]}/agent-{PAGE_SIZE + 4}",
+                await _short(storage, ids[PAGE_SIZE - 1], f"agent-{PAGE_SIZE - 1}"),
+                await _short(storage, ids[-1], f"agent-{PAGE_SIZE + 4}"),
             ),
         }
 
@@ -604,23 +629,19 @@ async def test_long_lists_come_a_page_at_a_time_as_the_end_scrolls_in(
         )
         _, html = await _get(session, f"{base}/agents/list?after={edges['/agents'][1]}")
         assert _rows(html) == PAGE_SIZE
-        assert f'data-after="{crowd.computer.id}/z{PAGE_SIZE - 1:03d}"' in html
+        crowded = await _short(storage, crowd.computer.id, f"z{PAGE_SIZE - 1:03d}")
+        assert f'data-after="{crowded}"' in html
         assert "revealed" in html
-        _, html = await _get(
-            session,
-            f"{base}/agents/list?after={crowd.computer.id}/z{PAGE_SIZE - 1:03d}",
-        )
+        _, html = await _get(session, f"{base}/agents/list?after={crowded}")
         assert _rows(html) == 1 and "revealed" not in html
 
         # case: a computer on a later page still has its own pages
-        last = ids[-1]
+        last = edges["/computers"][1]
         status, html = await _get(session, f"{base}/computers/{last}")
         assert status == 200 and f"computer-{PAGE_SIZE + 4}" in html
-        status, _ = await _get(session, f"{base}/agents/{last}/agent-{PAGE_SIZE + 4}")
+        status, _ = await _get(session, f"{base}/agents/{edges['/agents'][1]}")
         assert status == 200
-        status, _ = await _get(
-            session, f"{base}/agents/{last}/agent-{PAGE_SIZE + 4}/activity"
-        )
+        status, _ = await _get(session, f"{base}/agents/{edges['/agents'][1]}/activity")
         assert status == 200
 
 
@@ -660,14 +681,16 @@ async def test_an_account_sees_what_it_enrolled_and_nothing_else(
             assert "agent-mine" in agents and "agent-theirs" not in agents
 
             # case: the other account's things are not there to open, remove or enrol against
+            computer = await _short(storage, theirs.computer.id)
+            agent = await _short(storage, theirs.computer.id, "agent-theirs")
             for method, url in (
-                ("GET", f"/computers/{theirs.computer.id}"),
-                ("GET", f"/computers/{theirs.computer.id}/detail"),
-                ("GET", f"/computers/{theirs.computer.id}/presence"),
-                ("GET", f"/computers/{theirs.computer.id}/remove"),
-                ("DELETE", f"/computers/{theirs.computer.id}"),
-                ("GET", f"/agents/{theirs.computer.id}/agent-theirs"),
-                ("GET", f"/agents/{theirs.computer.id}/agent-theirs/activity"),
+                ("GET", f"/computers/{computer}"),
+                ("GET", f"/computers/{computer}/detail"),
+                ("GET", f"/computers/{computer}/presence"),
+                ("GET", f"/computers/{computer}/remove"),
+                ("DELETE", f"/computers/{computer}"),
+                ("GET", f"/agents/{agent}"),
+                ("GET", f"/agents/{agent}/activity"),
             ):
                 async with session.request(method, base + url) as response:
                     assert response.status == 404, (method, url)

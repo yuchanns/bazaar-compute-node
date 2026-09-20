@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-{% set url = "/agents/" ~ listing.agent.computer_id ~ "/" ~ listing.agent.id ~ "/contacts" %}
+{% set url = "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts" %}
 {# the column asks whether anything has arrived or left since it was read,
    and only then for itself again, as far as it has been scrolled and with
    the row that is open now; the new column is morphed into the old one so
