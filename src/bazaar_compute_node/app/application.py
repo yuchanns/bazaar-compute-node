@@ -247,6 +247,8 @@ class NodeApplication:
                     translator=self.translator,
                     upgrade_notice=self._upgrade_notice,
                     upgrade_service=self.upgrade_service,
+                    # a control is someone to ask about a conversation
+                    reviewed=self.control is not None,
                 )
                 await application.start()
         except asyncio.CancelledError:

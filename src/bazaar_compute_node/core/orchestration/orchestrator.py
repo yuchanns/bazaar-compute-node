@@ -28,6 +28,7 @@ from ..models import (
     Thread,
 )
 from ..outcomes import ProviderCallResult, ProviderCallStatus
+from ..review import ReviewPolicy
 from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
@@ -160,8 +161,12 @@ class AgentOrchestrator(IAsyncLifecycle):
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
         concurrency: IThreadConcurrency | None = None,
         clock: Callable[[], int] | None = None,
+        review: ReviewPolicy | None = None,
     ) -> None:
         self._clock = clock or now_ms
+        # who may talk to the agent as a conversation opens; with no policy
+        # given, anyone
+        self._review = review or ReviewPolicy()
         self._runtimes = Runtime(runtimes, clock=self._clock)
         if (
             isinstance(runtime_idle_timeout_ms, bool)
@@ -1044,6 +1049,9 @@ class AgentOrchestrator(IAsyncLifecycle):
         recorded = await self._storage.record_inbound(
             message,
             now_ms=self._clock(),
+            opening=self._review.opening(
+                message.channel_identity, message.provider_chat_id
+            ),
         )
         message = recorded.message
         context = _DurableTurnContext(
@@ -1065,6 +1073,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 ),
                 metadata={
                     "notifies_runtime": message.notifies_runtime,
+                    "review": recorded.channel_session.review.value,
                     "channel_session_mapping": (
                         "created" if recorded.channel_session_created else "reused"
                     ),

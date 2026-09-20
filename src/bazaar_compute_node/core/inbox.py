@@ -12,6 +12,7 @@ class InboxTargetPage:
     targets: tuple[InboxTargetSummary, ...]
     total: int
     offset: int
+    pending_review: int = 0
 
     def __post_init__(self) -> None:
         if len(self.targets) > self.total:

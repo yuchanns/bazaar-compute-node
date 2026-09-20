@@ -13,6 +13,7 @@ from bazaar_compute_node.core.models import (
     ConsumerCursor,
     Message,
     MessageDirection,
+    Review,
     SenderIdentity,
     SenderKind,
     Thread,
@@ -41,6 +42,7 @@ async def _create_session(
         updated_at_ms=last_activity_at_ms or 1,
         channel_identity=channel_identity,
         target_kind=target_kind,
+        review=Review.APPROVED,
     )
     thread = Thread(
         id=session_id,
@@ -174,9 +176,11 @@ async def test_sqlite_inbox_catalog_is_scoped_and_non_draining() -> None:
         repository = agent_a
         cursor_before = await repository.get_consumer_cursor(pending.thread_id)
         read_cursor_before = await repository.get_consumer_cursor(read.thread_id)
-        first_page = await repository.list_inbox_targets(limit=2, offset=0)
-        second_page = await repository.list_inbox_targets(limit=2, offset=2)
-        empty_page = await repository.list_inbox_targets(limit=2, offset=3)
+        first_page = await repository.list_inbox_targets(limit=2, offset=0, review=None)
+        second_page = await repository.list_inbox_targets(
+            limit=2, offset=2, review=None
+        )
+        empty_page = await repository.list_inbox_targets(limit=2, offset=3, review=None)
         cursor_after = await repository.get_consumer_cursor(pending.thread_id)
         read_cursor_after = await repository.get_consumer_cursor(read.thread_id)
         pending_owner = await repository.resolve_inbox_target("dm:channel-pending")

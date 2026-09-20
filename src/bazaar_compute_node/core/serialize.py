@@ -115,6 +115,7 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
         "target": summary.target,
         "canonical_target": summary.canonical_target or summary.target,
         "thread_id": summary.thread_id,
+        "review": summary.review.value,
         "target_kind": summary.target_kind.value,
         "channel": summary.channel,
         "pending_count": summary.pending_count,

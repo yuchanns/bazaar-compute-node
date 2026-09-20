@@ -11,6 +11,7 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    Review,
     SenderIdentity,
 )
 from bazaar_compute_server.clock import now_ms
@@ -66,6 +67,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 await node_storage.record_inbound(
                     _inbound(f"session-{index:03d}", index + 1),
                     now_ms=(index + 1) * 1_000,
+                    opening=Review.APPROVED,
                 )
             # the node's first beat has told the server about the agent
             async with asyncio.timeout(10):
@@ -264,6 +266,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 await node_storage.record_inbound(
                     _inbound("chat", seq, MARKDOWN if seq == 54 else None),
                     now_ms=seq * 1_000,
+                    opening=Review.APPROVED,
                 )
             async with asyncio.timeout(10):
                 while not (await storage.computer_health([enrolment.computer]))[
@@ -404,9 +407,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # case: messages arrive and are put after the end: one more
                 # from the same person joins their run, one from another
                 # person of the same name does not
-                await node_storage.record_inbound(_inbound("chat", 56), now_ms=56_000)
                 await node_storage.record_inbound(
-                    _inbound("chat", 57, sender_id="namesake"), now_ms=57_000
+                    _inbound("chat", 56), now_ms=56_000, opening=Review.APPROVED
+                )
+                await node_storage.record_inbound(
+                    _inbound("chat", 57, sender_id="namesake"),
+                    now_ms=57_000,
+                    opening=Review.APPROVED,
                 )
                 await storage.record_events(
                     computer_id,

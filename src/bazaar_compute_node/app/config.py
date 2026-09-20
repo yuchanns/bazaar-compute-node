@@ -40,6 +40,25 @@ class ChannelConfiguration:
                     raise ConfigurationError(
                         f"agent.channel.{key} must be a valid environment name"
                     )
+        listed = self.options.get("allowed_chats", [])
+        if not isinstance(listed, list) or not all(
+            isinstance(item, str | int) and not isinstance(item, bool)
+            for item in listed
+        ):
+            raise ConfigurationError(
+                "agent.channel.allowed_chats must be a list of chat ids"
+            )
+
+    @property
+    def allowed_chats(self) -> frozenset[str]:
+        """The chats the channel lets in by name: their provider ids, as text."""
+
+        listed = self.options.get("allowed_chats", [])
+        return (
+            frozenset(str(item) for item in listed)
+            if isinstance(listed, list)
+            else frozenset()
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -36,6 +36,7 @@ from ..models import (
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
+    Review,
     RuntimeEventState,
 )
 
@@ -173,6 +174,16 @@ def _named_as_called(
     return hold if len(targets) == 1 else replace(hold, target=raw_target)
 
 
+def _require_approved(target: ResolvedInboxTarget, raw_target: str) -> None:
+    """Refuse a conversation the agent may not talk in: to the agent, one
+    still pending or turned away is not there."""
+
+    if target.channel_session.review is not Review.APPROVED:
+        raise InboxTargetResolutionError(
+            f"inbox target does not resolve to an owned session: {raw_target}"
+        )
+
+
 def _reached_the_peer(delivery_result: OutboundDeliveryResult) -> bool:
     """Say whether any of this message is with the peer.
 
@@ -258,8 +269,11 @@ class CommandService(ICommandService):
         limit: int | None = None,
         offset: int = 0,
         pending_only: bool = True,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult:
-        result = await self._storage.read_inbox_catalog(limit=limit, offset=offset)
+        result = await self._storage.read_inbox_catalog(
+            limit=limit, offset=offset, review=review
+        )
         # the agent itself reaches every conversation; a page read as it is
         # kept whole, its bounds the storage's own
         reachable = (
@@ -315,11 +329,13 @@ class CommandService(ICommandService):
         raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
+        review: Review | None = Review.APPROVED,
     ) -> MessageReadResult:
         snapshot = await self._storage.read_message_history(
             raw_target=raw_target,
             around_message_id=around_message_id,
             limit=limit,
+            review=review,
         )
         self._require_in_reach(actor, snapshot.source_thread.id, raw_target)
         result = snapshot.history
@@ -415,6 +431,9 @@ class CommandService(ICommandService):
             target_kind=ChannelTargetKind.DM,
             target_handle=opening.handle,
             target_handle_key=opening.handle.casefold(),
+            # a conversation the agent opened itself, with someone it has
+            # already been talking to, needs no one's leave
+            review=Review.APPROVED,
         )
         outbound = Message[OutboundAttachment](
             direction=MessageDirection.OUTBOUND,
@@ -751,6 +770,7 @@ class CommandService(ICommandService):
             targets = (await self._storage.resolve_inbox_target(held.canonical_target),)
         for target in targets:
             self._require_in_reach(actor, target.thread.id, raw_target)
+            _require_approved(target, raw_target)
         # a handle held on several bots names the same peer everywhere, so the
         # message goes to every conversation; two conversations on one bot
         # are two different peers wearing the same name, and picking would
@@ -866,6 +886,7 @@ class CommandService(ICommandService):
         target = await self._storage.resolve_inbox_target(raw_target)
         thread_id = target.thread.id
         self._require_in_reach(actor, thread_id, raw_target)
+        _require_approved(target, raw_target)
         async with self._concurrency.for_thread(thread_id):
             channel_session = target.channel_session
             target_messages = await self._storage.list_messages(
@@ -903,6 +924,29 @@ class CommandService(ICommandService):
             },
         )
         return ThreadUnfollowResult(target=target.display_target, changed=changed)
+
+    async def review(self, thread_id: str, decision: Review) -> ChannelSession:
+        async with self._concurrency.for_thread(thread_id):
+            session = await self._storage.set_review(
+                thread_id, decision, now_ms=self._clock()
+            )
+        target = await self._storage.resolve_inbox_target(session.canonical_target)
+        await self._audit.append(
+            event_name="channel.session.reviewed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(
+                thread_id=thread_id,
+                channel=session.channel,
+                channel_session_id=session.id,
+            ),
+            metadata={
+                "thread_id": thread_id,
+                "review": decision.value,
+                "target": session.canonical_target,
+                "target_name": target.display_target,
+            },
+        )
+        return session
 
     def _correlation(
         self,

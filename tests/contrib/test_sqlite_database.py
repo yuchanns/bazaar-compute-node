@@ -43,6 +43,7 @@ from bazaar_compute_node.core.models import (
     OwnedReminder,
     Reminder,
     ReminderState,
+    Review,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
@@ -124,6 +125,7 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
             provider_thread_id="thread-1",
             created_at_ms=1,
             updated_at_ms=1,
+            review=Review.APPROVED,
         )
         bcn_session = Thread(
             id="bcn-1",
@@ -173,7 +175,7 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
             around_message_id=pending.message_id,
             limit=10,
         )
-        catalog = await scope.list_inbox_targets()
+        catalog = await scope.list_inbox_targets(review=None)
 
         assert persisted == sent
         assert history.history.messages == (sent,)
@@ -218,6 +220,7 @@ async def test_sqlite_persists_outbound_and_finalizes_once() -> None:
             provider_thread_id="thread-target",
             created_at_ms=10,
             updated_at_ms=10,
+            review=Review.APPROVED,
         )
         target_thread = Thread(
             id="bcn-target",
@@ -467,6 +470,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
             provider_thread_id="thread-1",
             created_at_ms=1,
             updated_at_ms=1,
+            review=Review.APPROVED,
         )
         bcn_session = Thread(
             id="bcn-1",
@@ -562,7 +566,7 @@ async def test_sqlite_atomically_materializes_reminder_system_message() -> None:
         assert materialized is not None
         persisted = await scope.get_message(materialized.message_id)
         owners = await storage.list_unread_message_owners()
-        catalog = await scope.list_inbox_targets()
+        catalog = await scope.list_inbox_targets(review=None)
         freshness = await scope.check_outbound_freshness(
             bcn_session.id,
             snapshot_seq=anchor.seq,
@@ -689,7 +693,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 30
+        assert schema_version["version"] == 31
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1213,7 +1217,7 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 30
+        assert schema_version["version"] == 31
     finally:
         await database.stop(timeout=2)
 
@@ -1442,7 +1446,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 30
+        assert schema_version["version"] == 31
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1461,12 +1465,14 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
             client_user_message_id="message-2",
             started_at_ms=3,
         )
+        # a session from before reviews was let in by the rules of its day
         assert await scope.get_channel_session("channel-1") == ChannelSession(
             id="channel-1",
             channel="test",
             provider_thread_id="thread-1",
             created_at_ms=1,
             updated_at_ms=1,
+            review=Review.APPROVED,
         )
         assert await scope.get_thread("bcn-1") == Thread(
             id="bcn-1",
@@ -1551,7 +1557,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 30
+        assert schema_version["version"] == 31
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None

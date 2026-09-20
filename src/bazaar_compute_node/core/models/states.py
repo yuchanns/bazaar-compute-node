@@ -8,6 +8,15 @@ class ChannelTargetKind(StrEnum):
     GROUP = "group"
 
 
+class Review(StrEnum):
+    """Whether whoever is behind a conversation may talk to the agent:
+    not yet decided, allowed, or turned away."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+
+
 class MessageDirection(StrEnum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"

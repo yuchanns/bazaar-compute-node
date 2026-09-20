@@ -5,10 +5,12 @@ from typing import Protocol
 
 from .actor import Actor
 from .models import (
+    ChannelSession,
     InboundAttachment,
     InboxTargetSummary,
     Message,
     OutboundAttachment,
+    Review,
 )
 from .reminder import (
     ReminderCancelRequest,
@@ -90,6 +92,8 @@ class InboxListResult:
     shown: int
     offset: int
     has_more: bool
+    # how many conversations wait to be looked at, whichever were listed
+    pending_review: int = 0
 
     def __post_init__(self) -> None:
         if self.shown != len(self.targets):
@@ -185,10 +189,12 @@ class ICommandService(Protocol):
         limit: int | None = None,
         offset: int = 0,
         pending_only: bool = True,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult:
         """List the conversations with unread messages, draining nothing; or,
         for whoever looks at the agent from outside, every conversation it
-        has, newest activity first, a page at a time."""
+        has - in one review state, or any - newest activity first, a page at
+        a time."""
         ...
 
     async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
@@ -202,8 +208,10 @@ class ICommandService(Protocol):
         raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
+        review: Review | None = Review.APPROVED,
     ) -> MessageReadResult:
-        """Read history without advancing the delivery cursor."""
+        """Read history without advancing the delivery cursor; a conversation
+        not in the review state asked for is not there."""
         ...
 
     async def send(
@@ -222,6 +230,11 @@ class ICommandService(Protocol):
 
     async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
         """Disable future group notifications and report whether state changed."""
+        ...
+
+    async def review(self, thread_id: str, decision: Review) -> ChannelSession:
+        """Decide whether whoever is behind a conversation may talk to the
+        agent. Not the agent's to call: the operator's, from outside."""
         ...
 
 

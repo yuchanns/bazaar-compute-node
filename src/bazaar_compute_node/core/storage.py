@@ -29,6 +29,7 @@ from .models import (
     OwnedReminder,
     Reminder,
     ReminderState,
+    Review,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
@@ -185,9 +186,17 @@ class StorageOperationMixin:
         raw_target: str,
         around_message_id: str | None,
         limit: int,
+        review: Review | None = Review.APPROVED,
     ) -> ReadMessageHistoryResult:
+        """A conversation's messages around one of them; a conversation not
+        in the review state asked for is not there, unless any is asked."""
+
         self = _operations(self)  # noqa: PLW0642
         target = await self.resolve_inbox_target(raw_target)
+        if review is not None and target.channel_session.review is not review:
+            raise InboxTargetResolutionError(
+                f"inbox target is not {review.value}: {raw_target}"
+            )
         source_thread = target.thread
         messages = await self.list_messages(
             source_thread.id,
@@ -240,9 +249,13 @@ class StorageOperationMixin:
         *,
         limit: int | None,
         offset: int = 0,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult:
+        """The conversations as a listing names them: those the agent may
+        talk in, unless another review state - or any - is asked for."""
+
         self = _operations(self)  # noqa: PLW0642
-        page = await self.list_inbox_targets(limit=limit, offset=offset)
+        page = await self.list_inbox_targets(limit=limit, offset=offset, review=review)
         targets = []
         for summary in page.targets:
             target = await self.resolve_inbox_target(summary.target)
@@ -259,6 +272,7 @@ class StorageOperationMixin:
             shown=len(targets),
             offset=page.offset,
             has_more=page.has_more,
+            pending_review=page.pending_review,
         )
 
     async def check_outbound_freshness(
@@ -525,7 +539,13 @@ class _StorageOperations(Protocol):
         message: Message[InboundAttachment],
         *,
         now_ms: int,
-    ) -> RecordInboundResult: ...
+        opening: Review,
+    ) -> RecordInboundResult:
+        """Keep an inbound message. A conversation seen for the first time
+        opens as `opening` says; one turned away comes back pending. A
+        message into a conversation not approved is kept without a word to
+        the runtime."""
+        ...
 
     async def check_messages(
         self,
@@ -547,6 +567,7 @@ class _StorageOperations(Protocol):
         raw_target: str,
         around_message_id: str | None,
         limit: int,
+        review: Review | None = Review.APPROVED,
     ) -> ReadMessageHistoryResult: ...
 
     async def read_inbox_catalog(
@@ -554,6 +575,7 @@ class _StorageOperations(Protocol):
         *,
         limit: int | None,
         offset: int = 0,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult: ...
 
     async def check_outbound_freshness(
@@ -621,11 +643,23 @@ class _StorageOperations(Protocol):
         notifying_only: bool = False,
     ) -> int: ...
 
-    async def list_thread_ids(self) -> tuple[str, ...]: ...
+    async def list_thread_ids(self) -> tuple[str, ...]:
+        """The conversations the agent is in: those approved."""
+        ...
 
     async def list_inbox_targets(
-        self, *, limit: int | None = 100, offset: int = 0
-    ) -> InboxTargetPage: ...
+        self, *, limit: int | None = 100, offset: int = 0, review: Review | None
+    ) -> InboxTargetPage:
+        """A page of conversations in the one review state, or in any when
+        `review` is None; the page counts those pending whichever it lists."""
+        ...
+
+    async def set_review(
+        self, thread_id: str, review: Review, *, now_ms: int
+    ) -> ChannelSession:
+        """Decide whether whoever is behind a conversation may talk to the
+        agent; the session as it stands after."""
+        ...
 
     async def list_unread_messages(
         self, *, limit: int

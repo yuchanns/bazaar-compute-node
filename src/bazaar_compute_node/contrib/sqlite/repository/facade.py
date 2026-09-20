@@ -10,6 +10,7 @@ from ....core.models import (
     InboundAttachment,
     Message,
     MessageDirection,
+    Review,
     Thread,
 )
 from ....core.storage import RecordInboundResult, StorageOperationMixin
@@ -32,6 +33,7 @@ class SqliteRepository(
         provider_thread_id: str,
         now_ms: int,
         new_message: bool,
+        opening: Review,
     ) -> tuple[ChannelSession, bool]:
         """Find or open the channel session an inbound message belongs to."""
 
@@ -53,6 +55,7 @@ class SqliteRepository(
                     message.target_kind is ChannelTargetKind.DM
                     or message.mentions_agent
                 ),
+                review=opening,
             )
             if message.target_presentation is not None:
                 channel_session = channel_session.with_target_presentation(
@@ -72,6 +75,11 @@ class SqliteRepository(
                     channel_session,
                     following=True,
                     updated_at_ms=now_ms,
+                )
+            # one turned away who writes again is asked about again
+            if channel_session.review is Review.DENIED:
+                channel_session = replace(
+                    channel_session, review=Review.PENDING, updated_at_ms=now_ms
                 )
         return channel_session, False
 
@@ -108,6 +116,7 @@ class SqliteRepository(
         message: Message[InboundAttachment],
         *,
         now_ms: int,
+        opening: Review,
     ) -> RecordInboundResult:
         if message.direction is not MessageDirection.INBOUND:
             raise ValueError("record_inbound requires an inbound message")
@@ -130,6 +139,7 @@ class SqliteRepository(
             provider_thread_id=provider_thread_id,
             now_ms=now_ms,
             new_message=existing_message is None,
+            opening=opening,
         )
 
         thread = await self.find_thread(channel_session.id)
@@ -145,10 +155,15 @@ class SqliteRepository(
             await self.save_thread(thread)
 
         if existing_message is None:
-            notifies_runtime = message.notifies_runtime and (
-                message.target_kind is ChannelTargetKind.DM
-                or channel_session.following
-                or message.mentions_agent
+            # a conversation not approved is kept quiet, mentioned or not
+            notifies_runtime = (
+                message.notifies_runtime
+                and channel_session.review is Review.APPROVED
+                and (
+                    message.target_kind is ChannelTargetKind.DM
+                    or channel_session.following
+                    or message.mentions_agent
+                )
             )
             message = replace(
                 message,

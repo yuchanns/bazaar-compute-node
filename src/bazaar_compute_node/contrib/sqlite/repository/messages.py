@@ -17,6 +17,7 @@ from ....core.models import (
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
+    Review,
     SenderIdentity,
     SenderKind,
 )
@@ -109,6 +110,7 @@ target_catalog AS (
         ) AS target,
         channel.target_kind AS target_kind,
         channel.channel AS channel,
+        channel.review AS review,
         COALESCE(pending.pending_count, 0) AS pending_count,
         MAX(
             COALESCE(thread.last_activity_at_ms, 0),
@@ -179,6 +181,7 @@ def _inbox_target_summary_from_row(row: aiosqlite.Row) -> InboxTargetSummary:
         thread_id=cast(str, row["thread_id"]),
         target_kind=ChannelTargetKind(cast(str, row["target_kind"])),
         channel=cast(str, row["channel"]),
+        review=Review(cast(str, row["review"])),
         pending_count=cast(int, row["pending_count"]),
         last_activity_at_ms=cast(int, row["last_activity_at_ms"]),
         latest_message_id=latest_message_id,
@@ -273,33 +276,48 @@ class MessageOperations(RepositoryBase):
 
     async def list_thread_ids(self) -> tuple[str, ...]:
         rows = await self.fetchall(
-            "SELECT id FROM threads WHERE agent_id = /*agent_id*/? ORDER BY id"
+            "SELECT thread.id FROM threads AS thread "
+            "JOIN channel_sessions AS channel ON channel.id = thread.channel_session_id "
+            "WHERE thread.agent_id = /*agent_id*/? AND channel.review = 'approved' "
+            "ORDER BY thread.id"
         )
         return tuple(cast(str, row["id"]) for row in rows)
 
     async def list_inbox_targets(
-        self, *, limit: int | None = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0, review: Review | None
     ) -> InboxTargetPage:
-        total_row = await self.fetchone(
-            _INBOX_TARGET_CATALOG_CTE + "SELECT COUNT(*) AS total FROM target_catalog"
+        # the whole catalog is counted by state in one pass: the page's own
+        # total, and how many wait to be looked at, whichever it lists
+        counts = await self.fetchall(
+            _INBOX_TARGET_CATALOG_CTE
+            + "SELECT review, COUNT(*) AS total FROM target_catalog GROUP BY review"
         )
-        if total_row is None:
-            raise RuntimeError("SQLite inbox target count query returned no row")
+        by_state = {cast(str, row["review"]): cast(int, row["total"]) for row in counts}
+        predicate, parameters = (
+            ("review = ?", (review.value,)) if review is not None else ("1", ())
+        )
         rows = await self.fetchall(
             _INBOX_TARGET_CATALOG_CTE
-            + "SELECT target, thread_id, target_kind, channel, pending_count, "
+            + "SELECT target, thread_id, target_kind, channel, review, pending_count, "
             "last_activity_at_ms, latest_message_id, latest_sender, latest_sender_id, "
             "latest_sender_display_name, "
             "latest_provider_time_ms, latest_received_at_ms "
-            "FROM target_catalog "
+            f"FROM target_catalog WHERE {predicate} "
             "ORDER BY last_activity_at_ms DESC, thread_id "
             + ("LIMIT ? OFFSET ?" if limit is not None else "LIMIT -1 OFFSET ?"),
-            (limit, offset) if limit is not None else (offset,),
+            (*parameters, limit, offset)
+            if limit is not None
+            else (*parameters, offset),
         )
         return InboxTargetPage(
             targets=tuple(_inbox_target_summary_from_row(row) for row in rows),
-            total=cast(int, total_row["total"]),
+            total=(
+                sum(by_state.values())
+                if review is None
+                else by_state.get(review.value, 0)
+            ),
             offset=offset,
+            pending_review=by_state.get(Review.PENDING.value, 0),
         )
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:

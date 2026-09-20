@@ -81,6 +81,7 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     Reminder,
     ReminderState,
+    Review,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -107,6 +108,7 @@ from bazaar_compute_node.core.orchestration.orchestrator import (
 )
 from bazaar_compute_node.core.orchestration.turn import inbox_notice
 from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallStatus
+from bazaar_compute_node.core.review import ReviewPolicy
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     Runtime,
@@ -388,7 +390,7 @@ async def make_node(
 
 
 async def make_sqlite_node(
-    *, mode: Mode = Mode.SESSION
+    *, mode: Mode = Mode.SESSION, review: ReviewPolicy | None = None
 ) -> tuple[
     AgentOrchestrator,
     TestChannel,
@@ -417,6 +419,7 @@ async def make_sqlite_node(
         workspace=Path.cwd,
         translator=_ENGLISH_TRANSLATOR,
         error_feedback_detail=unchanged_error_feedback_detail,
+        review=review,
     )
     runtime.command_service = orchestrator.command_service
     await orchestrator.start(timeout=2)
@@ -5086,7 +5089,8 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
     audit = RecordingAudit()
     scope = storage.scope(ACCEPTANCE_AGENT_ID, "Test Agent")
     await storage.start(timeout=1)
-    # a conversation from before the column existed, and one of another kind
+    # a conversation from before the column existed, let in by the rules of
+    # its day, and one of another kind
     for session in (
         ChannelSession(
             id="channel-legacy",
@@ -5094,6 +5098,7 @@ async def test_agent_backfills_conversations_written_before_bots_were_told_apart
             provider_thread_id="thread-legacy",
             created_at_ms=1,
             updated_at_ms=1,
+            review=Review.APPROVED,
         ),
         ChannelSession(
             id="channel-elsewhere",
