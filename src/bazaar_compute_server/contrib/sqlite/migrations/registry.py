@@ -9,6 +9,7 @@ import aiosqlite
 from ....clock import now_ms
 from .model import Migration
 from .v01_initial_server_schema import SCHEMA_MIGRATION
+from .v02_refs import REFS_MIGRATION
 
 
 class MigrationError(RuntimeError):
@@ -26,7 +27,7 @@ def _migration_ledger(*migrations: Migration) -> tuple[Migration, ...]:
     return migrations
 
 
-MIGRATIONS = _migration_ledger(SCHEMA_MIGRATION)
+MIGRATIONS = _migration_ledger(SCHEMA_MIGRATION, REFS_MIGRATION)
 
 
 async def apply_migrations(connection: aiosqlite.Connection) -> int:

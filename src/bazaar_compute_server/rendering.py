@@ -29,6 +29,7 @@ from .clock import clock_text, now_ms, zone
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
+from .refs import Refs
 from .storage import Account
 
 # the looks an account may choose; anything else follows the system
@@ -36,7 +37,7 @@ THEMES = ("light", "dark")
 
 
 class Renderer:
-    def __init__(self, images: Images) -> None:
+    def __init__(self, images: Images, refs: Refs) -> None:
         # templates and static files ship inside the package, so they are
         # read through the package, never from a directory that may not exist
         self._templates = Environment(
@@ -53,6 +54,8 @@ class Renderer:
         self._templates.globals["asset"] = _asset
         self._templates.globals["build"] = BUILD
         self._templates.globals["image_address"] = images.address
+        # the number a page names a loaded value by, in a link
+        self._templates.globals["ref"] = refs.ref
 
     @staticmethod
     def translator(request: Request) -> Translator:

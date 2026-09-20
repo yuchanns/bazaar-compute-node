@@ -13,17 +13,19 @@ from ..contacts import contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
+from ..refs import Refs
 from ..rendering import Renderer
 from ..storage import IStorage
 
 
 class AgentPages:
     def __init__(
-        self, storage: IStorage, controls: Controls, renderer: Renderer
+        self, storage: IStorage, controls: Controls, renderer: Renderer, refs: Refs
     ) -> None:
         self._storage = storage
         self._controls = controls
         self._render = renderer
+        self.refs = refs
 
     @allowed("agents.view")
     async def list(self, request: Request) -> Response:

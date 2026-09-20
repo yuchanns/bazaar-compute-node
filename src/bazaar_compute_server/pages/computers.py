@@ -10,14 +10,16 @@ from starlette.responses import HTMLResponse, Response
 from ..access import Access, allowed, sees
 from ..fleet import ComputerView, Fleet, computer_view, fleet
 from ..protocol import MAX_NAME_CHARS
+from ..refs import Refs
 from ..rendering import Renderer
 from ..storage import IStorage
 
 
 class ComputerPages:
-    def __init__(self, storage: IStorage, renderer: Renderer) -> None:
+    def __init__(self, storage: IStorage, renderer: Renderer, refs: Refs) -> None:
         self._storage = storage
         self._render = renderer
+        self.refs = refs
 
     @allowed("computers.view")
     async def list(self, request: Request) -> Response:

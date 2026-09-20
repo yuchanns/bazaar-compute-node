@@ -8,6 +8,7 @@ from starlette.routing import Route
 
 from ..control import Controls
 from ..images import PATH, Images
+from ..refs import Refs
 from ..rendering import Renderer
 from ..sessions import Sessions
 from ..storage import IStorage
@@ -23,11 +24,15 @@ async def home(request: Request) -> Response:
 
 
 def routes(
-    storage: IStorage, sessions: Sessions, controls: Controls, images: Images
+    storage: IStorage,
+    sessions: Sessions,
+    controls: Controls,
+    images: Images,
+    refs: Refs,
 ) -> list[Route]:
-    renderer = Renderer(images)
-    agents = AgentPages(storage, controls, renderer)
-    computers = ComputerPages(storage, renderer)
+    renderer = Renderer(images, refs)
+    agents = AgentPages(storage, controls, renderer, refs)
+    computers = ComputerPages(storage, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
     return [
