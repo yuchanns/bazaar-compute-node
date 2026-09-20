@@ -86,7 +86,10 @@ a { color: inherit; text-decoration: none; }
 .turn.follows, .turn.leads + .turn { margin-top: 0; }
 .turn.follows > .av, .turn.leads + .turn > .av { visibility: hidden; }
 .turn.follows .who, .turn.leads + .turn .who { display: none; }
-.turn .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 0; }
+/* each message is its own box, outlined under the pointer so where one ends
+   and the next begins can be seen */
+.turn .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
+.turn .line:hover { box-shadow: inset 0 0 0 1px var(--edge); }
 /* what an agent wrote, as Markdown: the page's own type, kept tight */
 .turn .line.md { white-space: normal; }
 .md > :first-child { margin-top: 0; }
