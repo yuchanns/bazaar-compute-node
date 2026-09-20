@@ -22,7 +22,8 @@ from .test_pages import _get, _health
 
 MARKDOWN = (
     "## Plan\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
-    "call `f()` <b>now</b>\n\n```python\nprint(1)  # hi\n```\n"
+    "call `f()` <b>now</b>\n\n```python\nprint(1)  # hi\n```\n\n"
+    "![shot](https://pixel.test/p.png)\n"
 )
 
 
@@ -339,6 +340,10 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     '<span class="tok-c1"># hi</span>',
                 ):
                     assert rendered in agent_line, rendered
+                # case: a picture from outside is a button until clicked, so
+                # opening the chat fetches nothing from where it lives
+                assert "<img" not in agent_line
+                assert 'data-src="https://pixel.test/p.png"' in agent_line
                 human_line = turns[2].split('class="line md"')[1]
                 assert "<h2>Plan</h2>" in human_line
                 assert 'id="message-message-chat-55"' in turns[2]

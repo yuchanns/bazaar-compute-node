@@ -3,7 +3,7 @@ it coloured by what it is."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from markdown_it import MarkdownIt
@@ -27,24 +27,45 @@ def _fence(
     options: Mapping[str, Any],
     env: Mapping[str, Any],
 ) -> str:
-    del renderer, options, env
+    del renderer, options
     token = tokens[index]
     language = token.info.strip().split(" ", 1)[0] if token.info else ""
     try:
         lexer = get_lexer_by_name(language) if language else TextLexer()
     except ClassNotFound:
         lexer = TextLexer()
-    return f'<pre class="code"><code>{highlight(token.content, lexer, _FORMATTER)}</code></pre>\n'
+    return env["code"](Markup(highlight(token.content, lexer, _FORMATTER))) + "\n"
+
+
+def _image(
+    renderer: Any,
+    tokens: Sequence[Token],
+    index: int,
+    options: Mapping[str, Any],
+    env: Mapping[str, Any],
+) -> str:
+    token = tokens[index]
+    return env["image"](
+        src=token.attrGet("src") or "",
+        alt=renderer.renderInlineAsText(token.children or [], options, env),
+    )
 
 
 # html off: what the agent wrote is text, however it looks; a link is only a
 # link on a scheme markdown-it lets through
 _MARKDOWN = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
 _MARKDOWN.add_render_rule("fence", _fence)
+_MARKDOWN.add_render_rule("image", _image)
 
 
-def render(text: str) -> Markup:
-    return Markup(_MARKDOWN.render(text))
+def render(
+    text: str, *, code: Callable[[Markup], str], image: Callable[..., str]
+) -> Markup:
+    """The text as HTML; each code block drawn by `code`, given its
+    highlighted content, and each image by `image`, given its `src` and
+    `alt`, so both are the page's own."""
+
+    return Markup(_MARKDOWN.render(text, {"code": code, "image": image}))
 
 
 __all__ = ["render"]

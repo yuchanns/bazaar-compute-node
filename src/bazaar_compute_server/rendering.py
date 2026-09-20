@@ -19,6 +19,7 @@ from jinja2 import (
     select_autoescape,
 )
 from jinja2.runtime import Context
+from markupsafe import Markup
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
@@ -26,6 +27,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clock import clock_text, now_ms, zone
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
+from .markdown import render
 from .storage import Account
 
 # the looks an account may choose; anything else follows the system
@@ -44,6 +46,7 @@ class Renderer:
         self._templates.filters["identicon"] = identicon
         self._templates.filters["ago"] = _ago
         self._templates.filters["clock"] = _clock
+        self._templates.filters["markdown"] = _markdown
         self._templates.globals["languages"] = LANGUAGES
         self._templates.globals["themes"] = THEMES
         self._templates.globals["asset"] = _asset
@@ -123,6 +126,20 @@ class Renderer:
             "tz": self.zone(request),
             "theme": None if account is None else account.theme,
         }
+
+
+@pass_context
+def _markdown(context: Context, text: str) -> Markup:
+    """What was written, as the Markdown a chat is written in; a code block
+    and an image are drawn by the page's own templates."""
+
+    code = context.environment.get_template("code.html")
+    image = context.environment.get_template("image.html")
+    return render(
+        text,
+        code=lambda content: code.render(**context.get_all(), code=content),
+        image=lambda **fields: image.render(**context.get_all(), **fields),
+    )
 
 
 @lru_cache

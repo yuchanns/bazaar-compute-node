@@ -1,0 +1,4 @@
+{% import "components.html" as c with context %}
+{# a picture from outside is not fetched until asked for: where it lives would
+   learn who is looking #}
+<button class="btn sm img" type="button" title="{{ src }}" data-src="{{ src }}" onclick="const img = document.createElement('img'); img.src = this.dataset.src; img.alt = this.textContent.trim(); this.replaceWith(img)">{{ c.icon("image") }} {{ alt or t.text("history.image") }}</button>

@@ -8,6 +8,11 @@
 <span class="i">{% include "icons/" ~ name ~ ".svg" %}</span>
 {%- endmacro %}
 
+{# a button that copies the text of what stands right before it, and ticks for a moment #}
+{% macro copy() -%}
+<button class="btn icon copy" type="button" title="{{ t.text("copy") }}" aria-label="{{ t.text("copy") }}" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent).then(() => { this.classList.add('done'); setTimeout(() => this.classList.remove('done'), 1500); })">{{ icon("copy") }}{{ icon("check") }}</button>
+{%- endmacro %}
+
 {# a select that looks like the rest of the page: the native control, drawn over #}
 {% macro select(id, name, options, selected, attrs="") -%}
 <span class="select"><select id="{{ id }}" name="{{ name }}" {{ attrs|safe }}>{% for value, label in options %}<option value="{{ value }}"{% if value == selected %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>{{ icon("chevron-down") }}</span>

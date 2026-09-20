@@ -5,11 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from markupsafe import Markup
-
 from .control import Controls
 from .fleet import PAGE_SIZE, AgentView
-from .markdown import render
 from .storage import IStorage
 
 # a page of history is read around one message: what the node returns is
@@ -24,9 +21,6 @@ class Line:
     body: str
     # what came with it, by name only; the files stay on the node
     attachments: tuple[str, ...]
-    # what was written, read as the Markdown a chat is written in; a system
-    # message is the node's own words and stays as they are
-    html: Markup | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +271,6 @@ def _turns(
             seq=item["seq"],
             body=item["body"],
             attachments=tuple(attachment["name"] for attachment in item["attachments"]),
-            html=render(item["body"]) if kind != "system" else None,
         )
         if turns and _same(turns[-1], item):
             turns[-1] = replace(turns[-1], lines=(*turns[-1].lines, line))

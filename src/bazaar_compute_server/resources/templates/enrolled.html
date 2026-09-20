@@ -20,7 +20,7 @@
       <div class="snippet" id="for-{{ kind }}">
 <pre>{{ install }}
 {{ rest }}</pre>
-        <button class="btn icon copy" type="button" title="{{ t.text("computers.copy") }}" aria-label="{{ t.text("computers.copy") }}" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent).then(() => { this.classList.add('done'); setTimeout(() => this.classList.remove('done'), 1500); })">{{ c.icon("copy") }}{{ c.icon("check") }}</button>
+        {{ c.copy() }}
       </div>
       {% endfor %}
     </div>

@@ -104,8 +104,12 @@ a { color: inherit; text-decoration: none; }
 .md a:hover { text-decoration: underline; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
 .md code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; background: var(--chip); padding: 0 4px; border-radius: 4px; }
-.md pre { white-space: pre; overflow-x: auto; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; }
+.md .snippet { margin: 0 0 6px; }
+/* code keeps its lines and scrolls sideways; the copy button sits in its corner */
+.md pre, .md .snippet pre { white-space: pre; word-break: normal; overflow-x: auto; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 36px 8px 10px; font-size: 1em; }
 .md pre code { background: none; padding: 0; font-size: .9em; }
+/* a picture, once asked for, fits the column */
+.md img { display: block; max-width: 100%; border-radius: var(--r-sm); }
 /* a table scrolls within itself rather than widening the column */
 .md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .95em; }
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; white-space: nowrap; }
