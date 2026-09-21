@@ -25,6 +25,8 @@ class Contact:
     last_activity_at_ms: int | None
     # where a read of the conversation starts: its newest message
     latest_message_id: str | None
+    # whether whoever is behind it may talk to the agent
+    review: str = "approved"
 
     @property
     def named(self) -> tuple[str, str, str]:
@@ -48,6 +50,10 @@ class Contacts:
     since: int
     answer: str
     code: str | None = None
+    # which conversations these are: those let in, or those waiting
+    review: str = "approved"
+    # how many wait to be looked at, whichever are listed
+    pending_review: int = 0
 
     @property
     def edge(self) -> str | None:
@@ -66,23 +72,38 @@ async def contacts(
     *,
     offset: int = 0,
     limit: int = PAGE_SIZE,
+    review: str = "approved",
 ) -> Contacts:
-    """The agent's conversations from `offset`, newest activity first, as far
-    as `limit`; the computer is asked only when it is there to answer."""
+    """The agent's conversations in one review state from `offset`, newest
+    activity first, as far as `limit`; the computer is asked only when it is
+    there to answer."""
 
     since = await storage.latest_message_event(agent.computer_id, agent.id)
     if agent.status == "offline":
-        return Contacts(agent, (), offset, False, since, "offline")
+        return Contacts(agent, (), offset, False, since, "offline", review=review)
     answer = await controls.ask(
         agent.computer_id,
-        {"read": "contacts", "agent_id": agent.id, "limit": limit, "offset": offset},
+        {
+            "read": "contacts",
+            "agent_id": agent.id,
+            "limit": limit,
+            "offset": offset,
+            "review": review,
+        },
     )
     # a page that got nothing is still there to be asked for
     if answer is None:
-        return Contacts(agent, (), offset, offset > 0, since, "silent")
+        return Contacts(agent, (), offset, offset > 0, since, "silent", review=review)
     if not answer.get("ok"):
         return Contacts(
-            agent, (), offset, offset > 0, since, "refused", answer.get("code")
+            agent,
+            (),
+            offset,
+            offset > 0,
+            since,
+            "refused",
+            answer.get("code"),
+            review=review,
         )
     result = answer["result"]
     return Contacts(
@@ -92,6 +113,8 @@ async def contacts(
         result["has_more"],
         since,
         "listed",
+        review=review,
+        pending_review=result["pending_review"],
     )
 
 
@@ -115,6 +138,7 @@ def _contact(item: dict[str, Any]) -> Contact:
         latest_message_id=item["latest_message_id"],
         pending=item["pending_count"],
         last_activity_at_ms=item["last_activity_at_ms"],
+        review=item["review"],
     )
 
 

@@ -36,7 +36,7 @@ from bazaar_compute_node.core.models import (
     RuntimeSession,
     SenderIdentity,
 )
-from bazaar_compute_node.core.orchestration.command import OutboundAttachmentResolver
+from bazaar_compute_node.core.orchestration.commands import OutboundAttachmentResolver
 from bazaar_compute_node.core.runtime import IRuntime, RuntimeCommandContext
 
 AGENT_A_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"

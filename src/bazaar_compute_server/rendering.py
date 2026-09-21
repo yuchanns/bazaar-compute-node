@@ -3,8 +3,9 @@ choice between a whole page and the fragment htmx asked for."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
-from datetime import tzinfo
+from datetime import datetime, tzinfo
 from functools import lru_cache
 from hashlib import blake2b
 from importlib.resources import files
@@ -48,6 +49,8 @@ class Renderer:
         self._templates.filters["identicon"] = identicon
         self._templates.filters["ago"] = _ago
         self._templates.filters["clock"] = _clock
+        self._templates.filters["due"] = _due
+        self._templates.filters["repeat"] = _repeat
         self._templates.filters["markdown"] = _markdown
         self._templates.globals["languages"] = LANGUAGES
         self._templates.globals["themes"] = THEMES
@@ -241,6 +244,46 @@ def _clock(context: Context, at_ms: int) -> str:
     """A time of day on the viewer's clock."""
 
     return clock_text(at_ms, context["tz"])
+
+
+@pass_context
+def _due(context: Context, at_ms: int) -> str:
+    """When something is set for, the way one says it: today or tomorrow by
+    name, any other day by date, and the time to the minute."""
+
+    translator: Translator = context["t"]
+    tz = context["tz"]
+    moment = datetime.fromtimestamp(at_ms / 1000, tz)
+    clock = moment.strftime("%H:%M")
+    match (moment.date() - datetime.now(tz).date()).days:
+        case 0:
+            return translator.text("time.today", {"clock": clock})
+        case 1:
+            return translator.text("time.tomorrow", {"clock": clock})
+        case _:
+            return f"{moment:%Y-%m-%d} {clock}"
+
+
+# the node's repeat rules, in their canonical forms
+_EVERY = re.compile(r"every:(?P<n>[0-9]+)(?P<unit>[mhd])")
+_WEEKLY = re.compile(r"weekly:(?P<days>[a-z,]+)@")
+
+
+@pass_context
+def _repeat(context: Context, rule: str) -> str:
+    """A repeat rule in words: every so often, daily, or on named weekdays."""
+
+    translator: Translator = context["t"]
+    if rule.startswith("daily@"):
+        return translator.text("repeat.daily")
+    if every := _EVERY.fullmatch(rule):
+        return translator.text(f"repeat.every_{every['unit']}", {"n": every["n"]})
+    if weekly := _WEEKLY.match(rule):
+        days = translator.text("repeat.day_join").join(
+            translator.text(f"repeat.{day}") for day in weekly["days"].split(",")
+        )
+        return translator.text("repeat.weekly", {"days": days})
+    return rule
 
 
 # a mark is under half a KiB, so this many is a couple of MiB: every agent

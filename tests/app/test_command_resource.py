@@ -24,7 +24,6 @@ from bazaar_compute_node.app.upgrade import UpgradeService
 from bazaar_compute_node.core.actor import Actors, Mode
 from bazaar_compute_node.core.command import (
     ICommandService,
-    IReminderService,
     MessageBroadcast,
     MessageSendFreshnessHold,
     MessageSendSuccess,
@@ -189,7 +188,7 @@ async def test_message_send_renders_freshness_hold() -> None:
         body="new context",
     )
     service = SimpleNamespace(
-        send=AsyncMock(
+        send_message=AsyncMock(
             return_value=MessageSendFreshnessHold(
                 target="dm:source",
                 messages=(message,),
@@ -204,7 +203,6 @@ async def test_message_send_renders_freshness_hold() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -228,7 +226,7 @@ async def test_message_send_renders_freshness_hold() -> None:
     assert "[1/1 seq=7 msg=message-7" in freshness_text
     assert "End of window: 1/1 shown." in freshness_text
     assert 'bcc message send --send-draft --target "dm:source"' in freshness_text
-    assert set(service.send.await_args.kwargs) == {
+    assert set(service.send_message.await_args.kwargs) == {
         "actor",
         "raw_target",
         "body",
@@ -241,11 +239,10 @@ async def test_message_send_renders_freshness_hold() -> None:
 
 @pytest.mark.asyncio
 async def test_message_send_renders_provider_outcomes() -> None:
-    service = SimpleNamespace(send=AsyncMock())
+    service = SimpleNamespace(send_message=AsyncMock())
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -286,7 +283,7 @@ async def test_message_send_renders_provider_outcomes() -> None:
     )
 
     for state, ok, code, expected_text in outcomes:
-        service.send.return_value = MessageSendSuccess(
+        service.send_message.return_value = MessageSendSuccess(
             message=cast(
                 Message,
                 SimpleNamespace(
@@ -324,11 +321,10 @@ def _delivery(target: str, state: OutboundDeliveryState) -> MessageSendSuccess:
 
 @pytest.mark.asyncio
 async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
-    service = SimpleNamespace(send=AsyncMock())
+    service = SimpleNamespace(send_message=AsyncMock())
     dispatcher = CommandDispatcher(
         cast(ICommandService, service),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -342,7 +338,7 @@ async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
         "created_at_ms": 1_100,
     }
 
-    service.send.return_value = MessageBroadcast(
+    service.send_message.return_value = MessageBroadcast(
         (
             _delivery("dm:one", OutboundDeliveryState.SENT),
             _delivery("dm:two", OutboundDeliveryState.QUEUED),
@@ -355,7 +351,7 @@ async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
 
     # one conversation reached and one refused: the failure is the answer,
     # and it says who already has the message
-    service.send.return_value = MessageBroadcast(
+    service.send_message.return_value = MessageBroadcast(
         (
             _delivery("dm:one", OutboundDeliveryState.SENT),
             _delivery("dm:two", OutboundDeliveryState.FAILED),
@@ -372,7 +368,7 @@ async def test_message_send_renders_a_broadcast_as_one_delivery() -> None:
 
     # a partly delivered conversation has been reached too, and keeps its
     # own advice against resending
-    service.send.return_value = MessageBroadcast(
+    service.send_message.return_value = MessageBroadcast(
         (
             _delivery("dm:one", OutboundDeliveryState.SENT),
             _delivery("dm:two", OutboundDeliveryState.PARTIAL),
@@ -392,7 +388,6 @@ async def test_a_node_that_cannot_upgrade_itself_offers_no_node_commands() -> No
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=None,
     )
     dispatcher.start_accepting()
@@ -417,7 +412,6 @@ async def test_upgrade_is_refused_before_a_release_is_announced() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -443,7 +437,6 @@ async def test_upgrade_rejects_a_command_without_an_anchor() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(),
     )
     dispatcher.start_accepting()
@@ -469,7 +462,6 @@ async def test_version_reports_the_process_and_not_the_disk() -> None:
     dispatcher = CommandDispatcher(
         cast(ICommandService, SimpleNamespace()),
         actors=Actors(agent_id="agent-1", mode=Mode.SESSION),
-        reminder_service=cast(IReminderService, object()),
         upgrade_service=make_upgrade_service(installed_version="0.1.0"),
     )
     dispatcher.start_accepting()

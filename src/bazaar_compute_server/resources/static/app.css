@@ -72,7 +72,7 @@ a { color: inherit; text-decoration: none; }
 .li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .li.off { opacity: .5; }
 .li.off:hover { background: none; }
-.li .badge { flex: none; }
+.li .n { flex: none; }
 
 /* the chat: a run of one speaker's messages under their name, oldest at
    the top, the newest end kept in view; no bubbles, no colour per speaker */
@@ -194,7 +194,7 @@ a { color: inherit; text-decoration: none; }
 .btn.icon .i svg { width: 16px; height: 16px; }
 .field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { width: 64px; color: var(--muted); }
-.field input, .field select { flex: 1; max-width: 260px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
+.field input, .field select, .field textarea { flex: 1; max-width: 260px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
 /* forms are short: a card no wider than it needs, inputs no longer than what goes in them */
 .dialog { border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--panel); max-width: 420px; box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
 .dialog.wide { max-width: 720px; }
@@ -248,7 +248,7 @@ a { color: inherit; text-decoration: none; }
    like the page's own cards; elsewhere the list stays the system's */
 .select { position: relative; display: inline-flex; flex: 1; max-width: 260px; }
 .select select { appearance: none; width: 100%; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 30px 6px 9px; font: inherit; cursor: pointer; }
-.select select:focus, .field input:focus { outline: none; border-color: var(--accent); }
+.select select:focus, .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
 .select .i { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
 @supports (appearance: base-select) {
   .select select, .select select::picker(select) { appearance: base-select; }
@@ -262,10 +262,14 @@ a { color: inherit; text-decoration: none; }
 
 
 /* a page from a build gone by: covered until its reader refreshes it */
-.stale { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(16, 24, 40, .35); }
-.stale[hidden] { display: none; }
-.stale .dialog { margin: 0; }
-.stale p { margin: 0 0 12px; color: var(--muted); }
+/* a question over the page, centred, the page dimmed behind it: the
+   refresh notice, or what the page must be sure of before it does it */
+.veil { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(16, 24, 40, .35); }
+.veil[hidden] { display: none; }
+.veil .dialog { margin: 0; }
+.veil .dialog h3 { margin: 0 0 6px; }
+.veil p { margin: 0 0 12px; }
+.veil .st { color: var(--muted); }
 
 /* the closed stall: a board on ropes where a page should have been */
 .col.closed { align-items: center; justify-content: center; text-align: center; }
@@ -273,3 +277,54 @@ a { color: inherit; text-decoration: none; }
 .stall .board { width: 260px; height: 195px; filter: drop-shadow(0 6px 10px rgba(0,0,0,.18)); }
 .stall h2 { margin: 8px 0 0; font-size: 1.15em; font-weight: 600; }
 .stall p { margin: 0 0 12px; color: var(--muted); max-width: 320px; }
+
+/* the contacts column's two lists, and the way to what the agent says to
+   those still waiting: icons, the waiting counted in the corner */
+.switch { display: flex; gap: 4px; padding: 2px 2px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--line); flex: none; }
+.switch .tab { position: relative; width: 36px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--r-sm); background: none; color: var(--muted); cursor: pointer; }
+.switch .tab:hover { background: var(--chip); color: var(--fg); }
+.switch .tab.on { background: var(--hi); color: var(--fg); }
+.switch .tab.aside { margin-left: auto; }
+.switch .tab .i svg { width: 18px; height: 18px; }
+/* a count of what is new: the red pill every chat list wears */
+.n { min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-weight: 600; }
+.switch .tab .n { position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px; padding: 0 4px; font-size: 10px; line-height: 15px; }
+/* a conversation still waiting, said in the chat's title */
+.badge.review { background: var(--warn); color: #18181b; font-size: inherit; padding: 0 6px; line-height: 1.4; }
+/* the question about a conversation waiting to be looked at */
+.dialog.review { max-width: 420px; }
+.dialog.review h3 { margin: 0 0 6px; }
+.dialog.review .st { margin: 0 0 8px; }
+.dialog.review .st.muted { color: var(--muted); }
+.dialog.review .first { background: var(--input); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; margin: 0 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dialog.review form { display: flex; gap: 6px; }
+.dialog.review .btn { padding: 8px 16px; }
+/* the chat's title wears the conversation's face, which opens its card */
+.hd .face { padding: 0; border: 1px solid var(--line); cursor: pointer; }
+#chat { position: relative; }
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; display: flex; flex-direction: column; background: var(--float); border-left: 1px solid var(--line); box-shadow: -6px 0 18px rgba(16, 24, 40, .06); z-index: 4; }
+.drawer[hidden] { display: none; }
+.drawer .hd .btn.icon { margin-left: auto; }
+.drawer .who { display: flex; gap: 12px; align-items: center; padding: 14px; border-bottom: 1px solid var(--line); }
+.drawer .who .sub { color: var(--muted); font-size: .86em; }
+.drawer .body { flex: 1; padding: 6px 14px; }
+.drawer .section { display: flex; align-items: center; gap: 6px; padding: 8px 0 6px; color: var(--muted); font-size: .86em; font-weight: 600; }
+.drawer .section .i svg { width: 14px; height: 14px; }
+/* members are a grid of faces in a box of one height, scrolled within */
+.drawer .grid { height: 190px; overflow: auto; display: flex; flex-wrap: wrap; gap: 8px 6px; align-content: flex-start; padding: 2px 0; }
+.drawer .member { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 52px; }
+.drawer .member small { font-size: 11px; color: var(--muted); max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer .rows { height: 120px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); }
+.drawer .row { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; }
+.drawer .row + .row { border-top: 1px solid var(--line); }
+.drawer .row .i { color: var(--muted); margin-top: 2px; }
+.drawer .row .i svg { width: 14px; height: 14px; }
+.drawer .row b { font-weight: 500; }
+.drawer .row small { display: block; color: var(--muted); font-size: .86em; }
+.drawer .rows .empty { padding: 10px; }
+.drawer .foot { padding: 12px 14px; border-top: 1px solid var(--line); }
+.drawer .foot > .btn.danger { width: 100%; justify-content: center; }
+/* what the agent says to those still waiting, asked for from the column */
+.dialog.reply { width: 420px; }
+/* a line that may run on: the box grows with it rather than growing a grip */
+.dialog.reply textarea { max-width: none; resize: none; field-sizing: content; min-height: 3lh; }

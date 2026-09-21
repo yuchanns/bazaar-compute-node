@@ -13,13 +13,15 @@ from ..actor import Actor, Actors
 from ..agent import Agent, State
 from ..approval import IApprovalHandler
 from ..audit import AuditRecorder, ErrorKind
-from ..channel import IChannel
+from ..channel import ChannelSendRequest, IChannel
 from ..concurrency import IThreadConcurrency, ThreadLockRegistry
 from ..correlation import CorrelationContext
 from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     ChannelSession,
     Message,
+    OutboundDeliveryState,
+    Review,
     RuntimeAttempt,
     RuntimeEventState,
     RuntimeSession,
@@ -28,6 +30,7 @@ from ..models import (
     Thread,
 )
 from ..outcomes import ProviderCallResult, ProviderCallStatus
+from ..review import REVIEW_REPLY, ReviewPolicy
 from ..runtime import (
     IRuntime,
     IRuntimeTurnStream,
@@ -44,7 +47,7 @@ from ..timerwheel import (
 )
 from ..utils.clock import now_ms
 from ..utils.text import format_exception
-from .command import CommandService
+from .commands import CommandService
 from .delivery import OutboundDeliveryService
 from .error_feedback import MESSAGE_KEYS, RuntimeErrorReporter
 from .services import unread_in_reach
@@ -160,8 +163,16 @@ class AgentOrchestrator(IAsyncLifecycle):
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
         concurrency: IThreadConcurrency | None = None,
         clock: Callable[[], int] | None = None,
+        review: ReviewPolicy | None = None,
+        # what the reminder commands need of the node: the scheduler's locks
+        # and a way to wake it; alone, the orchestrator keeps its own
+        reminder_concurrency: IThreadConcurrency | None = None,
+        reminder_poke: Callable[[], None] = lambda: None,
     ) -> None:
         self._clock = clock or now_ms
+        # who may talk to the agent as a conversation opens; with no policy
+        # given, anyone
+        self._review = review or ReviewPolicy()
         self._runtimes = Runtime(runtimes, clock=self._clock)
         if (
             isinstance(runtime_idle_timeout_ms, bool)
@@ -206,13 +217,15 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         self._command_service = CommandService(
             actors=actors,
-            channel=channel,
-            delivery=self._delivery,
             storage=storage,
             audit=self._audit,
             concurrency=self._concurrency,
-            workspace=workspace,
             clock=self._clock,
+            channel=channel,
+            delivery=self._delivery,
+            workspace=workspace,
+            poke=reminder_poke,
+            reminder_concurrency=reminder_concurrency or ThreadLockRegistry(),
         )
         self._turns = TurnCoordinator(
             agent_id=actors.agent_id,
@@ -604,6 +617,14 @@ class AgentOrchestrator(IAsyncLifecycle):
                     continue
                 if context is None:
                     raise RuntimeError("new inbound has no durable session context")
+                # what would have reached the agent is answered instead; what
+                # would not - a message quoted from before, one replayed from
+                # while the node was down - is only kept
+                if (
+                    context.channel_session.review is not Review.APPROVED
+                    and item.message.notifies_runtime
+                ):
+                    await self._answer_unreviewed(message, context)
                 actor = context.actor
                 runtime_queue = self._runtime_queues.get(actor)
                 if runtime_queue is None and (
@@ -1037,6 +1058,54 @@ class AgentOrchestrator(IAsyncLifecycle):
         )
         self._start_runtime_worker(actor, queue)
 
+    async def _answer_unreviewed(
+        self, message: Message, context: _DurableTurnContext
+    ) -> None:
+        """Say to a conversation not yet let in what the agent is set to say,
+        if anything: the one word it gets, every time it writes."""
+
+        reply = await self._storage.get_setting(REVIEW_REPLY)
+        if not reply or message.provider_thread_id is None:
+            return
+        result = await self._delivery.deliver(
+            ChannelSendRequest(
+                session_id=message.thread_id,
+                body=reply,
+                attachments=(),
+                target_kind=message.target_kind,
+                provider_thread_id=message.provider_thread_id,
+                channel=message.channel,
+                channel_identity=message.channel_identity,
+            )
+        )
+        await self._audit.append(
+            event_name="channel.review.replied",
+            state=(
+                RuntimeEventState.COMPLETED
+                if result.state
+                in (OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED)
+                else RuntimeEventState.FAILED
+            ),
+            correlation=CorrelationContext(
+                node_id=self.agent_id,
+                channel=message.channel,
+                channel_session_id=context.channel_session.id,
+                thread_id=message.thread_id,
+                inbound_seq=message.seq,
+            ),
+            error_kind=(
+                None
+                if result.state
+                in (OutboundDeliveryState.SENT, OutboundDeliveryState.QUEUED)
+                else ErrorKind.PROVIDER_FAILED
+            ),
+            error_message=result.error_message,
+            metadata={
+                "review": context.channel_session.review.value,
+                "delivery_state": result.state.value,
+            },
+        )
+
     async def _record_inbound(
         self,
         message: Message,
@@ -1044,6 +1113,9 @@ class AgentOrchestrator(IAsyncLifecycle):
         recorded = await self._storage.record_inbound(
             message,
             now_ms=self._clock(),
+            opening=self._review.opening(
+                message.channel_identity, message.provider_chat_id
+            ),
         )
         message = recorded.message
         context = _DurableTurnContext(
@@ -1065,6 +1137,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 ),
                 metadata={
                     "notifies_runtime": message.notifies_runtime,
+                    "review": recorded.channel_session.review.value,
                     "channel_session_mapping": (
                         "created" if recorded.channel_session_created else "reused"
                     ),

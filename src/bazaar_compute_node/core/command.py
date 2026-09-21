@@ -5,10 +5,12 @@ from typing import Protocol
 
 from .actor import Actor
 from .models import (
+    ChannelSession,
     InboundAttachment,
     InboxTargetSummary,
     Message,
     OutboundAttachment,
+    Review,
 )
 from .reminder import (
     ReminderCancelRequest,
@@ -90,6 +92,8 @@ class InboxListResult:
     shown: int
     offset: int
     has_more: bool
+    # how many conversations wait to be looked at, whichever were listed
+    pending_review: int = 0
 
     def __post_init__(self) -> None:
         if self.shown != len(self.targets):
@@ -176,37 +180,43 @@ class ThreadNotFoundError(ValueError):
 
 
 class ICommandService(Protocol):
-    """Session-scoped command surface used by the local wrapper."""
+    """Everything the agent may be asked to do about its conversations and
+    reminders, and what an operator may ask of it from outside: one surface,
+    reached through the local wrapper or the node's control."""
 
-    async def pending_targets(
+    async def check_inbox(
         self,
         actor: Actor,
         *,
         limit: int | None = None,
         offset: int = 0,
         pending_only: bool = True,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult:
         """List the conversations with unread messages, draining nothing; or,
         for whoever looks at the agent from outside, every conversation it
-        has, newest activity first, a page at a time."""
+        has - in one review state, or any - newest activity first, a page at
+        a time."""
         ...
 
-    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
+    async def check_messages(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
         """Read new messages and advance only the delivery cursor."""
         ...
 
-    async def read(
+    async def read_messages(
         self,
         actor: Actor,
         *,
         raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
+        review: Review | None = Review.APPROVED,
     ) -> MessageReadResult:
-        """Read history without advancing the delivery cursor."""
+        """Read history without advancing the delivery cursor; a conversation
+        not in the review state asked for is not there."""
         ...
 
-    async def send(
+    async def send_message(
         self,
         *,
         actor: Actor,
@@ -220,39 +230,51 @@ class ICommandService(Protocol):
         """Run the session fresh-check before calling the Channel port."""
         ...
 
-    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
+    async def unfollow_thread(
+        self, actor: Actor, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         """Disable future group notifications and report whether state changed."""
         ...
 
+    async def review_contact(self, thread_id: str, decision: Review) -> ChannelSession:
+        """Decide whether whoever is behind a conversation may talk to the
+        agent. Not the agent's to call: the operator's, from outside."""
+        ...
 
-class IReminderService(Protocol):
-    """Session-scoped Reminder command surface used by the local wrapper."""
+    async def setting(self, key: str) -> str | None:
+        """What the agent is set to do under a key, for whoever looks from
+        outside; nothing when unset."""
+        ...
 
-    async def schedule(
+    async def set_setting(self, key: str, value: str) -> None:
+        """Set what the agent does under a key. The operator's, from outside."""
+        ...
+
+    async def schedule_reminder(
         self,
         actor: Actor,
         request: ReminderScheduleRequest,
     ) -> ReminderScheduleResult: ...
 
-    async def list(
+    async def list_reminders(
         self,
         actor: Actor,
         request: ReminderListRequest,
     ) -> ReminderListResult: ...
 
-    async def snooze(
+    async def snooze_reminder(
         self,
         actor: Actor,
         request: ReminderSnoozeRequest,
     ) -> ReminderSnoozeResult: ...
 
-    async def update(
+    async def update_reminder(
         self,
         actor: Actor,
         request: ReminderUpdateRequest,
     ) -> ReminderUpdateResult: ...
 
-    async def cancel(
+    async def cancel_reminder(
         self,
         actor: Actor,
         request: ReminderCancelRequest,

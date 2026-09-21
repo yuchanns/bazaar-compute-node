@@ -41,9 +41,8 @@ class TelegramApprovalChannel(TelegramChannel):
         context: ChannelContext,
         *,
         token: str,
-        allowed_sender_ids: frozenset[int],
     ) -> None:
-        super().__init__(context, token=token, allowed_sender_ids=allowed_sender_ids)
+        super().__init__(context, token=token)
         self._translator: Translator = context.translator or create_translator(ENGLISH)
         self._pending_approvals: dict[str, _PendingApproval] = {}
         self._approval_tokens_by_request: dict[str, str] = {}

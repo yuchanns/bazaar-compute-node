@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..actor import Actor
-from ..audit import AuditRecorder
-from ..command import IReminderService
-from ..concurrency import IThreadConcurrency
-from ..models import (
+from ...actor import Actor
+from ...concurrency import IThreadConcurrency
+from ...models import (
     Message,
     MessageDirection,
     Reminder,
     ReminderState,
     RuntimeEventState,
 )
-from ..reminder import (
+from ...reminder import (
     ReminderCancelRequest,
     ReminderCancelResult,
     ReminderListRequest,
@@ -25,10 +23,10 @@ from ..reminder import (
     ReminderUpdateRequest,
     ReminderUpdateResult,
 )
-from ..storage import IStorage
-from ..utils.clock import now_ms
-from .reminder import reminder_audit_metadata, reminder_correlation
-from .services import threads_in_reach
+from ...storage import IStorage
+from ..reminder import reminder_audit_metadata, reminder_correlation
+from ..services import threads_in_reach
+from .base import Commands
 
 
 class ReminderCommandFailure(ValueError):
@@ -45,27 +43,18 @@ class ReminderCommandFailure(ValueError):
         self.next_action = next_action
 
 
-class ReminderCommandService(IReminderService):
-    """Execute session-owned Reminder commands over the durable storage port."""
+class ReminderCommands(Commands):
+    """The commands about reminders: what wakes the agent later, and when.
+    Their locks are the scheduler's, so a reminder is never fired and
+    changed at once."""
 
-    def __init__(
-        self,
-        *,
-        agent_id: str,
-        storage: IStorage,
-        concurrency: IThreadConcurrency,
-        poke: Callable[[], None],
-        audit: AuditRecorder,
-        clock: Callable[[], int] | None = None,
+    def _with_reminders(
+        self, *, poke: Callable[[], None], reminder_concurrency: IThreadConcurrency
     ) -> None:
-        self._agent_id = agent_id
-        self._storage = storage
-        self._concurrency = concurrency
         self._poke = poke
-        self._audit = audit
-        self._clock = clock or now_ms
+        self._reminder_concurrency = reminder_concurrency
 
-    async def schedule(
+    async def schedule_reminder(
         self,
         actor: Actor,
         request: ReminderScheduleRequest,
@@ -75,7 +64,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.message_id,
         )
-        async with self._concurrency.for_thread(owner_id):
+        async with self._reminder_concurrency.for_thread(owner_id):
             now_ms = self._clock()
             reminder = Reminder(
                 reminder_id="pending",
@@ -98,7 +87,7 @@ class ReminderCommandService(IReminderService):
         )
         return ReminderScheduleResult(reminder)
 
-    async def list(
+    async def list_reminders(
         self,
         actor: Actor,
         request: ReminderListRequest,
@@ -110,7 +99,7 @@ class ReminderCommandService(IReminderService):
             )
         return ReminderListResult(tuple(listed))
 
-    async def snooze(
+    async def snooze_reminder(
         self,
         actor: Actor,
         request: ReminderSnoozeRequest,
@@ -120,7 +109,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_thread(owner_id):
+        async with self._reminder_concurrency.for_thread(owner_id):
             reminder = await self._held_reminder(owner_id, request.reminder_id)
             try:
                 updated = reminder.snooze(
@@ -146,7 +135,7 @@ class ReminderCommandService(IReminderService):
         )
         return ReminderSnoozeResult(updated)
 
-    async def update(
+    async def update_reminder(
         self,
         actor: Actor,
         request: ReminderUpdateRequest,
@@ -156,7 +145,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_thread(owner_id):
+        async with self._reminder_concurrency.for_thread(owner_id):
             reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 next_action = (
@@ -205,7 +194,7 @@ class ReminderCommandService(IReminderService):
         )
         return ReminderUpdateResult(updated)
 
-    async def cancel(
+    async def cancel_reminder(
         self,
         actor: Actor,
         request: ReminderCancelRequest,
@@ -215,7 +204,7 @@ class ReminderCommandService(IReminderService):
             actor,
             request.reminder_id,
         )
-        async with self._concurrency.for_thread(owner_id):
+        async with self._reminder_concurrency.for_thread(owner_id):
             reminder = await self._held_reminder(owner_id, request.reminder_id)
             if reminder.state is not ReminderState.SCHEDULED:
                 raise ReminderCommandFailure(
@@ -259,7 +248,7 @@ class ReminderCommandService(IReminderService):
         await self._audit.append(
             event_name=event_name,
             state=RuntimeEventState.COMPLETED,
-            correlation=reminder_correlation(self._agent_id, reminder, anchor),
+            correlation=reminder_correlation(self._actors.agent_id, reminder, anchor),
             metadata=reminder_audit_metadata(reminder, anchor),
         )
 
@@ -323,4 +312,4 @@ class ReminderCommandService(IReminderService):
         )
 
 
-__all__ = ["ReminderCommandFailure", "ReminderCommandService"]
+__all__ = ["ReminderCommandFailure", "ReminderCommands"]

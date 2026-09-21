@@ -17,6 +17,7 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    Review,
     RuntimeAttempt,
     SenderIdentity,
     Thread,
@@ -45,6 +46,7 @@ class MemoryStorage:
         self.threads: dict[str, Thread] = {}
         self.runtime_attempts: dict[str, RuntimeAttempt] = {}
         self.cursors: dict[str, ConsumerCursor] = {}
+        self.settings: dict[tuple[str | None, str], str] = {}
         self.messages: dict[str, list[Message]] = {}
         self.started = False
         self.stopped = False
@@ -207,6 +209,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         message: Message,
         *,
         now_ms: int,
+        opening: Review,
     ) -> RecordInboundResult:
         channel, provider_thread_id, provider_message_id = message.inbound_identity()
         existing_message = await self.find_message(
@@ -236,6 +239,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                     message.target_kind is ChannelTargetKind.DM
                     or message.mentions_agent
                 ),
+                review=opening,
             )
             if message.target_presentation is not None:
                 channel_session = channel_session.with_target_presentation(
@@ -255,6 +259,10 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                     following=True,
                     updated_at_ms=now_ms,
                 )
+            if channel_session.review is Review.DENIED:
+                channel_session = replace(
+                    channel_session, review=Review.PENDING, updated_at_ms=now_ms
+                )
 
         thread = await self.find_thread(channel_session.id)
         thread_created = thread is None
@@ -269,10 +277,14 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             await self.save_thread(thread)
 
         if existing_message is None:
-            notifies_runtime = message.notifies_runtime and (
-                message.target_kind is ChannelTargetKind.DM
-                or channel_session.following
-                or message.mentions_agent
+            notifies_runtime = (
+                message.notifies_runtime
+                and channel_session.review is Review.APPROVED
+                and (
+                    message.target_kind is ChannelTargetKind.DM
+                    or channel_session.following
+                    or message.mentions_agent
+                )
             )
             message = replace(
                 message,
@@ -378,12 +390,19 @@ class _MemoryStorageTransaction(StorageOperationMixin):
         return session
 
     async def list_thread_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(thread.id for thread in self._scoped_threads()))
+        return tuple(
+            sorted(
+                thread.id
+                for thread in self._scoped_threads()
+                if self._storage.channel_sessions[thread.channel_session_id].review
+                is Review.APPROVED
+            )
+        )
 
     async def list_inbox_targets(
-        self, *, limit: int | None = 100, offset: int = 0
+        self, *, limit: int | None = 100, offset: int = 0, review: Review | None
     ) -> InboxTargetPage:
-        summaries = tuple(
+        everything = tuple(
             sorted(
                 (
                     self._inbox_target_summary(session)
@@ -392,6 +411,11 @@ class _MemoryStorageTransaction(StorageOperationMixin):
                 key=lambda summary: (-summary.last_activity_at_ms, summary.thread_id),
             )
         )
+        summaries = tuple(
+            summary
+            for summary in everything
+            if review is None or summary.review is review
+        )
         targets = (
             summaries[offset:] if limit is None else summaries[offset : offset + limit]
         )
@@ -399,7 +423,30 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             targets=targets,
             total=len(summaries),
             offset=offset,
+            pending_review=sum(
+                summary.review is Review.PENDING for summary in everything
+            ),
         )
+
+    async def get_setting(self, key: str) -> str | None:
+        return self._storage.settings.get((self._agent_id, key))
+
+    async def set_setting(self, key: str, value: str, *, now_ms: int) -> None:
+        del now_ms
+        self._storage.settings[(self._agent_id, key)] = value
+
+    async def set_review(
+        self, thread_id: str, review: Review, *, now_ms: int
+    ) -> ChannelSession:
+        thread = self._storage.threads.get(thread_id)
+        if thread is None or not self._in_scope(thread):
+            raise ValueError(f"thread is not found: {thread_id}")
+        session = self._storage.channel_sessions[thread.channel_session_id]
+        session = replace(
+            session, review=review, updated_at_ms=max(session.updated_at_ms, now_ms)
+        )
+        await self.save_channel_session(session)
+        return session
 
     async def list_unread_messages(self, *, limit: int) -> tuple[Message, ...]:
         return tuple((await self._unread_in_scope())[-limit:])
@@ -639,6 +686,7 @@ class _MemoryStorageTransaction(StorageOperationMixin):
             thread_id=session.id,
             target_kind=channel_session.target_kind,
             channel=channel_session.channel,
+            review=channel_session.review,
             pending_count=pending_count,
             last_activity_at_ms=last_activity_at_ms,
             latest_message_id=latest.message_id if latest is not None else None,

@@ -9,6 +9,7 @@ from .models import (
     Message,
     MessageDirection,
     OutboundAttachment,
+    Reminder,
 )
 
 
@@ -115,6 +116,7 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
         "target": summary.target,
         "canonical_target": summary.canonical_target or summary.target,
         "thread_id": summary.thread_id,
+        "review": summary.review.value,
         "target_kind": summary.target_kind.value,
         "channel": summary.channel,
         "pending_count": summary.pending_count,
@@ -133,4 +135,28 @@ def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
     }
 
 
-__all__ = ["serialize_attachment", "serialize_inbox_target", "serialize_message"]
+def serialize_reminder(reminder: Reminder) -> dict[str, object]:
+    return {
+        "reminder_id": reminder.reminder_id,
+        "owner_thread_id": reminder.owner_thread_id,
+        "anchor_message_id": reminder.anchor_message_id,
+        "title": reminder.title,
+        "state": reminder.state.value,
+        "next_fire_at_ms": reminder.next_fire_at_ms,
+        "repeat_rule": reminder.repeat_rule,
+        "timezone": reminder.timezone,
+        "revision": reminder.revision,
+        "last_occurrence_no": reminder.last_occurrence_no,
+        "created_at_ms": reminder.created_at_ms,
+        "updated_at_ms": reminder.updated_at_ms,
+        "last_fired_at_ms": reminder.last_fired_at_ms,
+        "canceled_at_ms": reminder.canceled_at_ms,
+    }
+
+
+__all__ = [
+    "serialize_attachment",
+    "serialize_inbox_target",
+    "serialize_message",
+    "serialize_reminder",
+]

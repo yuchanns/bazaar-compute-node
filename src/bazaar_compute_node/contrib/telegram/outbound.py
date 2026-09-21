@@ -70,9 +70,8 @@ class TelegramOutboundChannel(TelegramApprovalChannel):
         context: ChannelContext,
         *,
         token: str,
-        allowed_sender_ids: frozenset[int],
     ) -> None:
-        super().__init__(context, token=token, allowed_sender_ids=allowed_sender_ids)
+        super().__init__(context, token=token)
         self._outbound_requests = 0
         self._outbound_confirmed_requests = 0
         self._outbound_partial_requests = 0

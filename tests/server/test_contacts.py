@@ -11,6 +11,7 @@ from bazaar_compute_node.core.models import (
     Message,
     MessageDirection,
     OutboundDeliveryState,
+    Review,
     SenderIdentity,
 )
 from bazaar_compute_server.clock import now_ms
@@ -66,6 +67,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 await node_storage.record_inbound(
                     _inbound(f"session-{index:03d}", index + 1),
                     now_ms=(index + 1) * 1_000,
+                    opening=Review.APPROVED,
                 )
             # the node's first beat has told the server about the agent
             async with asyncio.timeout(10):
@@ -96,7 +98,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 assert f"channel-session-{PAGE_SIZE + 1:03d}" in rows[0]
                 assert f"channel-session-{2:03d}" in rows[-1]
                 assert "test</span> · Direct message · " in rows[0]
-                assert '<span class="badge">1</span>' in rows[0]
+                assert '<span class="n">1</span>' in rows[0]
                 assert f'data-after="{PAGE_SIZE}"' in column
                 since = int(column.split("?since=")[1].split("&")[0])
 
@@ -264,6 +266,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 await node_storage.record_inbound(
                     _inbound("chat", seq, MARKDOWN if seq == 54 else None),
                     now_ms=seq * 1_000,
+                    opening=Review.APPROVED,
                 )
             async with asyncio.timeout(10):
                 while not (await storage.computer_health([enrolment.computer]))[
@@ -370,7 +373,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert 'hx-trigger="revealed"' not in older
                 # case: the same sender goes on past the edge of the page, so
                 # the run is marked to join the one already shown
-                assert '<div class="turn leads">' in older
+                assert '<div class="turn leads" data-identity=' in older
 
                 # case: opened at a message the column named a while ago, the
                 # page may end before the newest, so its tail asks at once
@@ -404,9 +407,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # case: messages arrive and are put after the end: one more
                 # from the same person joins their run, one from another
                 # person of the same name does not
-                await node_storage.record_inbound(_inbound("chat", 56), now_ms=56_000)
                 await node_storage.record_inbound(
-                    _inbound("chat", 57, sender_id="namesake"), now_ms=57_000
+                    _inbound("chat", 56), now_ms=56_000, opening=Review.APPROVED
+                )
+                await node_storage.record_inbound(
+                    _inbound("chat", 57, sender_id="namesake"),
+                    now_ms=57_000,
+                    opening=Review.APPROVED,
                 )
                 await storage.record_events(
                     computer_id,
@@ -436,7 +443,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert tail.count('class="line md"') == 2
                 assert tail.count('<div class="turn') == 2
                 assert 'id="message-message-chat-56"' in tail
-                assert '<div class="turn follows">' in tail
+                assert '<div class="turn follows" data-identity=' in tail
                 assert "&last=message-chat-57" in tail
                 # case: a column with nothing to read after is read afresh
                 # as a whole once something is new

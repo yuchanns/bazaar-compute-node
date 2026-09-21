@@ -56,6 +56,17 @@ def routes(
             "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/messages",
             agents.messages,
         ),
+        Route(
+            "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/review",
+            agents.review,
+            methods=["POST"],
+        ),
+        Route(
+            "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/profile",
+            agents.profile,
+        ),
+        Route("/agents/{computer_id}/{agent_id}/reply", agents.reply),
+        Route("/agents/{computer_id}/{agent_id}/reply", agents.reply, methods=["POST"]),
         Route("/computers", computers.list),
         Route("/computers/new", computers.enrol_form),
         Route("/computers/list", computers.list_fragment),

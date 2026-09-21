@@ -1,16 +1,25 @@
 {% import "components.html" as c with context %}
 {% set url = "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts" %}
+{% set tab = "&review=pending" if listing.review == "pending" else "" %}
 {# the column asks whether anything has arrived or left since it was read,
    and only then for itself again, as far as it has been scrolled and with
    the row that is open now; the new column is morphed into the old one so
-   the rows keep their identity #}
-<div class="list-items" id="contacts" hx-get="{{ url }}?since={{ listing.since }}&shown={{ listing.answer }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? "", selected: this.querySelector(".li.on")?.id.slice(8) ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+   the rows keep their identity. its two tabs are those let in and those
+   waiting, the latter counted #}
+<div class="list-items" id="contacts" hx-get="{{ url }}?since={{ listing.since }}&shown={{ listing.answer }}{{ tab }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? "", selected: this.querySelector(".li.on")?.id.slice(8) ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+  <div class="switch">
+    <button class="tab{% if listing.review != "pending" %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_chats") }}" hx-get="{{ url }}" hx-target="#contacts" hx-swap="outerHTML">{{ c.icon("message-circle") }}</button>
+    <button class="tab{% if listing.review == "pending" %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_requests") }}" hx-get="{{ url }}?review=pending" hx-target="#contacts" hx-swap="outerHTML">{{ c.icon("user-plus") }}{% if listing.pending_review %}<span class="n">{{ listing.pending_review }}</span>{% endif %}</button>
+    <button class="tab aside" type="button" title="{{ t.text("contacts.reply") }}" hx-get="/agents/{{ ref(listing.agent.computer_id) }}/{{ ref(listing.agent.id) }}/reply" hx-target="#reply" hx-swap="outerHTML">{{ c.icon("message-square-text") }}</button>
+  </div>
+  {# the card is left alone when the column is read again #}
+  <div id="reply" hidden hx-morph-skip></div>
   {% include "contact_rows.html" %}
   {% if listing.answer == "offline" %}
   {{ c.empty(t.text("contacts.offline")) }}
   {% elif listing.answer != "listed" %}
-  <div class="empty">{{ t.text("contacts." ~ listing.answer, {"code": listing.code}) }} <button class="btn sm" hx-get="{{ url }}{% if selected_thread %}?selected={{ selected_thread }}{% endif %}" hx-target="#contacts" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
+  <div class="empty">{{ t.text("contacts." ~ listing.answer, {"code": listing.code}) }} <button class="btn sm" hx-get="{{ url }}{% if selected_thread %}?selected={{ selected_thread }}{% endif %}{{ tab|replace("&", "&" if selected_thread else "?", 1) }}" hx-target="#contacts" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
   {% elif not listing.contacts %}
-  {{ c.empty(t.text("contacts.empty")) }}
+  {{ c.empty(t.text("contacts.no_requests" if listing.review == "pending" else "contacts.empty")) }}
   {% endif %}
 </div>

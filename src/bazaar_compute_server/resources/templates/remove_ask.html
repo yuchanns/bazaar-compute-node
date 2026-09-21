@@ -1,0 +1,14 @@
+{% import "components.html" as c with context %}
+{% set url = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/contacts/" ~ ref(contact.thread_id) ~ "/review?actor=" ~ ref(contact.actor_id) ~ "&target=" ~ ref(contact.target) ~ "&channel=" ~ contact.channel|urlencode ~ "&name=" ~ contact.name|urlencode %}
+{# the question before turning a conversation away: a box over the page,
+   the way the page asks anything it must be sure of; when the node could
+   not answer, the box stays up and says so, the chat behind it as it was #}
+<div class="veil" id="remove-ask"{% if not failed %} hidden{% endif %} hx-on:click="if (event.target === this) this.hidden = true">
+  <form class="dialog danger" hx-post="{{ url }}" hx-target="#chat" hx-swap="outerHTML">
+    <h3>{{ t.text("profile.remove_ask_" ~ contact.kind, {"name": contact.name}) }}</h3>
+    <p class="st">{{ t.text("profile.remove_hint") }}</p>
+    {% if failed %}<p class="err">{{ t.text("contacts." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
+    <button class="btn danger" name="review" value="denied">{{ c.icon("trash-2") }} {{ t.text("profile.remove_yes") }}</button>
+    <button class="btn" type="button" hx-on:click="document.getElementById('remove-ask').hidden = true">{{ t.text("computers.cancel") }}</button>
+  </form>
+</div>

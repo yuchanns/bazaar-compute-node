@@ -533,6 +533,7 @@ class LarkChannel(IChannel):
             channel_session_id=thread_identity.channel_session_id,
             channel=self.name,
             provider_thread_id=thread_identity.provider_thread_id,
+            provider_chat_id=thread_identity.chat_id,
             provider_message_id=provider_message_id,
             received_at_ms=received_at_ms,
             sender=sender,

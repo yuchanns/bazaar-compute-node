@@ -8,9 +8,9 @@ from typing import Annotated, Literal, cast
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 
 from ..core.actor import Actor, Actors
-from ..core.command import ICommandService, IReminderService
+from ..core.command import ICommandService
 from ..core.models import Reminder, ReminderState
-from ..core.orchestration.reminder_command import ReminderCommandFailure
+from ..core.orchestration.commands import ReminderCommandFailure
 from ..core.reminder import (
     ReminderCancelRequest,
     ReminderListRequest,
@@ -18,6 +18,7 @@ from ..core.reminder import (
     ReminderSnoozeRequest,
     ReminderUpdateRequest,
 )
+from ..core.serialize import serialize_reminder
 from .command import CommandDispatcher as _MessageCommandDispatcher
 from .command import (
     CommandDispatchError,
@@ -26,26 +27,6 @@ from .command import (
     _parse_command_request,
 )
 from .upgrade import UpgradeError, UpgradeService, UpgradeUnavailable
-
-
-def serialize_reminder(reminder: Reminder) -> dict[str, object]:
-    return {
-        "reminder_id": reminder.reminder_id,
-        "owner_thread_id": reminder.owner_thread_id,
-        "anchor_message_id": reminder.anchor_message_id,
-        "title": reminder.title,
-        "state": reminder.state.value,
-        "next_fire_at_ms": reminder.next_fire_at_ms,
-        "repeat_rule": reminder.repeat_rule,
-        "timezone": reminder.timezone,
-        "revision": reminder.revision,
-        "last_occurrence_no": reminder.last_occurrence_no,
-        "created_at_ms": reminder.created_at_ms,
-        "updated_at_ms": reminder.updated_at_ms,
-        "last_fired_at_ms": reminder.last_fired_at_ms,
-        "canceled_at_ms": reminder.canceled_at_ms,
-    }
-
 
 _SCHEDULE_ERROR_CODES = (
     ("title", "REMINDER_TITLE_REQUIRED"),
@@ -240,7 +221,6 @@ class CommandDispatcher(_MessageCommandDispatcher):
         service: ICommandService,
         *,
         actors: Actors,
-        reminder_service: IReminderService,
         session_binding_validator: SessionBindingValidator | None = None,
         upgrade_service: UpgradeService | None,
     ) -> None:
@@ -249,7 +229,6 @@ class CommandDispatcher(_MessageCommandDispatcher):
             actors=actors,
             session_binding_validator=session_binding_validator,
         )
-        self._reminder_service = reminder_service
         self._upgrade_service = upgrade_service
         self._logger = logging.getLogger("bazaar_compute_node.application.upgrade")
 
@@ -373,7 +352,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             # failing to schedule one is a worse reason to leave the node
             # un-restarted than to go on without it
             try:
-                result = await self._reminder_service.schedule(
+                result = await self._service.schedule_reminder(
                     actor,
                     ReminderScheduleRequest.from_options(
                         title=(f"Report the outcome of upgrading to {upgrade_version}"),
@@ -488,7 +467,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 ),
                 str(error),
             ) from error
-        result = await self._reminder_service.schedule(actor, request)
+        result = await self._service.schedule_reminder(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _list_reminders(
@@ -496,7 +475,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
         actor: Actor,
         request_values: _ReminderListRequest,
     ) -> Mapping[str, object]:
-        result = await self._reminder_service.list(
+        result = await self._service.list_reminders(
             actor,
             ReminderListRequest(
                 statuses=_listed_statuses(request_values.all, request_values.status)
@@ -528,7 +507,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
                 "REMINDER_NOT_FOUND" if self._is_id_error(error) else "INVALID_COMMAND"
             )
             raise CommandDispatchError(code, str(error)) from error
-        result = await self._reminder_service.snooze(actor, request)
+        result = await self._service.snooze_reminder(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _update_reminder(
@@ -554,7 +533,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             else:
                 code = "REMINDER_UPDATE_FAILED"
             raise CommandDispatchError(code, str(error)) from error
-        result = await self._reminder_service.update(actor, request)
+        result = await self._service.update_reminder(actor, request)
         return _reminder_payload(result.reminder)
 
     async def _cancel_reminder(
@@ -570,7 +549,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             )
         except ValueError as error:
             raise CommandDispatchError("REMINDER_NOT_FOUND", str(error)) from error
-        result = await self._reminder_service.cancel(actor, request)
+        result = await self._service.cancel_reminder(actor, request)
         return _reminder_payload(result.reminder)
 
     @staticmethod

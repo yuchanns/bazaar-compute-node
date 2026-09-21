@@ -1,0 +1,22 @@
+{% import "components.html" as c with context %}
+{% set url = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/contacts/" ~ ref(contact.thread_id) ~ "/review?actor=" ~ ref(contact.actor_id) ~ "&target=" ~ ref(contact.target) ~ "&channel=" ~ contact.channel|urlencode ~ "&name=" ~ contact.name|urlencode ~ "&review=pending" %}
+{# the question about a conversation waiting to be looked at: who, wanting
+   what, and the first thing they said; then the two answers #}
+<div class="body">
+  <div class="dialog review">
+    <h3>{{ t.text("review.first_contact") }}</h3>
+    <p class="st">{{ t.text("review.wants_" ~ contact.kind, {"who": asked.sender or contact.name, "agent": selected.name}) }}</p>
+    <p class="st muted">{{ c.channels((contact.channel,)) }} {{ contact.channel }} · id {{ contact.name }}{% if asked.at_ms %} · {{ t.text("review.first_message_at", {"when": asked.at_ms|clock}) }}{% endif %}</p>
+    {% if asked.answer == "listed" and asked.body is not none %}
+    <div class="line first">{{ asked.body }}</div>
+    {% elif asked.answer == "offline" %}
+    <div class="empty">{{ t.text("contacts.offline") }}</div>
+    {% elif asked.answer != "listed" %}
+    <div class="empty">{{ t.text("contacts." ~ asked.answer, {"code": asked.code}) }}</div>
+    {% endif %}
+    <form hx-post="{{ url }}" hx-target="#chat" hx-swap="outerHTML">
+      <button class="btn p" name="review" value="approved"{% if asked.answer == "offline" %} disabled{% endif %}>{{ t.text("review.approve") }}</button>
+      <button class="btn" name="review" value="denied"{% if asked.answer == "offline" %} disabled{% endif %}>{{ t.text("review.deny") }}</button>
+    </form>
+  </div>
+</div>

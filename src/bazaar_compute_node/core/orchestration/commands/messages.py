@@ -12,11 +12,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
 
-from ..actor import Actor, Actors, Agent, Thread
-from ..audit import AuditRecorder, ErrorKind
-from ..channel import ChannelSendRequest, DmAddress, IChannel
-from ..command import (
-    ICommandService,
+from ...actor import Actor, Agent
+from ...audit import ErrorKind
+from ...channel import ChannelSendRequest, DmAddress, IChannel
+from ...command import (
     InboxListResult,
     MessageBroadcast,
     MessageCheckResult,
@@ -27,30 +26,30 @@ from ..command import (
     MessageSendSuccess,
     ThreadUnfollowResult,
 )
-from ..concurrency import IThreadConcurrency
-from ..correlation import CorrelationContext
-from ..models import (
+from ...correlation import CorrelationContext
+from ...models import (
     ChannelSession,
     ChannelTargetKind,
     Message,
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
+    Review,
     RuntimeEventState,
 )
 
 # `Thread` here is the actor variant; the conversation row keeps its own name.
-from ..models import Thread as ConversationRow
-from ..outcomes import OutboundDeliveryResult
-from ..storage import (
+from ...models import Thread as ConversationRow
+from ...outcomes import OutboundDeliveryResult
+from ...storage import (
     AmbiguousInboxTargetError,
     InboxTargetResolutionError,
-    IStorage,
     MaterializeOutboundResult,
     ResolvedInboxTarget,
 )
-from .delivery import OutboundDeliveryService
-from .services import threads_in_reach
+from ..delivery import OutboundDeliveryService
+from ..services import threads_in_reach
+from .base import Commands
 
 
 class OutboundAttachmentResolver:
@@ -173,6 +172,16 @@ def _named_as_called(
     return hold if len(targets) == 1 else replace(hold, target=raw_target)
 
 
+def _require_approved(target: ResolvedInboxTarget, raw_target: str) -> None:
+    """Refuse a conversation the agent may not talk in: to the agent, one
+    still pending or turned away is not there."""
+
+    if target.channel_session.review is not Review.APPROVED:
+        raise InboxTargetResolutionError(
+            f"inbox target does not resolve to an owned session: {raw_target}"
+        )
+
+
 def _reached_the_peer(delivery_result: OutboundDeliveryResult) -> bool:
     """Say whether any of this message is with the peer.
 
@@ -220,29 +229,20 @@ class _DmOpening:
     handle: str
 
 
-class CommandService(ICommandService):
-    """Execute session-scoped check, read, and send commands."""
+class MessageCommands(Commands):
+    """The commands about messages: what is unread, what was said, saying
+    something, and leaving a group's notifications."""
 
-    def __init__(
+    def _with_messages(
         self,
         *,
-        actors: Actors,
         channel: IChannel,
         delivery: OutboundDeliveryService,
-        storage: IStorage,
-        audit: AuditRecorder,
-        concurrency: IThreadConcurrency,
         workspace: Callable[[], Path],
-        clock: Callable[[], int],
     ) -> None:
-        self._actors = actors
         self._channel = channel
         self._delivery = delivery
-        self._storage = storage
-        self._audit = audit
-        self._concurrency = concurrency
         self._attachment_resolver = OutboundAttachmentResolver(workspace)
-        self._clock = clock
         # one draft per conversation as the caller names it, which may be a
         # peer reached on several bots: the key is the set of threads it spans
         self._drafts: dict[tuple[str, ...], MessageDraft] = {}
@@ -251,15 +251,18 @@ class CommandService(ICommandService):
         self._freshness_snapshots: dict[str, int] = {}
         self._logger = logging.getLogger("bazaar_compute_node.orchestration.command")
 
-    async def pending_targets(
+    async def check_inbox(
         self,
         actor: Actor,
         *,
         limit: int | None = None,
         offset: int = 0,
         pending_only: bool = True,
+        review: Review | None = Review.APPROVED,
     ) -> InboxListResult:
-        result = await self._storage.read_inbox_catalog(limit=limit, offset=offset)
+        result = await self._storage.read_inbox_catalog(
+            limit=limit, offset=offset, review=review
+        )
         # the agent itself reaches every conversation; a page read as it is
         # kept whole, its bounds the storage's own
         reachable = (
@@ -291,7 +294,7 @@ class CommandService(ICommandService):
             has_more=False,
         )
 
-    async def check(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
+    async def check_messages(self, actor: Actor) -> tuple[MessageCheckResult, ...]:
         thread_ids = await threads_in_reach(self._storage, actor)
         drained = await self._storage.check_messages(
             thread_ids,
@@ -308,18 +311,20 @@ class CommandService(ICommandService):
             )
         return drained
 
-    async def read(
+    async def read_messages(
         self,
         actor: Actor,
         *,
         raw_target: str,
         around_message_id: str | None = None,
         limit: int = 100,
+        review: Review | None = Review.APPROVED,
     ) -> MessageReadResult:
         snapshot = await self._storage.read_message_history(
             raw_target=raw_target,
             around_message_id=around_message_id,
             limit=limit,
+            review=review,
         )
         self._require_in_reach(actor, snapshot.source_thread.id, raw_target)
         result = snapshot.history
@@ -415,6 +420,9 @@ class CommandService(ICommandService):
             target_kind=ChannelTargetKind.DM,
             target_handle=opening.handle,
             target_handle_key=opening.handle.casefold(),
+            # a conversation the agent opened itself, with someone it has
+            # already been talking to, needs no one's leave
+            review=Review.APPROVED,
         )
         outbound = Message[OutboundAttachment](
             direction=MessageDirection.OUTBOUND,
@@ -470,24 +478,6 @@ class CommandService(ICommandService):
         )
         resolved = await self._storage.resolve_inbox_target(session.canonical_target)
         return MessageSendSuccess(message=outbound, target=resolved.display_target)
-
-    def _require_in_reach(
-        self,
-        actor: Actor,
-        target_thread_id: str,
-        raw_target: str,
-    ) -> None:
-        """Refuse a target this actor does not answer for."""
-
-        match actor:
-            case Agent():
-                return
-            case Thread(id) if id == target_thread_id:
-                return
-            case Thread():
-                raise InboxTargetResolutionError(
-                    f"inbox target is not this conversation: {raw_target}"
-                )
 
     async def _stage_draft(
         self,
@@ -680,7 +670,7 @@ class CommandService(ICommandService):
         )
         return outbound
 
-    async def send(
+    async def send_message(
         self,
         *,
         actor: Actor,
@@ -751,6 +741,7 @@ class CommandService(ICommandService):
             targets = (await self._storage.resolve_inbox_target(held.canonical_target),)
         for target in targets:
             self._require_in_reach(actor, target.thread.id, raw_target)
+            _require_approved(target, raw_target)
         # a handle held on several bots names the same peer everywhere, so the
         # message goes to every conversation; two conversations on one bot
         # are two different peers wearing the same name, and picking would
@@ -862,10 +853,13 @@ class CommandService(ICommandService):
             },
         )
 
-    async def unfollow(self, actor: Actor, *, raw_target: str) -> ThreadUnfollowResult:
+    async def unfollow_thread(
+        self, actor: Actor, *, raw_target: str
+    ) -> ThreadUnfollowResult:
         target = await self._storage.resolve_inbox_target(raw_target)
         thread_id = target.thread.id
         self._require_in_reach(actor, thread_id, raw_target)
+        _require_approved(target, raw_target)
         async with self._concurrency.for_thread(thread_id):
             channel_session = target.channel_session
             target_messages = await self._storage.list_messages(
@@ -903,23 +897,3 @@ class CommandService(ICommandService):
             },
         )
         return ThreadUnfollowResult(target=target.display_target, changed=changed)
-
-    def _correlation(
-        self,
-        *,
-        thread_id: str | None = None,
-        actor: Actor | None = None,
-        channel: str | None = None,
-        channel_session_id: str | None = None,
-        inbound_seq: int | None = None,
-        outbound_message_id: str | None = None,
-    ) -> CorrelationContext:
-        return CorrelationContext(
-            node_id=self._actors.agent_id,
-            channel=channel,
-            channel_session_id=channel_session_id,
-            thread_id=thread_id,
-            actor=actor,
-            inbound_seq=inbound_seq,
-            outbound_message_id=outbound_message_id,
-        )

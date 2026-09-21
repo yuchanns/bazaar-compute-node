@@ -23,8 +23,8 @@ from ..core.models import (
     RuntimeSession,
 )
 from ..core.orchestration import AgentOrchestrator
-from ..core.orchestration.reminder_command import ReminderCommandService
 from ..core.paths import resolve_workspace_dir
+from ..core.review import ReviewPolicy
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
@@ -82,6 +82,7 @@ class AgentApplication:
         translator: Translator,
         upgrade_service: UpgradeService | None,
         upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
+        reviewed: bool = False,
     ) -> None:
         self.configuration = configuration
         self.agent_id = configuration.id
@@ -103,25 +104,24 @@ class AgentApplication:
             self.workspace_path,
             self._referenced_attachment_paths,
         )
-        self.channel: IChannel = Channels(
-            tuple(
-                Channel(
-                    self.agent_id,
-                    factories.channels[channel_configuration.kind].build(
-                        ChannelContext(
-                            agent_id=self.agent_id,
-                            attachments=self._attachment_materializer,
-                            options=dict(channel_configuration.options),
-                            workspace=self.workspace_path,
-                            translator=self.translator,
-                            timer_wheel=self.timer_wheel,
-                            audit=audit,
-                        )
-                    ),
-                )
-                for channel_configuration in configuration.channels
+        channels = tuple(
+            Channel(
+                self.agent_id,
+                factories.channels[channel_configuration.kind].build(
+                    ChannelContext(
+                        agent_id=self.agent_id,
+                        attachments=self._attachment_materializer,
+                        options=dict(channel_configuration.options),
+                        workspace=self.workspace_path,
+                        translator=self.translator,
+                        timer_wheel=self.timer_wheel,
+                        audit=audit,
+                    )
+                ),
             )
+            for channel_configuration in configuration.channels
         )
+        self.channel: IChannel = Channels(channels)
         runtime_contexts: list[RuntimeCommandContext] = []
         runtimes: list[IRuntime] = []
         for index, runtime_configuration in enumerate(configuration.runtimes):
@@ -183,18 +183,21 @@ class AgentApplication:
             error_feedback_detail=self._redact_session_secrets,
             upgrade_notice=upgrade_notice,
             concurrency=self._concurrency,
-        )
-        self.reminder_service = ReminderCommandService(
-            agent_id=self.agent_id,
-            storage=self.storage,
-            concurrency=reminder_concurrency,
-            poke=reminder_poke,
-            audit=audit,
+            review=ReviewPolicy(
+                tuple(
+                    (channel, channel_configuration.allowed_chats)
+                    for channel, channel_configuration in zip(
+                        channels, configuration.channels, strict=True
+                    )
+                ),
+                reviewed,
+            ),
+            reminder_concurrency=reminder_concurrency,
+            reminder_poke=reminder_poke,
         )
         self.command_dispatcher = CommandDispatcher(
             self.orchestrator.command_service,
             actors=self.actors,
-            reminder_service=self.reminder_service,
             session_binding_validator=self._validate_actor_binding,
             upgrade_service=upgrade_service,
         )

@@ -16,6 +16,7 @@ from ...core.models import (
     MessageDirection,
     OutboundAttachment,
     OutboundDeliveryState,
+    Review,
     RuntimeAttempt,
     SenderIdentity,
     SenderKind,
@@ -44,6 +45,7 @@ def channel_session_from_row(row: aiosqlite.Row) -> ChannelSession:
             _required_text(row["target_kind"], "channel_session.target_kind")
         ),
         following=bool(following),
+        review=Review(_required_text(row["review"], "channel_session.review")),
         last_inbound_at_ms=cast(int | None, row["last_inbound_at_ms"]),
         last_outbound_at_ms=cast(int | None, row["last_outbound_at_ms"]),
         target_display_name=_optional_text(
@@ -454,6 +456,7 @@ def validate_channel_session_update(
         existing,
         updated_at_ms=incoming.updated_at_ms,
         following=incoming.following,
+        review=incoming.review,
         last_inbound_at_ms=incoming.last_inbound_at_ms,
         last_outbound_at_ms=incoming.last_outbound_at_ms,
         target_display_name=incoming.target_display_name,

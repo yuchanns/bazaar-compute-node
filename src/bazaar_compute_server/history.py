@@ -29,6 +29,9 @@ class Turn:
 
     speaker: str
     sender_id: str
+    # what the speaker's face is drawn from: the same wherever they appear,
+    # whatever they are called there
+    identity: str
     kind: str
     at_ms: int
     lines: tuple[Line, ...]
@@ -114,7 +117,7 @@ async def latest(
     return History(
         agent,
         contact,
-        _turns(messages),
+        _turns(messages, contact),
         messages[0]["message_id"] if messages and more else None,
         messages[-1]["message_id"] if messages else None,
         since if caught_up else since - 1,
@@ -143,7 +146,7 @@ async def earlier(
     return History(
         agent,
         contact,
-        _turns(messages, leads_into=anchor),
+        _turns(messages, contact, leads_into=anchor),
         messages[0]["message_id"] if len(messages) >= PAGE_SIZE else None,
         None,
         since,
@@ -179,7 +182,7 @@ async def later(
     return History(
         agent,
         contact,
-        _turns(messages, follows_from=anchor),
+        _turns(messages, contact, follows_from=anchor),
         None,
         messages[-1]["message_id"] if messages else after,
         newer if caught_up else since,
@@ -262,13 +265,16 @@ def _failed(
 
 def _turns(
     messages: list[dict[str, Any]],
+    contact: Contact,
     *,
     leads_into: dict[str, Any] | None = None,
     follows_from: dict[str, Any] | None = None,
 ) -> tuple[Turn, ...]:
     """The messages as runs of one speaker; the run at either edge is marked
     when the message on the page beyond it (`leads_into` after, `follows_from`
-    before) is the same speaker's, so the two read as one."""
+    before) is the same speaker's, so the two read as one. A face is drawn
+    from who someone is, not what they are called: in a direct message the
+    other side wears the conversation's, the way its row does."""
 
     turns: list[Turn] = []
     for item in messages:
@@ -282,10 +288,16 @@ def _turns(
             turns[-1] = replace(turns[-1], lines=(*turns[-1].lines, line))
             continue
         speaker, sender_id, kind, own = _who(item)
+        if own:
+            identity = speaker
+        elif contact.kind == "dm" and kind == "human":
+            identity = contact.thread_id
+        else:
+            identity = sender_id or speaker
         at_ms = (
             item["provider_time_ms"] or item["received_at_ms"] or item["created_at_ms"]
         )
-        turns.append(Turn(speaker, sender_id, kind, at_ms, (line,), own))
+        turns.append(Turn(speaker, sender_id, identity, kind, at_ms, (line,), own))
     if turns and leads_into is not None and _same(turns[-1], leads_into):
         turns[-1] = replace(turns[-1], leads=True)
     if turns and follows_from is not None and _same(turns[0], follows_from):
@@ -308,7 +320,8 @@ def _who(item: dict[str, Any]) -> tuple[str, str, str, bool]:
 
 
 def _same(turn: Turn, item: dict[str, Any]) -> bool:
-    return (turn.speaker, turn.sender_id, turn.kind, turn.own) == _who(item)
+    _, sender_id, kind, own = _who(item)
+    return (turn.sender_id, turn.kind, turn.own) == (sender_id, kind, own)
 
 
 __all__ = ["Contact", "History", "Line", "Turn", "earlier", "later", "latest", "news"]

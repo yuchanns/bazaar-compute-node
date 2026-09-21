@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 from ....core.models import (
     ChannelSession,
     ConsumerCursor,
     MessageDirection,
+    Review,
     RuntimeAttempt,
     Thread,
 )
@@ -35,7 +38,7 @@ class SessionOperations(RepositoryBase):
     ) -> ChannelSession | None:
         row = await self._fetch_one_or_conflict(
             "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
-            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "following, review, created_at_ms, updated_at_ms, last_inbound_at_ms, "
             "last_outbound_at_ms, target_display_name, target_handle, "
             "target_handle_key, provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
@@ -50,7 +53,7 @@ class SessionOperations(RepositoryBase):
     ) -> tuple[ChannelSession, ...]:
         rows = await self.fetchall(
             "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
-            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "following, review, created_at_ms, updated_at_ms, last_inbound_at_ms, "
             "last_outbound_at_ms, target_display_name, target_handle, "
             "target_handle_key, provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND channel = ? "
@@ -88,7 +91,7 @@ class SessionOperations(RepositoryBase):
     ) -> ChannelSession | None:
         row = await self.fetchone(
             "SELECT id, channel, channel_identity, provider_thread_id, target_kind, "
-            "following, created_at_ms, updated_at_ms, last_inbound_at_ms, "
+            "following, review, created_at_ms, updated_at_ms, last_inbound_at_ms, "
             "last_outbound_at_ms, target_display_name, target_handle, "
             "target_handle_key, provider_identity_ref_json FROM channel_sessions "
             "WHERE agent_id = /*agent_id*/? AND id = ?",
@@ -191,10 +194,10 @@ class SessionOperations(RepositoryBase):
             await self.execute(
                 "INSERT INTO channel_sessions ("
                 "agent_id, id, channel, channel_identity, provider_thread_id, "
-                "target_kind, following, provider_identity_ref_json, "
+                "target_kind, following, review, provider_identity_ref_json, "
                 "target_display_name, target_handle, target_handle_key, "
                 "created_at_ms, updated_at_ms, last_inbound_at_ms, last_outbound_at_ms"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._require_agent_id(),
                     session.id,
@@ -203,6 +206,7 @@ class SessionOperations(RepositoryBase):
                     session.provider_thread_id,
                     session.target_kind.value,
                     int(session.following),
+                    session.review.value,
                     encode_metadata(session.metadata),
                     session.target_display_name,
                     session.target_handle,
@@ -217,13 +221,14 @@ class SessionOperations(RepositoryBase):
 
         session = validate_channel_session_update(existing, session)
         await self.execute(
-            "UPDATE channel_sessions SET target_kind = ?, following = ?, "
+            "UPDATE channel_sessions SET target_kind = ?, following = ?, review = ?, "
             "updated_at_ms = ?, last_inbound_at_ms = ?, last_outbound_at_ms = ?, "
             "provider_identity_ref_json = ?, target_display_name = ?, "
             "target_handle = ?, target_handle_key = ? WHERE id = ?",
             (
                 session.target_kind.value,
                 int(session.following),
+                session.review.value,
                 session.updated_at_ms,
                 session.last_inbound_at_ms,
                 session.last_outbound_at_ms,
@@ -234,6 +239,21 @@ class SessionOperations(RepositoryBase):
                 session.id,
             ),
         )
+
+    async def set_review(
+        self, thread_id: str, review: Review, *, now_ms: int
+    ) -> ChannelSession:
+        thread = await self.get_thread(thread_id)
+        if thread is None:
+            raise ValueError(f"thread is not found: {thread_id}")
+        session = cast(
+            ChannelSession, await self.get_channel_session(thread.channel_session_id)
+        )
+        session = replace(
+            session, review=review, updated_at_ms=max(session.updated_at_ms, now_ms)
+        )
+        await self.save_channel_session(session)
+        return session
 
     async def save_thread(self, session: Thread) -> None:
         self._require_workspace(session.workspace_id)

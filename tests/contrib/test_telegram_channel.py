@@ -13,8 +13,7 @@ from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.audit import AuditRecorder
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
-from bazaar_compute_node.core.models import SenderIdentity, SenderKind
-from bazaar_compute_node.core.observability import LogLevel
+from bazaar_compute_node.core.models import Message, SenderIdentity, SenderKind
 
 TEST_BOT_ID = 1_000_000_001
 TEST_USER_ID = 1_000_000_002
@@ -219,7 +218,6 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             workspace=lambda: tmp_path,
         ),
         token="token",
-        allowed_sender_ids=frozenset({TEST_USER_ID}),
     )
 
     assert channel.get_identity() is None
@@ -317,6 +315,34 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
         assert current.sender_kind is SenderKind.HUMAN
         assert current.reply_to_message_id == quoted.message_id
 
+        # a reply quoting what this bot itself sent brings no second copy of
+        # it: the message is on record as sent
+        await channel._handle_message(
+            {
+                "message_id": 4,
+                "date": channel._started_at_s,
+                "chat": {"id": TEST_USER_ID, "type": "private"},
+                "from": {
+                    "id": TEST_USER_ID,
+                    "is_bot": False,
+                    "username": TEST_USER_USERNAME,
+                },
+                "text": "Replying to you",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "date": channel._started_at_s,
+                    "chat": {"id": TEST_USER_ID, "type": "private"},
+                    "from": {"id": bot_id, "is_bot": True, "username": bot_username},
+                    "text": "What the bot said",
+                },
+            },
+            update_id=3,
+        )
+        only = await channel._inbound.get()
+        assert isinstance(only, Message)
+        assert only.body == "Replying to you" and only.reply_to_message_id is None
+        assert channel._inbound.empty()
+
         filtered_before = channel._message_updates_filtered
         await channel._handle_message(
             {"from": {"id": bot_id, "username": bot_username}},
@@ -333,26 +359,25 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
 
 
 @pytest.mark.asyncio
-async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> None:
+async def test_a_private_chat_from_anyone_is_read(tmp_path: Path) -> None:
+    """Whether a stranger may talk is decided after the message is kept,
+    by its conversation's review; the channel turns nobody away."""
+
     async def referenced_paths() -> set[str]:
         return set()
 
     audit = RecordingAudit()
-    recorder = AuditRecorder(
-        sink=audit,
-        timeout_budget=TimeoutBudget(1, 1, 1, 1),
-        clock=lambda: 1,
-    )
     channel = TelegramChannel(
         ChannelContext(
             agent_id="agent-test",
             attachments=AttachmentMaterializer(lambda: tmp_path, referenced_paths),
             options={},
             workspace=lambda: tmp_path,
-            audit=recorder,
+            audit=AuditRecorder(
+                sink=audit, timeout_budget=TimeoutBudget(1, 1, 1, 1), clock=lambda: 1
+            ),
         ),
         token="token",
-        allowed_sender_ids=frozenset({TEST_USER_ID}),
     )
 
     def update(sender_id: int, chat: dict[str, Any]) -> dict[str, Any]:
@@ -369,28 +394,8 @@ async def test_a_private_chat_answers_only_an_allowed_sender(tmp_path: Path) -> 
         bot_id=TEST_BOT_ID,
         bot_username=TEST_BOT_USERNAME,
     )
-    assert stranger == "unauthorized_sender"
-    rejected = audit.events[-1]
-    assert rejected.event_name == "channel.inbound.rejected"
-    assert rejected.level is LogLevel.WARNING
-    assert rejected.metadata["telegram_sender_id"] == TEST_OTHER_BOT_ID
-
-    allowed = await channel._read_message(
-        update(TEST_USER_ID, {"id": TEST_USER_ID, "type": "private"}),
-        bot_id=TEST_BOT_ID,
-        bot_username=TEST_BOT_USERNAME,
-    )
-    assert not isinstance(allowed, str)
-
-    # A group has to be joined by someone, so the allowlist does not reach it.
-    in_group = await channel._read_message(
-        update(TEST_OTHER_BOT_ID, {"id": TEST_CHAT_ID, "type": "supergroup"}),
-        bot_id=TEST_BOT_ID,
-        bot_username=TEST_BOT_USERNAME,
-    )
-    assert not isinstance(in_group, str)
-    # Only the stranger was recorded; the two accepted messages were not.
-    assert len(audit.events) == 1
+    assert not isinstance(stranger, str)
+    assert audit.events == []
 
 
 def test_telegram_reads_the_chat_a_send_landed_in() -> None:

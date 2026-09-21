@@ -12,6 +12,7 @@ from .states import (
     ChannelTargetKind,
     MessageDirection,
     OutboundDeliveryState,
+    Review,
     RuntimeTurnState,
     SenderKind,
     SystemMessageKind,
@@ -36,6 +37,7 @@ class ChannelSession:
     channel_identity: str | None = None
     target_kind: ChannelTargetKind = ChannelTargetKind.DM
     following: bool = True
+    review: Review = Review.PENDING
     last_inbound_at_ms: int | None = None
     last_outbound_at_ms: int | None = None
     target_display_name: str | None = None
@@ -262,6 +264,8 @@ class InboxTargetSummary:
     pending_count: int
     last_activity_at_ms: int
     channel: str = ""
+    # whether whoever is behind the conversation may talk to the agent
+    review: Review = Review.APPROVED
     # the target as the store names it, once `target` is the form shown: a
     # handle may be shared or change hands, a store's name does not
     canonical_target: str | None = None
@@ -303,6 +307,9 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     channel: str | None = None
     channel_identity: str | None = None
     provider_thread_id: str | None = None
+    # the chat as the provider names it, the way an operator would write it
+    # down: what a channel's `allowed_chats` is matched against
+    provider_chat_id: str | None = None
     provider_message_id: str | None = None
     provider_time_ms: int | None = None
     received_at_ms: int | None = None
