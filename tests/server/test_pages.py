@@ -95,8 +95,17 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
                         text="hi",
                         target="group:1",
                         target_name="B小町 #bcn",
+                        sender={
+                            "id": "7",
+                            "name": "hanchin",
+                            "display_name": "Hanchin",
+                        },
                     ),
                     _event(3, "runtime.request.turn.started", "agent-1"),
+                    # a send is written down twice on the node; the card reads
+                    # the delivery record and not the tool's echo of it
+                    _event(6, "channel.outbound.sent", "agent-1"),
+                    _event(7, "tool.bcc.message.send.sent", "agent-1"),
                     _event(4, "tool_call.started", "agent-1", name="Bash"),
                     _event(
                         5,
@@ -174,7 +183,8 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert status == 200
         assert "正在处理 B小町 #bcn" in card
         assert "开始工具调用 · Bash" in card
-        assert "消息已接收 · B小町 #bcn" in card
+        assert "消息已接收 · B小町 #bcn · Hanchin" in card
+        assert card.count("消息已发送") == 1
         # the running total is summed up below the list, not read out in it
         assert "用量已更新" not in card
         assert "今日用量：输入 1K · 输出 200 · 缓存命中 34 · $0.50" in card

@@ -58,14 +58,20 @@ class _Counts:
 
 
 # what the card does not read out: the beat, the running total the card sums
-# up below anyway, and the reads a viewer of this very page causes on the
-# node, which would otherwise fill it with themselves
+# up below anyway, the reads a viewer of this very page causes on the node,
+# which would otherwise fill it with themselves, and the tool's word on a
+# send, which the delivery record says already - only the hold that kept a
+# send back has no record of its own
 QUIET = (
     "node.health",
     "usage.updated",
     "control.result",
     "tool.bcc.inbox.check.completed",
     "tool.bcc.message.read.completed",
+    *(
+        f"tool.bcc.message.send.{state}"
+        for state in ("pending", "queued", "sent", "partial", "failed", "unknown")
+    ),
 )
 
 
@@ -121,8 +127,16 @@ def event_text(translator: Translator, item: StoredEvent) -> str:
     if item.event_name.startswith("tool_call.") and metadata.get("name"):
         return f"{words} · {metadata['name']}"
     if item.event_name == "channel.inbound.persisted":
-        name = metadata.get("target_name") or metadata.get("target")
-        return f"{words} · {name}" if name else words
+        sender = metadata.get("sender") or {}
+        return " · ".join(
+            part
+            for part in (
+                words,
+                metadata.get("target_name") or metadata.get("target"),
+                sender.get("display_name") or sender.get("name"),
+            )
+            if part
+        )
     if item.event_name == "usage.updated":
         tokens = metadata.get("total", {}).get("total_tokens")
         return f"{words} · {tokens:,}" if tokens is not None else words
