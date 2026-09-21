@@ -7,8 +7,8 @@
 {% if history.before %}<div class="edge loading" hx-get="{{ url }}&before={{ history.before|urlencode }}" hx-trigger="revealed" hx-swap="outerHTML" hx-on:htmx:before:request="this.parentElement.dataset.height = this.parentElement.scrollHeight">{{ c.icon("loader-circle") }}</div>{% endif %}
 {% if earlier is defined %}<script>{ const chat = document.getElementById("history"); chat.scrollTop += chat.scrollHeight - Number(chat.dataset.height); }</script>{% endif %}
 {% for turn in history.turns %}
-<div class="turn{% if turn.own %} own{% endif %}{% if turn.leads %} leads{% endif %}{% if turn.follows %} follows{% endif %}">
-  {{ c.avatar(turn.speaker, small=true, opens=".turn" if turn.own else none) }}
+<div class="turn{% if turn.own %} own{% endif %}{% if turn.leads %} leads{% endif %}{% if turn.follows %} follows{% endif %}" data-identity="{{ turn.identity }}" data-speaker="{{ turn.speaker }}" data-kind="{{ turn.kind }}">
+  {{ c.avatar(turn.identity, small=true, opens=".turn" if turn.own else none) }}
   {% if turn.own %}
   {# the agent's own face opens onto what it is doing, the way its row in the
      list does; the card fetches itself the first time the pointer reaches

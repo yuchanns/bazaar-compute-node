@@ -1,11 +1,11 @@
 {% import "components.html" as c with context %}
 {% for item in listing.contacts %}
 {% set when = " · " ~ item.last_activity_at_ms|ago if item.last_activity_at_ms else "" %}
-{% set href = "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts/" ~ ref(item.thread_id) ~ "?actor=" ~ ref(item.actor_id) ~ "&target=" ~ ref(item.target) ~ "&channel=" ~ item.channel|urlencode ~ "&name=" ~ item.name|urlencode ~ ("&latest=" ~ item.latest_message_id|urlencode if item.latest_message_id else "") %}
+{% set href = "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts/" ~ ref(item.thread_id) ~ "?actor=" ~ ref(item.actor_id) ~ "&target=" ~ ref(item.target) ~ "&channel=" ~ item.channel|urlencode ~ "&name=" ~ item.name|urlencode ~ ("&latest=" ~ item.latest_message_id|urlencode if item.latest_message_id else "") ~ ("&review=pending" if item.review == "pending" else "") %}
 {# the conversation opens in the right column alone; the row takes the
    highlight itself, so the list is not asked for again #}
-{% call c.list_item(item.name, c.channels((item.channel,)) ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, name=item.name, href=href, on=(selected_thread == ref(item.thread_id)|string), id="contact-" ~ ref(item.thread_id), target="#chat", attrs='hx-swap="outerHTML" hx-on:click="for (const row of this.parentElement.querySelectorAll(\'.on\')) row.classList.remove(\'on\'); this.classList.add(\'on\')"') %}
+{% call c.list_item(item.name, c.channels((item.channel,)) ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, identity=item.thread_id, href=href, on=(selected_thread == ref(item.thread_id)|string), id="contact-" ~ ref(item.thread_id), target="#chat", attrs='hx-swap="outerHTML" hx-on:click="for (const row of this.parentElement.querySelectorAll(\'.on\')) row.classList.remove(\'on\'); this.classList.add(\'on\')"') %}
   {% if item.pending %}<span class="badge">{{ item.pending }}</span>{% endif %}
 {% endcall %}
 {% endfor %}
-{% if listing.edge %}{{ c.edge(listing.edge, listing.more, "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts?offset=" ~ listing.edge ~ ("&selected=" ~ selected_thread if selected_thread else "")) }}{% endif %}
+{% if listing.edge %}{{ c.edge(listing.edge, listing.more, "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts?offset=" ~ listing.edge ~ ("&selected=" ~ selected_thread if selected_thread else "") ~ ("&review=pending" if listing.review == "pending" else "")) }}{% endif %}

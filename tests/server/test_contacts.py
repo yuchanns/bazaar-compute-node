@@ -373,7 +373,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert 'hx-trigger="revealed"' not in older
                 # case: the same sender goes on past the edge of the page, so
                 # the run is marked to join the one already shown
-                assert '<div class="turn leads">' in older
+                assert '<div class="turn leads" data-identity=' in older
 
                 # case: opened at a message the column named a while ago, the
                 # page may end before the newest, so its tail asks at once
@@ -443,7 +443,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert tail.count('class="line md"') == 2
                 assert tail.count('<div class="turn') == 2
                 assert 'id="message-message-chat-56"' in tail
-                assert '<div class="turn follows">' in tail
+                assert '<div class="turn follows" data-identity=' in tail
                 assert "&last=message-chat-57" in tail
                 # case: a column with nothing to read after is read afresh
                 # as a whole once something is new

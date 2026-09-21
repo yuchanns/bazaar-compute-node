@@ -1,0 +1,21 @@
+{% import "components.html" as c with context %}
+{# what the agent says to a conversation still waiting to be looked at;
+   nothing means it says nothing: a box over the page, the way the page asks
+   anything it must be sure of. once the line is kept the box has nothing
+   more to say, and goes; a line that could not be read is not offered for
+   saving, so no blank goes out in its place #}
+{% if saved %}
+<div id="reply" hidden hx-morph-skip></div>
+{% else %}
+<div class="veil" id="reply" hx-morph-skip hx-on:click="if (event.target === this) this.hidden = true">
+  <form class="dialog reply" hx-post="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/reply" hx-target="#reply" hx-swap="outerHTML">
+    <h3>{{ t.text("contacts.reply") }}</h3>
+    <p class="st">{{ t.text("contacts.reply_hint") }}</p>
+    {# the title names the one field, so it carries no label of its own #}
+    {% if reply is not none %}<div class="field"><textarea name="reply" rows="3" placeholder="{{ t.text("contacts.reply_empty") }}" autofocus>{{ reply }}</textarea></div>{% endif %}
+    {% if failed %}<p class="err">{{ t.text("contacts." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
+    {% if reply is not none %}<button class="btn p" type="submit">{{ t.text("profile.save") }}</button>{% endif %}
+    <button class="btn" type="button" hx-on:click="document.getElementById('reply').hidden = true">{{ t.text("computers.cancel") }}</button>
+  </form>
+</div>
+{% endif %}

@@ -19,10 +19,10 @@
   {% include "rail.html" %}
   <div id="main" class="main">{% include content %}</div>
 </div>
-<div class="stale" id="stale" hidden>
+<div class="veil" id="stale" hidden>
   <div class="dialog">
     <h3>{{ t.text("stale.title") }}</h3>
-    <p>{{ t.text("stale.text") }}</p>
+    <p class="st">{{ t.text("stale.text") }}</p>
     <button class="btn p" type="button" hx-on:click="location.reload()">{{ t.text("stale.refresh") }}</button>
   </div>
 </div>

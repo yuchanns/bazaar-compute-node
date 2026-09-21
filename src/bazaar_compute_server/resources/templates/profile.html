@@ -1,0 +1,36 @@
+{% import "components.html" as c with context %}
+{# the card about a conversation, drawn over the chat from its right edge:
+   who is in it - read off the messages loaded, so it grows as more are -
+   what wakes the agent in it, and at the bottom the way to turn it away #}
+{# once htmx has taken the card in, it reads who spoke off the chat's turns,
+   and keeps reading as the chat takes more in - paged up or arriving - until
+   it is closed; and it listens for a click outside itself to close: the
+   click that opened it is still on its way, so the listener waits a tick #}
+<div class="drawer" id="profile" hx-on:htmx:after:process="const card = this; const grid = card.querySelector('#members'); const history = document.getElementById('history'); if (grid && history) { const seen = new Set(); const gather = () => { for (const turn of history.querySelectorAll('.turn:not([data-kind=system])')) { const id = turn.dataset.identity; if (seen.has(id)) continue; seen.add(id); const el = document.createElement('div'); el.className = 'member'; el.title = turn.dataset.speaker; el.innerHTML = '<div class=&quot;av&quot;></div><small></small>'; el.firstChild.innerHTML = turn.querySelector('.av').innerHTML; el.lastChild.textContent = turn.dataset.speaker; grid.append(el); } card.querySelector('#member-count').textContent = seen.size; }; gather(); const more = new MutationObserver(() => { if (!card.isConnected || card.hidden) { more.disconnect(); return; } gather(); }); more.observe(history, {childList: true, subtree: true}); } setTimeout(() => document.addEventListener('click', function away(event) { if (!card.isConnected || card.hidden) { document.removeEventListener('click', away); return; } if (!card.contains(event.target)) { card.hidden = true; document.removeEventListener('click', away); } }), 0)">
+  <div class="hd">{{ t.text("profile.title") }}<button class="btn icon" type="button" title="{{ t.text("profile.close") }}" hx-on:click="document.getElementById('profile').hidden = true">{{ c.icon("x") }}</button></div>
+  <div class="who">
+    <div class="av">{{ contact.thread_id|identicon|safe }}</div>
+    <div><b>{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }} · {{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
+  </div>
+  <div class="body">
+    {# a group has members; a direct message is the two of them #}
+    {% if contact.kind == "group" %}
+    <div class="section">{{ c.icon("users") }} {{ t.text("profile.members") }} · <span id="member-count"></span></div>
+    {# each turn in the chat carries its speaker; the grid is those, once each #}
+    <div class="grid" id="members"></div>
+    {% endif %}
+    <div class="section">{{ c.icon("alarm-clock") }} {{ t.text("profile.reminders") }} · {{ reminders.items|length }}</div>
+    <div class="rows">
+      {% for item in reminders.items %}
+      <div class="row">{{ c.icon("repeat" if item.repeat_rule else "calendar") }}<div><b>{{ item.title }}</b><small>{% if item.repeat_rule %}{{ item.repeat_rule|repeat }} · {% endif %}{% if item.next_fire_at_ms %}{{ item.next_fire_at_ms|due }}{% endif %}</small></div></div>
+      {% endfor %}
+      {% if reminders.answer == "offline" %}<div class="empty">{{ t.text("contacts.offline") }}</div>
+      {% elif reminders.answer != "listed" %}<div class="empty">{{ t.text("contacts." ~ reminders.answer, {"code": reminders.code}) }}</div>
+      {% elif not reminders.items %}<div class="empty">{{ t.text("profile.no_reminders") }}</div>{% endif %}
+    </div>
+  </div>
+  <div class="foot">
+    <button class="btn danger" type="button" hx-on:click="document.getElementById('remove-ask').hidden = false">{{ c.icon("trash-2") }} {{ t.text("profile.remove_" ~ contact.kind) }}</button>
+  </div>
+  {% include "remove_ask.html" %}
+</div>

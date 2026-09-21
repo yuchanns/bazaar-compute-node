@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from urllib.parse import urlencode
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
@@ -16,6 +17,10 @@ from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
 from ..refs import Refs, expanded
 from ..rendering import Renderer
+from ..review import Request as ReviewRequest
+from ..review import decide, reminders, set_reply
+from ..review import reply as reply_of
+from ..review import request as request_of
 from ..storage import IStorage
 
 
@@ -81,13 +86,7 @@ class AgentPages:
             if selected is None:
                 return HTMLResponse("", status_code=404)
             await self.refs.load([*_named([selected]), *contact.named])
-            return self._render.fragment(
-                request,
-                "chat.html",
-                selected=selected,
-                contact=contact,
-                latest=request.query_params.get("latest"),
-            )
+            return await self._chat(request, selected, contact)
         page, selected = await asyncio.gather(
             agent_page(self._storage, Access.of(request)),
             agent_view(
@@ -114,6 +113,12 @@ class AgentPages:
                 *(contact.named if contact else []),
             ]
         )
+        # a conversation still waiting opens on the question about it
+        asked = (
+            await request_of(self._controls, selected, contact)
+            if selected is not None and contact is not None and _pending(request)
+            else None
+        )
         return self._render.page(
             request,
             "agents",
@@ -127,6 +132,184 @@ class AgentPages:
             ),
             contact=contact,
             latest=request.query_params.get("latest"),
+            asked=asked,
+        )
+
+    async def _chat(
+        self, request: Request, selected: AgentView, contact: Contact
+    ) -> Response:
+        """The right column for one conversation: the chat, or, for one still
+        waiting to be looked at, the question about it."""
+
+        if _pending(request):
+            return self._render.fragment(
+                request,
+                "chat.html",
+                selected=selected,
+                contact=contact,
+                latest=None,
+                asked=await request_of(self._controls, selected, contact),
+            )
+        return self._render.fragment(
+            request,
+            "chat.html",
+            selected=selected,
+            contact=contact,
+            latest=request.query_params.get("latest"),
+            asked=None,
+        )
+
+    @allowed("agents.approve")
+    @expanded("computer_id", "agent_id", "thread_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def review(self, request: Request) -> Response:
+        """Let a conversation in or turn it away; the column comes back as
+        the chat when let in, empty when turned away - and the page's address
+        follows: the conversation's own once let in, the agent's once turned
+        away, so a reload does not ask the question again or open what was
+        turned away."""
+
+        params = request.path_params
+        contact = await self._contact(request)
+        if contact is None:
+            return HTMLResponse("", status_code=404)
+        form = await request.form()
+        review = str(form.get("review", ""))
+        if review not in ("approved", "denied"):
+            return HTMLResponse("", status_code=400)
+        selected = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load([*_named([selected]), *contact.named])
+        failed = await decide(self._controls, selected, contact.thread_id, review)
+        if failed is not None and not _pending(request):
+            # asked from the card about a conversation already let in: the
+            # question stays up with the answer, the chat behind it as it was
+            response = self._render.fragment(
+                request,
+                "remove_ask.html",
+                selected=selected,
+                contact=contact,
+                failed=failed,
+            )
+            response.headers["HX-Retarget"] = "#remove-ask"
+            return response
+        if failed is not None:
+            word, _, code = failed.partition(":")
+            return self._render.fragment(
+                request,
+                "chat.html",
+                selected=selected,
+                contact=contact,
+                latest=None,
+                asked=ReviewRequest(
+                    selected, contact, None, None, None, word, code or None
+                ),
+            )
+        agent_url = f"/agents/{self.refs.ref(selected.computer_id)}/{self.refs.ref(selected.id)}"
+        if review == "denied":
+            response = self._render.fragment(
+                request,
+                "chat.html",
+                selected=selected,
+                contact=None,
+                latest=None,
+                asked=None,
+            )
+            response.headers["HX-Push-Url"] = agent_url
+            return response
+        latest = request.query_params.get("latest")
+        response = self._render.fragment(
+            request,
+            "chat.html",
+            selected=selected,
+            contact=contact,
+            latest=latest,
+            asked=None,
+        )
+        response.headers["HX-Push-Url"] = (
+            f"{agent_url}/contacts/{self.refs.ref(contact.thread_id)}?"
+            + urlencode(
+                {
+                    "actor": self.refs.ref(contact.actor_id),
+                    "target": self.refs.ref(contact.target),
+                    "channel": contact.channel,
+                    "name": contact.name,
+                    **({"latest": latest} if latest else {}),
+                }
+            )
+        )
+        return response
+
+    @allowed("agents.view")
+    @expanded("computer_id", "agent_id", "thread_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def profile(self, request: Request) -> Response:
+        """The card about a conversation: who is in it, what wakes the agent
+        in it, and the way to turn it away."""
+
+        params = request.path_params
+        contact = await self._contact(request)
+        if contact is None:
+            return HTMLResponse("", status_code=404)
+        selected = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load([*_named([selected]), *contact.named])
+        return self._render.fragment(
+            request,
+            "profile.html",
+            selected=selected,
+            contact=contact,
+            reminders=await reminders(self._controls, selected, contact),
+            failed=None,
+        )
+
+    @allowed("agents.approve")
+    @expanded("computer_id", "agent_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def reply(self, request: Request) -> Response:
+        """What the agent says to a conversation still waiting: the card to
+        change it, or the change made."""
+
+        params = request.path_params
+        selected = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load(_named([selected]))
+        if request.method == "POST":
+            form = await request.form()
+            failed = await set_reply(
+                self._controls, selected, str(form.get("reply", ""))
+            )
+            return self._render.fragment(
+                request,
+                "reply_form.html",
+                selected=selected,
+                reply=str(form.get("reply", "")),
+                saved=failed is None,
+                failed=failed,
+            )
+        # a line that could not be read is not offered for saving, or a
+        # blank would go out in its place
+        answer = await reply_of(self._controls, selected)
+        failed = answer.partition(":")[0] in ("offline", "silent", "refused")
+        return self._render.fragment(
+            request,
+            "reply_form.html",
+            selected=selected,
+            reply=None if failed else answer,
+            saved=False,
+            failed=answer if failed else None,
         )
 
     async def _ids(self, key: str | None) -> str | None:
@@ -238,6 +421,8 @@ class AgentPages:
             agent,
             offset=offset,
             limit=max(int(query.get("until") or 0), PAGE_SIZE),
+            # the column shows those let in, or, on its other tab, those waiting
+            review="pending" if query.get("review") == "pending" else "approved",
         )
         # a refresh that got no answer leaves the column as it was; it is
         # asked for again when the next message event comes
@@ -319,6 +504,12 @@ class AgentPages:
         return self._render.fragment(
             request, "history.html", history=history, latest=query.get("latest")
         )
+
+
+def _pending(request: Request) -> bool:
+    """Whether the link came from the list of those waiting."""
+
+    return request.query_params.get("review") == "pending"
 
 
 def _named(agents: Iterable[AgentView]) -> list[str]:
