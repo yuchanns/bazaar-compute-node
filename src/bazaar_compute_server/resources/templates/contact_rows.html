@@ -5,7 +5,9 @@
 {# the conversation opens in the right column alone; the row takes the
    highlight itself, so the list is not asked for again #}
 {% call c.list_item(item.name, c.channels((item.channel,)) ~ " · " ~ t.text("contacts." ~ item.kind) ~ when, identity=item.thread_id, href=href, on=(selected_thread == ref(item.thread_id)|string), id="contact-" ~ ref(item.thread_id), target="#chat", attrs='hx-swap="outerHTML" hx-on:click="for (const row of this.parentElement.querySelectorAll(\'.on\')) row.classList.remove(\'on\'); this.classList.add(\'on\')"') %}
-  {% if item.pending %}<span class="badge">{{ item.pending }}</span>{% endif %}
+  {# what has come in and not been read yet, counted the way a chat list
+     counts it: a red pill at the row's end, capped where it stops meaning #}
+  {% if item.pending %}<span class="n">{{ item.pending if item.pending < 100 else "99+" }}</span>{% endif %}
 {% endcall %}
 {% endfor %}
 {% if listing.edge %}{{ c.edge(listing.edge, listing.more, "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts?offset=" ~ listing.edge ~ ("&selected=" ~ selected_thread if selected_thread else "") ~ ("&review=pending" if listing.review == "pending" else "")) }}{% endif %}
