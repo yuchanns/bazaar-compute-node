@@ -13,7 +13,7 @@ from bazaar_compute_node.contrib.telegram.channel import TelegramChannel
 from bazaar_compute_node.core.audit import AuditRecorder
 from bazaar_compute_node.core.channel import ChannelContext, ChannelIdentity
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
-from bazaar_compute_node.core.models import SenderIdentity, SenderKind
+from bazaar_compute_node.core.models import Message, SenderIdentity, SenderKind
 
 TEST_BOT_ID = 1_000_000_001
 TEST_USER_ID = 1_000_000_002
@@ -314,6 +314,34 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
         )
         assert current.sender_kind is SenderKind.HUMAN
         assert current.reply_to_message_id == quoted.message_id
+
+        # a reply quoting what this bot itself sent brings no second copy of
+        # it: the message is on record as sent
+        await channel._handle_message(
+            {
+                "message_id": 4,
+                "date": channel._started_at_s,
+                "chat": {"id": TEST_USER_ID, "type": "private"},
+                "from": {
+                    "id": TEST_USER_ID,
+                    "is_bot": False,
+                    "username": TEST_USER_USERNAME,
+                },
+                "text": "Replying to you",
+                "reply_to_message": {
+                    "message_id": 3,
+                    "date": channel._started_at_s,
+                    "chat": {"id": TEST_USER_ID, "type": "private"},
+                    "from": {"id": bot_id, "is_bot": True, "username": bot_username},
+                    "text": "What the bot said",
+                },
+            },
+            update_id=3,
+        )
+        only = await channel._inbound.get()
+        assert isinstance(only, Message)
+        assert only.body == "Replying to you" and only.reply_to_message_id is None
+        assert channel._inbound.empty()
 
         filtered_before = channel._message_updates_filtered
         await channel._handle_message(

@@ -866,6 +866,11 @@ class TelegramChannel(IChannel):
         bot_username = self._bot_username or ""
         if bot_id is None:
             raise RuntimeError("Telegram bot identity is not initialized")
+        # what the bot itself said is on record as sent; quoted back, it is
+        # not heard a second time as if someone else had said it
+        quoted_sender = reply.get("from")
+        if isinstance(quoted_sender, Mapping) and quoted_sender.get("id") == bot_id:
+            return None
         content = await self._content(
             reply,
             bot_id=bot_id,
