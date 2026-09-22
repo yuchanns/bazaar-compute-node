@@ -220,7 +220,7 @@ def load_node_configuration(
         return _parse_v4_configuration(payload)
 
     configuration = _parse_v4_configuration(state.advance(payload))
-    _write_configuration(path, configuration)
+    write_configuration(path, configuration)
     return configuration
 
 
@@ -636,7 +636,7 @@ def _configuration_state(version: str) -> _ConfigurationState:
     raise ConfigurationError(f"unsupported configuration version: {version}")
 
 
-def _write_configuration(path: Path, configuration: NodeConfiguration) -> None:
+def write_configuration(path: Path, configuration: NodeConfiguration) -> None:
     try:
         _replace_file(path, _serialize_configuration(configuration))
     except OSError as error:
@@ -847,4 +847,5 @@ __all__ = [
     "load_control_configuration",
     "load_node_configuration",
     "resolve_config_path",
+    "write_configuration",
 ]

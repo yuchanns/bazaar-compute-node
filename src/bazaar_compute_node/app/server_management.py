@@ -12,9 +12,9 @@ from .config import (
     ConfigurationError,
     NodeConfiguration,
     _replace_file,
-    _write_configuration,
     load_node_configuration,
     resolve_config_path,
+    write_configuration,
 )
 from .system_service import default_env_file, installed_env_file
 from .usage import Usage
@@ -74,9 +74,9 @@ def _connect(
     # the token goes first: a configuration that names the server sink is
     # only right once the credential it reads exists; and it goes back when
     # the configuration cannot follow, so the two never disagree
-    before = _write_env_value(env_file, TOKEN_ENV, token)
+    before = write_env_value(env_file, TOKEN_ENV, token)
     try:
-        _write_configuration(config_path, updated)
+        write_configuration(config_path, updated)
     except ConfigurationError as error:
         if before is None:
             env_file.unlink(missing_ok=True)
@@ -97,10 +97,22 @@ def _connect(
     return 0
 
 
-def _write_env_value(path: Path, name: str, value: str) -> str | None:
+def check_env_value(value: str) -> None:
+    """A value the environment file can hold. The file is read by systemd,
+    sourced by sh under launchd and dot-sourced by PowerShell on Windows; a
+    single-quoted literal is one to all three only while it has no quote and
+    stays on one line, so a value that breaks either is refused rather than
+    let out of its quotes."""
+
+    if any(character in value for character in "'\n\r\0"):
+        raise ValueError("value must not contain a single quote or a line break")
+
+
+def write_env_value(path: Path, name: str, value: str) -> str | None:
     """Set one variable in the service's environment file, keeping the rest;
     what the file held before, or nothing when there was no file."""
 
+    check_env_value(value)
     # single quotes: a literal to sh, PowerShell, and systemd alike
     line = f"$env:{name} = '{value}'" if os.name == "nt" else f"{name}='{value}'"
     prefix = f"$env:{name} " if os.name == "nt" else f"{name}="
@@ -120,4 +132,10 @@ def _write_env_value(path: Path, name: str, value: str) -> str | None:
     return before
 
 
-__all__ = ["TOKEN_ENV", "default_env_file", "run_server_command"]
+__all__ = [
+    "TOKEN_ENV",
+    "check_env_value",
+    "default_env_file",
+    "run_server_command",
+    "write_env_value",
+]

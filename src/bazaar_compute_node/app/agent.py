@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 
 from ..core.actor import Actor, Actors, Agent, Thread
+from ..core.agent import State
 from ..core.audit import AuditRecorder
 from ..core.channel import Channel, ChannelContext, Channels, IChannel
 from ..core.concurrency import IThreadConcurrency, ThreadLockRegistry
@@ -96,8 +97,6 @@ class AgentApplication:
         self.command_log: list[CommandRecord] = []
         self._session_capabilities: dict[str, _SessionCapabilityBinding] = {}
         self._concurrency = ThreadLockRegistry()
-        self._started = False
-        self._stopping = False
         self._runtime_configurations = configuration.runtimes
         self._logger = logging.getLogger("bazaar_compute_node.application.agent")
         self._attachment_materializer = AttachmentMaterializer(
@@ -203,17 +202,24 @@ class AgentApplication:
         )
 
     @property
+    def state(self) -> State:
+        """Where the agent is: not up yet, done for, or - once up - at rest,
+        since the actors' own states are theirs to tell."""
+
+        return self.orchestrator.agent.lifecycle
+
+    @property
     def started(self) -> bool:
-        return self._started
+        return self.orchestrator.agent.up
 
     def workspace_path(self) -> Path:
         return resolve_workspace_dir(self.agent_id)
 
     async def start(self) -> None:
-        if self._started:
+        if self.started:
             return
-        if self._stopping:
-            raise RuntimeError("Agent application is stopping")
+        if self.state is State.TERMINATED:
+            raise RuntimeError("Agent application is terminated")
         workspace = self.workspace_path()
         await asyncio.to_thread(
             workspace.mkdir,
@@ -238,7 +244,6 @@ class AgentApplication:
         except BaseException:
             await self._cleanup_partial_start()
             raise
-        self._started = True
         self.command_dispatcher.start_accepting()
 
     async def _backfill_channel_identity(self) -> None:
@@ -275,10 +280,11 @@ class AgentApplication:
         return tuple(names)
 
     async def stop(self) -> None:
-        if self._stopping:
+        if self.state is State.TERMINATED:
             return
-        self._stopping = True
-        self._started = False
+        # the turn is taken before anything is awaited: whoever looks in the
+        # meantime sees an agent that is done for, not one to be changed
+        self.orchestrator.agent.terminated()
         self.command_dispatcher.stop_accepting()
         errors: list[BaseException] = []
         try:
@@ -298,6 +304,11 @@ class AgentApplication:
         except BaseException as error:  # noqa: BLE001
             errors.append(error)
         self._session_capabilities.clear()
+        # the one who stopped it being cancelled is not an error of the stop:
+        # the cleanup is done, and the cancellation goes on up
+        for error in errors:
+            if isinstance(error, asyncio.CancelledError):
+                raise error
         if errors:
             raise RuntimeError(
                 "; ".join(type(error).__name__ for error in errors)
@@ -310,7 +321,7 @@ class AgentApplication:
         return await self.command_dispatcher(request)
 
     async def publish_inbox_wake(self, message: Message[InboundAttachment]) -> None:
-        if not self._started:
+        if not self.started:
             raise RuntimeError("Agent application is not started")
         await self.orchestrator.publish_inbox_wake(message)
 
@@ -318,7 +329,7 @@ class AgentApplication:
         return {
             "agent_id": self.agent_id,
             "name": self.name,
-            "status": "started" if self.started else "stopped",
+            "status": "started" if self.started else self.state.value,
             "channels": tuple(member.name for member in self.channel.members),
             "runtimes": tuple(runtime.name for runtime in self.runtimes),
             "channel_health": dict(self.channel.health),

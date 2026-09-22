@@ -6,15 +6,16 @@ import logging
 import os
 import signal
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import __version__
 from ..core.audit import AuditRecorder
 from ..core.concurrency import ThreadLockRegistry
 from ..core.control import AgentCommands, ControlContext, IControl
+from ..core.correlation import CorrelationContext
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
-from ..core.models import InboundAttachment, Message
+from ..core.models import InboundAttachment, Message, RuntimeEventState
 from ..core.observability import AuditContext, IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir
@@ -25,9 +26,16 @@ from ..core.utils.clock import now_ms
 from ..core.utils.text import format_exception
 from ..i18n import create_translator
 from .agent import AgentApplication
-from .config import AgentConfiguration, NodeConfiguration
+from .config import (
+    AgentConfiguration,
+    ChannelConfiguration,
+    NodeConfiguration,
+    load_node_configuration,
+    write_configuration,
+)
 from .health_report import HealthReporter
 from .registry import AdapterRegistry, SharedAdapterFactories
+from .server_management import check_env_value, write_env_value
 from .transport import LocalCommandServer
 from .upgrade import UpgradeService
 from .version_check import VersionWatcher
@@ -77,8 +85,15 @@ class NodeApplication:
         registry: AdapterRegistry | None = None,
         endpoint_path: Path | None = None,
         timeout_budget: TimeoutBudget | None = None,
+        # where the configuration and the credentials live on disk; a change
+        # to an agent made while the node runs is written there, and a node
+        # given neither keeps its changes to the process
+        config_path: Path | None = None,
+        env_path: Path | None = None,
     ) -> None:
         self.configuration = configuration
+        self._config_path = config_path
+        self._env_path = env_path
         self.translator = create_translator(configuration.lang)
         self.data_dir = resolve_data_dir()
         self.timeout_budget = timeout_budget or TimeoutBudget(
@@ -250,13 +265,19 @@ class NodeApplication:
                     # a control is someone to ask about a conversation
                     reviewed=self.control is not None,
                 )
+                # on the list from the moment it exists: its state says
+                # whether it is up, and a change to it in the meantime is
+                # refused on that state
+                self.agents[configuration.id] = application
                 await application.start()
         except asyncio.CancelledError:
             if application is not None:
+                self.agents.pop(configuration.id, None)
                 await self._stop_agent_after_failed_start(application)
             raise
         except Exception as error:  # noqa: BLE001
             if application is not None:
+                self.agents.pop(configuration.id, None)
                 await self._stop_agent_after_failed_start(application)
             result = AgentStartupResult(
                 agent_id=configuration.id,
@@ -271,7 +292,6 @@ class NodeApplication:
             self._log("agent.start.failed", **result.as_health_record())
             return
 
-        self.agents[configuration.id] = application
         result = AgentStartupResult(
             agent_id=configuration.id,
             name=configuration.name,
@@ -281,6 +301,187 @@ class NodeApplication:
         )
         self.agent_startup_results[configuration.id] = result
         self._log("agent.start.succeeded", **result.as_health_record())
+
+    async def add_agent(
+        self,
+        configuration: AgentConfiguration,
+        secrets: Mapping[int, Mapping[str, str]] | None = None,
+    ) -> AgentConfiguration:
+        """Take a new agent in while running: its credentials kept, its
+        configuration written down, and itself started. One that fails to
+        start stays on the list with the failure in the health record, the
+        same as at startup, for the operator to fix and try again."""
+
+        if any(agent.id == configuration.id for agent in self.configuration.agents):
+            raise ValueError(f"agent already configured: {configuration.id}")
+        self._check_agents((*self.configuration.agents, configuration))
+        configuration = self._keep_secrets(configuration, secrets or {})
+        self._write_agents((*self.configuration.agents, configuration))
+        await self._start_agent(configuration)
+        await self._agents_changed("agent.added", configuration)
+        return configuration
+
+    async def update_agent(
+        self,
+        configuration: AgentConfiguration,
+        secrets: Mapping[int, Mapping[str, str]] | None = None,
+    ) -> AgentConfiguration:
+        """Change an agent while running: the one running under that id is
+        stopped, the new configuration written down, and an agent started
+        from it. In between, the agent hears nothing; what its channels
+        hold for it is picked up when they poll again."""
+
+        if not any(agent.id == configuration.id for agent in self.configuration.agents):
+            raise ValueError(f"agent is not configured: {configuration.id}")
+        self._settled(configuration.id)
+        self._check_agents(
+            tuple(
+                configuration if agent.id == configuration.id else agent
+                for agent in self.configuration.agents
+            )
+        )
+        configuration = self._keep_secrets(configuration, secrets or {})
+        self._write_agents(
+            tuple(
+                configuration if agent.id == configuration.id else agent
+                for agent in self.configuration.agents
+            )
+        )
+        await self._stop_agent(configuration.id)
+        await self._start_agent(configuration)
+        await self._agents_changed("agent.updated", configuration)
+        return configuration
+
+    async def remove_agent(self, agent_id: str) -> AgentConfiguration:
+        """Stop an agent and strike it from the configuration. Its workspace
+        and its records stay, and so do the variables its credentials went
+        under: another agent may share a token, and clearing is the
+        operator's call."""
+
+        removed = next(
+            (agent for agent in self.configuration.agents if agent.id == agent_id),
+            None,
+        )
+        if removed is None:
+            raise ValueError(f"agent is not configured: {agent_id}")
+        self._settled(agent_id)
+        self._write_agents(
+            tuple(agent for agent in self.configuration.agents if agent.id != agent_id)
+        )
+        await self._stop_agent(agent_id)
+        await self._agents_changed("agent.removed", removed)
+        return removed
+
+    def _settled(self, agent_id: str) -> None:
+        """Refuse to change an agent that is not up: one still coming up,
+        or one already done for and on its way out. The turn to terminated
+        is taken before the stopping is awaited, so it is what stands
+        between two changes to one agent. One with no instance - it never
+        started, or failed to - is settled too."""
+
+        agent = self.agents.get(agent_id)
+        if agent is not None and not agent.started:
+            raise ValueError(f"agent is {agent.state.value}: {agent_id}")
+
+    def _keep_secrets(
+        self,
+        configuration: AgentConfiguration,
+        secrets: Mapping[int, Mapping[str, str]],
+    ) -> AgentConfiguration:
+        """Put each credential under a variable of the node's naming, in the
+        environment file for the next start and in the process for this one;
+        the channel's configuration names the variable, never the value. A
+        value the file cannot hold is refused before any value is kept."""
+
+        # the whole id: two agents made within the same minute share the start
+        # of theirs; and the card's place, for two cards of one kind
+        prefix = f"BCN_{configuration.id.replace('-', '_').upper()}"
+        kept: dict[str, str] = {}
+        channels = list(configuration.channels)
+        for index, values in secrets.items():
+            channel = channels[index]
+            options = dict(channel.options)
+            for key, value in values.items():
+                name = f"{prefix}_CHANNEL{index}_{channel.kind.upper()}_{key.upper()}"
+                kept[name] = value
+                options[f"{key}_env"] = name
+            channels[index] = ChannelConfiguration(kind=channel.kind, options=options)
+        for value in kept.values():
+            check_env_value(value)
+        for name, value in kept.items():
+            if self._env_path is not None:
+                write_env_value(self._env_path, name, value)
+            os.environ[name] = value
+        return replace(configuration, channels=tuple(channels))
+
+    def _write_agents(self, agents: tuple[AgentConfiguration, ...]) -> None:
+        """The agents as they now are, in memory and on disk - in one go,
+        with nothing awaited in between, so two changes cannot cross and
+        the file always holds what the process holds. The file is read back
+        before it is written so that only the agents change: what the
+        process runs with may carry command-line overrides the file never
+        held. The files are small; the write is over in the time a message
+        takes to arrive. The file goes first: a write that fails leaves the
+        process holding what it held."""
+
+        path = self._config_path
+        if path is not None:
+            write_configuration(
+                path, replace(load_node_configuration(path), agents=agents)
+            )
+        self.configuration = replace(self.configuration, agents=agents)
+
+    def _check_agents(self, agents: tuple[AgentConfiguration, ...]) -> None:
+        """The node's configuration with these agents, checked as a whole -
+        two agents may not share a name - before anything is kept for them."""
+
+        replace(self.configuration, agents=agents)
+
+    async def _stop_agent(self, agent_id: str) -> None:
+        """Stop an agent and take it off the list; the state turns to
+        stopping before the stop is awaited, and the list entry stays
+        until it is over so that the turn is seen. A stop that reports
+        something going wrong on its way down has still stopped: that is
+        recorded, and what comes after goes on."""
+
+        agent = self.agents.get(agent_id)
+        self.agent_startup_results.pop(agent_id, None)
+        if agent is not None:
+            try:
+                await agent.stop()
+            except Exception as error:  # noqa: BLE001
+                self._log(
+                    "agent.stop.failed",
+                    agent_id=agent_id,
+                    error_type=type(error).__name__,
+                    error=format_exception(error),
+                )
+            finally:
+                self.agents.pop(agent_id, None)
+
+    async def _agents_changed(self, event_name: str, agent: AgentConfiguration) -> None:
+        """Say what changed, and beat once so a consumer sees the new list
+        now rather than at the next interval."""
+
+        result = self.agent_startup_results.get(agent.id)
+        await self._audit_recorder.append(
+            event_name=event_name,
+            state=RuntimeEventState.COMPLETED,
+            correlation=CorrelationContext(node_id=agent.id),
+            metadata={
+                "agent_id": agent.id,
+                "name": agent.name,
+                "channels": _channel_kinds(agent),
+                "runtimes": _runtime_kinds(agent),
+                **(
+                    {"error": result.error, "error_type": result.error_type}
+                    if result is not None and result.status == "failed"
+                    else {}
+                ),
+            },
+        )
+        if self._ready:
+            await self.health_reporter.report()
 
     async def stop(self) -> None:
         if not self._started:

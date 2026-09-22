@@ -16,9 +16,14 @@ from ...app.config import (
     ConfigurationError,
     NodeConfiguration,
     load_node_configuration,
+    resolve_config_path,
 )
 from ...app.registry import AdapterRegistry, ProviderLoadError, SharedAdapterFactories
-from ...app.system_service import run_system_service_command
+from ...app.system_service import (
+    default_env_file,
+    installed_env_file,
+    run_system_service_command,
+)
 from ...app.usage import Usage
 from ...core.paths import resolve_data_dir
 from ...i18n import Translator, create_translator
@@ -140,6 +145,8 @@ async def _run_node(args: argparse.Namespace, parser: Usage) -> int:
         shared_factories=shared_factories,
         registry=AdapterRegistry(),
         endpoint_path=_endpoint_path(args, data_dir),
+        config_path=args.config or resolve_config_path(),
+        env_path=installed_env_file() or default_env_file(),
     )
     await node.start()
     records = tuple(

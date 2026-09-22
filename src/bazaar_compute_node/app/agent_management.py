@@ -16,9 +16,9 @@ from .config import (
     ConfigurationError,
     NodeConfiguration,
     RuntimeConfiguration,
-    _write_configuration,
     load_node_configuration,
     resolve_config_path,
+    write_configuration,
 )
 from .usage import Usage
 
@@ -136,7 +136,7 @@ def _add_agent(
             configuration,
             agents=(*configuration.agents, agent),
         )
-        _write_configuration(config_path, updated)
+        write_configuration(config_path, updated)
     except ConfigurationError as error:
         parser.error(str(error))
     print(
@@ -169,7 +169,7 @@ def _remove_agent(
         agents=tuple(agent for agent in configuration.agents if agent.id != removed.id),
     )
     try:
-        _write_configuration(config_path, updated)
+        write_configuration(config_path, updated)
     except ConfigurationError as error:
         parser.error(str(error))
     print(f"Agent removed id={removed.id} name={removed.name}", flush=True)

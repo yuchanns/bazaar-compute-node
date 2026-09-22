@@ -97,6 +97,10 @@ class TestRuntime(IRuntime):
         self.active_streams: set[_TestTurnStream] = set()
         self.closed_streams: list[_TestTurnStream] = []
         self.turn_started = asyncio.Event()
+        # when set, a stop waits on it: a stop that is under way
+        self.stop_gate: asyncio.Event | None = None
+        # when set, a stop says it went wrong on its way down
+        self.stop_error: Exception | None = None
         self._turn_plans: deque[TestTurnPlan] = deque()
         self._start_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._reconcile_results: deque[
@@ -114,7 +118,11 @@ class TestRuntime(IRuntime):
 
     async def stop(self, *, timeout: float) -> None:
         del timeout
+        if self.stop_gate is not None:
+            await self.stop_gate.wait()
         self.stopped = True
+        if self.stop_error is not None:
+            raise self.stop_error
         streams = tuple(self.active_streams)
         for stream in streams:
             await stream.aclose()
