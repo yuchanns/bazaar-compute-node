@@ -336,6 +336,39 @@ def _parse_v4_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
     )
 
 
+def parse_agent(value: object, *, index: int = 1) -> AgentConfiguration:
+    """One agent from the shape the configuration file holds it in - which
+    is also what a server sends when it writes one."""
+
+    return _parse_v4_agent(value, index=index)
+
+
+def serialize_agent(agent: AgentConfiguration) -> dict[str, object]:
+    """One agent in that same shape, for a reader that is not TOML."""
+
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "mode": agent.mode.value,
+        "idle_timeout": agent.idle_timeout_seconds,
+        "channel": [
+            {"kind": channel.kind, **channel.options} for channel in agent.channels
+        ],
+        "runtime": [
+            {
+                "kind": runtime.kind,
+                "model": runtime.model,
+                "effort": runtime.effort,
+                "sandbox_mode": runtime.sandbox_mode.value,
+                "network_access": runtime.network_access,
+                "env": dict(runtime.env),
+                **runtime.options,
+            }
+            for runtime in agent.runtimes
+        ],
+    }
+
+
 def _parse_v4_agent(value: object, *, index: int) -> AgentConfiguration:
     table = _table(value, f"agent #{index}")
     raw_channels = table.get("channel")
@@ -846,6 +879,8 @@ __all__ = [
     "RuntimeConfiguration",
     "load_control_configuration",
     "load_node_configuration",
+    "parse_agent",
     "resolve_config_path",
+    "serialize_agent",
     "write_configuration",
 ]

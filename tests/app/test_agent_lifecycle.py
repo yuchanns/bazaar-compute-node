@@ -126,6 +126,17 @@ async def test_a_running_node_takes_agents_in_changes_them_and_lets_them_go(
         updated = [e for e in audit.events if e.event_name == "agent.updated"][-1]
         assert updated.metadata["error_type"] and broken.name == "Renamed again"
 
+        # case: answered before it is started - a server does not wait out a
+        # start - and a change asked for until it is up is refused, not run
+        # beside the start
+        mended = await node.update_agent(changed, wait=False)
+        assert mended.name == "Renamed again"
+        with pytest.raises(ValueError, match="agent is starting"):
+            await node.remove_agent(NEWCOMER_ID)
+        async with asyncio.timeout(10):
+            while not (NEWCOMER_ID in node.agents and node.agents[NEWCOMER_ID].started):
+                await asyncio.sleep(0.02)
+
         # case: removed - gone from the node, the health and the file; the
         # variable stays, the first agent runs on
         removed = await node.remove_agent(NEWCOMER_ID)
@@ -145,6 +156,7 @@ async def test_a_running_node_takes_agents_in_changes_them_and_lets_them_go(
             e.event_name for e in audit.events if e.event_name.startswith("agent.")
         ] == [
             "agent.added",
+            "agent.updated",
             "agent.updated",
             "agent.updated",
             "agent.updated",

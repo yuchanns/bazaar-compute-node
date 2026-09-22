@@ -130,6 +130,24 @@ class AdapterRegistry:
         return factory
 
     @staticmethod
+    def channel_kinds() -> tuple[str, ...]:
+        """The channels installed here, by name."""
+
+        return AdapterRegistry._installed(CHANNEL_ENTRY_POINT_GROUP)
+
+    @staticmethod
+    def runtime_kinds() -> tuple[str, ...]:
+        """The runtimes installed here, by name."""
+
+        return AdapterRegistry._installed(RUNTIME_ENTRY_POINT_GROUP)
+
+    @staticmethod
+    def _installed(group: str) -> tuple[str, ...]:
+        return tuple(
+            sorted({candidate.name for candidate in entry_points(group=group)})
+        )
+
+    @staticmethod
     def _find(group: str, name: str) -> EntryPoint | None:
         if not name:
             raise ProviderLoadError(f"provider name for '{group}' is empty")

@@ -8,17 +8,18 @@ import signal
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from uuid import uuid7
 
 from .. import __version__
 from ..core.audit import AuditRecorder
 from ..core.concurrency import ThreadLockRegistry
-from ..core.control import AgentCommands, ControlContext, IControl
+from ..core.control import AgentCommands, ControlContext, IControl, Refused
 from ..core.correlation import CorrelationContext
 from ..core.lifecycle import ITaskFailureSource, TimeoutBudget
 from ..core.models import InboundAttachment, Message, RuntimeEventState
 from ..core.observability import AuditContext, IAudit
 from ..core.orchestration import ReminderScheduler
-from ..core.paths import resolve_data_dir
+from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.restart import RESTART_EXIT_CODE
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
@@ -29,8 +30,11 @@ from .agent import AgentApplication
 from .config import (
     AgentConfiguration,
     ChannelConfiguration,
+    ConfigurationError,
     NodeConfiguration,
     load_node_configuration,
+    parse_agent,
+    serialize_agent,
     write_configuration,
 )
 from .health_report import HealthReporter
@@ -39,6 +43,42 @@ from .server_management import check_env_value, write_env_value
 from .transport import LocalCommandServer
 from .upgrade import UpgradeService
 from .version_check import VersionWatcher
+
+# what a look at a workspace shows of its top: enough to see what an agent
+# has to hand, not a way through the tree
+WORKSPACE_ENTRIES = 200
+
+
+def _list_directory(workspace: Path, path: str) -> dict[str, object]:
+    root = workspace.resolve()
+    directory = (root / path).resolve()
+    if not directory.is_relative_to(root):
+        raise Refused(f"path is outside the workspace: {path}")
+    # a link is not listed: it may lead out of the workspace, or nowhere
+    listed = (
+        sorted(
+            (entry for entry in directory.iterdir() if not entry.is_symlink()),
+            key=lambda item: item.name,
+        )
+        if directory.is_dir()
+        else []
+    )
+    entries: list[dict[str, object]] = []
+    for entry in listed[:WORKSPACE_ENTRIES]:
+        stat = entry.stat()
+        entries.append(
+            {
+                "name": entry.name,
+                "kind": "directory" if entry.is_dir() else "file",
+                "size_bytes": stat.st_size,
+                "modified_at_ms": int(stat.st_mtime * 1000),
+            }
+        )
+    return {
+        "at": directory.relative_to(root).as_posix() if directory != root else "",
+        "entries": entries,
+        "more": len(listed) > WORKSPACE_ENTRIES,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +134,10 @@ class NodeApplication:
         self.configuration = configuration
         self._config_path = config_path
         self._env_path = env_path
+        self._clock = now_ms
+        # agents written down and answered for, still being started: by id,
+        # the start under way
+        self._starting: dict[str, asyncio.Task[None]] = {}
         self.translator = create_translator(configuration.lang)
         self.data_dir = resolve_data_dir()
         self.timeout_budget = timeout_budget or TimeoutBudget(
@@ -121,6 +165,7 @@ class NodeApplication:
                     timeout_budget=self.timeout_budget,
                     audit=self.audit,
                     commands_of=self._agent_commands,
+                    node=self,
                 )
             )
         self._reminder_concurrency = ThreadLockRegistry()
@@ -302,34 +347,164 @@ class NodeApplication:
         self.agent_startup_results[configuration.id] = result
         self._log("agent.start.succeeded", **result.as_health_record())
 
+    def read_agents(self) -> Mapping[str, object]:
+        """The agents as they are configured, each with how it is doing and
+        which of its credentials are set - the values themselves stay in the
+        process. With them, the kinds installed here, so a form can offer
+        what this node can actually run."""
+
+        return {
+            "agents": [
+                {
+                    **serialize_agent(agent),
+                    "status": self._agent_status(agent.id),
+                    # by channel, whether each credential it names has a
+                    # value here: named but empty is not set
+                    "secrets": [
+                        {
+                            key.removesuffix("_env"): bool(os.environ.get(str(name)))
+                            for key, name in channel.options.items()
+                            if key.endswith("_env")
+                        }
+                        for channel in agent.channels
+                    ],
+                }
+                for agent in self.configuration.agents
+            ],
+            "kinds": {
+                "channels": self._registry.channel_kinds(),
+                "runtimes": self._registry.runtime_kinds(),
+            },
+        }
+
+    async def write_agent(
+        self,
+        agent: Mapping[str, object],
+        secrets: Mapping[str, Mapping[str, str]],
+        env: Mapping[str, Mapping[str, str]],
+        settings: Mapping[str, str],
+    ) -> Mapping[str, object]:
+        """Take in or change one agent, as the mapping says. One without an
+        id is new, and the node gives it its id; one naming an agent the node
+        does not have - let go since the form was opened - is not found. The
+        environment values come by runtime position; each is kept under a
+        variable of the node's naming, the way a credential is."""
+
+        payload = dict(agent)
+        agent_id = payload.get("id")
+        known = {configured.id for configured in self.configuration.agents}
+        if agent_id is None:
+            payload["id"] = str(uuid7())
+        elif agent_id not in known:
+            raise ValueError(f"agent is not configured: {agent_id}")
+        try:
+            configuration = parse_agent(payload)
+        except ConfigurationError as error:
+            raise Refused(str(error)) from error
+        by_channel = {int(index): dict(values) for index, values in secrets.items()}
+        by_runtime = {int(index): dict(values) for index, values in env.items()}
+        try:
+            written = (
+                await self.update_agent(
+                    configuration, by_channel, by_runtime, wait=False
+                )
+                if configuration.id in known
+                else await self.add_agent(
+                    configuration, by_channel, by_runtime, wait=False
+                )
+            )
+        except ConfigurationError as error:
+            # an environment name the configuration will not hold
+            raise Refused(str(error)) from error
+        status = self._agent_status(written.id)
+        # what it does is kept with it now, in its own storage, not asked of
+        # an agent that may still be starting
+        for key, value in settings.items():
+            await self.storage.scope(written.id, written.name).set_setting(
+                key, value, now_ms=self._clock()
+            )
+            await self._audit_recorder.append(
+                event_name="setting.changed",
+                state=RuntimeEventState.COMPLETED,
+                correlation=CorrelationContext(node_id=written.id),
+                metadata={"key": key},
+            )
+        return {**serialize_agent(written), "status": status}
+
+    async def delete_agent(self, agent_id: str) -> Mapping[str, object]:
+        """Let one agent go, as the operator asked."""
+
+        return serialize_agent(await self.remove_agent(agent_id))
+
+    async def read_setting(self, agent_id: str, key: str) -> str | None:
+        """What one agent is set to do under a key, from its own storage: an
+        agent that is not up has it all the same."""
+
+        agent = next(
+            (agent for agent in self.configuration.agents if agent.id == agent_id),
+            None,
+        )
+        if agent is None:
+            raise ValueError(f"agent is not configured: {agent_id}")
+        return await self.storage.scope(agent.id, agent.name).get_setting(key)
+
+    async def read_workspace(self, agent_id: str, path: str) -> Mapping[str, object]:
+        """One directory of the workspace an agent works in, by name:
+        the top, or the one at `path` below it - a directory at a time, so a
+        page opens the tree as far as a person looks. A path that leads out
+        of the workspace, by `..` or by a link, is refused. Where the
+        workspace is on this computer is not said: the node keeps that. An
+        agent this node does not run has no workspace to read."""
+
+        if all(agent.id != agent_id for agent in self.configuration.agents):
+            raise ValueError(f"agent is not configured: {agent_id}")
+        return await asyncio.to_thread(
+            _list_directory, resolve_workspace_dir(agent_id), path
+        )
+
+    def _agent_status(self, agent_id: str) -> str:
+        agent = self.agents.get(agent_id)
+        if agent is not None:
+            return agent.state.value
+        result = self.agent_startup_results.get(agent_id)
+        return "failed" if result is not None and result.status == "failed" else "init"
+
     async def add_agent(
         self,
         configuration: AgentConfiguration,
         secrets: Mapping[int, Mapping[str, str]] | None = None,
+        env: Mapping[int, Mapping[str, str]] | None = None,
+        *,
+        wait: bool = True,
     ) -> AgentConfiguration:
         """Take a new agent in while running: its credentials kept, its
         configuration written down, and itself started. One that fails to
         start stays on the list with the failure in the health record, the
-        same as at startup, for the operator to fix and try again."""
+        same as at startup, for the operator to fix and try again. Without
+        `wait`, it is started after the answer: whether it came up is its
+        state, not the answer's."""
 
         if any(agent.id == configuration.id for agent in self.configuration.agents):
             raise ValueError(f"agent already configured: {configuration.id}")
         self._check_agents((*self.configuration.agents, configuration))
-        configuration = self._keep_secrets(configuration, secrets or {})
+        configuration = self._keep_secrets(configuration, secrets or {}, env or {})
         self._write_agents((*self.configuration.agents, configuration))
-        await self._start_agent(configuration)
-        await self._agents_changed("agent.added", configuration)
+        await self._bring_up(configuration, "agent.added", wait=wait)
         return configuration
 
     async def update_agent(
         self,
         configuration: AgentConfiguration,
         secrets: Mapping[int, Mapping[str, str]] | None = None,
+        env: Mapping[int, Mapping[str, str]] | None = None,
+        *,
+        wait: bool = True,
     ) -> AgentConfiguration:
         """Change an agent while running: the one running under that id is
         stopped, the new configuration written down, and an agent started
         from it. In between, the agent hears nothing; what its channels
-        hold for it is picked up when they poll again."""
+        hold for it is picked up when they poll again. Without `wait`, the
+        new one is started after the answer."""
 
         if not any(agent.id == configuration.id for agent in self.configuration.agents):
             raise ValueError(f"agent is not configured: {configuration.id}")
@@ -340,7 +515,7 @@ class NodeApplication:
                 for agent in self.configuration.agents
             )
         )
-        configuration = self._keep_secrets(configuration, secrets or {})
+        configuration = self._keep_secrets(configuration, secrets or {}, env or {})
         self._write_agents(
             tuple(
                 configuration if agent.id == configuration.id else agent
@@ -348,9 +523,27 @@ class NodeApplication:
             )
         )
         await self._stop_agent(configuration.id)
-        await self._start_agent(configuration)
-        await self._agents_changed("agent.updated", configuration)
+        await self._bring_up(configuration, "agent.updated", wait=wait)
         return configuration
+
+    async def _bring_up(
+        self, configuration: AgentConfiguration, change: str, *, wait: bool
+    ) -> None:
+        """Start an agent and say it changed - now, or after the answer. A
+        start left for later is on record before this returns, so a change
+        asked for in the meantime is refused, not run beside it."""
+
+        async def start() -> None:
+            try:
+                await self._start_agent(configuration)
+                await self._agents_changed(change, configuration)
+            finally:
+                self._starting.pop(configuration.id, None)
+
+        if wait:
+            await start()
+            return
+        self._starting[configuration.id] = asyncio.create_task(start())
 
     async def remove_agent(self, agent_id: str) -> AgentConfiguration:
         """Stop an agent and strike it from the configuration. Its workspace
@@ -379,19 +572,24 @@ class NodeApplication:
         between two changes to one agent. One with no instance - it never
         started, or failed to - is settled too."""
 
+        if agent_id in self._starting:
+            raise Refused(f"agent is starting: {agent_id}")
         agent = self.agents.get(agent_id)
         if agent is not None and not agent.started:
-            raise ValueError(f"agent is {agent.state.value}: {agent_id}")
+            raise Refused(f"agent is {agent.state.value}: {agent_id}")
 
     def _keep_secrets(
         self,
         configuration: AgentConfiguration,
         secrets: Mapping[int, Mapping[str, str]],
+        env: Mapping[int, Mapping[str, str]],
     ) -> AgentConfiguration:
-        """Put each credential under a variable of the node's naming, in the
-        environment file for the next start and in the process for this one;
-        the channel's configuration names the variable, never the value. A
-        value the file cannot hold is refused before any value is kept."""
+        """Put each credential, and each value of a runtime's environment,
+        under a variable of the node's naming, in the environment file for
+        the next start and in the process for this one; the configuration
+        names the variable, never the value. The names are settled - and a
+        name the configuration will not hold refused - before any value is
+        kept."""
 
         # the whole id: two agents made within the same minute share the start
         # of theirs; and the card's place, for two cards of one kind
@@ -406,13 +604,32 @@ class NodeApplication:
                 kept[name] = value
                 options[f"{key}_env"] = name
             channels[index] = ChannelConfiguration(kind=channel.kind, options=options)
+        runtimes = list(configuration.runtimes)
+        for index, values in env.items():
+            runtime = runtimes[index]
+            named = dict(runtime.env)
+            for key, value in values.items():
+                name = (
+                    # the name as asked, case and all: `TOKEN` and `token`
+                    # are two variables
+                    f"{prefix}_RUNTIME{index}_{runtime.kind.upper()}_ENV_{key}"
+                )
+                kept[name] = value
+                named[key] = name
+            runtimes[index] = replace(runtime, env=named)
+        configuration = replace(
+            configuration, channels=tuple(channels), runtimes=tuple(runtimes)
+        )
         for value in kept.values():
-            check_env_value(value)
+            try:
+                check_env_value(value)
+            except ValueError as error:
+                raise Refused(str(error)) from error
         for name, value in kept.items():
             if self._env_path is not None:
                 write_env_value(self._env_path, name, value)
             os.environ[name] = value
-        return replace(configuration, channels=tuple(channels))
+        return configuration
 
     def _write_agents(self, agents: tuple[AgentConfiguration, ...]) -> None:
         """The agents as they now are, in memory and on disk - in one go,
@@ -514,6 +731,10 @@ class NodeApplication:
             )
         except Exception as error:  # noqa: BLE001
             errors.append(f"reminder_scheduler.stop:{type(error).__name__}")
+        # a start left for after an answer is not waited out on the way down
+        for task in tuple(self._starting.values()):
+            task.cancel()
+        await asyncio.gather(*self._starting.values(), return_exceptions=True)
         for agent_id, agent in tuple(self.agents.items()):
             try:
                 await agent.stop()
