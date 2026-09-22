@@ -9,7 +9,7 @@ dependencies = []
 test = "bcn_test_support.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
-test = "bcn_test_support.plugin:create_runtime"
+test = "bcn_test_support.plugin:runtime_builder"
 
 [project.entry-points."bazaar_compute_node.storages"]
 test = "bcn_test_support.plugin:create_storage"

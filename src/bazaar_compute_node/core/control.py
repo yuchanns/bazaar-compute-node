@@ -73,6 +73,21 @@ class NodeCommands(Protocol):
         the top, or the one at `path` relative to it, never one outside."""
         ...
 
+    async def read_runtimes(self) -> Mapping[str, object]:
+        """The runtimes installed here: whether each can be run, and which
+        version it is."""
+        ...
+
+    async def read_models(self, kind: str) -> Mapping[str, object]:
+        """The models one installed runtime will answer as; or none, and
+        why it would not say."""
+        ...
+
+    async def read_skills(self, agent_id: str) -> Mapping[str, object]:
+        """The skills one agent's runtimes found. An agent with nothing
+        running has none to tell."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class ControlContext:

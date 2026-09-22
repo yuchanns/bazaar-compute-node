@@ -9,7 +9,7 @@ from typing import Any, cast
 from ..core.channel import IChannelBuilder
 from ..core.control import ControlContext, IControl
 from ..core.observability import AuditContext, IAudit
-from ..core.runtime import IRuntime, RuntimeCommandContext
+from ..core.runtime import IRuntime, IRuntimeBuilder, RuntimeCommandContext
 from ..core.storage import IStorage
 
 CHANNEL_ENTRY_POINT_GROUP = "bazaar_compute_node.channels"
@@ -84,10 +84,7 @@ class AdapterRegistry:
                 for kind in dict.fromkeys(channels)
             },
             runtimes={
-                kind: cast(
-                    RuntimeFactory,
-                    self._load(RUNTIME_ENTRY_POINT_GROUP, kind),
-                )
+                kind: self._load_runtime_builder(kind).build
                 for kind in dict.fromkeys(runtimes)
             },
         )
@@ -113,6 +110,28 @@ class AdapterRegistry:
             )
         return cast(IChannelBuilder, builder)
 
+    def _load_runtime_builder(self, name: str) -> IRuntimeBuilder:
+        entry_point = self._find(RUNTIME_ENTRY_POINT_GROUP, name)
+        if entry_point is None:
+            raise ProviderLoadError(
+                f"provider '{name}' is not installed for entry point group "
+                f"'{RUNTIME_ENTRY_POINT_GROUP}'"
+            )
+        try:
+            builder = entry_point.load()
+        except Exception as error:
+            raise ProviderLoadError(
+                f"failed to load provider '{name}' from "
+                f"'{RUNTIME_ENTRY_POINT_GROUP}': {error}"
+            ) from error
+        for method in ("build", "inspect", "models"):
+            if not callable(getattr(builder, method, None)):
+                raise ProviderLoadError(
+                    f"provider '{name}' from '{RUNTIME_ENTRY_POINT_GROUP}' "
+                    f"does not provide a callable {method} method"
+                )
+        return cast(IRuntimeBuilder, builder)
+
     def _load(self, group: str, name: str) -> Any:
         entry_point = self._find(group, name)
         if entry_point is None:
@@ -128,6 +147,12 @@ class AdapterRegistry:
         if not callable(factory):
             raise ProviderLoadError(f"provider '{name}' from '{group}' is not callable")
         return factory
+
+    def runtime_builders(self) -> dict[str, IRuntimeBuilder]:
+        """Every installed runtime, by kind; each can be asked about
+        itself."""
+
+        return {kind: self._load_runtime_builder(kind) for kind in self.runtime_kinds()}
 
     @staticmethod
     def channel_kinds() -> tuple[str, ...]:

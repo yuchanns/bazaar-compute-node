@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from importlib.metadata import distribution
+from importlib.metadata import EntryPoint, distribution
 
+import pytest
 from bcn_test_support import RecordingAudit
 
-from bazaar_compute_node.app.registry import AdapterRegistry
+from bazaar_compute_node.app.registry import (
+    RUNTIME_ENTRY_POINT_GROUP,
+    AdapterRegistry,
+    ProviderLoadError,
+)
 from bazaar_compute_node.core.lifecycle import TimeoutBudget
 from bazaar_compute_node.core.observability import AuditContext
 from bazaar_compute_node.core.timerwheel import TimerWheel
@@ -50,3 +55,37 @@ def test_audit_options_reach_the_sink_factory() -> None:
 
     assert isinstance(audit, RecordingAudit)
     assert audit.options == {"url": "http://127.0.0.1:8765"}
+
+
+class _OneRuntimeRegistry(AdapterRegistry):
+    """A registry whose only runtime is whatever the test points it at."""
+
+    def __init__(self, value: str) -> None:
+        self._entry_point = EntryPoint(
+            name="half", value=value, group=RUNTIME_ENTRY_POINT_GROUP
+        )
+
+    def _find(self, group: str, name: str) -> EntryPoint | None:
+        del group, name
+        return self._entry_point
+
+    def runtime_kinds(self) -> tuple[str, ...]:
+        return ("half",)
+
+
+def test_a_runtime_plugin_must_both_build_and_inspect() -> None:
+    # a channel builder builds, but cannot say whether it runs here
+    registry = _OneRuntimeRegistry(
+        "bazaar_compute_node.contrib.telegram.plugin:builder"
+    )
+
+    with pytest.raises(ProviderLoadError, match="callable inspect method"):
+        registry.runtime_builders()
+    with pytest.raises(ProviderLoadError, match="callable inspect method"):
+        registry.load_agent(channels=(), runtimes=("half",))
+
+
+def test_every_installed_runtime_can_be_asked_about_itself() -> None:
+    builders = AdapterRegistry().runtime_builders()
+
+    assert set(builders) == set(AdapterRegistry.runtime_kinds())

@@ -31,6 +31,7 @@ from bazaar_compute_node.core.outcomes import ProviderCallResult, ProviderCallSt
 from bazaar_compute_node.core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
+    RuntimeDescription,
     RuntimeExpire,
     RuntimeLifecycleEvent,
     RuntimeSessionReconciliation,
@@ -109,6 +110,7 @@ class TestRuntime(IRuntime):
         self._reconcile_turn_plans: deque[TestTurnPlan] = deque()
         self._stop_results: deque[ProviderCallResult[RuntimeSession]] = deque()
         self._lifecycle_events: asyncio.Queue[RuntimeLifecycleEvent] = asyncio.Queue()
+        self.description = RuntimeDescription()
         self._update_seq = 0
 
     async def start(self, *, timeout: float) -> None:
@@ -149,6 +151,10 @@ class TestRuntime(IRuntime):
 
     async def receive_event(self) -> RuntimeLifecycleEvent:
         return await self._lifecycle_events.get()
+
+    async def describe(self, *, timeout: float) -> RuntimeDescription:
+        del timeout
+        return self.description
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float

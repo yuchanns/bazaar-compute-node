@@ -34,8 +34,8 @@ bcn = "bazaar_compute_node.cli:main"
 bcs = "bazaar_compute_server.cli:main"
 
 [project.entry-points."bazaar_compute_node.runtimes"]
-codex = "bazaar_compute_node.contrib.codex.plugin:create_runtime"
-claudecode = "bazaar_compute_node.contrib.claude.plugin:create_runtime"
+codex = "bazaar_compute_node.contrib.codex.plugin:builder"
+claudecode = "bazaar_compute_node.contrib.claude.plugin:builder"
 
 [project.entry-points."bazaar_compute_node.channels"]
 wecom = "bazaar_compute_node.contrib.wecom.plugin:builder"

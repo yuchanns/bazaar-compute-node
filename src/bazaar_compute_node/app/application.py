@@ -21,6 +21,7 @@ from ..core.observability import AuditContext, IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
 from ..core.restart import RESTART_EXIT_CODE
+from ..core.runtime import RuntimeAvailability, RuntimeDescription, RuntimeModels
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
 from ..core.utils.clock import now_ms
@@ -81,6 +82,12 @@ def _list_directory(workspace: Path, path: str) -> dict[str, object]:
     }
 
 
+# how long what a runtime said of itself stands before it is asked again:
+# long enough that opening a form twice costs one asking, short enough that
+# an upgrade is seen without a restart
+RUNTIMES_FRESH_MS = 60_000
+
+
 @dataclass(frozen=True, slots=True)
 class AgentStartupResult:
     agent_id: str
@@ -135,6 +142,10 @@ class NodeApplication:
         self._config_path = config_path
         self._env_path = env_path
         self._clock = now_ms
+        self._runtimes: tuple[RuntimeAvailability, ...] = ()
+        self._runtimes_read_at_ms = 0
+        # the models each runtime listed, by kind, and when
+        self._models: dict[str, tuple[int, RuntimeModels]] = {}
         # agents written down and answered for, still being started: by id,
         # the start under way
         self._starting: dict[str, asyncio.Task[None]] = {}
@@ -461,6 +472,92 @@ class NodeApplication:
         return await asyncio.to_thread(
             _list_directory, resolve_workspace_dir(agent_id), path
         )
+
+    async def read_runtimes(self) -> Mapping[str, object]:
+        """Whether each installed runtime can be run, and which version. The
+        answer is kept
+        for a short while and no longer: a runtime may be upgraded under a
+        node that goes on running, and a form opened after that should see
+        the new one without anybody restarting anything."""
+
+        now = self._clock()
+        if now - self._runtimes_read_at_ms > RUNTIMES_FRESH_MS:
+            self._runtimes = tuple(
+                await asyncio.gather(
+                    *(
+                        builder.inspect(timeout=self.timeout_budget.command_seconds)
+                        for builder in self._registry.runtime_builders().values()
+                    )
+                )
+            )
+            self._runtimes_read_at_ms = now
+        return {
+            "runtimes": [
+                {
+                    "kind": runtime.kind,
+                    "available": runtime.available,
+                    "version": runtime.version,
+                    "error": runtime.error,
+                }
+                for runtime in self._runtimes
+            ]
+        }
+
+    async def read_models(self, kind: str) -> Mapping[str, object]:
+        """The models one installed runtime will answer as, asked of it
+        alone. A list is kept as the runtimes are; a failure is not, so
+        asking again asks the runtime again."""
+
+        builder = self._registry.runtime_builders().get(kind)
+        if builder is None:
+            raise ValueError(f"no runtime {kind} is installed")
+        now = self._clock()
+        read_at, listed = self._models.get(kind, (0, None))
+        if listed is None or now - read_at > RUNTIMES_FRESH_MS:
+            listed = await builder.models(timeout=self.timeout_budget.command_seconds)
+            if listed.error is None:
+                self._models[kind] = (now, listed)
+        return {
+            "error": listed.error,
+            "models": [
+                {
+                    "id": model.id,
+                    "name": model.name,
+                    "efforts": model.efforts,
+                    "default_effort": model.default_effort,
+                    "default": model.default,
+                }
+                for model in listed.models
+            ],
+        }
+
+    async def read_skills(self, agent_id: str) -> Mapping[str, object]:
+        """What one agent's runtimes have found for it to do. Only a
+        runtime that is up can say; the rest is silence, which a page shows
+        as nothing found yet."""
+
+        agent = self.agents.get(agent_id)
+        if agent is None or not agent.started:
+            return {"skills": []}
+        described = await asyncio.gather(
+            *(
+                runtime.describe(timeout=self.timeout_budget.command_seconds)
+                for runtime in agent.runtimes
+            ),
+            return_exceptions=True,
+        )
+        return {
+            "skills": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": skill.source,
+                }
+                for description in described
+                if isinstance(description, RuntimeDescription)
+                for skill in description.skills
+            ]
+        }
 
     def _agent_status(self, agent_id: str) -> str:
         agent = self.agents.get(agent_id)

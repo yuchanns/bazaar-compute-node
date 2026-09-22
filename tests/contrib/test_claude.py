@@ -16,7 +16,7 @@ from bazaar_compute_node.contrib.claude.client import (
     TurnInbox,
 )
 from bazaar_compute_node.contrib.claude.events import TurnEventStream
-from bazaar_compute_node.contrib.claude.plugin import create_runtime
+from bazaar_compute_node.contrib.claude.plugin import builder
 from bazaar_compute_node.contrib.claude.process import (
     MAX_JSONL_BYTES,
     ProcessSpec,
@@ -644,6 +644,7 @@ def test_claude_runtime_factory_preserves_runtime_options() -> None:
     context = RuntimeCommandContext(
         run_command=run_command,
         environment_for_session=environment_for_session,
+        environment_for_probe=dict,
         agent_id="agent-1",
         agent_name="Agent One",
         bot_names=lambda: ("Bot One",),
@@ -652,7 +653,7 @@ def test_claude_runtime_factory_preserves_runtime_options() -> None:
         network_access=False,
     )
 
-    runtime = create_runtime(context)
+    runtime = builder.build(context)
 
     assert runtime.name == "claudecode"
     assert runtime.environment_variable_names() == (

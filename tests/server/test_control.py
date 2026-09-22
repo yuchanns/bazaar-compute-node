@@ -7,10 +7,12 @@ from typing import Any
 from uuid import uuid7
 
 import pytest
+from bcn_test_support import TestRuntime
 
 from bazaar_compute_node.core.models import Message, MessageDirection, SenderIdentity
 from bazaar_compute_node.core.paths import resolve_workspace_dir
 from bazaar_compute_node.core.reminder import ReminderScheduleRequest
+from bazaar_compute_node.core.runtime import RuntimeDescription, RuntimeSkill
 from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_server.control import Controls
 
@@ -354,7 +356,7 @@ async def test_a_server_takes_an_agent_in_changes_it_and_lets_it_go(
             assert refused is not None and refused["ok"] is False
             assert refused["code"] == "REFUSED"
 
-            # case: what it has to work with
+            # case: what it has to work with, and what it could run
             workspace = await ask(read="workspace", agent_id=newcomer)
             # what is in it, and not where it is on the computer
             assert "path" not in workspace and workspace["at"] == ""
@@ -382,6 +384,28 @@ async def test_a_server_takes_an_agent_in_changes_it_and_lets_it_go(
             )
             assert stranger is not None and stranger["ok"] is False
             assert stranger["code"] == "TARGET_NOT_FOUND"
+            runtimes = await ask(read="runtimes")
+            said = {runtime["kind"]: runtime for runtime in runtimes["runtimes"]}
+            assert said["test"]["available"] is True
+            assert said["test"]["version"] == "1.2.3"
+            models = await ask(read="models", kind="test")
+            assert models["error"] is None
+            assert models["models"][0]["id"] == "test-model"
+
+            # case: the skills of an agent that is up, and of one that is not
+            assert await ask(read="skills", agent_id=newcomer) == {"skills": []}
+            runtime = node.agents[newcomer].runtimes[0]
+            assert isinstance(runtime, TestRuntime)
+            runtime.description = RuntimeDescription(
+                skills=(
+                    RuntimeSkill(
+                        name="brainstorming", description="", source="workspace"
+                    ),
+                )
+            )
+            found = await ask(read="skills", agent_id=newcomer)
+            assert [skill["name"] for skill in found["skills"]] == ["brainstorming"]
+            assert await ask(read="skills", agent_id="nobody") == {"skills": []}
 
             # case: let go - off the node and out of the file
             gone = await ask(remove="agent", agent_id=newcomer)

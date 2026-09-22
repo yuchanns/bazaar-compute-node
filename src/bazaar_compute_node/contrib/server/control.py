@@ -235,6 +235,41 @@ class _AgentRemove(BaseModel):
         return await node.delete_agent(self.agent_id)
 
 
+class _RuntimesRead(BaseModel):
+    """What the runtimes installed here can do."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["runtimes"]
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_runtimes()
+
+
+class _ModelsRead(BaseModel):
+    """The models one runtime installed here will answer as."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["models"]
+    kind: StrictStr
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_models(self.kind)
+
+
+class _SkillsRead(BaseModel):
+    """What one agent's runtimes found for it."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["skills"]
+    agent_id: StrictStr
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_skills(self.agent_id)
+
+
 class _WorkspaceRead(BaseModel):
     """What one agent has in its workspace, a directory at a time: the top,
     or the one at a path relative to it."""
@@ -260,7 +295,14 @@ type _AgentRequest = (
 # and what it may ask about the node rather than of one agent: the
 # operator's own requests, which `bcc` has no word for
 type _NodeRequest = (
-    _AgentsRead | _SettingRead | _AgentWrite | _AgentRemove | _WorkspaceRead
+    _AgentsRead
+    | _SettingRead
+    | _AgentWrite
+    | _AgentRemove
+    | _RuntimesRead
+    | _ModelsRead
+    | _SkillsRead
+    | _WorkspaceRead
 )
 type _Request = _AgentRequest | _NodeRequest
 _REQUESTS: TypeAdapter[_Request] = TypeAdapter(_Request)
@@ -436,7 +478,14 @@ class ServerControl(IControl):
 
         if isinstance(
             read,
-            _AgentsRead | _SettingRead | _AgentWrite | _AgentRemove | _WorkspaceRead,
+            _AgentsRead
+            | _SettingRead
+            | _AgentWrite
+            | _AgentRemove
+            | _RuntimesRead
+            | _ModelsRead
+            | _SkillsRead
+            | _WorkspaceRead,
         ):
             return partial(read.answer, self._node)
         commands = self._commands_of(read.agent_id)

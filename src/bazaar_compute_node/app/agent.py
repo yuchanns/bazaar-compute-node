@@ -29,6 +29,7 @@ from ..core.review import ReviewPolicy
 from ..core.runtime import IRuntime, RuntimeCommandContext
 from ..core.storage import IStorageScope
 from ..core.timerwheel import TimerWheel
+from ..core.utils.command import PLATFORM_ENVIRONMENT
 from ..i18n import Translator
 from .attachments import AttachmentMaterializer
 from .command import CommandDispatchError
@@ -41,19 +42,6 @@ from .wrapper import install_bcc_wrapper, remove_bcc_wrapper
 CommandRecord = tuple[str, tuple[str, ...]]
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PLATFORM_ENVIRONMENT = {
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "PATH",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "SystemRoot",
-    "ComSpec",
-    "PATHEXT",
-    "USERPROFILE",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +126,7 @@ class AgentApplication:
                 # the context belongs to one instance, so the index it builds
                 # the child environment for is fixed here
                 environment_for_session=partial(self._runtime_environment, index),
+                environment_for_probe=partial(self._probe_environment, index),
                 agent_id=self.agent_id,
                 agent_name=self.name,
                 bot_names=self._bot_names,
@@ -417,6 +406,9 @@ class AgentApplication:
             runtime_index=runtime_index,
         )
 
+    def _probe_environment(self, runtime_index: int) -> dict[str, str]:
+        return self._configured_environment(runtime_index)
+
     def _build_command_environment(
         self,
         actor_id: str,
@@ -448,7 +440,28 @@ class AgentApplication:
                 token_values=tuple(token_values),
             )
             self._session_capabilities[actor_id] = binding
-        allowed = set(_PLATFORM_ENVIRONMENT)
+        environment = self._configured_environment(runtime_index)
+        environment["PATH"] = os.pathsep.join(
+            (str(wrapper_path.parent), environment.get("PATH", os.defpath))
+        )
+        environment.update(
+            {
+                "BCN_AGENT_ID": self.agent_id,
+                "BCN_ENDPOINT": self._endpoint(),
+                "BCN_ACTOR_ID": actor_id,
+                "BCN_RUNTIME_SESSION_ID": runtime_session_id,
+                "BCN_COMMAND_CAPABILITY": binding.capability,
+            }
+        )
+        return environment
+
+    def _configured_environment(self, runtime_index: int) -> dict[str, str]:
+        """What a runtime's process starts with: the platform's own
+        variables it needs, and those its configuration binds, each under
+        the name it asked for."""
+
+        environment_bindings = self._runtime_configurations[runtime_index].env
+        allowed = set(PLATFORM_ENVIRONMENT)
         for name in self.runtimes[runtime_index].environment_variable_names():
             if not _ENVIRONMENT_NAME.fullmatch(name):
                 raise ValueError(f"runtime environment name is invalid: {name}")
@@ -475,18 +488,6 @@ class AgentApplication:
             if source_name not in environment_bindings:
                 environment.pop(source_name, None)
         environment.update(bound)
-        environment["PATH"] = os.pathsep.join(
-            (str(wrapper_path.parent), environment.get("PATH", os.defpath))
-        )
-        environment.update(
-            {
-                "BCN_AGENT_ID": self.agent_id,
-                "BCN_ENDPOINT": self._endpoint(),
-                "BCN_ACTOR_ID": actor_id,
-                "BCN_RUNTIME_SESSION_ID": runtime_session_id,
-                "BCN_COMMAND_CAPABILITY": binding.capability,
-            }
-        )
         return environment
 
     def _redact_session_secrets(self, thread_id: str, text: str) -> str:
