@@ -1,11 +1,11 @@
 {% import "components.html" as c with context %}
 <div class="col list">
   {% call c.column_header(t.text("computers.title")) %}
-    <button class="btn icon" hx-get="/computers/new" hx-target="#computer-detail" hx-swap="innerMorph" title="{{ t.text("computers.add") }}" aria-label="{{ t.text("computers.add") }}">{{ c.icon("plus") }}</button>
+    <button class="btn icon" hx-get="/computers/new" hx-target="#enrol" hx-swap="outerHTML" title="{{ t.text("computers.add") }}" aria-label="{{ t.text("computers.add") }}">{{ c.icon("plus") }}</button>
   {% endcall %}
   {% include "computer_list.html" %}
 </div>
 <div class="col wide" id="computer-detail">
-  {% if enrolment %}{% include "enrolled.html" %}{% endif %}
   {% if selected %}{% include "computer_detail.html" %}{% endif %}
 </div>
+<div id="enrol" hidden></div>

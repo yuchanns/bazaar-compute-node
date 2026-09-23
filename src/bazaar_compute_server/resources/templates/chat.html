@@ -5,7 +5,7 @@
 <div class="col wide" id="chat">
   {% if contact and asked %}
   {% call c.column_header(contact.name) %}
-    <span class="sub">{{ c.channels((contact.channel,)) }} · {{ t.text("contacts." ~ contact.kind) }} · <span class="badge review">{{ t.text("review.pending") }}</span></span>
+    <span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · <span class="badge review">{{ t.text("review.pending") }}</span></span>
   {% endcall %}
   {% include "review_card.html" %}
   {% elif contact %}
@@ -13,7 +13,7 @@
   <div class="hd">
     {# the avatar opens the card about the conversation, over the chat #}
     <button class="av sm face" type="button" title="{{ t.text("profile.open") }}" hx-get="{{ profile_url }}" hx-target="#profile" hx-swap="outerHTML">{{ contact.thread_id|identicon|safe }}</button>
-    {{ contact.name }}<span class="sub">{{ c.channels((contact.channel,)) }} · {{ t.text("contacts." ~ contact.kind) }}</span>
+    {{ contact.name }}<span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }}</span>
   </div>
   <div class="chat" id="history" hx-get="{{ c.messages_url(selected, contact) }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
   <div id="profile" hidden></div>

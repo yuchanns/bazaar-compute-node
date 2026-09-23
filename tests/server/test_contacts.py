@@ -97,7 +97,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 assert len(rows) == PAGE_SIZE
                 assert f"channel-session-{PAGE_SIZE + 1:03d}" in rows[0]
                 assert f"channel-session-{2:03d}" in rows[-1]
-                assert "test</span> · Direct message · " in rows[0]
+                assert "test</span>Direct message · " in rows[0]
                 assert '<span class="n">1</span>' in rows[0]
                 assert f'data-after="{PAGE_SIZE}"' in column
                 since = int(column.split("?since=")[1].split("&")[0])

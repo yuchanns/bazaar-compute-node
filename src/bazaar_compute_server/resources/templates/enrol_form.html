@@ -1,8 +1,13 @@
-<div class="body">
-  <form class="dialog" hx-post="/computers" hx-target="#main" hx-swap="innerMorph">
+{% import "components.html" as c with context %}
+{# naming a computer to add: a box over the page, the way the page asks for
+   anything; once it is kept the module comes back open on it, drawn afresh:
+   a morph would keep the boxes marked to be skipped from the computer the
+   page was open on #}
+<div class="veil" id="enrol" hx-on:click="if (event.target === this) this.hidden = true">
+  <form class="dialog enrol" hx-post="/computers" hx-target="#main" hx-swap="innerHTML">
     <h3>{{ t.text("computers.add_title") }}</h3>
     <div class="field"><label for="name">{{ t.text("computers.name") }}</label><input id="name" name="name" placeholder="{{ t.text('computers.name_placeholder') }}" required autofocus autocomplete="off"></div>
     <button class="btn p" type="submit">{{ t.text("computers.create") }}</button>
-    <a class="btn" href="/computers" hx-get="/computers" hx-target="#main">{{ t.text("computers.cancel") }}</a>
+    <button class="btn" type="button" hx-on:click="document.getElementById('enrol').hidden = true">{{ t.text("computers.cancel") }}</button>
   </form>
 </div>

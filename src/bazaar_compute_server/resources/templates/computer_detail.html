@@ -1,21 +1,31 @@
 {% import "components.html" as c with context %}
 <div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="every 5s" hx-swap="outerMorph">
 {% call c.column_header(selected.computer.name) %}
-  <span class="sub">{% if selected.system %}{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}{% endif %}{% if selected.queued %} · {{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
+  <span class="sub">{% if selected.system in c.os_icons %}<span class="os" title="{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}">{{ c.icon(c.os_icons[selected.system]) }}</span>{% endif %}{% if selected.queued %}{{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
 {% endcall %}
 <div class="body">
+  {# the commands that connect a computer just added, shown this once at the
+     top of its page; the pane's refresh has no token to show, so the box
+     keeps what it holds. the boxes marked to be skipped are named by their
+     computer, so a morph onto another computer's page never takes one for
+     its own #}
+  <div id="connect-{{ ref(selected.computer.id) }}" hx-morph-skip>{% if enrolment is defined and enrolment %}{% include "enrolled.html" %}{% endif %}</div>
   {{ c.section_title(t.text("computers.agents")) }}
-  {% for agent in selected.agents %}
-  {{ c.list_item(agent.name, c.runtimes(agent.runtimes) ~ " · " ~ c.channels(agent.channels), status=agent.status, identity=agent.name, href="/agents/" ~ ref(selected.computer.id) ~ "/" ~ ref(agent.id), off=(agent.status == "offline")) }}
-  {% endfor %}
-  {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+  {# the agents in a box of their own, the way to add one hanging off its corner #}
+  <div class="roster">
+    {% for agent in selected.agents %}
+    {{ c.list_item(agent.name, icons=c.agent_icons(agent, with_system=false), status=agent.status, identity=agent.name, href="/agents/" ~ ref(selected.computer.id) ~ "/" ~ ref(agent.id), off=(agent.status == "offline")) }}
+    {% endfor %}
+    {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+  </div>
+  <div class="roster-foot"><button class="add" type="button" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>
   {# the question takes the button's place whole - a morph would leave a
      box marked to be skipped as it is - and the mark then keeps the pane's
      refresh from putting the button back #}
-  <div class="dialog danger" id="remove" hx-morph-skip>
+  <div class="dialog danger" id="remove-{{ ref(selected.computer.id) }}" hx-morph-skip>
     <h3>{{ t.text("computers.remove") }}</h3>
     <p class="st">{{ t.text("computers.remove_hint") }}</p>
-    <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
+    <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove-{{ ref(selected.computer.id) }}" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
   </div>
 </div>
 </div>

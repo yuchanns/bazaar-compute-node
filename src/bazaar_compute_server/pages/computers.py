@@ -148,7 +148,11 @@ class ComputerPages:
         # a name is cut to what a row shows, like the names nodes report
         name = str(form.get("name", "")).strip()[:MAX_NAME_CHARS]
         if not name:
-            return await self.enrol_form(request)
+            # the box stays up, the page behind it as it was
+            response = await self.enrol_form(request)
+            response.headers["HX-Retarget"] = "#enrol"
+            response.headers["HX-Reswap"] = "outerHTML"
+            return response
         enrolment = await self._storage.add_computer(
             name, owner_id=Access.of(request).account.id
         )
@@ -157,18 +161,23 @@ class ComputerPages:
             computer_view(self._storage, Access.of(request), enrolment.computer.id),
         )
         await self.refs.load(_named(page.computers, item))
-        return self._render.page(
+        # the module comes back open on the new computer: its row picked, its
+        # page under the commands that connect it, shown this once
+        key = str(self.refs.ref(enrolment.computer.id))
+        response = self._render.page(
             request,
             "computers",
             "computers.html",
             fleet=page,
-            selected=None,
-            selected_key=None,
+            selected=item,
+            selected_key=key,
             enrolment=enrolment,
             item=item,
             base_url=str(request.base_url).rstrip("/"),
             system=_system_of(request),
         )
+        response.headers["HX-Push-Url"] = f"/computers/{key}"
+        return response
 
 
 def _named(

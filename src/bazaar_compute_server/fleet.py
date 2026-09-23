@@ -35,6 +35,7 @@ class AgentView:
     name: str
     computer_id: str
     computer_name: str
+    system: str | None
     status: str
     channels: tuple[str, ...]
     runtimes: tuple[str, ...]
@@ -245,6 +246,7 @@ def _computer_view(
             _agent_view(
                 item.computer,
                 record,
+                system=health.get("system"),
                 online=online,
                 turn=turn,
                 working_on=(
@@ -271,6 +273,7 @@ def _agent_view(
     computer: Computer,
     record: Mapping[str, Any],
     *,
+    system: str | None,
     online: bool,
     turn: StoredEvent | None,
     working_on: str | None,
@@ -292,6 +295,7 @@ def _agent_view(
         name=record["name"],
         computer_id=computer.id,
         computer_name=computer.name,
+        system=system,
         status=status,
         channels=tuple(record.get("channels", [])),
         runtimes=tuple(record.get("runtimes", [])),

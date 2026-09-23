@@ -45,10 +45,15 @@ async def test_a_stranger_is_looked_at_let_in_and_turned_away_from_the_page(
                 key = await _short(storage, enrolment.computer.id, AGENT_ID)
                 column = f"{base}/agents/{key}/contacts"
 
-                # case: the first tab lists nobody, the second counts one
+                # case: the first tab lists nobody, the second counts one; the
+                # count goes to the tab, which stands outside the list
                 status, chats = await _get(session, column, **headers)
                 assert status == 200 and "No conversations." in chats
-                assert '<span class="n">1</span>' in chats
+                assert (
+                    '<span class="n" id="pending-review" hx-swap-oob="outerHTML">1</span>'
+                    in chats
+                )
+                assert 'class="switch"' not in chats
                 status, requests = await _get(
                     session, f"{column}?review=pending", **headers
                 )
@@ -63,6 +68,14 @@ async def test_a_stranger_is_looked_at_let_in_and_turned_away_from_the_page(
                 assert status == 200
                 assert "First contact" in asked and "hello 1" in asked
                 assert "Stranger wants to message Kana" in asked
+                # opened as a page of its own, the column lists those waiting,
+                # its tab the one lit
+                status, whole = await _get(session, f"{base}{href}", **headers)
+                assert status == 200
+                assert "/contacts?review=pending&amp;selected=" in whole
+                assert (
+                    '<button class="tab on" type="button" title="New contacts"' in whole
+                )
                 review_url = (
                     asked.split('hx-post="')[1].split('"')[0].replace("&amp;", "&")
                 )
@@ -80,7 +93,11 @@ async def test_a_stranger_is_looked_at_let_in_and_turned_away_from_the_page(
                     and "review" not in pushed
                 )
                 status, chats = await _get(session, column, **headers)
-                assert 'id="contact-' in chats and '<span class="n">' not in chats
+                assert 'id="contact-' in chats
+                assert (
+                    'id="pending-review" hx-swap-oob="outerHTML" hidden></span>'
+                    in chats
+                )
 
                 # case: the card about the conversation lists its reminders,
                 # each said as when it is for and how often

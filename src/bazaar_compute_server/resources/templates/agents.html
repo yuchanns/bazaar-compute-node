@@ -6,11 +6,29 @@
 {% if selected %}
 <div class="col list">
   {% call c.column_header(selected.name) %}
-    <span class="sub">{{ selected.computer_name }} · {{ c.channels(selected.channels) }}</span>
+    <span class="sub">{{ c.system(selected) }}{{ c.channels(selected.channels) }}</span>
   {% endcall %}
+  {% set url = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/contacts" %}
+  {# the column's two lists, those let in and those waiting, stand above it
+     and answer a click at once: the tab lights and the list turns to a
+     spinner until the node answers, dropping a refresh of the list still on
+     its way so the other tab's answer cannot land after it. the count of
+     those waiting comes with each answer the list gets #}
+  {% set pick = "for (const tab of this.parentElement.querySelectorAll('.tab.on')) tab.classList.remove('on'); this.classList.add('on'); document.getElementById('contacts').replaceChildren(document.getElementById('contacts-loading').content.cloneNode(true))" %}
+  {# a page opened on a conversation waiting to be looked at opens on the
+     list of those waiting #}
+  {% set pending = asked is not none %}
+  {% set query = ["review=pending" if pending, "selected=" ~ ref(contact.thread_id) if contact]|select|join("&") %}
+  <div class="switch">
+    <button class="tab{% if not pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_chats") }}" hx-get="{{ url }}" hx-target="#contacts" hx-swap="outerHTML" hx-sync="#contacts:replace" hx-on:click="{{ pick }}">{{ c.icon("message-circle") }}</button>
+    <button class="tab{% if pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_requests") }}" hx-get="{{ url }}?review=pending" hx-target="#contacts" hx-swap="outerHTML" hx-sync="#contacts:replace" hx-on:click="{{ pick }}">{{ c.icon("user-plus") }}<span class="n" id="pending-review" hidden></span></button>
+    <button class="tab aside" type="button" title="{{ t.text("contacts.reply") }}" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/reply" hx-target="#reply" hx-swap="outerHTML">{{ c.icon("message-square-text") }}</button>
+  </div>
+  <div id="reply" hidden></div>
+  <template id="contacts-loading"><div class="loading">{{ c.icon("loader-circle") }}</div></template>
   {# the conversations are the node's to list, so the page comes up first and
      the column asks for them once it is there #}
-  <div class="list-items" id="contacts" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/contacts{% if contact %}?selected={{ ref(contact.thread_id) }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+  <div class="list-items" id="contacts" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/contacts{{ ("?" ~ query) if query }}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
 </div>
 {% endif %}
 {% include "chat.html" %}

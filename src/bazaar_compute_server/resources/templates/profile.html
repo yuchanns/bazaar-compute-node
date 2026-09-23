@@ -10,7 +10,7 @@
   <div class="hd">{{ t.text("profile.title") }}<button class="btn icon" type="button" title="{{ t.text("profile.close") }}" hx-on:click="document.getElementById('profile').hidden = true">{{ c.icon("x") }}</button></div>
   <div class="who">
     <div class="av">{{ contact.thread_id|identicon|safe }}</div>
-    <div><b>{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }} · {{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
+    <div><b>{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
   </div>
   <div class="body">
     {# a group has members; a direct message is the two of them #}

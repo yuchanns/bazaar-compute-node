@@ -48,6 +48,25 @@
 {% for kind in kinds %}<span class="ch ch-{{ kind }}" title="{{ kind }}">{% if kind in channel_icons %}{{ icon(channel_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
 {%- endmacro %}
 
+{# the computer an agent runs on, by its operating system's mark; the name is
+   the tooltip, and stands in for a system this page has no mark for #}
+{% macro system(agent) -%}
+<span class="os" title="{{ agent.computer_name }}">{% if agent.system in os_icons %}{{ icon(os_icons[agent.system]) }}{% else %}{{ agent.computer_name }}{% endif %}</span>
+{%- endmacro %}
+
+{# more marks than a row has room for: the first few, and how many more,
+   named in its tooltip #}
+{% set icons_shown = 5 %}
+{# what an agent is made of; on its computer's own page the system goes
+   without saying #}
+{% macro agent_icons(agent, with_system=true) -%}
+{% set ns = namespace(marks=[], names=[]) %}
+{% if with_system %}{% set ns.marks = ns.marks + [system(agent)] %}{% set ns.names = ns.names + [agent.computer_name] %}{% endif %}
+{% for kind in agent.runtimes %}{% set ns.marks = ns.marks + [runtimes((kind,))] %}{% set ns.names = ns.names + [kind] %}{% endfor %}
+{% for kind in agent.channels %}{% set ns.marks = ns.marks + [channels((kind,))] %}{% set ns.names = ns.names + [kind] %}{% endfor %}
+{% if ns.marks|length > icons_shown %}{{ ns.marks[:icons_shown - 1]|join }}<span class="more" title="{{ ns.names[icons_shown - 1:]|join(" · ") }}">+{{ ns.marks|length - icons_shown + 1 }}</span>{% else %}{{ ns.marks|join }}{% endif %}
+{%- endmacro %}
+
 {# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
    with an href it navigates through htmx, swapping `target` (the whole module
    unless told otherwise), otherwise it is a plain row.
@@ -55,15 +74,18 @@
    (an agent); a row that only looks off (extra_class="off") still opens, the way
    an offline computer does, since removing it happens from its page.
    what the row shows sits in its own box, so a long list can leave the rows
-   off screen unrendered while the row itself, and what hangs off it, stay #}
-{% macro list_item(title, subtitle, status=none, identity=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
+   off screen unrendered while the row itself, and what hangs off it, stay;
+   the status dot is one of those, sitting on the avatar's corner and out
+   past its edge, where the box would clip it #}
+{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
 {% set href = none if off else href %}
 <{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
     {% if identity is not none %}{{ avatar(identity, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
-    <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
-    {% if status %}{{ dot(status) }}{% endif %}
+    <div class="t"><b>{{ title }}</b>{% if subtitle %}<small>{{ subtitle }}</small>{% endif %}</div>
+    {% if icons %}<span class="icons">{{ icons }}</span>{% endif %}
   </div>
+  {% if status %}{{ dot(status) }}{% endif %}
   {% if caller is defined %}{{ caller() }}{% endif %}
 </{{ "a" if href else "div" }}>
 {%- endmacro %}
