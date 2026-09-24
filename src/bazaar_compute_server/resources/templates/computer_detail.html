@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-<div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="every 5s" hx-swap="outerMorph">
+<div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="every 5s, agents-changed from:body" hx-swap="outerMorph">
 {% call c.column_header(selected.computer.name) %}
   <span class="sub">{% if selected.system in c.os_icons %}<span class="os" title="{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}">{{ c.icon(c.os_icons[selected.system]) }}</span>{% endif %}{% if selected.queued %}{{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
 {% endcall %}
@@ -18,7 +18,7 @@
     {% endfor %}
     {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
   </div>
-  <div class="roster-foot"><button class="add" type="button" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>
+  <div class="roster-foot"><button class="add" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/agents/new" hx-target="#agent-new" hx-swap="outerHTML" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>
   {# the question takes the button's place whole - a morph would leave a
      box marked to be skipped as it is - and the mark then keeps the pane's
      refresh from putting the button back #}

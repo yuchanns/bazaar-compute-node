@@ -79,9 +79,7 @@ async def contacts(
     there to answer."""
 
     since = await storage.latest_message_event(agent.computer_id, agent.id)
-    if agent.status == "offline":
-        return Contacts(agent, (), offset, False, since, "offline", review=review)
-    answer = await controls.ask(
+    result = await controls.outcome(
         agent.computer_id,
         {
             "read": "contacts",
@@ -90,22 +88,22 @@ async def contacts(
             "offset": offset,
             "review": review,
         },
+        online=agent.status != "offline",
     )
-    # a page that got nothing is still there to be asked for
-    if answer is None:
-        return Contacts(agent, (), offset, offset > 0, since, "silent", review=review)
-    if not answer.get("ok"):
+    if isinstance(result, str):
+        word, _, code = result.partition(":")
+        # a page that got nothing is still there to be asked for, unless the
+        # computer is not there at all
         return Contacts(
             agent,
             (),
             offset,
-            offset > 0,
+            word != "offline" and offset > 0,
             since,
-            "refused",
-            answer.get("code"),
+            word,
+            code or None,
             review=review,
         )
-    result = answer["result"]
     return Contacts(
         agent,
         tuple(_contact(item) for item in result["targets"]),

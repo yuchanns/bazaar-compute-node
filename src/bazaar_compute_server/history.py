@@ -225,9 +225,7 @@ async def _ask(
     """The messages around one, oldest first, and whether the conversation
     goes on before them; or the word for why there are none."""
 
-    if agent.status == "offline":
-        return "offline"
-    answer = await controls.ask(
+    result = await controls.outcome(
         agent.computer_id,
         {
             "read": "history",
@@ -237,12 +235,10 @@ async def _ask(
             "around_message_id": around,
             "limit": limit,
         },
+        online=agent.status != "offline",
     )
-    if answer is None:
-        return "silent"
-    if not answer.get("ok"):
-        return f"refused:{answer.get('code')}"
-    result = answer["result"]
+    if isinstance(result, str):
+        return result
     messages: list[dict[str, Any]] = result["messages"]
     return messages, result["has_before"]
 

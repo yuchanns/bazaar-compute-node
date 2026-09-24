@@ -32,7 +32,7 @@ def routes(
 ) -> list[Route]:
     renderer = Renderer(images, refs)
     agents = AgentPages(storage, controls, renderer, refs)
-    computers = ComputerPages(storage, renderer, refs)
+    computers = ComputerPages(storage, controls, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
     return [
@@ -75,6 +75,12 @@ def routes(
         Route("/computers/{computer_id}/detail", computers.detail),
         Route("/computers/{computer_id}/presence", computers.presence),
         Route("/computers/{computer_id}/remove", computers.remove_form),
+        Route("/computers/{computer_id}/agents/new", computers.new_agent),
+        Route("/computers/{computer_id}/kinds/{family}", computers.kinds),
+        Route("/computers/{computer_id}/models/{kind}", computers.models),
+        Route(
+            "/computers/{computer_id}/agents", computers.create_agent, methods=["POST"]
+        ),
         Route("/computers/{computer_id}", computers.remove, methods=["DELETE"]),
         Route(PATH, images.fetch),
     ]

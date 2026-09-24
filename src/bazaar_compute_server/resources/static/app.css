@@ -218,6 +218,8 @@ a { color: inherit; text-decoration: none; }
 .field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { width: 64px; color: var(--muted); }
 .field input, .field textarea { flex: 1; min-width: 0; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 6px 9px; font: inherit; }
+/* a text box grows with what is typed, from three lines, and has no grip */
+.field textarea { resize: none; field-sizing: content; min-height: 3lh; }
 /* forms are short: a card no wider than it needs */
 .dialog { border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--panel); max-width: 420px; box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
 .dialog h3 { margin: 0 0 8px; font-size: 1em; }
@@ -362,7 +364,6 @@ a { color: inherit; text-decoration: none; }
 /* what the agent says to those still waiting, asked for from the column */
 .dialog.reply { width: 420px; }
 /* a line that may run on: the box grows with it rather than growing a grip */
-.dialog.reply textarea { max-width: none; resize: none; field-sizing: content; min-height: 3lh; }
 
 /* a computer's agents: a box of rows, about five tall before it scrolls */
 .roster { max-width: 560px; max-height: 268px; overflow-y: auto; border: 1px solid var(--edge); border-radius: 8px 8px 8px 0; background: var(--panel); }
@@ -390,3 +391,78 @@ a { color: inherit; text-decoration: none; }
 .roster-foot .add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .roster-foot .add::before { content: ""; position: absolute; top: 0; right: -1px; width: 1px; height: 10px; background: var(--panel); }
 .roster-foot .add::after { content: ""; position: absolute; top: 0; right: -10px; width: 10px; height: 10px; box-sizing: border-box; border-top: 1px solid var(--edge); border-left: 1px solid var(--edge); border-top-left-radius: 10px; }
+
+/* a form in steps: a sheet over the page, the steps across its top as dots
+   on a line, the one open scrolling under them, the buttons at its foot */
+.veil .sheet { width: 520px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--edge); border-radius: 10px; background: var(--canvas); box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
+.sheet h3 { margin: 0; padding: 16px 18px 10px; font-size: 1em; }
+.sheet .steps { flex: 1; overflow-y: auto; padding: 14px 18px 4px; min-height: 340px; }
+.sheet .steps > [hidden] { display: none; }
+.sheet .hint { margin: 0 0 12px; color: var(--muted); font-size: .9em; }
+.sheet .dialog { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.sheet .foot { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); }
+.sheet .foot .grow { flex: 1; }
+.sheet .foot [hidden] { display: none; }
+.stepper { display: flex; margin: 2px 18px 0; padding: 0 0 12px; list-style: none; border-bottom: 1px solid var(--line); }
+.stepper li { flex: 1; position: relative; }
+.stepper li + li::before { content: ""; position: absolute; top: 9px; left: calc(-50% + 14px); right: calc(50% + 14px); height: 2px; border-radius: 1px; background: var(--edge); }
+.stepper li.done + li::before { background: var(--fg); }
+.stepper button { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: .9em; cursor: pointer; }
+.stepper .pin { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: 2px solid var(--edge); border-radius: 50%; background: var(--panel); }
+.stepper li.on .pin { border-color: var(--fg); background: var(--fg); box-shadow: 0 0 0 4px var(--chip); }
+.stepper li.done .pin { border-color: var(--fg); background: var(--fg); }
+.stepper li.done .pin::after { content: ""; width: 5px; height: 9px; margin-top: -2px; border: solid var(--panel); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.stepper li.bad .pin { border-color: var(--accent); }
+.stepper li.bad .pin::after { content: "!"; color: var(--accent); font-size: 11px; font-weight: 700; }
+.stepper li.on button, .stepper li.done button { color: var(--fg); }
+.stepper li.on button { font-weight: 600; }
+/* what the last step reads back */
+[data-summary] .rows { grid-template-columns: 72px 1fr; font-size: .94em; white-space: pre-line; }
+[data-summary] .rows .k { color: var(--muted); }
+/* the cards of one kind as a stack of pages, one shown; a tab on its right
+   edge, level with its top, turns them; the blank page last starts another */
+.deck { position: relative; padding-right: 30px; }
+.deck > .part:not(.shown) { display: none; }
+.deck > .part.shown { min-height: 90px; border-top-right-radius: 0; }
+.deck .side { position: absolute; top: 0; right: 0; width: 31px; height: 48px; display: flex; flex-direction: column; border: 1px solid var(--edge); border-left: 0; border-radius: 0 8px 8px 0; background: var(--chip); overflow: hidden; }
+.deck .side[hidden] { display: none; }
+.deck .side button { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.deck .side button + button { border-top: 1px solid var(--line); }
+.deck .side button:hover:not(:disabled) { background: var(--hi); color: var(--fg); }
+.deck .side button:disabled { color: var(--edge); cursor: default; }
+.deck .side .i svg { width: 16px; height: 16px; stroke-width: 1.75; }
+.blank { border-style: dashed; background: none; }
+.blank .title { color: var(--muted); }
+.blank .kinds { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.blank .kinds button { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.blank .kinds button:hover:not(:disabled) { background: var(--hi); }
+.blank .kinds button:disabled { color: var(--muted); background: none; cursor: default; }
+.blank .kinds .ver, .blank .kinds .miss { margin-left: auto; }
+.blank .kinds > .loading, .blank .kinds > .err { grid-column: 1 / -1; }
+.blank .kinds > .loading { min-height: 38px; }
+.blank .kinds > .err { margin: 0; }
+.field .wait { display: inline-flex; color: var(--muted); }
+.field .wait .i svg { animation: turn 1s linear infinite; }
+.field [data-again] { margin-left: 0; }
+.field .wait[hidden], .field [data-again][hidden] { display: none; }
+/* a logo beside words sits on their middle, not their baseline */
+.part .title .ch, .part .title .rt, .blank .kinds .ch, .blank .kinds .rt { display: inline-flex; }
+.part .title .ch .i svg, .part .title .rt .i svg, .blank .kinds .ch .i svg, .blank .kinds .rt .i svg { vertical-align: 0; }
+.field[hidden] { display: none; }
+.part > .field:first-child, .part > input[type=hidden] + .title + .field { margin-top: 0; }
+.part > .field:last-child { margin-bottom: 0; }
+.part .title { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 6px; }
+.part .title .btn.icon { margin-left: auto; }
+.ver { margin-left: 4px; color: var(--muted); font: .82em ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.field input.num { flex: none; width: 96px; }
+.field .unit { color: var(--muted); }
+.field.top { align-items: flex-start; }
+.field.top > label { padding-top: 6px; }
+.field .list { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.kv { display: flex; align-items: center; gap: 6px; width: 100%; }
+.kv .arrow { color: var(--muted); }
+.kv .btn.icon { margin-left: 0; }
+/* a way to add something: dashed, quiet until pointed at */
+.btn.ghost { border-style: dashed; border-color: var(--edge); background: none; color: var(--muted); }
+.btn.ghost:hover { color: var(--fg); }
+.miss { display: inline-flex; color: var(--warn); }

@@ -1,4 +1,5 @@
-"""Computers: the enrolled ones, and enrolling a new one."""
+"""Computers: the enrolled ones, enrolling a new one, and taking an agent in
+on one."""
 
 from __future__ import annotations
 
@@ -9,6 +10,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
 from ..access import Access, allowed, sees
+from ..configure import SECRETS, configuration, create, kinds, models
+from ..control import Controls
 from ..fleet import ComputerView, Fleet, computer_view, fleet
 from ..protocol import MAX_NAME_CHARS
 from ..refs import Refs, expanded
@@ -17,8 +20,11 @@ from ..storage import IStorage
 
 
 class ComputerPages:
-    def __init__(self, storage: IStorage, renderer: Renderer, refs: Refs) -> None:
+    def __init__(
+        self, storage: IStorage, controls: Controls, renderer: Renderer, refs: Refs
+    ) -> None:
         self._storage = storage
+        self._controls = controls
         self._render = renderer
         self.refs = refs
 
@@ -97,12 +103,9 @@ class ComputerPages:
     async def detail(self, request: Request) -> Response:
         """One computer's pane alone, for its own refresh."""
 
-        selected = await computer_view(
-            self._storage, Access.of(request), request.path_params["computer_id"]
-        )
+        selected = await self._selected(request)
         if selected is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load(_named((), selected))
         return self._render.fragment(request, "computer_detail.html", selected=selected)
 
     @allowed("computers.view")
@@ -137,6 +140,120 @@ class ComputerPages:
         response = await self.list(request)
         response.headers["HX-Push-Url"] = "/computers"
         return response
+
+    @allowed("agents.create")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def new_agent(self, request: Request) -> Response:
+        """The form for a new agent on one computer, over its page. The
+        computer is not asked anything for it: what it can run is asked for
+        where the form needs it."""
+
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "agent_new.html",
+            selected=selected,
+            values={},
+            reply="",
+            failed=None,
+            secrets=SECRETS,
+        )
+
+    @allowed("agents.create")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def create_agent(self, request: Request) -> Response:
+        """The agent the form describes, taken in on the computer: the form
+        goes and the computer's box is asked for again; or the form stays,
+        as it was filled in, with why not."""
+
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        form = await request.form()
+        agent, secrets, env = configuration(
+            {key: str(value) for key, value in form.items()}
+        )
+        reply = str(form.get("reply", "")).strip()
+        failed = await create(self._controls, selected, agent, secrets, env, reply)
+        if failed is None:
+            response = self._render.fragment(request, "agent_new.html", created=True)
+            response.headers["HX-Trigger"] = "agents-changed"
+            return response
+        # the computer turning the configuration down says what is wrong with
+        # it, not that asking failed
+        word, _, code = failed.partition(":")
+        if word == "refused" and code in {"REFUSED", "INVALID_REQUEST"}:
+            failed = f"invalid:{code}"
+        return self._render.fragment(
+            request,
+            "agent_new.html",
+            selected=selected,
+            values=agent,
+            reply=reply,
+            failed=failed,
+            secrets=SECRETS,
+        )
+
+    @allowed("computers.view")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def kinds(self, request: Request) -> Response:
+        """What a card of one family can be started as on the computer: the
+        blank page of a form's stack, filled in when it is first seen."""
+
+        family = request.path_params["family"]
+        if family not in {"channel", "runtime"}:
+            return HTMLResponse("", status_code=404)
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "agent_kinds.html",
+            family=family,
+            listed=await kinds(
+                self._controls, selected.computer.id, family, online=selected.online
+            ),
+            secrets=SECRETS,
+        )
+
+    @allowed("computers.view")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def models(self, request: Request) -> Response:
+        """The models one runtime on the computer will answer as, as the
+        options of a form's model field when it is first opened; or why
+        not, which the field shows on the way to asking again."""
+
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        listed = await models(
+            self._controls,
+            selected.computer.id,
+            request.path_params["kind"],
+            online=selected.online,
+        )
+        if listed.answer != "listed":
+            return HTMLResponse(
+                self._render.translator(request).text(
+                    "agents." + listed.answer, {"code": listed.code}
+                ),
+                status_code=502,
+            )
+        return self._render.fragment(request, "agent_models.html", models=listed.models)
+
+    async def _selected(self, request: Request) -> ComputerView | None:
+        selected = await computer_view(
+            self._storage, Access.of(request), request.path_params["computer_id"]
+        )
+        if selected is not None:
+            await self.refs.load(_named((), selected))
+        return selected
 
     @allowed("computers.create")
     async def enrol_form(self, request: Request) -> Response:

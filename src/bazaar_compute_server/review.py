@@ -4,7 +4,6 @@ decides from the server, carried down to the agent's node."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from .control import Controls
 from .fleet import AgentView
@@ -45,9 +44,8 @@ class Reminders:
 async def request(controls: Controls, agent: AgentView, contact: Contact) -> Request:
     """The first message of a conversation waiting to be looked at."""
 
-    answer = await _ask(
-        controls,
-        agent,
+    answer = await controls.outcome(
+        agent.computer_id,
         {
             "read": "history",
             "agent_id": agent.id,
@@ -55,6 +53,7 @@ async def request(controls: Controls, agent: AgentView, contact: Contact) -> Req
             "target": contact.target,
             "limit": 1,
         },
+        online=agent.status != "offline",
     )
     if isinstance(answer, str):
         word, _, code = answer.partition(":")
@@ -79,15 +78,15 @@ async def decide(
     """Let a conversation in or turn it away; the word for why not when the
     node did not."""
 
-    answer = await _ask(
-        controls,
-        agent,
+    answer = await controls.outcome(
+        agent.computer_id,
         {
             "write": "review",
             "agent_id": agent.id,
             "thread_id": thread_id,
             "review": review,
         },
+        online=agent.status != "offline",
     )
     return answer if isinstance(answer, str) else None
 
@@ -97,17 +96,19 @@ async def reply(controls: Controls, agent: AgentView) -> str:
     says nothing - or why the node could not say, as `refused:<code>`,
     `offline` or `silent`, which no line the agent says ever reads as."""
 
-    answer = await _ask(
-        controls, agent, {"read": "setting", "agent_id": agent.id, "key": REVIEW_REPLY}
+    answer = await controls.outcome(
+        agent.computer_id,
+        {"read": "setting", "agent_id": agent.id, "key": REVIEW_REPLY},
+        online=agent.status != "offline",
     )
     return answer if isinstance(answer, str) else answer["value"] or ""
 
 
 async def set_reply(controls: Controls, agent: AgentView, value: str) -> str | None:
-    answer = await _ask(
-        controls,
-        agent,
+    answer = await controls.outcome(
+        agent.computer_id,
         {"write": "setting", "agent_id": agent.id, "key": REVIEW_REPLY, "value": value},
+        online=agent.status != "offline",
     )
     return answer if isinstance(answer, str) else None
 
@@ -117,10 +118,10 @@ async def reminders(
 ) -> Reminders:
     """The reminders still to come in a conversation."""
 
-    answer = await _ask(
-        controls,
-        agent,
+    answer = await controls.outcome(
+        agent.computer_id,
         {"read": "reminders", "agent_id": agent.id, "actor_id": contact.actor_id},
+        online=agent.status != "offline",
     )
     if isinstance(answer, str):
         word, _, code = answer.partition(":")
@@ -133,22 +134,6 @@ async def reminders(
         ),
         "listed",
     )
-
-
-async def _ask(
-    controls: Controls, agent: AgentView, request: dict[str, Any]
-) -> dict[str, Any] | str:
-    """The node's answer, or the word for why there is none: `offline`,
-    `silent`, or `refused:<code>`."""
-
-    if agent.status == "offline":
-        return "offline"
-    answer = await controls.ask(agent.computer_id, request)
-    if answer is None:
-        return "silent"
-    if not answer.get("ok"):
-        return f"refused:{answer.get('code')}"
-    return answer["result"]
 
 
 __all__ = [
