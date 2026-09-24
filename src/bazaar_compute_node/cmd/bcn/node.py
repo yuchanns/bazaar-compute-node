@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -165,7 +166,13 @@ async def _run_node(args: argparse.Namespace, parser: Usage) -> int:
     try:
         await node.wait()
     finally:
-        await node.stop()
+        # going down comes first: the whole of it gets one limit, and what
+        # is not done by then is left to the process ending
+        try:
+            async with asyncio.timeout(node.timeout_budget.shutdown_seconds):
+                await node.stop()
+        except TimeoutError:
+            print("bcn stop timed out; exiting anyway", file=sys.stderr, flush=True)
     return node.exit_code
 
 

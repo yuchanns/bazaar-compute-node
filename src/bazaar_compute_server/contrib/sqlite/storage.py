@@ -94,9 +94,13 @@ class SqliteStorage(IStorage):
             raise
 
     async def stop(self) -> None:
+        """Finish the writes and close every connection. The connections close
+        however the writing ended - cancelled with the rest on a forced quit
+        too: each holds a thread that keeps the process from exiting."""
+
         if self._writing is not None:
             await self._writes.put(None)
-            await self._writing
+            await asyncio.gather(self._writing, return_exceptions=True)
             self._writing = None
         readers, self._idle_readers = self._idle_readers, []
         writer, self._writer = self._writer, None
