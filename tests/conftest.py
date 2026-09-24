@@ -9,12 +9,17 @@ from uuid import uuid4
 
 import pytest
 from bcn_test_support import temporary_test_directory
+from bcn_test_support.plugin import install
 
 _owned_basetemp: AbstractContextManager[Path] | None = None
 
 
 def pytest_configure(config: pytest.Config) -> None:
     global _owned_basetemp
+
+    # the test channel, runtime, storage and audit, found by the node the
+    # way installed plugins are
+    install()
 
     if config.option.basetemp is not None:
         return

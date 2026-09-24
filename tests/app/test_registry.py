@@ -4,6 +4,7 @@ from importlib.metadata import EntryPoint, distribution
 
 import pytest
 from bcn_test_support import RecordingAudit
+from bcn_test_support.plugin import ENTRY_POINTS
 
 from bazaar_compute_node.app.registry import (
     RUNTIME_ENTRY_POINT_GROUP,
@@ -32,7 +33,7 @@ def test_declared_provider_entry_points_load() -> None:
     )
     test_support = tuple(
         entry_point
-        for entry_point in distribution("bcn-test-support").entry_points
+        for entry_point in ENTRY_POINTS
         if entry_point.group in PROVIDER_GROUPS
     )
 
@@ -40,6 +41,18 @@ def test_declared_provider_entry_points_load() -> None:
     assert test_support
     for entry_point in (*production, *test_support):
         entry_point.load()
+
+
+def test_the_test_plugins_are_not_installed_as_plugins() -> None:
+    """The test channel and runtime are found only where the suite puts
+    them: installed with the package, a node run from a checkout would
+    offer them as real kinds."""
+
+    assert not [
+        entry_point
+        for entry_point in distribution("bcn-test-support").entry_points
+        if entry_point.group in PROVIDER_GROUPS
+    ]
 
 
 def test_audit_options_reach_the_sink_factory() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from importlib.metadata import EntryPoint
 from typing import cast
 
 from bazaar_compute_node.core.observability import AuditContext, IAudit
@@ -64,11 +65,44 @@ def create_audit(context: AuditContext) -> IAudit:
     return RecordingAudit(options=context.options)
 
 
+# the test plugins, as installed ones are declared; they are not declared in
+# the package, or a node run from a checkout would offer them as real kinds
+ENTRY_POINTS = tuple(
+    EntryPoint(name="test", value=f"bcn_test_support.plugin:{target}", group=group)
+    for group, target in (
+        ("bazaar_compute_node.channels", "builder"),
+        ("bazaar_compute_node.runtimes", "runtime_builder"),
+        ("bazaar_compute_node.storages", "create_storage"),
+        ("bazaar_compute_node.audits", "create_audit"),
+    )
+)
+
+
+def install() -> None:
+    """Have the node find the test plugins beside the installed ones, in
+    this process only: the suite calls it once, and a node a test starts in
+    a process of its own runs through `bcn_test_support.node`."""
+
+    from bazaar_compute_node.app import registry
+
+    installed = registry.entry_points
+
+    def entry_points(*, group: str) -> list[EntryPoint]:
+        return [
+            *installed(group=group),
+            *(entry for entry in ENTRY_POINTS if entry.group == group),
+        ]
+
+    registry.entry_points = entry_points
+
+
 __all__ = [
+    "ENTRY_POINTS",
     "StaticRuntimeBuilder",
     "availability",
     "builder",
     "create_audit",
     "create_storage",
+    "install",
     "runtime_builder",
 ]

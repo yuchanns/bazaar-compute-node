@@ -122,7 +122,7 @@ kind = "test"
         [
             sys.executable,
             "-m",
-            "bazaar_compute_node.cli",
+            "bcn_test_support.node",
             "run",
             "--config",
             str(config_path),
