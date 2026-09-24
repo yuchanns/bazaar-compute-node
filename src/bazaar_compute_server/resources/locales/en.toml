@@ -147,7 +147,6 @@
 "history.empty" = "No messages yet."
 "history.agent" = "Agent"
 "history.human" = "Human"
-"history.system" = "System"
 "history.image" = "Image"
 "status.running" = "Running"
 "status.busy" = "Working"

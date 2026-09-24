@@ -14,6 +14,11 @@
 {% for turn in history.turns %}
 {% set day = turn.at_ms|day %}
 {% if day != ns.day %}<div class="day">{{ day }}</div>{% set ns.day = day %}{% endif %}
+{% if turn.kind == "system" %}
+{# what the node itself says - a reminder going off - is no one's turn: a
+   line on the background, apart from the conversation #}
+{% for line in turn.lines %}<div class="note" id="message-{{ line.message_id }}"><span class="at">{{ turn.at_ms|time }}</span><span>{{ line.body }}</span></div>{% endfor %}
+{% else %}
 <div class="turn{% if turn.own %} own{% endif %}{% if turn.leads %} leads{% endif %}{% if turn.follows %} follows{% endif %}" data-identity="{{ turn.identity }}" data-speaker="{{ turn.speaker }}" data-kind="{{ turn.kind }}">
   {{ c.avatar(turn.identity, small=true, opens=".turn" if turn.own else none) }}
   {% if turn.own %}
@@ -23,11 +28,12 @@
   <div class="card" hx-morph-skip hx-get="/agents/{{ ref(history.agent.computer_id) }}/{{ ref(history.agent.id) }}/activity" hx-trigger='mouseenter once from:"previous .av"' hx-target="this" hx-swap="innerMorph"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
   {% endif %}
   <div class="said">
-    <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human", "system") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|time }}</span></div>
+    <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|time }}</span></div>
     {% for line in turn.lines %}
-    <div class="line{% if turn.kind != "system" %} md{% endif %}" id="message-{{ line.message_id }}">{% if turn.kind != "system" %}{{ line.body|markdown }}{% else %}{{ line.body }}{% endif %}{% for name in line.attachments %}<div class="file">{{ c.icon("paperclip") }} {{ name }}</div>{% endfor %}</div>
+    <div class="line md" id="message-{{ line.message_id }}">{{ line.body|markdown }}{% for name in line.attachments %}<div class="file">{{ c.icon("paperclip") }} {{ name }}</div>{% endfor %}</div>
     {% endfor %}
   </div>
 </div>
+{% endif %}
 {% endfor %}
 {% if history.next_ms and history.turns and history.next_ms|day != ns.day %}<div class="day">{{ history.next_ms|day }}</div>{% endif %}

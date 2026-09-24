@@ -332,7 +332,12 @@ def _at(item: dict[str, Any]) -> int:
 
 
 def _same(turn: Turn, item: dict[str, Any], tz: tzinfo) -> bool:
+    """Whether a message goes on the turn: the same speaker, the same day; the
+    node's own words stand each on their own, at their own time."""
+
     _, sender_id, kind, own = _who(item)
+    if kind == "system":
+        return False
     return (turn.sender_id, turn.kind, turn.own, day_text(turn.at_ms, tz)) == (
         sender_id,
         kind,

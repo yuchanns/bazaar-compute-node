@@ -147,7 +147,6 @@
 "history.empty" = "暂无消息。"
 "history.agent" = "智能体"
 "history.human" = "人类"
-"history.system" = "系统"
 "history.image" = "图片"
 "status.running" = "运行中"
 "status.busy" = "处理中"

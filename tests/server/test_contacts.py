@@ -13,6 +13,8 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     Review,
     SenderIdentity,
+    SenderKind,
+    SystemMessageKind,
 )
 from bazaar_compute_server.clock import now_ms
 from bazaar_compute_server.fleet import PAGE_SIZE
@@ -425,6 +427,27 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     now_ms=57_000,
                     opening=Review.APPROVED,
                 )
+                # and a reminder going off after them
+                await node_storage.save_message(
+                    Message(
+                        direction=MessageDirection.INBOUND,
+                        seq=0,
+                        message_id="message-chat-reminder",
+                        thread_id="chat",
+                        channel_session_id="channel-chat",
+                        channel="test",
+                        provider_thread_id="thread-chat",
+                        provider_message_id=None,
+                        received_at_ms=86_400_000 + 58_000,
+                        sender=SenderIdentity(id="system", name="system"),
+                        target="dm:channel-chat",
+                        body="Reminder went off",
+                        metadata={
+                            "sender_kind": SenderKind.SYSTEM.value,
+                            "system_message_kind": SystemMessageKind.REMINDER.value,
+                        },
+                    )
+                )
                 await storage.record_events(
                     computer_id,
                     "run-x",
@@ -452,6 +475,10 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert status == 200, tail
                 assert tail.count('class="line md"') == 2
                 assert tail.count('<div class="turn') == 2
+                # case: the node's own words are a line on the background, no
+                # one's turn
+                assert '<div class="note" id="message-message-chat-reminder">' in tail
+                assert "Reminder went off" in tail.split('class="note"')[1]
                 assert 'id="message-message-chat-56"' in tail
                 assert '<div class="turn follows" data-identity=' in tail
                 assert tail.count('class="day"') == 1
@@ -460,7 +487,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     < tail.index('class="day"')
                     < tail.index('id="message-message-chat-57"')
                 )
-                assert "&last=message-chat-57" in tail
+                assert "&last=message-chat-reminder" in tail
                 # case: a column with nothing to read after is read afresh
                 # as a whole once something is new
                 status, whole = await _get(
