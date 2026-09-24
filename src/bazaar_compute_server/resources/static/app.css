@@ -78,6 +78,10 @@ a { color: inherit; text-decoration: none; }
    the top, the newest end kept in view; no bubbles, no colour per speaker */
 .chat { flex: 1; overflow-y: auto; padding: 12px 16px; }
 .turn { display: flex; gap: 10px; margin: 10px 0; }
+/* where a day starts, in the chat and the activity log alike: its date
+   centred on a thin line */
+.day { display: flex; align-items: center; gap: 10px; padding: 6px 0; color: var(--muted); font: 11.5px ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace; }
+.day::before, .day::after { content: ""; flex: 1; height: 1px; background: var(--edge); }
 .turn .said { flex: 1; min-width: 0; }
 .turn .who { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
 .turn .who .at { color: var(--muted); font-size: .84em; }
@@ -533,6 +537,5 @@ a { color: inherit; text-decoration: none; }
 .log .ln.bad .x { color: var(--danger); }
 .log .ln.fresh { animation: fresh 2.4s ease-out; }
 @keyframes fresh { from { background: var(--hi); } to { background: transparent; } }
-.log .day { display: flex; align-items: center; gap: 10px; padding: 6px 14px; color: var(--muted); font: 11.5px ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace; }
-.log .day::before, .log .day::after { content: ""; flex: 1; height: 1px; background: var(--edge); }
+.log .day { padding: 6px 14px; }
 .log .empty { padding: 12px 14px; }

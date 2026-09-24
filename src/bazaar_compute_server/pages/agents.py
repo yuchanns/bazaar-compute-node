@@ -428,6 +428,7 @@ class AgentPages:
                 self._controls,
                 agent,
                 contact,
+                self._render.zone(request),
                 after=last,
                 since=int(since),
                 shown=query.get("shown"),
@@ -451,13 +452,23 @@ class AgentPages:
         before = query.get("before")
         if before is not None:
             history = await earlier(
-                self._storage, self._controls, agent, contact, before=before
+                self._storage,
+                self._controls,
+                agent,
+                contact,
+                self._render.zone(request),
+                before=before,
             )
             return self._render.fragment(
                 request, "history_rows.html", history=history, earlier=True
             )
         history = await latest(
-            self._storage, self._controls, agent, contact, around=query.get("latest")
+            self._storage,
+            self._controls,
+            agent,
+            contact,
+            self._render.zone(request),
+            around=query.get("latest"),
         )
         return self._render.fragment(
             request, "history.html", history=history, latest=query.get("latest")

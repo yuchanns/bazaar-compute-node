@@ -6,7 +6,14 @@
    being read without moving it #}
 {% if history.before %}<div class="edge loading" hx-get="{{ url }}&before={{ history.before|urlencode }}" hx-trigger="revealed" hx-swap="outerHTML" hx-on:htmx:before:request="this.parentElement.dataset.height = this.parentElement.scrollHeight">{{ c.icon("loader-circle") }}</div>{% endif %}
 {% if earlier is defined %}<script>{ const chat = document.getElementById("history"); chat.scrollTop += chat.scrollHeight - Number(chat.dataset.height); }</script>{% endif %}
+{# a day's turns start under a line with its date: the first loaded when
+   there is nothing before it, and any whose day is not the one above; a page
+   put above others ends with the line for the day below it, when that one
+   starts there #}
+{% set ns = namespace(day=history.previous_ms|day if history.previous_ms else (history.turns[0].at_ms|day if history.before and history.turns else none)) %}
 {% for turn in history.turns %}
+{% set day = turn.at_ms|day %}
+{% if day != ns.day %}<div class="day">{{ day }}</div>{% set ns.day = day %}{% endif %}
 <div class="turn{% if turn.own %} own{% endif %}{% if turn.leads %} leads{% endif %}{% if turn.follows %} follows{% endif %}" data-identity="{{ turn.identity }}" data-speaker="{{ turn.speaker }}" data-kind="{{ turn.kind }}">
   {{ c.avatar(turn.identity, small=true, opens=".turn" if turn.own else none) }}
   {% if turn.own %}
@@ -16,10 +23,11 @@
   <div class="card" hx-morph-skip hx-get="/agents/{{ ref(history.agent.computer_id) }}/{{ ref(history.agent.id) }}/activity" hx-trigger='mouseenter once from:"previous .av"' hx-target="this" hx-swap="innerMorph"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
   {% endif %}
   <div class="said">
-    <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human", "system") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|clock }}</span></div>
+    <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human", "system") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|time }}</span></div>
     {% for line in turn.lines %}
     <div class="line{% if turn.kind != "system" %} md{% endif %}" id="message-{{ line.message_id }}">{% if turn.kind != "system" %}{{ line.body|markdown }}{% else %}{{ line.body }}{% endif %}{% for name in line.attachments %}<div class="file">{{ c.icon("paperclip") }} {{ name }}</div>{% endfor %}</div>
     {% endfor %}
   </div>
 </div>
 {% endfor %}
+{% if history.next_ms and history.turns and history.next_ms|day != ns.day %}<div class="day">{{ history.next_ms|day }}</div>{% endif %}
