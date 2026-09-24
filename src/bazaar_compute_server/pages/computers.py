@@ -174,7 +174,7 @@ class ComputerPages:
         if selected is None:
             return HTMLResponse("", status_code=404)
         form = await request.form()
-        agent, secrets, env = configuration(
+        agent, secrets, env, _ = configuration(
             {key: str(value) for key, value in form.items()}
         )
         reply = str(form.get("reply", "")).strip()

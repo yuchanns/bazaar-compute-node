@@ -93,6 +93,55 @@ async def recent_lines(
     ]
 
 
+# how many events a page of the activity tab holds
+PAGE_EVENTS = 50
+
+
+@dataclass(frozen=True, slots=True)
+class EventLine:
+    """One event of an agent's stream as the activity tab reads it."""
+
+    id: int
+    at_ms: int
+    # where it came from: the first part of the event's name, as named
+    source: str
+    text: str
+    detail: str
+    failed: bool
+
+
+async def event_lines(
+    storage: IStorage,
+    translator: Translator,
+    computer_id: str,
+    agent_id: str,
+    *,
+    before: int | None = None,
+    after: int | None = None,
+) -> list[EventLine]:
+    """An agent's events, newest first, a page at a time: those older than
+    `before`, or those newer than `after`; the same ones left out as on the
+    card."""
+
+    return [
+        EventLine(
+            item.id,
+            item.created_at_ms,
+            item.event_name.partition(".")[0],
+            *_parts(translator, item),
+            item.event_name.endswith(".failed"),
+        )
+        for item in await storage.recent_activity(
+            computer_id,
+            agent_id,
+            limit=PAGE_EVENTS,
+            skipping=QUIET,
+            before=before,
+            after=after,
+        )
+    ]
+
+
 async def usage_today(
     storage: IStorage, tz: tzinfo, computer_id: str, agent_id: str
 ) -> UsageView | None:
@@ -121,17 +170,22 @@ async def usage_today(
 
 
 def event_text(translator: Translator, item: StoredEvent) -> str:
+    return " · ".join(part for part in _parts(translator, item) if part)
+
+
+def _parts(translator: Translator, item: StoredEvent) -> tuple[str, str]:
+    """What happened, in words, and what it happened to."""
+
     key = f"event.{item.event_name}"
     words = translator.text(key) if translator.has(key) else item.event_name
     metadata = item.payload["metadata"]
-    if item.event_name.startswith("tool_call.") and metadata.get("name"):
-        return f"{words} · {metadata['name']}"
+    if item.event_name.startswith("tool_call."):
+        return words, metadata.get("name") or ""
     if item.event_name == "channel.inbound.persisted":
         sender = metadata.get("sender") or {}
-        return " · ".join(
+        return words, " · ".join(
             part
             for part in (
-                words,
                 metadata.get("target_name") or metadata.get("target"),
                 sender.get("display_name") or sender.get("name"),
             )
@@ -139,8 +193,8 @@ def event_text(translator: Translator, item: StoredEvent) -> str:
         )
     if item.event_name == "usage.updated":
         tokens = metadata.get("total", {}).get("total_tokens")
-        return f"{words} · {tokens:,}" if tokens is not None else words
-    return words
+        return words, f"{tokens:,}" if tokens is not None else ""
+    return words, ""
 
 
 def _session(item: StoredEvent) -> str | None:
@@ -181,4 +235,13 @@ def _compact(tokens: int) -> str:
     return str(tokens)
 
 
-__all__ = ["ActivityLine", "UsageView", "event_text", "recent_lines", "usage_today"]
+__all__ = [
+    "PAGE_EVENTS",
+    "ActivityLine",
+    "EventLine",
+    "UsageView",
+    "event_lines",
+    "event_text",
+    "recent_lines",
+    "usage_today",
+]

@@ -1,0 +1,12 @@
+{# the agent's events as a log in a box, newest on top; the top asks for
+   newer ones every few seconds - with the day of the newest line when no
+   date marks it yet - and the end for older ones as it comes into view #}
+{% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile/events" %}
+<div class="log">
+  <div class="cap">{{ t.text("agents.events") }}</div>
+  <div class="lines" id="events">
+    <div class="fresh" hx-get="{{ base }}" hx-vals='js:{after: document.querySelector("#events .ln")?.dataset.id ?? "", below: document.querySelector("#events .fresh + .ln")?.dataset.day ?? ""}' hx-trigger="every 5s" hx-target="this" hx-swap="afterend"></div>
+    {% include "agent_profile_events.html" %}
+    {% if not lines %}<div class="empty" id="events-empty">{{ t.text("agents.no_activity") }}</div>{% endif %}
+  </div>
+</div>

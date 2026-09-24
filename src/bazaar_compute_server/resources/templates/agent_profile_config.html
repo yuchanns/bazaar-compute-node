@@ -1,0 +1,34 @@
+{% import "components.html" as c with context %}
+{% import "agent_form.html" as f with context %}
+{# the agent as its computer holds it, one page of cards under headings;
+   saved, it comes back as the computer now holds it #}
+{% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile" %}
+{% if values is none %}
+<p class="err">{{ t.text("agents." ~ held.answer, {"code": held.code}) if held.answer != "listed" else t.text("agents.gone") }}</p>
+{% else %}
+{% set channels = values.get("channel", []) %}
+{% set runtimes = values.get("runtime", []) %}
+<form class="config" hx-post="{{ base }}" hx-target="#profile-body" hx-swap="innerHTML" hx-disable="find [type=submit]" data-computer="/computers/{{ ref(selected.computer_id) }}" data-next="{{ channels|length + runtimes|length }}">
+  <div class="section">{{ t.text("agents.step.basic") }}</div>
+  {{ f.basic(values) }}
+  <div class="section">{{ t.text("contacts.reply") }}</div>
+  {{ f.reply(reply) }}
+  <div class="section">{{ t.text("agents.step.channels") }}</div>
+  {{ f.deck("channel", channels, 0, kept=true, origins=origins.channel if origins is defined and origins else none, present=values.get("secrets", ())) }}
+  <div class="section">{{ t.text("agents.step.runtimes") }}</div>
+  {{ f.deck("runtime", runtimes, channels|length, kept=true, origins=origins.runtime if origins is defined and origins else none) }}
+  {% if failed %}<p class="err">{{ t.text("agents." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
+  {% if saved %}<p class="ok">{{ t.text("agents.saved") }}</p>{% endif %}
+  <div class="actions">
+    <button class="btn p" type="submit">{{ t.text("profile.save") }}</button>
+    <button class="btn" type="button" hx-get="{{ base }}/config" hx-target="#profile-body" hx-swap="innerHTML">{{ t.text("computers.cancel") }}</button>
+  </div>
+  {{ f.script() }}
+</form>
+{% endif %}
+<div class="dialog danger">
+  <h3>{{ t.text("agents.remove") }}</h3>
+  <p class="st">{{ t.text("agents.remove_hint") }}</p>
+  <button class="btn danger" type="button" hx-get="{{ base }}/remove" hx-target="#agent-remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("agents.remove") }}</button>
+</div>
+{% if saved %}{% with name = head.name, selected = head, oob = true %}{% include "agent_profile_head.html" %}{% endwith %}{% endif %}

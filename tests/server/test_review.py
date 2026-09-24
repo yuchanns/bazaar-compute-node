@@ -162,23 +162,6 @@ async def test_a_stranger_is_looked_at_let_in_and_turned_away_from_the_page(
                 )
                 assert 'id="contact-' in requests
 
-                # case: what the agent says to those waiting is set, the box
-                # going once it is kept, and read back
-                status, form = await _get(
-                    session, f"{base}/agents/{key}/reply", **headers
-                )
-                assert status == 200 and "<textarea" in form
-                async with session.post(
-                    f"{base}/agents/{key}/reply",
-                    data={"reply": "Not yet."},
-                    headers=headers,
-                ) as response:
-                    assert response.status == 200
-                    assert "<textarea" not in await response.text()
-                status, form = await _get(
-                    session, f"{base}/agents/{key}/reply", **headers
-                )
-                assert "Not yet." in form
         finally:
             await node.stop()
 

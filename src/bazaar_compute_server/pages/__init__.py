@@ -15,6 +15,7 @@ from ..storage import IStorage
 from .agents import AgentPages
 from .computers import ComputerPages
 from .login import LoginPages
+from .profile import ProfilePages
 from .settings import SettingsPages
 
 
@@ -32,6 +33,7 @@ def routes(
 ) -> list[Route]:
     renderer = Renderer(images, refs)
     agents = AgentPages(storage, controls, renderer, refs)
+    profile = ProfilePages(storage, controls, renderer, refs, agents)
     computers = ComputerPages(storage, controls, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
@@ -65,8 +67,14 @@ def routes(
             "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/profile",
             agents.profile,
         ),
-        Route("/agents/{computer_id}/{agent_id}/reply", agents.reply),
-        Route("/agents/{computer_id}/{agent_id}/reply", agents.reply, methods=["POST"]),
+        Route("/agents/{computer_id}/{agent_id}/profile", profile.show),
+        Route(
+            "/agents/{computer_id}/{agent_id}/profile", profile.save, methods=["POST"]
+        ),
+        Route("/agents/{computer_id}/{agent_id}/profile/remove", profile.remove_ask),
+        Route("/agents/{computer_id}/{agent_id}/profile/events", profile.events),
+        Route("/agents/{computer_id}/{agent_id}/profile/{tab}", profile.tab),
+        Route("/agents/{computer_id}/{agent_id}", profile.remove, methods=["DELETE"]),
         Route("/computers", computers.list),
         Route("/computers/new", computers.enrol_form),
         Route("/computers/list", computers.list_fragment),

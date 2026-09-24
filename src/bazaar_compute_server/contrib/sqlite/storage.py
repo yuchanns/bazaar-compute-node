@@ -573,7 +573,14 @@ class SqliteStorage(IStorage):
             return {row["computer_id"]: row["at"] async for row in cursor}
 
     async def recent_activity(
-        self, computer_id: str, agent_id: str, *, limit: int, skipping: Sequence[str]
+        self,
+        computer_id: str,
+        agent_id: str,
+        *,
+        limit: int,
+        skipping: Sequence[str],
+        before: int | None = None,
+        after: int | None = None,
     ) -> list[StoredEvent]:
         async with (
             self._reader() as reader,
@@ -581,11 +588,24 @@ class SqliteStorage(IStorage):
                 f"SELECT {_COLUMNS} FROM events"
                 " WHERE computer_id = ? AND agent_id = ?"
                 f" AND event_name NOT IN ({_marks(skipping)})"
-                " ORDER BY id DESC LIMIT ?",
-                (computer_id, agent_id, *skipping, limit),
+                " AND id < ? AND id > ?"
+                # from a cursor after, the page right after it, so a burst
+                # between two reads is taken in order and none is passed
+                # over; otherwise the newest
+                f" ORDER BY id {'ASC' if after is not None else 'DESC'} LIMIT ?",
+                (
+                    computer_id,
+                    agent_id,
+                    *skipping,
+                    before if before is not None else 2**63 - 1,
+                    after if after is not None else -1,
+                    limit,
+                ),
             ) as cursor,
         ):
-            return [_stored(row) async for row in cursor]
+            events = [_stored(row) async for row in cursor]
+        # newest first, however it was read
+        return events[::-1] if after is not None else events
 
     async def latest_per_agent(
         self, computer_ids: Sequence[str], names: Sequence[str]

@@ -91,28 +91,6 @@ async def decide(
     return answer if isinstance(answer, str) else None
 
 
-async def reply(controls: Controls, agent: AgentView) -> str:
-    """What the agent says to a conversation still waiting - empty when it
-    says nothing - or why the node could not say, as `refused:<code>`,
-    `offline` or `silent`, which no line the agent says ever reads as."""
-
-    answer = await controls.outcome(
-        agent.computer_id,
-        {"read": "setting", "agent_id": agent.id, "key": REVIEW_REPLY},
-        online=agent.status != "offline",
-    )
-    return answer if isinstance(answer, str) else answer["value"] or ""
-
-
-async def set_reply(controls: Controls, agent: AgentView, value: str) -> str | None:
-    answer = await controls.outcome(
-        agent.computer_id,
-        {"write": "setting", "agent_id": agent.id, "key": REVIEW_REPLY, "value": value},
-        online=agent.status != "offline",
-    )
-    return answer if isinstance(answer, str) else None
-
-
 async def reminders(
     controls: Controls, agent: AgentView, contact: Contact
 ) -> Reminders:
@@ -143,7 +121,5 @@ __all__ = [
     "Request",
     "decide",
     "reminders",
-    "reply",
     "request",
-    "set_reply",
 ]

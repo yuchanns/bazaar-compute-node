@@ -1,0 +1,17 @@
+{% import "components.html" as c with context %}
+{# the agent's workspace - what is in it, not where it is: a tree opened a
+   directory at a time, as it was when the tab opened - the button at the
+   contents' heading reads it again #}
+{% if workspace.at %}
+{# a directory below the top, for a folder opened in the tree #}
+{% include "agent_profile_files.html" %}
+{% elif workspace.answer != "listed" %}
+<p class="err">{{ t.text("agents." ~ workspace.answer, {"code": workspace.code}) }}</p>
+{% else %}
+<div class="section head">{{ t.text("agents.workspace_entries") }}<button class="btn icon" type="button" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/profile/workspace" hx-target="#profile-body" hx-swap="innerHTML" title="{{ t.text("agents.refresh") }}" aria-label="{{ t.text("agents.refresh") }}">{{ c.icon("rotate-cw") }}</button></div>
+{% if not workspace.entries %}
+<div class="empty">{{ t.text("agents.workspace_empty") }}</div>
+{% else %}
+<div class="dialog part files">{% include "agent_profile_files.html" %}</div>
+{% endif %}
+{% endif %}

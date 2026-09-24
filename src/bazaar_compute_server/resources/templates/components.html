@@ -77,13 +77,17 @@
    off screen unrendered while the row itself, and what hangs off it, stay;
    the status dot is one of those, sitting on the avatar's corner and out
    past its edge, where the box would clip it #}
-{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
+{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, settings=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
 {% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% if settings %} hx-trigger="click[!event.target.closest('.gear')]"{% endif %}{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
     {% if identity is not none %}{{ avatar(identity, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
     <div class="t"><b>{{ title }}</b>{% if subtitle %}<small>{{ subtitle }}</small>{% endif %}</div>
     {% if icons %}<span class="icons">{{ icons }}</span>{% endif %}
+    {# the way to the thing's own page, at the row's end: a button inside
+       the row's link, so a click on it goes there and not where the row goes;
+       it turns while the page is on its way #}
+    {% if settings %}<button class="btn icon gear" type="button" title="{{ t.text("agents.settings") }}" aria-label="{{ t.text("agents.settings") }}" data-href="{{ settings }}" onclick="event.preventDefault(); event.stopPropagation(); this.classList.add('busy'); htmx.ajax('GET', this.dataset.href, {target: '#main', swap: 'innerHTML'}).then(() => history.pushState(null, '', this.dataset.href)).finally(() => this.classList.remove('busy'))">{{ icon("settings") }}</button>{% endif %}
   </div>
   {% if status %}{{ dot(status) }}{% endif %}
   {% if caller is defined %}{{ caller() }}{% endif %}

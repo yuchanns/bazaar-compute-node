@@ -219,7 +219,9 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         # itself, past the box its contents are clipped to
         assert '<span class="os" title="kana"><span class="i">' in fragment
         assert ">kana<" not in fragment and "<small>" not in fragment
-        assert re.search(r'</span>\s*</div>\s*<div class="dot busy"', fragment)
+        assert re.search(r'</button>\s*</div>\s*<div class="dot busy"', fragment)
+        # case: the row's gear leads to the agent's own page
+        assert f'data-href="/agents/{one}/profile"' in fragment
         status, fragment = await _get(session, f"{base}/computers/list?selected={cid}")
         assert status == 200 and 'id="computer-list"' in fragment
         assert 'class="li on"' in fragment

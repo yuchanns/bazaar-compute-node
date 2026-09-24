@@ -1,0 +1,47 @@
+{% import "agent_form.html" as f with context %}
+{# how the agent is doing, as its computer last said: whether it runs, and
+   for each channel whether it is up, who it is there, since when, when it
+   last heard anything, and what last went wrong #}
+{% macro field(label) -%}
+<div class="field"><label>{{ t.text("agents.health." ~ label) }}</label><span class="v">{{ caller() }}</span></div>
+{%- endmacro %}
+{% if health is none %}
+<div class="empty">{{ t.text("agents.no_status") }}</div>
+{% else %}
+<div class="health">
+  <div class="dialog part">
+    {# a computer gone offline says nothing now: its last beat is not how
+       the agent is #}
+    {% if selected.status == "offline" %}
+    {% call field("agent") %}<span class="dot offline"></span>{{ t.text("agents.health.offline") }}{% endcall %}
+    {% else %}
+    {% call field("agent") %}<span class="dot {{ "running" if health.running else "bad" }}"></span>{{ t.text("agents.health." ~ ("running" if health.running else ("troubled" if health.status == "started" else "stopped"))) }}{% endcall %}
+    {% if health.status != "started" %}<p class="st">{{ health.status }}</p>{% endif %}
+    {% for problem in health.problems %}<p class="st">{{ problem }}</p>{% endfor %}
+    {% endif %}
+  </div>
+  {# what it used today, as the card by its face says #}
+  {% if usage %}
+  <div class="section">{{ t.text("agents.health.usage") }}</div>
+  <div class="dialog part">
+    {% call field("input") %}{{ usage.input }}{% endcall %}
+    {% call field("output") %}{{ usage.output }}{% endcall %}
+    {% call field("cached") %}{{ usage.cached }}{% endcall %}
+    {% if usage.cost %}{% call field("cost") %}${{ usage.cost }}{% endcall %}{% endif %}
+  </div>
+  {% endif %}
+  {% if health.channels and selected.status != "offline" %}
+  <div class="section">{{ t.text("agents.step.channels") }}</div>
+  {% for channel in health.channels %}
+  <div class="dialog part">
+    <div class="title">{{ f.logo("channel", channel.kind) }} {{ f.kind_name("channel", channel.kind) }}</div>
+    {% call field("link") %}<span class="dot {{ "running" if channel.ok else "bad" }}"></span>{{ t.text("agents.health." ~ ("ok" if channel.ok else "down")) }}{% if not channel.ok %} <span class="st">{{ channel.state }}</span>{% endif %}{% endcall %}
+    {% if channel.identity %}{% call field("identity") %}{{ channel.identity }}{% endcall %}{% endif %}
+    {% if channel.since_ms %}{% call field("since") %}{{ channel.since_ms|clock }}{% endcall %}{% endif %}
+    {% if channel.last_ms %}{% call field("last") %}{{ channel.last_ms|ago }}{% endcall %}{% endif %}
+    {% if channel.error %}{% call field("error") %}<span class="err-t">{{ channel.error }}</span>{% endcall %}{% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
+{% endif %}

@@ -141,6 +141,12 @@ a { color: inherit; text-decoration: none; }
 .li .t small { color: var(--muted); font-size: .84em; margin-top: 1px; white-space: nowrap; overflow: hidden; }
 /* what an agent is made of, at the row's end */
 .icons { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--muted); }
+/* the way to a row's own page: quiet until the row is pointed at or picked */
+.li .gear { flex: none; width: 24px; height: 24px; margin-left: 2px; }
+.li .gear .i svg { width: 15px; height: 15px; }
+.li:hover .gear, .li.on .gear { color: var(--fg); }
+.li .gear.busy { color: var(--fg); }
+.li .gear.busy .i svg { animation: turn 1s linear infinite; }
 .icons .more { min-width: 20px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--chip); color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: default; }
 /* the status dot sits centred on the avatar's bottom-left corner - on its
    rounded arc, not the square's point outside it (the avatar is 34px,
@@ -162,6 +168,7 @@ a { color: inherit; text-decoration: none; }
 /* busy breathes, so it reads as something going on */
 @keyframes breathe { 50% { opacity: .35; } }
 .dot.offline, .dot.failed { background: var(--muted); opacity: .5; }
+.dot.bad { background: var(--danger); }
 .chip { font-size: .78em; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--muted); }
 .ch-telegram { color: var(--tg); } .ch-lark { color: var(--lark); } .ch-wecom { color: var(--wecom); }
 .ch + .ch, .rt + .rt { margin-left: 4px; }
@@ -361,8 +368,6 @@ a { color: inherit; text-decoration: none; }
 .drawer .rows .empty { padding: 10px; }
 .drawer .foot { padding: 12px 14px; border-top: 1px solid var(--line); }
 .drawer .foot > .btn.danger { width: 100%; justify-content: center; }
-/* what the agent says to those still waiting, asked for from the column */
-.dialog.reply { width: 420px; }
 /* a line that may run on: the box grows with it rather than growing a grip */
 
 /* a computer's agents: a box of rows, about five tall before it scrolls */
@@ -462,7 +467,72 @@ a { color: inherit; text-decoration: none; }
 .kv { display: flex; align-items: center; gap: 6px; width: 100%; }
 .kv .arrow { color: var(--muted); }
 .kv .btn.icon { margin-left: 0; }
+.kv > input, .kv > .secret { flex: 1; min-width: 0; }
+.kv .secret[hidden], .kv input[hidden] { display: none; }
 /* a way to add something: dashed, quiet until pointed at */
 .btn.ghost { border-style: dashed; border-color: var(--edge); background: none; color: var(--muted); }
 .btn.ghost:hover { color: var(--fg); }
 .miss { display: inline-flex; color: var(--warn); }
+
+/* an agent's own page: its face with the status dot on the corner, text
+   tabs, and a page under them that scrolls */
+.profile .hd .face-at { position: relative; display: inline-flex; }
+.profile .hd .face-at .dot { position: absolute; left: calc(var(--r-av) * .2929 - 4px); top: calc(28px - var(--r-av) * .2929 - 4px); box-shadow: 0 0 0 2px var(--panel); }
+.profile .hd .icons { margin-left: 6px; font-weight: 400; }
+.switch.text { margin: 8px 14px 0; }
+.switch.text .tab { width: auto; padding: 0 12px; font: inherit; }
+.profile .body { flex: 1; }
+.profile .body > .dialog, .profile .config { max-width: 480px; }
+.profile .config .dialog, .profile .body > .dialog.part { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.profile .config .section, .profile .body > .section { margin: 18px 0 8px; }
+.profile .config > .section:first-child, .profile .body > .section:first-child { margin-top: 0; }
+/* the heading names the card: the card need not say it again */
+.profile .config .section + .part > .title:first-child { display: none; }
+.profile .config .part > .st { margin: 0 0 8px; color: var(--muted); }
+.profile .config .actions { display: flex; gap: 8px; margin: 16px 0 0; }
+.profile .secret { display: inline-flex; align-items: center; gap: 8px; }
+.profile .secret[hidden] { display: none; }
+.profile .section.head { display: flex; align-items: center; justify-content: space-between; }
+.profile .section.head .btn.htmx-request .i svg { animation: turn 1s linear infinite; }
+/* the workspace tree: a folder's contents under it, a step in; its arrow
+   turns down while it is open */
+.profile .dir > button.file { width: 100%; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-sm); }
+.profile .dir > button.file:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.profile .dir > button.file > .i:first-child svg { transition: transform .15s; }
+.profile .dir.open > button.file > .i:first-child svg { transform: rotate(90deg); }
+.profile .dir:not(.open) > .children { display: none; }
+.profile .children { padding-left: 20px; }
+.profile .file .twist { width: 1em; flex: none; }
+.profile .files .more { padding: 4px 0 4px 20px; color: var(--muted); font-size: .88em; }
+.profile .skill { padding: 6px 0; }
+.profile .skill + .skill { border-top: 1px solid var(--line); }
+.profile .skill b { display: block; font-weight: 500; }
+.profile .skill .st { color: var(--muted); font-size: .9em; }
+.profile .file { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.profile .file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile .file .size, .profile .file .when { color: var(--muted); font-size: .88em; font-variant-numeric: tabular-nums; }
+.profile .health { max-width: 480px; }
+.profile .health .dialog { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.profile .health .section { margin: 18px 0 8px; }
+.profile .health .title { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 6px; }
+.profile .health .field .v { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.profile .health .field .v .dot { align-self: center; }
+.profile .health .st { color: var(--muted); font-size: .9em; }
+.profile .health p.st { margin: 4px 0 0; }
+.profile .health .err-t { color: var(--danger); }
+/* the activity tab: a log in a box filling the page, scrolling inside;
+   a new line lights up as it comes in; a day's date on a line of its own */
+.profile .body:has(> .log) { display: flex; flex-direction: column; overflow: hidden; }
+.log { flex: 1; min-height: 0; display: flex; flex-direction: column; max-width: 860px; background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; overflow: hidden; }
+.log > .cap { padding: 8px 14px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: .92em; }
+.log .lines { flex: 1; overflow-y: auto; padding: 6px 0 10px; background: var(--canvas); line-height: 1.85; }
+.log .ln { display: grid; grid-template-columns: 72px 88px 1fr; align-items: baseline; padding: 0 14px; }
+.log .ln:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.log .ln .t, .log .ln .s { color: var(--muted); font: 12.5px ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+.log .ln .d { color: var(--muted); margin-left: 8px; }
+.log .ln.bad .x { color: var(--danger); }
+.log .ln.fresh { animation: fresh 2.4s ease-out; }
+@keyframes fresh { from { background: var(--hi); } to { background: transparent; } }
+.log .day { display: flex; align-items: center; gap: 10px; padding: 6px 14px; color: var(--muted); font: 11.5px ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace; }
+.log .day::before, .log .day::after { content: ""; flex: 1; height: 1px; background: var(--edge); }
+.log .empty { padding: 12px 14px; }

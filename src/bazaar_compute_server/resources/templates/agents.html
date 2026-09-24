@@ -3,6 +3,10 @@
   {{ c.column_header(t.text("agents.title")) }}
   {% include "agent_list.html" %}
 </div>
+{# an agent's own page takes the two columns right of the list #}
+{% if profile is defined and profile %}
+{% include "agent_profile.html" %}
+{% else %}
 {% if selected %}
 <div class="col list">
   {% call c.column_header(selected.name) %}
@@ -22,9 +26,7 @@
   <div class="switch">
     <button class="tab{% if not pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_chats") }}" hx-get="{{ url }}" hx-target="#contacts" hx-swap="outerHTML" hx-sync="#contacts:replace" hx-on:click="{{ pick }}">{{ c.icon("message-circle") }}</button>
     <button class="tab{% if pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_requests") }}" hx-get="{{ url }}?review=pending" hx-target="#contacts" hx-swap="outerHTML" hx-sync="#contacts:replace" hx-on:click="{{ pick }}">{{ c.icon("user-plus") }}<span class="n" id="pending-review" hidden></span></button>
-    <button class="tab aside" type="button" title="{{ t.text("contacts.reply") }}" hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/reply" hx-target="#reply" hx-swap="outerHTML">{{ c.icon("message-square-text") }}</button>
   </div>
-  <div id="reply" hidden></div>
   <template id="contacts-loading"><div class="loading">{{ c.icon("loader-circle") }}</div></template>
   {# the conversations are the node's to list, so the page comes up first and
      the column asks for them once it is there #}
@@ -32,3 +34,4 @@
 </div>
 {% endif %}
 {% include "chat.html" %}
+{% endif %}

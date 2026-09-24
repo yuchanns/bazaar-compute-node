@@ -39,10 +39,11 @@
 
 {# one channel: the options its kind takes, the credential typed in and
    never shown back #}
-{% macro channel_card(kind, n, values={}) -%}
+{% macro channel_card(kind, n, values={}, was=none, present={}) -%}
 {% set p = "channel-" ~ n ~ "-" %}
 <div class="dialog part" data-card>
   <input type="hidden" name="{{ p }}kind" value="{{ kind }}">
+  {% if was is not none %}<input type="hidden" name="{{ p }}was" value="{{ was }}">{% endif %}
   {{ card_head("channel", kind) }}
   {% if kind == "lark" %}
   <div class="field"><label>{{ t.text("agents.field.app_id") }}</label><input name="{{ p }}app_id" value="{{ values.get("app_id", "") }}" required autocomplete="off"></div>
@@ -51,7 +52,13 @@
   <div class="field"><label>{{ t.text("agents.field.bot_id") }}</label><input name="{{ p }}bot_id" value="{{ values.get("bot_id", "") }}" required autocomplete="off"></div>
   <div class="field"><label>{{ t.text("agents.field.websocket_url") }}</label><input name="{{ p }}websocket_url" value="{{ values.get("websocket_url", "") }}" placeholder="wss://openws.work.weixin.qq.com" autocomplete="off"></div>
   {% endif %}
-  {% if kind in secrets %}
+  {# a credential already kept is not shown back: it says it is set, and
+     changes only when a new one is typed #}
+  {# set is the computer's word that the credential has a value there, not
+     that the card names a variable for it #}
+  {% if kind in secrets and present.get(secrets[kind]) %}
+  <div class="field"><label>{{ t.text("agents.field." ~ secrets[kind]) }}</label><span class="secret"><span class="chip">{{ t.text("agents.secret_set") }}</span><button class="btn sm" type="button" data-change>{{ t.text("agents.secret_change") }}</button></span><input name="{{ p }}secret" type="password" autocomplete="new-password" hidden></div>
+  {% elif kind in secrets %}
   <div class="field"><label>{{ t.text("agents.field." ~ secrets[kind]) }}</label><input name="{{ p }}secret" type="password" required autocomplete="new-password"></div>
   {% endif %}
 </div>
@@ -73,24 +80,27 @@
 {%- endmacro %}
 
 {# a variable of the runtime's environment: its name and its value, which
-   the node keeps the way it keeps a credential #}
-{% macro env_row(n, m) -%}
+   the node keeps the way it keeps a credential - so one already kept is
+   not shown back, and changes only when a new value is typed #}
+{% macro env_row(n, m, name="") -%}
 {% set p = "runtime-" ~ n ~ "-env-" ~ m ~ "-" %}
-<div class="kv" data-row><input name="{{ p }}name" placeholder="{{ t.text("agents.env_name") }}" autocomplete="off"><span class="arrow">=</span><input name="{{ p }}value" type="password" placeholder="{{ t.text("agents.env_value") }}" autocomplete="new-password"><button class="btn icon" type="button" title="{{ t.text("agents.remove_card") }}" aria-label="{{ t.text("agents.remove_card") }}" data-remove>{{ c.icon("x") }}</button></div>
+<div class="kv" data-row><input name="{{ p }}name" value="{{ name }}" placeholder="{{ t.text("agents.env_name") }}" autocomplete="off"><span class="arrow">=</span>{% if name %}<input type="hidden" name="{{ p }}was" value="{{ name }}"><span class="secret"><span class="chip">{{ t.text("agents.secret_set") }}</span><button class="btn sm" type="button" data-change>{{ t.text("agents.secret_change") }}</button></span><input name="{{ p }}value" type="password" placeholder="{{ t.text("agents.env_value") }}" autocomplete="new-password" hidden>{% else %}<input name="{{ p }}value" type="password" placeholder="{{ t.text("agents.env_value") }}" autocomplete="new-password">{% endif %}<button class="btn icon" type="button" title="{{ t.text("agents.remove_card") }}" aria-label="{{ t.text("agents.remove_card") }}" data-remove>{{ c.icon("x") }}</button></div>
 {%- endmacro %}
 
 {# one runtime: a model chosen from those it lists; the effort the model
    takes; where it may write and reach. the model and the effort hold only
    what is chosen until one of them is first opened, and the runtime's list
    is asked for then. Default is the empty choice - as a configuration
-   naming none; a model named that the runtime does not list stays named #}
-{% macro runtime_card(kind, n, values={}, version=none) -%}
+   naming none - and stays so on a save that did not touch it; a model
+   named that the runtime does not list stays named #}
+{% macro runtime_card(kind, n, values={}, was=none, version=none) -%}
 {% set p = "runtime-" ~ n ~ "-" %}
 {% set model = values.get("model") or "" %}
 {% set effort = values.get("effort") or "" %}
 {% set env = values.get("env", {}) %}
 <div class="dialog part" data-card data-env="{{ env|length }}">
   <input type="hidden" name="{{ p }}kind" value="{{ kind }}">
+  {% if was is not none %}<input type="hidden" name="{{ p }}was" value="{{ was }}">{% endif %}
   {{ card_head("runtime", kind, version) }}
   <div class="field"><label>{{ t.text("agents.model") }}</label><span class="select"><select name="{{ p }}model" data-model><option value="{{ model }}">{{ model or t.text("agents.model_default") }}</option></select>{{ c.icon("chevron-down") }}</span>{{ waiting() }}</div>
   {# a model that takes no effort hides the field once the list says so;
@@ -100,6 +110,7 @@
   <div class="field"><label>{{ t.text("agents.network") }}</label><label class="sw"><input type="checkbox" name="{{ p }}network_access"{% if values.get("network_access", true) %} checked{% endif %}><span class="track"><span class="knob"></span></span></label></div>
   <div class="field top"><label>{{ t.text("agents.env") }}</label>
     <div class="list">
+      {% for name in env %}{{ env_row(n, loop.index0, name) }}{% endfor %}
       <button class="btn sm ghost" type="button" data-env-add>{{ c.icon("plus") }} {{ t.text("agents.env_add") }}</button>
     </div>
   </div>
@@ -129,11 +140,14 @@
 
 {# the cards of one family as a stack of pages, one shown, a tab on its edge
    to turn them; `start` numbers the first card #}
-{% macro deck(family, items, start) -%}
+{% macro deck(family, items, start, kept=false, origins=none, present=()) -%}
 <div class="deck">
   <div class="side" hidden><button type="button" data-turn="-1" title="{{ t.text("agents.previous") }}" aria-label="{{ t.text("agents.previous") }}">{{ c.icon("chevron-up") }}</button><button type="button" data-turn="1" title="{{ t.text("agents.next") }}" aria-label="{{ t.text("agents.next") }}">{{ c.icon("chevron-down") }}</button></div>
   {% for item in items %}
-  {% if family == "channel" %}{{ channel_card(item.kind, start + loop.index0, item) }}{% else %}{{ runtime_card(item.kind, start + loop.index0, item) }}{% endif %}
+  {# a card of the agent says which kept card it is, as the page last had
+     it: a form shown again after a refusal keeps where each came from #}
+  {% set was = (origins[loop.index0] if origins is not none else loop.index0) if kept else none %}
+  {% if family == "channel" %}{{ channel_card(item.kind, start + loop.index0, item, was, present[was] if was is not none and was < present|length else {}) }}{% else %}{{ runtime_card(item.kind, start + loop.index0, item, was) }}{% endif %}
   {% endfor %}
   {{ blank(family) }}
 </div>
@@ -257,7 +271,7 @@
       const rows = Object.assign(document.createElement('div'), { className: 'rows' });
       for (const row of card.querySelectorAll('.field')) {
         if (row.hidden) continue;
-        const names = [...row.querySelectorAll('.kv')].filter((kv) => kv.querySelector('[name$="-value"]').value).map((kv) => kv.querySelector('[name$="-name"]').value).filter(Boolean);
+        const names = [...row.querySelectorAll('.kv')].filter((kv) => kv.querySelector('[name$="-value"]').value || kv.querySelector('[name$="-was"]')).map((kv) => kv.querySelector('[name$="-name"]').value).filter(Boolean);
         const fields = [...row.querySelectorAll('input:not([type=hidden]), select, textarea')].filter((field) => !field.closest('.kv'));
         const value = row.querySelector('.kv, [data-env-add]') ? names.join('\n') || form.dataset.none
           : [...fields.map(said), row.querySelector('.unit')?.textContent].filter(Boolean).join(' ');
@@ -268,38 +282,6 @@
       out.append(box);
     }
   };
-
-  // the steps: one shown; those behind say whether they are filled in
-  let at = 0;
-  const go = (step) => {
-    at = step;
-    steps.forEach((section, n) => section.hidden = n !== step);
-    pins.forEach((pin, n) => {
-      const item = pin.parentElement;
-      item.classList.toggle('on', n === step);
-      item.classList.toggle('done', n < step && !bad(steps[n]));
-      item.classList.toggle('bad', n < step && bad(steps[n]));
-    });
-    back.hidden = step === 0;
-    forward.hidden = step === steps.length - 1;
-    done.hidden = step !== steps.length - 1;
-    if (step === steps.length - 1) summary();
-    reveal();
-  };
-  pins.forEach((pin, n) => pin.addEventListener('click', () => go(n)));
-  back.addEventListener('click', () => go(at - 1));
-  forward.addEventListener('click', () => go(at + 1));
-  // sending with something missing goes to the step and the card it is on
-  // first - a field out of sight cannot say what is wrong with it - and
-  // lets the field say it
-  done.addEventListener('click', () => {
-    const missing = [...form.querySelectorAll('input, select')].find((field) => !field.checkValidity());
-    if (!missing) return form.requestSubmit();
-    go(steps.findIndex((section) => section.contains(missing)));
-    const deck = missing.closest('.deck');
-    if (deck) draw(deck, [...deck.querySelectorAll(':scope > [data-card]')].indexOf(missing.closest('[data-card]')));
-    missing.reportValidity();
-  });
 
   form.addEventListener('click', (event) => {
     const button = event.target.closest('button');
@@ -322,12 +304,61 @@
       const card = button.closest('[data-card]'), shown = [...deck.querySelectorAll(':scope > [data-card]')].indexOf(card);
       card.remove();
       draw(deck, Math.max(shown - 1, 0));
+    } else if (button.hasAttribute('data-change')) {
+      const field = button.closest('.kv, .field').querySelector('input[type=password]');
+      button.closest('.secret').hidden = true;
+      field.hidden = false;
+      field.focus();
+    } else if (button.type === 'submit') {
+      // a missing field on a card out of sight is shown before it is asked for
+      const missing = [...form.querySelectorAll('input, select')].find((field) => !field.checkValidity());
+      const hidden = missing?.closest('.deck');
+      if (hidden && !missing.closest('.shown')) {
+        event.preventDefault();
+        draw(hidden, [...hidden.querySelectorAll(':scope > [data-card]')].indexOf(missing.closest('[data-card]')));
+        missing.reportValidity();
+      }
     } else if (button.hasAttribute('data-env-add')) {
       const card = button.closest('[data-card]'), m = Number(card.dataset.env);
       card.dataset.env = m + 1;
       button.before(copy('env-row', card.querySelector('input[name$="-kind"]').name.split('-')[1], m));
     }
   });
+
+  // a form in steps: one shown; those behind say whether they are filled in
+  if (steps.length) {
+    let at = 0;
+    const go = (step) => {
+      at = step;
+      steps.forEach((section, n) => section.hidden = n !== step);
+      pins.forEach((pin, n) => {
+        const item = pin.parentElement;
+        item.classList.toggle('on', n === step);
+        item.classList.toggle('done', n < step && !bad(steps[n]));
+        item.classList.toggle('bad', n < step && bad(steps[n]));
+      });
+      back.hidden = step === 0;
+      forward.hidden = step === steps.length - 1;
+      done.hidden = step !== steps.length - 1;
+      if (step === steps.length - 1) summary();
+      reveal();
+    };
+    pins.forEach((pin, n) => pin.addEventListener('click', () => go(n)));
+    back.addEventListener('click', () => go(at - 1));
+    forward.addEventListener('click', () => go(at + 1));
+    // sending with something missing goes to the step and the card it is on
+    // first - a field out of sight cannot say what is wrong with it - and
+    // lets the field say it
+    done.addEventListener('click', () => {
+      const missing = [...form.querySelectorAll('input, select')].find((field) => !field.checkValidity());
+      if (!missing) return form.requestSubmit();
+      go(steps.findIndex((section) => section.contains(missing)));
+      const deck = missing.closest('.deck');
+      if (deck) draw(deck, [...deck.querySelectorAll(':scope > [data-card]')].indexOf(missing.closest('[data-card]')));
+      missing.reportValidity();
+    });
+    go(Number(form.dataset.at ?? 0));
+  }
 
   form.addEventListener('change', (event) => {
     const model = event.target.closest('select[data-model]');
@@ -345,6 +376,5 @@
   form.addEventListener('mousedown', opening);
   form.addEventListener('keydown', opening);
 
-  go(Number(form.dataset.at ?? 0));
 }</script>
 {%- endmacro %}

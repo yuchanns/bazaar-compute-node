@@ -228,6 +228,125 @@ async def agent_view(
     return next((agent for agent in computer.agents if agent.id == agent_id), None)
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelHealth:
+    """One channel of an agent as a person reads it: whether it is up, who
+    it is there, since when, when it last heard anything, and what last went
+    wrong. Each kind reports these under names of its own."""
+
+    kind: str
+    ok: bool
+    state: str
+    identity: str | None
+    since_ms: int | None
+    last_ms: int | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentHealth:
+    """How an agent is doing: running, and if not quite, why; its channels."""
+
+    status: str
+    # what keeps a started agent from being well: its background work that
+    # failed, named with the error
+    problems: tuple[str, ...]
+    channels: tuple[ChannelHealth, ...]
+
+    @property
+    def running(self) -> bool:
+        return self.status == "started" and not self.problems
+
+
+async def agent_health(
+    storage: IStorage, computer_id: str, agent_id: str
+) -> AgentHealth | None:
+    """How the agent's computer last said it was doing in its health beat;
+    nothing when it has not."""
+
+    record = await _agent_record(storage, computer_id, agent_id)
+    if record is None:
+        return None
+    orchestrator = record.get("orchestrator_health") or {}
+    return AgentHealth(
+        record["status"],
+        tuple(
+            f"{name}: {error}"
+            for name, error in (orchestrator.get("background_failures") or {}).items()
+        ),
+        tuple(
+            _channel_health(item["kind"], item.get("identity"), item["health"])
+            for item in (record.get("channel_health") or {}).get("channels", [])
+        ),
+    )
+
+
+def _channel_health(
+    kind: str, identity: str | None, health: Mapping[str, Any]
+) -> ChannelHealth:
+    state = str(health.get("state"))
+    match kind:
+        case "telegram":
+            started = health.get("started_at_s")
+            return ChannelHealth(
+                kind,
+                state == "ready",
+                state,
+                f"@{health['bot_username']}"
+                if health.get("bot_username")
+                else identity,
+                started * 1000 if started else None,
+                health.get("last_update_at_ms"),
+                health.get("last_poll_error_kind"),
+            )
+        case "lark":
+            return ChannelHealth(
+                kind,
+                state == "connected",
+                state,
+                health.get("bot_name") or identity,
+                health.get("connected_at_ms"),
+                health.get("last_event_at_ms"),
+                health.get("last_disconnect_kind"),
+            )
+        case "wecom":
+            return ChannelHealth(
+                kind,
+                state == "connected",
+                state,
+                identity,
+                health.get("connected_at_ms"),
+                health.get("last_frame_at_ms"),
+                health.get("last_disconnect_kind"),
+            )
+        case _:
+            return ChannelHealth(
+                kind, state in {"ready", "connected"}, state, identity, None, None, None
+            )
+
+
+async def _agent_record(
+    storage: IStorage, computer_id: str, agent_id: str
+) -> Mapping[str, Any] | None:
+    """What the agent's computer last said of it in its health beat, as it
+    said it; nothing when it has not."""
+
+    computer = await storage.find_computer(computer_id)
+    if computer is None:
+        return None
+    (health,) = await storage.computer_health([computer])
+    if health.health is None:
+        return None
+    return next(
+        (
+            record
+            for record in health.health.payload["metadata"].get("agents", [])
+            if record["agent_id"] == agent_id
+        ),
+        None,
+    )
+
+
 def _computer_view(
     item: ComputerHealth,
     open_turns: Mapping[tuple[str, str | None], StoredEvent],
@@ -306,10 +425,13 @@ def _agent_view(
 
 __all__ = [
     "PAGE_SIZE",
+    "AgentHealth",
     "AgentPage",
     "AgentView",
+    "ChannelHealth",
     "ComputerView",
     "Fleet",
+    "agent_health",
     "agent_view",
     "agents_of",
     "computer_view",
