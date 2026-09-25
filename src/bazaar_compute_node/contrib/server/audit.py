@@ -66,6 +66,8 @@ class ServerAudit(IAudit):
         self._holding = 0
         self._sent = 0
         self._dropped = 0
+        # events the server read and refused, one by one
+        self._rejected = 0
         self._last_error: str | None = self._unusable
         self._last_sent_at_ms: int | None = None
         self._logger = logging.getLogger("bazaar_compute_node.audit.server")
@@ -79,6 +81,7 @@ class ServerAudit(IAudit):
             + (0 if self._carry is None else 1),
             "sent": self._sent,
             "dropped": self._dropped,
+            "rejected": self._rejected,
             "last_error": self._last_error,
             "last_sent_at_ms": self._last_sent_at_ms,
         }
@@ -135,10 +138,12 @@ class ServerAudit(IAudit):
         while True:
             batch = await self._next_batch()
             self._holding = len(batch)
-            if await self._report(batch):
-                self._sent += len(batch)
-            else:
+            rejected = await self._report(batch)
+            if rejected is None:
                 self._dropped += len(batch)
+            else:
+                self._sent += len(batch) - rejected
+                self._rejected += rejected
             self._holding = 0
 
     async def _next_batch(self) -> list[str]:
@@ -164,13 +169,13 @@ class ServerAudit(IAudit):
         self._queued_bytes -= len(event)
         return event
 
-    async def _report(self, batch: list[str]) -> bool:
-        """Post one batch; false when it did not get through, with the reason
-        in `last_error`."""
+    async def _report(self, batch: list[str]) -> int | None:
+        """Post one batch; how many of it the server refused, or nothing when
+        it did not get through, with the reason in `last_error`."""
 
         session = self._session
         if session is None or self._endpoint is None:
-            return False
+            return None
         try:
             async with session.post(
                 self._endpoint,
@@ -186,18 +191,20 @@ class ServerAudit(IAudit):
                         f"http {response.status} {_error_code(body)}:"
                         f" {len(batch)} events dropped"
                     )
-                    return False
+                    return None
                 reply = json.loads(body)
         except (aiohttp.ClientError, TimeoutError, ValueError) as error:
             self._last_error = f"{type(error).__name__}: {error}"
-            return False
+            return None
         if not isinstance(reply, Mapping) or reply.get("ok") is not True:
             code = reply.get("error_code") if isinstance(reply, Mapping) else None
             self._last_error = str(code or "malformed reply")
-            return False
+            return None
+        result = reply.get("result")
+        rejected = result.get("rejected") if isinstance(result, Mapping) else None
         self._last_error = None
         self._last_sent_at_ms = now_ms()
-        return True
+        return rejected if isinstance(rejected, int) else 0
 
 
 def _encode(value: object) -> str:

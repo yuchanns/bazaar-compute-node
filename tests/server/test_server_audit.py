@@ -119,7 +119,7 @@ async def test_what_the_server_cannot_take_is_dropped_and_the_node_goes_on(
 
 
 @pytest.mark.asyncio
-async def test_a_batch_the_server_refuses_is_dropped_not_retried(
+async def test_what_the_server_refuses_is_let_go_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with serving(tmp_path) as (base, storage):
@@ -128,30 +128,29 @@ async def test_a_batch_the_server_refuses_is_dropped_not_retried(
         audit = _sink(base)
         try:
             await audit.start(timeout=1)
-            # case: an event too large for any request is let go at the door,
-            # then one the server will not read
+            # case: an event too large for any request is let go at the door
             await audit.append(
                 _event("event.huge", at_ms=1, text="x" * BATCH_BYTES), timeout=1
             )
             assert audit.health["dropped"] == 1
             assert "larger than a request" in str(audit.health["last_error"])
+
+            # case: one the server will not read is refused alone; the one
+            # beside it is kept, and the node counts what was refused
             await audit.append(
                 _event("event.bad", at_ms=2, agent_id="not an id"), timeout=1
             )
-            await _wait_until(lambda: audit.health["dropped"] == 2)
-            # the server's own reason comes along with the status
-            assert "400 invalid_request" in str(audit.health["last_error"])
-
-            # case: the next event is not held up by either
             await audit.append(_event("event.after", at_ms=3), timeout=1)
-            await _wait_until(lambda: audit.health["sent"] == 1)
+            await _wait_until(
+                lambda: audit.health["sent"] == 1 and audit.health["rejected"] == 1
+            )
             assert await _stored(tmp_path / "bcs.sqlite3") == [(3, "event.after")]
-            assert audit.health["queued"] == 0
+            assert audit.health["queued"] == 0 and audit.health["dropped"] == 1
 
             # case: the computer is removed while the node runs: its reports are refused, not kept
             await storage.remove_computer(enrolment.computer.id)
             await audit.append(_event("event.orphan", at_ms=4), timeout=1)
-            await _wait_until(lambda: audit.health["dropped"] == 3)
+            await _wait_until(lambda: audit.health["dropped"] == 2)
             assert "401" in str(audit.health["last_error"])
             assert audit.health["queued"] == 0
         finally:
