@@ -18,8 +18,7 @@ from ..history import Contact, earlier, later, latest, news
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..review import Request as ReviewRequest
-from ..review import decide, reminders, set_reply
-from ..review import reply as reply_of
+from ..review import decide, reminders
 from ..review import request as request_of
 from ..storage import IStorage
 
@@ -85,7 +84,7 @@ class AgentPages:
             )
             if selected is None:
                 return HTMLResponse("", status_code=404)
-            await self.refs.load([*_named([selected]), *contact.named])
+            await self.refs.load([*named([selected]), *contact.named])
             return await self._chat(request, selected, contact)
         page, selected = await asyncio.gather(
             agent_page(self._storage, Access.of(request)),
@@ -109,7 +108,7 @@ class AgentPages:
     ) -> Response:
         await self.refs.load(
             [
-                *_named([*page.agents, *([selected] if selected else [])]),
+                *named([*page.agents, *([selected] if selected else [])]),
                 *(contact.named if contact else []),
             ]
         )
@@ -183,7 +182,7 @@ class AgentPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load([*_named([selected]), *contact.named])
+        await self.refs.load([*named([selected]), *contact.named])
         failed = await decide(self._controls, selected, contact.thread_id, review)
         if failed is not None and not _pending(request):
             # asked from the card about a conversation already let in: the
@@ -261,7 +260,7 @@ class AgentPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load([*_named([selected]), *contact.named])
+        await self.refs.load([*named([selected]), *contact.named])
         return self._render.fragment(
             request,
             "profile.html",
@@ -269,47 +268,6 @@ class AgentPages:
             contact=contact,
             reminders=await reminders(self._controls, selected, contact),
             failed=None,
-        )
-
-    @allowed("agents.approve")
-    @expanded("computer_id", "agent_id")
-    @sees("computer", "computer_id")
-    @sees("agent", "agent_id")
-    async def reply(self, request: Request) -> Response:
-        """What the agent says to a conversation still waiting: the card to
-        change it, or the change made."""
-
-        params = request.path_params
-        selected = await agent_view(
-            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
-        )
-        if selected is None:
-            return HTMLResponse("", status_code=404)
-        await self.refs.load(_named([selected]))
-        if request.method == "POST":
-            form = await request.form()
-            failed = await set_reply(
-                self._controls, selected, str(form.get("reply", ""))
-            )
-            return self._render.fragment(
-                request,
-                "reply_form.html",
-                selected=selected,
-                reply=str(form.get("reply", "")),
-                saved=failed is None,
-                failed=failed,
-            )
-        # a line that could not be read is not offered for saving, or a
-        # blank would go out in its place
-        answer = await reply_of(self._controls, selected)
-        failed = answer.partition(":")[0] in ("offline", "silent", "refused")
-        return self._render.fragment(
-            request,
-            "reply_form.html",
-            selected=selected,
-            reply=None if failed else answer,
-            saved=False,
-            failed=answer if failed else None,
         )
 
     async def _ids(self, key: str | None) -> str | None:
@@ -353,7 +311,7 @@ class AgentPages:
         page = await agent_page(
             self._storage, Access.of(request), after=after, until=until
         )
-        await self.refs.load(_named(page.agents))
+        await self.refs.load(named(page.agents))
         return self._render.fragment(
             request,
             "agent_rows.html" if after else "agent_list.html",
@@ -382,7 +340,7 @@ class AgentPages:
         )
         if agent is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load(_named([agent]))
+        await self.refs.load(named([agent]))
         return self._render.fragment(
             request, "activity_card.html", agent=agent, activity=activity, usage=usage
         )
@@ -430,7 +388,7 @@ class AgentPages:
             return Response(status_code=204)
         await self.refs.load(
             [
-                *_named([agent]),
+                *named([agent]),
                 *(value for row in listing.contacts for value in row.named),
             ]
         )
@@ -461,7 +419,7 @@ class AgentPages:
         contact = await self._contact(request)
         if contact is None:
             return HTMLResponse("", status_code=404)
-        await self.refs.load([*_named([agent]), *contact.named])
+        await self.refs.load([*named([agent]), *contact.named])
         since = query.get("since")
         last = query.get("last")
         if since is not None and last is not None:
@@ -470,6 +428,7 @@ class AgentPages:
                 self._controls,
                 agent,
                 contact,
+                self._render.zone(request),
                 after=last,
                 since=int(since),
                 shown=query.get("shown"),
@@ -493,13 +452,23 @@ class AgentPages:
         before = query.get("before")
         if before is not None:
             history = await earlier(
-                self._storage, self._controls, agent, contact, before=before
+                self._storage,
+                self._controls,
+                agent,
+                contact,
+                self._render.zone(request),
+                before=before,
             )
             return self._render.fragment(
                 request, "history_rows.html", history=history, earlier=True
             )
         history = await latest(
-            self._storage, self._controls, agent, contact, around=query.get("latest")
+            self._storage,
+            self._controls,
+            agent,
+            contact,
+            self._render.zone(request),
+            around=query.get("latest"),
         )
         return self._render.fragment(
             request, "history.html", history=history, latest=query.get("latest")
@@ -512,10 +481,10 @@ def _pending(request: Request) -> bool:
     return request.query_params.get("review") == "pending"
 
 
-def _named(agents: Iterable[AgentView]) -> list[str]:
+def named(agents: Iterable[AgentView]) -> list[str]:
     """What a page names agents by in a link: their computer, and them."""
 
     return [value for agent in agents for value in (agent.computer_id, agent.id)]
 
 
-__all__ = ["AgentPages"]
+__all__ = ["AgentPages", "named"]

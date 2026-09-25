@@ -173,9 +173,19 @@ class IStorage(Protocol):
         ...
 
     async def recent_activity(
-        self, computer_id: str, agent_id: str, *, limit: int, skipping: Sequence[str]
+        self,
+        computer_id: str,
+        agent_id: str,
+        *,
+        limit: int,
+        skipping: Sequence[str],
+        before: int | None = None,
+        after: int | None = None,
     ) -> list[StoredEvent]:
-        """An agent's latest events, newest first, those named left out."""
+        """An agent's events, newest first, those named left out: the latest,
+        or those older than the event id `before`; with `after`, the first
+        ones newer than it - the page right after the cursor, not the
+        newest, so none between is passed over."""
         ...
 
     async def latest_per_agent(

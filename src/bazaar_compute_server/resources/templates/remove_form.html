@@ -1,5 +1,5 @@
 {% import "components.html" as c with context %}
-<div class="dialog danger" id="remove" hx-morph-skip>
+<div class="dialog danger" id="remove-{{ ref(computer_id) }}" hx-morph-skip>
   <h3>{{ t.text("computers.remove_confirm") }}</h3>
   <p class="st">{{ t.text("computers.remove_hint") }}</p>
   {# the column is filled afresh: a morph would carry this question, marked

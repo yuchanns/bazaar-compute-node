@@ -7,7 +7,9 @@ import json
 import logging
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from functools import partial
+from inspect import isawaitable
 from typing import Literal
 
 import aiohttp
@@ -24,7 +26,13 @@ from yarl import URL
 
 from ...core.actor import Agent
 from ...core.audit import AuditEvent
-from ...core.control import AgentCommands, ControlContext, IControl
+from ...core.control import (
+    AgentCommands,
+    ControlContext,
+    IControl,
+    NodeCommands,
+    Refused,
+)
 from ...core.correlation import CorrelationContext
 from ...core.models import ReminderState, Review, RuntimeEventState
 from ...core.reminder import ReminderListRequest
@@ -135,7 +143,8 @@ class _RemindersRead(BaseModel):
 
 
 class _SettingRead(BaseModel):
-    """What the agent is set to do under a key."""
+    """What the agent is set to do under a key - read from where it is kept,
+    so an agent not running says it too, the way it is written."""
 
     model_config = ConfigDict(extra="ignore", strict=True)
 
@@ -143,8 +152,11 @@ class _SettingRead(BaseModel):
     agent_id: StrictStr
     key: Literal["review.reply"]
 
-    async def answer(self, commands: AgentCommands) -> dict[str, object]:
-        return {"key": self.key, "value": await commands.service.setting(self.key)}
+    async def answer(self, node: NodeCommands) -> dict[str, object]:
+        return {
+            "key": self.key,
+            "value": await node.read_setting(self.agent_id, self.key),
+        }
 
 
 class _ReviewWrite(BaseModel):
@@ -179,19 +191,120 @@ class _SettingWrite(BaseModel):
         return {"key": self.key, "value": self.value}
 
 
+class _AgentsRead(BaseModel):
+    """Every agent the node runs, and what it could run."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["agents"]
+
+    def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return node.read_agents()
+
+
+class _AgentWrite(BaseModel):
+    """One agent taken in or changed. The agent itself crosses as the
+    mapping the configuration file holds it in, which only the node reads;
+    credentials come beside it, by channel and by option, and so do the
+    values of a runtime's environment, by runtime and by name; neither is
+    ever written into the configuration."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    write: Literal["agent"]
+    agent: dict[str, object]
+    secrets: dict[StrictStr, dict[StrictStr, StrictStr]] = {}
+    env: dict[StrictStr, dict[StrictStr, StrictStr]] = {}
+    # what the agent does, kept with it as it is written
+    settings: dict[Literal["review.reply"], StrictStr] = {}
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        settings = {str(key): value for key, value in self.settings.items()}
+        return await node.write_agent(self.agent, self.secrets, self.env, settings)
+
+
+class _AgentRemove(BaseModel):
+    """One agent let go."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    remove: Literal["agent"]
+    agent_id: StrictStr
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.delete_agent(self.agent_id)
+
+
+class _RuntimesRead(BaseModel):
+    """What the runtimes installed here can do."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["runtimes"]
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_runtimes()
+
+
+class _ModelsRead(BaseModel):
+    """The models one runtime installed here will answer as."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["models"]
+    kind: StrictStr
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_models(self.kind)
+
+
+class _SkillsRead(BaseModel):
+    """What one agent's runtimes found for it."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["skills"]
+    agent_id: StrictStr
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_skills(self.agent_id)
+
+
+class _WorkspaceRead(BaseModel):
+    """What one agent has in its workspace, a directory at a time: the top,
+    or the one at a path relative to it."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["workspace"]
+    agent_id: StrictStr
+    path: StrictStr = ""
+
+    async def answer(self, node: NodeCommands) -> Mapping[str, object]:
+        return await node.read_workspace(self.agent_id, self.path)
+
+
 # what a server may ask a node: the same services the runtime's own `bcc`
 # reaches through the local command server, without the caller checks that
 # server does for a runtime, since the caller here is the node - and what
 # only an operator may do, which `bcc` has no word for. each request knows
 # how it is answered; `read` or `write` tells them apart on the wire
-type _Request = (
-    _ContactsRead
-    | _HistoryRead
-    | _RemindersRead
-    | _SettingRead
-    | _ReviewWrite
-    | _SettingWrite
+type _AgentRequest = (
+    _ContactsRead | _HistoryRead | _RemindersRead | _ReviewWrite | _SettingWrite
 )
+# and what it may ask about the node rather than of one agent: the
+# operator's own requests, which `bcc` has no word for
+type _NodeRequest = (
+    _AgentsRead
+    | _SettingRead
+    | _AgentWrite
+    | _AgentRemove
+    | _RuntimesRead
+    | _ModelsRead
+    | _SkillsRead
+    | _WorkspaceRead
+)
+type _Request = _AgentRequest | _NodeRequest
 _REQUESTS: TypeAdapter[_Request] = TypeAdapter(_Request)
 
 # how long the server may hold a getUpdates before answering with nothing,
@@ -227,6 +340,7 @@ class ServerControl(IControl):
             self._unusable = f"environment variable {token_env!r} is not set"
         self._audit = context.audit
         self._commands_of = context.commands_of
+        self._node = context.node
         self._timer_wheel = context.timer_wheel
         # a fetch that fails waits this long before the next: as long as the
         # node is allowed to be silent
@@ -356,6 +470,27 @@ class ServerControl(IControl):
         self._offset = max(self._offset, update_id)
         self._served += 1
 
+    def _answer_of(
+        self, read: _Request
+    ) -> Callable[[], Mapping[str, object] | Awaitable[Mapping[str, object]]] | None:
+        """How a request is answered: about the node by the node, to an
+        agent by that agent's commands - nothing when it is not running."""
+
+        if isinstance(
+            read,
+            _AgentsRead
+            | _SettingRead
+            | _AgentWrite
+            | _AgentRemove
+            | _RuntimesRead
+            | _ModelsRead
+            | _SkillsRead
+            | _WorkspaceRead,
+        ):
+            return partial(read.answer, self._node)
+        commands = self._commands_of(read.agent_id)
+        return None if commands is None else partial(read.answer, commands)
+
     async def _answer_request(
         self, request: Mapping[str, object]
     ) -> Mapping[str, object]:
@@ -363,15 +498,21 @@ class ServerControl(IControl):
             read = _REQUESTS.validate_python(request)
         except ValidationError as error:
             return {"ok": False, "code": "INVALID_REQUEST", "error": str(error)}
-        commands = self._commands_of(read.agent_id)
-        if commands is None:
+        answer = self._answer_of(read)
+        if answer is None:
             return {
                 "ok": False,
                 "code": "AGENT_NOT_AVAILABLE",
                 "error": "Agent is not available",
             }
         try:
-            return {"ok": True, "result": await read.answer(commands)}
+            result = answer()
+            return {
+                "ok": True,
+                "result": await result if isawaitable(result) else result,
+            }
+        except Refused as error:
+            return {"ok": False, "code": "REFUSED", "error": str(error)}
         except ValueError as error:
             return {"ok": False, "code": "TARGET_NOT_FOUND", "error": str(error)}
         except Exception as error:

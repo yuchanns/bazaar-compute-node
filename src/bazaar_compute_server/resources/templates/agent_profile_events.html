@@ -1,0 +1,14 @@
+{# lines of the agent's events, newest first; a day other than the one
+   above starts under a line with its date. the end of a page asks for the
+   one before it when it scrolls into view #}
+{% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile/events" %}
+{# the first lines to come in take the place of saying there are none #}
+{% if fresh and lines %}<div id="events-empty" hx-swap-oob="delete"></div>{% endif %}
+{% set ns = namespace(day=above) %}
+{% for line in lines %}
+{% set day = line.at_ms|day %}
+{% if day != ns.day %}<div class="day">{{ day }}</div>{% set ns.day = day %}{% endif %}
+<div class="ln{% if line.failed %} bad{% endif %}{% if fresh %} fresh{% endif %}" data-id="{{ line.id }}" data-day="{{ day }}"><span class="t">{{ line.at_ms|time }}</span><span class="s">{{ line.source }}</span><span class="x">{{ line.text }}{% if line.detail %}<span class="d">{{ line.detail }}</span>{% endif %}</span></div>
+{% endfor %}
+{% if below and lines and ns.day != below %}<div class="day">{{ below }}</div>{% endif %}
+{% if more %}<div class="edge" hx-get="{{ base }}?before={{ lines[-1].id }}&above={{ ns.day }}" hx-trigger="revealed" hx-swap="outerHTML"></div>{% endif %}

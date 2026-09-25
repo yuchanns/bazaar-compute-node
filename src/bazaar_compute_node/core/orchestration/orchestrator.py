@@ -273,6 +273,12 @@ class AgentOrchestrator(IAsyncLifecycle):
             "background_failures": dict(self._background_failures),
         }
 
+    @property
+    def agent(self) -> Agent:
+        """The Agent's condition, for whoever starts and stops it to turn."""
+
+        return self._agent
+
     def session_runtime_state(self, actor: Actor) -> State | None:
         """Return process-local runtime lifecycle state for one actor."""
 
@@ -486,6 +492,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 await runtime.stop(timeout=timeout)
             raise
         self._started = True
+        self._agent.started()
         self._background_failures.clear()
         self._receive_task = asyncio.create_task(
             self._receive_loop(),
@@ -504,6 +511,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         if self._stopping:
             return
         self._stopping = True
+        self._agent.terminated()
         try:
             await self._channel.stop(timeout=timeout)
         except Exception as error:  # noqa: BLE001

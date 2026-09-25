@@ -1,0 +1,380 @@
+{% import "components.html" as c with context %}
+{# the configuration of an agent as cards: the agent itself, then one card
+   per channel and per runtime, kept as a stack of pages per kind with a
+   blank page at the end to start another. field names carry the card's
+   number, so the handler reads the cards back in the order they were added;
+   the values sent are the configuration's own words, the page shows them in
+   the reader's #}
+
+{% macro kind_name(family, kind) -%}
+{{ t.text("agents." ~ family ~ "." ~ kind) if t.has("agents." ~ family ~ "." ~ kind) else kind }}
+{%- endmacro %}
+
+{% macro logo(family, kind) -%}
+{% if family == "channel" %}{{ c.channels((kind,)) }}{% else %}{{ c.runtimes((kind,)) }}{% endif %}
+{%- endmacro %}
+
+{# a card's head: its logo and name, the runtime's version beside it, and
+   the way to take the card out #}
+{% macro card_head(family, kind, version=none) -%}
+<div class="title">{{ logo(family, kind) }} {{ kind_name(family, kind) }}{% if version %}<span class="ver">{{ version }}</span>{% endif %}<button class="btn icon" type="button" title="{{ t.text("agents.remove_card") }}" aria-label="{{ t.text("agents.remove_card") }}" data-remove>{{ c.icon("trash-2") }}</button></div>
+{%- endmacro %}
+
+{% macro basic(values) -%}
+<div class="dialog part">
+  <div class="field"><label for="agent-name">{{ t.text("agents.name") }}</label><input id="agent-name" name="name" value="{{ values.get("name", "") }}" required autocomplete="off"></div>
+  <div class="field"><label for="agent-mode">{{ t.text("agents.mode") }}</label>{{ c.select("agent-mode", "mode", [("session", t.text("agents.mode.session")), ("dangerous_individual", t.text("agents.mode.dangerous_individual"))], values.get("mode", "session")) }}</div>
+  <div class="field"><label for="agent-idle">{{ t.text("agents.idle") }}</label><input id="agent-idle" name="idle_timeout" type="number" min="0" step="1" value="{{ values.get("idle_timeout", 0)|int }}" class="num"><span class="unit">{{ t.text("agents.seconds") }}</span></div>
+</div>
+{%- endmacro %}
+
+{# what the agent tells a conversation still waiting to be looked at #}
+{% macro reply(value) -%}
+<div class="dialog part">
+  <div class="title">{{ t.text("contacts.reply") }}</div>
+  <p class="st">{{ t.text("contacts.reply_hint") }}</p>
+  <div class="field"><textarea name="reply" rows="2" placeholder="{{ t.text("contacts.reply_empty") }}">{{ value }}</textarea></div>
+</div>
+{%- endmacro %}
+
+{# one channel: the options its kind takes, the credential typed in and
+   never shown back #}
+{% macro channel_card(kind, n, values={}, was=none, present={}) -%}
+{% set p = "channel-" ~ n ~ "-" %}
+<div class="dialog part" data-card>
+  <input type="hidden" name="{{ p }}kind" value="{{ kind }}">
+  {% if was is not none %}<input type="hidden" name="{{ p }}was" value="{{ was }}">{% endif %}
+  {{ card_head("channel", kind) }}
+  {% if kind == "lark" %}
+  <div class="field"><label>{{ t.text("agents.field.app_id") }}</label><input name="{{ p }}app_id" value="{{ values.get("app_id", "") }}" required autocomplete="off"></div>
+  <div class="field"><label>{{ t.text("agents.field.region") }}</label>{{ c.select(p ~ "region", p ~ "region", [("feishu", t.text("agents.region.feishu")), ("lark", t.text("agents.region.lark"))], values.get("region", "feishu")) }}</div>
+  {% elif kind == "wecom" %}
+  <div class="field"><label>{{ t.text("agents.field.bot_id") }}</label><input name="{{ p }}bot_id" value="{{ values.get("bot_id", "") }}" required autocomplete="off"></div>
+  <div class="field"><label>{{ t.text("agents.field.websocket_url") }}</label><input name="{{ p }}websocket_url" value="{{ values.get("websocket_url", "") }}" placeholder="wss://openws.work.weixin.qq.com" autocomplete="off"></div>
+  {% endif %}
+  {# a credential already kept is not shown back: it says it is set, and
+     changes only when a new one is typed #}
+  {# set is the computer's word that the credential has a value there, not
+     that the card names a variable for it #}
+  {% if kind in secrets and present.get(secrets[kind]) %}
+  <div class="field"><label>{{ t.text("agents.field." ~ secrets[kind]) }}</label><span class="secret"><span class="chip">{{ t.text("agents.secret_set") }}</span><button class="btn sm" type="button" data-change>{{ t.text("agents.secret_change") }}</button></span><input name="{{ p }}secret" type="password" autocomplete="new-password" hidden></div>
+  {% elif kind in secrets %}
+  <div class="field"><label>{{ t.text("agents.field." ~ secrets[kind]) }}</label><input name="{{ p }}secret" type="password" required autocomplete="new-password"></div>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{# the models a runtime lists, as a model field's options once it is first
+   opened: default first, the empty choice, taking the efforts of the model
+   the runtime answers as unasked. each carries the efforts it takes, so
+   choosing it can offer those #}
+{% macro model_options(models) -%}
+{% set fallback = models|selectattr("default")|list %}
+<option value="" data-efforts="{{ fallback[0].efforts|join(" ") if fallback else "" }}">{{ t.text("agents.model_default") }}</option>{% for item in models if item.id != "default" %}<option value="{{ item.id }}" data-efforts="{{ item.efforts|join(" ") }}">{{ item.name }}</option>{% endfor %}
+{%- endmacro %}
+
+{# a field waiting on what the computer lists: turning while it is asked,
+   the way to ask again when it did not answer #}
+{% macro waiting() -%}
+<span class="wait" data-wait hidden>{{ c.icon("loader-circle") }}</span><button class="btn icon" type="button" data-again hidden aria-label="{{ t.text("agents.retry") }}">{{ c.icon("rotate-cw") }}</button>
+{%- endmacro %}
+
+{# a variable of the runtime's environment: its name and its value, which
+   the node keeps the way it keeps a credential - so one already kept is
+   not shown back, and changes only when a new value is typed #}
+{% macro env_row(n, m, name="") -%}
+{% set p = "runtime-" ~ n ~ "-env-" ~ m ~ "-" %}
+<div class="kv" data-row><input name="{{ p }}name" value="{{ name }}" placeholder="{{ t.text("agents.env_name") }}" autocomplete="off"><span class="arrow">=</span>{% if name %}<input type="hidden" name="{{ p }}was" value="{{ name }}"><span class="secret"><span class="chip">{{ t.text("agents.secret_set") }}</span><button class="btn sm" type="button" data-change>{{ t.text("agents.secret_change") }}</button></span><input name="{{ p }}value" type="password" placeholder="{{ t.text("agents.env_value") }}" autocomplete="new-password" hidden>{% else %}<input name="{{ p }}value" type="password" placeholder="{{ t.text("agents.env_value") }}" autocomplete="new-password">{% endif %}<button class="btn icon" type="button" title="{{ t.text("agents.remove_card") }}" aria-label="{{ t.text("agents.remove_card") }}" data-remove>{{ c.icon("x") }}</button></div>
+{%- endmacro %}
+
+{# one runtime: a model chosen from those it lists; the effort the model
+   takes; where it may write and reach. the model and the effort hold only
+   what is chosen until one of them is first opened, and the runtime's list
+   is asked for then. Default is the empty choice - as a configuration
+   naming none - and stays so on a save that did not touch it; a model
+   named that the runtime does not list stays named #}
+{% macro runtime_card(kind, n, values={}, was=none, version=none) -%}
+{% set p = "runtime-" ~ n ~ "-" %}
+{% set model = values.get("model") or "" %}
+{% set effort = values.get("effort") or "" %}
+{% set env = values.get("env", {}) %}
+<div class="dialog part" data-card data-env="{{ env|length }}">
+  <input type="hidden" name="{{ p }}kind" value="{{ kind }}">
+  {% if was is not none %}<input type="hidden" name="{{ p }}was" value="{{ was }}">{% endif %}
+  {{ card_head("runtime", kind, version) }}
+  <div class="field"><label>{{ t.text("agents.model") }}</label><span class="select"><select name="{{ p }}model" data-model><option value="{{ model }}">{{ model or t.text("agents.model_default") }}</option></select>{{ c.icon("chevron-down") }}</span>{{ waiting() }}</div>
+  {# a model that takes no effort hides the field once the list says so;
+     choosing one that does shows it again #}
+  <div class="field"><label>{{ t.text("agents.effort") }}</label><span class="select"><select name="{{ p }}effort" data-effort><option value="">{{ t.text("agents.effort_default") }}</option>{% if effort %}<option value="{{ effort }}" selected>{{ effort }}</option>{% endif %}</select>{{ c.icon("chevron-down") }}</span>{{ waiting() }}</div>
+  <div class="field"><label>{{ t.text("agents.sandbox") }}</label>{{ c.select(p ~ "sandbox_mode", p ~ "sandbox_mode", [("workspace-write", t.text("agents.sandbox.workspace-write")), ("danger-full-access", t.text("agents.sandbox.danger-full-access"))], values.get("sandbox_mode", "workspace-write")) }}</div>
+  <div class="field"><label>{{ t.text("agents.network") }}</label><label class="sw"><input type="checkbox" name="{{ p }}network_access"{% if values.get("network_access", true) %} checked{% endif %}><span class="track"><span class="knob"></span></span></label></div>
+  <div class="field top"><label>{{ t.text("agents.env") }}</label>
+    <div class="list">
+      {% for name in env %}{{ env_row(n, loop.index0, name) }}{% endfor %}
+      <button class="btn sm ghost" type="button" data-env-add>{{ c.icon("plus") }} {{ t.text("agents.env_add") }}</button>
+    </div>
+  </div>
+</div>
+{%- endmacro %}
+
+{# the last page of a stack: what the computer has of this family, to start
+   a card from, asked for when the page is first seen #}
+{% macro blank(family) -%}
+<div class="dialog part blank" data-blank="{{ family }}">
+  <div class="title">{{ t.text("agents.blank." ~ family) }}</div>
+  <div class="kinds"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+</div>
+{%- endmacro %}
+
+{# what the computer has of one family, on the blank page: a runtime that
+   is not there is greyed and says so; each comes with the card it starts #}
+{% macro kinds(family, listed) -%}
+{% if listed.answer != "listed" %}
+<p class="err">{{ t.text("agents." ~ listed.answer, {"code": listed.code}) }}</p><button class="btn sm" type="button" data-again>{{ c.icon("rotate-cw") }} {{ t.text("agents.retry") }}</button>
+{% elif family == "channel" %}
+{% for item in listed.kinds %}<button type="button" data-add="channel-{{ item.kind }}">{{ logo("channel", item.kind) }}{{ kind_name("channel", item.kind) }}</button><template id="card-channel-{{ item.kind }}">{{ channel_card(item.kind, "__N__") }}</template>{% endfor %}
+{% else %}
+{% for item in listed.kinds %}<button type="button" data-add="runtime-{{ item.kind }}"{% if not item.available %} disabled title="{{ t.text("agents.not_found") }}"{% endif %}>{{ logo("runtime", item.kind) }}{{ kind_name("runtime", item.kind) }}{% if item.available %}{% if item.version %}<span class="ver">{{ item.version }}</span>{% endif %}{% else %}<span class="miss">{{ c.icon("triangle-alert") }}</span>{% endif %}</button>{% if item.available %}<template id="card-runtime-{{ item.kind }}">{{ runtime_card(item.kind, "__N__", version=item.version) }}</template>{% endif %}{% endfor %}
+{% endif %}
+{%- endmacro %}
+
+{# the cards of one family as a stack of pages, one shown, a tab on its edge
+   to turn them; `start` numbers the first card #}
+{% macro deck(family, items, start, kept=false, origins=none, present=()) -%}
+<div class="deck">
+  <div class="side" hidden><button type="button" data-turn="-1" title="{{ t.text("agents.previous") }}" aria-label="{{ t.text("agents.previous") }}">{{ c.icon("chevron-up") }}</button><button type="button" data-turn="1" title="{{ t.text("agents.next") }}" aria-label="{{ t.text("agents.next") }}">{{ c.icon("chevron-down") }}</button></div>
+  {% for item in items %}
+  {# a card of the agent says which kept card it is, as the page last had
+     it: a form shown again after a refusal keeps where each came from #}
+  {% set was = (origins[loop.index0] if origins is not none else loop.index0) if kept else none %}
+  {% if family == "channel" %}{{ channel_card(item.kind, start + loop.index0, item, was, present[was] if was is not none and was < present|length else {}) }}{% else %}{{ runtime_card(item.kind, start + loop.index0, item, was) }}{% endif %}
+  {% endfor %}
+  {{ blank(family) }}
+</div>
+{%- endmacro %}
+
+{# what makes the form work, for the form it sits in: the steps, the stacks
+   and their pages, cards and rows added and taken out, what the computer
+   has asked for where it is first wanted, a model offering the efforts it
+   takes, and the summary the last step reads back. the form names its
+   computer's address in `data-computer` #}
+{% macro script() -%}
+<template id="env-row">{{ env_row("__N__", "__M__") }}</template>
+<template id="kinds-wait"><div class="loading">{{ c.icon("loader-circle") }}</div></template>
+<script>{
+  const form = document.currentScript.closest('form');
+  const steps = [...form.querySelectorAll('[data-step]')];
+  const pins = [...form.querySelectorAll('[data-go]')];
+  const back = form.querySelector('[data-back]'), forward = form.querySelector('[data-forward]'), done = form.querySelector('[data-done]');
+  const copy = (id, n, m) => document.createRange().createContextualFragment(
+    form.querySelector('#' + id).innerHTML.replaceAll('__N__', n).replaceAll('__M__', m ?? ''));
+  // an agent needs a channel and a runtime: a step whose stack has no card
+  // is as unfinished as one with an empty field
+  const bad = (step) => [...step.querySelectorAll('.deck')].some((deck) => !deck.querySelector(':scope > [data-card]'))
+    || [...step.querySelectorAll('input, select')].some((field) => !field.checkValidity());
+
+  // what a stack can be started with is asked for when its blank page is
+  // first seen, and again when asking did not get an answer
+  const kinds = async (blank) => {
+    blank.dataset.asked = '';
+    const box = blank.querySelector('.kinds');
+    box.replaceChildren(form.querySelector('#kinds-wait').content.cloneNode(true));
+    const response = await fetch(`${form.dataset.computer}/kinds/${blank.dataset.blank}`);
+    box.innerHTML = await response.text();
+  };
+  const reveal = () => {
+    for (const blank of form.querySelectorAll('[data-blank].shown:not([data-asked])')) {
+      if (blank.checkVisibility()) kinds(blank);
+    }
+  };
+
+  // a runtime's models are asked for when its model or effort is first
+  // opened, once for every card of that kind; not answering, the field
+  // offers to ask again
+  const lists = {};
+  const list = async (card, field) => {
+    const model = card.querySelector('select[data-model]');
+    const kind = card.querySelector('input[name$="-kind"]').value;
+    const wait = field.closest('.field').querySelector('[data-wait]');
+    for (const again of card.querySelectorAll('[data-again]')) again.hidden = true;
+    wait.hidden = false;
+    lists[kind] ??= fetch(`${form.dataset.computer}/models/${encodeURIComponent(kind)}`).then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+      return response.text();
+    });
+    let options;
+    try {
+      options = await lists[kind];
+    } catch (error) {
+      delete lists[kind];
+      const again = field.closest('.field').querySelector('[data-again]');
+      again.title = error.message;
+      again.hidden = false;
+      return;
+    } finally {
+      wait.hidden = true;
+    }
+    // what was chosen stays chosen, listed or not
+    const chosen = model.value;
+    model.innerHTML = options;
+    model.value = chosen;
+    if (model.value !== chosen) model.add(new Option(chosen, chosen, false, true));
+    model.dataset.listed = '';
+    efforts(model);
+    if (navigator.userActivation?.isActive && !field.closest('.field').hidden) field.showPicker();
+  };
+
+  // a model chosen offers the efforts it takes; one chosen before stays
+  // when the model takes it too, and otherwise it is back to default
+  const efforts = (model) => {
+    const effort = model.closest('[data-card]').querySelector('select[data-effort]');
+    const chosen = effort.value;
+    for (const item of [...effort.options].slice(1)) item.remove();
+    for (const value of model.selectedOptions[0].dataset.efforts.split(' ').filter(Boolean)) {
+      effort.add(new Option(value, value, false, value === chosen));
+    }
+    effort.closest('.field').hidden = effort.options.length < 2;
+  };
+
+  // a stack shows one page; its tab turns them, the blank page is last
+  const draw = (deck, shown) => {
+    const pages = [...deck.querySelectorAll(':scope > [data-card], :scope > [data-blank]')];
+    const at = Math.min(Math.max(shown ?? pages.findIndex((page) => page.classList.contains('shown')), 0), pages.length - 1);
+    pages.forEach((page, n) => page.classList.toggle('shown', n === at));
+    const [up, down] = deck.querySelectorAll('[data-turn]');
+    up.disabled = at <= 0; down.disabled = at >= pages.length - 1;
+    deck.querySelector('.side').hidden = pages.length < 2;
+    reveal();
+  };
+  for (const deck of form.querySelectorAll('.deck')) draw(deck, 0);
+
+  // the summary reads each card's fields back as they will be kept
+  const said = (field) => field.tagName === 'SELECT' ? field.selectedOptions[0]?.textContent
+    : field.type === 'password' ? form.dataset[field.value ? 'filled' : 'empty']
+    : field.type === 'checkbox' ? form.dataset[field.checked ? 'on' : 'off']
+    : field.value || form.dataset.none;
+  const summary = () => {
+    const out = form.querySelector('[data-summary]');
+    out.replaceChildren();
+    for (const card of form.querySelectorAll('[data-step]:not([data-summary-step]) .part:not([data-blank])')) {
+      const box = Object.assign(document.createElement('div'), { className: 'dialog part' });
+      const title = card.querySelector('.title');
+      const head = Object.assign(document.createElement('div'), { className: 'title' });
+      if (title) {
+        for (const node of title.childNodes) {
+          if (node.nodeName !== 'BUTTON') head.append(node.cloneNode(true));
+        }
+      } else {
+        head.textContent = form.dataset.basic;
+      }
+      box.append(head);
+      const rows = Object.assign(document.createElement('div'), { className: 'rows' });
+      for (const row of card.querySelectorAll('.field')) {
+        if (row.hidden) continue;
+        const names = [...row.querySelectorAll('.kv')].filter((kv) => kv.querySelector('[name$="-value"]').value || kv.querySelector('[name$="-was"]')).map((kv) => kv.querySelector('[name$="-name"]').value).filter(Boolean);
+        const fields = [...row.querySelectorAll('input:not([type=hidden]), select, textarea')].filter((field) => !field.closest('.kv'));
+        const value = row.querySelector('.kv, [data-env-add]') ? names.join('\n') || form.dataset.none
+          : [...fields.map(said), row.querySelector('.unit')?.textContent].filter(Boolean).join(' ');
+        rows.append(Object.assign(document.createElement('span'), { className: 'k', textContent: row.querySelector('label')?.textContent ?? '' }),
+          Object.assign(document.createElement('span'), { textContent: value }));
+      }
+      box.append(rows);
+      out.append(box);
+    }
+  };
+
+  form.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    const deck = button.closest('.deck');
+    if (button.hasAttribute('data-again')) {
+      const blank = button.closest('[data-blank]');
+      if (blank) return kinds(blank);
+      list(button.closest('[data-card]'), button.closest('.field').querySelector('select'));
+    } else if (button.dataset.turn) {
+      draw(deck, [...deck.querySelectorAll(':scope > [data-card], :scope > [data-blank]')].findIndex((page) => page.classList.contains('shown')) + Number(button.dataset.turn));
+    } else if (button.dataset.add) {
+      // the new card takes the blank page's place, and is shown
+      const n = Number(form.dataset.next); form.dataset.next = n + 1;
+      deck.querySelector('[data-blank]').before(copy('card-' + button.dataset.add, n));
+      draw(deck, deck.querySelectorAll(':scope > [data-card]').length - 1);
+    } else if (button.hasAttribute('data-remove')) {
+      const row = button.closest('[data-row]');
+      if (row) return row.remove();
+      const card = button.closest('[data-card]'), shown = [...deck.querySelectorAll(':scope > [data-card]')].indexOf(card);
+      card.remove();
+      draw(deck, Math.max(shown - 1, 0));
+    } else if (button.hasAttribute('data-change')) {
+      const field = button.closest('.kv, .field').querySelector('input[type=password]');
+      button.closest('.secret').hidden = true;
+      field.hidden = false;
+      field.focus();
+    } else if (button.type === 'submit') {
+      // a missing field on a card out of sight is shown before it is asked for
+      const missing = [...form.querySelectorAll('input, select')].find((field) => !field.checkValidity());
+      const hidden = missing?.closest('.deck');
+      if (hidden && !missing.closest('.shown')) {
+        event.preventDefault();
+        draw(hidden, [...hidden.querySelectorAll(':scope > [data-card]')].indexOf(missing.closest('[data-card]')));
+        missing.reportValidity();
+      }
+    } else if (button.hasAttribute('data-env-add')) {
+      const card = button.closest('[data-card]'), m = Number(card.dataset.env);
+      card.dataset.env = m + 1;
+      button.before(copy('env-row', card.querySelector('input[name$="-kind"]').name.split('-')[1], m));
+    }
+  });
+
+  // a form in steps: one shown; those behind say whether they are filled in
+  if (steps.length) {
+    let at = 0;
+    const go = (step) => {
+      at = step;
+      steps.forEach((section, n) => section.hidden = n !== step);
+      pins.forEach((pin, n) => {
+        const item = pin.parentElement;
+        item.classList.toggle('on', n === step);
+        item.classList.toggle('done', n < step && !bad(steps[n]));
+        item.classList.toggle('bad', n < step && bad(steps[n]));
+      });
+      back.hidden = step === 0;
+      forward.hidden = step === steps.length - 1;
+      done.hidden = step !== steps.length - 1;
+      if (step === steps.length - 1) summary();
+      reveal();
+    };
+    pins.forEach((pin, n) => pin.addEventListener('click', () => go(n)));
+    back.addEventListener('click', () => go(at - 1));
+    forward.addEventListener('click', () => go(at + 1));
+    // sending with something missing goes to the step and the card it is on
+    // first - a field out of sight cannot say what is wrong with it - and
+    // lets the field say it
+    done.addEventListener('click', () => {
+      const missing = [...form.querySelectorAll('input, select')].find((field) => !field.checkValidity());
+      if (!missing) return form.requestSubmit();
+      go(steps.findIndex((section) => section.contains(missing)));
+      const deck = missing.closest('.deck');
+      if (deck) draw(deck, [...deck.querySelectorAll(':scope > [data-card]')].indexOf(missing.closest('[data-card]')));
+      missing.reportValidity();
+    });
+    go(Number(form.dataset.at ?? 0));
+  }
+
+  form.addEventListener('change', (event) => {
+    const model = event.target.closest('select[data-model]');
+    if (model) efforts(model);
+  });
+  // a model or an effort not yet listed is listed before it opens
+  const opening = (event) => {
+    const field = event.target.closest('select[data-model], select[data-effort]');
+    const card = field?.closest('[data-card]');
+    if (!card || 'listed' in card.querySelector('select[data-model]').dataset || event.key === 'Tab') return;
+    event.preventDefault();
+    field.focus();
+    list(card, field);
+  };
+  form.addEventListener('mousedown', opening);
+  form.addEventListener('keydown', opening);
+
+}</script>
+{%- endmacro %}

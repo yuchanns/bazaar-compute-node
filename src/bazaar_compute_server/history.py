@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import tzinfo
 from typing import Any
 
+from .clock import day_text
 from .control import Controls
 from .fleet import PAGE_SIZE, AgentView
 from .storage import IStorage
@@ -86,6 +88,10 @@ class History:
     since: int
     answer: str
     code: str | None = None
+    # when the message just before the stretch, or just after it, was said,
+    # when that one is on the page already: a day may turn between the two
+    previous_ms: int | None = None
+    next_ms: int | None = None
 
 
 async def latest(
@@ -93,6 +99,7 @@ async def latest(
     controls: Controls,
     agent: AgentView,
     contact: Contact,
+    tz: tzinfo,
     *,
     around: str | None,
 ) -> History:
@@ -117,7 +124,7 @@ async def latest(
     return History(
         agent,
         contact,
-        _turns(messages, contact),
+        _turns(messages, contact, tz),
         messages[0]["message_id"] if messages and more else None,
         messages[-1]["message_id"] if messages else None,
         since if caught_up else since - 1,
@@ -130,6 +137,7 @@ async def earlier(
     controls: Controls,
     agent: AgentView,
     contact: Contact,
+    tz: tzinfo,
     *,
     before: str,
 ) -> History:
@@ -146,11 +154,12 @@ async def earlier(
     return History(
         agent,
         contact,
-        _turns(messages, contact, leads_into=anchor),
+        _turns(messages, contact, tz, leads_into=anchor),
         messages[0]["message_id"] if len(messages) >= PAGE_SIZE else None,
         None,
         since,
         "listed",
+        next_ms=_at(anchor),
     )
 
 
@@ -159,6 +168,7 @@ async def later(
     controls: Controls,
     agent: AgentView,
     contact: Contact,
+    tz: tzinfo,
     *,
     after: str,
     since: int,
@@ -182,11 +192,12 @@ async def later(
     return History(
         agent,
         contact,
-        _turns(messages, contact, follows_from=anchor),
+        _turns(messages, contact, tz, follows_from=anchor),
         None,
         messages[-1]["message_id"] if messages else after,
         newer if caught_up else since,
         "listed",
+        previous_ms=_at(anchor),
     )
 
 
@@ -225,9 +236,7 @@ async def _ask(
     """The messages around one, oldest first, and whether the conversation
     goes on before them; or the word for why there are none."""
 
-    if agent.status == "offline":
-        return "offline"
-    answer = await controls.ask(
+    result = await controls.outcome(
         agent.computer_id,
         {
             "read": "history",
@@ -237,12 +246,10 @@ async def _ask(
             "around_message_id": around,
             "limit": limit,
         },
+        online=agent.status != "offline",
     )
-    if answer is None:
-        return "silent"
-    if not answer.get("ok"):
-        return f"refused:{answer.get('code')}"
-    result = answer["result"]
+    if isinstance(result, str):
+        return result
     messages: list[dict[str, Any]] = result["messages"]
     return messages, result["has_before"]
 
@@ -266,13 +273,15 @@ def _failed(
 def _turns(
     messages: list[dict[str, Any]],
     contact: Contact,
+    tz: tzinfo,
     *,
     leads_into: dict[str, Any] | None = None,
     follows_from: dict[str, Any] | None = None,
 ) -> tuple[Turn, ...]:
     """The messages as runs of one speaker; the run at either edge is marked
     when the message on the page beyond it (`leads_into` after, `follows_from`
-    before) is the same speaker's, so the two read as one. A face is drawn
+    before) is the same speaker's on the same day, so the two read as one; a
+    run ends where the day does, for the day's line to go between. A face is drawn
     from who someone is, not what they are called: in a direct message the
     other side wears the conversation's, the way its row does."""
 
@@ -284,7 +293,7 @@ def _turns(
             body=item["body"],
             attachments=tuple(attachment["name"] for attachment in item["attachments"]),
         )
-        if turns and _same(turns[-1], item):
+        if turns and _same(turns[-1], item, tz):
             turns[-1] = replace(turns[-1], lines=(*turns[-1].lines, line))
             continue
         speaker, sender_id, kind, own = _who(item)
@@ -294,13 +303,10 @@ def _turns(
             identity = contact.thread_id
         else:
             identity = sender_id or speaker
-        at_ms = (
-            item["provider_time_ms"] or item["received_at_ms"] or item["created_at_ms"]
-        )
-        turns.append(Turn(speaker, sender_id, identity, kind, at_ms, (line,), own))
-    if turns and leads_into is not None and _same(turns[-1], leads_into):
+        turns.append(Turn(speaker, sender_id, identity, kind, _at(item), (line,), own))
+    if turns and leads_into is not None and _same(turns[-1], leads_into, tz):
         turns[-1] = replace(turns[-1], leads=True)
-    if turns and follows_from is not None and _same(turns[0], follows_from):
+    if turns and follows_from is not None and _same(turns[0], follows_from, tz):
         turns[0] = replace(turns[0], follows=True)
     return tuple(turns)
 
@@ -319,9 +325,25 @@ def _who(item: dict[str, Any]) -> tuple[str, str, str, bool]:
     )
 
 
-def _same(turn: Turn, item: dict[str, Any]) -> bool:
+def _at(item: dict[str, Any]) -> int:
+    """When a message was said, as near as it is known."""
+
+    return item["provider_time_ms"] or item["received_at_ms"] or item["created_at_ms"]
+
+
+def _same(turn: Turn, item: dict[str, Any], tz: tzinfo) -> bool:
+    """Whether a message goes on the turn: the same speaker, the same day; the
+    node's own words stand each on their own, at their own time."""
+
     _, sender_id, kind, own = _who(item)
-    return (turn.sender_id, turn.kind, turn.own) == (sender_id, kind, own)
+    if kind == "system":
+        return False
+    return (turn.sender_id, turn.kind, turn.own, day_text(turn.at_ms, tz)) == (
+        sender_id,
+        kind,
+        own,
+        day_text(_at(item), tz),
+    )
 
 
 __all__ = ["Contact", "History", "Line", "Turn", "earlier", "later", "latest", "news"]

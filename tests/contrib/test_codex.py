@@ -61,7 +61,7 @@ from bazaar_compute_node.contrib.codex import (
     parse_turn_steer_response,
 )
 from bazaar_compute_node.contrib.codex import runtime as runtime_module
-from bazaar_compute_node.contrib.codex.plugin import create_runtime
+from bazaar_compute_node.contrib.codex.plugin import builder
 from bazaar_compute_node.contrib.sqlite import SqliteDatabase
 from bazaar_compute_node.core.actor import Thread
 from bazaar_compute_node.core.approval import IApprovalHandler
@@ -673,10 +673,11 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
     def environment(_: RuntimeSession) -> dict[str, str]:
         return {}
 
-    configured = create_runtime(
+    configured = builder.build(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=environment,
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -685,10 +686,11 @@ def test_codex_runtime_factory_uses_optional_runtime_configuration() -> None:
             network_access=False,
         )
     )
-    defaulted = create_runtime(
+    defaulted = builder.build(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=environment,
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -718,6 +720,7 @@ async def test_codex_runtime_reports_missing_connection_before_turn_start() -> N
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _: {},
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -765,6 +768,7 @@ async def test_codex_runtime_declines_steer_without_active_binding() -> None:
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _: {},
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -822,6 +826,7 @@ async def test_codex_runtime_stops_session(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _: {},
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -890,6 +895,7 @@ async def test_codex_runtime_reports_background_job_when_the_query_fails(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _: {},
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -947,6 +953,7 @@ async def test_codex_runtime_reports_background_job(
         RuntimeCommandContext(
             run_command=run_command,
             environment_for_session=lambda _: {},
+            environment_for_probe=dict,
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id="agent-test",
@@ -1650,6 +1657,7 @@ async def test_local_codex_runtime_maps_context_changes_to_expiry(
         RuntimeCommandContext(
             run_command=unexpected_command,
             environment_for_session=lambda _: dict(os.environ),
+            environment_for_probe=lambda: dict(os.environ),
             agent_name="Test Agent",
             bot_names=lambda: ("provider_bot",),
             agent_id=agent_id,
@@ -1781,6 +1789,7 @@ async def test_local_codex_runtime_maps_follow_up_resume_and_concurrency() -> No
     context = RuntimeCommandContext(
         run_command=unexpected_command,
         environment_for_session=lambda _: dict(os.environ),
+        environment_for_probe=lambda: dict(os.environ),
         agent_name="Test Agent",
         bot_names=lambda: ("provider_bot",),
         agent_id=agent_id,

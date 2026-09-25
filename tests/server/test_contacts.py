@@ -13,6 +13,8 @@ from bazaar_compute_node.core.models import (
     OutboundDeliveryState,
     Review,
     SenderIdentity,
+    SenderKind,
+    SystemMessageKind,
 )
 from bazaar_compute_server.clock import now_ms
 from bazaar_compute_server.fleet import PAGE_SIZE
@@ -30,7 +32,11 @@ MARKDOWN = (
 
 
 def _inbound(
-    session_id: str, seq: int, body: str | None = None, sender_id: str = "sender-id"
+    session_id: str,
+    seq: int,
+    body: str | None = None,
+    sender_id: str = "sender-id",
+    at_ms: int | None = None,
 ) -> Message:
     return Message(
         direction=MessageDirection.INBOUND,
@@ -41,7 +47,7 @@ def _inbound(
         channel="test",
         provider_thread_id=f"thread-{session_id}",
         provider_message_id=f"provider-{session_id}-{seq}",
-        received_at_ms=seq * 1_000,
+        received_at_ms=at_ms or seq * 1_000,
         sender=SenderIdentity(id=sender_id, name="Sender"),
         message_type="text",
         target=f"dm:channel-{session_id}",
@@ -97,7 +103,7 @@ async def test_an_agents_conversations_are_listed_as_its_node_has_them(
                 assert len(rows) == PAGE_SIZE
                 assert f"channel-session-{PAGE_SIZE + 1:03d}" in rows[0]
                 assert f"channel-session-{2:03d}" in rows[-1]
-                assert "test</span> · Direct message · " in rows[0]
+                assert "test</span>Direct message · " in rows[0]
                 assert '<span class="n">1</span>' in rows[0]
                 assert f'data-after="{PAGE_SIZE}"' in column
                 since = int(column.split("?since=")[1].split("&")[0])
@@ -324,10 +330,10 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert turns[0].count('class="line md"') == 47
                 assert 'id="message-message-chat-6"' in turns[0]
                 assert '<b>Kana</b> <span class="k">Agent</span>' in turns[1]
-                # case: a day that is not today is named with its date
-                assert re.search(
-                    r'class="at">\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<', turns[1]
-                )
+                # case: a turn says its time of day alone; the page goes on
+                # before it on the same day, so no date is drawn yet
+                assert re.search(r'class="at">\d{2}:\d{2}:\d{2}<', turns[1])
+                assert 'class="day"' not in chat
                 # case: only the agent's own words carry its activity card
                 assert turns[1].startswith(" own")
                 assert f'hx-get="/agents/{agent}/activity"' in turns[1]
@@ -374,6 +380,9 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # case: the same sender goes on past the edge of the page, so
                 # the run is marked to join the one already shown
                 assert '<div class="turn leads" data-identity=' in older
+                # case: the first page of all opens under its date
+                assert older.count('class="day"') == 1
+                assert older.index('class="day"') < older.index('class="turn')
 
                 # case: opened at a message the column named a while ago, the
                 # page may end before the newest, so its tail asks at once
@@ -406,14 +415,38 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
 
                 # case: messages arrive and are put after the end: one more
                 # from the same person joins their run, one from another
-                # person of the same name does not
+                # person of the same name does not, and a day later it starts
+                # under the new day's date
                 await node_storage.record_inbound(
                     _inbound("chat", 56), now_ms=56_000, opening=Review.APPROVED
                 )
                 await node_storage.record_inbound(
-                    _inbound("chat", 57, sender_id="namesake"),
+                    _inbound(
+                        "chat", 57, sender_id="namesake", at_ms=86_400_000 + 57_000
+                    ),
                     now_ms=57_000,
                     opening=Review.APPROVED,
+                )
+                # and a reminder going off after them
+                await node_storage.save_message(
+                    Message(
+                        direction=MessageDirection.INBOUND,
+                        seq=0,
+                        message_id="message-chat-reminder",
+                        thread_id="chat",
+                        channel_session_id="channel-chat",
+                        channel="test",
+                        provider_thread_id="thread-chat",
+                        provider_message_id=None,
+                        received_at_ms=86_400_000 + 58_000,
+                        sender=SenderIdentity(id="system", name="system"),
+                        target="dm:channel-chat",
+                        body="Reminder went off",
+                        metadata={
+                            "sender_kind": SenderKind.SYSTEM.value,
+                            "system_message_kind": SystemMessageKind.REMINDER.value,
+                        },
+                    )
                 )
                 await storage.record_events(
                     computer_id,
@@ -442,9 +475,19 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 assert status == 200, tail
                 assert tail.count('class="line md"') == 2
                 assert tail.count('<div class="turn') == 2
+                # case: the node's own words are a line on the background, no
+                # one's turn
+                assert '<div class="note" id="message-message-chat-reminder">' in tail
+                assert "Reminder went off" in tail.split('class="note"')[1]
                 assert 'id="message-message-chat-56"' in tail
                 assert '<div class="turn follows" data-identity=' in tail
-                assert "&last=message-chat-57" in tail
+                assert tail.count('class="day"') == 1
+                assert (
+                    tail.index('id="message-message-chat-56"')
+                    < tail.index('class="day"')
+                    < tail.index('id="message-message-chat-57"')
+                )
+                assert "&last=message-chat-reminder" in tail
                 # case: a column with nothing to read after is read afresh
                 # as a whole once something is new
                 status, whole = await _get(

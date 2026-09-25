@@ -1,0 +1,16 @@
+{% import "components.html" as c with context %}
+{# an agent's own page: who it is, and a tab at a time of what it is made of,
+   found, has to hand, is doing and did #}
+{% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile" %}
+<div class="col wide profile" id="profile-page">
+  {% with name = selected.name %}{% include "agent_profile_head.html" %}{% endwith %}
+  <div class="switch text">
+    {% for tab in ("config", "skills", "workspace", "status", "activity") %}
+    <button class="tab{% if tab == profile %} on{% endif %}" type="button" hx-get="{{ base }}/{{ tab }}" hx-target="#profile-body" hx-swap="innerHTML" hx-sync="#profile-body:replace" hx-push-url="{{ base }}?tab={{ tab }}" hx-on:click="for (const other of this.parentElement.querySelectorAll('.tab.on')) other.classList.remove('on'); this.classList.add('on'); document.getElementById('profile-body').replaceChildren(document.getElementById('profile-loading').content.cloneNode(true))">{{ t.text("profile_tab." ~ tab) }}</button>
+    {% endfor %}
+  </div>
+  <div class="body" id="profile-body">{% include "agent_profile_" ~ profile ~ ".html" %}</div>
+  <div id="agent-remove" hidden></div>
+  {# a tab asks its computer; until it answers, a turning ring where it goes #}
+  <template id="profile-loading"><div class="loading">{{ c.icon("loader-circle") }}</div></template>
+</div>

@@ -33,6 +33,7 @@ from bazaar_compute_node.app.registry import (
 )
 from bazaar_compute_node.contrib.claude.client import Client
 from bazaar_compute_node.contrib.claude.events import TurnEventStream
+from bazaar_compute_node.contrib.claude.plugin import builder
 from bazaar_compute_node.contrib.claude.process import (
     ProcessSpec,
     ProcessSupervisor,
@@ -214,6 +215,7 @@ def _claude_environment() -> Mapping[str, str]:
         RuntimeCommandContext(
             run_command=_unused_command,
             environment_for_session=_empty_environment,
+            environment_for_probe=dict,
             agent_id="claude-e2e-environment",
             agent_name="Claude E2E",
             bot_names=lambda: (),
@@ -230,6 +232,22 @@ async def _unused_command(
     command: str, arguments: Sequence[str], cwd: str | None
 ) -> None:
     del command, arguments, cwd
+
+
+@pytest.mark.asyncio
+async def test_real_claude_says_its_version_and_models() -> None:
+    """The node asks Claude Code what it is without opening a session: the
+    version it prints, and the models `list_models` names with the efforts
+    each takes."""
+
+    if shutil.which("claude") is None:
+        pytest.fail("claude CLI is required for the protocol integration test")
+    said = await builder.inspect(timeout=30)
+    listed = await builder.models(timeout=30)
+
+    assert said.available and said.version and listed.error is None
+    assert listed.models and all(model.id and model.name for model in listed.models)
+    assert any(model.efforts for model in listed.models)
 
 
 @pytest.mark.asyncio

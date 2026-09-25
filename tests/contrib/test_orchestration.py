@@ -2685,7 +2685,7 @@ async def test_a_check_returns_what_every_thread_brought_in_arrival_order() -> N
 
 @pytest.mark.asyncio
 async def test_an_individual_actor_drains_and_answers_every_conversation() -> None:
-    orchestrator, channel, _, storage, _ = await make_node(
+    orchestrator, channel, _, storage, audit = await make_node(
         mode=Mode.DANGEROUS_INDIVIDUAL
     )
     agent = Agent("workspace-1")
@@ -2707,6 +2707,14 @@ async def test_an_individual_actor_drains_and_answers_every_conversation() -> No
         assert storage.cursors["bcn-a"].delivered_through_seq > 0
         assert storage.cursors["bcn-b"].delivered_through_seq > 0
         assert not (await orchestrator.command_service.check_inbox(agent)).targets
+        # one check is one record, naming every conversation it looked in
+        (checked,) = [
+            event
+            for event in audit.events
+            if event.metadata.get("operation") == "bcc.message.check"
+        ]
+        arguments = cast(Mapping[str, list[str]], checked.metadata["arguments"])
+        assert set(arguments["thread_ids"]) == {"bcn-a", "bcn-b"}
 
         # unread somewhere else does not stand between the Agent and this target
         await orchestrator._record_inbound(make_message(session_id="bcn-b", seq=2))

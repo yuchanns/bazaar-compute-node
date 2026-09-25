@@ -51,6 +51,10 @@ class RuntimeCommandContext:
 
     run_command: Callable[[str, Sequence[str], str | None], Awaitable[None]]
     environment_for_session: Callable[[RuntimeSession], Mapping[str, str]]
+    # the environment for a process started only to ask the runtime about
+    # itself: what the runtime is configured with, without the command
+    # capability a session gets
+    environment_for_probe: Callable[[], Mapping[str, str]]
     agent_id: str
     agent_name: str
     bot_names: Callable[[], tuple[str, ...]]
@@ -66,6 +70,73 @@ class RuntimeCommandContext:
             raise ValueError("agent_id must not contain line breaks")
         if "\r" in self.agent_name or "\n" in self.agent_name:
             raise ValueError("agent_name must not contain line breaks")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModel:
+    """A model a runtime will answer as, as the runtime names it."""
+
+    id: str
+    name: str
+    efforts: tuple[str, ...] = ()
+    default_effort: str | None = None
+    # the one the runtime answers as when an agent names none
+    default: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSkill:
+    """A skill a runtime found for this agent, and where it came from:
+    the workspace, the person running the node, or the runtime itself."""
+
+    name: str
+    description: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDescription:
+    """What a runtime can tell about itself once it is up: the models it
+    will answer as, and the skills it found. A runtime that cannot say
+    tells nothing rather than holding the agent up."""
+
+    models: tuple[RuntimeModel, ...] = ()
+    skills: tuple[RuntimeSkill, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAvailability:
+    """Whether a runtime can be run on this node at all, and which version.
+    A runtime is here when its command is on the path and runs; one that is
+    not says why, so a form can grey it out and tell."""
+
+    kind: str
+    available: bool
+    version: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModels:
+    """The models a runtime will answer as; or none, and why it would not
+    say."""
+
+    models: tuple[RuntimeModel, ...] = ()
+    error: str | None = None
+
+
+class IRuntimeBuilder(Protocol):
+    """What a runtime plugin is: it builds a runtime for an agent, it says
+    whether it can run on this node at all, and which models it will answer
+    as. All are its to answer; a plugin that cannot do one is not a runtime
+    plugin. Being here is cheap to ask; the models take starting the
+    runtime, so they are asked for apart, when somebody wants them."""
+
+    def build(self, context: RuntimeCommandContext) -> IRuntime: ...
+
+    async def inspect(self, *, timeout: float) -> RuntimeAvailability: ...
+
+    async def models(self, *, timeout: float) -> RuntimeModels: ...
 
 
 class IRuntimeTurnStream(Protocol):
@@ -95,6 +166,8 @@ class IRuntime(IAsyncLifecycle, Protocol):
     def environment_variable_names(self) -> Sequence[str]: ...
 
     async def receive_event(self) -> RuntimeLifecycleEvent: ...
+
+    async def describe(self, *, timeout: float) -> RuntimeDescription: ...
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float

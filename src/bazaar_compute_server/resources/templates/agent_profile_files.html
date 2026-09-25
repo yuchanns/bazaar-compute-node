@@ -1,0 +1,20 @@
+{% import "components.html" as c with context %}
+{# one directory of the workspace: a folder opens onto its own when clicked,
+   read from the computer the first time and only folded after #}
+{% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile/workspace?path=" %}
+{% if workspace.answer != "listed" %}
+<p class="err">{{ t.text("agents." ~ workspace.answer, {"code": workspace.code}) }}</p>
+{% else %}
+{% for entry in workspace.entries %}
+{% if entry.directory %}
+<div class="dir">
+  <button class="file" type="button" hx-get="{{ base }}{{ entry.path|urlencode }}" hx-trigger="click once" hx-target="next .children" hx-swap="innerHTML" hx-on:click="this.parentElement.classList.toggle('open')">{{ c.icon("chevron-right") }}{{ c.icon("folder") }}<span class="name">{{ entry.name }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></button>
+  <div class="children"></div>
+</div>
+{% else %}
+<div class="file"><span class="twist"></span>{{ c.icon("file") }}<span class="name">{{ entry.name }}</span><span class="size">{{ entry.size_bytes|filesizeformat }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></div>
+{% endif %}
+{% endfor %}
+{% if workspace.more %}<div class="st more">{{ t.text("agents.workspace_more", {"n": workspace.entries|length}) }}</div>{% endif %}
+{% if workspace.at and not workspace.entries %}<div class="st more">{{ t.text("agents.folder_empty") }}</div>{% endif %}
+{% endif %}

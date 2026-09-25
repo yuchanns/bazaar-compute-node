@@ -5,11 +5,11 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ...core.approval import IApprovalHandler
 from ...core.instruction import DeveloperInstructionContext
@@ -25,11 +25,13 @@ from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
     RuntimeCommandContext,
+    RuntimeDescription,
     RuntimeExpire,
     RuntimeLifecycleEvent,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
+    RuntimeSkill,
 )
 from ...core.utils.clock import now_ms
 from ...core.utils.text import format_exception
@@ -63,6 +65,17 @@ _WORKSPACE_AGENTS_WATCH_ID = "bcn-agents-workspace"
 _CODEX_HOME_AGENTS_WATCH_ID = "bcn-agents-codex-home"
 
 
+# the variables of the node's own environment a process of this runtime
+# needs, beside the platform's: where it keeps its state, how it reaches
+# its provider
+ENVIRONMENT = (
+    "CODEX_HOME",
+    "CODEX_SQLITE_HOME",
+    "CODEX_CA_CERTIFICATE",
+    "SSL_CERT_FILE",
+)
+
+
 @dataclass(slots=True)
 class _Connection:
     supervisor: JsonlProcessSupervisor
@@ -80,12 +93,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         return "codex"
 
     def environment_variable_names(self) -> tuple[str, ...]:
-        return (
-            "CODEX_HOME",
-            "CODEX_SQLITE_HOME",
-            "CODEX_CA_CERTIFICATE",
-            "SSL_CERT_FILE",
-        )
+        return ENVIRONMENT
 
     def __init__(
         self,
@@ -134,6 +142,56 @@ class Runtime(IRuntime, IAsyncLifecycle):
 
     async def receive_event(self) -> RuntimeLifecycleEvent:
         return await self._lifecycle_events.get()
+
+    async def describe(self, *, timeout: float) -> RuntimeDescription:
+        """The skills Codex finds for this agent, asked in its workspace:
+        of an App Server already up for it, or of one started for the
+        asking - with what the runtime is configured with - and stopped
+        again. One that will not say says nothing."""
+
+        connection = next(iter(self._connections.values()), None)
+        try:
+            if connection is not None:
+                skills = await _list_skills(
+                    connection.client.supervisor, connection.workspace, timeout=timeout
+                )
+            else:
+                skills = await self._probe_skills(timeout=timeout)
+        except (
+            JsonlTransportError,
+            AppServerProtocolError,
+            OSError,
+            TimeoutError,
+        ):
+            self._logger.debug("codex did not list its skills", exc_info=True)
+            return RuntimeDescription()
+        return RuntimeDescription(skills=skills)
+
+    async def _probe_skills(self, *, timeout: float) -> tuple[RuntimeSkill, ...]:
+        executable = await asyncio.to_thread(shutil.which, self._executable)
+        if executable is None:
+            return ()
+        workspace = resolve_workspace_dir(self._context.agent_id)
+        await asyncio.to_thread(
+            workspace.mkdir, parents=True, exist_ok=True, mode=0o700
+        )
+        supervisor = JsonlProcessSupervisor(
+            JsonlProcessSpec(
+                executable=executable,
+                arguments=("app-server", "--stdio"),
+                cwd=workspace,
+                environment=dict(self._context.environment_for_probe()),
+            )
+        )
+        client = Client(supervisor)
+        try:
+            await supervisor.start(timeout=timeout)
+            await client.initialize(
+                client_info=self._context.client_info, timeout=timeout
+            )
+            return await _list_skills(supervisor, workspace, timeout=timeout)
+        finally:
+            await supervisor.stop(timeout=timeout)
 
     async def start_session(
         self,
@@ -691,4 +749,34 @@ def _provider_result(error: BaseException) -> ProviderCallResult[Any]:
     )
 
 
-__all__ = ["Runtime"]
+__all__ = ["ENVIRONMENT", "Runtime"]
+
+
+# what a scope means to a reader: the workspace, the person running the
+# node, or the runtime itself
+_SKILL_SOURCES = {"repo": "workspace", "user": "personal"}
+
+
+async def _list_skills(
+    supervisor: JsonlProcessSupervisor, workspace: Path, *, timeout: float
+) -> tuple[RuntimeSkill, ...]:
+    """The enabled skills `skills/list` finds for the workspace. The shapes
+    are `SkillsListResponse` and `SkillMetadata` in
+    codex-rs/app-server-protocol/src/protocol/v2/plugin.rs."""
+
+    answer = await supervisor.request(
+        "skills/list", {"cwds": [str(workspace)]}, timeout=timeout
+    )
+    result = cast(Mapping[str, Any], answer["result"])
+    return tuple(
+        RuntimeSkill(
+            name=skill["name"],
+            description=(skill.get("interface") or {}).get("shortDescription")
+            or skill.get("shortDescription")
+            or skill["description"],
+            source=_SKILL_SOURCES.get(skill["scope"], "system"),
+        )
+        for entry in result["data"]
+        for skill in entry["skills"]
+        if skill["enabled"]
+    )

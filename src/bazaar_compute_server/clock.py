@@ -42,4 +42,24 @@ def clock_text(at_ms: int, tz: tzinfo) -> str:
     return datetime.fromtimestamp(at_ms / 1000, tz).strftime(form)
 
 
-__all__ = ["clock_text", "local", "now_ms", "start_of_today_ms", "zone"]
+def day_text(at_ms: int, tz: tzinfo) -> str:
+    """The day a moment falls on, on the viewer's calendar."""
+
+    return datetime.fromtimestamp(at_ms / 1000, tz).strftime("%Y-%m-%d")
+
+
+def time_text(at_ms: int, tz: tzinfo) -> str:
+    """The time of day of a moment, whatever the day."""
+
+    return datetime.fromtimestamp(at_ms / 1000, tz).strftime("%H:%M:%S")
+
+
+__all__ = [
+    "clock_text",
+    "day_text",
+    "local",
+    "now_ms",
+    "start_of_today_ms",
+    "time_text",
+    "zone",
+]

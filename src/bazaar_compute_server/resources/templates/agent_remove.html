@@ -1,0 +1,11 @@
+{% import "components.html" as c with context %}
+{# the question before an agent is let go: a box over the page #}
+<div class="veil" id="agent-remove" hx-on:click="if (event.target === this) this.hidden = true">
+  <form class="dialog danger" hx-delete="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}" hx-target="#main" hx-swap="innerHTML">
+    <h3>{{ t.text("agents.remove_ask", {"name": selected.name}) }}</h3>
+    <p class="st">{{ t.text("agents.remove_hint") }}</p>
+    {% if failed %}<p class="err">{{ t.text("agents." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
+    <button class="btn danger" type="submit">{{ c.icon("trash-2") }} {{ t.text("agents.remove_yes") }}</button>
+    <button class="btn" type="button" hx-on:click="document.getElementById('agent-remove').hidden = true">{{ t.text("computers.cancel") }}</button>
+  </form>
+</div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,11 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert enrolment.computer.id not in page
         status, opened = await _get(session, f"{base}/agents/{one}")
         assert status == 200 and opened.count("有马佳奈") >= 2
+        # case: the column's tabs stand above the list, lit at once on a click
+        # and dropping a refresh of the list still on its way
+        tabs = opened.split('<div class="switch">')[1].split('id="contacts"')[0]
+        assert tabs.count('hx-sync="#contacts:replace"') == 2
+        assert 'id="pending-review" hidden' in tabs
         status, _ = await _get(session, f"{base}/agents/{one.split('/')[0]}/999999")
         assert status == 404
         for odd in ("²", "9" * 30):
@@ -190,11 +196,12 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert "今日用量：输入 1K · 输出 200 · 缓存命中 34 · $0.50" in card
         assert "tool_call.started" not in card
 
-        # case: a computer wears its system as its mark, and says it in words
+        # case: a computer wears its system as its mark, named only in its tooltip
         status, detail = await _get(
             session, f"{base}/computers", **{"Accept-Language": "zh-CN"}
         )
-        assert status == 200 and 'class="av mark"' in detail and ">Linux<" in detail
+        assert status == 200 and 'class="av mark"' in detail and ">Linux<" not in detail
+        assert '<span class="os" title="Linux">' in detail
         assert "Python" not in detail
 
         # case: the lists and the detail pane ask for themselves again, keeping
@@ -207,6 +214,14 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
             and 'hx-swap="outerMorph"' in fragment
         )
         assert 'class="li agent on"' in fragment and "<html" not in fragment
+        # case: an agent's row is one line: the computer is its system's mark,
+        # named only in the tooltip, and the status dot hangs off the row
+        # itself, past the box its contents are clipped to
+        assert '<span class="os" title="kana"><span class="i">' in fragment
+        assert ">kana<" not in fragment and "<small>" not in fragment
+        assert re.search(r'</button>\s*</div>\s*<div class="dot busy"', fragment)
+        # case: the row's gear leads to the agent's own page
+        assert f'data-href="/agents/{one}/profile"' in fragment
         status, fragment = await _get(session, f"{base}/computers/list?selected={cid}")
         assert status == 200 and 'id="computer-list"' in fragment
         assert 'class="li on"' in fragment
@@ -216,6 +231,19 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
             and 'id="computer-view"' in fragment
             and "有马佳奈" in fragment
         )
+        # case: the computer's agents sit in a box, the way to add one off its corner
+        roster = fragment.split('<div class="roster">')[1].split(
+            '<div class="roster-foot">'
+        )[0]
+        assert "有马佳奈" in roster and 'class="icons"' in roster
+        # the system is the computer's, said once in its header, not per agent
+        assert 'class="os"' not in roster
+        assert (
+            '<span class="os" title="Linux"><span class="i">'
+            in fragment.split('<div class="body">')[0]
+        )
+        assert 'class="roster-foot"><button class="add"' in fragment
+        assert " disabled" not in fragment.split('<button class="add"')[1].split(">")[0]
 
         # case: the static assets the shell needs are served
         status, script = await _get(session, f"{base}/static/htmx.min.js")
@@ -458,8 +486,18 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
         )
         assert status == 200 and "尚未接入电脑" in empty
 
+        # case: the name is asked for in a box over the page; a blank one
+        # keeps the box up and leaves the page behind it alone
         status, form = await _get(session, f"{base}/computers/new")
         assert status == 200 and 'name="name"' in form
+        assert '<div class="veil" id="enrol"' in form
+        # the new page is drawn afresh, not morphed over the one open before
+        assert 'hx-target="#main" hx-swap="innerHTML"' in form
+        async with session.post(
+            f"{base}/computers", data={"name": "  "}, headers={"HX-Request": "true"}
+        ) as response:
+            assert response.headers["HX-Retarget"] == "#enrol"
+            assert response.headers["HX-Reswap"] == "outerHTML"
 
         async with session.post(
             f"{base}/computers",
@@ -468,14 +506,27 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
         ) as response:
             assert response.status == 200
             page = await response.text()
+            pushed = response.headers["HX-Push-Url"]
         computers = await storage.list_computers(await root_id(storage), limit=10)
         assert [item.name for item in computers] == ["kana"]
         token_prefix = f"{computers[0].id}:"
+        # case: the module comes back open on the new computer, its row
+        # picked and its page under the commands
+        assert pushed == f"/computers/{await _short(storage, computers[0].id)}"
+        assert 'class="li off on"' in page
+        short = await _short(storage, computers[0].id)
+        assert f'<div id="connect-{short}" hx-morph-skip>' in page
+        # the commands are a code block, coloured by their shell; read as text
+        # they are what gets copied
+        text = html.unescape(re.sub(r"<[^>]+>", "", page))
+        connect = text.split("接入命令")[1]
+        assert connect.index("bcn server connect") < connect.index("电脑上的智能体")
+        assert 'class="for md" id="for-unix"' in page and 'class="tok-' in page
         # case: the snippet carries the token and the server's own address,
         # once for either kind of machine, open on the browser's own kind
-        assert f"bcn server connect --url {base} --token {token_prefix}" in page
+        assert f"bcn server connect --url {base} --token {token_prefix}" in text
         assert "仅显示一次" in page
-        assert "install.sh | sh" in page and "install.ps1 | iex" in page
+        assert "install.sh | sh" in text and "install.ps1 | iex" in text
         assert 'id="snippet-unix" checked' in page
         async with session.post(
             f"{base}/computers",
@@ -489,6 +540,17 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
             session, f"{base}/computers/{await _short(storage, computers[0].id)}"
         )
         assert status == 200 and token_prefix not in again and "kana" in again
+        # the pane's own refresh leaves the box to keep what it holds
+        status, pane = await _get(
+            session,
+            f"{base}/computers/{await _short(storage, computers[0].id)}/detail",
+        )
+        assert f'<div id="connect-{short}" hx-morph-skip></div>' in pane
+        assert f'id="remove-{short}" hx-morph-skip' in pane
+        # case: a computer not up yet cannot take an agent in
+        assert (
+            " disabled>" in pane.split('<button class="add"')[1].split("</button>")[0]
+        )
 
 
 def test_identicons_are_stable_symmetric_marks() -> None:

@@ -48,6 +48,25 @@
 {% for kind in kinds %}<span class="ch ch-{{ kind }}" title="{{ kind }}">{% if kind in channel_icons %}{{ icon(channel_icons[kind]) }}{% else %}{{ kind }}{% endif %}</span>{% endfor %}
 {%- endmacro %}
 
+{# the computer an agent runs on, by its operating system's mark; the name is
+   the tooltip, and stands in for a system this page has no mark for #}
+{% macro system(agent) -%}
+<span class="os" title="{{ agent.computer_name }}">{% if agent.system in os_icons %}{{ icon(os_icons[agent.system]) }}{% else %}{{ agent.computer_name }}{% endif %}</span>
+{%- endmacro %}
+
+{# more marks than a row has room for: the first few, and how many more,
+   named in its tooltip #}
+{% set icons_shown = 5 %}
+{# what an agent is made of; on its computer's own page the system goes
+   without saying #}
+{% macro agent_icons(agent, with_system=true) -%}
+{% set ns = namespace(marks=[], names=[]) %}
+{% if with_system %}{% set ns.marks = ns.marks + [system(agent)] %}{% set ns.names = ns.names + [agent.computer_name] %}{% endif %}
+{% for kind in agent.runtimes %}{% set ns.marks = ns.marks + [runtimes((kind,))] %}{% set ns.names = ns.names + [kind] %}{% endfor %}
+{% for kind in agent.channels %}{% set ns.marks = ns.marks + [channels((kind,))] %}{% set ns.names = ns.names + [kind] %}{% endfor %}
+{% if ns.marks|length > icons_shown %}{{ ns.marks[:icons_shown - 1]|join }}<span class="more" title="{{ ns.names[icons_shown - 1:]|join(" · ") }}">+{{ ns.marks|length - icons_shown + 1 }}</span>{% else %}{{ ns.marks|join }}{% endif %}
+{%- endmacro %}
+
 {# a row in a list column: avatar (optional), title + subtitle, status dot (optional);
    with an href it navigates through htmx, swapping `target` (the whole module
    unless told otherwise), otherwise it is a plain row.
@@ -55,15 +74,22 @@
    (an agent); a row that only looks off (extra_class="off") still opens, the way
    an offline computer does, since removing it happens from its page.
    what the row shows sits in its own box, so a long list can leave the rows
-   off screen unrendered while the row itself, and what hangs off it, stay #}
-{% macro list_item(title, subtitle, status=none, identity=none, icon_name=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
+   off screen unrendered while the row itself, and what hangs off it, stay;
+   the status dot is one of those, sitting on the avatar's corner and out
+   past its edge, where the box would clip it #}
+{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, settings=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
 {% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% if settings %} hx-trigger="click[!event.target.closest('.gear')]"{% endif %}{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
     {% if identity is not none %}{{ avatar(identity, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
-    <div class="t"><b>{{ title }}</b><small>{{ subtitle }}</small></div>
-    {% if status %}{{ dot(status) }}{% endif %}
+    <div class="t"><b>{{ title }}</b>{% if subtitle %}<small>{{ subtitle }}</small>{% endif %}</div>
+    {% if icons %}<span class="icons">{{ icons }}</span>{% endif %}
+    {# the way to the thing's own page, at the row's end: a button inside
+       the row's link, so a click on it goes there and not where the row goes;
+       it turns while the page is on its way #}
+    {% if settings %}<button class="btn icon gear" type="button" title="{{ t.text("agents.settings") }}" aria-label="{{ t.text("agents.settings") }}" data-href="{{ settings }}" onclick="event.preventDefault(); event.stopPropagation(); this.classList.add('busy'); htmx.ajax('GET', this.dataset.href, {target: '#main', swap: 'innerHTML'}).then(() => history.pushState(null, '', this.dataset.href)).finally(() => this.classList.remove('busy'))">{{ icon("settings") }}</button>{% endif %}
   </div>
+  {% if status %}{{ dot(status) }}{% endif %}
   {% if caller is defined %}{{ caller() }}{% endif %}
 </{{ "a" if href else "div" }}>
 {%- endmacro %}

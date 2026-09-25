@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .clock import clock_text, now_ms, zone
+from .clock import clock_text, day_text, now_ms, time_text, zone
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
@@ -49,6 +49,8 @@ class Renderer:
         self._templates.filters["identicon"] = identicon
         self._templates.filters["ago"] = _ago
         self._templates.filters["clock"] = _clock
+        self._templates.filters["day"] = _day
+        self._templates.filters["time"] = _time
         self._templates.filters["due"] = _due
         self._templates.filters["repeat"] = _repeat
         self._templates.filters["markdown"] = _markdown
@@ -244,6 +246,16 @@ def _clock(context: Context, at_ms: int) -> str:
     """A time of day on the viewer's clock."""
 
     return clock_text(at_ms, context["tz"])
+
+
+@pass_context
+def _day(context: Context, at_ms: int) -> str:
+    return day_text(at_ms, context["tz"])
+
+
+@pass_context
+def _time(context: Context, at_ms: int) -> str:
+    return time_text(at_ms, context["tz"])
 
 
 @pass_context

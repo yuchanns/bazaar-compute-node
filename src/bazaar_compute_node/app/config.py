@@ -220,7 +220,7 @@ def load_node_configuration(
         return _parse_v4_configuration(payload)
 
     configuration = _parse_v4_configuration(state.advance(payload))
-    _write_configuration(path, configuration)
+    write_configuration(path, configuration)
     return configuration
 
 
@@ -334,6 +334,39 @@ def _parse_v4_configuration(payload: Mapping[str, object]) -> NodeConfiguration:
         database_name=_optional_text(node.get("database_name"), "node.database_name"),
         version_check=version_check,
     )
+
+
+def parse_agent(value: object, *, index: int = 1) -> AgentConfiguration:
+    """One agent from the shape the configuration file holds it in - which
+    is also what a server sends when it writes one."""
+
+    return _parse_v4_agent(value, index=index)
+
+
+def serialize_agent(agent: AgentConfiguration) -> dict[str, object]:
+    """One agent in that same shape, for a reader that is not TOML."""
+
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "mode": agent.mode.value,
+        "idle_timeout": agent.idle_timeout_seconds,
+        "channel": [
+            {"kind": channel.kind, **channel.options} for channel in agent.channels
+        ],
+        "runtime": [
+            {
+                "kind": runtime.kind,
+                "model": runtime.model,
+                "effort": runtime.effort,
+                "sandbox_mode": runtime.sandbox_mode.value,
+                "network_access": runtime.network_access,
+                "env": dict(runtime.env),
+                **runtime.options,
+            }
+            for runtime in agent.runtimes
+        ],
+    }
 
 
 def _parse_v4_agent(value: object, *, index: int) -> AgentConfiguration:
@@ -636,7 +669,7 @@ def _configuration_state(version: str) -> _ConfigurationState:
     raise ConfigurationError(f"unsupported configuration version: {version}")
 
 
-def _write_configuration(path: Path, configuration: NodeConfiguration) -> None:
+def write_configuration(path: Path, configuration: NodeConfiguration) -> None:
     try:
         _replace_file(path, _serialize_configuration(configuration))
     except OSError as error:
@@ -846,5 +879,8 @@ __all__ = [
     "RuntimeConfiguration",
     "load_control_configuration",
     "load_node_configuration",
+    "parse_agent",
     "resolve_config_path",
+    "serialize_agent",
+    "write_configuration",
 ]

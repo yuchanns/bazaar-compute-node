@@ -302,13 +302,14 @@ class MessageCommands(Commands):
         )
         for thread_id, result in zip(thread_ids, drained, strict=True):
             self._observe_freshness(thread_id, result.snapshot_seq)
-            await self._audit.append_tool(
-                operation="bcc.message.check",
-                status="completed",
-                state=RuntimeEventState.COMPLETED,
-                correlation=self._correlation(thread_id=thread_id),
-                arguments={"thread_id": thread_id},
-            )
+        # one check is one record, however many conversations it looked in
+        await self._audit.append_tool(
+            operation="bcc.message.check",
+            status="completed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(actor=actor),
+            arguments={"actor_id": actor.id, "thread_ids": list(thread_ids)},
+        )
         return drained
 
     async def read_messages(

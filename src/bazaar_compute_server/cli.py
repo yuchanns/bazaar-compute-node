@@ -18,6 +18,11 @@ def bcs() -> None:
     """Bazaar compute server: the management plane for bcn nodes."""
 
 
+# how long the server has to go down before it stops waiting on what is
+# still open
+SHUTDOWN_SECONDS = 5
+
+
 @bcs.command("run", help="Run the server in the foreground.")
 @click.option(
     "--config",
@@ -36,6 +41,9 @@ def run(config: Path | None) -> None:
         host=configuration.listen_host,
         port=configuration.listen_port,
         log_level="info",
+        # going down comes first: a node's poll held open or a page still
+        # waiting on a computer is not waited out past this
+        timeout_graceful_shutdown=SHUTDOWN_SECONDS,
     )
 
 

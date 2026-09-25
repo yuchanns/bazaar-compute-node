@@ -5,11 +5,12 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from time import time_ns
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ...core.approval import IApprovalHandler
@@ -26,10 +27,12 @@ from ...core.runtime import (
     IRuntime,
     IRuntimeTurnStream,
     RuntimeCommandContext,
+    RuntimeDescription,
     RuntimeLifecycleEvent,
     RuntimeSandboxMode,
     RuntimeSessionReconciliation,
     RuntimeSessionUnavailable,
+    RuntimeSkill,
 )
 from .approval import (
     build_approval_response,
@@ -44,6 +47,25 @@ _MINIMUM_VERSION = (2, 1, 239)
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)")
 _UNUSABLE_CONNECTION_STOP_SECONDS = 10.0
 _STEER_RESULT_GRACE_SECONDS = 1.0
+
+
+# the variables of the node's own environment a process of this runtime
+# needs, beside the platform's: where it keeps its state, how it reaches
+# its provider
+ENVIRONMENT = (
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "SSL_CERT_FILE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+)
 
 
 @dataclass(slots=True)
@@ -85,20 +107,7 @@ class Runtime(IRuntime, IAsyncLifecycle):
         return "claudecode"
 
     def environment_variable_names(self) -> tuple[str, ...]:
-        return (
-            "CLAUDE_CONFIG_DIR",
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL",
-            "CLAUDE_CODE_USE_BEDROCK",
-            "CLAUDE_CODE_USE_VERTEX",
-            "CLAUDE_CODE_USE_FOUNDRY",
-            "CLAUDE_CODE_USE_MANTLE",
-            "SSL_CERT_FILE",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "NO_PROXY",
-        )
+        return ENVIRONMENT
 
     async def start(self, *, timeout: float) -> None:
         del timeout
@@ -124,6 +133,56 @@ class Runtime(IRuntime, IAsyncLifecycle):
 
     async def receive_event(self) -> RuntimeLifecycleEvent:
         return await self._lifecycle_events.get()
+
+    async def describe(self, *, timeout: float) -> RuntimeDescription:
+        """The skills Claude Code finds for this agent, asked in its
+        workspace: of one already running for it, or of one started for the
+        asking - with what the runtime is configured with - and stopped
+        again. One that will not say says nothing."""
+
+        connection = next(iter(self._connections.values()), None)
+        try:
+            answer = (
+                await connection.client.initialize(timeout=timeout)
+                if connection is not None
+                else await self._probe(timeout=timeout)
+            )
+        except ClaudeTransportError, ClaudeControlError, OSError, TimeoutError:
+            return RuntimeDescription()
+        if answer is None:
+            return RuntimeDescription()
+        return RuntimeDescription(skills=_read_skills(answer))
+
+    async def _probe(self, *, timeout: float) -> Mapping[str, object] | None:
+        executable = await asyncio.to_thread(shutil.which, "claude")
+        if executable is None:
+            return None
+        workspace = resolve_workspace_dir(self._context.agent_id)
+        await asyncio.to_thread(
+            workspace.mkdir, parents=True, exist_ok=True, mode=0o700
+        )
+        supervisor = ProcessSupervisor(
+            ProcessSpec(
+                executable=executable,
+                arguments=(
+                    "-p",
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                ),
+                cwd=workspace,
+                environment=dict(self._context.environment_for_probe()),
+            )
+        )
+        client = Client(supervisor)
+        try:
+            await supervisor.start(timeout=timeout)
+            return await client.initialize(timeout=timeout)
+        finally:
+            await client.close()
+            await supervisor.stop(timeout=timeout)
 
     async def start_session(
         self, session: RuntimeSession, *, timeout: float
@@ -645,4 +704,39 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-__all__ = ["Runtime"]
+__all__ = ["ENVIRONMENT", "Runtime"]
+
+
+# where a command came from, as `initialize` marks it at the end of its
+# description; the CLI's own commands are marked `builtin` and are not skills
+_COMMAND_SOURCE = re.compile(r"\s*\((project|user)\)\s*$")
+
+
+def _read_skills(answer: Mapping[str, object]) -> tuple[RuntimeSkill, ...]:
+    """The skills among the commands Claude Code answers to: all but its
+    own. The shape is what `initialize` returns under `response.commands`
+    (claude 2.1.280): `name`, `description`, `argumentHint`, and `builtin`
+    for the CLI's own; a description ending in `(project)` is the
+    workspace's, in `(user)` the person's, anything else came with it."""
+
+    response = cast(Mapping[str, Any], answer["response"])
+    skills: list[RuntimeSkill] = []
+    for command in response["commands"]:
+        if command.get("builtin"):
+            continue
+        description = command["description"]
+        marked = _COMMAND_SOURCE.search(description)
+        skills.append(
+            RuntimeSkill(
+                name=command["name"],
+                description=description[: marked.start()] if marked else description,
+                source=(
+                    "system"
+                    if marked is None
+                    else "workspace"
+                    if marked[1] == "project"
+                    else "personal"
+                ),
+            )
+        )
+    return tuple(skills)

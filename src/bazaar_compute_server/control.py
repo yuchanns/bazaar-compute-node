@@ -19,8 +19,10 @@ from .protocol import Event
 from .storage import Computer
 
 # how long a page waits for a computer to answer before it says the computer
-# did not, and how long a node's poll is held before it is answered with nothing
-ANSWER_SECONDS = 10
+# did not: a minute, whatever the computer takes its own time over - a
+# computer that took the request and went away is not waited on for ever
+ANSWER_SECONDS = 60
+# how long a node's poll is held before it is answered with nothing
 POLL_SECONDS = 25
 # how many requests one poll hands over at most
 POLL_LIMIT = 20
@@ -89,6 +91,27 @@ class Controls:
             asked.waiters -= 1
             if asked.waiters == 0 and not asked.answer.done():
                 self._forget(key, asked)
+
+    async def outcome(
+        self,
+        computer_id: str,
+        request: Mapping[str, Any],
+        *,
+        online: bool,
+        timeout: float = ANSWER_SECONDS,
+    ) -> Mapping[str, Any] | str:
+        """What the computer answered, or the word for why there is no
+        answer: `offline` when it is not there to ask, `silent` when it did
+        not answer in time, `refused:<code>` when it said no."""
+
+        if not online:
+            return "offline"
+        answer = await self.ask(computer_id, request, timeout=timeout)
+        if answer is None:
+            return "silent"
+        if not answer.get("ok"):
+            return f"refused:{answer.get('code')}"
+        return answer["result"]
 
     def _forget(self, key: tuple[str, str], asked: _Asked) -> None:
         if self._in_flight.get(key) is asked:
