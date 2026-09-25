@@ -27,6 +27,7 @@ from ...app.system_service import (
 )
 from ...app.usage import Usage
 from ...core.paths import resolve_data_dir
+from ...core.utils import children
 from ...i18n import Translator, create_translator
 from ._options import inherited, node_options
 from ._runner import UsageReporter, arguments
@@ -166,13 +167,14 @@ async def _run_node(args: argparse.Namespace, parser: Usage) -> int:
     try:
         await node.wait()
     finally:
-        # going down comes first: the whole of it gets one limit, and what
-        # is not done by then is left to the process ending
+        # going down comes first: the whole of it gets one limit; a runtime
+        # still running by then is ended here, so none outlives the node
         try:
             async with asyncio.timeout(node.timeout_budget.shutdown_seconds):
                 await node.stop()
         except TimeoutError:
-            print("bcn stop timed out; exiting anyway", file=sys.stderr, flush=True)
+            print("bcn stop timed out; ending runtimes", file=sys.stderr, flush=True)
+        await children.end_all()
     return node.exit_code
 
 

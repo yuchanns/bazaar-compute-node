@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
-from ...core.utils import UnlimitedLineReader
+from ...core.utils import UnlimitedLineReader, children
 from .protocol import (
     JsonlMessage,
     JsonlProcessExited,
@@ -145,6 +145,7 @@ class JsonlProcessSupervisor:
                             if self.spec.environment is not None
                             else None
                         ),
+                        **children.own_group(),
                     )
             except BaseException:
                 self._process = None
@@ -152,6 +153,7 @@ class JsonlProcessSupervisor:
                 raise
             self._state = JsonlProcessState.RUNNING
             process = self._process
+            children.started(process.pid)
             self._stdout_task = asyncio.create_task(
                 self._read_stdout(process),
                 name="codex-app-server-stdout",
@@ -398,6 +400,7 @@ class JsonlProcessSupervisor:
 
     async def _watch_process(self, process: asyncio.subprocess.Process) -> None:
         returncode = await process.wait()
+        children.ended(process.pid)
         self._returncode = returncode
         stdout_task = self._stdout_task
         if stdout_task is not None and stdout_task is not asyncio.current_task():
