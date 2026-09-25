@@ -12,7 +12,7 @@ import pytest
 from bazaar_compute_server.contrib.sqlite.storage import SqliteStorage
 from bazaar_compute_server.protocol import PROTOCOL_HEADER, PROTOCOL_VERSION, Event
 
-from ._serving import enrol, root_id, serving, signed_in
+from ._serving import enrol, root_id, serving, serving_app, signed_in
 
 
 def _event(
@@ -45,6 +45,20 @@ async def _post(
         return response.status, await response.json()
 
 
+async def _refused(
+    session: aiohttp.ClientSession, base: str, token: str, event: dict[str, Any]
+) -> None:
+    """The event is refused on its own: the report is taken, the event is not
+    kept, and the reply counts it."""
+
+    status, reply = await _post(
+        session, base, token, {"run_id": "run-1", "events": [event]}
+    )
+    assert status == 200, event
+    assert reply["result"]["accepted"] == 0, event
+    assert reply["result"]["rejected"] == 1, event
+
+
 @pytest.mark.asyncio
 async def test_an_enrolled_computer_can_report_and_duplicates_are_ignored(
     tmp_path: Path,
@@ -68,7 +82,8 @@ async def test_an_enrolled_computer_can_report_and_duplicates_are_ignored(
         )
         # case: the reply follows the envelope and counts what was new
         assert status == 200
-        assert reply["ok"] is True and reply["result"]["accepted"] == 2
+        assert reply["ok"] is True
+        assert reply["result"] == {"accepted": 2, "rejected": 0}
 
         # case: a retried batch is not stored twice, a new event is
         status, reply = await _post(
@@ -77,15 +92,49 @@ async def test_an_enrolled_computer_can_report_and_duplicates_are_ignored(
             enrolment.token,
             {"run_id": "run-1", "events": [_event(1), _event(2), _event(3)]},
         )
-        assert reply["result"] == {"accepted": 1}
+        assert reply["result"] == {"accepted": 1, "rejected": 0}
         assert await storage.count_events(enrolment.computer.id) == 3
 
         # case: a new run starts its sequence over without colliding
         status, reply = await _post(
             session, base, enrolment.token, {"run_id": "run-2", "events": [_event(1)]}
         )
-        assert reply["result"] == {"accepted": 1}
+        assert reply["result"] == {"accepted": 1, "rejected": 0}
         assert await storage.count_events(enrolment.computer.id) == 4
+
+
+@pytest.mark.asyncio
+async def test_one_bad_event_does_not_take_the_rest_of_its_report_with_it(
+    tmp_path: Path,
+) -> None:
+    """An event the server will not read is refused alone: the events beside
+    it are kept, and an answer riding among them reaches whoever waits."""
+
+    async with serving_app(tmp_path) as (base, app):
+        storage = app.state.storage
+        enrolment = await enrol(storage, "kana")
+        waiting = asyncio.create_task(
+            app.state.controls.ask(enrolment.computer.id, {"read": "agents"})
+        )
+        async with asyncio.timeout(5):
+            (update,) = await app.state.controls.updates(enrolment.computer.id, after=0)
+        bad = _event(1)
+        bad["correlation"]["node_id"] = "../.."
+        answer = _event(
+            2, "control.result", update_id=update["update_id"], response='{"ok":true}'
+        )
+        async with aiohttp.ClientSession() as session:
+            status, reply = await _post(
+                session,
+                base,
+                enrolment.token,
+                {"run_id": "run-1", "events": [bad, answer, _event(3)]},
+            )
+        assert status == 200
+        assert reply["result"] == {"accepted": 2, "rejected": 1}
+        assert await storage.count_events(enrolment.computer.id) == 2
+        async with asyncio.timeout(5):
+            assert await waiting == {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -135,11 +184,7 @@ async def test_only_a_known_token_on_a_known_protocol_gets_in(tmp_path: Path) ->
         for bad in ('x" onmouseover="alert(1)', "a b", "x" * 65, 7):
             event = _event(1)
             event["correlation"]["node_id"] = bad
-            status, reply = await _post(
-                session, base, enrolment.token, {"run_id": "run-1", "events": [event]}
-            )
-            assert status == 400, bad
-            assert reply["error_code"] == "invalid_request"
+            await _refused(session, base, enrolment.token, event)
 
         # case: an event the pages read into, shaped wrong
         for name, metadata in (
@@ -152,35 +197,20 @@ async def test_only_a_known_token_on_a_known_protocol_gets_in(tmp_path: Path) ->
             # a number spelled as text would pass a lenient check and be kept as text
             ("node.health", {"version": 1}),
         ):
-            status, reply = await _post(
-                session,
-                base,
-                enrolment.token,
-                {"run_id": "run-1", "events": [_event(1, name, **metadata)]},
-            )
-            assert status == 400, (name, metadata)
-            assert reply["error_code"] == "invalid_request"
+            await _refused(session, base, enrolment.token, _event(1, name, **metadata))
 
         # case: a time the pages could not show
         for when in (-1, 10**100):
             event = _event(1)
             event["created_at_ms"] = when
-            status, reply = await _post(
-                session, base, enrolment.token, {"run_id": "run-1", "events": [event]}
-            )
-            assert status == 400, when
-            assert reply["error_code"] == "invalid_request"
+            await _refused(session, base, enrolment.token, event)
 
         # case: a place in the run, and a cost, the store cannot hold
         for event in (
             {**_event(1), "seq": 2**63},
             _event(1, "usage.updated", cost_usd=float("inf")),
         ):
-            status, reply = await _post(
-                session, base, enrolment.token, {"run_id": "run-1", "events": [event]}
-            )
-            assert status == 400, event
-            assert reply["error_code"] == "invalid_request"
+            await _refused(session, base, enrolment.token, event)
 
         # case: a run named by more than a UUID takes
         status, reply = await _post(

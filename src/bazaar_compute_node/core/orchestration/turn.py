@@ -834,14 +834,17 @@ class TurnCoordinator:
 
     async def steer_turn(
         self,
-        message: Message,
-        context: TurnContext,
+        steered: Sequence[tuple[Message, TurnContext]],
         turn: RuntimeTurn,
         *,
         input_text: str,
-    ) -> None:
+    ) -> bool:
+        """Steer messages into a running turn at once; taken, each of their
+        conversations joins the turn. Whether the runtime took them."""
+
         if not isinstance(input_text, str) or not input_text:
             raise ValueError("turn input_text must be a non-empty string")
+        message, context = steered[0]
         try:
             accepted = await self._runtimes.get(
                 context.runtime_session.runtime_index
@@ -862,12 +865,13 @@ class TurnCoordinator:
             )
             accepted = False
         if accepted:
-            await self.join_turn(
-                turn.turn_id,
-                context.thread.id,
-                message,
-                channel_session=context.channel_session,
-            )
+            for joined, joined_context in steered:
+                await self.join_turn(
+                    turn.turn_id,
+                    joined_context.thread.id,
+                    joined,
+                    channel_session=joined_context.channel_session,
+                )
         try:
             await self._audit.append(
                 event_name=(
@@ -881,6 +885,7 @@ class TurnCoordinator:
             )
         except Exception:
             self._logger.exception("runtime turn steer audit failed")
+        return accepted
 
     def notify_terminal(self, turn: RuntimeTurn, actor: Actor, thread_id: str) -> None:
         """Announce a turn whose outcome only the orchestrator can settle."""

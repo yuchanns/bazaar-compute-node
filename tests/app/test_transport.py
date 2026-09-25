@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -59,5 +60,44 @@ async def test_local_transport_serves_the_platform_endpoint(
                 )
             )
             assert all(item["ok"] is True for item in responses)
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a named pipe leaves nothing behind"
+)
+async def test_a_socket_left_behind_does_not_keep_a_node_from_starting(
+    tmp_path: Path,
+) -> None:
+    """A socket file nobody listens on is taken over; one somebody listens on
+    still keeps a second node out."""
+
+    async def handle(_: Mapping[str, object]) -> dict[str, object]:
+        return {"ok": True, "result": {"accepted": True}}
+
+    path = tmp_path / "bcn.sock"
+    # what a node killed outright leaves: the file, and nobody behind it
+    left = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    left.bind(str(path))
+    left.close()
+    assert path.exists()
+
+    server = LocalCommandServer(handle, endpoint_path=path)
+    await server.start()
+    try:
+        response = await LocalCommandClient.request(
+            server.endpoint, {"kind": "control", "operation": "health"}
+        )
+        assert response["ok"] is True
+
+        # case: a second node on the same path while the first one runs
+        with pytest.raises(FileExistsError):
+            await LocalCommandServer(handle, endpoint_path=path).start()
+        response = await LocalCommandClient.request(
+            server.endpoint, {"kind": "control", "operation": "health"}
+        )
+        assert response["ok"] is True
     finally:
         await server.stop()

@@ -151,7 +151,9 @@ class ReportEventsRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     run_id: str = Field(min_length=1, max_length=MAX_RUN_ID_CHARS)
-    events: list[Event]
+    # each checked on its own: one that is wrong is refused alone, and the
+    # rest of the report is kept
+    events: list[dict[str, Any]]
 
 
 def ok(result: dict[str, Any]) -> dict[str, Any]:

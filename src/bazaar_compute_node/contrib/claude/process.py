@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
-from ...core.utils import UnlimitedLineReader
+from ...core.utils import UnlimitedLineReader, children
 from .protocol import (
     ClaudeProcessExited,
     ClaudeProcessNotRunning,
@@ -165,11 +165,13 @@ class ProcessSupervisor:
                         stderr=asyncio.subprocess.PIPE,
                         cwd=str(self.spec.cwd),
                         env=dict(self.spec.environment),
+                        **children.own_group(),
                     )
             except BaseException:
                 self._state = ProcessState.FAILED
                 raise
             self._process = process
+            children.started(process.pid)
             self._stdout_task = asyncio.create_task(
                 self._read_stdout(process), name="claude-code-stdout"
             )
@@ -351,6 +353,7 @@ class ProcessSupervisor:
 
     async def _watch_process(self, process: asyncio.subprocess.Process) -> None:
         self._returncode = await process.wait()
+        children.ended(process.pid)
         readers = tuple(
             task for task in (self._stdout_task, self._stderr_task) if task is not None
         )

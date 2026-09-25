@@ -135,6 +135,32 @@ def _take_notifications(
         batch.append(candidate)
 
 
+# how long a running turn's conversations must be quiet before what came in
+# is steered into it, all at once
+STEER_QUIET_MS = 3_000
+
+
+@dataclass(slots=True)
+class _SteerTimer:
+    """The quiet a running turn waits out before a steer: started again by
+    every message that comes in meanwhile."""
+
+    timer: Timer
+    due: asyncio.Task[None]
+
+    async def cancel(self) -> None:
+        self.timer.cancel()
+        self.due.cancel()
+        await asyncio.gather(self.due, return_exceptions=True)
+
+    def fired(self) -> bool:
+        return (
+            self.due.done()
+            and not self.due.cancelled()
+            and self.due.exception() is None
+        )
+
+
 @dataclass(slots=True)
 class _RuntimeTimerBinding:
     runtime_session_id: str
@@ -157,6 +183,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         timeout_budget: TimeoutBudget,
         timer_wheel: TimerWheel,
         runtime_idle_timeout_ms: int = 0,
+        steer_quiet_ms: int = STEER_QUIET_MS,
         workspace: Callable[[], Path],
         translator: Translator,
         error_feedback_detail: Callable[[str, str], str],
@@ -184,6 +211,7 @@ class AgentOrchestrator(IAsyncLifecycle):
         self._channel = channel
         self._upgrade_notice = upgrade_notice
         self._runtime_idle_timeout_ms = runtime_idle_timeout_ms
+        self._steer_quiet_ms = steer_quiet_ms
         self._storage = storage
         self._timeout_budget = timeout_budget
         self._timer_wheel = timer_wheel
@@ -665,16 +693,21 @@ class AgentOrchestrator(IAsyncLifecycle):
         item: _RuntimeQueueItem,
         pending: list[_RuntimeQueueItem],
         queue: asyncio.Queue[_RuntimeQueueItem],
-    ) -> None:
-        """Take in an item that arrived while a turn was already running."""
+    ) -> bool:
+        """Take in an item that arrived while a turn was already running;
+        whether it is a message the turn is to be steered with."""
 
         if isinstance(item, _RuntimeNotification):
             await self._cancel_actor_timer(item.context.actor)
             pending.append(item)
-            await self._steer_active_turn(item)
-            return
+            return True
         await self._handle_runtime_expiry(item, queue, queue_quiescent=False)
         queue.task_done()
+        return False
+
+    def _steer_timer(self) -> _SteerTimer:
+        timer = self._timer_wheel.create(self._steer_quiet_ms)
+        return _SteerTimer(timer, asyncio.create_task(timer.wait()))
 
     async def _runtime_loop(
         self,
@@ -706,20 +739,46 @@ class AgentOrchestrator(IAsyncLifecycle):
             )
             queue_task = asyncio.create_task(queue.get())
             queue_item_consumed = False
+            # what came in while the turn runs waits in `pending` for a quiet
+            # spell and is steered in then; what the turn takes is settled
+            # with it, what it does not is the next batch
+            joined: list[_RuntimeNotification] = []
+            steer: _SteerTimer | None = None
             try:
                 while True:
                     done, _ = await asyncio.wait(
-                        (turn_task, queue_task),
+                        (turn_task, queue_task)
+                        if steer is None
+                        else (turn_task, queue_task, steer.due),
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if queue_task in done:
                         queued_item = queue_task.result()
                         queue_item_consumed = True
-                        await self._absorb_queue_item(queued_item, pending, queue)
+                        if await self._absorb_queue_item(queued_item, pending, queue):
+                            if steer is not None:
+                                await steer.cancel()
+                            steer = self._steer_timer()
+                    if steer is not None and steer.due in done:
+                        if steer.fired() and turn_task not in done:
+                            steering = [
+                                item
+                                for item in pending
+                                if isinstance(item, _RuntimeNotification)
+                            ]
+                            if await self._steer_active_turn(steering):
+                                pending[:] = [
+                                    item
+                                    for item in pending
+                                    if not isinstance(item, _RuntimeNotification)
+                                ]
+                                joined.extend(steering)
+                        steer = None
                     if turn_task in done:
                         break
-                    queue_task = asyncio.create_task(queue.get())
-                    queue_item_consumed = False
+                    if queue_task.done():
+                        queue_task = asyncio.create_task(queue.get())
+                        queue_item_consumed = False
 
                 result = turn_task.result()
                 await self._start_runtime_timer_if_idle(actor)
@@ -731,7 +790,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                     return_exceptions=True,
                 )
                 await self._record_runtime_outcome(batch[0].message, result)
-                for completion in _awaiting(batch):
+                for completion in _awaiting((*batch, *joined)):
                     completion.set_result(result)
             except asyncio.CancelledError:
                 turn_task.cancel()
@@ -744,7 +803,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 ):
                     pending.append(queue_task.result())
                     queue_item_consumed = True
-                for completion in _awaiting((*batch, *pending)):
+                for completion in _awaiting((*batch, *joined, *pending)):
                     completion.cancel()
                 for _ in range(len(pending)):
                     queue.task_done()
@@ -754,11 +813,13 @@ class AgentOrchestrator(IAsyncLifecycle):
                 turn_task.cancel()
                 await asyncio.gather(turn_task, return_exceptions=True)
                 await self._start_runtime_timer_if_idle(actor)
-                for completion in _awaiting(batch):
+                for completion in _awaiting((*batch, *joined)):
                     completion.set_exception(error)
                 if batch[0].completion is None:
                     self._logger.exception("wake runtime notification failed")
             finally:
+                if steer is not None:
+                    await steer.cancel()
                 self._turns.release_turn(turn_id)
                 if not queue_task.done():
                     queue_task.cancel()
@@ -769,7 +830,7 @@ class AgentOrchestrator(IAsyncLifecycle):
                 else:
                     if not queue_item_consumed:
                         pending.append(queued_item)
-                for _ in range(len(batch)):
+                for _ in range(len(batch) + len(joined)):
                     queue.task_done()
 
     async def _report_runtime_error(
@@ -784,26 +845,37 @@ class AgentOrchestrator(IAsyncLifecycle):
         except Exception:
             self._logger.exception("runtime error feedback failed")
 
-    async def _steer_active_turn(self, notification: _RuntimeNotification) -> None:
-        thread_id = notification.context.thread.id
-        runtime_session = self.runtime_session(notification.context.actor)
+    async def _steer_active_turn(
+        self, notifications: Sequence[_RuntimeNotification]
+    ) -> bool:
+        """Steer what came in during a quiet spell into the running turn, as
+        one notice: each message the conversation has not had yet. Whether
+        the turn has them now; those it has not are for the next turn."""
+
+        actor = notifications[0].context.actor
+        runtime_session = self.runtime_session(actor)
         if runtime_session is None:
-            return
-        message = notification.message
-        summary = await unread_in_reach(
-            self._storage,
-            notification.context.actor,
-            limit=0,
-        )
-        cursor = await self._storage.get_consumer_cursor(thread_id)
-        if cursor is not None and message.seq <= cursor.delivered_through_seq:
-            return
+            return False
+        fresh: list[_RuntimeNotification] = []
+        for notification in notifications:
+            cursor = await self._storage.get_consumer_cursor(
+                notification.context.thread.id
+            )
+            if (
+                cursor is None
+                or notification.message.seq > cursor.delivered_through_seq
+            ):
+                fresh.append(notification)
+        if not fresh:
+            # all of it reached the conversation some other way already
+            return True
+        summary = await unread_in_reach(self._storage, actor, limit=0)
         # a message arriving mid-turn is consumed here, and the turn path that
         # would otherwise carry the offer then finds nothing unread to run for
-        upgrade = self._upgrade_for(notification.context.actor)
+        upgrade = self._upgrade_for(actor)
         input_text = inbox_notice(
-            (message,),
-            total_unread_count=max(summary.total, 1),
+            tuple(notification.message for notification in fresh),
+            total_unread_count=max(summary.total, len(fresh)),
             closing_bracket_on_own_line=False,
             upgrade_version=upgrade[0] if upgrade is not None else None,
             installed_version=upgrade[1] if upgrade is not None else None,
@@ -818,13 +890,18 @@ class AgentOrchestrator(IAsyncLifecycle):
             None,
         )
         if active_turn is None:
-            return
-        await self._turns.steer_turn(
-            message,
-            TurnContext(
-                notification.context.channel_session,
-                notification.context.thread,
-                runtime_session,
+            return False
+        return await self._turns.steer_turn(
+            tuple(
+                (
+                    notification.message,
+                    TurnContext(
+                        notification.context.channel_session,
+                        notification.context.thread,
+                        runtime_session,
+                    ),
+                )
+                for notification in fresh
             ),
             active_turn,
             input_text=input_text,

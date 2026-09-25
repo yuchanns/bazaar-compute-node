@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import secrets
+import stat
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
@@ -39,6 +40,22 @@ else:
 
     async def _open_unix_connection(path: str) -> StreamPair:
         return await asyncio.open_unix_connection(path)
+
+
+async def _answers(path: Path) -> bool:
+    """Whether something listens on the socket at `path`. A path that is not
+    a socket, or one whose connection is refused, has nobody behind it."""
+
+    mode = (await asyncio.to_thread(path.stat)).st_mode
+    if not stat.S_ISSOCK(mode):
+        return False
+    try:
+        _, writer = await _open_unix_connection(str(path))
+    except ConnectionRefusedError, FileNotFoundError:
+        return False
+    writer.close()
+    await writer.wait_closed()
+    return True
 
 
 class LocalCommandServer:
@@ -91,7 +108,11 @@ class LocalCommandServer:
         path = path.expanduser()
         await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
         if await asyncio.to_thread(path.exists):
-            raise FileExistsError(f"local command endpoint already exists: {path}")
+            if await _answers(path):
+                raise FileExistsError(f"local command endpoint already exists: {path}")
+            # left behind by a node that ended without taking it down: nobody
+            # listens on it, so it is only in the way
+            await asyncio.to_thread(path.unlink)
         self._server = await asyncio.start_unix_server(
             self._handle_client,
             path=str(path),

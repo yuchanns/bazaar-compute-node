@@ -30,6 +30,7 @@ from .pages import routes
 from .protocol import (
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
+    Event,
     GetUpdatesRequest,
     ReportEventsRequest,
     error,
@@ -134,12 +135,21 @@ async def report_events(request: Request) -> Response:
         report = ReportEventsRequest.model_validate(json.loads(body))
     except (json.JSONDecodeError, ValidationError, UnicodeDecodeError) as failure:
         return _reply(error("invalid_request", str(failure)), status=400)
-    accepted = await _storage(request).record_events(
-        computer.id, report.run_id, report.events
-    )
+    events: list[Event] = []
+    rejected = 0
+    for item in report.events:
+        try:
+            events.append(Event.model_validate(item))
+        except ValidationError as failure:
+            seq = item.get("seq")
+            rejected += 1
+            _log.warning(
+                "event %s from computer %s refused: %s", seq, computer.id, failure
+            )
+    accepted = await _storage(request).record_events(computer.id, report.run_id, events)
     consumers: Consumers = request.app.state.consumers
-    consumers.consume(computer, report.events)
-    return _reply(ok({"accepted": accepted}))
+    consumers.consume(computer, events)
+    return _reply(ok({"accepted": accepted, "rejected": rejected}))
 
 
 async def get_updates(request: Request) -> Response:
