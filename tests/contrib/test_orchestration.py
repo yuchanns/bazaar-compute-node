@@ -129,6 +129,8 @@ from bazaar_compute_node.i18n import (
 
 ACCEPTANCE_AGENT_ID = "0198d4e6-29c5-7465-b74b-88db31f0c118"
 _ENGLISH_TRANSLATOR = create_translator(ENGLISH)
+# the quiet a steer waits out, short enough for a test to wait it out
+STEER_QUIET_MS = 30
 
 
 def unchanged_error_feedback_detail(
@@ -354,6 +356,7 @@ async def make_node(
     error_feedback_detail: Callable[[str, str], str] = unchanged_error_feedback_detail,
     upgrade_notice: Callable[[], tuple[str, str] | None] = lambda: None,
     mode: Mode = Mode.SESSION,
+    steer_quiet_ms: int = STEER_QUIET_MS,
 ) -> tuple[
     AgentOrchestrator,
     TestChannel,
@@ -366,6 +369,8 @@ async def make_node(
     storage = MemoryStorage()
     audit = RecordingAudit()
     await storage.start(timeout=1)
+    wheel = TimerWheel()
+    await wheel.start()
     orchestrator = AgentOrchestrator(
         actors=Actors(agent_id="workspace-1", mode=mode),
         channel=channel,
@@ -377,7 +382,8 @@ async def make_node(
             clock=now_ms,
         ),
         timeout_budget=make_budget(),
-        timer_wheel=TimerWheel(),
+        timer_wheel=wheel,
+        steer_quiet_ms=steer_quiet_ms,
         workspace=workspace,
         translator=translator,
         error_feedback_detail=error_feedback_detail,
@@ -492,7 +498,13 @@ async def wait_until(predicate: object) -> None:
         if predicate():
             return
         await asyncio.sleep(0)
-    raise AssertionError("condition was not reached")
+    # what waits out a quiet spell takes real time, not a few turns of the loop
+    try:
+        async with asyncio.timeout(5):
+            while not predicate():
+                await asyncio.sleep(0.005)
+    except TimeoutError:
+        raise AssertionError("condition was not reached") from None
 
 
 def _turn_endings(channel: TestChannel, turn_id: str) -> list[str]:
@@ -2434,6 +2446,87 @@ async def test_a_turn_marks_every_conversation_steered_into_it() -> None:
 
 
 @pytest.mark.asyncio
+async def test_messages_arriving_close_together_are_steered_at_once() -> None:
+    """A burst mid-turn is one steer, after the conversation goes quiet: the
+    notice carries every message of it."""
+
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: bool(runtime.active_streams))
+        for seq in (2, 3, 4):
+            await channel.inject(make_message(seq=seq))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+        _, _, notice = runtime.steered_turns[0]
+        assert "pending: 3 messages" in notice
+
+        # case: one after the quiet is a steer of its own
+        await channel.inject(make_message(seq=5))
+        await wait_until(lambda: len(runtime.steered_turns) == 2)
+        _, _, notice = runtime.steered_turns[1]
+        assert "pending: 1 message" in notice
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_what_a_turn_takes_by_steer_is_answered_by_that_turn() -> None:
+    """A message steered into a running turn is done with when that turn is:
+    it is answered by it, not run once more afterwards."""
+
+    orchestrator, channel, runtime, _, _ = await make_node()
+    runtime.accepts_steer = True
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    queue = orchestrator._runtime_queue_for_actor(Thread("bcn-1"))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: bool(runtime.active_streams))
+        context, message, _ = await orchestrator._record_inbound(  # pyright: ignore[reportPrivateUsage]
+            make_message(seq=2)
+        )
+        assert context is not None
+        answered: asyncio.Future[RuntimeTurn | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        queue.put_nowait(_RuntimeNotification(message, context, answered))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
+
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+        async with asyncio.timeout(5):
+            turn = await answered
+        assert turn is not None and turn.turn_id == "turn-message-bcn-1-1"
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_ends_before_the_quiet_takes_what_came_in_next() -> None:
+    """What came in is not steered into a turn that ends first: it opens the
+    next turn instead."""
+
+    orchestrator, channel, runtime, _, _ = await make_node(steer_quiet_ms=60_000)
+    runtime.queue_turn_plan(TestTurnPlan(block_until_release=True))
+    try:
+        await channel.inject(make_message(seq=1))
+        await wait_until(lambda: bool(runtime.active_streams))
+        await channel.inject(make_message(seq=2))
+        await channel.inject(make_message(seq=3))
+        runtime.queue_turn_plan(TestTurnPlan())
+        next(iter(runtime.active_streams)).release()
+
+        # the next turn opens for them: nobody steered them in
+        await wait_until(lambda: len(runtime.started_turns) == 2)
+        _, opened_turn, opened = runtime.started_turns[1]
+        assert opened_turn.turn_id == "turn-message-bcn-1-2"
+        assert "dm:channel-bcn-1  pending:" in opened
+    finally:
+        await orchestrator.stop(timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_a_conversation_steered_twice_is_marked_once() -> None:
     orchestrator, channel, runtime, _, _ = await make_node()
     runtime.accepts_steer = True
@@ -2442,6 +2535,7 @@ async def test_a_conversation_steered_twice_is_marked_once() -> None:
         await channel.inject(make_message(seq=1))
         await wait_until(lambda: bool(runtime.active_streams))
         await channel.inject(make_message(seq=2))
+        await wait_until(lambda: len(runtime.steered_turns) == 1)
         await channel.inject(make_message(seq=3))
         await wait_until(lambda: len(runtime.steered_turns) == 2)
 
