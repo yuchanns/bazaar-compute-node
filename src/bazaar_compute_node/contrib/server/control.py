@@ -311,6 +311,8 @@ _REQUESTS: TypeAdapter[_Request] = TypeAdapter(_Request)
 # and how much longer than that the node waits for it
 POLL_SECONDS = 25
 POLL_GRACE_SECONDS = 5
+# how long a failed fetch waits before the first retry
+FIRST_BACKOFF_MS = 1_000
 # a reply to getUpdates is a few requests of the command protocol
 UPDATES_BYTES = 64 * 1024
 
@@ -342,9 +344,13 @@ class ServerControl(IControl):
         self._commands_of = context.commands_of
         self._node = context.node
         self._timer_wheel = context.timer_wheel
-        # a fetch that fails waits this long before the next: as long as the
-        # node is allowed to be silent
-        self._backoff_ms = math.ceil(context.timeout_budget.startup_seconds * 1_000)
+        # a fetch that fails waits before the next: a second at first, twice
+        # as long after each failure in a row, never longer than the node is
+        # allowed to be silent; one that gets through starts it over
+        self._backoff_ceiling_ms = math.ceil(
+            context.timeout_budget.startup_seconds * 1_000
+        )
+        self._backoff_ms = FIRST_BACKOFF_MS
         self._session: aiohttp.ClientSession | None = None
         self._task: asyncio.Task[None] | None = None
         self._offset = 0
@@ -396,7 +402,9 @@ class ServerControl(IControl):
             updates = await self._updates()
             if updates is None:
                 await self._timer_wheel.create(self._backoff_ms).wait()
+                self._backoff_ms = min(self._backoff_ms * 2, self._backoff_ceiling_ms)
                 continue
+            self._backoff_ms = FIRST_BACKOFF_MS
             for update in updates:
                 await self._answer(update)
 

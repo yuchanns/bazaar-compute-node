@@ -17,7 +17,7 @@ from bazaar_compute_node.core.utils.clock import now_ms
 from bazaar_compute_server.control import Controls
 
 from ._node import AGENT_ID, node_reporting_to
-from ._serving import enrol, serving_app
+from ._serving import enrol, free_port, serving_app
 
 
 @pytest.mark.asyncio
@@ -105,18 +105,51 @@ async def test_a_computer_that_does_not_answer_is_said_so_and_asked_no_more(
 async def test_a_server_that_is_not_there_is_asked_again_quietly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("BCN_SERVER_TOKEN", "kana:secret")
-    node = await node_reporting_to("http://127.0.0.1:1", tmp_path)
+    """A fetch that fails is tried again after a wait that doubles each time;
+    the server back, the node is served again."""
+
+    port = free_port()
+    async with serving_app(tmp_path, port) as (_, app):
+        enrolment = await enrol(app.state.storage, "kana")
+    monkeypatch.setenv("BCN_SERVER_TOKEN", enrolment.token)
+    # the server's port, taken by something that hangs up on every fetch
+    attempts: list[float] = []
+
+    async def hang_up(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        # the node's reports come to the same port; only fetches are counted
+        if b"/node/getUpdates" in await reader.readline():
+            attempts.append(asyncio.get_running_loop().time())
+        writer.close()
+
+    listener = await asyncio.start_server(hang_up, "127.0.0.1", port)
+    node = await node_reporting_to(f"http://127.0.0.1:{port}", tmp_path)
     try:
         assert node.control is not None
         async with asyncio.timeout(10):
-            while node.control.health["last_error"] is None:
+            while len(attempts) < 3:
                 await asyncio.sleep(0.05)
-        assert "ClientConnectorError" in str(node.control.health["last_error"])
+        assert node.control.health["last_error"] is not None
         assert node.control.health["served"] == 0
         # case: reporting is not held up by the failing fetches
         assert node.audit.health["queued"] == 0
+        # case: each wait is longer than the one before
+        first, second = attempts[1] - attempts[0], attempts[2] - attempts[1]
+        assert first >= 0.9 and second > first * 1.5
+
+        # case: the server back on its port, the next fetch gets through
+        listener.close()
+        await listener.wait_closed()
+        async with serving_app(tmp_path, port) as (_, app):
+            answer = await app.state.controls.ask(
+                enrolment.computer.id, {"read": "agents"}, timeout=15
+            )
+            assert answer is not None and answer["ok"] is True
+            # let go while the server is up: its held fetch ends with the node
+            await node.stop()
     finally:
+        listener.close()
         await node.stop()
 
 
