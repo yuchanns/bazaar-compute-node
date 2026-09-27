@@ -330,6 +330,7 @@
     let at = 0;
     const go = (step) => {
       at = step;
+      form.querySelector('.steps').scrollTop = 0;
       steps.forEach((section, n) => section.hidden = n !== step);
       pins.forEach((pin, n) => {
         const item = pin.parentElement;
@@ -373,7 +374,7 @@
     field.focus();
     list(card, field);
   };
-  form.addEventListener('mousedown', opening);
+  form.addEventListener('pointerdown', opening);
   form.addEventListener('keydown', opening);
 
 }</script>
