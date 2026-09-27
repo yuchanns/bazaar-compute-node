@@ -28,8 +28,8 @@
 <div class="dot {{ status }}" title="{{ t.text('status.' ~ status) }}"></div>
 {%- endmacro %}
 
-{% macro column_header(title) -%}
-<div class="hd">{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
+{% macro column_header(title, back=none) -%}
+<div class="hd">{% if back %}<a class="btn icon back" href="{{ back }}" hx-get="{{ back }}" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('nav.back') }}" title="{{ t.text('nav.back') }}">{{ icon("chevron-right") }}</a>{% endif %}{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
 {# the mark for a channel, in the channel's own colour; one this page has no
