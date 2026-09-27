@@ -17,6 +17,7 @@
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
+[x-cloak] { display: none !important; }
 /* scrollbars: a thin rounded thumb in the page's own colours, no track, and
    out of sight until the pointer is over what scrolls. WebKit and Blink give
    the pseudo-elements this much, but only when the standard properties are

@@ -82,7 +82,7 @@
 
 ## 串行任务与 review
 
-按照 `AGENTS.md`，每个 task 完成后提交可审阅结果并停下等待 review，通过后继续下一项。
+按 task 串行实施并分别提交。2026-09-27 用户明确授权本分支连续完成剩余任务，无需逐项暂停 review；各任务修复 amend 到对应提交。
 
 ### Task 1：共用壳层、导航与基础响应式布局
 
@@ -245,6 +245,15 @@ Alpine 本地状态随所在组件销毁；表单凭据和环境变量值只参�
 实际回归截图随线程交付，包括短视口、横屏、手机深色配置、桌面配置和会话信息；[验收记录](2026-09-27-bcs-mobile/task5-review.md) 列出截图和待验项。
 
 真机部分仍待验：当前环境未检测到连接手机，亦无 adb/idevice 调试工具；浏览器模拟无法证明真实软键盘、地址栏伸缩、刘海/底部安全区及系统级横竖屏行为。需接入可调试手机后补验并在本任务提交上 amend。Claude Code 可用配置仍受先前 SSH 连接环境限制。Task 5 的真机项保留待验状态。
+
+
+## Task 6 Alpine 基础集成结果（2026-09-27）
+
+重新核对 npm 稳定版本，Alpine、Focus、Collapse 仍为 3.17.4；与 htmx 4.0.0 配套的官方 alpine-compat 一起随包加载。shell/login 共用脚本入口，资源来源、许可证与 SHA-256 见 `resources/static/THIRD_PARTY.md`，wheel 已检查包含全部资源。
+
+`application` 组件及共享 `connection` 绑定管理旧版本拦截与不可达提示；`clipboard` 组件管理复制反馈并在移除时释放计时器。Markdown 保持禁用原始 HTML，对正文 inline 内容与代码内容使用 `x-ignore`，可信复制按钮位于边界外。官方扩展负责 morph 生命周期，未启用 history-cache。
+
+验证：导航 34 项与路由/视口/主题 64 组通过；真实隔离 TestChannel/节点/Edge 验证复制、同一历史组件 morph 保持状态、移除计时器释放、版本过期停止请求与断网恢复。既有 login/pages/contacts 21 项通过；Ruff、根目录 Pyright 与 wheel 构建通过。手机真机项目仍待设备。
 
 ## Task 12：统一被动订阅轮询（已实施，待 review）
 

@@ -305,8 +305,8 @@ async def test_the_page_carries_the_board_for_when_the_server_is_gone(
             page = await response.text()
         # case: the shell holds the unreachable board and the listener that
         # hangs it when a request cannot be sent at all
-        assert '<template id="unreachable">' in page
-        script = re.search(r'<script type="module" src="([^"]+)"', page)
+        assert '<template x-if="unreachable">' in page
+        script = re.search(r'<script defer src="([^"]*components.js[^"]*)"', page)
         assert script is not None
         async with session.get(f"{base}{script[1]}") as response:
             listener = await response.text()
