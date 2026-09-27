@@ -1,7 +1,7 @@
 {% import "components.html" as c with context %}
 <div class="module" data-view="{{ view }}">
 <div class="col list" data-pane="settings">
-  {{ c.column_header(t.text("settings.title")) }}
+  {{ c.column_header(t.text("settings.title"), brand=true) }}
   <div class="list-items">
     {% set icons = {"appearance": "sun-moon", "security": "key-round"} %}
     {% for key in sections %}{% set icon_name = icons[key] %}

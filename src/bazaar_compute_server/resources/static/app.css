@@ -550,6 +550,7 @@ a { color: inherit; text-decoration: none; }
 .hd .back { border: 0; background: transparent; }
 .hd .back .i svg { width: 20px; height: 20px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mobile-brand { display: none; }
 @media (max-width: 959px) {
   .app { flex-direction: column; padding-top: env(safe-area-inset-top); }
   .main { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
@@ -559,6 +560,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .rail .nav-label { display: block; font-size: 11px; text-align: center; overflow-wrap: anywhere; }
   .hd .back { display: inline-flex; flex: none; margin-left: 0; }
   .hd { min-height: 52px; height: auto; }
+  .hd .mobile-brand { display: flex; align-items: center; flex: none; width: 60px; height: 36px; }
+  .mobile-brand svg { width: 60px; height: 32.5px; overflow: visible; }
   .btn.icon, .hd button { min-width: 44px; min-height: 44px; }
   input, textarea, select { font-size: 16px; }
   .col { min-height: 0; }
@@ -607,9 +610,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   #login > .btn { min-height: 42px; }
   .part .title { flex-wrap: wrap; overflow-wrap: anywhere; }
   .part .title .ver { overflow-wrap: anywhere; }
-  .deck { padding-right: 44px; }
-  .deck .side { width: 45px; height: 90px; }
-  .deck .side button { min-height: 44px; }
+  .deck { padding-right: 0; }
+  .deck > .part.shown { border-top-right-radius: 0; }
+  .deck .side { position: static; width: 90px; height: 45px; margin-left: auto; flex-direction: row; border: 1px solid var(--edge); border-bottom: 0; border-radius: 8px 8px 0 0; }
+  .deck .side button { min-width: 44px; min-height: 44px; }
+  .deck .side button + button { border-top: 0; border-left: 1px solid var(--line); }
   .deck .side .i svg { transform: rotate(-90deg); }
   .blank .kinds { grid-template-columns: minmax(0, 1fr); }
   .blank .kinds button { min-height: 44px; flex-wrap: wrap; overflow-wrap: anywhere; }

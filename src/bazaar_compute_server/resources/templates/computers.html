@@ -1,7 +1,7 @@
 {% import "components.html" as c with context %}
 <div class="module" data-view="{{ view }}">
 <div class="col list" data-pane="computers">
-  {% call c.column_header(t.text("computers.title")) %}
+  {% call c.column_header(t.text("computers.title"), brand=true) %}
     <button class="btn icon" hx-get="/computers/new" x-bind="opener" hx-target="#enrol" hx-swap="outerHTML" title="{{ t.text("computers.add") }}" aria-label="{{ t.text("computers.add") }}">{{ c.icon("plus") }}</button>
   {% endcall %}
   {% include "computer_list.html" %}

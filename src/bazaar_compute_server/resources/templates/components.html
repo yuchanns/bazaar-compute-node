@@ -36,8 +36,8 @@
 <a class="btn icon back" href="{{ back }}" hx-get="{{ back }}" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('nav.back') }}" title="{{ t.text('nav.back') }}">{{ icon("chevron-left") }}</a>
 {%- endmacro %}
 
-{% macro column_header(title, back=none) -%}
-<div class="hd">{% if back %}{{ back_link(back) }}{% endif %}<span class="heading">{{ title }}</span>{% if caller is defined %}{{ caller() }}{% endif %}</div>
+{% macro column_header(title, back=none, brand=false) -%}
+<div class="hd">{% if brand %}<a class="mobile-brand" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true" aria-label="Bazaar">{% include "sign.svg" %}</a>{% endif %}{% if back %}{{ back_link(back) }}{% endif %}<span class="heading">{{ title }}</span>{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
 {# the mark for a channel, in the channel's own colour; one this page has no
