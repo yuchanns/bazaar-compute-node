@@ -305,7 +305,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 )
                 assert status == 200
                 assert only_chat.lstrip().startswith(
-                    '<div class="col wide" id="chat">'
+                    '<div class="col wide" id="chat"'
                 ), only_chat[:200]
                 assert 'id="contacts"' not in only_chat
 

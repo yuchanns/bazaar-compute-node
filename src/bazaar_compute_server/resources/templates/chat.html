@@ -2,15 +2,17 @@
 {# the right column: one conversation, or nothing yet; picking a contact
    swaps this column alone, the two lists staying as they are. a conversation
    still waiting to be looked at shows the question about it instead #}
-<div class="col wide" id="chat">
+{% set back = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ ("?review=pending" if asked else "") if selected else "/agents" %}
+<div class="col wide" id="chat" data-pane="chat" data-active="{{ 'true' if contact else 'false' }}">
   {% if contact and asked %}
-  {% call c.column_header(contact.name) %}
+  {% call c.column_header(contact.name, back=back) %}
     <span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · <span class="badge review">{{ t.text("review.pending") }}</span></span>
   {% endcall %}
   {% include "review_card.html" %}
   {% elif contact %}
   {% set profile_url = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/contacts/" ~ ref(contact.thread_id) ~ "/profile?actor=" ~ ref(contact.actor_id) ~ "&target=" ~ ref(contact.target) ~ "&channel=" ~ contact.channel|urlencode ~ "&name=" ~ contact.name|urlencode %}
   <div class="hd">
+    {{ c.back_link(back) }}
     {# the avatar opens the card about the conversation, over the chat #}
     <button class="av sm face" type="button" title="{{ t.text("profile.open") }}" hx-get="{{ profile_url }}" hx-target="#profile" hx-swap="outerHTML">{{ contact.thread_id|identicon|safe }}</button>
     {{ contact.name }}<span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }}</span>

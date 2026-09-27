@@ -1,6 +1,6 @@
 {% import "components.html" as c with context %}
 <div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="every 5s, agents-changed from:body" hx-swap="outerMorph">
-{% call c.column_header(selected.computer.name) %}
+{% call c.column_header(selected.computer.name, back="/computers") %}
   <span class="sub">{% if selected.system in c.os_icons %}<span class="os" title="{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}">{{ c.icon(c.os_icons[selected.system]) }}</span>{% endif %}{% if selected.queued %}{{ t.text("computers.queue", {"queued": selected.queued}) }}{% endif %}</span>
 {% endcall %}
 <div class="body">

@@ -74,7 +74,10 @@ class AgentPages:
         if contact is None:
             return HTMLResponse("", status_code=404)
         # htmx names the element it will swap as `tag#id`
-        if request.headers.get("HX-Target") == "div#chat":
+        if (
+            request.headers.get("HX-Target") == "div#chat"
+            and request.headers.get("HX-History-Restore-Request") != "true"
+        ):
             # picked from the list: the column alone, the lists staying put
             selected = await agent_view(
                 self._storage,
@@ -105,6 +108,8 @@ class AgentPages:
         page: AgentPage,
         selected: AgentView | None,
         contact: Contact | None = None,
+        *,
+        pending: bool | None = None,
     ) -> Response:
         await self.refs.load(
             [
@@ -112,10 +117,12 @@ class AgentPages:
                 *(contact.named if contact else []),
             ]
         )
+        if pending is None:
+            pending = _pending(request)
         # a conversation still waiting opens on the question about it
         asked = (
             await request_of(self._controls, selected, contact)
-            if selected is not None and contact is not None and _pending(request)
+            if selected is not None and contact is not None and pending
             else None
         )
         return self._render.page(
@@ -132,6 +139,7 @@ class AgentPages:
             contact=contact,
             latest=request.query_params.get("latest"),
             asked=asked,
+            pending=pending,
         )
 
     async def _chat(
@@ -163,11 +171,8 @@ class AgentPages:
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def review(self, request: Request) -> Response:
-        """Let a conversation in or turn it away; the column comes back as
-        the chat when let in, empty when turned away - and the page's address
-        follows: the conversation's own once let in, the agent's once turned
-        away, so a reload does not ask the question again or open what was
-        turned away."""
+        """Let a conversation in or turn it away, updating the module and
+        address together so its tabs, selected row and chat agree on reload."""
 
         params = request.path_params
         contact = await self._contact(request)
@@ -209,26 +214,19 @@ class AgentPages:
                 ),
             )
         agent_url = f"/agents/{self.refs.ref(selected.computer_id)}/{self.refs.ref(selected.id)}"
+        response = await self._page(
+            request,
+            await agent_page(self._storage, Access.of(request)),
+            selected,
+            contact if review == "approved" else None,
+            pending=False,
+        )
+        response.headers["HX-Retarget"] = "#main"
+        response.headers["HX-Reswap"] = "innerMorph"
         if review == "denied":
-            response = self._render.fragment(
-                request,
-                "chat.html",
-                selected=selected,
-                contact=None,
-                latest=None,
-                asked=None,
-            )
             response.headers["HX-Push-Url"] = agent_url
             return response
         latest = request.query_params.get("latest")
-        response = self._render.fragment(
-            request,
-            "chat.html",
-            selected=selected,
-            contact=contact,
-            latest=latest,
-            asked=None,
-        )
         response.headers["HX-Push-Url"] = (
             f"{agent_url}/contacts/{self.refs.ref(contact.thread_id)}?"
             + urlencode(

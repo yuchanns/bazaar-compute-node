@@ -14,7 +14,7 @@
     {% elif asked.answer != "listed" %}
     <div class="empty">{{ t.text("contacts." ~ asked.answer, {"code": asked.code}) }}</div>
     {% endif %}
-    <form hx-post="{{ url }}" hx-target="#chat" hx-swap="outerHTML">
+    <form hx-post="{{ url }}" hx-target="#chat" hx-swap="outerHTML" hx-sync="#contacts:replace">
       <button class="btn p" name="review" value="approved"{% if asked.answer == "offline" %} disabled{% endif %}>{{ t.text("review.approve") }}</button>
       <button class="btn" name="review" value="denied"{% if asked.answer == "offline" %} disabled{% endif %}>{{ t.text("review.deny") }}</button>
     </form>

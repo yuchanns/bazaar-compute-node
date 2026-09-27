@@ -85,7 +85,10 @@ class Renderer:
         """A module's page: inside the shell, unless htmx is swapping it in."""
 
         values = {**self._viewer(request), "module": module, **values}
-        if request.headers.get("HX-Request") == "true":
+        if (
+            request.headers.get("HX-Request") == "true"
+            and request.headers.get("HX-History-Restore-Request") != "true"
+        ):
             # the rail stays outside the swapped region, so it rides along
             # out of band to move its highlight
             return _personal(

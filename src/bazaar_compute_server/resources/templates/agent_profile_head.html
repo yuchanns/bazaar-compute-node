@@ -2,6 +2,7 @@
 {# who the page is about; after a rename it comes again out of band, under
    the name just saved, before the computer's next beat says it #}
 <div class="hd" id="profile-head"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}>
+  {{ c.back_link("/agents") }}
   <span class="face-at">{{ c.avatar(name, small=true) }}{{ c.dot(selected.status) }}</span>
   {{ name }}
   <span class="icons">{{ c.agent_icons(selected) }}</span>
