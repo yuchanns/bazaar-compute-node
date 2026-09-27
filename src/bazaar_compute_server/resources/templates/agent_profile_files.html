@@ -8,7 +8,7 @@
 {% for entry in workspace.entries %}
 {% if entry.directory %}
 <div class="dir">
-  <button class="file" type="button" hx-get="{{ base }}{{ entry.path|urlencode }}" hx-trigger="click once" hx-target="next .children" hx-swap="innerHTML" hx-on:click="this.parentElement.classList.toggle('open')">{{ c.icon("chevron-right") }}{{ c.icon("folder") }}<span class="name">{{ entry.name }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></button>
+  <button class="file" type="button" aria-expanded="false" hx-get="{{ base }}{{ entry.path|urlencode }}" hx-trigger="click once" hx-target="next .children" hx-swap="innerHTML" hx-on:click="this.setAttribute('aria-expanded', this.parentElement.classList.toggle('open'))">{{ c.icon("chevron-right") }}{{ c.icon("folder") }}<span class="name">{{ entry.name }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></button>
   <div class="children"></div>
 </div>
 {% else %}
