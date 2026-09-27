@@ -607,9 +607,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   #login > .btn { min-height: 42px; }
   .part .title { flex-wrap: wrap; overflow-wrap: anywhere; }
   .part .title .ver { overflow-wrap: anywhere; }
-  .deck { padding-right: 44px; }
-  .deck .side { width: 45px; height: 90px; }
-  .deck .side button { min-height: 44px; }
+  .deck { padding-right: 0; }
+  .deck > .part.shown { border-top-right-radius: 0; }
+  .deck .side { position: static; width: 90px; height: 45px; margin-left: auto; flex-direction: row; border: 1px solid var(--edge); border-bottom: 0; border-radius: 8px 8px 0 0; }
+  .deck .side button { min-width: 44px; min-height: 44px; }
+  .deck .side button + button { border-top: 0; border-left: 1px solid var(--line); }
   .deck .side .i svg { transform: rotate(-90deg); }
   .blank .kinds { grid-template-columns: minmax(0, 1fr); }
   .blank .kinds button { min-height: 44px; flex-wrap: wrap; overflow-wrap: anywhere; }
