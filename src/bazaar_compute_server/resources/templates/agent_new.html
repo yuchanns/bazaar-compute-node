@@ -10,15 +10,16 @@
 {% set channels = values.get("channel", []) %}
 {% set runtimes = values.get("runtime", []) %}
 <div class="veil" id="agent-new" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
-  <form x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
+  <form x-data="agentForm" id="new-agent-form-{{ ref(selected.computer.id) }}" x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerMorph" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
+    {{ f.initial(values, reply) }}
     <h3 id="agent_new-title">{{ t.text("agents.new_title") }}</h3>
     <ol class="stepper">
       {% for step in ("basic", "channels", "runtimes", "confirm") %}<li><button type="button" data-go="{{ loop.index0 }}"><span class="pin"></span>{{ t.text("agents.step." ~ step) }}</button></li>{% endfor %}
     </ol>
     <div class="steps">
       <section data-step="basic"><p class="hint">{{ t.text("agents.hint.basic") }}</p>{{ f.basic(values) }}{{ f.reply(reply) }}</section>
-      <section data-step="channels" hidden><p class="hint">{{ t.text("agents.hint.channels") }}</p>{{ f.deck("channel", channels, 0) }}</section>
-      <section data-step="runtimes" hidden><p class="hint">{{ t.text("agents.hint.runtimes") }}</p>{{ f.deck("runtime", runtimes, channels|length) }}</section>
+      <section data-step="channels" hidden><p class="hint">{{ t.text("agents.hint.channels") }}</p>{{ f.deck("channel", "new-agent-form-" ~ ref(selected.computer.id), channels, 0) }}</section>
+      <section data-step="runtimes" hidden><p class="hint">{{ t.text("agents.hint.runtimes") }}</p>{{ f.deck("runtime", "new-agent-form-" ~ ref(selected.computer.id), runtimes, channels|length) }}</section>
       <section data-step="confirm" data-summary-step hidden>
         <p class="hint">{{ t.text("agents.hint.confirm") }}</p>
         <div data-summary></div>
@@ -32,7 +33,6 @@
       <button class="btn p" type="button" data-forward>{{ t.text("agents.forward") }}</button>
       <button class="btn p" type="button" data-done hidden>{{ t.text("agents.create") }}</button>
     </div>
-    {{ f.script() }}
   </form>
 </div>
 {% endif %}

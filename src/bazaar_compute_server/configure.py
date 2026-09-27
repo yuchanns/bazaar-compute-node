@@ -140,6 +140,56 @@ class Origins:
     runtime: tuple[int | None, ...]
 
 
+def editor(
+    values: Mapping[str, Any],
+    reply: str,
+    *,
+    kept: bool = False,
+    origins: Origins | None = None,
+) -> dict[str, Any]:
+    """Only the editable fields and credential-presence flags for the browser."""
+
+    cards: dict[str, list[dict[str, Any]]] = {"channel": [], "runtime": []}
+    number = 0
+    for family, items in cards.items():
+        for index, value in enumerate(values.get(family, ())):
+            origin = getattr(origins, family)[index] if origins else index
+            origin = origin if kept else None
+            present = values.get("secrets", ())
+            fields = (
+                ("app_id", "region", "bot_id", "websocket_url")
+                if family == "channel"
+                else ("model", "effort", "sandbox_mode", "network_access")
+            )
+            items.append(
+                {
+                    "id": number,
+                    "kind": value["kind"],
+                    "was": origin,
+                    **{key: value[key] for key in fields if value.get(key) is not None},
+                    "secret_set": bool(
+                        family == "channel"
+                        and origin is not None
+                        and origin < len(present)
+                        and present[origin].get(SECRETS.get(value["kind"]))
+                    ),
+                    "env": [
+                        {"id": i, "name": name, "was": name}
+                        for i, name in enumerate(value.get("env", {}))
+                    ],
+                }
+            )
+            number += 1
+    return {
+        "name": values.get("name", ""),
+        "mode": values.get("mode", "session"),
+        "idle_timeout": values.get("idle_timeout", 0),
+        "reply": reply,
+        "cards": cards,
+        "next": number,
+    }
+
+
 def configuration(
     form: Mapping[str, str],
     kept: Mapping[str, Any] | None = None,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from pathlib import Path
 
@@ -72,12 +73,16 @@ async def test_an_agent_is_seen_changed_and_let_go_from_its_page(
                 status, page = await _get(session, page_url, **headers)
                 assert status == 200 and 'id="profile-page"' in page
                 assert 'id="agent-list"' in page
-                assert 'name="name" value="Kana"' in page
-                assert 'name="channel-0-was" value="0"' in page
+                initial = json.loads(
+                    page.split('<script type="application/json" data-editor>')[1].split(
+                        "</script>"
+                    )[0]
+                )["fields"]
+                assert initial["name"] == "Kana"
+                assert initial["cards"]["channel"][0]["was"] == 0
                 # a runtime naming no model holds the default alone until its
                 # field is opened, and a save untouched keeps it so
-                model = page.split('name="runtime-1-model"')[1].split("</select>")[0]
-                assert '<option value="">Default</option>' in model
+                assert initial["cards"]["runtime"][0].get("model", "") == ""
                 assert f'data-computer="/computers/{key.split("/")[0]}"' in page
                 for tab in ("config", "skills", "workspace", "status", "activity"):
                     assert f'hx-get="/agents/{key}/profile/{tab}"' in page
@@ -188,8 +193,15 @@ async def test_an_agent_is_seen_changed_and_let_go_from_its_page(
                 ) as response:
                     refused = await response.text()
                 assert "rejected" in refused
-                assert 'name="channel-0-was"' not in refused
-                assert 'name="channel-1-was" value="0"' in refused
+                initial = json.loads(
+                    refused.split('<script type="application/json" data-editor>')[
+                        1
+                    ].split("</script>")[0]
+                )["fields"]
+                assert [card["was"] for card in initial["cards"]["channel"]] == [
+                    None,
+                    0,
+                ]
                 # the page's heading takes the new name at once
                 assert 'id="profile-head" hx-swap-oob="outerHTML"' in saved
                 assert saved.split('id="profile-head"')[1].count("Renamed") >= 1
@@ -205,7 +217,12 @@ async def test_an_agent_is_seen_changed_and_let_go_from_its_page(
                     "API_KEY": f"BCN_{AGENT_ID.replace('-', '_').upper()}_RUNTIME0_TEST_ENV_API_KEY"
                 }
                 assert "value-1" not in saved
-                assert 'name="runtime-1-env-0-was" value="API_KEY"' in saved
+                initial = json.loads(
+                    saved.split('<script type="application/json" data-editor>')[
+                        1
+                    ].split("</script>")[0]
+                )["fields"]
+                assert initial["cards"]["runtime"][0]["env"][0]["was"] == "API_KEY"
                 reply = await app.state.controls.ask(
                     enrolment.computer.id,
                     {"read": "setting", "agent_id": AGENT_ID, "key": "review.reply"},
