@@ -2,12 +2,8 @@
 {# the card about a conversation, drawn over the chat from its right edge:
    who is in it - read off the messages loaded, so it grows as more are -
    what wakes the agent in it, and at the bottom the way to turn it away #}
-{# once htmx has taken the card in, it reads who spoke off the chat's turns,
-   and keeps reading as the chat takes more in - paged up or arriving - until
-   it is closed; and it listens for a click outside itself to close: the
-   click that opened it is still on its way, so the listener waits a tick #}
-<div class="drawer" id="profile" role="dialog" aria-labelledby="conversation-title" tabindex="-1" hx-on:htmx:after:process="const card = this; const grid = card.querySelector('#members'); const history = document.getElementById('history'); if (grid && history) { const seen = new Set(); const gather = () => { for (const turn of history.querySelectorAll('.turn')) { const id = turn.dataset.identity; if (seen.has(id)) continue; seen.add(id); const el = document.createElement('div'); el.className = 'member'; el.title = turn.dataset.speaker; el.innerHTML = '<div class=&quot;av&quot;></div><small></small>'; el.firstChild.innerHTML = turn.querySelector('.av').innerHTML; el.lastChild.textContent = turn.dataset.speaker; grid.append(el); } card.querySelector('#member-count').textContent = seen.size; }; gather(); const more = new MutationObserver(() => { if (!card.isConnected || card.hidden) { more.disconnect(); return; } gather(); }); more.observe(history, {childList: true, subtree: true}); } setTimeout(() => document.addEventListener('click', function away(event) { if (!card.isConnected || card.hidden) { document.removeEventListener('click', away); return; } if (!card.contains(event.target)) { card.hidden = true; document.removeEventListener('click', away); } }), 0)">
-  <div class="hd"><span class="heading" id="conversation-title">{{ t.text("profile.title") }}</span><button class="btn icon" type="button" title="{{ t.text("profile.close") }}" hx-on:click="document.getElementById('profile').hidden = true">{{ c.icon("x") }}</button></div>
+<div class="drawer" id="profile" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabindex="-1" x-data="conversation" x-bind="dialog" x-cloak x-trap.inert.noscroll="open" @click.outside="open = false" @htmx:after:swap.window="gather()">
+  <div class="hd"><span class="heading" id="conversation-title">{{ t.text("profile.title") }}</span><button class="btn icon" type="button" title="{{ t.text("profile.close") }}" @click="open = false">{{ c.icon("x") }}</button></div>
   <div class="who">
     <div class="av">{{ contact.thread_id|identicon|safe }}</div>
     <div><b>{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
@@ -15,9 +11,13 @@
   <div class="body">
     {# a group has members; a direct message is the two of them #}
     {% if contact.kind == "group" %}
-    <div class="section">{{ c.icon("users") }} {{ t.text("profile.members") }} · <span id="member-count"></span></div>
+    <div class="section">{{ c.icon("users") }} {{ t.text("profile.members") }} · <span id="member-count" x-text="members.length"></span></div>
     {# each turn in the chat carries its speaker; the grid is those, once each #}
-    <div class="grid" id="members"></div>
+    <div class="grid" id="members">
+      <template x-for="member in members" :key="member.id">
+        <div class="member" :title="member.name"><div class="av" x-html="member.avatar"></div><small x-text="member.name"></small></div>
+      </template>
+    </div>
     {% endif %}
     <div class="section">{{ c.icon("alarm-clock") }} {{ t.text("profile.reminders") }} · {{ reminders.items|length }}</div>
     <div class="rows">
@@ -30,7 +30,7 @@
     </div>
   </div>
   <div class="foot">
-    <button class="btn danger" type="button" hx-on:click="document.getElementById('remove-ask').hidden = false">{{ c.icon("trash-2") }} {{ t.text("profile.remove_" ~ contact.kind) }}</button>
+    <button class="btn danger" type="button" x-bind="opener" @click="$dispatch('dialog-open', 'remove-ask')">{{ c.icon("trash-2") }} {{ t.text("profile.remove_" ~ contact.kind) }}</button>
   </div>
   {% include "remove_ask.html" %}
 </div>

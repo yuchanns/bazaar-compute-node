@@ -29,6 +29,6 @@
 <div class="dialog danger">
   <h3>{{ t.text("agents.remove") }}</h3>
   <p class="st">{{ t.text("agents.remove_hint") }}</p>
-  <button class="btn danger" type="button" hx-get="{{ base }}/remove" hx-target="#agent-remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("agents.remove") }}</button>
+  <button class="btn danger" type="button" hx-get="{{ base }}/remove" x-bind="opener" hx-target="#agent-remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("agents.remove") }}</button>
 </div>
 {% if saved %}{% with name = head.name, selected = head, oob = true %}{% include "agent_profile_head.html" %}{% endwith %}{% endif %}

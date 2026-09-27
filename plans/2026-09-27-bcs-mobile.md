@@ -255,6 +255,14 @@ Alpine 本地状态随所在组件销毁；表单凭据和环境变量值只参�
 
 验证：导航 34 项与路由/视口/主题 64 组通过；真实隔离 TestChannel/节点/Edge 验证复制、同一历史组件 morph 保持状态、移除计时器释放、版本过期停止请求与断网恢复。既有 login/pages/contacts 21 项通过；Ruff、根目录 Pyright 与 wheel 构建通过。手机真机项目仍待设备。
 
+## Task 7 弹窗与成员组件结果（2026-09-27）
+
+管理弹窗、四步向导外壳、会话抽屉及更新提示已改为 Alpine 显隐与 Focus `x-trap.inert.noscroll`。共享 `dialog`/`opener` 绑定管理 Escape、打开及焦点返回；嵌套确认框独立状态，逐层关闭。删除原 `app.js` 的全局弹窗数组、手写 Tab 循环和 DOM observer。
+
+会话成员从已加载历史生成以 identity 为 key 的数组，通过 `x-for/x-text` 渲染；htmx 更新后刷新数据，头像仍来自服务器生成的可信 identicon。原 HTML 拼接、持续 MutationObserver 和手动全局 outside 监听已移除。
+
+验证：导航 34 项与 64 组布局、表单 46 项、详情 63 项通过；补充真实消息追加的成员去重/数量更新与嵌套 Tab、Shift+Tab、Escape、焦点返回验证。既有 pages/contacts/profile/new_agent 15 项、Ruff、根目录 Pyright 通过。
+
 ## Task 12：统一被动订阅轮询（已实施，待 review）
 
 执行依据：[Task 12 完整实施规格](2026-09-27-bcs-mobile/task12-polling.md)。已完成现有代码调研，规格中给出了文件修改表、十三类网络订阅及本地时钟订阅的字段与确定查询、请求/响应、逐模板接入及真实验收步骤。
