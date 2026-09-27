@@ -169,6 +169,7 @@ class ProfilePages:
                 secrets=SECRETS,
             )
             response.headers["HX-Trigger"] = "agents-changed"
+            response.headers["HX-Reswap"] = "innerHTML"
             return response
         word, _, code = failed.partition(":")
         if word == "refused" and code in {"REFUSED", "INVALID_REQUEST"}:

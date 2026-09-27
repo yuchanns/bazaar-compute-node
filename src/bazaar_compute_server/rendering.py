@@ -27,6 +27,7 @@ from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clock import clock_text, day_text, now_ms, time_text, zone
+from .configure import editor
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
@@ -58,6 +59,7 @@ class Renderer:
         self._templates.globals["themes"] = THEMES
         self._templates.globals["asset"] = _asset
         self._templates.globals["build"] = BUILD
+        self._templates.globals["editor"] = editor
         self._templates.globals["image_address"] = images.address
         # the number a page names a loaded value by, in a link
         self._templates.globals["ref"] = refs.ref
