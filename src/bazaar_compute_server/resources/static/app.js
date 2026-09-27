@@ -1,8 +1,3 @@
-document.addEventListener("htmx:error", (event) => {
-  if (!(event.detail?.error instanceof TypeError)) return;
-  const main = document.getElementById("main");
-  main.replaceChildren(document.getElementById("unreachable").content.cloneNode(true));
-});
 // Keep focus with the top dialog, including confirmation over conversation info.
 let modal = null, outside = document.activeElement;
 const dialogs = [];

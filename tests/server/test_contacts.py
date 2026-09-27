@@ -342,12 +342,12 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # coloured by token and its HTML kept as text, whoever wrote it
                 agent_line = turns[1].split('class="line md"')[1]
                 for rendered in (
-                    "<h2>Plan</h2>",
-                    "<li>one</li>",
-                    "<td>2</td>",
+                    "<h2><span x-ignore>Plan</span></h2>",
+                    "<li><span x-ignore>one</span></li>",
+                    "<td><span x-ignore>2</span></td>",
                     "<code>f()</code>",
                     "&lt;b&gt;now&lt;/b&gt;",
-                    '<pre class="code"><code><span class="tok-nb">print</span>',
+                    '<pre class="code" x-ignore><code><span class="tok-nb">print</span>',
                     '<span class="tok-c1"># hi</span>',
                 ):
                     assert rendered in agent_line, rendered
@@ -359,7 +359,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     in agent_line
                 )
                 human_line = turns[2].split('class="line md"')[1]
-                assert "<h2>Plan</h2>" in human_line
+                assert "<h2><span x-ignore>Plan</span></h2>" in human_line
                 assert 'id="message-message-chat-55"' in turns[2]
                 assert 'hx-trigger="revealed"' in chat
                 assert "&before=message-chat-6" in chat

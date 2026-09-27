@@ -10,7 +10,7 @@
 
 {# a button that copies the text of what stands right before it, and ticks for a moment #}
 {% macro copy() -%}
-<button class="btn icon copy" type="button" title="{{ t.text("copy") }}" aria-label="{{ t.text("copy") }}" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent).then(() => { this.classList.add('done'); setTimeout(() => this.classList.remove('done'), 1500); })">{{ icon("copy") }}{{ icon("check") }}</button>
+<button class="btn icon copy" type="button" title="{{ t.text("copy") }}" aria-label="{{ t.text("copy") }}" x-data="clipboard" @click="copy()" :class="{done: copied}">{{ icon("copy") }}{{ icon("check") }}</button>
 {%- endmacro %}
 
 {# a select that looks like the rest of the page: the native control, drawn over #}

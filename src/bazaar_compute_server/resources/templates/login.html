@@ -6,12 +6,13 @@
 <title>{{ t.text("app.title") }}</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
-<script src="{{ asset('htmx.min.js') }}"></script>
+{% include "scripts.html" %}
 </head>
-<body hx-swap:inherited="innerMorph">
-<div class="gate">
+<body x-data="application" x-bind="connection" hx-swap:inherited="innerMorph">
+<div class="gate" x-show="!unreachable">
   <div class="sign big">{% include "sign.svg" %}</div>
   {% include "login_form.html" %}
 </div>
+{% include "unreachable.html" %}
 </body>
 </html>
