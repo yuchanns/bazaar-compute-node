@@ -4,6 +4,6 @@
 <div class="hd" id="profile-head"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}>
   {{ c.back_link("/agents") }}
   <span class="face-at">{{ c.avatar(name, small=true) }}{{ c.dot(selected.status) }}</span>
-  {{ name }}
+  <span class="heading">{{ name }}</span>
   <span class="icons">{{ c.agent_icons(selected) }}</span>
 </div>

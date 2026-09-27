@@ -630,3 +630,43 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   [data-summary] .rows { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
   [data-summary] .rows .k:not(:first-child) { margin-top: 8px; }
 }
+
+/* Detail content stays within its pane; wide code and tables scroll locally. */
+.hd .heading { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn .who { flex-wrap: wrap; overflow-wrap: anywhere; }
+.turn .who b { min-width: 0; }
+.turn .who .at, .turn .who .k { flex: none; }
+.profile .skill, .profile .health, .log .x, .err, .empty { overflow-wrap: anywhere; }
+.log .ln { grid-template-columns: 72px 88px minmax(0, 1fr); }
+.switch.text { overflow-x: auto; }
+.switch.text .tab { flex: none; }
+.drawer .rows { display: block; }
+.drawer .who > div:last-child, .drawer .row > div { min-width: 0; overflow-wrap: anywhere; }
+.drawer .who .sub { flex-wrap: wrap; overflow-wrap: anywhere; }
+.drawer .hd, .drawer .who, .drawer .foot { flex: none; }
+.profile .health .field .v { flex-wrap: wrap; }
+@media (max-width: 959px) {
+  .hd { padding: 4px 10px; gap: 6px; flex-wrap: wrap; }
+  .hd > .heading { flex: 1; white-space: normal; overflow-wrap: anywhere; }
+  .hd > .sub { flex-basis: 100%; flex-wrap: wrap; padding-bottom: 4px; }
+  .profile .hd .icons { flex-wrap: wrap; }
+  .chat { padding: 10px 12px; }
+  .turn { gap: 8px; }
+  .note { padding: 0; flex-wrap: wrap; }
+  .snippet .copy { min-width: 44px; min-height: 44px; }
+  .md pre, .md .snippet pre { padding-right: 48px; }
+  .drawer { width: 100%; border-left: 0; }
+  .switch.text { margin: 8px 10px 0; }
+  .switch.text .tab { min-height: 44px; }
+  [data-pane="contacts"] .switch .tab .n { position: static; height: auto; min-height: 18px; line-height: 18px; flex: none; }
+  .profile .file { flex-wrap: wrap; gap: 4px 6px; min-height: 44px; }
+  .profile .file .name { white-space: normal; overflow-wrap: anywhere; flex-basis: calc(100% - 64px); }
+  .profile .file .when { margin-left: auto; }
+  .profile .children { padding-left: 12px; }
+  .log .ln { grid-template-columns: 72px minmax(0, 1fr); padding: 6px 10px; }
+  .log .ln .x { grid-column: 1 / -1; }
+  .log .ln .s { overflow-wrap: anywhere; }
+  .stall { max-width: 100%; padding: 16px; overflow-wrap: anywhere; }
+  .stall .board { max-width: 100%; height: auto; }
+  .col.closed { overflow-y: auto; }
+}

@@ -33,7 +33,7 @@
 {%- endmacro %}
 
 {% macro column_header(title, back=none) -%}
-<div class="hd">{% if back %}{{ back_link(back) }}{% endif %}{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
+<div class="hd">{% if back %}{{ back_link(back) }}{% endif %}<span class="heading">{{ title }}</span>{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
 {# the mark for a channel, in the channel's own colour; one this page has no
