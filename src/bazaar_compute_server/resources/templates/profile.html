@@ -2,11 +2,11 @@
 {# the card about a conversation, drawn over the chat from its right edge:
    who is in it - read off the messages loaded, so it grows as more are -
    what wakes the agent in it, and at the bottom the way to turn it away #}
-<div class="drawer" id="profile" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabindex="-1" x-data="conversation" x-bind="dialog" x-cloak x-trap.inert.noscroll="open" @click.outside="open = false" @htmx:after:swap.window="gather()">
+<div class="drawer" id="profile" role="dialog" aria-modal="true" aria-labelledby="conversation-title" tabindex="-1" x-data="conversation" :data-open="open" x-bind="dialog" x-cloak x-trap.inert.noscroll="open" @click.outside="open = false" @htmx:after:swap.window="gather()">
   <div class="hd"><span class="heading" id="conversation-title">{{ t.text("profile.title") }}</span><button class="btn icon" type="button" title="{{ t.text("profile.close") }}" @click="open = false">{{ c.icon("x") }}</button></div>
   <div class="who">
     <div class="av">{{ contact.thread_id|identicon|safe }}</div>
-    <div><b>{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
+    <div><b x-data="contactName" data-name="{{ contact.name }}" data-thread="{{ ref(contact.thread_id) }}" x-text="name" @contact-name.window="update($event)">{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
   </div>
   <div class="body">
     {# a group has members; a direct message is the two of them #}
@@ -19,15 +19,7 @@
       </template>
     </div>
     {% endif %}
-    <div class="section">{{ c.icon("alarm-clock") }} {{ t.text("profile.reminders") }} · {{ reminders.items|length }}</div>
-    <div class="rows">
-      {% for item in reminders.items %}
-      <div class="row">{{ c.icon("repeat" if item.repeat_rule else "calendar") }}<div><b>{{ item.title }}</b><small>{% if item.repeat_rule %}{{ item.repeat_rule|repeat }} · {% endif %}{% if item.next_fire_at_ms %}{{ item.next_fire_at_ms|due }}{% endif %}</small></div></div>
-      {% endfor %}
-      {% if reminders.answer == "offline" %}<div class="empty">{{ t.text("contacts.offline") }}</div>
-      {% elif reminders.answer != "listed" %}<div class="empty">{{ t.text("contacts." ~ reminders.answer, {"code": reminders.code}) }}</div>
-      {% elif not reminders.items %}<div class="empty">{{ t.text("profile.no_reminders") }}</div>{% endif %}
-    </div>
+    {% include "conversation_reminders.html" %}
   </div>
   <div class="foot">
     <button class="btn danger" type="button" x-bind="opener" @click="$dispatch('dialog-open', 'remove-ask')">{{ c.icon("trash-2") }} {{ t.text("profile.remove_" ~ contact.kind) }}</button>

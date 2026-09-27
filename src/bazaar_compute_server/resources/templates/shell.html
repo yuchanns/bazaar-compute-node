@@ -14,7 +14,7 @@
    upgrade is told so and covered until its reader refreshes it, rather than
    patched with pieces of the new one - and from then on asks for nothing,
    whatever on it would have #}
-<body x-data="application" x-bind="connection" hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}'>
+<body data-build="{{ build }}" x-data="application" x-bind="connection" hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}'>
 <div class="app">
   {% include "rail.html" %}
   <div id="main" class="main" x-show="!unreachable">{% include content %}</div>

@@ -1,0 +1,6 @@
+{% import "components.html" as c with context %}
+{% set key = ref(item.computer.id)|string %}
+{% set report %}<span x-show="last_event_at_ms !== null">{{ t.text("computers.last_report", {"when": "{when}"}).split("{when}")[0] }}{{ c.time(item.last_event_at_ms or 0, source="last_event_at_ms") }}{{ t.text("computers.last_report", {"when": "{when}"}).split("{when}")[1] }}</span><span x-show="last_event_at_ms === null">{{ t.text("computers.never_reported") }}</span>{% endset %}
+{% set version = t.text("computers.version", {"version": item.version}) ~ " · " if item.version else "" %}
+{% set attrs %}x-data="computerState" data-computer='{{ poll("computer-state", item)|tojson }}' :class="{off: !online}" x-poll data-poll='{{ poll("computer-info", item)|tojson }}' data-poll-url="/computers/{{ key }}/row" hx-vals='js:{selected: this.classList.contains("on") ? "{{ key }}" : ""}'{% endset %}
+{% call c.list_item(item.computer.name, version ~ report, icon_name=c.os_icons.get(item.system, "monitor"), href="/computers/" ~ key, on=(selected_key == key), attrs=attrs) %}<div class="dot" :class="online ? 'running' : 'offline'"></div>{% endcall %}

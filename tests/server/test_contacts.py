@@ -224,7 +224,7 @@ async def test_an_offline_computer_is_not_asked(tmp_path: Path) -> None:
                 session, f"{opened}&latest=m", **{"Accept-Language": "en"}
             )
             assert status == 200 and "This computer is offline" in chat
-            assert '&shown=offline&latest=m" hx-trigger="every 5s"' in chat
+            assert '&shown=offline&latest=m" hx-trigger="poll-refresh"' in chat
             status, _ = await _get(session, f"{opened}&since=0&shown=offline")
             assert status == 204
 

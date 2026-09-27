@@ -166,6 +166,19 @@ class IStorage(Protocol):
         agent's conversations, or one of them; 0 when there is none yet."""
         ...
 
+    async def latest_activity_event(
+        self, computer_id: str, agent_id: str, *, skipping: Sequence[str]
+    ) -> int: ...
+
+    async def latest_named_event(
+        self,
+        computer_id: str,
+        agent_id: str,
+        *,
+        names: Sequence[str],
+        thread_id: str | None = None,
+    ) -> int: ...
+
     async def computer_health(
         self, computers: Sequence[Computer]
     ) -> list[ComputerHealth]:
