@@ -9,8 +9,8 @@
 {% else %}
 {% set channels = values.get("channel", []) %}
 {% set runtimes = values.get("runtime", []) %}
-<div class="veil" id="agent-new" hx-on:click="if (event.target === this) this.hidden = true">
-  <form role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
+<div class="veil" id="agent-new" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
+  <form x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
     <h3 id="agent_new-title">{{ t.text("agents.new_title") }}</h3>
     <ol class="stepper">
       {% for step in ("basic", "channels", "runtimes", "confirm") %}<li><button type="button" data-go="{{ loop.index0 }}"><span class="pin"></span>{{ t.text("agents.step." ~ step) }}</button></li>{% endfor %}
@@ -28,7 +28,7 @@
     <div class="foot">
       <button class="btn" type="button" data-back>{{ t.text("agents.back") }}</button>
       <span class="grow"></span>
-      <button class="btn" type="button" hx-on:click="document.getElementById('agent-new').hidden = true">{{ t.text("computers.cancel") }}</button>
+      <button class="btn" type="button" @click="open = false">{{ t.text("computers.cancel") }}</button>
       <button class="btn p" type="button" data-forward>{{ t.text("agents.forward") }}</button>
       <button class="btn p" type="button" data-done hidden>{{ t.text("agents.create") }}</button>
     </div>

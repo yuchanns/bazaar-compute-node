@@ -20,13 +20,12 @@
   <div id="main" class="main" x-show="!unreachable">{% include content %}</div>
   {% include "unreachable.html" %}
 </div>
-<div class="veil" id="stale" hidden x-cloak :hidden="!stale">
-  <div class="dialog">
-    <h3>{{ t.text("stale.title") }}</h3>
+<div class="veil" id="stale" x-cloak x-show="stale">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="stale-title" x-trap.inert.noscroll="stale">
+    <h3 id="stale-title">{{ t.text("stale.title") }}</h3>
     <p class="st">{{ t.text("stale.text") }}</p>
     <button class="btn p" type="button" @click="location.reload()">{{ t.text("stale.refresh") }}</button>
   </div>
 </div>
-<script type="module" src="{{ asset('app.js') }}"></script>
 </body>
 </html>

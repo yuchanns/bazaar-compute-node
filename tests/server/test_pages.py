@@ -145,7 +145,7 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         ) as response:
             assert response.status == 204
             assert response.headers["HX-Trigger"] == "stale"
-        assert 'id="stale" hidden' in page
+        assert 'id="stale" x-cloak x-show="stale"' in page
         async with session.get(
             f"{base}/agents/list", headers={"HX-Request": "true", "X-Build": build}
         ) as response:
