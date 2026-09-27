@@ -1,3 +1,5 @@
+<div id="agent-health" x-poll hx-get="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/profile/status" hx-trigger="poll-refresh" hx-swap="outerHTML" data-poll='{{ poll("health", selected, seen=poll_state)|tojson }}'>
+{% import "components.html" as c with context %}
 {% import "agent_form.html" as f with context %}
 {# how the agent is doing, as its computer last said: whether it runs, and
    for each channel whether it is up, who it is there, since when, when it
@@ -37,11 +39,13 @@
     <div class="title">{{ f.logo("channel", channel.kind) }} {{ f.kind_name("channel", channel.kind) }}</div>
     {% call field("link") %}<span class="dot {{ "running" if channel.ok else "bad" }}"></span>{{ t.text("agents.health." ~ ("ok" if channel.ok else "down")) }}{% if not channel.ok %} <span class="st">{{ channel.state }}</span>{% endif %}{% endcall %}
     {% if channel.identity %}{% call field("identity") %}{{ channel.identity }}{% endcall %}{% endif %}
-    {% if channel.since_ms %}{% call field("since") %}{{ channel.since_ms|clock }}{% endcall %}{% endif %}
-    {% if channel.last_ms %}{% call field("last") %}{{ channel.last_ms|ago }}{% endcall %}{% endif %}
+    {% if channel.since_ms %}{% call field("since") %}{{ c.time(channel.since_ms, "clock") }}{% endcall %}{% endif %}
+    {% if channel.last_ms %}{% call field("last") %}{{ c.time(channel.last_ms) }}{% endcall %}{% endif %}
     {% if channel.error %}{% call field("error") %}<span class="err-t">{{ channel.error }}</span>{% endcall %}{% endif %}
   </div>
   {% endfor %}
   {% endif %}
 </div>
 {% endif %}
+
+</div>

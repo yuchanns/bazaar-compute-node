@@ -10,9 +10,7 @@
 {% else %}
 {% if selected %}
 <div class="col list" data-pane="contacts">
-  {% call c.column_header(selected.name, back="/agents") %}
-    <span class="sub">{{ c.system(selected) }}{{ c.channels(selected.channels) }}</span>
-  {% endcall %}
+  {% include "agent_contacts_head.html" %}
   {% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) %}
   {% set query = ["review=pending" if pending, "selected=" ~ ref(contact.thread_id) if contact]|select|join("&") %}
   <div class="switch text">

@@ -14,6 +14,7 @@ CARD_EVENTS = 5
 
 @dataclass(frozen=True, slots=True)
 class ActivityLine:
+    at_ms: int
     time: str
     text: str
 
@@ -87,7 +88,9 @@ async def recent_lines(
     )
     return [
         ActivityLine(
-            time=clock_text(item.created_at_ms, tz), text=event_text(translator, item)
+            at_ms=item.created_at_ms,
+            time=clock_text(item.created_at_ms, tz),
+            text=event_text(translator, item),
         )
         for item in recent
     ]

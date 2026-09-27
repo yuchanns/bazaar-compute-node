@@ -203,7 +203,9 @@ async def test_an_agent_is_seen_changed_and_let_go_from_its_page(
                     0,
                 ]
                 # the page's heading takes the new name at once
-                assert 'id="profile-head" hx-swap-oob="outerHTML"' in saved
+                assert (
+                    'id="profile-head"' in saved and 'hx-swap-oob="outerHTML"' in saved
+                )
                 assert saved.split('id="profile-head"')[1].count("Renamed") >= 1
                 renamed = next(
                     agent for agent in node.configuration.agents if agent.id == AGENT_ID

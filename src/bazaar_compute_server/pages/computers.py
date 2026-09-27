@@ -13,6 +13,7 @@ from ..access import Access, allowed, sees
 from ..configure import SECRETS, configuration, create, kinds, models
 from ..control import Controls
 from ..fleet import ComputerView, Fleet, computer_view, fleet
+from ..polling import computer_info
 from ..protocol import MAX_NAME_CHARS
 from ..refs import Refs, expanded
 from ..rendering import Renderer
@@ -99,6 +100,21 @@ class ComputerPages:
             "computer_rows.html" if after else "computer_list.html",
             fleet=page,
             selected_key=query.get("selected") or None,
+        )
+
+    @allowed("computers.view")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def row_fragment(self, request: Request) -> Response:
+        item = await self._selected(request)
+        if item is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "computer_row.html",
+            item=item,
+            selected_key=request.query_params.get("selected"),
+            poll_state=computer_info(item),
         )
 
     @allowed("computers.view")

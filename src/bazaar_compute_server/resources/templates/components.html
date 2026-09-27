@@ -24,8 +24,12 @@
 <div class="av{% if small %} sm{% endif %}"{% if opens %} @mousemove="move($event)"{% endif %}>{{ identity|identicon|safe }}</div>
 {%- endmacro %}
 
-{% macro dot(status) -%}
-<div class="dot {{ status }}" title="{{ t.text('status.' ~ status) }}"></div>
+{% macro dot(status, reactive=false) -%}
+<div class="dot{% if not reactive %} {{ status }}{% endif %}"{% if reactive %} :class="status" :title="labels[status]"{% else %} title="{{ t.text('status.' ~ status) }}"{% endif %}></div>
+{%- endmacro %}
+
+{% macro time(at, mode="ago", source=none) -%}
+<time x-data="relativeTime" data-time='{{ {"at": at, "mode": mode, "labels": time_labels}|tojson }}' {% if source %}x-effect="$el.dataset.time = JSON.stringify({...JSON.parse($el.dataset.time), at: {{ source }}})"{% endif %} x-text="text">{{ at|ago if mode == "ago" else at|clock if mode == "clock" else at|due }}</time>
 {%- endmacro %}
 
 {% macro back_link(back) -%}
@@ -81,9 +85,9 @@
    off screen unrendered while the row itself, and what hangs off it, stay;
    the status dot is one of those, sitting on the avatar's corner and out
    past its edge, where the box would clip it #}
-{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, settings=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none) -%}
-{% set href = none if off else href %}
-<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% if settings %} hx-trigger="click[!event.target.closest('.gear')]"{% endif %}{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if opens %} x-data="activity" data-activity{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
+{% macro list_item(title, subtitle=none, status=none, identity=none, icon_name=none, icons=none, settings=none, href=none, push=none, on=false, off=false, extra_class="", id=none, target="#main", attrs="", opens=none, live_status=false) -%}
+{% set href = none if off and not live_status else href %}
+<{{ "a" if href else "div" }} class="li{% if extra_class %} {{ extra_class }}{% endif %}{% if on %} on{% endif %}{% if off and not live_status %} off{% endif %}"{% if href %} href="{{ href }}" hx-get="{{ href }}" hx-target="{{ target }}" hx-push-url="{{ push or 'true' }}"{% if settings %} hx-trigger="click[!event.target.closest('.gear')]"{% endif %}{% endif %}{% if live_status %} x-bind="agentLink"{% endif %}{% if id %} id="{{ id }}"{% endif %}{% if opens %} x-data="activity" data-activity{% endif %}{% if attrs %} {{ attrs|safe }}{% endif %}>
   <div class="in">
     {% if identity is not none %}{{ avatar(identity, opens=opens) }}{% elif icon_name %}<div class="av mark">{{ icon(icon_name) }}</div>{% endif %}
     <div class="t"><b>{{ title }}</b>{% if subtitle %}<small>{{ subtitle }}</small>{% endif %}</div>
@@ -93,7 +97,7 @@
        it turns while the page is on its way #}
     {% if settings %}<button class="btn icon gear" type="button" title="{{ t.text("agents.settings") }}" aria-label="{{ t.text("agents.settings") }}" data-href="{{ settings }}" x-data="navigation" @click.prevent.stop="open()" :class="{busy}">{{ icon("settings") }}</button>{% endif %}
   </div>
-  {% if status %}{{ dot(status) }}{% endif %}
+  {% if status %}{{ dot(status, reactive=live_status) }}{% endif %}
   {% if caller is defined %}{{ caller() }}{% endif %}
 </{{ "a" if href else "div" }}>
 {%- endmacro %}

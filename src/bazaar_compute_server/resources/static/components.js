@@ -1,6 +1,82 @@
 document.addEventListener('alpine:init', () => {
+  const stateComponent = (attribute, kind) => ({
+    status: 'running', labels: {}, online: false, queued: null, last_event_at_ms: null,
+    subscription: null, element: null, descriptor: null, syncHandler: null,
+    init() {
+      this.element = this.$el;
+      this.syncHandler = () => this.sync();
+      document.addEventListener('htmx:after:swap', this.syncHandler);
+      this.sync();
+    },
+    sync() {
+      const raw = this.element.dataset[attribute];
+      if (!raw || raw === this.descriptor) return;
+      this.descriptor = raw;
+      const data = JSON.parse(raw);
+      this.labels = data.labels || {};
+      Object.assign(this, data.seen);
+      if (this.subscription) this.subscription.update(data);
+      else this.subscription = Alpine.store('poll').subscribe(data, change => {
+        Object.assign(this, change.data);
+        this.element.dataset[attribute] = this.descriptor = JSON.stringify({...JSON.parse(this.element.dataset[attribute]), seen: change.state});
+        if (kind === 'computer') this.element.dispatchEvent(new CustomEvent('computer-state', {bubbles: true, detail: change.data}));
+        return {seen: change.state};
+      });
+    },
+    destroy() {
+      this.subscription?.unsubscribe();
+      document.removeEventListener('htmx:after:swap', this.syncHandler);
+    },
+  });
+  Alpine.data('agentStatus', () => stateComponent('agent', 'agent'));
+  Alpine.data('computerState', () => stateComponent('computer', 'computer'));
+  Alpine.bind('agentLink', () => ({
+    ':class'() { return {off: this.status === 'offline'}; },
+    ':aria-disabled'() { return this.status === 'offline' ? 'true' : null; },
+    ':tabindex'() { return this.status === 'offline' ? -1 : 0; },
+    '@click.capture'(event) {
+      if (this.status === 'offline' && !event.target.closest('.gear')) {
+        event.preventDefault(); event.stopImmediatePropagation();
+      }
+    },
+  }));
+  Alpine.data('relativeTime', () => ({
+    text: '', cancel: null, element: null,
+    init() {
+      this.element = this.$el;
+      this.cancel = Alpine.store('poll').clock(now => {
+        const {at, mode, labels} = JSON.parse(this.element.dataset.time);
+        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const parts = value => Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+          timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+        }).formatToParts(value).map(part => [part.type, part.value]));
+        let text;
+        if (mode === 'ago') {
+          const seconds = Math.max(0, Math.floor((now - at) / 1000));
+          const [word, n] = seconds < 10 ? ['just_now', 0] : seconds < 60 ? ['seconds_ago', seconds] : seconds < 3600 ? ['minutes_ago', Math.floor(seconds / 60)] : seconds < 86400 ? ['hours_ago', Math.floor(seconds / 3600)] : ['days_ago', Math.floor(seconds / 86400)];
+          text = labels[word].replace('{n}', n);
+        } else {
+          const a = parts(at), b = parts(now);
+          const date = `${a.year}-${a.month}-${a.day}`;
+          const today = `${b.year}-${b.month}-${b.day}`;
+          const clock = `${a.hour}:${a.minute}`;
+          if (mode === 'clock') text = `${date === today ? '' : date + ' '}${clock}:${a.second}`;
+          else {
+            const days = (Date.UTC(+a.year, +a.month - 1, +a.day) - Date.UTC(+b.year, +b.month - 1, +b.day)) / 86400000;
+            text = days === 0 ? labels.today.replace('{clock}', clock) : days === 1 ? labels.tomorrow.replace('{clock}', clock) : `${date} ${clock}`;
+          }
+        }
+        if (this.text !== text) this.text = text;
+      });
+    },
+    destroy() { this.cancel?.(); },
+  }));
+
   Alpine.data('application', () => ({stale: false, unreachable: false}));
   Alpine.bind('connection', () => ({
+    '@poll-online.window'() { this.unreachable = false; },
+    '@poll-offline.window'() { this.unreachable = true; },
     '@stale.window'() { this.stale = true; },
     '@htmx:before:request.window'(event) {
       if (this.stale) event.preventDefault();
@@ -24,7 +100,10 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('conversation', () => ({
     open: true,
     members: [],
-    init() { this.$nextTick(() => this.gather()); },
+    init() {
+      this.$watch('open', () => this.$nextTick(() => window.dispatchEvent(new Event('drawer-state'))));
+      this.$nextTick(() => this.gather());
+    },
     gather() {
       const members = new Map();
       for (const turn of document.querySelectorAll('#history .turn')) {
@@ -67,7 +146,25 @@ document.addEventListener('alpine:init', () => {
   }));
   Alpine.data('selection', () => ({
     selected: '',
-    init() { this.selected = this.$el.dataset.selected; },
+    init() { this.selected = this.$el.dataset.selected; this.$nextTick(() => this.names()); },
+    names() {
+      for (const row of this.$el.querySelectorAll('[data-contact]')) {
+        this.$dispatch('contact-name', JSON.parse(row.dataset.contact));
+      }
+    },
+  }));
+  Alpine.data('contactName', () => ({
+    name: '', thread: '', url: '',
+    init() { this.name = this.$el.dataset.name; this.thread = this.$el.dataset.thread; this.url = this.$el.getAttribute('hx-get') || ''; },
+    update(event) {
+      if (event.detail.thread !== this.thread) return;
+      this.name = event.detail.name;
+      if (this.url) {
+        const url = new URL(this.url, location.href);
+        url.searchParams.set('name', this.name);
+        this.url = url.pathname + url.search;
+      }
+    },
   }));
   Alpine.data('submission', () => ({
     ready: false,
@@ -92,6 +189,7 @@ document.addEventListener('alpine:init', () => {
     },
   }));
   Alpine.data('activity', () => ({
+    ...stateComponent('agent', 'agent'),
     left: 0,
     top: 0,
     move(event) {
