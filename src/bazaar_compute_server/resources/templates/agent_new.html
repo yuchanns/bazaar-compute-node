@@ -10,8 +10,8 @@
 {% set channels = values.get("channel", []) %}
 {% set runtimes = values.get("runtime", []) %}
 <div class="veil" id="agent-new" hx-on:click="if (event.target === this) this.hidden = true">
-  <form class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
-    <h3>{{ t.text("agents.new_title") }}</h3>
+  <form role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
+    <h3 id="agent_new-title">{{ t.text("agents.new_title") }}</h3>
     <ol class="stepper">
       {% for step in ("basic", "channels", "runtimes", "confirm") %}<li><button type="button" data-go="{{ loop.index0 }}"><span class="pin"></span>{{ t.text("agents.step." ~ step) }}</button></li>{% endfor %}
     </ol>
