@@ -2,9 +2,12 @@
 <html lang="{{ t.language }}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{ t.text("app.title") }}</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="manifest" href="/static/app.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="{{ asset('apple-touch-icon.png') }}">
+<meta name="theme-color" content="#3b1a1a">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 {% include "scripts.html" %}
 </head>
