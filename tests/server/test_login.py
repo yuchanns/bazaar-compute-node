@@ -156,7 +156,7 @@ async def test_changing_the_password_ends_every_other_session(tmp_path: Path) ->
         ) as response:
             text = await response.text()
             assert response.status == 422 and "8" in text
-            assert "disabled" not in text
+            assert 'x-data="submission"' in text
 
         # case: the current password has to be right
         async with first.post(

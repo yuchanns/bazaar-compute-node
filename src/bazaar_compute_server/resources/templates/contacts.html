@@ -7,7 +7,7 @@
    the rows keep their identity. the tabs above it are the page's; the
    count of those waiting is carried to its tab with every answer #}
 <span class="n" id="pending-review" hx-swap-oob="outerHTML"{% if not listing.pending_review %} hidden{% endif %}>{{ listing.pending_review or "" }}</span>
-<div class="list-items" id="contacts" hx-get="{{ url }}?since={{ listing.since }}&shown={{ listing.answer }}{{ tab }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? "", selected: this.querySelector(".li.on")?.id.slice(8) ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
+<div class="list-items" id="contacts" x-data="selection" data-selected="{{ 'contact-' ~ selected_thread if selected_thread else '' }}" hx-get="{{ url }}?since={{ listing.since }}&shown={{ listing.answer }}{{ tab }}" hx-vals='js:{until: this.querySelector(".edge")?.dataset.after ?? "", selected: this.querySelector(".li.on")?.id.slice(8) ?? ""}' hx-trigger="every 5s" hx-swap="outerMorph">
   {% include "contact_rows.html" %}
   {% if listing.answer == "offline" %}
   {{ c.empty(t.text("contacts.offline")) }}

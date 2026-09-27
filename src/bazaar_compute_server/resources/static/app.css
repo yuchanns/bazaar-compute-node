@@ -673,3 +673,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 }
 
 .summary-row { display: contents; }
+
+@media (prefers-reduced-motion: reduce) {
+  .children { transition-duration: 0s !important; }
+}

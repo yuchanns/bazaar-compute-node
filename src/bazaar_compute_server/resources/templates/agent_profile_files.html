@@ -7,9 +7,9 @@
 {% else %}
 {% for entry in workspace.entries %}
 {% if entry.directory %}
-<div class="dir">
-  <button class="file" type="button" aria-expanded="false" hx-get="{{ base }}{{ entry.path|urlencode }}" hx-trigger="click once" hx-target="next .children" hx-swap="innerHTML" hx-on:click="this.setAttribute('aria-expanded', this.parentElement.classList.toggle('open'))">{{ c.icon("chevron-right") }}{{ c.icon("folder") }}<span class="name">{{ entry.name }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></button>
-  <div class="children"></div>
+<div class="dir" x-data="directory" :class="{open}">
+  <button class="file" type="button" aria-expanded="false" :aria-expanded="open" hx-get="{{ base }}{{ entry.path|urlencode }}" hx-trigger="directory-load" hx-target="next .children" hx-swap="innerHTML" @click="toggle()" @htmx:before:request="loading = true" @htmx:finally:request="finished($event)">{{ c.icon("chevron-right") }}{{ c.icon("folder") }}<span class="name">{{ entry.name }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></button>
+  <div class="children" x-show="open" x-collapse.duration.200ms></div>
 </div>
 {% else %}
 <div class="file"><span class="twist"></span>{{ c.icon("file") }}<span class="name">{{ entry.name }}</span><span class="size">{{ entry.size_bytes|filesizeformat }}</span><span class="when">{{ entry.modified_at_ms|ago }}</span></div>

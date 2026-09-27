@@ -299,7 +299,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # case: picked from the list, the conversation column alone
                 # comes back and the row takes the highlight itself
                 assert 'hx-target="#chat"' in column
-                assert "classList.add('on')" in column
+                assert '@click="selected = $el.id"' in column
                 status, only_chat = await _get(
                     session, f"{base}{href}", **headers, **{"HX-Target": "div#chat"}
                 )
@@ -494,7 +494,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     session, f"{base}{messages_url}&since={since}", **headers
                 )
                 assert status == 200
-                assert whole.lstrip().startswith('<div class="chat" id="history">')
+                assert whole.lstrip().startswith('<div class="chat" id="history"')
                 assert 'id="message-message-chat-57"' in whole
                 assert int(tail.split("&since=")[1].split("&")[0]) > since
         finally:
