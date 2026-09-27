@@ -671,3 +671,5 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .stall .board { max-width: 100%; height: auto; }
   .col.closed { overflow-y: auto; }
 }
+
+.summary-row { display: contents; }
