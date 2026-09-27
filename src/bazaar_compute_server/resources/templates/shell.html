@@ -2,11 +2,11 @@
 <html lang="{{ t.language }}"{% if theme %} data-theme="{{ theme }}"{% endif %}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{ t.text("app.title") }}</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="{{ asset('app.css') }}">
-<script src="{{ asset('htmx.min.js') }}"></script>
+{% include "scripts.html" %}
 </head>
 {# every swap on the page morphs by default: what is on screen is diffed into
    what came back, so scroll, hover and focus survive a change of page #}
@@ -14,27 +14,18 @@
    upgrade is told so and covered until its reader refreshes it, rather than
    patched with pieces of the new one - and from then on asks for nothing,
    whatever on it would have #}
-<body hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}' hx-on:stale="document.getElementById('stale').hidden = false" hx-on:htmx:before:request="if (!document.getElementById('stale').hidden) event.preventDefault()">
+<body data-build="{{ build }}" x-data="application" x-bind="connection" hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}'>
 <div class="app">
   {% include "rail.html" %}
-  <div id="main" class="main">{% include content %}</div>
+  <div id="main" class="main" x-show="!unreachable">{% include content %}</div>
+  {% include "unreachable.html" %}
 </div>
-<div class="veil" id="stale" hidden>
-  <div class="dialog">
-    <h3>{{ t.text("stale.title") }}</h3>
+<div class="veil" id="stale" x-cloak x-show="stale">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="stale-title" x-trap.inert.noscroll="stale">
+    <h3 id="stale-title">{{ t.text("stale.title") }}</h3>
     <p class="st">{{ t.text("stale.text") }}</p>
-    <button class="btn p" type="button" hx-on:click="location.reload()">{{ t.text("stale.refresh") }}</button>
+    <button class="btn p" type="button" @click="location.reload()">{{ t.text("stale.refresh") }}</button>
   </div>
 </div>
-{# when the server cannot be reached at all, nothing can come from it; the
-   board for that case is carried in the page from the start #}
-<template id="unreachable">{% with code=none %}{% include "error.html" %}{% endwith %}</template>
-<script>
-document.addEventListener("htmx:error", (event) => {
-  if (!(event.detail?.error instanceof TypeError)) return;
-  const main = document.getElementById("main");
-  main.replaceChildren(document.getElementById("unreachable").content.cloneNode(true));
-});
-</script>
 </body>
 </html>

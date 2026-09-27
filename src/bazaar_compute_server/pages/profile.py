@@ -25,6 +25,7 @@ from ..configure import (
 )
 from ..control import Controls
 from ..fleet import AgentView, agent_health, agent_page, agent_view
+from ..polling import agent_info, health_state
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
@@ -106,6 +107,22 @@ class ProfilePages:
             **await self._tab(request, selected, tab),
         )
 
+    @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def head(self, request: Request) -> Response:
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "agent_profile_head.html",
+            selected=selected,
+            name=selected.name,
+            poll_state=agent_info(selected),
+        )
+
     @allowed("agents.update")
     @expanded("computer_id", "agent_id")
     @sees("computer", "computer_id")
@@ -169,6 +186,7 @@ class ProfilePages:
                 secrets=SECRETS,
             )
             response.headers["HX-Trigger"] = "agents-changed"
+            response.headers["HX-Reswap"] = "innerHTML"
             return response
         word, _, code = failed.partition(":")
         if word == "refused" and code in {"REFUSED", "INVALID_REQUEST"}:
@@ -254,6 +272,7 @@ class ProfilePages:
             above=query.get("above") or self._today(request),
             below=query.get("below") or None,
             fresh=after is not None,
+            poll_state={"since": max([int(after or 0), *(line.id for line in lines)])},
             # a refresh for newer ones has no end to scroll past
             more=after is None and len(lines) == PAGE_EVENTS,
         )
@@ -302,6 +321,10 @@ class ProfilePages:
                 )
             }
         if tab == "status":
+            since = await self._storage.latest_named_event(
+                selected.computer_id, selected.id, names=("usage.updated",)
+            )
+            day = self._today(request)
             health, usage = await asyncio.gather(
                 agent_health(self._storage, selected.computer_id, selected.id),
                 usage_today(
@@ -311,7 +334,11 @@ class ProfilePages:
                     selected.id,
                 ),
             )
-            return {"health": health, "usage": usage}
+            return {
+                "health": health,
+                "usage": usage,
+                "poll_state": health_state(health, selected, since, day),
+            }
         lines = await event_lines(
             self._storage,
             self._render.translator(request),

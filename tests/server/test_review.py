@@ -124,7 +124,7 @@ async def test_a_stranger_is_looked_at_let_in_and_turned_away_from_the_page(
                 status, card = await _get(session, f"{base}{profile_url}", **headers)
                 assert status == 200 and "Remove conversation" in card
                 assert re.search(
-                    r"follow up</b><small>(today|tomorrow) \d\d:\d\d<", card
+                    r"follow up</b><small><time[^>]*>(today|tomorrow) \d\d:\d\d<", card
                 )
                 assert "standup</b><small>weekly on Mon, Fri · " in card
 

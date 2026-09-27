@@ -13,6 +13,7 @@ from ..access import Access, allowed, sees
 from ..configure import SECRETS, configuration, create, kinds, models
 from ..control import Controls
 from ..fleet import ComputerView, Fleet, computer_view, fleet
+from ..polling import computer_info
 from ..protocol import MAX_NAME_CHARS
 from ..refs import Refs, expanded
 from ..rendering import Renderer
@@ -34,7 +35,10 @@ class ComputerPages:
 
         page = await fleet(self._storage, Access.of(request))
         return await self._page(
-            request, page, page.computers[0] if page.computers else None
+            request,
+            page,
+            page.computers[0] if page.computers else None,
+            view="computers",
         )
 
     @allowed("computers.view")
@@ -51,7 +55,7 @@ class ComputerPages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
-        return await self._page(request, page, selected)
+        return await self._page(request, page, selected, view="computer")
 
     async def _id(self, short: str | None) -> str | None:
         """The id behind a number a link carries; nothing for none, or one
@@ -63,7 +67,7 @@ class ComputerPages:
         return None if ids is None else ids[0]
 
     async def _page(
-        self, request: Request, page: Fleet, selected: ComputerView | None
+        self, request: Request, page: Fleet, selected: ComputerView | None, *, view: str
     ) -> Response:
         await self.refs.load(_named(page.computers, selected))
         return self._render.page(
@@ -77,6 +81,7 @@ class ComputerPages:
             if selected is None
             else str(self.refs.ref(selected.computer.id)),
             enrolment=None,
+            view=view,
         )
 
     @allowed("computers.view")
@@ -95,6 +100,21 @@ class ComputerPages:
             "computer_rows.html" if after else "computer_list.html",
             fleet=page,
             selected_key=query.get("selected") or None,
+        )
+
+    @allowed("computers.view")
+    @expanded("computer_id")
+    @sees("computer", "computer_id")
+    async def row_fragment(self, request: Request) -> Response:
+        item = await self._selected(request)
+        if item is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "computer_row.html",
+            item=item,
+            selected_key=request.query_params.get("selected"),
+            poll_state=computer_info(item),
         )
 
     @allowed("computers.view")
@@ -289,6 +309,7 @@ class ComputerPages:
             selected=item,
             selected_key=key,
             enrolment=enrolment,
+            view="computer",
             item=item,
             base_url=str(request.base_url).rstrip("/"),
             system=_system_of(request),

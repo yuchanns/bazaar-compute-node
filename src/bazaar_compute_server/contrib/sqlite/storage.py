@@ -534,6 +534,47 @@ class SqliteStorage(IStorage):
             row = await cursor.fetchone()
         return 0 if row is None or row["id"] is None else int(row["id"])
 
+    async def latest_activity_event(
+        self, computer_id: str, agent_id: str, *, skipping: Sequence[str]
+    ) -> int:
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                "SELECT COALESCE(MAX(id), 0) AS id FROM events"
+                " WHERE computer_id = ? AND agent_id = ?"
+                f" AND event_name NOT IN ({_marks(skipping)})",
+                (computer_id, agent_id, *skipping),
+            ) as cursor,
+        ):
+            (row,) = await cursor.fetchall()
+        return int(row["id"])
+
+    async def latest_named_event(
+        self,
+        computer_id: str,
+        agent_id: str,
+        *,
+        names: Sequence[str],
+        thread_id: str | None = None,
+    ) -> int:
+        async with (
+            self._reader() as reader,
+            reader.execute(
+                "SELECT COALESCE(MAX(id), 0) AS id FROM events"
+                " WHERE computer_id = ? AND agent_id = ?"
+                f" AND event_name IN ({_marks(names)})"
+                + (" AND thread_id = ?" if thread_id is not None else ""),
+                (
+                    computer_id,
+                    agent_id,
+                    *names,
+                    *((thread_id,) if thread_id is not None else ()),
+                ),
+            ) as cursor,
+        ):
+            (row,) = await cursor.fetchall()
+        return int(row["id"])
+
     async def computer_health(
         self, computers: Sequence[Computer]
     ) -> list[ComputerHealth]:

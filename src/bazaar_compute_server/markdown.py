@@ -7,7 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from markdown_it import MarkdownIt
+from markdown_it.renderer import RendererHTML
 from markdown_it.token import Token
+from markdown_it.utils import EnvType, OptionsDict
 from markupsafe import Markup
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -51,9 +53,22 @@ def _image(
     )
 
 
+class _ContentRenderer(RendererHTML):
+    def renderInline(
+        self, tokens: Sequence[Token], options: OptionsDict, env: EnvType
+    ) -> str:
+        # Prose stays outside Alpine; the trusted code-block copy control is
+        # a separate component, beside its own ignored code content.
+        return (
+            "<span x-ignore>" + super().renderInline(tokens, options, env) + "</span>"
+        )
+
+
 # html off: what the agent wrote is text, however it looks; a link is only a
 # link on a scheme markdown-it lets through
-_MARKDOWN = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
+_MARKDOWN = MarkdownIt(
+    "commonmark", {"html": False}, renderer_cls=_ContentRenderer
+).enable(["table", "strikethrough"])
 _MARKDOWN.add_render_rule("fence", _fence)
 _MARKDOWN.add_render_rule("image", _image)
 

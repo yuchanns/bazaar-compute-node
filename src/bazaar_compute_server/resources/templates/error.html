@@ -6,6 +6,6 @@
     <h2>{{ t.text(key ~ ".title") if t.has(key ~ ".title") else t.text("error.title") }}</h2>
     <p>{{ t.text(key ~ ".text") if t.has(key ~ ".text") else t.text("error.text") }}</p>
     {% if code %}<a class="btn" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true">{{ t.text("error.home") }}</a>
-    {% else %}<button class="btn" type="button" onclick="location.reload()">{{ t.text("error.retry") }}</button>{% endif %}
+    {% else %}<button class="btn" type="button" @click="location.reload()">{{ t.text("error.retry") }}</button>{% endif %}
   </div>
 </div>

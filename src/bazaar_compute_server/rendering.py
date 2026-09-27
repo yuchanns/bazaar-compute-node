@@ -3,6 +3,7 @@ choice between a whole page and the fragment htmx asked for."""
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from datetime import datetime, tzinfo
@@ -27,9 +28,11 @@ from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .clock import clock_text, day_text, now_ms, time_text, zone
+from .configure import editor
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
+from .polling import Descriptors
 from .refs import Refs
 from .storage import Account
 
@@ -58,9 +61,11 @@ class Renderer:
         self._templates.globals["themes"] = THEMES
         self._templates.globals["asset"] = _asset
         self._templates.globals["build"] = BUILD
+        self._templates.globals["editor"] = editor
         self._templates.globals["image_address"] = images.address
         # the number a page names a loaded value by, in a link
         self._templates.globals["ref"] = refs.ref
+        self._templates.globals["poll"] = Descriptors(refs)
 
     @staticmethod
     def translator(request: Request) -> Translator:
@@ -85,7 +90,10 @@ class Renderer:
         """A module's page: inside the shell, unless htmx is swapping it in."""
 
         values = {**self._viewer(request), "module": module, **values}
-        if request.headers.get("HX-Request") == "true":
+        if (
+            request.headers.get("HX-Request") == "true"
+            and request.headers.get("HX-History-Restore-Request") != "true"
+        ):
             # the rail stays outside the swapped region, so it rides along
             # out of band to move its highlight
             return _personal(
@@ -101,12 +109,42 @@ class Renderer:
     def fragment(
         self, request: Request, template: str, *, status_code: int = 200, **values: Any
     ) -> HTMLResponse:
-        return _personal(
+        response = _personal(
             self._templates.get_template(template).render(
                 **self._viewer(request), **values
             ),
             status_code=status_code,
         )
+        descriptor = self._templates.globals["poll"]
+        if template in ("agent_list.html", "computer_list.html"):
+            values["poll_state"] = descriptor(
+                "agents" if template == "agent_list.html" else "computers",
+                values["page"] if template == "agent_list.html" else values["fleet"],
+            )["seen"]
+        elif template == "computer_detail.html":
+            values["poll_state"] = descriptor("computer", values["selected"])["seen"]
+        elif template == "contacts.html" and values["listing"].answer in (
+            "listed",
+            "offline",
+        ):
+            listing = values["listing"]
+            values["poll_state"] = {
+                "since": listing.since,
+                "offline": listing.agent.status == "offline",
+            }
+        elif template in ("history.html", "history_tail.html") and values[
+            "history"
+        ].answer in ("listed", "offline"):
+            history = values["history"]
+            values["poll_state"] = {
+                "since": history.since,
+                "offline": history.agent.status == "offline",
+            }
+        if values.get("poll_state") is not None:
+            response.headers["X-Poll-State"] = json.dumps(
+                values["poll_state"], separators=(",", ":")
+            )
+        return response
 
     def error(self, request: Request, status_code: int) -> HTMLResponse:
         """The closed-stall board for a status, whole or as the fragment
@@ -131,8 +169,25 @@ class Renderer:
         """What every template knows about who is looking: their words, their clock."""
 
         account: Account | None = getattr(request.state, "account", None)
+        translator = self.translator(request)
         return {
-            "t": self.translator(request),
+            "time_labels": {
+                key: translator.text("time." + key, {"n": "{n}", "clock": "{clock}"})
+                for key in (
+                    "just_now",
+                    "seconds_ago",
+                    "minutes_ago",
+                    "hours_ago",
+                    "days_ago",
+                    "today",
+                    "tomorrow",
+                )
+            },
+            "status_labels": {
+                key: translator.text("status." + key)
+                for key in ("running", "busy", "failed", "offline")
+            },
+            "t": translator,
             "tz": self.zone(request),
             "theme": None if account is None else account.theme,
         }

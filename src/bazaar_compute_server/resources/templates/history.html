@@ -1,6 +1,6 @@
 {% import "components.html" as c with context %}
 {% set url = c.messages_url(history.agent, history.contact) %}
-<div class="chat" id="history">
+<div class="chat" id="history" x-data="history" @htmx:before:request.window="before($event)" @htmx:after:swap.window="after($event)" @htmx:finally:request.window="pending.delete($event.detail.ctx)">
   {% if history.answer == "offline" %}
   {{ c.empty(t.text("contacts.offline")) }}
   {% elif history.answer != "listed" %}
@@ -11,5 +11,3 @@
   {% endif %}
   {% include "history_end.html" %}
 </div>
-{# the column opens at its newest message, the way a chat is picked up #}
-<script>document.getElementById("history").scrollTop = 1e9</script>

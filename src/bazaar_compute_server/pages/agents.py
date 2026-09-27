@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable
 from urllib.parse import urlencode
 
@@ -11,10 +12,12 @@ from starlette.responses import HTMLResponse, Response
 
 from ..access import Access, allowed, sees
 from ..activity import recent_lines, usage_today
+from ..clock import day_text, now_ms
 from ..contacts import contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
+from ..polling import CARD_QUIET, REMINDERS, activity_state, agent_info
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..review import Request as ReviewRequest
@@ -74,7 +77,10 @@ class AgentPages:
         if contact is None:
             return HTMLResponse("", status_code=404)
         # htmx names the element it will swap as `tag#id`
-        if request.headers.get("HX-Target") == "div#chat":
+        if (
+            request.headers.get("HX-Target") == "div#chat"
+            and request.headers.get("HX-History-Restore-Request") != "true"
+        ):
             # picked from the list: the column alone, the lists staying put
             selected = await agent_view(
                 self._storage,
@@ -105,6 +111,8 @@ class AgentPages:
         page: AgentPage,
         selected: AgentView | None,
         contact: Contact | None = None,
+        *,
+        pending: bool | None = None,
     ) -> Response:
         await self.refs.load(
             [
@@ -112,10 +120,12 @@ class AgentPages:
                 *(contact.named if contact else []),
             ]
         )
+        if pending is None:
+            pending = _pending(request)
         # a conversation still waiting opens on the question about it
         asked = (
             await request_of(self._controls, selected, contact)
-            if selected is not None and contact is not None and _pending(request)
+            if selected is not None and contact is not None and pending
             else None
         )
         return self._render.page(
@@ -132,6 +142,7 @@ class AgentPages:
             contact=contact,
             latest=request.query_params.get("latest"),
             asked=asked,
+            pending=pending,
         )
 
     async def _chat(
@@ -163,11 +174,8 @@ class AgentPages:
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def review(self, request: Request) -> Response:
-        """Let a conversation in or turn it away; the column comes back as
-        the chat when let in, empty when turned away - and the page's address
-        follows: the conversation's own once let in, the agent's once turned
-        away, so a reload does not ask the question again or open what was
-        turned away."""
+        """Let a conversation in or turn it away, updating the module and
+        address together so its tabs, selected row and chat agree on reload."""
 
         params = request.path_params
         contact = await self._contact(request)
@@ -209,26 +217,19 @@ class AgentPages:
                 ),
             )
         agent_url = f"/agents/{self.refs.ref(selected.computer_id)}/{self.refs.ref(selected.id)}"
+        response = await self._page(
+            request,
+            await agent_page(self._storage, Access.of(request)),
+            selected,
+            contact if review == "approved" else None,
+            pending=False,
+        )
+        response.headers["HX-Retarget"] = "#main"
+        response.headers["HX-Reswap"] = "innerMorph"
         if review == "denied":
-            response = self._render.fragment(
-                request,
-                "chat.html",
-                selected=selected,
-                contact=None,
-                latest=None,
-                asked=None,
-            )
             response.headers["HX-Push-Url"] = agent_url
             return response
         latest = request.query_params.get("latest")
-        response = self._render.fragment(
-            request,
-            "chat.html",
-            selected=selected,
-            contact=contact,
-            latest=latest,
-            asked=None,
-        )
         response.headers["HX-Push-Url"] = (
             f"{agent_url}/contacts/{self.refs.ref(contact.thread_id)}?"
             + urlencode(
@@ -261,13 +262,97 @@ class AgentPages:
         if selected is None:
             return HTMLResponse("", status_code=404)
         await self.refs.load([*named([selected]), *contact.named])
+        since = await self._storage.latest_named_event(
+            selected.computer_id,
+            selected.id,
+            names=REMINDERS,
+            thread_id=contact.thread_id,
+        )
         return self._render.fragment(
             request,
             "profile.html",
+            reminder_since=since,
             selected=selected,
             contact=contact,
             reminders=await reminders(self._controls, selected, contact),
             failed=None,
+        )
+
+    @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def row_fragment(self, request: Request) -> Response:
+        agent = await agent_view(
+            self._storage,
+            Access.of(request),
+            request.path_params["computer_id"],
+            request.path_params["agent_id"],
+        )
+        if agent is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load(named([agent]))
+        return self._render.fragment(
+            request,
+            "agent_row.html",
+            agent=agent,
+            selected_key=request.query_params.get("selected"),
+            poll_state=agent_info(agent),
+        )
+
+    @allowed("agents.view")
+    @expanded("computer_id", "agent_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def head(self, request: Request) -> Response:
+        selected = await agent_view(
+            self._storage,
+            Access.of(request),
+            request.path_params["computer_id"],
+            request.path_params["agent_id"],
+        )
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load(named([selected]))
+        return self._render.fragment(
+            request,
+            "agent_contacts_head.html",
+            selected=selected,
+            poll_state=agent_info(selected),
+        )
+
+    @allowed("agents.view")
+    @expanded("computer_id", "agent_id", "thread_id")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def reminder_fragment(self, request: Request) -> Response:
+        selected = await agent_view(
+            self._storage,
+            Access.of(request),
+            request.path_params["computer_id"],
+            request.path_params["agent_id"],
+        )
+        contact = await self._contact(request)
+        if selected is None or contact is None:
+            return HTMLResponse("", status_code=404)
+        await self.refs.load([*named([selected]), *contact.named])
+        since = await self._storage.latest_named_event(
+            selected.computer_id,
+            selected.id,
+            names=REMINDERS,
+            thread_id=contact.thread_id,
+        )
+        listed = await reminders(self._controls, selected, contact)
+        return self._render.fragment(
+            request,
+            "conversation_reminders.html",
+            selected=selected,
+            contact=contact,
+            reminders=listed,
+            reminder_since=since,
+            poll_state={"since": since, "offline": selected.status == "offline"}
+            if listed.answer in ("listed", "offline")
+            else None,
         )
 
     async def _ids(self, key: str | None) -> str | None:
@@ -327,6 +412,10 @@ class AgentPages:
         computer_id = request.path_params["computer_id"]
         agent_id = request.path_params["agent_id"]
         tz = self._render.zone(request)
+        since = await self._storage.latest_activity_event(
+            computer_id, agent_id, skipping=CARD_QUIET
+        )
+        day = day_text(now_ms(), tz)
         agent, activity, usage = await asyncio.gather(
             agent_view(self._storage, Access.of(request), computer_id, agent_id),
             recent_lines(
@@ -342,7 +431,12 @@ class AgentPages:
             return HTMLResponse("", status_code=404)
         await self.refs.load(named([agent]))
         return self._render.fragment(
-            request, "activity_card.html", agent=agent, activity=activity, usage=usage
+            request,
+            "activity_card.html",
+            agent=agent,
+            activity=activity,
+            usage=usage,
+            poll_state=activity_state(agent, since, day),
         )
 
     @allowed("agents.view")
@@ -371,7 +465,14 @@ class AgentPages:
                 agent.computer_id, agent.id
             )
             if latest <= int(since):
-                return Response(status_code=204)
+                return Response(
+                    status_code=204,
+                    headers={
+                        "X-Poll-State": json.dumps(
+                            {"since": int(since), "offline": offline}
+                        )
+                    },
+                )
         offset = int(query.get("offset") or 0)
         listing = await contacts(
             self._storage,
@@ -434,7 +535,14 @@ class AgentPages:
                 shown=query.get("shown"),
             )
             if history is None:
-                return Response(status_code=204)
+                return Response(
+                    status_code=204,
+                    headers={
+                        "X-Poll-State": json.dumps(
+                            {"since": int(since), "offline": agent.status == "offline"}
+                        )
+                    },
+                )
             return self._render.fragment(request, "history_tail.html", history=history)
         # a column with no message to read after - empty, or one that got
         # none - is read afresh once something is new, and left until then
@@ -448,7 +556,14 @@ class AgentPages:
             )
             is None
         ):
-            return Response(status_code=204)
+            return Response(
+                status_code=204,
+                headers={
+                    "X-Poll-State": json.dumps(
+                        {"since": int(since), "offline": agent.status == "offline"}
+                    )
+                },
+            )
         before = query.get("before")
         if before is not None:
             history = await earlier(

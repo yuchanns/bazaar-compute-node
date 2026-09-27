@@ -1,8 +1,9 @@
 {% import "components.html" as c with context %}
 {# who the page is about; after a rename it comes again out of band, under
    the name just saved, before the computer's next beat says it #}
-<div class="hd" id="profile-head"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}>
-  <span class="face-at">{{ c.avatar(name, small=true) }}{{ c.dot(selected.status) }}</span>
-  {{ name }}
+<div class="hd" id="profile-head" x-poll data-poll='{{ poll("agent-info", selected)|tojson }}' data-poll-url="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/profile/head"{% if oob is defined and oob %} hx-swap-oob="outerHTML"{% endif %}>
+  {{ c.back_link("/agents") }}
+  <span class="face-at" x-data="agentStatus" data-agent='{{ dict(poll("agent-status", selected), labels=status_labels)|tojson }}'>{{ c.avatar(name, small=true) }}{{ c.dot(selected.status, reactive=true) }}</span>
+  <span class="heading">{{ name }}</span>
   <span class="icons">{{ c.agent_icons(selected) }}</span>
 </div>

@@ -37,6 +37,7 @@ class SettingsPages:
             account=account,
             sections=SECTIONS,
             section=section,
+            view="section" if "section" in request.path_params else "settings",
             outcome=None,
         )
 

@@ -15,6 +15,7 @@ from ..storage import IStorage
 from .agents import AgentPages
 from .computers import ComputerPages
 from .login import LoginPages
+from .poll import PollPages
 from .profile import ProfilePages
 from .settings import SettingsPages
 
@@ -37,7 +38,9 @@ def routes(
     computers = ComputerPages(storage, controls, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
+    poll = PollPages(storage, renderer, refs)
     return [
+        Route("/poll", poll.check, methods=["POST"]),
         Route("/", home),
         Route("/login", login.form),
         Route("/login", login.login, methods=["POST"]),
@@ -49,6 +52,12 @@ def routes(
         Route("/agents", agents.list),
         Route("/agents/list", agents.list_fragment),
         Route("/agents/{computer_id}/{agent_id}", agents.show),
+        Route("/agents/{computer_id}/{agent_id}/row", agents.row_fragment),
+        Route("/agents/{computer_id}/{agent_id}/head", agents.head),
+        Route(
+            "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/reminders",
+            agents.reminder_fragment,
+        ),
         Route("/agents/{computer_id}/{agent_id}/activity", agents.activity_card),
         Route("/agents/{computer_id}/{agent_id}/contacts", agents.contacts),
         Route(
@@ -73,6 +82,7 @@ def routes(
         ),
         Route("/agents/{computer_id}/{agent_id}/profile/remove", profile.remove_ask),
         Route("/agents/{computer_id}/{agent_id}/profile/events", profile.events),
+        Route("/agents/{computer_id}/{agent_id}/profile/head", profile.head),
         Route("/agents/{computer_id}/{agent_id}/profile/{tab}", profile.tab),
         Route("/agents/{computer_id}/{agent_id}", profile.remove, methods=["DELETE"]),
         Route("/computers", computers.list),
@@ -80,6 +90,7 @@ def routes(
         Route("/computers/list", computers.list_fragment),
         Route("/computers", computers.enrol, methods=["POST"]),
         Route("/computers/{computer_id}", computers.show),
+        Route("/computers/{computer_id}/row", computers.row_fragment),
         Route("/computers/{computer_id}/detail", computers.detail),
         Route("/computers/{computer_id}/presence", computers.presence),
         Route("/computers/{computer_id}/remove", computers.remove_form),

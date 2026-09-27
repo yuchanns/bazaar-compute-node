@@ -224,7 +224,7 @@ async def test_an_offline_computer_is_not_asked(tmp_path: Path) -> None:
                 session, f"{opened}&latest=m", **{"Accept-Language": "en"}
             )
             assert status == 200 and "This computer is offline" in chat
-            assert '&shown=offline&latest=m" hx-trigger="every 5s"' in chat
+            assert '&shown=offline&latest=m" hx-trigger="poll-refresh"' in chat
             status, _ = await _get(session, f"{opened}&since=0&shown=offline")
             assert status == 204
 
@@ -299,13 +299,13 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # case: picked from the list, the conversation column alone
                 # comes back and the row takes the highlight itself
                 assert 'hx-target="#chat"' in column
-                assert "classList.add('on')" in column
+                assert '@click="selected = $el.id"' in column
                 status, only_chat = await _get(
                     session, f"{base}{href}", **headers, **{"HX-Target": "div#chat"}
                 )
                 assert status == 200
                 assert only_chat.lstrip().startswith(
-                    '<div class="col wide" id="chat">'
+                    '<div class="col wide" id="chat"'
                 ), only_chat[:200]
                 assert 'id="contacts"' not in only_chat
 
@@ -342,12 +342,12 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                 # coloured by token and its HTML kept as text, whoever wrote it
                 agent_line = turns[1].split('class="line md"')[1]
                 for rendered in (
-                    "<h2>Plan</h2>",
-                    "<li>one</li>",
-                    "<td>2</td>",
+                    "<h2><span x-ignore>Plan</span></h2>",
+                    "<li><span x-ignore>one</span></li>",
+                    "<td><span x-ignore>2</span></td>",
                     "<code>f()</code>",
                     "&lt;b&gt;now&lt;/b&gt;",
-                    '<pre class="code"><code><span class="tok-nb">print</span>',
+                    '<pre class="code" x-ignore><code><span class="tok-nb">print</span>',
                     '<span class="tok-c1"># hi</span>',
                 ):
                     assert rendered in agent_line, rendered
@@ -359,7 +359,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     in agent_line
                 )
                 human_line = turns[2].split('class="line md"')[1]
-                assert "<h2>Plan</h2>" in human_line
+                assert "<h2><span x-ignore>Plan</span></h2>" in human_line
                 assert 'id="message-message-chat-55"' in turns[2]
                 assert 'hx-trigger="revealed"' in chat
                 assert "&before=message-chat-6" in chat
@@ -494,7 +494,7 @@ async def test_a_conversation_reads_newest_last_and_pages_up(
                     session, f"{base}{messages_url}&since={since}", **headers
                 )
                 assert status == 200
-                assert whole.lstrip().startswith('<div class="chat" id="history">')
+                assert whole.lstrip().startswith('<div class="chat" id="history"')
                 assert 'id="message-message-chat-57"' in whole
                 assert int(tail.split("&since=")[1].split("&")[0]) > since
         finally:

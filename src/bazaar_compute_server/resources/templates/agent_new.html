@@ -7,32 +7,35 @@
 {% if created is defined and created %}
 <div id="agent-new" hidden></div>
 {% else %}
-{% set channels = values.get("channel", []) %}
-{% set runtimes = values.get("runtime", []) %}
-<div class="veil" id="agent-new" hx-on:click="if (event.target === this) this.hidden = true">
-  <form class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerHTML" data-next="{{ channels|length + runtimes|length }}" data-at="{{ 3 if failed else 0 }}" data-basic="{{ t.text("agents.step.basic") }}" data-filled="{{ t.text("agents.summary.filled") }}" data-empty="{{ t.text("agents.summary.empty") }}" data-on="{{ t.text("agents.summary.on") }}" data-off="{{ t.text("agents.summary.off") }}" data-none="{{ t.text("agents.summary.none") }}">
-    <h3>{{ t.text("agents.new_title") }}</h3>
+<div class="veil" id="agent-new" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
+  <form x-data="agentForm" novalidate @submit.capture="submit($event)" @htmx:before:request="kindStarted($event)" @htmx:finally:request="kindFinished($event)" id="new-agent-form-{{ ref(selected.computer.id) }}" x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerMorph" data-at="{{ 3 if failed else 0 }}">
+    {{ f.initial(values, reply) }}
+    <h3 id="agent_new-title">{{ t.text("agents.new_title") }}</h3>
     <ol class="stepper">
-      {% for step in ("basic", "channels", "runtimes", "confirm") %}<li><button type="button" data-go="{{ loop.index0 }}"><span class="pin"></span>{{ t.text("agents.step." ~ step) }}</button></li>{% endfor %}
+      {% for step in ("basic", "channels", "runtimes", "confirm") %}<li :class="{on: step === {{ loop.index0 }}, done: step > {{ loop.index0 }} && validStep({{ loop.index0 }}), bad: step > {{ loop.index0 }} && !validStep({{ loop.index0 }})}"><button type="button" data-go="{{ loop.index0 }}" @click="go({{ loop.index0 }})"><span class="pin"></span>{{ t.text("agents.step." ~ step) }}</button></li>{% endfor %}
     </ol>
     <div class="steps">
-      <section data-step="basic"><p class="hint">{{ t.text("agents.hint.basic") }}</p>{{ f.basic(values) }}{{ f.reply(reply) }}</section>
-      <section data-step="channels" hidden><p class="hint">{{ t.text("agents.hint.channels") }}</p>{{ f.deck("channel", channels, 0) }}</section>
-      <section data-step="runtimes" hidden><p class="hint">{{ t.text("agents.hint.runtimes") }}</p>{{ f.deck("runtime", runtimes, channels|length) }}</section>
-      <section data-step="confirm" data-summary-step hidden>
+      <section data-step="basic" x-show="step === 0"><p class="hint">{{ t.text("agents.hint.basic") }}</p>{{ f.basic(values) }}{{ f.reply(reply) }}</section>
+      <section data-step="channels" x-show="step === 1"><p class="hint">{{ t.text("agents.hint.channels") }}</p>{{ f.deck("channel", "new-agent-form-" ~ ref(selected.computer.id)) }}</section>
+      <section data-step="runtimes" x-show="step === 2"><p class="hint">{{ t.text("agents.hint.runtimes") }}</p>{{ f.deck("runtime", "new-agent-form-" ~ ref(selected.computer.id)) }}</section>
+      <section data-step="confirm" x-show="step === 3">
         <p class="hint">{{ t.text("agents.hint.confirm") }}</p>
-        <div data-summary></div>
+        <div data-summary hx-morph-skip id="agent-summary">
+          <template x-for="section in summary" :key="section.id"><div class="dialog part">
+            <div class="title"><span x-text="section.title"></span><span class="ver" x-show="section.version" x-text="section.version"></span></div>
+            <div class="rows"><template x-for="row in section.rows" :key="row.label"><div class="summary-row"><span class="k" x-text="row.label"></span><span x-text="row.value"></span></div></template></div>
+          </div></template>
+        </div>
         {% if failed %}<p class="err">{{ t.text("agents." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
       </section>
     </div>
     <div class="foot">
-      <button class="btn" type="button" data-back>{{ t.text("agents.back") }}</button>
+      <button class="btn" type="button" data-back x-show="step > 0" @click="go(step - 1)">{{ t.text("agents.back") }}</button>
       <span class="grow"></span>
-      <button class="btn" type="button" hx-on:click="document.getElementById('agent-new').hidden = true">{{ t.text("computers.cancel") }}</button>
-      <button class="btn p" type="button" data-forward>{{ t.text("agents.forward") }}</button>
-      <button class="btn p" type="button" data-done hidden>{{ t.text("agents.create") }}</button>
+      <button class="btn" type="button" @click="open = false">{{ t.text("computers.cancel") }}</button>
+      <button class="btn p" type="button" data-forward x-show="step < 3" @click="go(step + 1)">{{ t.text("agents.forward") }}</button>
+      <button class="btn p" type="submit" data-done x-show="step === 3">{{ t.text("agents.create") }}</button>
     </div>
-    {{ f.script() }}
   </form>
 </div>
 {% endif %}

@@ -3,11 +3,11 @@
    anything; once it is kept the module comes back open on it, drawn afresh:
    a morph would keep the boxes marked to be skipped from the computer the
    page was open on #}
-<div class="veil" id="enrol" hx-on:click="if (event.target === this) this.hidden = true">
-  <form class="dialog enrol" hx-post="/computers" hx-target="#main" hx-swap="innerHTML">
-    <h3>{{ t.text("computers.add_title") }}</h3>
-    <div class="field"><label for="name">{{ t.text("computers.name") }}</label><input id="name" name="name" placeholder="{{ t.text('computers.name_placeholder') }}" required autofocus autocomplete="off"></div>
+<div class="veil" id="enrol" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
+  <form x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="enrol_form-title" tabindex="-1" class="dialog enrol" hx-post="/computers" hx-target="#main" hx-swap="innerHTML">
+    <h3 id="enrol_form-title">{{ t.text("computers.add_title") }}</h3>
+    <div class="field"><label for="name">{{ t.text("computers.name") }}</label><input id="name" name="name" placeholder="{{ t.text('computers.name_placeholder') }}" required autocomplete="off"></div>
     <button class="btn p" type="submit">{{ t.text("computers.create") }}</button>
-    <button class="btn" type="button" hx-on:click="document.getElementById('enrol').hidden = true">{{ t.text("computers.cancel") }}</button>
+    <button class="btn" type="button" @click="open = false">{{ t.text("computers.cancel") }}</button>
   </form>
 </div>

@@ -145,13 +145,13 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         ) as response:
             assert response.status == 204
             assert response.headers["HX-Trigger"] == "stale"
-        assert 'id="stale" hidden' in page
+        assert 'id="stale" x-cloak x-show="stale"' in page
         async with session.get(
             f"{base}/agents/list", headers={"HX-Request": "true", "X-Build": build}
         ) as response:
             assert response.status == 200
         assert "智能体" in page and "有马佳奈" in page
-        assert 'class="dot busy"' in page
+        assert '"status": "busy"' in page
 
         # case: a running agent can be opened by the numbers its row carries;
         # its name heads the right column. a number that names nothing, or
@@ -161,10 +161,10 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert enrolment.computer.id not in page
         status, opened = await _get(session, f"{base}/agents/{one}")
         assert status == 200 and opened.count("有马佳奈") >= 2
-        # case: the column's tabs stand above the list, lit at once on a click
-        # and dropping a refresh of the list still on its way
-        tabs = opened.split('<div class="switch">')[1].split('id="contacts"')[0]
-        assert tabs.count('hx-sync="#contacts:replace"') == 2
+        # case: switching conversation categories navigates to the agent
+        # URL so refresh and browser history retain that category
+        tabs = opened.split('<div class="switch text">')[1].split('id="contacts"')[0]
+        assert f'hx-get="/agents/{one}?review=pending"' in tabs
         assert 'id="pending-review" hidden' in tabs
         status, _ = await _get(session, f"{base}/agents/{one.split('/')[0]}/999999")
         assert status == 404
@@ -219,7 +219,7 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         # itself, past the box its contents are clipped to
         assert '<span class="os" title="kana"><span class="i">' in fragment
         assert ">kana<" not in fragment and "<small>" not in fragment
-        assert re.search(r'</button>\s*</div>\s*<div class="dot busy"', fragment)
+        assert re.search(r'</button>\s*</div>\s*<div class="dot"', fragment)
         # case: the row's gear leads to the agent's own page
         assert f'data-href="/agents/{one}/profile"' in fragment
         status, fragment = await _get(session, f"{base}/computers/list?selected={cid}")
@@ -384,7 +384,7 @@ async def test_a_long_turn_still_reads_as_busy(tmp_path: Path) -> None:
             ],
         )
         _, page = await _get(session, f"{base}/agents")
-        assert 'class="dot busy"' in page
+        assert '"status": "busy"' in page
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,7 @@ async def test_a_turn_open_in_another_conversation_keeps_the_agent_busy(
             ],
         )
         _, page = await _get(session, f"{base}/agents")
-        assert 'class="dot busy"' in page
+        assert '"status": "busy"' in page
 
 
 @pytest.mark.asyncio
@@ -454,10 +454,10 @@ async def test_a_silent_computer_shows_offline(tmp_path: Path) -> None:
             session, f"{base}/computers", **{"Accept-Language": "en"}
         )
         assert status == 200
-        assert 'class="dot offline"' in page
+        assert '"status": "offline"' in page
         # case: an offline computer is greyed but still opens: removing it
         # happens from its page
-        assert '<a class="li off on"' in page
+        assert '<a class="li on"' in page
         assert (
             f'href="/computers/{await _short(storage, enrolment.computer.id)}"' in page
         )
@@ -465,11 +465,11 @@ async def test_a_silent_computer_shows_offline(tmp_path: Path) -> None:
         status, agents = await _get(
             session, f"{base}/agents", **{"Accept-Language": "en"}
         )
-        assert 'class="dot offline"' in agents
-        assert 'class="li agent off"' in agents
+        assert '"status": "offline"' in agents
+        assert 'x-bind="agentLink"' in agents
         assert (
             f'href="/agents/{await _short(storage, enrolment.computer.id, "a")}"'
-            not in agents
+            in agents
         )
 
 
@@ -513,7 +513,7 @@ async def test_a_computer_is_added_from_the_page_and_the_token_shown_once(
         # case: the module comes back open on the new computer, its row
         # picked and its page under the commands
         assert pushed == f"/computers/{await _short(storage, computers[0].id)}"
-        assert 'class="li off on"' in page
+        assert 'class="li on"' in page
         short = await _short(storage, computers[0].id)
         assert f'<div id="connect-{short}" hx-morph-skip>' in page
         # the commands are a code block, coloured by their shell; read as text
@@ -780,6 +780,6 @@ async def test_an_account_sees_what_it_enrolled_and_nothing_else(
         async with signed_in(base, storage, "other") as session:
             _, computers = await _get(session, f"{base}/computers/list")
             assert "theirs" in computers
-            assert "mine" not in computers and "fresh" not in computers
+            assert ">mine<" not in computers and ">fresh<" not in computers
             _, agents = await _get(session, f"{base}/agents/list")
             assert "agent-theirs" in agents and "agent-mine" not in agents

@@ -54,13 +54,13 @@ async def test_an_agent_is_taken_in_from_the_computer_page(
                     session, f"{base}/computers/{computer}/kinds/channel", **headers
                 )
                 assert status == 200 and 'data-add="channel-test"' in channels
-                assert '<template id="card-channel-test">' in channels
+                assert 'addCard("channel", "test"' in channels
                 status, runtimes = await _get(
                     session, f"{base}/computers/{computer}/kinds/runtime", **headers
                 )
                 assert status == 200 and 'data-add="runtime-test"' in runtimes
                 assert '<span class="ver">1.2.3</span>' in runtimes
-                assert '<template id="card-runtime-test">' in runtimes
+                assert 'addCard("runtime", "test"' in runtimes
                 status, _ = await _get(
                     session, f"{base}/computers/{computer}/kinds/elsewhere", **headers
                 )
