@@ -161,10 +161,10 @@ async def test_the_agents_module_lists_what_computers_report(tmp_path: Path) -> 
         assert enrolment.computer.id not in page
         status, opened = await _get(session, f"{base}/agents/{one}")
         assert status == 200 and opened.count("有马佳奈") >= 2
-        # case: the column's tabs stand above the list, lit at once on a click
-        # and dropping a refresh of the list still on its way
-        tabs = opened.split('<div class="switch">')[1].split('id="contacts"')[0]
-        assert tabs.count('hx-sync="#contacts:replace"') == 2
+        # case: switching conversation categories navigates to the agent
+        # URL so refresh and browser history retain that category
+        tabs = opened.split('<div class="switch text">')[1].split('id="contacts"')[0]
+        assert f'hx-get="/agents/{one}?review=pending"' in tabs
         assert 'id="pending-review" hidden' in tabs
         status, _ = await _get(session, f"{base}/agents/{one.split('/')[0]}/999999")
         assert status == 404

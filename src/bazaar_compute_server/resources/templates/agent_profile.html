@@ -2,7 +2,7 @@
 {# an agent's own page: who it is, and a tab at a time of what it is made of,
    found, has to hand, is doing and did #}
 {% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ "/profile" %}
-<div class="col wide profile" id="profile-page">
+<div class="col wide profile" id="profile-page" data-pane="profile">
   {% with name = selected.name %}{% include "agent_profile_head.html" %}{% endwith %}
   <div class="switch text">
     {% for tab in ("config", "skills", "workspace", "status", "activity") %}

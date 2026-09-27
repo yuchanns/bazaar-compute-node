@@ -1,5 +1,6 @@
 {% import "components.html" as c with context %}
-<div class="col list">
+<div class="module" data-view="{{ view }}">
+<div class="col list" data-pane="settings">
   {{ c.column_header(t.text("settings.title")) }}
   <div class="list-items">
     {% set icons = {"appearance": "sun-moon", "security": "key-round"} %}
@@ -9,10 +10,12 @@
     {% endcall %}
     {% endfor %}
   </div>
+  <button class="btn mobile-logout" type="button" hx-post="/logout">{{ c.icon("log-out") }}{{ t.text("settings.logout") }}</button>
 </div>
-<div class="col wide">
-  {{ c.column_header(t.text("settings." ~ section)) }}
+<div class="col wide" data-pane="section">
+  {{ c.column_header(t.text("settings." ~ section), back="/settings") }}
   <div class="body">
     {% include "settings_" ~ section ~ ".html" %}
   </div>
+</div>
 </div>

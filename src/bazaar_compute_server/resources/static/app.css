@@ -546,7 +546,8 @@ a { color: inherit; text-decoration: none; }
 
 /* Shared shell: module navigation becomes a bottom bar on narrow screens. */
 .rail .nav-label, .hd .back { display: none; }
-.hd .back .i { transform: rotate(180deg); }
+.hd .back { border: 0; background: transparent; }
+.hd .back .i svg { width: 20px; height: 20px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 959px) {
   .app { flex-direction: column; padding-top: env(safe-area-inset-top); }
@@ -555,9 +556,28 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .rail .sign, .rail .sp, .rail .logout { display: none; }
   .rail .ic { flex: 1; min-width: 0; width: auto; min-height: 48px; height: auto; flex-direction: column; gap: 2px; padding: 4px; }
   .rail .nav-label { display: block; font-size: 11px; text-align: center; overflow-wrap: anywhere; }
-  .hd .back { display: inline-flex; flex: none; }
+  .hd .back { display: inline-flex; flex: none; margin-left: 0; }
   .hd { min-height: 52px; height: auto; }
   .btn.icon, .hd button { min-width: 44px; min-height: 44px; }
   input, textarea, select { font-size: 16px; }
   .col { min-height: 0; }
+}
+
+/* Modules keep their shared columns; a narrow screen shows one level. */
+.module { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.mobile-logout { display: none; }
+#computer-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+@media (max-width: 959px) {
+  .main { overflow: hidden; }
+  .module > [data-pane] { display: none; width: 100%; flex: 1; border-right: 0; }
+  .module[data-view="agents"] > [data-pane="agents"],
+  .module[data-view="contacts"]:not(:has(> #chat[data-active="true"])) > [data-pane="contacts"],
+  .module[data-view="contacts"] > #chat[data-active="true"],
+  .module[data-view="profile"] > [data-pane="profile"],
+  .module[data-view="computers"] > [data-pane="computers"],
+  .module[data-view="computer"] > [data-pane="computer"],
+  .module[data-view="settings"] > [data-pane="settings"],
+  .module[data-view="section"] > [data-pane="section"] { display: flex; }
+  .mobile-logout { display: inline-flex; align-self: flex-start; gap: 8px; min-height: 44px; margin: 12px 16px; }
+  [data-pane="contacts"] > .switch .tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; }
 }

@@ -28,8 +28,12 @@
 <div class="dot {{ status }}" title="{{ t.text('status.' ~ status) }}"></div>
 {%- endmacro %}
 
+{% macro back_link(back) -%}
+<a class="btn icon back" href="{{ back }}" hx-get="{{ back }}" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('nav.back') }}" title="{{ t.text('nav.back') }}">{{ icon("chevron-left") }}</a>
+{%- endmacro %}
+
 {% macro column_header(title, back=none) -%}
-<div class="hd">{% if back %}<a class="btn icon back" href="{{ back }}" hx-get="{{ back }}" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('nav.back') }}" title="{{ t.text('nav.back') }}">{{ icon("chevron-right") }}</a>{% endif %}{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
+<div class="hd">{% if back %}{{ back_link(back) }}{% endif %}{{ title }}{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}
 
 {# the mark for a channel, in the channel's own colour; one this page has no
@@ -87,7 +91,7 @@
     {# the way to the thing's own page, at the row's end: a button inside
        the row's link, so a click on it goes there and not where the row goes;
        it turns while the page is on its way #}
-    {% if settings %}<button class="btn icon gear" type="button" title="{{ t.text("agents.settings") }}" aria-label="{{ t.text("agents.settings") }}" data-href="{{ settings }}" onclick="event.preventDefault(); event.stopPropagation(); this.classList.add('busy'); htmx.ajax('GET', this.dataset.href, {target: '#main', swap: 'innerHTML'}).then(() => history.pushState(null, '', this.dataset.href)).finally(() => this.classList.remove('busy'))">{{ icon("settings") }}</button>{% endif %}
+    {% if settings %}<button class="btn icon gear" type="button" title="{{ t.text("agents.settings") }}" aria-label="{{ t.text("agents.settings") }}" data-href="{{ settings }}" onclick="event.preventDefault(); event.stopPropagation(); this.classList.add('busy'); htmx.ajax('GET', this.dataset.href, {target: '#main', swap: 'innerHTML', push: this.dataset.href}).finally(() => this.classList.remove('busy'))">{{ icon("settings") }}</button>{% endif %}
   </div>
   {% if status %}{{ dot(status) }}{% endif %}
   {% if caller is defined %}{{ caller() }}{% endif %}
