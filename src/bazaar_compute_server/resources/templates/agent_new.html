@@ -7,8 +7,6 @@
 {% if created is defined and created %}
 <div id="agent-new" hidden></div>
 {% else %}
-{% set channels = values.get("channel", []) %}
-{% set runtimes = values.get("runtime", []) %}
 <div class="veil" id="agent-new" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
   <form x-data="agentForm" novalidate @submit.capture="submit($event)" @htmx:before:request="kindStarted($event)" @htmx:finally:request="kindFinished($event)" id="new-agent-form-{{ ref(selected.computer.id) }}" x-trap.inert.noscroll="open" role="dialog" aria-modal="true" aria-labelledby="agent_new-title" tabindex="-1" class="sheet wizard" hx-disable="find [data-done]" hx-post="/computers/{{ ref(selected.computer.id) }}/agents" data-computer="/computers/{{ ref(selected.computer.id) }}" hx-target="#agent-new" hx-swap="outerMorph" data-at="{{ 3 if failed else 0 }}">
     {{ f.initial(values, reply) }}
@@ -20,7 +18,7 @@
       <section data-step="basic" x-show="step === 0"><p class="hint">{{ t.text("agents.hint.basic") }}</p>{{ f.basic(values) }}{{ f.reply(reply) }}</section>
       <section data-step="channels" x-show="step === 1"><p class="hint">{{ t.text("agents.hint.channels") }}</p>{{ f.deck("channel", "new-agent-form-" ~ ref(selected.computer.id)) }}</section>
       <section data-step="runtimes" x-show="step === 2"><p class="hint">{{ t.text("agents.hint.runtimes") }}</p>{{ f.deck("runtime", "new-agent-form-" ~ ref(selected.computer.id)) }}</section>
-      <section data-step="confirm" x-show="step === 3" data-summary-step>
+      <section data-step="confirm" x-show="step === 3">
         <p class="hint">{{ t.text("agents.hint.confirm") }}</p>
         <div data-summary hx-morph-skip id="agent-summary">
           <template x-for="section in summary" :key="section.id"><div class="dialog part">
