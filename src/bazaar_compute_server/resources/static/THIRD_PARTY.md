@@ -30,3 +30,5 @@ All files are served locally through `asset()`. Registry stable versions checked
 - SHA-256: `0984507114aaf26a4461dc74173cd0e1977a971ab8a33843042e683ab871f69a`
 - License: [htmx-LICENSE.txt](htmx-LICENSE.txt), from https://registry.npmjs.org/htmx.org/-/htmx.org-4.0.0.tgz
 
+- Existing core asset: `htmx.min.js` (same archive, `dist/htmx.min.js`)
+- Core SHA-256: `e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f`

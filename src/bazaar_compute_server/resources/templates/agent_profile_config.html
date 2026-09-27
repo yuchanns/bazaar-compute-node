@@ -6,8 +6,6 @@
 {% if values is none %}
 <p class="err">{{ t.text("agents." ~ held.answer, {"code": held.code}) if held.answer != "listed" else t.text("agents.gone") }}</p>
 {% else %}
-{% set channels = values.get("channel", []) %}
-{% set runtimes = values.get("runtime", []) %}
 <form x-data="agentForm" novalidate @submit.capture="submit($event)" @htmx:before:request="kindStarted($event)" @htmx:finally:request="kindFinished($event)" id="agent-config-{{ ref(selected.id) }}" class="config" hx-post="{{ base }}" hx-target="#profile-body" hx-swap="innerMorph" hx-disable="find [type=submit]" data-computer="/computers/{{ ref(selected.computer_id) }}">
   {{ f.initial(values, reply, kept=true, origins=origins if origins is defined else none) }}
   <div class="section">{{ t.text("agents.step.basic") }}</div>
