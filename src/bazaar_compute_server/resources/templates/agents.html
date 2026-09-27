@@ -1,7 +1,7 @@
 {% import "components.html" as c with context %}
 <div class="module" data-view="{{ 'profile' if profile is defined and profile else 'contacts' if selected else 'agents' }}">
 <div class="col list" data-pane="agents">
-  {{ c.column_header(t.text("agents.title")) }}
+  {{ c.column_header(t.text("agents.title"), brand=true) }}
   {% include "agent_list.html" %}
 </div>
 {# an agent's own page takes the two columns right of the list #}
