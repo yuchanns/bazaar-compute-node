@@ -39,11 +39,26 @@
 {# a field waiting on what the computer lists: turning while it is asked,
    the way to ask again when it did not answer #}
 {% macro waiting() -%}
-<span class="wait" data-wait hidden>{{ c.icon("loader-circle") }}</span><button class="btn icon" type="button" data-again hidden aria-label="{{ t.text("agents.retry") }}">{{ c.icon("rotate-cw") }}</button>
+<span class="wait" x-show="card.modelState === 'loading'">{{ c.icon("loader-circle") }}</span><button class="btn icon" type="button" data-again x-show="card.modelState === 'error'" :title="card.modelError" @click="loadModels(card)" aria-label="{{ t.text("agents.retry") }}">{{ c.icon("rotate-cw") }}</button>
 {%- endmacro %}
 
 {% macro initial(values, reply, kept=false, origins=none) -%}
-<script type="application/json" data-editor>{{ {"fields": editor(values, reply, kept=kept, origins=origins), "labels": {"modelDefault": t.text("agents.model_default"), "channel": {"telegram": kind_name("channel", "telegram")|trim, "lark": kind_name("channel", "lark")|trim, "wecom": kind_name("channel", "wecom")|trim}, "runtime": {"codex": kind_name("runtime", "codex")|trim, "claudecode": kind_name("runtime", "claudecode")|trim}}}|tojson }}</script>
+{% set labels = {"modelDefault": t.text("agents.model_default"),
+  "effortDefault": t.text("agents.effort_default"),
+  "basic": t.text("agents.step.basic"),
+  "reply": t.text("contacts.reply"),
+  "filled": t.text("agents.summary.filled"),
+  "empty": t.text("agents.summary.empty"),
+  "on": t.text("agents.summary.on"),
+  "off": t.text("agents.summary.off"),
+  "none": t.text("agents.summary.none"),
+  "seconds": t.text("agents.seconds"),
+  "secrets": secrets,
+  "fields": {"name": t.text("agents.name"), "mode": t.text("agents.mode"), "idle_timeout": t.text("agents.idle"), "model": t.text("agents.model"), "effort": t.text("agents.effort"), "sandbox_mode": t.text("agents.sandbox"), "network_access": t.text("agents.network"), "env": t.text("agents.env"), "app_id": t.text("agents.field.app_id"), "region": t.text("agents.field.region"), "bot_id": t.text("agents.field.bot_id"), "websocket_url": t.text("agents.field.websocket_url"), "token": t.text("agents.field.token"), "app_secret": t.text("agents.field.app_secret"), "secret": t.text("agents.field.secret")},
+  "values": {"mode": {"session": t.text("agents.mode.session"), "dangerous_individual": t.text("agents.mode.dangerous_individual")}, "region": {"feishu": t.text("agents.region.feishu"), "lark": t.text("agents.region.lark")}, "sandbox_mode": {"workspace-write": t.text("agents.sandbox.workspace-write"), "danger-full-access": t.text("agents.sandbox.danger-full-access")}},
+  "channel": {"telegram": kind_name("channel", "telegram")|trim, "lark": kind_name("channel", "lark")|trim, "wecom": kind_name("channel", "wecom")|trim},
+  "runtime": {"codex": kind_name("runtime", "codex")|trim, "claudecode": kind_name("runtime", "claudecode")|trim}} %}
+<script type="application/json" data-editor>{{ {"fields": editor(values, reply, kept=kept, origins=origins), "labels": labels}|tojson }}</script>
 {%- endmacro %}
 
 {% macro card_head(family) -%}
@@ -76,8 +91,8 @@
 
 {% macro runtime_card() -%}
 {{ card_head('runtime') }}
-<div class="field"><label>{{ t.text('agents.model') }}</label><span class="select"><select :name="'runtime-' + card.id + '-model'" x-model="card.model" data-model><template x-for="option in card.models" :key="option.value"><option :value="option.value" x-text="option.label"></option></template></select>{{ c.icon('chevron-down') }}</span>{{ waiting() }}</div>
-<div class="field" x-show="!card.listed || card.efforts.length"><label>{{ t.text('agents.effort') }}</label><span class="select"><select :name="'runtime-' + card.id + '-effort'" x-model="card.effort" data-effort><option value="">{{ t.text('agents.effort_default') }}</option><template x-for="effort in card.efforts" :key="effort"><option :value="effort" x-text="effort"></option></template></select>{{ c.icon('chevron-down') }}</span>{{ waiting() }}</div>
+<div class="field"><label>{{ t.text('agents.model') }}</label><span class="select"><select :name="'runtime-' + card.id + '-model'" x-model="card.model" x-init="$watch('card.model', () => updateEffort(card))" @pointerdown="loadModels(card, $event)" @keydown="loadModels(card, $event)" data-model><template x-for="option in card.models" :key="option.value"><option :value="option.value" x-text="option.label"></option></template></select>{{ c.icon('chevron-down') }}</span>{{ waiting() }}</div>
+<div class="field" x-show="card.modelState !== 'ready' || card.efforts.length"><label>{{ t.text('agents.effort') }}</label><span class="select"><select :name="'runtime-' + card.id + '-effort'" x-model="card.effort" @pointerdown="loadModels(card, $event)" @keydown="loadModels(card, $event)" data-effort><option value="">{{ t.text('agents.effort_default') }}</option><template x-for="effort in card.efforts" :key="effort"><option :value="effort" x-text="effort"></option></template></select>{{ c.icon('chevron-down') }}</span>{{ waiting() }}</div>
 <div class="field"><label>{{ t.text('agents.sandbox') }}</label><span class="select"><select :name="'runtime-' + card.id + '-sandbox_mode'" x-model="card.sandbox_mode"><option value="workspace-write">{{ t.text('agents.sandbox.workspace-write') }}</option><option value="danger-full-access">{{ t.text('agents.sandbox.danger-full-access') }}</option></select>{{ c.icon('chevron-down') }}</span></div>
 <div class="field"><label>{{ t.text('agents.network') }}</label><label class="sw"><input type="checkbox" :name="'runtime-' + card.id + '-network_access'" x-model="card.network_access"><span class="track"><span class="knob"></span></span></label></div>
 <div class="field top"><label>{{ t.text('agents.env') }}</label><div class="list">
@@ -100,7 +115,7 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro deck(family, owner, items=(), start=0, kept=false, origins=none, present=()) -%}
+{% macro deck(family, owner) -%}
 <div class="deck" data-family="{{ family }}" id="{{ owner }}-{{ family }}-deck" hx-morph-skip>
   <div class="side" x-show="cards.{{ family }}.length">
     <button type="button" data-turn="-1" :disabled="selected.{{ family }} === 0" @click="turn('{{ family }}', -1)" title="{{ t.text('agents.previous') }}" aria-label="{{ t.text('agents.previous') }}">{{ c.icon('chevron-up') }}</button>
