@@ -25,6 +25,7 @@ def sections(access: Access) -> tuple[str, ...]:
         *(("security",) if access.is_admin else ()),
         *(("roles",) if access.allows(Permission.SETTINGS_ROLES) else ()),
         *(("accounts",) if access.allows(Permission.SETTINGS_ACCOUNTS) else ()),
+        *(("oidc",) if access.allows(Permission.SETTINGS_OIDC) else ()),
     )
 
 
@@ -93,7 +94,12 @@ class SettingsPages:
         response = self._render.fragment(
             request, "password_form.html", outcome="changed"
         )
-        set_session(response, self._sessions.issue(changed), request=request)
+        set_session(
+            response,
+            self._sessions.issue(changed),
+            request=request,
+            max_age=self._sessions.max_age,
+        )
         return response
 
 

@@ -1,6 +1,5 @@
-<form x-data="submission" x-bind="submission" class="dialog" id="login" hx-post="/login" hx-target="this" hx-swap="outerMorph">
-  <h3>{{ t.text("login.title") }}</h3>
-  <div class="field"><label for="name">{{ t.text("login.name") }}</label><input id="name" name="name" required autofocus autocomplete="username"></div>
+<form x-data="submission" x-bind="submission" class="login-form" id="login" hx-post="/login" hx-target="this" hx-swap="outerMorph">
+  <div class="field"><label for="name">{{ t.text("login.name") }}</label><input id="name" name="name" required autocomplete="username"></div>
   <div class="field"><label for="password">{{ t.text("login.password") }}</label><input id="password" name="password" type="password" required autocomplete="current-password"></div>
   {% if failed %}<p class="err">{{ t.text("login.failed") }}</p>{% endif %}
   <button class="btn p" type="submit" disabled :disabled="!ready || busy">{{ t.text("login.submit") }}</button>

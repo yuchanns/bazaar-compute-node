@@ -1,0 +1,59 @@
+<div class="col list management-list" data-pane="entries">
+  {% call c.column_header(t.text("settings.oidc"), back="/settings") %}
+    {% if default %}<a class="btn icon" href="/settings/oidc/new" hx-get="/settings/oidc/new" hx-swap="innerHTML" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('oidc.new') }}" title="{{ t.text('oidc.new') }}">{{ c.icon("plus") }}</a>{% endif %}
+  {% endcall %}
+  <div class="list-items">
+    {% if error and not (new or selected) %}<p class="bad" role="alert">{{ t.text(error) }}</p>{% endif %}
+    {% for id in order %}
+    {% set provider = providers|selectattr('id', 'equalto', id)|first if id != 'password' else none %}
+    <div class="login-order-row" data-method="{{ id }}">
+      {% if provider %}
+      {{ c.list_item(provider.name, t.text("login.preferred") if loop.first else provider.issuer, href="/settings/oidc/" ~ ref(provider.id), on=(selected and selected.id == provider.id), icon_name="key-round", attrs='hx-swap="innerHTML"') }}
+      {% else %}{{ c.list_item(t.text("login.local"), t.text("login.preferred") if loop.first else none, icon_name="key-round") }}{% endif %}
+      <div class="login-order-controls">
+        {% set index = loop.index0 %}
+        {% for direction in (-1, 1) %}
+        {% set moved = order[:index-1] + [id, order[index-1]] + order[index+1:] if direction == -1 and index > 0 else order[:index] + [order[index+1], id] + order[index+2:] if direction == 1 and index < order|length-1 else order %}
+        <form hx-post="/settings/oidc/order" hx-target="#main" hx-swap="innerHTML">
+          <input type="hidden" name="order" value='{{ {"order": moved}|tojson }}'>
+          <button class="btn icon" type="submit" aria-label="{{ t.text('login.move_up' if direction == -1 else 'login.move_down') }}" title="{{ t.text('login.move_up' if direction == -1 else 'login.move_down') }}"{% if (direction == -1 and index == 0) or (direction == 1 and index == order|length-1) %} disabled{% endif %}>{{ c.icon("chevron-up" if direction == -1 else "chevron-down") }}</button>
+        </form>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if not default %}<div class="empty empty-state">{{ c.icon("users") }}<span>{{ t.text("oidc.default_required") }}</span>{% if access.allows(permissions.SETTINGS_ROLES) %}<a class="btn" href="/settings/roles" hx-get="/settings/roles" hx-target="#main" hx-push-url="true">{{ t.text("settings.roles") }}</a>{% endif %}</div>{% endif %}
+  </div>
+</div>
+<div class="col wide" data-pane="entry">
+  {{ c.column_header(t.text("oidc.new") if new else selected.name if selected else t.text("settings.oidc"), back="/settings/oidc") }}
+  <div class="body">
+  {% if (new or selected) and default %}
+    {% if error %}<p class="bad" role="alert">{{ t.text(error) }}</p>{% endif %}
+    <form id="oidc-form-{{ selected.id if selected else 'new' }}" class="management-form" hx-encoding="multipart/form-data" enctype="multipart/form-data" hx-post="{{ '/settings/oidc/' ~ ref(selected.id) if selected else '/settings/oidc' }}" hx-target="#main" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{ values.id }}">
+      {% for key in ("name", "description", "issuer", "client_id", "redirect_uri") %}
+      <div class="field"><label for="oidc-{{ key }}">{{ t.text("oidc." ~ key) }}</label><input id="oidc-{{ key }}" name="{{ key }}" type="{{ 'url' if key in ('issuer', 'redirect_uri') else 'text' }}" value="{{ values[key] }}"{% if key == "description" %} maxlength="200"{% else %} required{% endif %} autocomplete="off"></div>
+      {% endfor %}
+      <div class="field" x-data="{preview: $el.dataset.logo, clear: false}" data-logo="{{ values.logo_url }}">
+        <label for="oidc-logo">{{ t.text("oidc.logo") }}</label>
+        <div class="provider-logo">
+          <div class="logo-controls">
+            <span class="logo-preview"><img x-show="preview" :src="preview" alt="" width="40" height="40" x-cloak><span x-show="!preview">{{ c.icon("key-round") }}</span></span>
+            <input id="oidc-logo" x-ref="file" name="logo" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden @change="const file = $event.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = () => { preview = reader.result; clear = false; }; reader.readAsDataURL(file); }">
+            <input type="hidden" name="clear_logo" :value="clear ? 'true' : 'false'" value="false">
+            <button class="btn" type="button" @click="$refs.file.click()">{{ c.icon("paperclip") }}<span x-show="!preview">{{ t.text("oidc.choose_logo") }}</span><span x-show="preview" x-cloak>{{ t.text("oidc.change_logo") }}</span></button>
+            <button class="btn icon" type="button" x-show="preview" x-cloak @click="preview = ''; clear = true; $refs.file.value = ''" aria-label="{{ t.text('oidc.clear_logo') }}" title="{{ t.text('oidc.clear_logo') }}">{{ c.icon("x") }}</button>
+          </div>
+          <small>{{ t.text("oidc.logo_hint") }}</small>
+        </div>
+      </div>
+      <div class="field"><label for="oidc-default-role">{{ t.text("oidc.default_role") }}</label><span class="select"><select id="oidc-default-role" name="default_role_id"><option value=""{% if not values.default_role_id %} selected{% endif %}>{{ t.text("oidc.global_role") }} · {{ default.name }}</option>{% for role in roles %}<option value="{{ role.id }}"{% if values.default_role_id == role.id %} selected{% endif %}>{{ role.name }}</option>{% endfor %}</select>{{ c.icon("chevron-down") }}</span><small>{{ t.text("oidc.default_role_hint") }}</small></div>
+      <p>{{ t.text("oidc.callback_hint") }}</p>
+      <div class="field"><label for="oidc-secret">{{ t.text("oidc.client_secret") }}</label><input id="oidc-secret" name="client_secret" type="password" value="" autocomplete="new-password"{% if not selected %} required{% endif %}></div>{% if selected %}<p>{{ t.text("oidc.secret_set") }}</p>{% endif %}
+      <button class="btn p" type="submit">{{ t.text("manage.save") }}</button>
+    </form>
+  {% elif new and not default %}<p>{{ t.text("oidc.default_required") }}</p>
+  {% else %}{{ c.empty(t.text("oidc.select"), "key-round") }}{% endif %}
+  </div>
+</div>

@@ -5,6 +5,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import Response
 
+from .. import reauth
 from ..gate import LOGIN_PATH, clear_session, set_session
 from ..rendering import Renderer
 from ..sessions import Sessions
@@ -22,7 +23,14 @@ class LoginPages:
         self._sessions = sessions
 
     async def form(self, request: Request) -> Response:
-        return self._render.standalone(request, "login.html", failed=False)
+        return self._render.standalone(
+            request,
+            "login.html",
+            failed=False,
+            oidc_error=None,
+            providers=await self._storage.list_oidc_providers(),
+            order=await self._storage.login_order(),
+        )
 
     async def login(self, request: Request) -> Response:
         form = await request.form()
@@ -35,7 +43,13 @@ class LoginPages:
                 request, "login_form.html", failed=True, status_code=401
             )
         response = Response(status_code=204, headers={"HX-Redirect": HOME})
-        set_session(response, self._sessions.issue(account), request=request)
+        response.delete_cookie(reauth.COOKIE, path="/")
+        set_session(
+            response,
+            self._sessions.issue(account),
+            request=request,
+            max_age=self._sessions.max_age,
+        )
         return response
 
     async def logout(self, request: Request) -> Response:

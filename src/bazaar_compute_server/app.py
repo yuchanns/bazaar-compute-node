@@ -54,7 +54,7 @@ def create_app(configuration: ServerConfiguration, data_dir: Path) -> Starlette:
         )
     )
 
-    sessions = Sessions()
+    sessions = Sessions(max_age=configuration.session_minutes * 60)
     images = Images(sessions)
     refs = Refs(storage)
     controls = Controls()

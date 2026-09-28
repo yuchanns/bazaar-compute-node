@@ -43,7 +43,8 @@ ROLES_OIDC_MIGRATION = Migration(
             provider_id TEXT NOT NULL REFERENCES oidc_providers(id) ON DELETE CASCADE,
             browser_hash TEXT NOT NULL, nonce TEXT NOT NULL,
             code_verifier TEXT NOT NULL, redirect_uri TEXT NOT NULL,
-            expires_at_ms INTEGER NOT NULL
+            expires_at_ms INTEGER NOT NULL,
+            issuer TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT ''
         )""",
         "CREATE INDEX oidc_transactions_by_expiry ON oidc_transactions(expires_at_ms)",
     ),

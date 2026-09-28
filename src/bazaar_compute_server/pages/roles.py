@@ -163,6 +163,13 @@ class RolePages:
             return await self._page(
                 request, role_id=role_id, error="roles.replacement_required"
             )
+        if any(
+            provider.default_role_id == role_id
+            for provider in await self._storage.list_oidc_providers()
+        ):
+            return await self._page(
+                request, role_id=role_id, error="roles.provider_default"
+            )
         await self._storage.remove_role(role_id, replacement_id=replacement)
         return Response(
             status_code=204,

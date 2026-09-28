@@ -261,6 +261,23 @@ class SqliteStorage(IStorage):
             )
         )
 
+    async def login_order(self) -> list[str]:
+        async with (
+            self._reader() as db,
+            db.execute("SELECT login_order FROM auth_settings WHERE id=1") as rows,
+        ):
+            row = await rows.fetchone()
+            assert row is not None
+            return json.loads(row["login_order"])
+
+    async def save_login_order(self, order: list[str]) -> None:
+        await self._write(
+            lambda db: db.execute(
+                "UPDATE auth_settings SET login_order=? WHERE id=1",
+                (json.dumps(order),),
+            )
+        )
+
     async def list_oidc_providers(self) -> list[OIDCProvider]:
         async with (
             self._reader() as db,
@@ -281,12 +298,12 @@ class SqliteStorage(IStorage):
             return None if row is None else OIDCProvider(**dict(row))
 
     async def save_oidc_provider(self, provider: OIDCProvider) -> None:
-        await self._write(
-            lambda db: db.execute(
-                "INSERT INTO oidc_providers(id,name,logo_url,issuer,client_id,client_secret,redirect_uri,created_at_ms,updated_at_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
+        async def save(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                "INSERT INTO oidc_providers(id,name,logo_url,issuer,client_id,client_secret,redirect_uri,created_at_ms,updated_at_ms,description,default_role_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
                 " name=excluded.name,logo_url=excluded.logo_url,issuer=excluded.issuer,client_id=excluded.client_id,"
-                " client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated_at_ms=excluded.updated_at_ms",
+                " client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated_at_ms=excluded.updated_at_ms,description=excluded.description,default_role_id=excluded.default_role_id",
                 (
                     provider.id,
                     provider.name,
@@ -297,9 +314,17 @@ class SqliteStorage(IStorage):
                     provider.redirect_uri,
                     provider.created_at_ms,
                     provider.updated_at_ms,
+                    provider.description,
+                    provider.default_role_id,
                 ),
             )
-        )
+            await db.execute(
+                "UPDATE auth_settings SET login_order=json_insert(login_order, '$[#]', ?)"
+                " WHERE id=1 AND NOT EXISTS (SELECT 1 FROM json_each(login_order) WHERE value=?)",
+                (provider.id, provider.id),
+            )
+
+        await self._write(save)
 
     async def oidc_account(
         self, provider_id: str, issuer: str, subject: str, display_name: str, email: str
@@ -314,7 +339,10 @@ class SqliteStorage(IStorage):
                 identity = await rows.fetchone()
             if identity is None:
                 async with db.execute(
-                    "SELECT default_role_id FROM auth_settings WHERE id=1"
+                    "SELECT COALESCE(oidc_providers.default_role_id, auth_settings.default_role_id) AS default_role_id"
+                    " FROM oidc_providers CROSS JOIN auth_settings"
+                    " WHERE oidc_providers.id=? AND auth_settings.id=1",
+                    (provider_id,),
                 ) as rows:
                     settings = await rows.fetchone()
                 if settings is None or settings["default_role_id"] is None:
@@ -354,7 +382,7 @@ class SqliteStorage(IStorage):
                 "DELETE FROM oidc_transactions WHERE expires_at_ms <= ?", (now_ms(),)
             )
             await db.execute(
-                "INSERT INTO oidc_transactions(state,provider_id,browser_hash,nonce,code_verifier,redirect_uri,expires_at_ms) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO oidc_transactions(state,provider_id,browser_hash,nonce,code_verifier,redirect_uri,expires_at_ms,issuer,subject) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     transaction.state,
                     transaction.provider_id,
@@ -363,6 +391,8 @@ class SqliteStorage(IStorage):
                     transaction.code_verifier,
                     transaction.redirect_uri,
                     transaction.expires_at_ms,
+                    transaction.issuer,
+                    transaction.subject,
                 ),
             )
 

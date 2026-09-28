@@ -360,6 +360,49 @@
 "permissions.agents" = "Agents"
 "permissions.settings" = "Settings"
 
+# OIDC sign-in
+"settings.oidc.hint" = "Identity providers and sign-in configuration"
+"oidc.new" = "New sign-in method"
+"oidc.empty" = "No external sign-in methods yet."
+"oidc.default_required" = "Ask an administrator to set a default role before configuring or using external sign-in."
+"oidc.name" = "Display name"
+"oidc.issuer" = "Issuer URL"
+"oidc.client_id" = "Client ID"
+"oidc.client_secret" = "Client secret"
+"oidc.redirect_uri" = "Callback URL"
+"oidc.callback_hint" = "Register this exact callback URL at your identity provider."
+"oidc.secret_set" = "Secret is set. Leave blank to keep it."
+"oidc.secret_required" = "Enter the client secret supplied by your identity provider."
+"oidc.select" = "Select a sign-in method or create one."
+"oidc.invalid" = "Check the name, issuer, client and callback URLs."
+"oidc.unavailable" = "This sign-in provider is unavailable. Try again later or use local sign-in."
+"oidc.expired" = "This sign-in attempt has expired. Start sign-in again."
+"oidc.failed" = "Sign-in could not be completed. Please try again."
+
+"oidc.logo" = "Logo"
+"oidc.clear_logo" = "Remove logo"
+"oidc.logo_hint" = "PNG, JPEG, WebP or GIF, up to 256 KiB."
+"oidc.logo_invalid" = "Upload a PNG, JPEG, WebP or GIF image no larger than 256 KiB."
+
+"oidc.choose_logo" = "Choose image"
+"oidc.change_logo" = "Change image"
+
 "accounts.choose_roles" = "Select roles"
 "accounts.search_roles" = "Search roles"
 "accounts.unassign" = "Remove {name}"
+
+"login.other" = "Other sign-in methods"
+"login.local" = "Password"
+"login.preferred" = "Preferred"
+"login.move_up" = "Move up"
+"login.move_down" = "Move down"
+"oidc.order_changed" = "Sign-in methods changed. Please try again."
+"oidc.description" = "Description (optional)"
+
+"roles.provider_default" = "A sign-in method uses this as its default role. Change that sign-in method’s default role before deleting it."
+
+"oidc.default_role" = "Default role"
+
+"oidc.global_role" = "Use global default role"
+
+"oidc.default_role_hint" = "The role for new accounts registered with this sign-in method."

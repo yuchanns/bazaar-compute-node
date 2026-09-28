@@ -11,6 +11,9 @@ from .model import Migration
 from .v01_initial_server_schema import SCHEMA_MIGRATION
 from .v02_refs import REFS_MIGRATION
 from .v03_roles_oidc import ROLES_OIDC_MIGRATION
+from .v04_login_order import LOGIN_ORDER_MIGRATION
+from .v05_provider_description import PROVIDER_DESCRIPTION_MIGRATION
+from .v06_provider_default_role import PROVIDER_DEFAULT_ROLE_MIGRATION
 
 
 class MigrationError(RuntimeError):
@@ -28,7 +31,14 @@ def _migration_ledger(*migrations: Migration) -> tuple[Migration, ...]:
     return migrations
 
 
-MIGRATIONS = _migration_ledger(SCHEMA_MIGRATION, REFS_MIGRATION, ROLES_OIDC_MIGRATION)
+MIGRATIONS = _migration_ledger(
+    SCHEMA_MIGRATION,
+    REFS_MIGRATION,
+    ROLES_OIDC_MIGRATION,
+    LOGIN_ORDER_MIGRATION,
+    PROVIDER_DESCRIPTION_MIGRATION,
+    PROVIDER_DEFAULT_ROLE_MIGRATION,
+)
 
 
 async def apply_migrations(connection: aiosqlite.Connection) -> int:

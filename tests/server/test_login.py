@@ -91,7 +91,11 @@ async def test_logging_in_and_out(tmp_path: Path) -> None:
             ) as response:
                 assert response.status == 204
                 assert response.headers["HX-Redirect"] == "/agents"
-                set_cookie = response.headers["Set-Cookie"].lower()
+                set_cookie = next(
+                    value.lower()
+                    for value in response.headers.getall("Set-Cookie")
+                    if value.startswith(f"{COOKIE}=")
+                )
             assert set_cookie.startswith(f"{COOKIE}=")
             assert "httponly" in set_cookie and "samesite=lax" in set_cookie
             # case: over plain http the cookie is plain; behind https it is secure
@@ -104,7 +108,11 @@ async def test_logging_in_and_out(tmp_path: Path) -> None:
                     headers={"X-Forwarded-Proto": "https"},
                 ) as response,
             ):
-                assert "secure" in response.headers["Set-Cookie"].lower()
+                assert "secure" in next(
+                    value.lower()
+                    for value in response.headers.getall("Set-Cookie")
+                    if value.startswith(f"{COOKIE}=")
+                )
             async with session.get(f"{base}/agents") as response:
                 assert response.status == 200
 

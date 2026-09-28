@@ -41,6 +41,8 @@ def run(config: Path | None) -> None:
         host=configuration.listen_host,
         port=configuration.listen_port,
         log_level="info",
+        # OIDC callback query strings contain one-time codes and state.
+        access_log=False,
         # going down comes first: a node's poll held open or a page still
         # waiting on a computer is not waited out past this
         timeout_graceful_shutdown=SHUTDOWN_SECONDS,

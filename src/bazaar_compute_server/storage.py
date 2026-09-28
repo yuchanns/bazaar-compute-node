@@ -56,6 +56,8 @@ class OIDCProvider:
     redirect_uri: str
     created_at_ms: int
     updated_at_ms: int
+    description: str = ""
+    default_role_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +69,8 @@ class OIDCTransaction:
     code_verifier: str
     redirect_uri: str
     expires_at_ms: int
+    issuer: str = ""
+    subject: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +177,10 @@ class IStorage(Protocol):
     async def default_role(self) -> Role | None: ...
 
     async def set_default_role(self, role_id: str) -> None: ...
+
+    async def login_order(self) -> list[str]: ...
+
+    async def save_login_order(self, order: list[str]) -> None: ...
 
     async def list_oidc_providers(self) -> list[OIDCProvider]: ...
 

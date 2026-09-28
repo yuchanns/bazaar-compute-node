@@ -16,8 +16,6 @@ from .storage import Account
 
 COOKIE = "bcs_session"
 # how long a login lasts before the person is asked again
-SESSION_DAYS = 30
-_SESSION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000
 _KEY_BYTES = 32
 
 
@@ -37,7 +35,8 @@ class Sessions:
     """Issues and reads session cookies with a key that arrives when the
     server starts, after the data directory is known to exist."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_age: int = 600) -> None:
+        self.max_age = max_age
         self.key = b""
 
     def issue(self, account: Account) -> str:
@@ -59,7 +58,7 @@ class Sessions:
         if (
             not mark.isdigit()
             or not issued.isdigit()
-            or now_ms() - int(issued) > _SESSION_MS
+            or now_ms() - int(issued) >= self.max_age * 1000
         ):
             return None
         return Claim(
@@ -95,7 +94,6 @@ def _load_or_create(path: Path) -> bytes:
 
 __all__ = [
     "COOKIE",
-    "SESSION_DAYS",
     "Claim",
     "Sessions",
     "load_session_key",

@@ -6,7 +6,8 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .sessions import COOKIE, SESSION_DAYS, Sessions
+from . import reauth
+from .sessions import COOKIE, Sessions
 from .storage import Account, IStorage
 
 LOGIN_PATH = "/login"
@@ -102,17 +103,22 @@ def _is_open(path: str) -> bool:
 
 
 def _to_login(request: Request) -> Response:
+    destination = (
+        "/login/oidc/resume" if request.cookies.get(reauth.COOKIE) else LOGIN_PATH
+    )
     # htmx cannot follow a redirect into the shell; it is told to go there whole
     if request.headers.get("HX-Request") == "true":
-        return Response(status_code=401, headers={"HX-Redirect": LOGIN_PATH})
-    return RedirectResponse(LOGIN_PATH, status_code=303)
+        return Response(status_code=401, headers={"HX-Redirect": destination})
+    return RedirectResponse(destination, status_code=303)
 
 
-def set_session(response: Response, cookie: str, *, request: Request) -> None:
+def set_session(
+    response: Response, cookie: str, *, request: Request, max_age: int
+) -> None:
     response.set_cookie(
         COOKIE,
         cookie,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
+        max_age=max_age,
         path="/",
         httponly=True,
         samesite="lax",
@@ -123,6 +129,7 @@ def set_session(response: Response, cookie: str, *, request: Request) -> None:
 
 def clear_session(response: Response) -> None:
     response.delete_cookie(COOKIE, path="/")
+    response.delete_cookie(reauth.COOKIE, path="/")
 
 
 __all__ = ["LOGIN_PATH", "MAX_BODY_BYTES", "Gate", "clear_session", "set_session"]

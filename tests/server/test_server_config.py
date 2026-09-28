@@ -18,7 +18,7 @@ def test_a_first_run_writes_the_defaults_and_reads_them_back(tmp_path: Path) -> 
 
     assert configuration == ServerConfiguration()
     assert path.read_text(encoding="utf-8") == (
-        'listen = "127.0.0.1:8765"\nretention_days = 30\nstorage = "sqlite"\n'
+        'listen = "127.0.0.1:8765"\nretention_days = 30\nsession_minutes = 10\nstorage = "sqlite"\n'
     )
     assert load_configuration(path) == configuration
 
@@ -26,7 +26,7 @@ def test_a_first_run_writes_the_defaults_and_reads_them_back(tmp_path: Path) -> 
 def test_configuration_values_are_read_and_checked(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
-        'listen = "0.0.0.0:9000"\nretention_days = 7\n'
+        'listen = "0.0.0.0:9000"\nretention_days = 7\nsession_minutes = 25\n'
         'storage = "postgres"\n\n[postgres]\ndsn = "postgresql://bcs@db/bcs"\n',
         encoding="utf-8",
     )
@@ -34,6 +34,7 @@ def test_configuration_values_are_read_and_checked(tmp_path: Path) -> None:
     assert configuration == ServerConfiguration(
         listen="0.0.0.0:9000",
         retention_days=7,
+        session_minutes=25,
         storage="postgres",
         storage_options={"dsn": "postgresql://bcs@db/bcs"},
     )

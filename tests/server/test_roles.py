@@ -190,3 +190,64 @@ async def test_first_oidc_login_assigns_the_current_default_and_keeps_membership
         assert provider in await storage.list_oidc_providers()
     finally:
         await storage.stop()
+
+
+@pytest.mark.asyncio
+async def test_provider_default_role_overrides_global_for_new_accounts(
+    tmp_path: Path,
+) -> None:
+    storage = SqliteStorage(tmp_path / "bcs.sqlite3", retention_days=30)
+    await storage.start()
+    try:
+        reader = Role(
+            "reader", "Readers", frozenset({P.AGENTS_VIEW}), now_ms(), now_ms()
+        )
+        reviewer = replace(
+            reader,
+            id="reviewer",
+            name="Reviewers",
+            permissions=frozenset({P.AGENTS_VIEW, P.AGENTS_APPROVE}),
+        )
+        await storage.save_role(reader)
+        await storage.save_role(reviewer)
+        await storage.set_default_role(reader.id)
+        provider = OIDCProvider(
+            "work",
+            "Work",
+            "",
+            "https://issuer.example",
+            "client",
+            "secret",
+            "https://bcs.example/callback",
+            now_ms(),
+            now_ms(),
+            default_role_id=reviewer.id,
+        )
+        await storage.save_oidc_provider(provider)
+        account = await storage.oidc_account(
+            provider.id, provider.issuer, "first", "First", "first@example.com"
+        )
+        assert reviewer in await storage.list_roles(account.id)
+        await storage.stop()
+        await storage.start()
+        assert (await storage.get_oidc_provider(provider.id)) == provider
+        assert reviewer in await storage.list_roles(account.id)
+        await storage.set_account_roles(account.id, [reader.id])
+        returning = await storage.oidc_account(
+            provider.id, provider.issuer, "first", "First", "first@example.com"
+        )
+        assert reader in await storage.list_roles(returning.id)
+        provider = replace(provider, default_role_id=None)
+        await storage.save_oidc_provider(provider)
+        following = await storage.oidc_account(
+            provider.id,
+            provider.issuer,
+            "following",
+            "Following",
+            "following@example.com",
+        )
+        assert reader in await storage.list_roles(following.id)
+        await storage.remove_role(reviewer.id)
+        assert provider in await storage.list_oidc_providers()
+    finally:
+        await storage.stop()

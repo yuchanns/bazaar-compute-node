@@ -33,13 +33,16 @@ async def serving(
 
 @asynccontextmanager
 async def serving_app(
-    data_dir: Path, port: int | None = None
+    data_dir: Path,
+    port: int | None = None,
+    *,
+    configuration: ServerConfiguration | None = None,
 ) -> AsyncIterator[tuple[str, Starlette]]:
     """The same server, with the application it runs in hand."""
 
     port = port or free_port()
     app: Starlette = create_app(
-        ServerConfiguration(listen=f"127.0.0.1:{port}"), data_dir
+        configuration or ServerConfiguration(listen=f"127.0.0.1:{port}"), data_dir
     )
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")

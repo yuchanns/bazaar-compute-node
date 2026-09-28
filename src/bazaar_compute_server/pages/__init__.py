@@ -16,6 +16,8 @@ from .accounts import AccountPages
 from .agents import AgentPages
 from .computers import ComputerPages
 from .login import LoginPages
+from .oidc import OIDCPages
+from .oidc_login import OIDCLoginPages
 from .poll import PollPages
 from .profile import ProfilePages
 from .roles import RolePages
@@ -42,12 +44,21 @@ def routes(
     settings = SettingsPages(storage, renderer, sessions)
     roles = RolePages(storage, renderer, refs)
     accounts = AccountPages(storage, renderer, refs)
+    oidc = OIDCPages(storage, renderer, refs)
+    oidc_login = OIDCLoginPages(storage, renderer, sessions)
     poll = PollPages(storage, renderer, refs)
     return [
         Route("/poll", poll.check, methods=["POST"]),
         Route("/", home),
         Route("/login", login.form),
         Route("/login", login.login, methods=["POST"]),
+        Route("/login/oidc/resume", oidc_login.resume),
+        Route("/login/oidc/{provider_id}", oidc_login.start),
+        Route(
+            "/login/oidc/{provider_id}/callback",
+            oidc_login.callback,
+            name="oidc_callback",
+        ),
         Route("/logout", login.logout, methods=["POST"]),
         Route("/settings", settings.page),
         Route("/settings/roles", roles.list),
@@ -60,6 +71,12 @@ def routes(
         Route("/settings/accounts", accounts.list),
         Route("/settings/accounts/{account_id}", accounts.show),
         Route("/settings/accounts/{account_id}", accounts.save, methods=["POST"]),
+        Route("/settings/oidc", oidc.list),
+        Route("/settings/oidc", oidc.create, methods=["POST"]),
+        Route("/settings/oidc/order", oidc.reorder, methods=["POST"]),
+        Route("/settings/oidc/new", oidc.new),
+        Route("/settings/oidc/{provider_id}", oidc.show),
+        Route("/settings/oidc/{provider_id}", oidc.save, methods=["POST"]),
         Route("/settings/{section}", settings.page),
         Route("/settings/password", settings.change_password, methods=["POST"]),
         Route("/settings/preferences", settings.change_preferences, methods=["POST"]),
