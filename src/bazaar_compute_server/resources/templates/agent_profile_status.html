@@ -8,7 +8,7 @@
 <div class="field"><label>{{ t.text("agents.health." ~ label) }}</label><span class="v">{{ caller() }}</span></div>
 {%- endmacro %}
 {% if health is none %}
-<div class="empty">{{ t.text("agents.no_status") }}</div>
+{{ c.empty(t.text("agents.no_status"), "monitor") }}
 {% else %}
 <div class="health">
   <div class="dialog part">

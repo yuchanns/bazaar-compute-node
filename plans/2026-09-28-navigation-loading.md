@@ -19,6 +19,10 @@ Lucide loader 使用同版本 lucide-static 1.46.0 官方 SVG，八条线按顺�
 
 提示仅展示居中的 loader 图标，不添加底框、边框或阴影。
 
+## Task 2
+
+统一正常空状态为淡色 Lucide 图标和短文案：智能体与电脑列表、联系人与审核请求、消息历史、电脑内智能体、状态、动态、技能、工作区与提醒。复用 components.empty，增加可选图标及 id；保留 events-empty 供新事件移除。列表填满可用高度并居中；资料与抽屉使用紧凑间距。离线及错误反馈保留原语义和重试操作。使用现有 users、monitor、message-circle、user-plus、message-square-text、grid-2x2、folder、alarm-clock 图标。真实浏览器检查手机及桌面空列表、模板编译，执行 Ruff 和根目录 Pyright。
+
 ## 验证结果
 
-Task 1 已完成。真实隔离 BCS + Edge 验证弱网导航、完成/失败/取消清理、并行请求；Ruff check/format、根目录 Pyright 和 diff 检查通过。
+Task 1、Task 2 已完成。真实隔离 BCS + Edge 验证手机/桌面空列表和弱网导航、完成/失败/取消清理、并行请求。全部 HTML 模板使用应用过滤器编译通过；Ruff check/format、根目录 Pyright 和 diff 检查通过。改动保留在主仓库 fix/navigation-loading-empty-states 分支工作区等待 review。

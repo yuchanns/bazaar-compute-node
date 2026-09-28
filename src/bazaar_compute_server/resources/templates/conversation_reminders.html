@@ -7,6 +7,6 @@
       {% endfor %}
       {% if reminders.answer == "offline" %}<div class="empty">{{ t.text("contacts.offline") }}</div>
       {% elif reminders.answer != "listed" %}<div class="empty">{{ t.text("contacts." ~ reminders.answer, {"code": reminders.code}) }}</div>
-      {% elif not reminders.items %}<div class="empty">{{ t.text("profile.no_reminders") }}</div>{% endif %}
+      {% elif not reminders.items %}{{ c.empty(t.text("profile.no_reminders"), "alarm-clock") }}{% endif %}
     </div>
 </div>
