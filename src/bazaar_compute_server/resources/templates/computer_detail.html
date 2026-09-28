@@ -17,7 +17,7 @@
     {% set attrs %}x-data="agentStatus" data-agent='{{ dict(poll("agent-status", agent), labels=status_labels)|tojson }}'{% endset %}
     {{ c.list_item(agent.name, icons=c.agent_icons(agent, with_system=false), settings="/agents/" ~ ref(selected.computer.id) ~ "/" ~ ref(agent.id) ~ "/profile", status=agent.status, identity=agent.name, href="/agents/" ~ ref(selected.computer.id) ~ "/" ~ ref(agent.id), off=(agent.status == "offline"), live_status=true, attrs=attrs) }}
     {% endfor %}
-    {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents")) }}{% endif %}
+    {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents"), "users") }}{% endif %}
   </div>
   <div class="roster-foot"><button class="add" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/agents/new" x-bind="opener" hx-target="#agent-new" hx-swap="outerHTML" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}" :disabled="!online"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>
   {# the question takes the button's place whole - a morph would leave a

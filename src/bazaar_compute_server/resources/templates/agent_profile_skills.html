@@ -1,8 +1,9 @@
+{% import "components.html" as c with context %}
 {# what the agent's runtimes found for it to do, by where they found it #}
 {% if skills.answer != "listed" %}
 <p class="err">{{ t.text("agents." ~ skills.answer, {"code": skills.code}) }}</p>
 {% elif not skills.groups|map(attribute=1)|select|list %}
-<div class="empty">{{ t.text("agents.no_skills") }}</div>
+{{ c.empty(t.text("agents.no_skills"), "grid-2x2") }}
 {% else %}
 {% for source, items in skills.groups if items %}
 <div class="section">{{ t.text("agents.skills." ~ source) }}</div>

@@ -61,6 +61,12 @@ a { color: inherit; text-decoration: none; }
 .body { padding: 14px 18px; overflow: auto; }
 .list-items { padding: 6px 8px; overflow-y: auto; flex: 1; }
 .empty { color: var(--muted); padding: 24px 18px; }
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 140px; text-align: center; font-size: 13px; }
+.empty-state .i svg { width: 36px; height: 36px; stroke-width: 1.25; opacity: .55; }
+.list-items:has(> .empty-state) { display: flex; flex-direction: column; }
+.list-items > .empty-state { flex: 1; }
+.drawer .rows .empty-state { min-height: 100px; }
+.drawer .empty-state .i svg { width: 28px; height: 28px; }
 
 /* list items */
 .li { --px: 8px; --py: 8px; display: flex; align-items: center; gap: 10px; padding: var(--py) var(--px); border-radius: var(--r-sm); position: relative; }
