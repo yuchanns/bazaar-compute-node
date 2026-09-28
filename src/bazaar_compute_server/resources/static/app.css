@@ -209,10 +209,23 @@ a { color: inherit; text-decoration: none; }
 .card .ev span.t { color: var(--muted); margin-right: 8px; }
 .card .ev .live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
 .card .more { margin-top: 8px; font-size: .9em; color: var(--muted); }
-/* until the card's first load arrives, a turning ring where the words will be */
+/* feedback while navigation or inline content is loading */
 .loading { display: flex; justify-content: center; align-items: center; min-height: 140px; color: var(--muted); }
-.loading .i svg { width: 20px; height: 20px; animation: turn 1s linear infinite; }
+.loading .i svg { width: 20px; height: 20px; }
+.navigation-loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 60; display: flex; color: var(--muted); pointer-events: none; }
+.navigation-loading .i svg { width: 28px; height: 28px; }
+.i .lucide-loader > path { animation: loading-fade 1s linear infinite; }
+.i .lucide-loader > path:nth-child(1) { animation-delay: -1s; }
+.i .lucide-loader > path:nth-child(2) { animation-delay: -0.875s; }
+.i .lucide-loader > path:nth-child(3) { animation-delay: -0.75s; }
+.i .lucide-loader > path:nth-child(4) { animation-delay: -0.625s; }
+.i .lucide-loader > path:nth-child(5) { animation-delay: -0.5s; }
+.i .lucide-loader > path:nth-child(6) { animation-delay: -0.375s; }
+.i .lucide-loader > path:nth-child(7) { animation-delay: -0.25s; }
+.i .lucide-loader > path:nth-child(8) { animation-delay: -0.125s; }
 @keyframes turn { to { transform: rotate(360deg); } }
+@keyframes loading-fade { from { opacity: 1; } to { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .i .lucide-loader > path { animation: none; } }
 
 /* forms and buttons */
 /* buttons side by side sit level, whether or not one carries an icon: on their middles, not their baselines */
@@ -456,7 +469,6 @@ a { color: inherit; text-decoration: none; }
 .blank .kinds > .loading { min-height: 38px; }
 .blank .kinds > .err { margin: 0; }
 .field .wait { display: inline-flex; color: var(--muted); }
-.field .wait .i svg { animation: turn 1s linear infinite; }
 .field [data-again] { margin-left: 0; }
 .field .wait[hidden], .field [data-again][hidden] { display: none; }
 /* a logo beside words sits on their middle, not their baseline */

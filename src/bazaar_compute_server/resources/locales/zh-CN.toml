@@ -316,3 +316,5 @@
 "event.reminder.fired" = "提醒已触发"
 "event.agent.start.succeeded" = "智能体已启动"
 "event.agent.start.failed" = "智能体启动失败"
+
+"app.loading" = "正在加载…"
