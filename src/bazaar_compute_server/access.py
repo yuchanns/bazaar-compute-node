@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -17,7 +18,7 @@ type Handler[S] = Callable[[S, Request], Awaitable[Response]]
 
 class Access:
     """Two kinds of permission point. A functional point says whether a
-    feature may be used at all (`computers.create`, `agents.chat`, ...); a
+    feature may be used at all (`computers.create`, `agents.update`, ...); a
     data point says which objects of a kind may be touched, read from the
     relations the account stands in. Roles, shares and the rights a share
     carries all arrive here; the pages keep asking the same few things."""
@@ -25,6 +26,7 @@ class Access:
     def __init__(
         self, account: Account, storage: IStorage, roles: Sequence[Role] = ()
     ) -> None:
+        self._targets: dict[tuple[str, Permission], set[str]] = {}
         self._account = account
         self._storage = storage
         self._permissions = frozenset(
@@ -57,8 +59,21 @@ class Access:
     async def can(self, kind: str, target_id: str, point: Permission) -> bool:
         if not self.allows(point):
             return False
-        return target_id in await self._storage.allowed_targets(
-            self.subject_id, kind, point
+        return target_id in await self.targets(kind, point)
+
+    async def targets(self, kind: str, point: Permission) -> set[str]:
+        if not self.allows(point):
+            return set()
+        key = (kind, point)
+        if key not in self._targets:
+            self._targets[key] = await self._storage.allowed_targets(
+                self.subject_id, kind, point
+            )
+        return self._targets[key]
+
+    async def can_share(self, kind: str, target_id: str) -> bool:
+        return self.is_admin or await self._storage.has_relation(
+            self.subject_id, f"{kind}_owner", target_id
         )
 
     async def can_see(self, kind: str, target_id: str) -> bool:
@@ -73,9 +88,7 @@ class Access:
         )
         if not self.allows(point):
             return set()
-        return set(target_ids) & await self._storage.allowed_targets(
-            self.subject_id, kind, point
-        )
+        return set(target_ids) & await self.targets(kind, point)
 
 
 def allowed[S](
@@ -89,6 +102,8 @@ def allowed[S](
     def guard(handler: Handler[S]) -> Handler[S]:
         @wraps(handler)
         async def guarded(self: S, request: Request) -> Response:
+            if not Access.of(request).allows(point):
+                raise HTTPException(status_code=403)
             if not await permission(Access.of(request), request.path_params):
                 return HTMLResponse("", status_code=404)
             return await handler(self, request)

@@ -31,6 +31,7 @@ def agent_info(agent: AgentView) -> dict[str, Any]:
             agent.system,
             agent.channels,
             agent.runtimes,
+            sorted(agent.actions),
         ]
     )
 
@@ -53,6 +54,7 @@ def computer_detail(item: ComputerView) -> dict[str, Any]:
             item.computer.id,
             item.computer.name,
             item.system,
+            sorted(item.actions),
             [[a.id, a.name, a.channels, a.runtimes] for a in item.agents],
         ]
     )

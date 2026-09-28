@@ -6,7 +6,8 @@
 {% if values is none %}
 <p class="err">{{ t.text("agents." ~ held.answer, {"code": held.code}) if held.answer != "listed" else t.text("agents.gone") }}</p>
 {% else %}
-<form x-data="agentForm" novalidate @submit.capture="submit($event)" @htmx:before:request="kindStarted($event)" @htmx:finally:request="kindFinished($event)" id="agent-config-{{ ref(selected.id) }}" class="config" hx-post="{{ base }}" hx-target="#profile-body" hx-swap="innerMorph" hx-disable="find [type=submit]" data-computer="/computers/{{ ref(selected.computer_id) }}">
+<form x-data="agentForm" novalidate @submit.capture="submit($event)" @htmx:before:request="kindStarted($event)" @htmx:finally:request="kindFinished($event)" id="agent-config-{{ ref(selected.id) }}" class="config" hx-post="{{ base }}" hx-target="#profile-body" hx-swap="innerMorph" hx-disable="find [type=submit]" data-computer="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}">
+  <fieldset{% if permissions.AGENTS_UPDATE not in selected.actions %} disabled{% endif %}>
   {{ f.initial(values, reply, kept=true, origins=origins if origins is defined else none) }}
   <div class="section">{{ t.text("agents.step.basic") }}</div>
   {{ f.basic(values) }}
@@ -18,15 +19,17 @@
   {{ f.deck("runtime", "agent-config-" ~ ref(selected.id)) }}
   {% if failed %}<p class="err">{{ t.text("agents." ~ failed.partition(":")[0], {"code": failed.partition(":")[2] or none}) }}</p>{% endif %}
   {% if saved %}<p class="ok">{{ t.text("agents.saved") }}</p>{% endif %}
-  <div class="actions">
+  </fieldset>
+  {% if permissions.AGENTS_UPDATE in selected.actions %}<div class="actions">
     <button class="btn p" type="submit">{{ t.text("profile.save") }}</button>
     <button class="btn" type="button" hx-get="{{ base }}/config" hx-target="#profile-body" hx-swap="innerHTML">{{ t.text("computers.cancel") }}</button>
-  </div>
+  </div>{% endif %}
 </form>
 {% endif %}
-<div class="dialog danger">
+{% if permissions.AGENTS_DELETE in selected.actions %}<div class="dialog danger">
   <h3>{{ t.text("agents.remove") }}</h3>
   <p class="st">{{ t.text("agents.remove_hint") }}</p>
   <button class="btn danger" type="button" hx-get="{{ base }}/remove" x-bind="opener" hx-target="#agent-remove" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("agents.remove") }}</button>
 </div>
+{% endif %}
 {% if saved %}{% with name = head.name, selected = head, oob = true %}{% include "agent_profile_head.html" %}{% endwith %}{% endif %}

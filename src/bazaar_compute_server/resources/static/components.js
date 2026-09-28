@@ -119,6 +119,41 @@ document.addEventListener('alpine:init', () => {
       this.members = [...members.values()];
     },
   }));
+  Alpine.data('roleSharing', () => ({
+    roles: [], grants: {}, original: {}, permissions: [], left: [], right: [],
+    leftSearch: '', rightSearch: '', labels: {}, saving: false, leaveHandler: null,
+    init() {
+      const data = JSON.parse(this.$el.dataset.sharing);
+      this.roles = data.roles;
+      this.original = data.grants;
+      this.grants = structuredClone(data.grants);
+      this.labels = Object.fromEntries([...this.$el.querySelectorAll('[data-point]')].map(el => [el.dataset.point, el.textContent]));
+      this.permissions = Object.keys(this.labels).filter(point => point === 'agents.view');
+      this.leaveHandler = event => {
+        if (!this.dirty || this.saving || !(event.target instanceof Element)) return;
+        const navigation = event.target.closest('a[href], .tab[hx-get]');
+        if (!navigation || this.$el.contains(navigation)) return;
+        if (!window.confirm(this.$el.dataset.leave)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      };
+      document.addEventListener('click', this.leaveHandler, true);
+    },
+    get available() { return this.roles.filter(role => !this.grants[role.id]?.length && role.name.toLowerCase().includes(this.leftSearch.toLowerCase())); },
+    get shared() { return this.roles.filter(role => this.grants[role.id]?.length && role.name.toLowerCase().includes(this.rightSearch.toLowerCase())); },
+    get changes() {
+      return Object.fromEntries(this.roles.filter(role =>
+        JSON.stringify([...(this.grants[role.id] || [])].sort()) !== JSON.stringify([...(this.original[role.id] || [])].sort())
+      ).map(role => [role.id, this.grants[role.id] || []]));
+    },
+    get dirty() { return Object.keys(this.changes).length > 0; },
+    grant() { for (const id of this.left) this.grants[id] = [...this.permissions]; this.left = []; },
+    revoke() { for (const id of this.right) delete this.grants[id]; this.right = []; },
+    apply() { for (const id of this.right) this.grants[id] = [...this.permissions]; this.right = []; },
+    reset() { this.grants = structuredClone(Alpine.raw(this.original)); this.left = []; this.right = []; },
+    destroy() { document.removeEventListener('click', this.leaveHandler, true); },
+  }));
   Alpine.data('profileTabs', () => ({
     tab: '',
     pending: null,

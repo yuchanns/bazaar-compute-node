@@ -22,6 +22,7 @@ from .poll import PollPages
 from .profile import ProfilePages
 from .roles import RolePages
 from .settings import SettingsPages
+from .shares import SharePages
 
 
 async def home(request: Request) -> Response:
@@ -46,6 +47,7 @@ def routes(
     accounts = AccountPages(storage, renderer, refs)
     oidc = OIDCPages(storage, renderer, refs)
     oidc_login = OIDCLoginPages(storage, renderer, sessions)
+    shares = SharePages(storage, renderer, refs)
     poll = PollPages(storage, renderer, refs)
     return [
         Route("/poll", poll.check, methods=["POST"]),
@@ -80,6 +82,14 @@ def routes(
         Route("/settings/{section}", settings.page),
         Route("/settings/password", settings.change_password, methods=["POST"]),
         Route("/settings/preferences", settings.change_preferences, methods=["POST"]),
+        Route(
+            "/computers/{computer_id}/shares", shares.computer, methods=["GET", "POST"]
+        ),
+        Route(
+            "/agents/{computer_id}/{agent_id}/shares",
+            shares.agent,
+            methods=["GET", "POST"],
+        ),
         Route("/agents", agents.list),
         Route("/agents/list", agents.list_fragment),
         Route("/agents/{computer_id}/{agent_id}", agents.show),
@@ -107,6 +117,8 @@ def routes(
             "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/profile",
             agents.profile,
         ),
+        Route("/agents/{computer_id}/{agent_id}/kinds/{family}", profile.kinds),
+        Route("/agents/{computer_id}/{agent_id}/models/{kind}", profile.models),
         Route("/agents/{computer_id}/{agent_id}/profile", profile.show),
         Route(
             "/agents/{computer_id}/{agent_id}/profile", profile.save, methods=["POST"]

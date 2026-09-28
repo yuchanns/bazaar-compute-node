@@ -21,8 +21,8 @@
     {% endif %}
     {% include "conversation_reminders.html" %}
   </div>
-  <div class="foot">
+  {% if permissions.AGENTS_APPROVE in selected.actions %}<div class="foot">
     <button class="btn danger" type="button" x-bind="opener" @click="$dispatch('dialog-open', 'remove-ask')">{{ c.icon("trash-2") }} {{ t.text("profile.remove_" ~ contact.kind) }}</button>
   </div>
-  {% include "remove_ask.html" %}
+  {% include "remove_ask.html" %}{% endif %}
 </div>

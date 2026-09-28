@@ -741,6 +741,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .login-order-controls .btn { padding: 4px; }
 
 
+.config > fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+#sharing .sheet { padding: 16px; overflow-y: auto; }
+#sharing .sheet h3 { padding: 0 0 10px; }
+#sharing .sheet .foot { padding: 12px 0 0; }
+
 .role-default { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0 20px 82px; color: var(--muted); font-size: .9em; }
 
 .provider-logo { display: grid; gap: 8px; min-width: 0; }
@@ -779,3 +784,45 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .accounts-body { flex: 1; }
 
 .login-identity small { color: var(--muted); font-size: 12px; }
+
+/* Role sharing is edited as one batch in the agent's own tab. */
+.agent-sharing { max-width: 980px; }
+.share-permissions { margin: 0; padding: 0; border: 0; }
+.share-permissions legend { margin-bottom: 14px; padding: 0; color: var(--fg); font-weight: 600; }
+.share-hint, .share-summary, .share-empty { color: var(--muted); font-size: 12px; }
+.share-hint { margin: 12px 0 24px; }
+.share-transfer { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); align-items: center; }
+.share-list { border: 1px solid var(--edge); border-radius: 8px; min-width: 0; overflow: hidden; }
+.share-list-head { height: 58px; display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--float); border-bottom: 1px solid var(--line); font-weight: 600; }
+.share-search { display: block; width: calc(100% - 24px); margin: 12px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 7px 9px; font: inherit; }
+.share-search:focus { outline: none; border-color: var(--accent); }
+.agent-sharing .btn:disabled { opacity: .4; cursor: default; }
+.share-select-all { margin: 0 14px 10px; color: var(--muted); }
+.share-rows { height: 220px; overflow: auto; }
+.share-role { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; }
+.share-role.selected { background: var(--hi); }
+.share-role input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; }
+.share-role-name { overflow-wrap: anywhere; }
+.share-summary { margin-left: auto; text-align: right; }
+.share-arrows { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.share-arrows .btn.icon { margin: 0; width: 36px; height: 34px; color: var(--fg); background: transparent; border: 0; }
+.share-arrows .btn.icon:hover { background: transparent; }
+.share-edit { margin-left: auto; font-size: 12px; flex: none; }
+.share-empty { padding: 14px; text-align: center; }
+.share-footer { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+.share-footer .share-hint { margin: 0; }
+.share-buttons { display: flex; gap: 8px; margin-left: auto; }
+@media (max-width: 600px) {
+  .share-transfer { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .share-list-head { height: 60px; padding: 8px 12px; }
+  .share-edit { min-height: 44px; }
+  .share-search { min-height: 44px; font-size: 16px; }
+  .share-rows { height: auto; min-height: 88px; max-height: 176px; }
+  .share-role { min-height: 44px; flex-wrap: wrap; }
+  .share-summary { overflow-wrap: anywhere; }
+  .share-select-all { min-height: 44px; margin-bottom: 0; }
+  .share-arrows { flex-direction: row; justify-content: center; gap: 24px; }
+  .share-arrows .btn.icon { width: 44px; height: 44px; }
+  .share-arrows .i { transform: rotate(90deg); }
+  .share-footer { position: sticky; bottom: 0; background: var(--panel); padding: 12px 0; margin-top: 12px; }
+}

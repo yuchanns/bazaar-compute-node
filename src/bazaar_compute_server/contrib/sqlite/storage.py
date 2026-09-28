@@ -452,6 +452,46 @@ class SqliteStorage(IStorage):
 
         await self._write(save)
 
+    async def save_role_shares(
+        self,
+        kind: str,
+        target_id: str,
+        grants: dict[str, frozenset[Permission]],
+        points: frozenset[Permission],
+    ) -> None:
+        async def save(db: aiosqlite.Connection) -> None:
+            for role_id, permissions in grants.items():
+                async with db.execute(
+                    "SELECT id FROM roles WHERE id=?", (role_id,)
+                ) as rows:
+                    if await rows.fetchone() is None:
+                        raise LookupError(role_id)
+                async with db.execute(
+                    "SELECT ext FROM relations WHERE subject_id=? AND kind=? AND target_id=?",
+                    (role_id, f"{kind}_share_role", target_id),
+                ) as rows:
+                    row = await rows.fetchone()
+                existing = set(json.loads(row["ext"])["permissions"]) if row else set()
+                permissions = frozenset((existing - points) | permissions)
+                if permissions:
+                    await db.execute(
+                        "INSERT INTO relations(subject_id,kind,target_id,ext,created_at_ms) VALUES (?,?,?,?,?) ON CONFLICT(subject_id,kind,target_id) DO UPDATE SET ext=excluded.ext",
+                        (
+                            role_id,
+                            f"{kind}_share_role",
+                            target_id,
+                            json.dumps({"permissions": sorted(permissions)}),
+                            now_ms(),
+                        ),
+                    )
+                else:
+                    await db.execute(
+                        "DELETE FROM relations WHERE subject_id=? AND kind=? AND target_id=?",
+                        (role_id, f"{kind}_share_role", target_id),
+                    )
+
+        await self._write(save)
+
     async def remove_role_share(self, role_id: str, kind: str, target_id: str) -> None:
         await self._write(
             lambda db: db.execute(
@@ -478,10 +518,19 @@ class SqliteStorage(IStorage):
         account = await self.get_account(account_id)
         if account is None:
             return set()
-        if account.auth_type != "local" or account.name != "admin":
-            roles = await self.list_roles(account_id)
-            if not any(point in role.permissions for role in roles):
-                return set()
+        if account.auth_type == "local" and account.name == "admin":
+            async with (
+                self._reader() as db,
+                db.execute(
+                    "SELECT id AS target_id FROM computers"
+                    if kind == "computer"
+                    else "SELECT target_id FROM relations WHERE kind='agent_owner'"
+                ) as rows,
+            ):
+                return {row["target_id"] async for row in rows}
+        roles = await self.list_roles(account_id)
+        if not any(point in role.permissions for role in roles):
+            return set()
         async with self._reader() as db:
             async with db.execute(
                 "SELECT target_id FROM relations WHERE subject_id=? AND kind=?",

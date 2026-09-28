@@ -730,13 +730,24 @@ async def test_an_account_sees_what_it_enrolled_and_nothing_else(
         role = Role(
             "reader",
             "Reader",
-            frozenset({Permission.COMPUTERS_VIEW, Permission.AGENTS_VIEW}),
+            frozenset(
+                {
+                    Permission.COMPUTERS_VIEW,
+                    Permission.COMPUTERS_CREATE,
+                    Permission.COMPUTERS_DELETE,
+                    Permission.AGENTS_VIEW,
+                }
+            ),
             now_ms(),
             now_ms(),
         )
         await storage.save_role(role)
         await storage.set_account_roles(account.id, [role.id])
-        mine = await enrol(storage, "mine")
+        await with_password(storage, "member", TESTER[1])
+        member = await storage.find_account("member")
+        assert member is not None
+        await storage.set_account_roles(member.id, [role.id])
+        mine = await enrol(storage, "mine", owner="member")
         theirs = await enrol(storage, "theirs", owner="other")
         for enrolment, agent_id in ((mine, "agent-mine"), (theirs, "agent-theirs")):
             await storage.record_events(
@@ -758,8 +769,8 @@ async def test_an_account_sees_what_it_enrolled_and_nothing_else(
                 ],
             )
 
-        async with signed_in(base, storage) as session:
-            # case: the lists carry root's computer and agent only
+        async with signed_in(base, storage, "member") as session:
+            # case: an ordinary member's lists carry their own resources
             _, computers = await _get(session, f"{base}/computers/list")
             assert "mine" in computers and "theirs" not in computers
             _, agents = await _get(session, f"{base}/agents/list")

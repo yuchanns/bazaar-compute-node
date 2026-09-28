@@ -154,6 +154,9 @@ class Renderer:
 
         response = self.page(request, "", "error.html", code=status_code)
         response.status_code = status_code
+        if status_code == 403 and request.headers.get("HX-Request") == "true":
+            response.headers["HX-Retarget"] = "#main"
+            response.headers["HX-Reswap"] = "innerMorph"
         return response
 
     def standalone(

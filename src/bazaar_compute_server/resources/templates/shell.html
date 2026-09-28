@@ -20,6 +20,7 @@
 <body data-build="{{ build }}" x-data="application" x-bind="connection" hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}'>
 <div class="app">
   {% include "rail.html" %}
+  <div id="sharing" hidden></div>
   <div id="main" class="main" :aria-busy="pending.size > 0" x-show="!unreachable">{% include content %}</div>
   {% include "unreachable.html" %}
 </div>

@@ -70,3 +70,20 @@ POLL_HANDLERS = MappingProxyType(
         ),
     }
 )
+
+
+SHARE_POINTS = MappingProxyType(
+    {
+        "computer": tuple(
+            point
+            for point in Permission
+            if point.module in ("computers", "agents")
+            and point != Permission.COMPUTERS_CREATE
+        ),
+        "agent": tuple(
+            point
+            for point in Permission
+            if point.module == "agents" and point != Permission.AGENTS_CREATE
+        ),
+    }
+)

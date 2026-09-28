@@ -89,6 +89,7 @@ async def test_role_members_browse_shared_resources_and_receive_action_grants(
             reviewer.id, "agent", "assistant", frozenset({P.AGENTS_UPDATE})
         )
         await storage.save_role_share(share)
+        access = Access(member, storage, await storage.list_roles(member.id))
         assert await access.can("agent", "assistant", P.AGENTS_UPDATE)
         await storage.set_account_roles(member.id, [reader.id])
         access = Access(member, storage, await storage.list_roles(member.id))

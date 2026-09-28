@@ -202,6 +202,14 @@ class IStorage(Protocol):
 
     async def save_role_share(self, share: RoleShare) -> None: ...
 
+    async def save_role_shares(
+        self,
+        kind: str,
+        target_id: str,
+        grants: dict[str, frozenset[Permission]],
+        points: frozenset[Permission],
+    ) -> None: ...
+
     async def remove_role_share(
         self, role_id: str, kind: str, target_id: str
     ) -> None: ...
