@@ -121,6 +121,6 @@
 <div class="section">{{ text }}</div>
 {%- endmacro %}
 
-{% macro empty(text) -%}
-<div class="empty">{{ text }}</div>
+{% macro empty(text, symbol=none, id=none) -%}
+<div class="empty{{ " empty-state" if symbol }}"{% if id %} id="{{ id }}"{% endif %}>{% if symbol %}{{ icon(symbol) }}<span>{{ text }}</span>{% else %}{{ text }}{% endif %}</div>
 {%- endmacro %}

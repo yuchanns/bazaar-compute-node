@@ -4,7 +4,7 @@
    scrolling it into view asks for the page before, which takes its place;
    the column notes how tall it was, so the page can be put above what is
    being read without moving it #}
-{% if history.before %}<div class="edge loading" hx-get="{{ url }}&before={{ history.before|urlencode }}" hx-trigger="revealed" hx-swap="outerHTML">{{ c.icon("loader-circle") }}</div>{% endif %}
+{% if history.before %}<div class="edge loading" hx-get="{{ url }}&before={{ history.before|urlencode }}" hx-trigger="revealed" hx-swap="outerHTML">{{ c.icon("loader") }}</div>{% endif %}
 {# a day's turns start under a line with its date: the first loaded when
    there is nothing before it, and any whose day is not the one above; a page
    put above others ends with the line for the day below it, when that one
@@ -24,7 +24,7 @@
   {# the agent's own face opens onto what it is doing, the way its row in the
      list does; the card fetches itself the first time the pointer reaches
      the avatar, and shows by the pointer while it is there #}
-  <div class="card" :style="{left: left + 'px', top: top + 'px'}" hx-morph-skip hx-get="/agents/{{ ref(history.agent.computer_id) }}/{{ ref(history.agent.id) }}/activity" hx-trigger='mouseenter once from:"previous .av"' hx-target="this" hx-swap="innerMorph"><div class="loading">{{ c.icon("loader-circle") }}</div></div>
+  <div class="card" :style="{left: left + 'px', top: top + 'px'}" hx-morph-skip hx-get="/agents/{{ ref(history.agent.computer_id) }}/{{ ref(history.agent.id) }}/activity" hx-trigger='mouseenter once from:"previous .av"' hx-target="this" hx-swap="innerMorph"><div class="loading">{{ c.icon("loader") }}</div></div>
   {% endif %}
   <div class="said">
     <div class="who"><b>{{ turn.speaker }}</b>{% if turn.kind in ("agent", "human") %} <span class="k">{{ t.text("history." ~ turn.kind) }}</span>{% endif %} <span class="at">{{ turn.at_ms|time }}</span></div>

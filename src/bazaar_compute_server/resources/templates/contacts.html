@@ -14,6 +14,6 @@
   {% elif listing.answer != "listed" %}
   <div class="empty">{{ t.text("contacts." ~ listing.answer, {"code": listing.code}) }} <button class="btn sm" hx-get="{{ url }}{% if selected_thread %}?selected={{ selected_thread }}{% endif %}{{ tab|replace("&", "&" if selected_thread else "?", 1) }}" hx-target="#contacts" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
   {% elif not listing.contacts %}
-  {{ c.empty(t.text("contacts.no_requests" if listing.review == "pending" else "contacts.empty")) }}
+  {{ c.empty(t.text("contacts.no_requests" if listing.review == "pending" else "contacts.empty"), "user-plus" if listing.review == "pending" else "message-circle") }}
   {% endif %}
 </div>

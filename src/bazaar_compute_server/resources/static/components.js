@@ -73,14 +73,17 @@ document.addEventListener('alpine:init', () => {
     destroy() { this.cancel?.(); },
   }));
 
-  Alpine.data('application', () => ({stale: false, unreachable: false}));
+  Alpine.data('application', () => ({stale: false, unreachable: false, pending: new Set()}));
   Alpine.bind('connection', () => ({
     '@poll-online.window'() { this.unreachable = false; },
     '@poll-offline.window'() { this.unreachable = true; },
     '@stale.window'() { this.stale = true; },
     '@htmx:before:request.window'(event) {
-      if (this.stale) event.preventDefault();
+      if (this.stale) { event.preventDefault(); return; }
+      const ctx = event.detail.ctx;
+      if (ctx.target?.id === 'main') this.pending.add(ctx);
     },
+    '@htmx:finally:request.window'(event) { this.pending.delete(event.detail.ctx); },
     '@htmx:error.window'(event) {
       if (event.detail?.error instanceof TypeError) this.unreachable = true;
     },

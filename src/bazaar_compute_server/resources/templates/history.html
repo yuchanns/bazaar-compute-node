@@ -7,7 +7,7 @@
   <div class="empty">{{ t.text("contacts." ~ history.answer, {"code": history.code}) }} <button class="btn sm" hx-get="{{ url }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-target="#history" hx-swap="outerHTML">{{ t.text("contacts.retry") }}</button></div>
   {% else %}
   {% include "history_rows.html" %}
-  {% if not history.turns %}{{ c.empty(t.text("history.empty")) }}{% endif %}
+  {% if not history.turns %}{{ c.empty(t.text("history.empty"), "message-square-text") }}{% endif %}
   {% endif %}
   {% include "history_end.html" %}
 </div>

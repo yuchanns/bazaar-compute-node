@@ -20,9 +20,11 @@
 <body data-build="{{ build }}" x-data="application" x-bind="connection" hx-swap:inherited="innerMorph" hx-headers:inherited='js:{"X-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone, "X-Build": "{{ build }}"}'>
 <div class="app">
   {% include "rail.html" %}
-  <div id="main" class="main" x-show="!unreachable">{% include content %}</div>
+  <div id="main" class="main" :aria-busy="pending.size > 0" x-show="!unreachable">{% include content %}</div>
   {% include "unreachable.html" %}
 </div>
+{% import "components.html" as c with context %}
+<div class="navigation-loading" x-cloak x-show="pending.size > 0 && !stale" role="status" aria-label="{{ t.text('app.loading') }}">{{ c.icon("loader") }}</div>
 <div class="veil" id="stale" x-cloak x-show="stale">
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="stale-title" x-trap.inert.noscroll="stale">
     <h3 id="stale-title">{{ t.text("stale.title") }}</h3>
