@@ -12,12 +12,17 @@ from ..refs import Refs
 from ..rendering import Renderer
 from ..sessions import Sessions
 from ..storage import IStorage
+from .accounts import AccountPages
 from .agents import AgentPages
 from .computers import ComputerPages
 from .login import LoginPages
+from .oidc import OIDCPages
+from .oidc_login import OIDCLoginPages
 from .poll import PollPages
 from .profile import ProfilePages
+from .roles import RolePages
 from .settings import SettingsPages
+from .shares import SharePages
 
 
 async def home(request: Request) -> Response:
@@ -38,17 +43,53 @@ def routes(
     computers = ComputerPages(storage, controls, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
+    roles = RolePages(storage, renderer, refs)
+    accounts = AccountPages(storage, renderer, refs)
+    oidc = OIDCPages(storage, renderer, refs)
+    oidc_login = OIDCLoginPages(storage, renderer, sessions)
+    shares = SharePages(storage, renderer, refs)
     poll = PollPages(storage, renderer, refs)
     return [
         Route("/poll", poll.check, methods=["POST"]),
         Route("/", home),
         Route("/login", login.form),
         Route("/login", login.login, methods=["POST"]),
+        Route("/login/oidc/resume", oidc_login.resume),
+        Route("/login/oidc/{provider_id}", oidc_login.start),
+        Route(
+            "/login/oidc/{provider_id}/callback",
+            oidc_login.callback,
+            name="oidc_callback",
+        ),
         Route("/logout", login.logout, methods=["POST"]),
         Route("/settings", settings.page),
+        Route("/settings/roles", roles.list),
+        Route("/settings/roles", roles.create, methods=["POST"]),
+        Route("/settings/roles/new", roles.new),
+        Route("/settings/roles/{role_id}", roles.show),
+        Route("/settings/roles/{role_id}", roles.save, methods=["POST"]),
+        Route("/settings/roles/{role_id}", roles.remove, methods=["DELETE"]),
+        Route("/settings/roles/{role_id}/default", roles.default, methods=["POST"]),
+        Route("/settings/accounts", accounts.list),
+        Route("/settings/accounts/{account_id}", accounts.show),
+        Route("/settings/accounts/{account_id}", accounts.save, methods=["POST"]),
+        Route("/settings/oidc", oidc.list),
+        Route("/settings/oidc", oidc.create, methods=["POST"]),
+        Route("/settings/oidc/order", oidc.reorder, methods=["POST"]),
+        Route("/settings/oidc/new", oidc.new),
+        Route("/settings/oidc/{provider_id}", oidc.show),
+        Route("/settings/oidc/{provider_id}", oidc.save, methods=["POST"]),
         Route("/settings/{section}", settings.page),
         Route("/settings/password", settings.change_password, methods=["POST"]),
         Route("/settings/preferences", settings.change_preferences, methods=["POST"]),
+        Route(
+            "/computers/{computer_id}/shares", shares.computer, methods=["GET", "POST"]
+        ),
+        Route(
+            "/agents/{computer_id}/{agent_id}/shares",
+            shares.agent,
+            methods=["GET", "POST"],
+        ),
         Route("/agents", agents.list),
         Route("/agents/list", agents.list_fragment),
         Route("/agents/{computer_id}/{agent_id}", agents.show),
@@ -76,6 +117,8 @@ def routes(
             "/agents/{computer_id}/{agent_id}/contacts/{thread_id}/profile",
             agents.profile,
         ),
+        Route("/agents/{computer_id}/{agent_id}/kinds/{family}", profile.kinds),
+        Route("/agents/{computer_id}/{agent_id}/models/{kind}", profile.models),
         Route("/agents/{computer_id}/{agent_id}/profile", profile.show),
         Route(
             "/agents/{computer_id}/{agent_id}/profile", profile.save, methods=["POST"]

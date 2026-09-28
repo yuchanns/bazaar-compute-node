@@ -83,7 +83,7 @@ async def test_an_agent_is_seen_changed_and_let_go_from_its_page(
                 # a runtime naming no model holds the default alone until its
                 # field is opened, and a save untouched keeps it so
                 assert initial["cards"]["runtime"][0].get("model", "") == ""
-                assert f'data-computer="/computers/{key.split("/")[0]}"' in page
+                assert f'data-computer="/agents/{key}"' in page
                 for tab in ("config", "skills", "workspace", "status", "activity"):
                     assert f'hx-get="/agents/{key}/profile/{tab}"' in page
 

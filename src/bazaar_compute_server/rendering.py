@@ -32,7 +32,8 @@ from .configure import editor
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
-from .polling import Descriptors
+from .permissions import Permission
+from .poll_rendering import Descriptors
 from .refs import Refs
 from .storage import Account
 
@@ -59,6 +60,7 @@ class Renderer:
         self._templates.filters["markdown"] = _markdown
         self._templates.globals["languages"] = LANGUAGES
         self._templates.globals["themes"] = THEMES
+        self._templates.globals["permissions"] = Permission
         self._templates.globals["asset"] = _asset
         self._templates.globals["build"] = BUILD
         self._templates.globals["editor"] = editor
@@ -152,6 +154,9 @@ class Renderer:
 
         response = self.page(request, "", "error.html", code=status_code)
         response.status_code = status_code
+        if status_code == 403 and request.headers.get("HX-Request") == "true":
+            response.headers["HX-Retarget"] = "#main"
+            response.headers["HX-Reswap"] = "innerMorph"
         return response
 
     def standalone(
@@ -171,6 +176,7 @@ class Renderer:
         account: Account | None = getattr(request.state, "account", None)
         translator = self.translator(request)
         return {
+            "access": getattr(request.state, "access", None),
             "time_labels": {
                 key: translator.text("time." + key, {"n": "{n}", "clock": "{clock}"})
                 for key in (

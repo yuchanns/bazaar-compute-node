@@ -10,6 +10,7 @@ from typing import Any
 
 from .access import Access
 from .clock import now_ms
+from .permissions import SHARE_POINTS, Permission
 from .storage import Computer, ComputerHealth, IStorage, StoredEvent, ThreadKey
 
 # a page is what one scroll of the list asks for; the next page is asked for
@@ -39,6 +40,7 @@ class AgentView:
     status: str
     channels: tuple[str, ...]
     runtimes: tuple[str, ...]
+    actions: frozenset[Permission] = frozenset()
     working_on: str | None = None
     working_since_ms: int | None = None
 
@@ -52,6 +54,7 @@ class ComputerView:
     system: str | None
     queued: int | None
     agents: tuple[AgentView, ...]
+    actions: frozenset[Permission] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,14 +130,19 @@ async def agent_page(
     more = False
     # the cursor's own computer may have agents past the cursor
     pending = []
-    if cursor is not None and await storage.has_relation(
-        subject, "computer_owner", cursor[0]
+    if cursor is not None and any(
+        computer.id == cursor[0]
+        for computer in await storage.list_computers(
+            subject, for_agents=True, until=cursor[0]
+        )
     ):
         first = await storage.find_computer(cursor[0])
         pending = [first] if first is not None else []
     last_id = None if cursor is None else cursor[0]
     while True:
-        batch = await storage.list_computers(subject, after=last_id, limit=PAGE_SIZE)
+        batch = await storage.list_computers(
+            subject, for_agents=True, after=last_id, limit=PAGE_SIZE
+        )
         computers = [*pending, *batch]
         pending = []
         if not computers:
@@ -209,8 +217,34 @@ async def _views(
     views = [_computer_view(item, open_turns, names) for item in health]
     # the agents the account may look at, out of all these computers report
     visible = await access.visible("agent", [agent.id for agent in agents_of(views)])
+    computer_actions = {
+        point: await access.targets("computer", point)
+        for point in SHARE_POINTS["computer"]
+    }
+    agent_actions = {
+        point: await access.targets("agent", point) for point in SHARE_POINTS["agent"]
+    }
     return [
-        replace(view, agents=tuple(a for a in view.agents if a.id in visible))
+        replace(
+            view,
+            actions=frozenset(
+                point
+                for point, targets in computer_actions.items()
+                if view.computer.id in targets
+            ),
+            agents=tuple(
+                replace(
+                    agent,
+                    actions=frozenset(
+                        point
+                        for point, targets in agent_actions.items()
+                        if agent.id in targets
+                    ),
+                )
+                for agent in view.agents
+                if agent.id in visible
+            ),
+        )
         for view in views
     ]
 

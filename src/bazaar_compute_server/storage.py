@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .permissions import Permission
 from .protocol import Event
 
 
@@ -19,7 +20,7 @@ class Computer:
 
 @dataclass(frozen=True, slots=True)
 class Account:
-    """Someone who may log in; the hash is what a session is checked against."""
+    """Someone who may log in, with identity type and session version."""
 
     id: str
     name: str
@@ -29,6 +30,55 @@ class Account:
     # and the system's theme
     language: str | None = None
     theme: str | None = None
+    auth_type: str = "local"
+    session_version: int = 0
+    display_name: str = ""
+    provider_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Role:
+    id: str
+    name: str
+    permissions: frozenset[Permission]
+    created_at_ms: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class OIDCProvider:
+    id: str
+    name: str
+    logo_url: str
+    issuer: str
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    created_at_ms: int
+    updated_at_ms: int
+    description: str = ""
+    default_role_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OIDCTransaction:
+    state: str
+    provider_id: str
+    browser_hash: str
+    nonce: str
+    code_verifier: str
+    redirect_uri: str
+    expires_at_ms: int
+    issuer: str = ""
+    subject: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RoleShare:
+    role_id: str
+    kind: str
+    target_id: str
+    permissions: frozenset[Permission]
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +160,66 @@ class IStorage(Protocol):
         """The account with how it reads the pages from now on."""
         ...
 
+    async def list_accounts(self, role_id: str | None = None) -> list[Account]: ...
+
+    async def list_roles(self, account_id: str | None = None) -> list[Role]: ...
+
+    async def save_role(self, role: Role) -> None: ...
+
+    async def remove_role(
+        self, role_id: str, *, replacement_id: str | None = None
+    ) -> None: ...
+
+    async def set_account_roles(
+        self, account_id: str, role_ids: Sequence[str]
+    ) -> None: ...
+
+    async def default_role(self) -> Role | None: ...
+
+    async def set_default_role(self, role_id: str) -> None: ...
+
+    async def login_order(self) -> list[str]: ...
+
+    async def save_login_order(self, order: list[str]) -> None: ...
+
+    async def list_oidc_providers(self) -> list[OIDCProvider]: ...
+
+    async def get_oidc_provider(self, provider_id: str) -> OIDCProvider | None: ...
+
+    async def save_oidc_provider(self, provider: OIDCProvider) -> None: ...
+
+    async def oidc_account(
+        self, provider_id: str, issuer: str, subject: str, display_name: str, email: str
+    ) -> Account: ...
+
+    async def save_oidc_transaction(self, transaction: OIDCTransaction) -> None: ...
+
+    async def consume_oidc_transaction(
+        self, state: str, browser_hash: str, provider_id: str
+    ) -> OIDCTransaction | None: ...
+
+    async def list_role_shares(self, kind: str, target_id: str) -> list[RoleShare]: ...
+
+    async def save_role_share(self, share: RoleShare) -> None: ...
+
+    async def save_role_shares(
+        self,
+        kind: str,
+        target_id: str,
+        grants: dict[str, frozenset[Permission]],
+        points: frozenset[Permission],
+    ) -> None: ...
+
+    async def remove_role_share(
+        self, role_id: str, kind: str, target_id: str
+    ) -> None: ...
+
+    async def agent_computer(self, agent_id: str) -> str | None: ...
+
+    async def allowed_targets(
+        self, account_id: str, kind: str, point: Permission
+    ) -> set[str]: ...
+
     async def add_computer(self, name: str, *, owner_id: str) -> Enrolment:
         """A new computer, owned by the account that enrolled it."""
         ...
@@ -125,6 +235,7 @@ class IStorage(Protocol):
         self,
         subject_id: str,
         *,
+        for_agents: bool = False,
         after: str | None = None,
         until: str | None = None,
         limit: int | None = None,

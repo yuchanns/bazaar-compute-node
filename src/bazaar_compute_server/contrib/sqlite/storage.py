@@ -15,6 +15,7 @@ from uuid import uuid7
 import aiosqlite
 
 from ...clock import now_ms
+from ...permissions import Permission
 from ...protocol import Event
 from ...secrets import derive, hash_secret, new_secret, verify_secret
 from ...storage import (
@@ -23,6 +24,10 @@ from ...storage import (
     ComputerHealth,
     Enrolment,
     IStorage,
+    OIDCProvider,
+    OIDCTransaction,
+    Role,
+    RoleShare,
     StoredEvent,
     ThreadKey,
 )
@@ -158,6 +163,402 @@ class SqliteStorage(IStorage):
         await connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    # ---- roles and external identities -----------------------------------
+
+    async def list_accounts(self, role_id: str | None = None) -> list[Account]:
+        query = f"SELECT {_ACCOUNT_COLUMNS} FROM accounts"
+        args: tuple[str, ...] = ()
+        if role_id is not None:
+            query += (
+                " WHERE id IN (SELECT account_id FROM account_roles WHERE role_id=?)"
+            )
+            args = (role_id,)
+        async with (
+            self._reader() as db,
+            db.execute(query + " ORDER BY id", args) as rows,
+        ):
+            return [_account_row(row) async for row in rows]
+
+    async def list_roles(self, account_id: str | None = None) -> list[Role]:
+        query = "SELECT * FROM roles"
+        args: tuple[str, ...] = ()
+        if account_id is not None:
+            query += (
+                " WHERE id IN (SELECT role_id FROM account_roles WHERE account_id = ?)"
+            )
+            args = (account_id,)
+        async with (
+            self._reader() as db,
+            db.execute(query + " ORDER BY name, id", args) as rows,
+        ):
+            return [_role_row(row) async for row in rows]
+
+    async def save_role(self, role: Role) -> None:
+        await self._write(
+            lambda db: db.execute(
+                "INSERT INTO roles(id, name, permissions, created_at_ms, updated_at_ms)"
+                " VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET"
+                " name=excluded.name, permissions=excluded.permissions, updated_at_ms=excluded.updated_at_ms",
+                (
+                    role.id,
+                    role.name,
+                    json.dumps(sorted(role.permissions)),
+                    role.created_at_ms,
+                    role.updated_at_ms,
+                ),
+            )
+        )
+
+    async def remove_role(
+        self, role_id: str, *, replacement_id: str | None = None
+    ) -> None:
+        async def remove(db: aiosqlite.Connection) -> None:
+            async with db.execute(
+                "SELECT default_role_id FROM auth_settings WHERE id=1"
+            ) as rows:
+                row = await rows.fetchone()
+            if row is not None and row["default_role_id"] == role_id:
+                if replacement_id is None or replacement_id == role_id:
+                    raise ValueError("choose a replacement default role")
+                await db.execute(
+                    "UPDATE auth_settings SET default_role_id=? WHERE id=1",
+                    (replacement_id,),
+                )
+            await db.execute(
+                "DELETE FROM relations WHERE subject_id=? AND kind IN ('computer_share_role', 'agent_share_role')",
+                (role_id,),
+            )
+            await db.execute("DELETE FROM roles WHERE id=?", (role_id,))
+
+        await self._write(remove)
+
+    async def set_account_roles(self, account_id: str, role_ids: Sequence[str]) -> None:
+        async def replace(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                "DELETE FROM account_roles WHERE account_id=?", (account_id,)
+            )
+            await db.executemany(
+                "INSERT INTO account_roles(account_id, role_id) VALUES (?, ?)",
+                [(account_id, role_id) for role_id in dict.fromkeys(role_ids)],
+            )
+
+        await self._write(replace)
+
+    async def default_role(self) -> Role | None:
+        async with (
+            self._reader() as db,
+            db.execute(
+                "SELECT roles.* FROM roles JOIN auth_settings ON roles.id=auth_settings.default_role_id WHERE auth_settings.id=1"
+            ) as rows,
+        ):
+            row = await rows.fetchone()
+            return None if row is None else _role_row(row)
+
+    async def set_default_role(self, role_id: str) -> None:
+        await self._write(
+            lambda db: db.execute(
+                "UPDATE auth_settings SET default_role_id=? WHERE id=1", (role_id,)
+            )
+        )
+
+    async def login_order(self) -> list[str]:
+        async with (
+            self._reader() as db,
+            db.execute("SELECT login_order FROM auth_settings WHERE id=1") as rows,
+        ):
+            row = await rows.fetchone()
+            assert row is not None
+            return json.loads(row["login_order"])
+
+    async def save_login_order(self, order: list[str]) -> None:
+        await self._write(
+            lambda db: db.execute(
+                "UPDATE auth_settings SET login_order=? WHERE id=1",
+                (json.dumps(order),),
+            )
+        )
+
+    async def list_oidc_providers(self) -> list[OIDCProvider]:
+        async with (
+            self._reader() as db,
+            db.execute(
+                "SELECT * FROM oidc_providers ORDER BY created_at_ms, id"
+            ) as rows,
+        ):
+            return [OIDCProvider(**dict(row)) async for row in rows]
+
+    async def get_oidc_provider(self, provider_id: str) -> OIDCProvider | None:
+        async with (
+            self._reader() as db,
+            db.execute(
+                "SELECT * FROM oidc_providers WHERE id=?", (provider_id,)
+            ) as rows,
+        ):
+            row = await rows.fetchone()
+            return None if row is None else OIDCProvider(**dict(row))
+
+    async def save_oidc_provider(self, provider: OIDCProvider) -> None:
+        async def save(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                "INSERT INTO oidc_providers(id,name,logo_url,issuer,client_id,client_secret,redirect_uri,created_at_ms,updated_at_ms,description,default_role_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
+                " name=excluded.name,logo_url=excluded.logo_url,issuer=excluded.issuer,client_id=excluded.client_id,"
+                " client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated_at_ms=excluded.updated_at_ms,description=excluded.description,default_role_id=excluded.default_role_id",
+                (
+                    provider.id,
+                    provider.name,
+                    provider.logo_url,
+                    provider.issuer,
+                    provider.client_id,
+                    provider.client_secret,
+                    provider.redirect_uri,
+                    provider.created_at_ms,
+                    provider.updated_at_ms,
+                    provider.description,
+                    provider.default_role_id,
+                ),
+            )
+            await db.execute(
+                "UPDATE auth_settings SET login_order=json_insert(login_order, '$[#]', ?)"
+                " WHERE id=1 AND NOT EXISTS (SELECT 1 FROM json_each(login_order) WHERE value=?)",
+                (provider.id, provider.id),
+            )
+
+        await self._write(save)
+
+    async def oidc_account(
+        self, provider_id: str, issuer: str, subject: str, display_name: str, email: str
+    ) -> Account:
+        """Resolve a verified identity, atomically assigning the default role on first login."""
+
+        async def resolve(db: aiosqlite.Connection) -> Account:
+            async with db.execute(
+                "SELECT account_id FROM oidc_identities WHERE issuer=? AND subject=?",
+                (issuer, subject),
+            ) as rows:
+                identity = await rows.fetchone()
+            if identity is None:
+                async with db.execute(
+                    "SELECT COALESCE(oidc_providers.default_role_id, auth_settings.default_role_id) AS default_role_id"
+                    " FROM oidc_providers CROSS JOIN auth_settings"
+                    " WHERE oidc_providers.id=? AND auth_settings.id=1",
+                    (provider_id,),
+                ) as rows:
+                    settings = await rows.fetchone()
+                if settings is None or settings["default_role_id"] is None:
+                    raise ValueError("a default role is required for first sign-in")
+                account_id = str(uuid7())
+                await db.execute(
+                    "INSERT INTO accounts(id,name,password_hash,created_at_ms,auth_type) VALUES (?,?,'',?,'oidc')",
+                    (account_id, account_id, now_ms()),
+                )
+                await db.execute(
+                    "INSERT INTO oidc_identities(issuer,subject,account_id,provider_id,display_name,email) VALUES (?,?,?,?,?,?)",
+                    (issuer, subject, account_id, provider_id, display_name, email),
+                )
+                await db.execute(
+                    "INSERT INTO account_roles(account_id,role_id) VALUES (?,?)",
+                    (account_id, settings["default_role_id"]),
+                )
+            else:
+                account_id = identity["account_id"]
+                await db.execute(
+                    "UPDATE oidc_identities SET display_name=?,email=? WHERE issuer=? AND subject=?",
+                    (display_name, email, issuer, subject),
+                )
+            async with db.execute(
+                f"SELECT {_ACCOUNT_COLUMNS} FROM accounts WHERE id=?", (account_id,)
+            ) as rows:
+                row = await rows.fetchone()
+            if row is None:
+                raise LookupError(account_id)
+            return _account_row(row)
+
+        return await self._write(resolve)
+
+    async def save_oidc_transaction(self, transaction: OIDCTransaction) -> None:
+        async def save(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                "DELETE FROM oidc_transactions WHERE expires_at_ms <= ?", (now_ms(),)
+            )
+            await db.execute(
+                "INSERT INTO oidc_transactions(state,provider_id,browser_hash,nonce,code_verifier,redirect_uri,expires_at_ms,issuer,subject) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    transaction.state,
+                    transaction.provider_id,
+                    transaction.browser_hash,
+                    transaction.nonce,
+                    transaction.code_verifier,
+                    transaction.redirect_uri,
+                    transaction.expires_at_ms,
+                    transaction.issuer,
+                    transaction.subject,
+                ),
+            )
+
+        await self._write(save)
+
+    async def consume_oidc_transaction(
+        self, state: str, browser_hash: str, provider_id: str
+    ) -> OIDCTransaction | None:
+        async def consume(db: aiosqlite.Connection) -> OIDCTransaction | None:
+            async with db.execute(
+                "DELETE FROM oidc_transactions WHERE state=? AND browser_hash=? AND provider_id=? AND expires_at_ms>? RETURNING *",
+                (state, browser_hash, provider_id, now_ms()),
+            ) as rows:
+                row = await rows.fetchone()
+            return None if row is None else OIDCTransaction(**dict(row))
+
+        return await self._write(consume)
+
+    async def list_role_shares(self, kind: str, target_id: str) -> list[RoleShare]:
+        async with (
+            self._reader() as db,
+            db.execute(
+                "SELECT subject_id,ext FROM relations WHERE kind=? AND target_id=? ORDER BY subject_id",
+                (f"{kind}_share_role", target_id),
+            ) as rows,
+        ):
+            return [
+                RoleShare(
+                    row["subject_id"],
+                    kind,
+                    target_id,
+                    frozenset(
+                        Permission(point)
+                        for point in json.loads(row["ext"])["permissions"]
+                    ),
+                )
+                async for row in rows
+            ]
+
+    async def save_role_share(self, share: RoleShare) -> None:
+        async def save(db: aiosqlite.Connection) -> None:
+            async with db.execute(
+                "SELECT id FROM roles WHERE id=?", (share.role_id,)
+            ) as rows:
+                if await rows.fetchone() is None:
+                    raise LookupError(share.role_id)
+            await db.execute(
+                "INSERT INTO relations(subject_id,kind,target_id,ext,created_at_ms) VALUES (?,?,?,?,?) ON CONFLICT(subject_id,kind,target_id) DO UPDATE SET ext=excluded.ext",
+                (
+                    share.role_id,
+                    f"{share.kind}_share_role",
+                    share.target_id,
+                    json.dumps({"permissions": sorted(share.permissions)}),
+                    now_ms(),
+                ),
+            )
+
+        await self._write(save)
+
+    async def save_role_shares(
+        self,
+        kind: str,
+        target_id: str,
+        grants: dict[str, frozenset[Permission]],
+        points: frozenset[Permission],
+    ) -> None:
+        async def save(db: aiosqlite.Connection) -> None:
+            for role_id, permissions in grants.items():
+                async with db.execute(
+                    "SELECT id FROM roles WHERE id=?", (role_id,)
+                ) as rows:
+                    if await rows.fetchone() is None:
+                        raise LookupError(role_id)
+                async with db.execute(
+                    "SELECT ext FROM relations WHERE subject_id=? AND kind=? AND target_id=?",
+                    (role_id, f"{kind}_share_role", target_id),
+                ) as rows:
+                    row = await rows.fetchone()
+                existing = set(json.loads(row["ext"])["permissions"]) if row else set()
+                permissions = frozenset((existing - points) | permissions)
+                if permissions:
+                    await db.execute(
+                        "INSERT INTO relations(subject_id,kind,target_id,ext,created_at_ms) VALUES (?,?,?,?,?) ON CONFLICT(subject_id,kind,target_id) DO UPDATE SET ext=excluded.ext",
+                        (
+                            role_id,
+                            f"{kind}_share_role",
+                            target_id,
+                            json.dumps({"permissions": sorted(permissions)}),
+                            now_ms(),
+                        ),
+                    )
+                else:
+                    await db.execute(
+                        "DELETE FROM relations WHERE subject_id=? AND kind=? AND target_id=?",
+                        (role_id, f"{kind}_share_role", target_id),
+                    )
+
+        await self._write(save)
+
+    async def remove_role_share(self, role_id: str, kind: str, target_id: str) -> None:
+        await self._write(
+            lambda db: db.execute(
+                "DELETE FROM relations WHERE subject_id=? AND kind=? AND target_id=?",
+                (role_id, f"{kind}_share_role", target_id),
+            )
+        )
+
+    async def agent_computer(self, agent_id: str) -> str | None:
+        async with (
+            self._reader() as db,
+            db.execute(
+                "SELECT ext FROM relations WHERE kind='agent_owner' AND target_id=?",
+                (agent_id,),
+            ) as rows,
+        ):
+            row = await rows.fetchone()
+            return None if row is None else json.loads(row["ext"])["computer_id"]
+
+    async def allowed_targets(
+        self, account_id: str, kind: str, point: Permission
+    ) -> set[str]:
+        """Ownership and the union of role grants, including explicit computer-to-agent grants."""
+        account = await self.get_account(account_id)
+        if account is None:
+            return set()
+        if account.auth_type == "local" and account.name == "admin":
+            async with (
+                self._reader() as db,
+                db.execute(
+                    "SELECT id AS target_id FROM computers"
+                    if kind == "computer"
+                    else "SELECT target_id FROM relations WHERE kind='agent_owner'"
+                ) as rows,
+            ):
+                return {row["target_id"] async for row in rows}
+        roles = await self.list_roles(account_id)
+        if not any(point in role.permissions for role in roles):
+            return set()
+        async with self._reader() as db:
+            async with db.execute(
+                "SELECT target_id FROM relations WHERE subject_id=? AND kind=?",
+                (account_id, f"{kind}_owner"),
+            ) as rows:
+                targets = {row["target_id"] async for row in rows}
+            async with db.execute(
+                "SELECT kind,target_id,ext FROM relations WHERE subject_id IN (SELECT role_id FROM account_roles WHERE account_id=?) AND kind IN (?,?)",
+                (account_id, f"{kind}_share_role", "computer_share_role"),
+            ) as rows:
+                grants = await rows.fetchall()
+            computers = set()
+            for grant in grants:
+                if point not in json.loads(grant["ext"])["permissions"]:
+                    continue
+                if grant["kind"] == f"{kind}_share_role":
+                    targets.add(grant["target_id"])
+                elif kind == "agent":
+                    computers.add(grant["target_id"])
+            if computers:
+                async with db.execute(
+                    "SELECT target_id,ext FROM relations WHERE kind='agent_owner'"
+                ) as rows:
+                    async for row in rows:
+                        if json.loads(row["ext"])["computer_id"] in computers:
+                            targets.add(row["target_id"])
+            return targets
+
     # ---- accounts --------------------------------------------------------
 
     async def add_account(self, name: str, password: str) -> Account:
@@ -191,7 +592,11 @@ class SqliteStorage(IStorage):
         account = await self.find_account(name)
         # an unknown name costs the same as a wrong password, so neither
         # can be told apart by timing
-        stored = _NOBODY if account is None else account.password_hash
+        stored = (
+            _NOBODY
+            if account is None or account.auth_type != "local"
+            else account.password_hash
+        )
         if not await derive(verify_secret, password, stored):
             return None
         return account
@@ -205,7 +610,7 @@ class SqliteStorage(IStorage):
             # the hash the caller verified is the one being replaced; another
             # change landing in between means their password was already wrong
             cursor = await db.execute(
-                "UPDATE accounts SET password_hash = ?"
+                "UPDATE accounts SET password_hash = ?, session_version = session_version + 1"
                 " WHERE id = ? AND password_hash = ?",
                 (password_hash, account_id, expected_hash),
             )
@@ -316,29 +721,45 @@ class SqliteStorage(IStorage):
         self,
         subject_id: str,
         *,
+        for_agents: bool = False,
         after: str | None = None,
         until: str | None = None,
         limit: int | None = None,
     ) -> list[Computer]:
-        # ids are uuid7, so id order is enrolment order and an id is a
-        # cursor: the rows past it stay the rows past it, whatever is added
-        # or removed meanwhile
+        if for_agents:
+            agents = await self.allowed_targets(
+                subject_id, "agent", Permission.AGENTS_VIEW
+            )
+            targets = set()
+            async with (
+                self._reader() as db,
+                db.execute(
+                    "SELECT target_id,ext FROM relations WHERE kind='agent_owner'"
+                ) as rows,
+            ):
+                async for row in rows:
+                    if row["target_id"] in agents:
+                        targets.add(json.loads(row["ext"])["computer_id"])
+        else:
+            targets = await self.allowed_targets(
+                subject_id, "computer", Permission.COMPUTERS_VIEW
+            )
+        if not targets:
+            return []
         async with (
-            self._reader() as reader,
-            reader.execute(
-                "SELECT id, name, created_at_ms FROM computers"
-                " WHERE id IN (SELECT target_id FROM relations"
-                "  WHERE subject_id = ? AND kind = 'computer_owner')"
-                " AND id > ? AND id <= ? ORDER BY id LIMIT ?",
+            self._reader() as db,
+            db.execute(
+                f"SELECT id,name,created_at_ms FROM computers WHERE id IN ({_marks(tuple(targets))})"
+                " AND id>? AND id<=? ORDER BY id LIMIT ?",
                 (
-                    subject_id,
+                    *sorted(targets),
                     "" if after is None else after,
                     "\uffff" if until is None else until,
                     -1 if limit is None else limit,
                 ),
-            ) as cursor,
+            ) as rows,
         ):
-            return [_computer(row) async for row in cursor]
+            return [_computer(row) async for row in rows]
 
     async def has_relation(self, subject_id: str, kind: str, target_id: str) -> bool:
         async with (
@@ -763,7 +1184,11 @@ class _Write[T]:
     result: asyncio.Future[T]
 
 
-_ACCOUNT_COLUMNS = "id, name, password_hash, created_at_ms, language, theme"
+_ACCOUNT_COLUMNS = (
+    "id, name, password_hash, created_at_ms, language, theme, auth_type, session_version, "
+    "COALESCE((SELECT display_name FROM oidc_identities WHERE account_id=accounts.id LIMIT 1), '') AS display_name, "
+    "COALESCE((SELECT p.name FROM oidc_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.account_id=accounts.id LIMIT 1), '') AS provider_name"
+)
 _INBOUND = "channel.inbound.persisted"
 # what changes a conversation as a reader sees it: a message arriving, or
 # one of the agent's own reaching the channel
@@ -777,6 +1202,16 @@ _MESSAGE_EVENTS = (
 )
 
 
+def _role_row(row: aiosqlite.Row) -> Role:
+    return Role(
+        row["id"],
+        row["name"],
+        frozenset(Permission(point) for point in json.loads(row["permissions"])),
+        row["created_at_ms"],
+        row["updated_at_ms"],
+    )
+
+
 def _account_row(row: aiosqlite.Row) -> Account:
     return Account(
         id=row["id"],
@@ -785,6 +1220,10 @@ def _account_row(row: aiosqlite.Row) -> Account:
         created_at_ms=row["created_at_ms"],
         language=row["language"],
         theme=row["theme"],
+        auth_type=row["auth_type"],
+        session_version=row["session_version"],
+        display_name=row["display_name"],
+        provider_name=row["provider_name"],
     )
 
 

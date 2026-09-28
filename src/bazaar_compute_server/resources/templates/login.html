@@ -14,7 +14,31 @@
 <body x-data="application" x-bind="connection" hx-swap:inherited="innerMorph">
 <div class="gate" x-show="!unreachable">
   <div class="sign big">{% include "sign.svg" %}</div>
-  {% include "login_form.html" %}
+  <div class="login-methods" x-data='{ selected: {{ order[0]|tojson }} }' x-init="if (selected === 'password') $nextTick(() => document.getElementById('name').focus())">
+    <div x-show="selected === 'password'"{% if order[0] != 'password' %} x-cloak{% endif %}>
+      {% include "login_form.html" %}
+    </div>
+    {% for provider in providers %}
+    <a class="login-provider" aria-label="{{ provider.name }}" href="/login/oidc/{{ provider.id }}" x-show="selected === '{{ provider.id }}'"{% if order[0] != provider.id %} x-cloak{% endif %}>
+      <span class="login-logo">{% if provider.logo_url %}<img src="{{ provider.logo_url }}" alt="" referrerpolicy="no-referrer">{% else %}{% include "icons/key-round.svg" %}{% endif %}</span>
+      <span class="login-identity"><strong>{{ provider.name }}</strong>{% if provider.description %}<small>{{ provider.description }}</small>{% endif %}</span>
+    </a>
+    {% endfor %}
+    {% if oidc_error %}<p class="err" role="alert">{{ t.text(oidc_error) }}</p>{% endif %}
+    {% if order|length > 1 %}
+    <div class="login-switcher">
+    <p class="login-other">{{ t.text("login.other") }}</p>
+    <div class="login-alternatives">
+      {% for id in order %}
+      {% set provider = providers|selectattr('id', 'equalto', id)|first if id != 'password' else none %}
+      <button type="button" class="login-alternative" aria-label="{{ provider.name if provider else t.text('login.local') }}" title="{{ provider.name if provider else t.text('login.local') }}" x-show="selected !== '{{ id }}'"{% if order[0] == id %} x-cloak{% endif %} @click="selected = '{{ id }}'{% if id == 'password' %}; $nextTick(() => document.getElementById('name').focus()){% endif %}">
+        <span class="login-logo">{% if provider and provider.logo_url %}<img src="{{ provider.logo_url }}" alt="" referrerpolicy="no-referrer">{% else %}{% include "icons/key-round.svg" %}{% endif %}</span>
+      </button>
+      {% endfor %}
+    </div>
+    </div>
+    {% endif %}
+  </div>
 </div>
 {% include "unreachable.html" %}
 </body>

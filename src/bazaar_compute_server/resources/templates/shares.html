@@ -1,0 +1,19 @@
+{% import "components.html" as c with context %}
+<div class="veil" id="sharing" x-data="dialog(true)" x-bind="dialog" x-cloak @click.self="open = false">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sharing-title" x-trap.inert.noscroll="open" tabindex="-1">
+    <h3 id="sharing-title">{{ t.text("shares." ~ kind) }}</h3>
+    <p>{{ t.text("shares.hint") }}</p>
+    {% if error %}<p class="err" role="alert">{{ t.text(error) }}</p>{% endif %}
+    {% if saved %}<p role="status">{{ t.text("shares.saved") }}</p>{% endif %}
+    {% if roles %}
+    <form hx-post="{{ url }}" hx-target="#sharing" hx-swap="outerHTML">
+      <div class="field"><label for="share-role">{{ t.text("shares.role") }}</label><span class="select"><select id="share-role" name="role" hx-get="{{ url }}" hx-trigger="change" hx-target="#sharing" hx-swap="outerHTML">{% for role in roles %}<option value="{{ role.id }}"{% if role.id == selected %} selected{% endif %}>{{ role.name }}{% if role.id in grants %} · {{ t.text("shares.granted") }}{% endif %}</option>{% endfor %}</select>{{ c.icon("chevron-down") }}</span></div>
+      <fieldset class="permission-group"><legend>{{ t.text("roles.permissions") }}</legend>
+        {% for point in points %}<label class="check"><input type="checkbox" name="permissions" value="{{ point }}"{% if point in grants.get(selected, ()) %} checked{% endif %}><span>{{ t.text(point) }}</span></label>{% endfor %}
+      </fieldset>
+      <p>{{ t.text("shares.revoke_hint") }}</p>
+      <div class="foot"><button class="btn" type="button" @click="open = false">{{ t.text("computers.cancel") }}</button><button class="btn p" type="submit">{{ t.text("manage.save") }}</button></div>
+    </form>
+    {% else %}<p>{{ t.text("accounts.no_roles") }}</p><button class="btn" type="button" @click="open = false">{{ t.text("computers.cancel") }}</button>{% endif %}
+  </div>
+</div>

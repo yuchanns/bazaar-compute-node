@@ -5,8 +5,8 @@
 <div class="col wide profile" id="profile-page" data-pane="profile" x-data="profileTabs" data-tab="{{ profile }}" @htmx:before:request="before($event)" @htmx:after:swap.window="after($event)" @htmx:finally:request.window="finished($event)">
   {% with name = selected.name %}{% include "agent_profile_head.html" %}{% endwith %}
   <div class="switch text">
-    {% for tab in ("config", "skills", "workspace", "status", "activity") %}
-    <button class="tab" type="button" hx-get="{{ base }}/{{ tab }}" hx-target="#profile-body" hx-swap="innerHTML" hx-sync="#profile-body:replace" hx-push-url="{{ base }}?tab={{ tab }}" @click="tab = '{{ tab }}'" :class="{on: tab === '{{ tab }}'}">{{ t.text("profile_tab." ~ tab) }}</button>
+    {% for tab in ("config", "skills", "workspace", "status", "activity", "sharing") %}
+    {% if tab != "sharing" or can_share %}<button class="tab" type="button" hx-get="{{ base }}/{{ tab }}" hx-target="#profile-body" hx-swap="innerHTML" hx-sync="#profile-body:replace" hx-push-url="{{ base }}?tab={{ tab }}" @click="tab = '{{ tab }}'" :class="{on: tab === '{{ tab }}'}">{{ t.text("profile_tab." ~ tab) }}</button>{% endif %}
     {% endfor %}
   </div>
   <div class="body" id="profile-body" x-show="!pending">{% include "agent_profile_" ~ profile ~ ".html" %}</div>

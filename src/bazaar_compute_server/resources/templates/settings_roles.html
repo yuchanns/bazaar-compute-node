@@ -1,0 +1,40 @@
+<div class="col list management-list" data-pane="entries">
+  {% call c.column_header(t.text("settings.roles"), back="/settings") %}
+    <a class="btn icon" href="/settings/roles/new" hx-get="/settings/roles/new" hx-swap="innerHTML" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('roles.new') }}" title="{{ t.text('roles.new') }}">{{ c.icon("plus") }}</a>
+  {% endcall %}
+  <div class="list-items">
+    {% for role in roles %}
+      {{ c.list_item(role.name, t.text("roles.default") if default and default.id == role.id else none, href="/settings/roles/" ~ ref(role.id), on=(selected and selected.id == role.id), icon_name="users", attrs='hx-swap="innerHTML"') }}
+    {% else %}
+      <div class="empty empty-state">{{ c.icon("users") }}<span>{{ t.text("roles.empty") }}</span><a class="btn p" href="/settings/roles/new" hx-get="/settings/roles/new" hx-swap="innerHTML" hx-target="#main" hx-push-url="true">{{ t.text("roles.new") }}</a></div>
+    {% endfor %}
+  </div>
+</div>
+<div class="col wide" data-pane="entry">
+  {% call c.column_header(t.text("roles.new") if new else selected.name if selected else t.text("settings.roles"), back="/settings/roles") %}
+    {% if selected and (not default or default.id != selected.id) %}<button class="btn icon" type="button" aria-label="{{ t.text('roles.remove') }}" title="{{ t.text('roles.remove') }}" hx-delete="/settings/roles/{{ ref(selected.id) }}" hx-target="#main" hx-confirm="{{ t.text('roles.remove_confirm') }}">{{ c.icon("trash-2") }}</button>{% endif %}
+  {% endcall %}
+  <div class="body">
+  {% if new or selected %}
+    {% set url = "/settings/roles/" ~ ref(selected.id) if selected else "/settings/roles" %}
+    {% if error %}<p class="bad" role="alert">{{ t.text(error) }}</p>{% endif %}
+    <form id="roles-form-{{ selected.id if selected else 'new' }}" class="management-form" hx-post="{{ url }}" hx-target="#main" hx-swap="innerHTML">
+      <div class="field"><label for="role-name">{{ t.text("roles.name") }}</label><input id="role-name" name="name" value="{{ selected.name if selected else '' }}" required maxlength="80" autocomplete="off"></div>
+      {% if selected %}
+      <div class="role-default">
+        {% if default and default.id == selected.id %}<span class="badge">{{ t.text("roles.default") }}</span>{% else %}<button class="btn sm" type="button" hx-post="{{ url }}/default" hx-target="#main">{{ t.text("roles.set_default") }}</button>{% endif %}
+        {% if default and default.id == selected.id %}<span>{{ t.text("roles.default_hint") }}</span>{% endif %}
+      </div>
+      {% endif %}
+      <h3>{{ t.text("roles.permissions") }}</h3>
+      {% for module, points in groups.items() %}
+      <fieldset class="permission-group"><legend>{{ t.text("permissions." ~ module) }}</legend>
+        {% for point in points %}<label class="check"><input type="checkbox" name="permissions" value="{{ point }}"{% if selected and point in selected.permissions %} checked{% endif %}><span>{{ t.text(point) }}</span></label>{% endfor %}
+      </fieldset>
+      {% endfor %}
+      <button class="btn p" type="submit">{{ t.text("manage.save") }}</button>
+    </form>
+
+  {% else %}{{ c.empty(t.text("roles.select"), "users") }}{% endif %}
+  </div>
+</div>

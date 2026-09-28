@@ -17,6 +17,8 @@ from ..configure import (
     SECRETS,
     configuration,
     held,
+    kinds,
+    models,
     remove,
     reply_of,
     save,
@@ -25,14 +27,16 @@ from ..configure import (
 )
 from ..control import Controls
 from ..fleet import AgentView, agent_health, agent_page, agent_view
-from ..polling import agent_info, health_state
+from ..permissions import Permission
+from ..poll_rendering import agent_info, health_state
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
 from .agents import AgentPages, named
+from .shares import SharePages
 
 # the page's tabs, in the order they stand; the first is where it opens
-TABS = ("config", "skills", "workspace", "status", "activity")
+TABS = ("config", "skills", "workspace", "status", "activity", "sharing")
 
 
 class ProfilePages:
@@ -50,8 +54,8 @@ class ProfilePages:
         self.refs = refs
         self._agents = agents
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show(self, request: Request) -> Response:
@@ -72,6 +76,9 @@ class ProfilePages:
         )
         if selected is None:
             return HTMLResponse("", status_code=404)
+        can_share = await Access.of(request).can_share("agent", selected.id)
+        if tab == "sharing" and not can_share:
+            return HTMLResponse("", status_code=404)
         await self.refs.load(named([*page.agents, selected]))
         return self._render.page(
             request,
@@ -84,11 +91,12 @@ class ProfilePages:
             latest=None,
             asked=None,
             profile=tab,
+            can_share=can_share,
             **await self._tab(request, selected, tab),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def tab(self, request: Request) -> Response:
@@ -100,6 +108,10 @@ class ProfilePages:
         selected = await self._selected(request)
         if selected is None:
             return HTMLResponse("", status_code=404)
+        if tab == "sharing" and not await Access.of(request).can_share(
+            "agent", selected.id
+        ):
+            return HTMLResponse("", status_code=404)
         return self._render.fragment(
             request,
             f"agent_profile_{tab}.html",
@@ -107,8 +119,8 @@ class ProfilePages:
             **await self._tab(request, selected, tab),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def head(self, request: Request) -> Response:
@@ -123,8 +135,8 @@ class ProfilePages:
             poll_state=agent_info(selected),
         )
 
-    @allowed("agents.update")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_UPDATE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def save(self, request: Request) -> Response:
@@ -203,8 +215,8 @@ class ProfilePages:
             secrets=SECRETS,
         )
 
-    @allowed("agents.delete")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_DELETE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def remove_ask(self, request: Request) -> Response:
@@ -217,8 +229,8 @@ class ProfilePages:
             request, "agent_remove.html", selected=selected, failed=None
         )
 
-    @allowed("agents.delete")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_DELETE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def remove(self, request: Request) -> Response:
@@ -240,8 +252,8 @@ class ProfilePages:
         response.headers["HX-Push-Url"] = "/agents"
         return response
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def events(self, request: Request) -> Response:
@@ -277,6 +289,51 @@ class ProfilePages:
             more=after is None and len(lines) == PAGE_EVENTS,
         )
 
+    @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
+    @sees("computer", "computer_id")
+    async def kinds(self, request: Request) -> Response:
+        family = request.path_params["family"]
+        if family not in {"channel", "runtime"}:
+            return HTMLResponse("", status_code=404)
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        return self._render.fragment(
+            request,
+            "agent_kinds.html",
+            family=family,
+            listed=await kinds(
+                self._controls,
+                selected.computer_id,
+                family,
+                online=selected.status != "offline",
+            ),
+            secrets=SECRETS,
+        )
+
+    @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
+    @sees("computer", "computer_id")
+    async def models(self, request: Request) -> Response:
+        selected = await self._selected(request)
+        if selected is None:
+            return HTMLResponse("", status_code=404)
+        listed = await models(
+            self._controls,
+            selected.computer_id,
+            request.path_params["kind"],
+            online=selected.status != "offline",
+        )
+        if listed.answer != "listed":
+            return HTMLResponse(
+                self._render.translator(request).text(
+                    "agents." + listed.answer, {"code": listed.code}
+                ),
+                status_code=502,
+            )
+        return self._render.fragment(request, "agent_models.html", models=listed.models)
+
     async def _selected(self, request: Request) -> AgentView | None:
         params = request.path_params
         selected = await agent_view(
@@ -294,6 +351,10 @@ class ProfilePages:
     ) -> dict[str, Any]:
         """What one tab shows."""
 
+        if tab == "sharing":
+            return await SharePages(
+                self._storage, self._render, self.refs
+            ).agent_context(request)
         if tab == "config":
             agents, reply = await asyncio.gather(
                 held(

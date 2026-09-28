@@ -1,12 +1,15 @@
-"""Settings: for now, the password of whoever is logged in."""
+"""Personal appearance and admin account security."""
 
 from __future__ import annotations
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
+from ..access import Access
 from ..gate import set_session
 from ..i18n import LANGUAGES
+from ..permissions import Permission
 from ..rendering import THEMES, Renderer
 from ..sessions import Sessions
 from ..storage import Account, IStorage
@@ -15,6 +18,16 @@ from ..storage import Account, IStorage
 # the floor NIST SP 800-63B sets for a chosen password
 MIN_PASSWORD_CHARS = 8
 SECTIONS = ("appearance", "security")
+
+
+def sections(access: Access) -> tuple[str, ...]:
+    return (
+        "appearance",
+        *(("security",) if access.is_admin else ()),
+        *(("roles",) if access.allows(Permission.SETTINGS_ROLES) else ()),
+        *(("accounts",) if access.allows(Permission.SETTINGS_ACCOUNTS) else ()),
+        *(("oidc",) if access.allows(Permission.SETTINGS_OIDC) else ()),
+    )
 
 
 class SettingsPages:
@@ -28,14 +41,15 @@ class SettingsPages:
     async def page(self, request: Request) -> Response:
         account = _account(request)
         section = request.path_params.get("section", SECTIONS[0])
-        if section not in SECTIONS:
-            return HTMLResponse("", status_code=404)
+        available = sections(Access.of(request))
+        if section not in available:
+            raise HTTPException(status_code=403 if section in SECTIONS else 404)
         return self._render.page(
             request,
             "settings",
             "settings.html",
             account=account,
-            sections=SECTIONS,
+            sections=available,
             section=section,
             view="section" if "section" in request.path_params else "settings",
             outcome=None,
@@ -54,6 +68,8 @@ class SettingsPages:
         return Response(status_code=204, headers={"HX-Refresh": "true"})
 
     async def change_password(self, request: Request) -> Response:
+        if not Access.of(request).is_admin:
+            raise HTTPException(status_code=403)
         account = _account(request)
         form = await request.form()
         current = str(form.get("current", ""))
@@ -79,7 +95,12 @@ class SettingsPages:
         response = self._render.fragment(
             request, "password_form.html", outcome="changed"
         )
-        set_session(response, self._sessions.issue(changed), request=request)
+        set_session(
+            response,
+            self._sessions.issue(changed),
+            request=request,
+            max_age=self._sessions.max_age,
+        )
         return response
 
 

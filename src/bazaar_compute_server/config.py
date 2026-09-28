@@ -23,6 +23,7 @@ class ServerConfiguration(BaseModel):
     # host and port, read the way a URL is: `127.0.0.1:8765`, `[::1]:8765`,
     # or the same with a scheme in front
     listen: str = "127.0.0.1:8765"
+    session_minutes: int = Field(default=10, ge=1, strict=True)
     retention_days: int = Field(default=30, ge=1, strict=True)
     storage: str = Field(default="sqlite", min_length=1)
     # a storage's own settings live in a table named after it
@@ -103,6 +104,7 @@ def _serialize(configuration: ServerConfiguration) -> str:
     lines = [
         f'listen = "{configuration.listen}"',
         f"retention_days = {configuration.retention_days}",
+        f"session_minutes = {configuration.session_minutes}",
         f'storage = "{configuration.storage}"',
     ]
     return "\n".join(lines) + "\n"

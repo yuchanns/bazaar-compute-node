@@ -24,6 +24,9 @@ dependencies = [
     "yarl>=1.18",
     "markdown-it-py>=4.2.0",
     "pygments>=2.20.0",
+    "authlib>=1.8.0",
+    "joserfc>=1.7.5",
+    "httpx2>=2.13.1",
 ]
 
 [project.urls]

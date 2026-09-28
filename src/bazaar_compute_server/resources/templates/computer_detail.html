@@ -2,6 +2,7 @@
 <div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="poll-refresh, agents-changed from:body" x-poll data-poll='{{ poll("computer", selected)|tojson }}' x-data="computerState" data-computer='{{ poll("computer-state", selected)|tojson }}' hx-swap="outerMorph">
 {% call c.column_header(selected.computer.name, back="/computers") %}
   <span class="sub">{% if selected.system in c.os_icons %}<span class="os" title="{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}">{{ c.icon(c.os_icons[selected.system]) }}</span>{% endif %}<span x-show="queued" x-text='{{ t.text("computers.queue", {"queued": "{queued}"})|tojson }}.replace("{queued}", queued)'></span></span>
+  {% if permissions.COMPUTERS_SHARE in selected.actions %}<button class="btn" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/shares" x-bind="opener" hx-target="#sharing" hx-swap="outerHTML">{{ t.text("shares.computer") }}</button>{% endif %}
 {% endcall %}
 <div class="body">
   {# the commands that connect a computer just added, shown this once at the
@@ -19,14 +20,14 @@
     {% endfor %}
     {% if not selected.agents %}{{ c.empty(t.text("computers.no_agents"), "users") }}{% endif %}
   </div>
-  <div class="roster-foot"><button class="add" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/agents/new" x-bind="opener" hx-target="#agent-new" hx-swap="outerHTML" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}" :disabled="!online"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>
+  {% if permissions.AGENTS_CREATE in selected.actions %}<div class="roster-foot"><button class="add" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/agents/new" x-bind="opener" hx-target="#agent-new" hx-swap="outerHTML" title="{{ t.text("computers.new_agent") }}" aria-label="{{ t.text("computers.new_agent") }}" :disabled="!online"{% if not selected.online %} disabled{% endif %}>{{ c.icon("plus") }}</button></div>{% endif %}
   {# the question takes the button's place whole - a morph would leave a
      box marked to be skipped as it is - and the mark then keeps the pane's
      refresh from putting the button back #}
-  <div class="dialog danger" id="remove-{{ ref(selected.computer.id) }}" hx-morph-skip>
+  {% if permissions.COMPUTERS_DELETE in selected.actions %}<div class="dialog danger" id="remove-{{ ref(selected.computer.id) }}" hx-morph-skip>
     <h3>{{ t.text("computers.remove") }}</h3>
     <p class="st">{{ t.text("computers.remove_hint") }}</p>
     <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove-{{ ref(selected.computer.id) }}" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
-  </div>
+  </div>{% endif %}
 </div>
 </div>
