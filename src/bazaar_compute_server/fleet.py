@@ -219,7 +219,7 @@ async def _views(
     visible = await access.visible("agent", [agent.id for agent in agents_of(views)])
     computer_actions = {
         point: await access.targets("computer", point)
-        for point in SHARE_POINTS["computer"]
+        for point in (*SHARE_POINTS["computer"], Permission.COMPUTERS_SHARE)
     }
     agent_actions = {
         point: await access.targets("agent", point) for point in SHARE_POINTS["agent"]

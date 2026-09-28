@@ -352,9 +352,9 @@ class ProfilePages:
         """What one tab shows."""
 
         if tab == "sharing":
-            return await SharePages(
-                self._storage, self._render, self.refs
-            ).agent_context(request)
+            return await SharePages(self._storage, self._render, self.refs).context(
+                request, "agent", request.path_params["agent_id"]
+            )
         if tab == "config":
             agents, reply = await asyncio.gather(
                 held(

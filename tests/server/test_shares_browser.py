@@ -111,35 +111,54 @@ async def test_role_sharing_and_member_actions_in_the_browser(
                 await owner.get_by_role("button", name="Save", exact=True).click()
                 await expect(owner.get_by_text("Saved.", exact=True)).to_be_visible()
                 await owner.goto(f"{base}/computers/{computer_key}")
-                await owner.get_by_role(
-                    "button", name="Share computer", exact=True
-                ).click()
-                await expect(owner.locator("#sharing")).to_be_visible()
-                await owner.get_by_label("Role", exact=True).select_option(reader.id)
-                await expect(owner.locator("#share-role")).to_have_value(reader.id)
-                for label in ("View computers", "View agents", "Approve contacts"):
+                await owner.get_by_role("button", name="Sharing", exact=True).click()
+                await expect(owner.locator(".role-sharing")).to_be_visible()
+                for label in ("View computers",):
                     await owner.get_by_label(label, exact=True).check()
                 await (
-                    owner.locator("#sharing")
+                    owner.locator(".share-list")
+                    .first.get_by_label("Readers", exact=True)
+                    .check()
+                )
+                await owner.get_by_role(
+                    "button", name="Share with selected roles", exact=True
+                ).click()
+                await (
+                    owner.locator(".role-sharing")
                     .get_by_role("button", name="Save", exact=True)
                     .click()
                 )
                 await expect(
-                    owner.get_by_text("Sharing updated.", exact=True)
-                ).to_be_visible()
+                    owner.locator('.role-sharing input[name="changes"]')
+                ).to_have_value('{"grants":{}}')
                 await owner.screenshot(path=str(tmp_path / "share-computer.png"))
                 await viewer.goto(f"{base}/computers/{computer_key}")
                 await expect(
                     viewer.get_by_text("Shared workstation", exact=True).first
                 ).to_be_visible()
+                await owner.goto(f"{base}/agents/{key}/profile?tab=sharing")
+                await (
+                    owner.locator(".share-list")
+                    .first.get_by_label("Readers", exact=True)
+                    .check()
+                )
+                await owner.get_by_role(
+                    "button", name="Share with selected roles", exact=True
+                ).click()
+                await owner.get_by_role("button", name="Save", exact=True).click()
+                await expect(
+                    owner.locator('.role-sharing input[name="changes"]')
+                ).to_have_value('{"grants":{}}')
                 await viewer.goto(f"{base}/agents/{key}/profile")
                 await expect(viewer.locator("#agent-name")).to_be_disabled()
-                await viewer.goto(f"{base}/agents/{key}?review=pending")
+                # The administrator reviews contacts; the recipient browses
+                # the approved conversation through its viewing grant.
+                await owner.goto(f"{base}/agents/{key}?review=pending")
+                await owner.locator('#contacts a[href*="/contacts/"]').first.click()
+                await owner.get_by_role("button", name="Allow", exact=True).click()
+                await expect(owner.locator("#history")).to_be_visible()
+                await viewer.goto(f"{base}/agents/{key}?review=approved")
                 await viewer.locator('#contacts a[href*="/contacts/"]').first.click()
-                await expect(
-                    viewer.get_by_role("button", name="Allow", exact=True)
-                ).to_be_visible()
-                await viewer.get_by_role("button", name="Allow", exact=True).click()
                 await expect(viewer.locator("#history")).to_be_visible()
 
                 thread_key = str((await storage.shorten(["stranger"]))[0])
@@ -203,44 +222,29 @@ async def test_role_sharing_and_member_actions_in_the_browser(
                 await viewer.get_by_role("button", name="Save", exact=True).click()
                 await expect(viewer.get_by_text("Saved.", exact=True)).to_be_visible()
 
-                # Grant agent-only visibility, then revoke the computer share.
-                await owner.goto(f"{base}/agents/{key}/profile?tab=sharing")
-                await (
-                    owner.locator(".share-list")
-                    .first.get_by_label("Readers", exact=True)
-                    .check()
-                )
-                await owner.get_by_role(
-                    "button", name="Share with selected roles", exact=True
-                ).click()
-                await (
-                    owner.locator("#agent-sharing")
-                    .get_by_role("button", name="Save", exact=True)
-                    .click()
-                )
-                await expect(
-                    owner.locator('#agent-sharing input[name="changes"]')
-                ).to_have_value('{"grants":{}}')
+                # Revoke the computer share while keeping explicit agent grants.
                 await owner.set_viewport_size({"width": 390, "height": 844})
                 await owner.goto(f"{base}/computers/{computer_key}")
-                await owner.get_by_role(
-                    "button", name="Share computer", exact=True
-                ).click()
-                await owner.get_by_label("Role", exact=True).select_option(reader.id)
-                await expect(owner.locator("#share-role")).to_have_value(reader.id)
-                await owner.screenshot(path=str(tmp_path / "share-mobile.png"))
-                for checkbox in await owner.locator(
-                    '#sharing input[type="checkbox"]'
-                ).all():
-                    await checkbox.uncheck()
+                await owner.get_by_role("button", name="Sharing", exact=True).click()
                 await (
-                    owner.locator("#sharing")
+                    owner.locator(".share-list")
+                    .last.locator(".share-role")
+                    .filter(has_text="Readers")
+                    .get_by_role("checkbox")
+                    .check()
+                )
+                await owner.screenshot(path=str(tmp_path / "share-mobile.png"))
+                await owner.get_by_role(
+                    "button", name="Revoke selected shares", exact=True
+                ).click()
+                await (
+                    owner.locator(".role-sharing")
                     .get_by_role("button", name="Save", exact=True)
                     .click()
                 )
                 await expect(
-                    owner.get_by_text("Sharing updated.", exact=True)
-                ).to_be_visible()
+                    owner.locator('.role-sharing input[name="changes"]')
+                ).to_have_value('{"grants":{}}')
                 await viewer.goto(base + "/agents")
                 await viewer.locator(f'a[href="/agents/{key}"]').first.click()
                 await expect(viewer.locator("#agent-contacts-head")).to_be_visible()
@@ -269,7 +273,8 @@ async def test_role_sharing_and_member_actions_in_the_browser(
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["agent", "computer"])
+async def test_share_transfer_and_saved_roles(tmp_path: Path, kind: str) -> None:
     from bazaar_compute_server.protocol import Event
 
     playwright = pytest.importorskip("playwright.async_api")
@@ -307,7 +312,7 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
                 Role(
                     str(uuid7()),
                     name,
-                    frozenset({P.AGENTS_VIEW, P.AGENTS_UPDATE, P.AGENTS_APPROVE}),
+                    frozenset({P.AGENTS_VIEW, P.AGENTS_UPDATE, P.AGENTS_DELETE}),
                     now_ms(),
                     now_ms(),
                 )
@@ -328,31 +333,38 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
             await page.locator("#password").fill(TESTER[1])
             await page.locator("#login button").click()
             await page.wait_for_url("**/agents")
-            await page.goto(f"{base}/agents/{key}/profile?tab=activity")
+            if kind == "agent":
+                await page.goto(f"{base}/agents/{key}/profile?tab=activity")
+            else:
+                await page.goto(f"{base}/computers/{key.split('/')[0]}")
             await page.get_by_role("button", name="分享", exact=True).click()
-            await expect(page.locator("#agent-sharing")).to_be_visible()
+            await expect(page.locator(".role-sharing")).to_be_visible()
             left = page.locator(".share-list").first
             right = page.locator(".share-list").last
-            await page.get_by_label("修改", exact=True).check()
+            await page.get_by_label(
+                "修改" if kind == "agent" else "创建智能体", exact=True
+            ).check()
             for name in ("运营人员", "内容编辑"):
                 await left.get_by_label(name, exact=True).check()
             await page.get_by_role("button", name="分享给选中角色", exact=True).click()
             await expect(right.get_by_text("运营人员", exact=True)).to_be_visible()
             await expect(right.get_by_text("内容编辑", exact=True)).to_be_visible()
             await (
-                page.locator("#agent-sharing")
+                page.locator(".role-sharing")
                 .get_by_role("button", name="保存", exact=True)
                 .click()
             )
             await expect(
-                page.locator('#agent-sharing input[name="changes"]')
+                page.locator('.role-sharing input[name="changes"]')
             ).to_have_value('{"grants":{}}')
             await page.reload()
             await expect(right.get_by_text("运营人员", exact=True)).to_be_visible()
             await expect(right.get_by_text("内容编辑", exact=True)).to_be_visible()
             # Update two roles together, then restore the pending change.
             await right.get_by_label("全选", exact=True).check()
-            await page.get_by_label("审核联系人", exact=True).check()
+            await page.get_by_label(
+                "审核联系人" if kind == "agent" else "删除电脑", exact=True
+            ).check()
             await page.get_by_role("button", name="修改权限", exact=True).click()
             await page.get_by_role("button", name="取消", exact=True).click()
             await expect(
@@ -362,23 +374,34 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
             await page.get_by_role("button", name="修改权限", exact=True).click()
             await page.get_by_role("button", name="保存", exact=True).click()
             await expect(
-                page.locator('#agent-sharing input[name="changes"]')
+                page.locator('.role-sharing input[name="changes"]')
             ).to_have_value('{"grants":{}}')
             await page.reload()
             await expect(right.locator(".share-summary").first).to_contain_text(
-                "审核联系人"
+                "审核联系人" if kind == "agent" else "删除电脑"
             )
             # Search, cancel leaving an unsaved grant, and revoke a saved role.
             await page.get_by_label("搜索未分享的角色").fill("协作")
             await left.get_by_label("协作成员", exact=True).check()
             await page.get_by_role("button", name="分享给选中角色", exact=True).click()
 
+            if kind == "computer":
+                await page.locator("#computer-view").evaluate(
+                    "el => htmx.trigger(el, 'poll-refresh')"
+                )
+                await expect(right.get_by_text("协作成员", exact=True)).to_be_visible()
+                await expect(
+                    page.get_by_role("button", name="保存", exact=True)
+                ).to_be_enabled()
+
             async def stay(dialog):
                 await dialog.dismiss()
 
             page.on("dialog", stay)
-            await page.get_by_role("button", name="活动", exact=True).click()
-            await expect(page.locator("#agent-sharing")).to_be_visible()
+            await page.get_by_role(
+                "button", name="活动" if kind == "agent" else "概览", exact=True
+            ).click()
+            await expect(page.locator(".role-sharing")).to_be_visible()
             page.remove_listener("dialog", stay)
             await page.get_by_role("button", name="取消", exact=True).click()
             await (
@@ -392,7 +415,7 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
             ).click()
             await page.get_by_role("button", name="保存", exact=True).click()
             await expect(
-                page.locator('#agent-sharing input[name="changes"]')
+                page.locator('.role-sharing input[name="changes"]')
             ).to_have_value('{"grants":{}}')
             await page.reload()
             await expect(left.get_by_label("内容编辑", exact=True)).to_be_visible()
@@ -414,7 +437,7 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
                 ).click()
                 await page.get_by_role("button", name="保存", exact=True).click()
                 await expect(
-                    page.locator('#agent-sharing input[name="changes"]')
+                    page.locator('.role-sharing input[name="changes"]')
                 ).to_have_value('{"grants":{}}')
                 await page.reload()
                 await (
@@ -428,7 +451,7 @@ async def test_agent_share_transfer_and_saved_roles(tmp_path: Path) -> None:
                 ).click()
                 await page.get_by_role("button", name="保存", exact=True).click()
                 await expect(
-                    page.locator('#agent-sharing input[name="changes"]')
+                    page.locator('.role-sharing input[name="changes"]')
                 ).to_have_value('{"grants":{}}')
                 await page.reload()
                 await left.get_by_label("协作成员", exact=True).check()
@@ -465,7 +488,7 @@ async def test_computer_sharer_preserves_administrator_grants(tmp_path: Path) ->
         recipients = Role(
             str(uuid7()),
             "Review team",
-            frozenset({P.COMPUTERS_VIEW, P.AGENTS_APPROVE}),
+            frozenset({P.COMPUTERS_VIEW, P.AGENTS_CREATE}),
             now_ms(),
             now_ms(),
         )
@@ -480,7 +503,7 @@ async def test_computer_sharer_preserves_administrator_grants(tmp_path: Path) ->
                 recipients.id,
                 "computer",
                 computer.id,
-                frozenset({P.COMPUTERS_VIEW, P.AGENTS_APPROVE}),
+                frozenset({P.COMPUTERS_VIEW, P.AGENTS_CREATE}),
             )
         )
         key = (await storage.shorten([computer.id]))[0]
@@ -499,45 +522,38 @@ async def test_computer_sharer_preserves_administrator_grants(tmp_path: Path) ->
                     page.get_by_role("heading", name="Access denied", exact=True)
                 ).to_be_visible()
                 await page.goto(f"{base}/computers/{key}")
-                await page.get_by_role(
-                    "button", name="Share computer", exact=True
-                ).click()
-                await page.get_by_label("Role", exact=True).select_option(recipients.id)
-                await expect(page.locator("#share-role")).to_have_value(recipients.id)
+                await page.get_by_role("button", name="Sharing", exact=True).click()
+                left = page.locator(".share-list").first
+                right = page.locator(".share-list").last
                 for enabled in (False, True):
-                    await page.get_by_label("View computers", exact=True).set_checked(
-                        enabled
-                    )
-                    await (
-                        page.locator("#sharing")
-                        .get_by_role("button", name="Save", exact=True)
-                        .click()
-                    )
+                    if enabled:
+                        await left.get_by_label("Review team", exact=True).check()
+                        await page.get_by_role(
+                            "button", name="Share with selected roles", exact=True
+                        ).click()
+                    else:
+                        await (
+                            right.locator(".share-role")
+                            .filter(has_text="Review team")
+                            .get_by_role("checkbox")
+                            .check()
+                        )
+                        await page.get_by_role(
+                            "button", name="Revoke selected shares", exact=True
+                        ).click()
+                    await page.get_by_role("button", name="Save", exact=True).click()
                     await expect(
-                        page.get_by_text("Sharing updated.", exact=True)
-                    ).to_be_visible()
+                        page.locator('.role-sharing input[name="changes"]')
+                    ).to_have_value('{"grants":{}}')
                     shares = await storage.list_role_shares("computer", computer.id)
                     grant = next(
                         share for share in shares if share.role_id == recipients.id
                     )
-                    assert P.AGENTS_APPROVE in grant.permissions
+                    assert P.AGENTS_CREATE in grant.permissions
                     await page.reload()
-                    await page.get_by_role(
-                        "button", name="Share computer", exact=True
-                    ).click()
-                    await page.get_by_label("Role", exact=True).select_option(
-                        recipients.id
-                    )
-                    await expect(page.locator("#share-role")).to_have_value(
-                        recipients.id
-                    )
-                    if enabled:
-                        await expect(
-                            page.get_by_label("View computers", exact=True)
-                        ).to_be_checked()
-                    else:
-                        await expect(
-                            page.get_by_label("View computers", exact=True)
-                        ).not_to_be_checked()
+                    panel = right if enabled else left
+                    await expect(
+                        panel.get_by_text("Review team", exact=True)
+                    ).to_be_visible()
             finally:
                 await browser.close()

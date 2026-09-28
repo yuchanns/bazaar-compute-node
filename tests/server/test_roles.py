@@ -54,7 +54,7 @@ async def test_role_members_browse_shared_resources_and_receive_action_grants(
         reader = Role(
             "reader",
             "Readers",
-            frozenset({P.COMPUTERS_VIEW, P.AGENTS_VIEW}),
+            frozenset({P.COMPUTERS_VIEW, P.AGENTS_VIEW, P.COMPUTERS_SHARE}),
             now_ms(),
             now_ms(),
         )
@@ -73,12 +73,37 @@ async def test_role_members_browse_shared_resources_and_receive_action_grants(
                 reader.id,
                 "computer",
                 computer.id,
-                frozenset({P.COMPUTERS_VIEW, P.AGENTS_VIEW, P.AGENTS_APPROVE}),
+                frozenset(
+                    {
+                        P.COMPUTERS_VIEW,
+                        P.AGENTS_VIEW,
+                        P.AGENTS_APPROVE,
+                        P.COMPUTERS_SHARE,
+                    }
+                ),
             )
         )
         access = Access(member, storage, await storage.list_roles(member.id))
         assert await access.can("computer", computer.id, P.COMPUTERS_VIEW)
-        assert await access.can("agent", "assistant", P.AGENTS_APPROVE)
+        assert await storage.allowed_targets(member.id, "agent", P.AGENTS_VIEW) == set()
+        await storage.save_role_share(
+            RoleShare(reader.id, "agent", "assistant", frozenset({P.AGENTS_VIEW}))
+        )
+        access = Access(member, storage, await storage.list_roles(member.id))
+        assert await access.can("agent", "assistant", P.AGENTS_VIEW)
+        assert (
+            await storage.allowed_targets(member.id, "agent", P.AGENTS_APPROVE) == set()
+        )
+        assert (
+            await storage.allowed_targets(member.id, "computer", P.COMPUTERS_SHARE)
+            == set()
+        )
+        assert "assistant" in await storage.allowed_targets(
+            owner.id, "agent", P.AGENTS_APPROVE
+        )
+        assert computer.id in await storage.allowed_targets(
+            owner.id, "computer", P.COMPUTERS_SHARE
+        )
         computers = await storage.list_computers(member.id)
         assert computer in computers
         page = await agent_page(storage, access)
