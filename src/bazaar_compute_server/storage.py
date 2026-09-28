@@ -32,6 +32,8 @@ class Account:
     theme: str | None = None
     auth_type: str = "local"
     session_version: int = 0
+    display_name: str = ""
+    provider_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +156,7 @@ class IStorage(Protocol):
         """The account with how it reads the pages from now on."""
         ...
 
-    async def list_accounts(self) -> list[Account]: ...
+    async def list_accounts(self, role_id: str | None = None) -> list[Account]: ...
 
     async def list_roles(self, account_id: str | None = None) -> list[Role]: ...
 

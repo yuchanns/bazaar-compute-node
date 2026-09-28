@@ -165,10 +165,17 @@ class SqliteStorage(IStorage):
 
     # ---- roles and external identities -----------------------------------
 
-    async def list_accounts(self) -> list[Account]:
+    async def list_accounts(self, role_id: str | None = None) -> list[Account]:
+        query = f"SELECT {_ACCOUNT_COLUMNS} FROM accounts"
+        args: tuple[str, ...] = ()
+        if role_id is not None:
+            query += (
+                " WHERE id IN (SELECT account_id FROM account_roles WHERE role_id=?)"
+            )
+            args = (role_id,)
         async with (
             self._reader() as db,
-            db.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM accounts ORDER BY id") as rows,
+            db.execute(query + " ORDER BY id", args) as rows,
         ):
             return [_account_row(row) async for row in rows]
 
@@ -1098,7 +1105,11 @@ class _Write[T]:
     result: asyncio.Future[T]
 
 
-_ACCOUNT_COLUMNS = "id, name, password_hash, created_at_ms, language, theme, auth_type, session_version"
+_ACCOUNT_COLUMNS = (
+    "id, name, password_hash, created_at_ms, language, theme, auth_type, session_version, "
+    "COALESCE((SELECT display_name FROM oidc_identities WHERE account_id=accounts.id LIMIT 1), '') AS display_name, "
+    "COALESCE((SELECT p.name FROM oidc_identities i JOIN oidc_providers p ON p.id=i.provider_id WHERE i.account_id=accounts.id LIMIT 1), '') AS provider_name"
+)
 _INBOUND = "channel.inbound.persisted"
 # what changes a conversation as a reader sees it: a message arriving, or
 # one of the agent's own reaching the channel
@@ -1132,6 +1143,8 @@ def _account_row(row: aiosqlite.Row) -> Account:
         theme=row["theme"],
         auth_type=row["auth_type"],
         session_version=row["session_version"],
+        display_name=row["display_name"],
+        provider_name=row["provider_name"],
     )
 
 

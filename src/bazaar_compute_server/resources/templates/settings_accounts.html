@@ -1,0 +1,36 @@
+<div class="col list management-list" data-pane="entries">
+  {{ c.column_header(t.text("settings.accounts"), back="/settings") }}
+  <div class="list-items">
+    {% for account in accounts %}
+      {{ c.list_item(account.display_name or account.name, account.provider_name if account.auth_type == "oidc" else t.text("accounts.local"), href="/settings/accounts/" ~ ref(account.id), on=(selected and selected.id == account.id), identity=account.id, attrs='hx-swap="innerHTML"') }}
+    {% endfor %}
+  </div>
+</div>
+<div class="col wide" data-pane="entry">
+  {{ c.column_header((selected.display_name or selected.name) if selected else t.text("settings.accounts"), back="/settings/accounts") }}
+  <div class="body accounts-body">
+  {% if selected %}
+    <p class="st">{{ t.text("accounts.source") }}：{{ selected.provider_name if selected.auth_type == "oidc" else t.text("accounts.local") }}</p>
+    {% if selected.auth_type == "local" and selected.name == "admin" %}<p class="st">{{ t.text("accounts.admin_hint") }}</p>{% endif %}
+    {% if error %}<p class="bad" role="alert">{{ t.text(error) }}</p>{% endif %}
+    <form id="accounts-form-{{ selected.id if selected else 'new' }}" class="management-form" hx-post="/settings/accounts/{{ ref(selected.id) }}" hx-target="#main">
+      <div class="field top">
+        <label id="account-roles-label">{{ t.text("accounts.roles") }}</label>
+        <div class="role-picker" x-data='{open: false, query: "", selected: {{ assigned|list|tojson }}}' @click.outside="open = false" @keydown.escape.prevent.stop="open = false">
+          <div class="role-selection">
+            {% for role in roles %}<span class="role-tag" x-show="selected.includes('{{ role.id }}')" x-cloak>{{ role.name }}<button type="button" @click="selected = selected.filter(id => id !== '{{ role.id }}')" aria-label="{{ t.text('accounts.unassign', {'name': role.name}) }}">{{ c.icon("x") }}</button></span>{% endfor %}
+            <button class="role-picker-toggle" type="button" @click="open = !open; if (open) $nextTick(() => $refs.search.focus())" :aria-expanded="open" aria-controls="account-role-options" aria-labelledby="account-roles-label"><span x-show="!selected.length">{{ t.text("accounts.choose_roles") }}</span>{{ c.icon("chevron-down") }}</button>
+          </div>
+          <div class="role-options" id="account-role-options" x-show="open" x-cloak>
+            <input x-ref="search" type="search" x-model="query" placeholder="{{ t.text('accounts.search_roles') }}" aria-label="{{ t.text('accounts.search_roles') }}" autocomplete="off">
+            <div class="role-options-list">
+              {% for role in roles %}<label class="check" data-name="{{ role.name }}" x-show="$el.dataset.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())"><input type="checkbox" name="roles" value="{{ role.id }}" x-model="selected"><span>{{ role.name }}</span></label>{% else %}<p>{{ t.text("accounts.no_roles") }}</p>{% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+      <button class="btn p" type="submit">{{ t.text("manage.save") }}</button>
+    </form>
+  {% else %}{{ c.empty(t.text("accounts.select"), "users") }}{% endif %}
+  </div>
+</div>

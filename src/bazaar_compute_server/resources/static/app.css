@@ -700,3 +700,47 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 @media (prefers-reduced-motion: reduce) {
   .children { transition-duration: 0s !important; }
 }
+
+/* Settings management keeps a vertical selector beside its detail form. */
+.management-list { max-width: 260px; }
+.management-form { max-width: 620px; }
+.management-form > h3 { margin: 24px 0 10px; font-size: 1em; }
+.permission-group { display: flex; flex-wrap: wrap; gap: 0 24px; border: 1px solid var(--line); border-radius: var(--r-sm); margin: 0 0 14px; padding: 10px 14px; }
+.permission-group legend { color: var(--muted); padding: 0 5px; }
+.check { display: flex; align-items: center; gap: 10px; padding: 7px 0; cursor: pointer; overflow-wrap: anywhere; }
+.check input[type="checkbox"] { width: 18px; height: 18px; flex: none; margin: 0; accent-color: var(--accent); }
+@media (max-width: 959px) {
+  .module[data-view="entries"] > [data-pane="entries"],
+  .module[data-view="entry"] > [data-pane="entry"] { display: flex; }
+  .management-list { max-width: none; }
+}
+
+.role-default { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0 20px 82px; color: var(--muted); font-size: .9em; }
+
+
+.management-form .field > label { flex: 0 0 72px; }
+@media (max-width: 959px) {
+  .management-form .field { flex-wrap: wrap; }
+  .management-form .field > label { flex: 0 0 100%; }
+  .management-form .field > input { flex-basis: 100%; }
+  .role-default { margin-left: 0; }
+}
+
+.role-default .badge { font-size: inherit; line-height: inherit; }
+
+
+.role-picker { flex: 0 1 320px; max-width: 320px; min-width: 0; position: relative; }
+.role-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 36px; padding: 5px 8px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); }
+.role-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; background: var(--chip); font-size: .9em; }
+.role-tag button, .role-picker-toggle { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; }
+.role-tag .i svg { width: 14px; height: 14px; }
+.role-picker-toggle { flex: 1; justify-content: flex-end; gap: 12px; min-width: 24px; min-height: 24px; }
+.role-picker-toggle > span:first-child { margin-right: auto; }
+.role-options { position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 6px); padding: 8px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+.role-options > input { width: 100%; }
+.role-options-list { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+.role-options .check { width: auto; padding: 8px; border-radius: var(--r-sm); color: var(--fg); }
+.role-options .check:hover { background: var(--chip); }
+@media (max-width: 959px) { .management-form .field > .role-picker { flex-basis: 100%; } }
+
+.accounts-body { flex: 1; }

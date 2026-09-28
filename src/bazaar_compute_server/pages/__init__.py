@@ -12,11 +12,13 @@ from ..refs import Refs
 from ..rendering import Renderer
 from ..sessions import Sessions
 from ..storage import IStorage
+from .accounts import AccountPages
 from .agents import AgentPages
 from .computers import ComputerPages
 from .login import LoginPages
 from .poll import PollPages
 from .profile import ProfilePages
+from .roles import RolePages
 from .settings import SettingsPages
 
 
@@ -38,6 +40,8 @@ def routes(
     computers = ComputerPages(storage, controls, renderer, refs)
     login = LoginPages(storage, renderer, sessions)
     settings = SettingsPages(storage, renderer, sessions)
+    roles = RolePages(storage, renderer, refs)
+    accounts = AccountPages(storage, renderer, refs)
     poll = PollPages(storage, renderer, refs)
     return [
         Route("/poll", poll.check, methods=["POST"]),
@@ -46,6 +50,16 @@ def routes(
         Route("/login", login.login, methods=["POST"]),
         Route("/logout", login.logout, methods=["POST"]),
         Route("/settings", settings.page),
+        Route("/settings/roles", roles.list),
+        Route("/settings/roles", roles.create, methods=["POST"]),
+        Route("/settings/roles/new", roles.new),
+        Route("/settings/roles/{role_id}", roles.show),
+        Route("/settings/roles/{role_id}", roles.save, methods=["POST"]),
+        Route("/settings/roles/{role_id}", roles.remove, methods=["DELETE"]),
+        Route("/settings/roles/{role_id}/default", roles.default, methods=["POST"]),
+        Route("/settings/accounts", accounts.list),
+        Route("/settings/accounts/{account_id}", accounts.show),
+        Route("/settings/accounts/{account_id}", accounts.save, methods=["POST"]),
         Route("/settings/{section}", settings.page),
         Route("/settings/password", settings.change_password, methods=["POST"]),
         Route("/settings/preferences", settings.change_preferences, methods=["POST"]),

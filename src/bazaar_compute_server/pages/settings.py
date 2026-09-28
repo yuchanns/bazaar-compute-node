@@ -8,6 +8,7 @@ from starlette.responses import HTMLResponse, Response
 from ..access import Access
 from ..gate import set_session
 from ..i18n import LANGUAGES
+from ..permissions import Permission
 from ..rendering import THEMES, Renderer
 from ..sessions import Sessions
 from ..storage import Account, IStorage
@@ -16,6 +17,15 @@ from ..storage import Account, IStorage
 # the floor NIST SP 800-63B sets for a chosen password
 MIN_PASSWORD_CHARS = 8
 SECTIONS = ("appearance", "security")
+
+
+def sections(access: Access) -> tuple[str, ...]:
+    return (
+        "appearance",
+        *(("security",) if access.is_admin else ()),
+        *(("roles",) if access.allows(Permission.SETTINGS_ROLES) else ()),
+        *(("accounts",) if access.allows(Permission.SETTINGS_ACCOUNTS) else ()),
+    )
 
 
 class SettingsPages:
@@ -29,15 +39,15 @@ class SettingsPages:
     async def page(self, request: Request) -> Response:
         account = _account(request)
         section = request.path_params.get("section", SECTIONS[0])
-        sections = SECTIONS if Access.of(request).is_admin else ("appearance",)
-        if section not in sections:
+        available = sections(Access.of(request))
+        if section not in available:
             return HTMLResponse("", status_code=404)
         return self._render.page(
             request,
             "settings",
             "settings.html",
             account=account,
-            sections=sections,
+            sections=available,
             section=section,
             view="section" if "section" in request.path_params else "settings",
             outcome=None,
