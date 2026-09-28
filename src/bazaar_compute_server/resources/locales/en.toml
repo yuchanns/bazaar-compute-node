@@ -316,3 +316,5 @@
 "event.reminder.fired" = "Reminder triggered"
 "event.agent.start.succeeded" = "Agent started"
 "event.agent.start.failed" = "Agent failed to start"
+
+"app.loading" = "Loading…"

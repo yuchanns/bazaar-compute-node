@@ -39,7 +39,7 @@
 {# a field waiting on what the computer lists: turning while it is asked,
    the way to ask again when it did not answer #}
 {% macro waiting() -%}
-<span class="wait" x-show="card.modelState === 'loading'">{{ c.icon("loader-circle") }}</span><button class="btn icon" type="button" data-again x-show="card.modelState === 'error'" :title="card.modelError" @click="loadModels(card)" aria-label="{{ t.text("agents.retry") }}">{{ c.icon("rotate-cw") }}</button>
+<span class="wait" x-show="card.modelState === 'loading'">{{ c.icon("loader") }}</span><button class="btn icon" type="button" data-again x-show="card.modelState === 'error'" :title="card.modelError" @click="loadModels(card)" aria-label="{{ t.text("agents.retry") }}">{{ c.icon("rotate-cw") }}</button>
 {%- endmacro %}
 
 {% macro initial(values, reply, kept=false, origins=none) -%}
@@ -128,7 +128,7 @@
   </div></template>
   <div class="dialog part blank" data-blank="{{ family }}" :class="{shown: selected.{{ family }} === cards.{{ family }}.length}">
     <div class="title">{{ t.text('agents.blank.' ~ family) }}</div>
-    <div class="loading" x-show="kinds.{{ family }} === 'loading'">{{ c.icon('loader-circle') }}</div>
+    <div class="loading" x-show="kinds.{{ family }} === 'loading'">{{ c.icon('loader') }}</div>
     <div class="kinds" x-show="kinds.{{ family }} !== 'loading'"></div>
     <button class="btn sm" type="button" x-show="kinds.{{ family }} === 'error'" @click="loadKinds('{{ family }}', true)">{{ c.icon('rotate-cw') }} {{ t.text('agents.retry') }}</button>
   </div>
