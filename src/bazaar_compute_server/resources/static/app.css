@@ -742,9 +742,6 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 
 
 .config > fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-#sharing .sheet { padding: 16px; overflow-y: auto; }
-#sharing .sheet h3 { padding: 0 0 10px; }
-#sharing .sheet .foot { padding: 12px 0 0; }
 
 .role-default { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0 20px 82px; color: var(--muted); font-size: .9em; }
 
@@ -785,8 +782,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 
 .login-identity small { color: var(--muted); font-size: 12px; }
 
-/* Role sharing is edited as one batch in the agent's own tab. */
-.agent-sharing { max-width: 980px; }
+/* Role sharing is edited as one batch in each resource's sharing tab. */
+.role-sharing { max-width: 980px; }
 .share-permissions { margin: 0; padding: 0; border: 0; }
 .share-permissions legend { margin-bottom: 14px; padding: 0; color: var(--fg); font-weight: 600; }
 .share-hint, .share-summary, .share-empty { color: var(--muted); font-size: 12px; }
@@ -796,7 +793,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .share-list-head { height: 58px; display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--float); border-bottom: 1px solid var(--line); font-weight: 600; }
 .share-search { display: block; width: calc(100% - 24px); margin: 12px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--input); color: var(--fg); padding: 7px 9px; font: inherit; }
 .share-search:focus { outline: none; border-color: var(--accent); }
-.agent-sharing .btn:disabled { opacity: .4; cursor: default; }
+.role-sharing .btn:disabled { opacity: .4; cursor: default; }
 .share-select-all { margin: 0 14px 10px; color: var(--muted); }
 .share-rows { height: 220px; overflow: auto; }
 .share-role { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; }

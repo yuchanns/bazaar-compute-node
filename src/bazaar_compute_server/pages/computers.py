@@ -19,6 +19,7 @@ from ..protocol import MAX_NAME_CHARS
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
+from .shares import SharePages
 
 
 class ComputerPages:
@@ -71,6 +72,15 @@ class ComputerPages:
         self, request: Request, page: Fleet, selected: ComputerView | None, *, view: str
     ) -> Response:
         await self.refs.load(_named(page.computers, selected))
+        context = {}
+        if (
+            selected is not None
+            and request.query_params.get("tab") == "sharing"
+            and Permission.COMPUTERS_SHARE in selected.actions
+        ):
+            context = await SharePages(self._storage, self._render, self.refs).context(
+                request, "computer", selected.computer.id
+            )
         return self._render.page(
             request,
             "computers",
@@ -83,6 +93,7 @@ class ComputerPages:
             else str(self.refs.ref(selected.computer.id)),
             enrolment=None,
             view=view,
+            **context,
         )
 
     @allowed(Permission.COMPUTERS_VIEW)
@@ -127,7 +138,17 @@ class ComputerPages:
         selected = await self._selected(request)
         if selected is None:
             return HTMLResponse("", status_code=404)
-        return self._render.fragment(request, "computer_detail.html", selected=selected)
+        context = {}
+        if (
+            request.query_params.get("tab") == "sharing"
+            and Permission.COMPUTERS_SHARE in selected.actions
+        ):
+            context = await SharePages(self._storage, self._render, self.refs).context(
+                request, "computer", selected.computer.id
+            )
+        return self._render.fragment(
+            request, "computer_detail.html", selected=selected, **context
+        )
 
     @expanded("computer_id")
     @allowed(Permission.COMPUTERS_VIEW, "computer")

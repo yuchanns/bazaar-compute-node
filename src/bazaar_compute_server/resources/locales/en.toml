@@ -436,3 +436,5 @@
 
 "error.403.title" = "Access denied"
 "error.403.text" = "Your account does not have permission to access this page. Choose an available module from the navigation."
+
+"computers.overview" = "Overview"

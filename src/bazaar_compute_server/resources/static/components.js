@@ -128,7 +128,7 @@ document.addEventListener('alpine:init', () => {
       this.original = data.grants;
       this.grants = structuredClone(data.grants);
       this.labels = Object.fromEntries([...this.$el.querySelectorAll('[data-point]')].map(el => [el.dataset.point, el.textContent]));
-      this.permissions = Object.keys(this.labels).filter(point => point === 'agents.view');
+      this.permissions = Object.keys(this.labels).filter(point => point === data.default);
       this.leaveHandler = event => {
         if (!this.dirty || this.saving || !(event.target instanceof Element)) return;
         const navigation = event.target.closest('a[href], .tab[hx-get]');

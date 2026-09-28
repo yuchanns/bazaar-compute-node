@@ -74,16 +74,16 @@ POLL_HANDLERS = MappingProxyType(
 
 SHARE_POINTS = MappingProxyType(
     {
-        "computer": tuple(
-            point
-            for point in Permission
-            if point.module in ("computers", "agents")
-            and point != Permission.COMPUTERS_CREATE
+        "computer": (
+            Permission.COMPUTERS_VIEW,
+            Permission.AGENTS_CREATE,
+            Permission.COMPUTERS_DELETE,
         ),
-        "agent": tuple(
-            point
-            for point in Permission
-            if point.module == "agents" and point != Permission.AGENTS_CREATE
+        "agent": (
+            Permission.AGENTS_VIEW,
+            Permission.AGENTS_UPDATE,
+            Permission.AGENTS_DELETE,
+            Permission.AGENTS_APPROVE,
         ),
     }
 )

@@ -1,10 +1,20 @@
 {% import "components.html" as c with context %}
-<div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail" hx-trigger="poll-refresh, agents-changed from:body" x-poll data-poll='{{ poll("computer", selected)|tojson }}' x-data="computerState" data-computer='{{ poll("computer-state", selected)|tojson }}' hx-swap="outerMorph">
+{% set sharing = share_data is defined %}
+{% set base = "/computers/" ~ ref(selected.computer.id) %}
+<div id="computer-view" hx-get="/computers/{{ ref(selected.computer.id) }}/detail{% if sharing %}?tab=sharing{% endif %}" hx-trigger="poll-refresh, agents-changed from:body" x-poll data-poll='{{ poll("computer", selected)|tojson }}' x-data="computerState" data-computer='{{ poll("computer-state", selected)|tojson }}' hx-swap="outerMorph">
 {% call c.column_header(selected.computer.name, back="/computers") %}
   <span class="sub">{% if selected.system in c.os_icons %}<span class="os" title="{{ t.text("system." ~ selected.system) if t.has("system." ~ selected.system) else selected.system }}">{{ c.icon(c.os_icons[selected.system]) }}</span>{% endif %}<span x-show="queued" x-text='{{ t.text("computers.queue", {"queued": "{queued}"})|tojson }}.replace("{queued}", queued)'></span></span>
-  {% if permissions.COMPUTERS_SHARE in selected.actions %}<button class="btn" type="button" hx-get="/computers/{{ ref(selected.computer.id) }}/shares" x-bind="opener" hx-target="#sharing" hx-swap="outerHTML">{{ t.text("shares.computer") }}</button>{% endif %}
 {% endcall %}
+{% if permissions.COMPUTERS_SHARE in selected.actions %}
+<div class="switch text">
+  <button class="tab{% if not sharing %} on{% endif %}" type="button" hx-get="{{ base }}" hx-target="#main" hx-swap="innerHTML" hx-push-url="true">{{ t.text("computers.overview") }}</button>
+  <button class="tab{% if sharing %} on{% endif %}" type="button" hx-get="{{ base }}?tab=sharing" hx-target="#main" hx-swap="innerHTML" hx-push-url="true">{{ t.text("profile_tab.sharing") }}</button>
+</div>
+{% endif %}
 <div class="body">
+{% if sharing %}
+  {% include "shares.html" %}
+{% else %}
   {# the commands that connect a computer just added, shown this once at the
      top of its page; the pane's refresh has no token to show, so the box
      keeps what it holds. the boxes marked to be skipped are named by their
@@ -29,5 +39,6 @@
     <p class="st">{{ t.text("computers.remove_hint") }}</p>
     <button class="btn danger" hx-get="/computers/{{ ref(selected.computer.id) }}/remove" hx-target="#remove-{{ ref(selected.computer.id) }}" hx-swap="outerHTML">{{ c.icon("trash-2") }} {{ t.text("computers.remove") }}</button>
   </div>{% endif %}
+{% endif %}
 </div>
 </div>

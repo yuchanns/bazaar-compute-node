@@ -15,7 +15,7 @@ from uuid import uuid7
 import aiosqlite
 
 from ...clock import now_ms
-from ...permissions import Permission
+from ...permissions import SHARE_POINTS, Permission
 from ...protocol import Event
 from ...secrets import derive, hash_secret, new_secret, verify_secret
 from ...storage import (
@@ -514,7 +514,7 @@ class SqliteStorage(IStorage):
     async def allowed_targets(
         self, account_id: str, kind: str, point: Permission
     ) -> set[str]:
-        """Ownership and the union of role grants, including explicit computer-to-agent grants."""
+        """Ownership and grants explicitly attached to this resource kind."""
         account = await self.get_account(account_id)
         if account is None:
             return set()
@@ -537,26 +537,15 @@ class SqliteStorage(IStorage):
                 (account_id, f"{kind}_owner"),
             ) as rows:
                 targets = {row["target_id"] async for row in rows}
+            if point not in SHARE_POINTS[kind]:
+                return targets
             async with db.execute(
-                "SELECT kind,target_id,ext FROM relations WHERE subject_id IN (SELECT role_id FROM account_roles WHERE account_id=?) AND kind IN (?,?)",
-                (account_id, f"{kind}_share_role", "computer_share_role"),
+                "SELECT target_id,ext FROM relations WHERE subject_id IN (SELECT role_id FROM account_roles WHERE account_id=?) AND kind=?",
+                (account_id, f"{kind}_share_role"),
             ) as rows:
-                grants = await rows.fetchall()
-            computers = set()
-            for grant in grants:
-                if point not in json.loads(grant["ext"])["permissions"]:
-                    continue
-                if grant["kind"] == f"{kind}_share_role":
-                    targets.add(grant["target_id"])
-                elif kind == "agent":
-                    computers.add(grant["target_id"])
-            if computers:
-                async with db.execute(
-                    "SELECT target_id,ext FROM relations WHERE kind='agent_owner'"
-                ) as rows:
-                    async for row in rows:
-                        if json.loads(row["ext"])["computer_id"] in computers:
-                            targets.add(row["target_id"])
+                async for row in rows:
+                    if point in json.loads(row["ext"])["permissions"]:
+                        targets.add(row["target_id"])
             return targets
 
     # ---- accounts --------------------------------------------------------
