@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from bazaar_compute_server.clock import now_ms
+from bazaar_compute_server.permissions import Permission
 from bazaar_compute_server.protocol import Event
+from bazaar_compute_server.storage import Role
 
 from ._serving import enrol, serving_app, signed_in
 from .test_pages import _event, _health, _short
@@ -107,6 +110,16 @@ async def test_poll_tracks_independent_consumers_from_persisted_data(
             )
             assert all(item["id"] != member_id for item in changes)
             # Another account's own list works alongside an inaccessible object.
+            account = await storage.add_account("other", "other password")
+            role = Role(
+                "reader",
+                "Reader",
+                frozenset({Permission.AGENTS_VIEW}),
+                now_ms(),
+                now_ms(),
+            )
+            await storage.save_role(role)
+            await storage.set_account_roles(account.id, [role.id])
             async with signed_in(base, storage, "other") as other:
                 async with other.post(
                     base + "/poll",

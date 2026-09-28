@@ -7,7 +7,6 @@
 "agents.empty" = "No agents."
 "agents.search" = "Search"
 "agents.new_title" = "New agent"
-"agents.create" = "Create"
 "agents.name" = "Name"
 "agents.mode" = "Mode"
 "agents.mode.session" = "Per conversation"
@@ -165,7 +164,6 @@
 "computers.add_title" = "Add a computer"
 "computers.name" = "Name"
 "computers.name_placeholder" = "e.g. kana"
-"computers.create" = "Create"
 "computers.cancel" = "Cancel"
 "computers.added" = "Run the following command on the computer you want to connect. The access token is shown only once. Store it securely."
 "computers.on_unix" = "Linux / macOS"
@@ -318,3 +316,17 @@
 "event.agent.start.failed" = "Agent failed to start"
 
 "app.loading" = "Loading…"
+
+# Permission identifiers are their display translation keys.
+"computers.view" = "View computers"
+"computers.create" = "Enrol computers"
+"computers.delete" = "Delete computers"
+"computers.share" = "Share computers"
+"agents.view" = "View agents"
+"agents.create" = "Create agents"
+"agents.update" = "Edit agents"
+"agents.delete" = "Delete agents"
+"agents.approve" = "Approve contacts"
+"settings.roles" = "Manage roles"
+"settings.accounts" = "Manage accounts"
+"settings.oidc" = "Manage sign-in methods"

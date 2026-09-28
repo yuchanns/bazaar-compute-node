@@ -1,17 +1,34 @@
-"""Browser-owned cursors and the database snapshots they describe."""
+"""Registered browser subscriptions and their request-local snapshots."""
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
-from hashlib import sha256
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from .access import Access
 from .activity import QUIET
-from .fleet import AgentHealth, AgentView, ComputerView
-from .refs import Refs
+from .fleet import (
+    AgentView,
+    ComputerView,
+    agent_health,
+    agent_page,
+    computer_view,
+    fleet,
+)
+from .permissions import POLL_HANDLERS, PermissionHandler
+from .poll_rendering import (
+    activity_state,
+    agent_info,
+    computer_detail,
+    computer_info,
+    computer_state,
+    digest,
+    health_state,
+)
+from .storage import IStorage
 
 REMINDERS = (
     "reminder.scheduled",
@@ -28,56 +45,6 @@ Status = Literal["running", "busy", "failed", "offline"]
 
 class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class Scope(Model):
-    topic: Literal[
-        "agents",
-        "agent-status",
-        "agent-info",
-        "computers",
-        "computer-state",
-        "computer-info",
-        "computer",
-        "contacts",
-        "messages",
-        "events",
-        "activity",
-        "health",
-        "reminders",
-    ]
-    computer: Short | None = None
-    agent: Short | None = None
-    thread: Short | None = None
-    until: str | None = None
-    review: Literal["approved", "pending"] | None = None
-
-    @model_validator(mode="after")
-    def fields(self) -> Self:
-        required: set[str] = set()
-        optional: set[str] = set()
-        if self.topic in ("agents", "computers"):
-            optional.add("until")
-            if self.until is not None:
-                parts = self.until.split("/")
-                if len(parts) != (2 if self.topic == "agents" else 1):
-                    raise ValueError("invalid list edge")
-                for part in parts:
-                    TypeAdapter(Short).validate_python(part)
-        else:
-            required.add("computer")
-            if self.topic not in ("computer", "computer-state", "computer-info"):
-                required.add("agent")
-            if self.topic in ("messages", "reminders"):
-                required.add("thread")
-            if self.topic == "contacts":
-                required.add("review")
-        supplied = self.model_fields_set - {"topic"}
-        if not required <= supplied or not supplied <= required | optional:
-            raise ValueError("fields do not match topic")
-        if any(getattr(self, field) is None for field in required):
-            raise ValueError("missing scope value")
-        return self
 
 
 class Digest(Model):
@@ -106,21 +73,33 @@ class ComputerState(Model):
     queued: int | None
 
 
-STATES: dict[str, type[Model]] = {
-    "agents": Digest,
-    "agent-info": Digest,
-    "computers": Digest,
-    "computer-info": Digest,
-    "computer": Digest,
-    "agent-status": AgentStatus,
-    "computer-state": ComputerState,
-    "contacts": Messages,
-    "messages": Messages,
-    "events": Since,
-    "activity": Activity,
-    "health": Activity,
-    "reminders": Messages,
-}
+class Scope(Model):
+    topic: str
+    computer: Short | None = None
+    agent: Short | None = None
+    thread: Short | None = None
+    until: str | None = None
+    review: Literal["approved", "pending"] | None = None
+
+    @model_validator(mode="after")
+    def fields(self) -> Self:
+        topic = TOPICS.get(self.topic)
+        if topic is None:
+            raise ValueError("unknown topic")
+        required = set(topic.required)
+        optional = {"until"} if topic.edge_parts else set()
+        supplied = self.model_fields_set - {"topic"}
+        if not required <= supplied or not supplied <= required | optional:
+            raise ValueError("fields do not match topic")
+        if any(getattr(self, name) is None for name in required):
+            raise ValueError("missing scope value")
+        if self.until is not None:
+            parts = self.until.split("/")
+            if len(parts) != topic.edge_parts:
+                raise ValueError("invalid list edge")
+            for part in parts:
+                TypeAdapter(Short).validate_python(part)
+        return self
 
 
 class Subscription(Model):
@@ -131,7 +110,7 @@ class Subscription(Model):
     @model_validator(mode="after")
     def state(self) -> Self:
         if self.seen is not None:
-            STATES[self.scope.topic].model_validate(self.seen)
+            TOPICS[self.scope.topic].state.model_validate(self.seen)
         return self
 
 
@@ -146,131 +125,183 @@ class PollRequest(Model):
         return self
 
 
-def digest(value: object) -> dict[str, Any]:
-    return {
-        "digest": sha256(
-            json.dumps(
-                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest()
-    }
+@dataclass(slots=True)
+class PollContext:
+    storage: IStorage
+    access: Access
+    ids: dict[str, str | None]
+    day: str
+    computers: dict[str, ComputerView | None] = field(default_factory=dict)
+
+    async def computer(self, scope: Scope) -> ComputerView | None:
+        computer_id = self.ids.get(scope.computer or "")
+        if computer_id is None:
+            return None
+        if computer_id not in self.computers:
+            self.computers[computer_id] = await computer_view(
+                self.storage, self.access, computer_id
+            )
+        return self.computers[computer_id]
+
+    async def agent(self, scope: Scope) -> AgentView | None:
+        computer = await self.computer(scope)
+        if computer is None:
+            return None
+        return next(
+            (
+                agent
+                for agent in computer.agents
+                if agent.id == self.ids.get(scope.agent or "")
+            ),
+            None,
+        )
+
+    def edge(self, scope: Scope) -> str | None:
+        return (
+            "/".join(self.ids[part] or "" for part in scope.until.split("/"))
+            if scope.until
+            else None
+        )
 
 
-def agent_info(agent: AgentView) -> dict[str, Any]:
-    return digest(
-        [
-            agent.computer_id,
-            agent.id,
-            agent.name,
-            agent.computer_name,
-            agent.system,
-            agent.channels,
-            agent.runtimes,
-        ]
+type Fetch = Callable[[PollContext, Scope], Awaitable[dict[str, Any] | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class Topic:
+    fetch: Fetch
+    state: type[Model]
+    permission: PermissionHandler
+    required: tuple[str, ...]
+    edge_parts: int = 0
+    inline: bool = False
+    priority: int = 0
+
+
+TOPICS: dict[str, Topic] = {}
+
+
+def register(
+    name: str,
+    state: type[Model],
+    *,
+    required: tuple[str, ...] = (),
+    edge_parts: int = 0,
+    inline: bool = False,
+    priority: int = 0,
+) -> Callable[[Fetch], Fetch]:
+    def attach(fetch: Fetch) -> Fetch:
+        TOPICS[name] = Topic(
+            fetch, state, POLL_HANDLERS[name], required, edge_parts, inline, priority
+        )
+        return fetch
+
+    return attach
+
+
+@register("agents", Digest, edge_parts=2)
+async def agents(context: PollContext, scope: Scope) -> dict[str, Any]:
+    page = await agent_page(context.storage, context.access, until=context.edge(scope))
+    return digest([[[agent.computer_id, agent.id] for agent in page.agents], page.more])
+
+
+@register("computers", Digest, edge_parts=1, priority=-1)
+async def computers(context: PollContext, scope: Scope) -> dict[str, Any]:
+    page = await fleet(context.storage, context.access, until=context.edge(scope))
+    context.computers.update((view.computer.id, view) for view in page.computers)
+    return digest([[view.computer.id for view in page.computers], page.more])
+
+
+@register("computer", Digest, required=("computer",))
+async def detail(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    view = await context.computer(scope)
+    return None if view is None else computer_detail(view)
+
+
+@register("computer-info", Digest, required=("computer",))
+async def computer_information(
+    context: PollContext, scope: Scope
+) -> dict[str, Any] | None:
+    view = await context.computer(scope)
+    return None if view is None else computer_info(view)
+
+
+@register("computer-state", ComputerState, required=("computer",), inline=True)
+async def computer_status(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    view = await context.computer(scope)
+    return None if view is None else computer_state(view)
+
+
+@register("agent-status", AgentStatus, required=("computer", "agent"), inline=True)
+async def agent_status(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    return None if agent is None else {"status": agent.status}
+
+
+@register("agent-info", Digest, required=("computer", "agent"))
+async def agent_information(
+    context: PollContext, scope: Scope
+) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    return None if agent is None else agent_info(agent)
+
+
+@register("contacts", Messages, required=("computer", "agent", "review"))
+@register("messages", Messages, required=("computer", "agent", "thread"))
+async def messages(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    if agent is None:
+        return None
+    since = await context.storage.latest_message_event(
+        agent.computer_id, agent.id, thread_id=context.ids.get(scope.thread or "")
     )
+    return {"since": since, "offline": agent.status == "offline"}
 
 
-def computer_state(item: ComputerView) -> dict[str, Any]:
+@register("events", Since, required=("computer", "agent"))
+async def events(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    if agent is None:
+        return None
     return {
-        "online": item.online,
-        "last_event_at_ms": item.last_event_at_ms,
-        "queued": item.queued,
+        "since": await context.storage.latest_activity_event(
+            agent.computer_id, agent.id, skipping=QUIET
+        )
     }
 
 
-def computer_info(item: ComputerView) -> dict[str, Any]:
-    return digest([item.computer.id, item.computer.name, item.version, item.system])
-
-
-def computer_detail(item: ComputerView) -> dict[str, Any]:
-    return digest(
-        [
-            item.computer.id,
-            item.computer.name,
-            item.system,
-            [[a.id, a.name, a.channels, a.runtimes] for a in item.agents],
-        ]
+@register("activity", Activity, required=("computer", "agent"))
+async def activity(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    if agent is None:
+        return None
+    since = await context.storage.latest_activity_event(
+        agent.computer_id, agent.id, skipping=CARD_QUIET
     )
+    return activity_state(agent, since, context.day)
 
 
-def activity_state(agent: AgentView, since: int, day: str) -> dict[str, Any]:
-    return {
-        **digest([agent.name, agent.working_on, agent.working_since_ms]),
-        "since": since,
-        "day": day,
-    }
-
-
-def health_state(
-    health: AgentHealth | None, agent: AgentView, since: int, day: str
-) -> dict[str, Any]:
-    return {
-        **digest(
-            [None if health is None else asdict(health), agent.status == "offline"]
-        ),
-        "since": since,
-        "day": day,
-    }
-
-
-def changed(seen: dict[str, Any] | None, current: dict[str, Any]) -> bool:
-    if seen is None:
-        return True
-    return any(
-        (value > seen[key] if key == "since" else value != seen[key])
-        for key, value in current.items()
+@register("health", Activity, required=("computer", "agent"))
+async def health(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    if agent is None:
+        return None
+    since = await context.storage.latest_named_event(
+        agent.computer_id, agent.id, names=("usage.updated",)
     )
+    health = await agent_health(context.storage, agent.computer_id, agent.id)
+    return health_state(health, agent, since, context.day)
 
 
-class Descriptors:
-    """The same state functions for initial HTML and subsequent checks."""
-
-    def __init__(self, refs: Refs) -> None:
-        self.refs = refs
-
-    def __call__(
-        self,
-        topic: str,
-        value: Any,
-        *,
-        since: int = 0,
-        thread: str | None = None,
-        review: str = "approved",
-        seen: dict[str, Any] | None = None,
-        failed: bool = False,
-    ) -> dict[str, Any]:
-        scope: dict[str, Any] = {"topic": topic}
-        match topic:
-            case "agents":
-                seen = digest(
-                    [[[a.computer_id, a.id] for a in value.agents], value.more]
-                )
-                scope["until"] = None
-            case "computers":
-                seen = digest([[c.computer.id for c in value.computers], value.more])
-                scope["until"] = None
-            case "computer" | "computer-info" | "computer-state":
-                scope["computer"] = str(self.refs.ref(value.computer.id))
-                seen = {
-                    "computer": computer_detail,
-                    "computer-info": computer_info,
-                    "computer-state": computer_state,
-                }[topic](value)
-            case _:
-                scope.update(
-                    computer=str(self.refs.ref(value.computer_id)),
-                    agent=str(self.refs.ref(value.id)),
-                )
-                if thread is not None:
-                    scope["thread"] = str(self.refs.ref(thread))
-                if topic == "contacts":
-                    scope["review"] = review
-                if topic == "agent-status":
-                    seen = {"status": value.status}
-                elif topic == "agent-info":
-                    seen = agent_info(value)
-                elif topic in ("contacts", "messages", "reminders"):
-                    seen = {"since": since, "offline": value.status == "offline"}
-                elif topic == "events":
-                    seen = {"since": since}
-        return {"scope": scope, "seen": None if failed else seen}
+@register("reminders", Messages, required=("computer", "agent", "thread"))
+async def reminders(context: PollContext, scope: Scope) -> dict[str, Any] | None:
+    agent = await context.agent(scope)
+    if agent is None:
+        return None
+    since = await context.storage.latest_named_event(
+        agent.computer_id,
+        agent.id,
+        names=REMINDERS,
+        thread_id=context.ids.get(scope.thread or ""),
+    )
+    return {"since": since, "offline": agent.status == "offline"}

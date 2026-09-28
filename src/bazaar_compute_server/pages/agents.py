@@ -17,7 +17,9 @@ from ..contacts import contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
-from ..polling import CARD_QUIET, REMINDERS, activity_state, agent_info
+from ..permissions import Permission
+from ..poll_rendering import activity_state, agent_info
+from ..polling import CARD_QUIET, REMINDERS
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..review import Request as ReviewRequest
@@ -35,7 +37,7 @@ class AgentPages:
         self._render = renderer
         self.refs = refs
 
-    @allowed("agents.view")
+    @allowed(Permission.AGENTS_VIEW)
     async def list(self, request: Request) -> Response:
         """The module with nothing open."""
 
@@ -43,8 +45,8 @@ class AgentPages:
             request, await agent_page(self._storage, Access.of(request)), None
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show(self, request: Request) -> Response:
@@ -64,8 +66,8 @@ class AgentPages:
             return HTMLResponse("", status_code=404)
         return await self._page(request, page, selected)
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id", "thread_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show_contact(self, request: Request) -> Response:
@@ -169,8 +171,8 @@ class AgentPages:
             asked=None,
         )
 
-    @allowed("agents.approve")
     @expanded("computer_id", "agent_id", "thread_id")
+    @allowed(Permission.AGENTS_APPROVE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def review(self, request: Request) -> Response:
@@ -244,8 +246,8 @@ class AgentPages:
         )
         return response
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id", "thread_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def profile(self, request: Request) -> Response:
@@ -278,8 +280,8 @@ class AgentPages:
             failed=None,
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def row_fragment(self, request: Request) -> Response:
@@ -300,8 +302,8 @@ class AgentPages:
             poll_state=agent_info(agent),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def head(self, request: Request) -> Response:
@@ -321,8 +323,8 @@ class AgentPages:
             poll_state=agent_info(selected),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id", "thread_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def reminder_fragment(self, request: Request) -> Response:
@@ -384,7 +386,7 @@ class AgentPages:
             name=query["name"],
         )
 
-    @allowed("agents.view")
+    @allowed(Permission.AGENTS_VIEW)
     async def list_fragment(self, request: Request) -> Response:
         """The list alone, for its own refresh, as far as `until`; or the rows
         of the page past `after`, for the scroll. `selected` names the open row."""
@@ -404,8 +406,8 @@ class AgentPages:
             selected_key=query.get("selected") or None,
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def activity_card(self, request: Request) -> Response:
@@ -439,8 +441,8 @@ class AgentPages:
             poll_state=activity_state(agent, since, day),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def contacts(self, request: Request) -> Response:
@@ -500,8 +502,8 @@ class AgentPages:
             selected_thread=query.get("selected") or None,
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id", "thread_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def messages(self, request: Request) -> Response:

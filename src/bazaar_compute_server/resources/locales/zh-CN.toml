@@ -7,7 +7,6 @@
 "agents.empty" = "暂无智能体。"
 "agents.search" = "搜索"
 "agents.new_title" = "新建智能体"
-"agents.create" = "新建"
 "agents.name" = "名字"
 "agents.mode" = "模式"
 "agents.mode.session" = "按会话"
@@ -165,7 +164,6 @@
 "computers.add_title" = "接入电脑"
 "computers.name" = "名称"
 "computers.name_placeholder" = "例如：kana"
-"computers.create" = "创建"
 "computers.cancel" = "取消"
 "computers.added" = "请在待接入的电脑上执行以下命令。接入令牌仅显示一次，请妥善保存。"
 "computers.on_unix" = "Linux / macOS"
@@ -318,3 +316,17 @@
 "event.agent.start.failed" = "智能体启动失败"
 
 "app.loading" = "正在加载…"
+
+# Permission identifiers are their display translation keys.
+"computers.view" = "查看电脑"
+"computers.create" = "接入电脑"
+"computers.delete" = "删除电脑"
+"computers.share" = "分享电脑"
+"agents.view" = "查看智能体"
+"agents.create" = "创建智能体"
+"agents.update" = "修改智能体"
+"agents.delete" = "删除智能体"
+"agents.approve" = "审核联系人"
+"settings.roles" = "管理角色"
+"settings.accounts" = "管理账号"
+"settings.oidc" = "管理登录方式"

@@ -127,14 +127,19 @@ async def agent_page(
     more = False
     # the cursor's own computer may have agents past the cursor
     pending = []
-    if cursor is not None and await storage.has_relation(
-        subject, "computer_owner", cursor[0]
+    if cursor is not None and any(
+        computer.id == cursor[0]
+        for computer in await storage.list_computers(
+            subject, for_agents=True, until=cursor[0]
+        )
     ):
         first = await storage.find_computer(cursor[0])
         pending = [first] if first is not None else []
     last_id = None if cursor is None else cursor[0]
     while True:
-        batch = await storage.list_computers(subject, after=last_id, limit=PAGE_SIZE)
+        batch = await storage.list_computers(
+            subject, for_agents=True, after=last_id, limit=PAGE_SIZE
+        )
         computers = [*pending, *batch]
         pending = []
         if not computers:

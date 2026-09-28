@@ -32,7 +32,7 @@ from .configure import editor
 from .i18n import LANGUAGES, Translator, create_translator, language_from_header
 from .images import Images
 from .markdown import render
-from .polling import Descriptors
+from .poll_rendering import Descriptors
 from .refs import Refs
 from .storage import Account
 

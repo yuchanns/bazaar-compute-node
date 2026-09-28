@@ -25,7 +25,8 @@ from ..configure import (
 )
 from ..control import Controls
 from ..fleet import AgentView, agent_health, agent_page, agent_view
-from ..polling import agent_info, health_state
+from ..permissions import Permission
+from ..poll_rendering import agent_info, health_state
 from ..refs import Refs, expanded
 from ..rendering import Renderer
 from ..storage import IStorage
@@ -50,8 +51,8 @@ class ProfilePages:
         self.refs = refs
         self._agents = agents
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def show(self, request: Request) -> Response:
@@ -87,8 +88,8 @@ class ProfilePages:
             **await self._tab(request, selected, tab),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def tab(self, request: Request) -> Response:
@@ -107,8 +108,8 @@ class ProfilePages:
             **await self._tab(request, selected, tab),
         )
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def head(self, request: Request) -> Response:
@@ -123,8 +124,8 @@ class ProfilePages:
             poll_state=agent_info(selected),
         )
 
-    @allowed("agents.update")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_UPDATE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def save(self, request: Request) -> Response:
@@ -203,8 +204,8 @@ class ProfilePages:
             secrets=SECRETS,
         )
 
-    @allowed("agents.delete")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_DELETE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def remove_ask(self, request: Request) -> Response:
@@ -217,8 +218,8 @@ class ProfilePages:
             request, "agent_remove.html", selected=selected, failed=None
         )
 
-    @allowed("agents.delete")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_DELETE, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def remove(self, request: Request) -> Response:
@@ -240,8 +241,8 @@ class ProfilePages:
         response.headers["HX-Push-Url"] = "/agents"
         return response
 
-    @allowed("agents.view")
     @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
     @sees("computer", "computer_id")
     @sees("agent", "agent_id")
     async def events(self, request: Request) -> Response:

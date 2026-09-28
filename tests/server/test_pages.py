@@ -12,9 +12,10 @@ import pytest
 
 from bazaar_compute_server.clock import clock_text, local, now_ms, start_of_today_ms
 from bazaar_compute_server.fleet import PAGE_SIZE
+from bazaar_compute_server.permissions import Permission
 from bazaar_compute_server.protocol import Event
 from bazaar_compute_server.rendering import identicon
-from bazaar_compute_server.storage import IStorage
+from bazaar_compute_server.storage import IStorage, Role
 
 from ._serving import TESTER, enrol, root_id, serving, signed_in, with_password
 
@@ -724,6 +725,17 @@ async def test_an_account_sees_what_it_enrolled_and_nothing_else(
 ) -> None:
     async with serving(tmp_path) as (base, storage):
         await with_password(storage, "other", TESTER[1])
+        account = await storage.find_account("other")
+        assert account is not None
+        role = Role(
+            "reader",
+            "Reader",
+            frozenset({Permission.COMPUTERS_VIEW, Permission.AGENTS_VIEW}),
+            now_ms(),
+            now_ms(),
+        )
+        await storage.save_role(role)
+        await storage.set_account_roles(account.id, [role.id])
         mine = await enrol(storage, "mine")
         theirs = await enrol(storage, "theirs", owner="other")
         for enrolment, agent_id in ((mine, "agent-mine"), (theirs, "agent-theirs")):

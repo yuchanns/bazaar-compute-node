@@ -1,5 +1,5 @@
 """Who is logged in: a signed cookie that names the account, when it was
-issued, and which password it was issued under."""
+issued, and the account session version it was issued under."""
 
 from __future__ import annotations
 
@@ -19,9 +19,6 @@ COOKIE = "bcs_session"
 SESSION_DAYS = 30
 _SESSION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000
 _KEY_BYTES = 32
-# how much of the password hash a session remembers: enough to tell one
-# password from the next, too little to help anyone guess it
-_FINGERPRINT = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,17 +27,10 @@ class Claim:
 
     account_id: str
     issued_at_ms: int
-    fingerprint: str
+    session_version: int
 
     def matches(self, account: Account) -> bool:
-        return hmac.compare_digest(self.fingerprint, fingerprint(account))
-
-
-def fingerprint(account: Account) -> str:
-    """The part of the hash a session is bound to: change the password and
-    every session issued before it stops matching."""
-
-    return account.password_hash.rsplit("$", 1)[-1][:_FINGERPRINT]
+        return self.session_version == account.session_version
 
 
 class Sessions:
@@ -51,7 +41,7 @@ class Sessions:
         self.key = b""
 
     def issue(self, account: Account) -> str:
-        body = f"{account.id}:{now_ms()}:{fingerprint(account)}"
+        body = f"{account.id}:{now_ms()}:{account.session_version}"
         return f"{body}:{self._sign(body)}"
 
     def read(self, cookie: str | None) -> Claim | None:
@@ -66,9 +56,15 @@ class Sessions:
         if len(parts) != 3:
             return None
         account_id, issued, mark = parts
-        if not issued.isdigit() or now_ms() - int(issued) > _SESSION_MS:
+        if (
+            not mark.isdigit()
+            or not issued.isdigit()
+            or now_ms() - int(issued) > _SESSION_MS
+        ):
             return None
-        return Claim(account_id=account_id, issued_at_ms=int(issued), fingerprint=mark)
+        return Claim(
+            account_id=account_id, issued_at_ms=int(issued), session_version=int(mark)
+        )
 
     def _sign(self, body: str) -> str:
         if not self.key:
@@ -102,6 +98,5 @@ __all__ = [
     "SESSION_DAYS",
     "Claim",
     "Sessions",
-    "fingerprint",
     "load_session_key",
 ]

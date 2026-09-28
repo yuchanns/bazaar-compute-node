@@ -1,10 +1,11 @@
-"""Settings: for now, the password of whoever is logged in."""
+"""Personal appearance and admin account security."""
 
 from __future__ import annotations
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
+from ..access import Access
 from ..gate import set_session
 from ..i18n import LANGUAGES
 from ..rendering import THEMES, Renderer
@@ -28,14 +29,15 @@ class SettingsPages:
     async def page(self, request: Request) -> Response:
         account = _account(request)
         section = request.path_params.get("section", SECTIONS[0])
-        if section not in SECTIONS:
+        sections = SECTIONS if Access.of(request).is_admin else ("appearance",)
+        if section not in sections:
             return HTMLResponse("", status_code=404)
         return self._render.page(
             request,
             "settings",
             "settings.html",
             account=account,
-            sections=SECTIONS,
+            sections=sections,
             section=section,
             view="section" if "section" in request.path_params else "settings",
             outcome=None,
@@ -54,6 +56,8 @@ class SettingsPages:
         return Response(status_code=204, headers={"HX-Refresh": "true"})
 
     async def change_password(self, request: Request) -> Response:
+        if not Access.of(request).is_admin:
+            return HTMLResponse("", status_code=404)
         account = _account(request)
         form = await request.form()
         current = str(form.get("current", ""))

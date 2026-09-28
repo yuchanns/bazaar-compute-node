@@ -13,7 +13,8 @@ from ..access import Access, allowed, sees
 from ..configure import SECRETS, configuration, create, kinds, models
 from ..control import Controls
 from ..fleet import ComputerView, Fleet, computer_view, fleet
-from ..polling import computer_info
+from ..permissions import Permission
+from ..poll_rendering import computer_info
 from ..protocol import MAX_NAME_CHARS
 from ..refs import Refs, expanded
 from ..rendering import Renderer
@@ -29,7 +30,7 @@ class ComputerPages:
         self._render = renderer
         self.refs = refs
 
-    @allowed("computers.view")
+    @allowed(Permission.COMPUTERS_VIEW)
     async def list(self, request: Request) -> Response:
         """The module, open on the first computer when there is one."""
 
@@ -41,8 +42,8 @@ class ComputerPages:
             view="computers",
         )
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def show(self, request: Request) -> Response:
         """The module, open on one computer."""
@@ -84,7 +85,7 @@ class ComputerPages:
             view=view,
         )
 
-    @allowed("computers.view")
+    @allowed(Permission.COMPUTERS_VIEW)
     async def list_fragment(self, request: Request) -> Response:
         """The list alone, for its own refresh, as far as `until`; or the rows
         of the page past `after`, for the scroll. `selected` names the open row."""
@@ -102,8 +103,8 @@ class ComputerPages:
             selected_key=query.get("selected") or None,
         )
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def row_fragment(self, request: Request) -> Response:
         item = await self._selected(request)
@@ -117,8 +118,8 @@ class ComputerPages:
             poll_state=computer_info(item),
         )
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def detail(self, request: Request) -> Response:
         """One computer's pane alone, for its own refresh."""
@@ -128,8 +129,8 @@ class ComputerPages:
             return HTMLResponse("", status_code=404)
         return self._render.fragment(request, "computer_detail.html", selected=selected)
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def presence(self, request: Request) -> Response:
         """Whether a computer has shown up yet; polled while it has not."""
@@ -141,8 +142,8 @@ class ComputerPages:
             return HTMLResponse("", status_code=404)
         return self._render.fragment(request, "presence.html", item=item)
 
-    @allowed("computers.delete")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_DELETE, "computer")
     @sees("computer", "computer_id")
     async def remove_form(self, request: Request) -> Response:
         """The question before a computer is forgotten, in place of the button."""
@@ -151,8 +152,8 @@ class ComputerPages:
             request, "remove_form.html", computer_id=request.path_params["computer_id"]
         )
 
-    @allowed("computers.delete")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_DELETE, "computer")
     @sees("computer", "computer_id")
     async def remove(self, request: Request) -> Response:
         if not await self._storage.remove_computer(request.path_params["computer_id"]):
@@ -161,8 +162,8 @@ class ComputerPages:
         response.headers["HX-Push-Url"] = "/computers"
         return response
 
-    @allowed("agents.create")
     @expanded("computer_id")
+    @allowed(Permission.AGENTS_CREATE, "computer")
     @sees("computer", "computer_id")
     async def new_agent(self, request: Request) -> Response:
         """The form for a new agent on one computer, over its page. The
@@ -182,8 +183,8 @@ class ComputerPages:
             secrets=SECRETS,
         )
 
-    @allowed("agents.create")
     @expanded("computer_id")
+    @allowed(Permission.AGENTS_CREATE, "computer")
     @sees("computer", "computer_id")
     async def create_agent(self, request: Request) -> Response:
         """The agent the form describes, taken in on the computer: the form
@@ -218,8 +219,8 @@ class ComputerPages:
             secrets=SECRETS,
         )
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def kinds(self, request: Request) -> Response:
         """What a card of one family can be started as on the computer: the
@@ -241,8 +242,8 @@ class ComputerPages:
             secrets=SECRETS,
         )
 
-    @allowed("computers.view")
     @expanded("computer_id")
+    @allowed(Permission.COMPUTERS_VIEW, "computer")
     @sees("computer", "computer_id")
     async def models(self, request: Request) -> Response:
         """The models one runtime on the computer will answer as, as the
@@ -275,11 +276,11 @@ class ComputerPages:
             await self.refs.load(_named((), selected))
         return selected
 
-    @allowed("computers.create")
+    @allowed(Permission.COMPUTERS_CREATE)
     async def enrol_form(self, request: Request) -> Response:
         return self._render.fragment(request, "enrol_form.html")
 
-    @allowed("computers.create")
+    @allowed(Permission.COMPUTERS_CREATE)
     async def enrol(self, request: Request) -> Response:
         form = await request.form()
         # a name is cut to what a row shows, like the names nodes report
