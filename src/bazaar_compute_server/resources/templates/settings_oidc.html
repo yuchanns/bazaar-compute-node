@@ -49,6 +49,7 @@
         </div>
       </div>
       <div class="field"><label for="oidc-default-role">{{ t.text("oidc.default_role") }}</label><span class="select"><select id="oidc-default-role" name="default_role_id"><option value=""{% if not values.default_role_id %} selected{% endif %}>{{ t.text("oidc.global_role") }} · {{ default.name }}</option>{% for role in roles %}<option value="{{ role.id }}"{% if values.default_role_id == role.id %} selected{% endif %}>{{ role.name }}</option>{% endfor %}</select>{{ c.icon("chevron-down") }}</span><small>{{ t.text("oidc.default_role_hint") }}</small></div>
+      <div class="field"><label for="oidc-session-minutes">{{ t.text("oidc.session_minutes") }}</label><input id="oidc-session-minutes" name="session_minutes" type="number" min="1" step="1" value="{{ values.session_minutes }}" required><small>{{ t.text("oidc.session_minutes_hint") }}</small></div>
       <p>{{ t.text("oidc.callback_hint") }}</p>
       <div class="field"><label for="oidc-secret">{{ t.text("oidc.client_secret") }}</label><input id="oidc-secret" name="client_secret" type="password" value="" autocomplete="new-password"{% if not selected %} required{% endif %}></div>{% if selected %}<p>{{ t.text("oidc.secret_set") }}</p>{% endif %}
       <button class="btn p" type="submit">{{ t.text("manage.save") }}</button>

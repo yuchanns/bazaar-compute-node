@@ -58,19 +58,7 @@ class OIDCProvider:
     updated_at_ms: int
     description: str = ""
     default_role_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class OIDCTransaction:
-    state: str
-    provider_id: str
-    browser_hash: str
-    nonce: str
-    code_verifier: str
-    redirect_uri: str
-    expires_at_ms: int
-    issuer: str = ""
-    subject: str = ""
+    session_minutes: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,12 +179,6 @@ class IStorage(Protocol):
     async def oidc_account(
         self, provider_id: str, issuer: str, subject: str, display_name: str, email: str
     ) -> Account: ...
-
-    async def save_oidc_transaction(self, transaction: OIDCTransaction) -> None: ...
-
-    async def consume_oidc_transaction(
-        self, state: str, browser_hash: str, provider_id: str
-    ) -> OIDCTransaction | None: ...
 
     async def list_role_shares(self, kind: str, target_id: str) -> list[RoleShare]: ...
 

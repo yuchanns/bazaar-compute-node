@@ -1,28 +1,58 @@
-"""OIDC protocol calls with single-use, browser-bound transactions in BCS storage."""
+"""OIDC protocol calls with short-lived, single-use in-memory login state."""
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from hashlib import sha256
+from pathlib import PurePosixPath
 from secrets import token_urlsafe
 
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import StarletteOAuth2App
 from httpx2 import HTTPError
 from joserfc.errors import JoseError
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
+from yarl import URL
 
 from .. import reauth
 from ..clock import now_ms
 from ..gate import set_session
 from ..rendering import Renderer
 from ..sessions import Sessions
-from ..storage import IStorage, OIDCProvider, OIDCTransaction
+from ..storage import IStorage, OIDCProvider
 from .login import HOME
 
 LIFETIME = 600
+MAX_TRANSACTIONS = 1024
 COOKIE = "bcs_oidc"
+
+
+class Destination(BaseModel):
+    return_to: str = Field(default=HOME, max_length=8192)
+
+    @field_validator("return_to")
+    @classmethod
+    def local_path(cls, value: str) -> str:
+        url = URL(value)
+        path = PurePosixPath(url.raw_path)
+        if url.scheme or url.authority or path.root != "/":
+            raise ValueError("return_to must be a local absolute path")
+        return str(
+            url.with_path(str(path), encoded=True, keep_query=True, keep_fragment=True)
+        )
+
+
+class Transaction(Destination):
+    expires_at_ms: int
+    browser_hash: str
+    provider_id: str
+    nonce: str
+    code_verifier: str
+    redirect_uri: str
+    issuer: str
+    subject: str
 
 
 class Callback(BaseModel):
@@ -39,8 +69,8 @@ class Identity(BaseModel):
 
 
 def client(provider: OIDCProvider) -> StarletteOAuth2App:
-    # BCS stores/consumes state itself; these Authlib protocol methods do not
-    # use the framework session adapter or expose protocol data in cookies.
+    # BCS keeps login state in memory rather than the framework session adapter.
+    # Authlib handles the protocol and token checks.
     return StarletteOAuth2App(
         framework=None,
         client_id=provider.client_id,
@@ -62,6 +92,7 @@ class OIDCLoginPages:
         self._storage = storage
         self._render = renderer
         self._sessions = sessions
+        self._transactions: OrderedDict[str, Transaction] = OrderedDict()
 
     async def failure(self, request: Request, reason: str) -> Response:
         response = self._render.standalone(
@@ -106,6 +137,10 @@ class OIDCLoginPages:
     async def _start(
         self, request: Request, provider: OIDCProvider, hint: reauth.Hint | None = None
     ) -> Response:
+        try:
+            destination = Destination.model_validate(dict(request.query_params))
+        except ValidationError:
+            destination = Destination()
         state, nonce, verifier, browser = (token_urlsafe(32) for _ in range(4))
         oauth = client(provider)
         try:
@@ -121,19 +156,24 @@ class OIDCLoginPages:
             )
         except HTTPError, OAuthError, ValueError, KeyError, RuntimeError:
             return await self.failure(request, "oidc.unavailable")
-        await self._storage.save_oidc_transaction(
-            OIDCTransaction(
-                state,
-                provider.id,
-                sha256(browser.encode()).hexdigest(),
-                nonce,
-                verifier,
-                provider.redirect_uri,
-                now_ms() + LIFETIME * 1000,
-                hint.issuer if hint else "",
-                hint.subject if hint else "",
-            )
+        self._transactions[state] = Transaction(
+            expires_at_ms=now_ms() + LIFETIME * 1000,
+            browser_hash=sha256(browser.encode()).hexdigest(),
+            provider_id=provider.id,
+            nonce=nonce,
+            code_verifier=verifier,
+            redirect_uri=provider.redirect_uri,
+            issuer=hint.issuer if hint else "",
+            subject=hint.subject if hint else "",
+            return_to=destination.return_to,
         )
+        # Each entry is read only when consumed, so the oldest pending entry
+        # is also the least recently used one.
+        while self._transactions and (
+            len(self._transactions) > MAX_TRANSACTIONS
+            or next(iter(self._transactions.values())).expires_at_ms <= now_ms()
+        ):
+            self._transactions.popitem(last=False)
         response = RedirectResponse(authorization["url"], status_code=302)
         response.delete_cookie(reauth.COOKIE, path="/")
         response.set_cookie(
@@ -154,13 +194,16 @@ class OIDCLoginPages:
             values = Callback.model_validate(dict(request.query_params))
         except ValidationError:
             return await self.failure(request, "oidc.expired")
-        transaction = await self._storage.consume_oidc_transaction(
-            values.state,
-            sha256(request.cookies.get(COOKIE, "").encode()).hexdigest(),
-            request.path_params["provider_id"],
-        )
-        if transaction is None:
+        transaction = self._transactions.get(values.state)
+        if (
+            transaction is None
+            or transaction.expires_at_ms <= now_ms()
+            or transaction.browser_hash
+            != sha256(request.cookies.get(COOKIE, "").encode()).hexdigest()
+            or request.path_params["provider_id"] != transaction.provider_id
+        ):
             return await self.failure(request, "oidc.expired")
+        self._transactions.pop(values.state)
         if values.error or not values.code:
             return await self.failure(request, "oidc.failed")
         provider = await self._storage.get_oidc_provider(transaction.provider_id)
@@ -203,12 +246,12 @@ class OIDCLoginPages:
             )
         except ValueError:
             return await self.failure(request, "oidc.default_required")
-        response = RedirectResponse(HOME, status_code=302)
+        response = RedirectResponse(transaction.return_to, status_code=302)
         set_session(
             response,
-            self._sessions.issue(account),
+            self._sessions.issue(account, max_age=provider.session_minutes * 60),
             request=request,
-            max_age=self._sessions.max_age,
+            max_age=provider.session_minutes * 60,
         )
         response.delete_cookie(COOKIE, path="/login/oidc")
         hint = reauth.Hint(

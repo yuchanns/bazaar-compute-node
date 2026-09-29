@@ -39,8 +39,10 @@ class Sessions:
         self.max_age = max_age
         self.key = b""
 
-    def issue(self, account: Account) -> str:
-        body = f"{account.id}:{now_ms()}:{account.session_version}"
+    def issue(self, account: Account, *, max_age: int | None = None) -> str:
+        issued = now_ms()
+        expires = issued + (self.max_age if max_age is None else max_age) * 1000
+        body = f"{account.id}:{issued}:{account.session_version}:{expires}"
         return f"{body}:{self._sign(body)}"
 
     def read(self, cookie: str | None) -> Claim | None:
@@ -52,13 +54,14 @@ class Sessions:
         if not body or not hmac.compare_digest(self._sign(body), signature):
             return None
         parts = body.split(":")
-        if len(parts) != 3:
+        if len(parts) != 4:
             return None
-        account_id, issued, mark = parts
+        account_id, issued, mark, expires = parts
         if (
             not mark.isdigit()
             or not issued.isdigit()
-            or now_ms() - int(issued) >= self.max_age * 1000
+            or not expires.isdigit()
+            or now_ms() >= int(expires)
         ):
             return None
         return Claim(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlencode, urlsplit
+
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -106,6 +108,23 @@ def _to_login(request: Request) -> Response:
     destination = (
         "/login/oidc/resume" if request.cookies.get(reauth.COOKIE) else LOGIN_PATH
     )
+    if request.cookies.get(reauth.COOKIE):
+        # Partial requests name the page in the browser, not the fragment endpoint.
+        if request.headers.get("HX-Request") == "true":
+            current = request.headers.get("HX-Current-URL", "")
+        elif request.method in ("GET", "HEAD"):
+            current = str(request.url)
+        else:
+            current = request.headers.get("Referer", "")
+        try:
+            current = urlsplit(current)
+            origin = urlsplit(str(request.url))
+            if (current.scheme, current.netloc) == (origin.scheme, origin.netloc):
+                destination += "?" + urlencode(
+                    {"return_to": current._replace(scheme="", netloc="").geturl()}
+                )
+        except ValueError:
+            pass
     # htmx cannot follow a redirect into the shell; it is told to go there whole
     if request.headers.get("HX-Request") == "true":
         return Response(status_code=401, headers={"HX-Redirect": destination})

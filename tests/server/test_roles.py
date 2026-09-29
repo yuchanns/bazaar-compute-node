@@ -11,7 +11,7 @@ from bazaar_compute_server.contrib.sqlite.storage import SqliteStorage
 from bazaar_compute_server.fleet import agent_page
 from bazaar_compute_server.permissions import Permission as P
 from bazaar_compute_server.protocol import Event
-from bazaar_compute_server.storage import OIDCProvider, OIDCTransaction, Role, RoleShare
+from bazaar_compute_server.storage import OIDCProvider, Role, RoleShare
 
 from ._serving import serving, signed_in
 
@@ -191,22 +191,6 @@ async def test_first_oidc_login_assigns_the_current_default_and_keeps_membership
         assert returning.auth_type == "oidc"
         await storage.remove_role(reviewer.id, replacement_id=reader.id)
         assert await storage.default_role() == reader
-        transaction = OIDCTransaction(
-            "state",
-            provider.id,
-            "browser",
-            "nonce",
-            "verifier",
-            provider.redirect_uri,
-            now_ms() + 60_000,
-        )
-        await storage.save_oidc_transaction(transaction)
-        assert (
-            await storage.consume_oidc_transaction(
-                transaction.state, transaction.browser_hash, provider.id
-            )
-            == transaction
-        )
     finally:
         await storage.stop()
     # Reopening runs the migration ledger and restores the saved membership.
