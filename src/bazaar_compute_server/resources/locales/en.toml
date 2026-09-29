@@ -441,3 +441,5 @@
 
 "oidc.session_minutes" = "Session duration (minutes)"
 "oidc.session_minutes_hint" = "Defaults to 10 minutes. Changes apply on the next sign-in or automatic sign-in renewal."
+
+"history.jump_bottom" = "Jump to latest"

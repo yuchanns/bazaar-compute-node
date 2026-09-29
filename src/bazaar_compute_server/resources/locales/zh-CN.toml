@@ -441,3 +441,5 @@
 
 "oidc.session_minutes" = "会话有效期（分钟）"
 "oidc.session_minutes_hint" = "默认 10 分钟。修改后从下一次登录或自动恢复登录起生效。"
+
+"history.jump_bottom" = "跳到底部"

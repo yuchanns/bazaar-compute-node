@@ -238,6 +238,7 @@ document.addEventListener('alpine:init', () => {
   }));
   Alpine.data('history', () => ({
     element: null,
+    atBottom: true,
     pending: new Map(),
     active: true,
     init() {
@@ -245,6 +246,9 @@ document.addEventListener('alpine:init', () => {
       this.$nextTick(() => { if (this.active) this.element.scrollTop = this.element.scrollHeight; });
     },
     destroy() { this.active = false; this.pending.clear(); },
+    updateBottom() {
+      this.atBottom = this.element.scrollHeight - this.element.scrollTop - this.element.clientHeight < 2;
+    },
     before(event) {
       const {ctx} = event.detail;
       if (!this.element.contains(ctx.sourceElement)) return;
@@ -262,6 +266,7 @@ document.addEventListener('alpine:init', () => {
         if (!this.active) return;
         if (position.earlier) this.element.scrollTop = position.top + this.element.scrollHeight - position.height;
         else if (position.bottom) this.element.scrollTop = this.element.scrollHeight;
+        this.updateBottom();
       });
     },
   }));

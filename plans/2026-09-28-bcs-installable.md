@@ -16,7 +16,7 @@
 1. 添加清单及三种尺寸图标，修改两个入口 head。
 2. 用临时数据库和隔离的真实 BCS HTTP 服务，在 Edge 中检查登录页、登录后页面的 manifest 解析结果、图标解码尺寸、公开资源 MIME 和启动重定向。
 3. 使用浏览器 CDP 检查 manifest/installability，记录浏览器实际反馈；使用打包结果确认静态资源被收入 wheel。
-4. 运行 Ruff、仓库根目录 Pyright 与 diff 检查，提交推送，报告结果供 review。真实 iOS/Android/macOS 的系统安装操作需要对应设备验收，报告中明确验证范围。
+4. 运行 Ruff、仓库根目录 Pyright 与 diff 检查。真实 iOS/Android/macOS 的系统安装操作需要对应设备验收，报告中明确验证范围。
 
 ### Task 1 结果
 
