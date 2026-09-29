@@ -120,7 +120,7 @@ async def test_expired_oidc_session_resumes_once_with_existing_sso(
             page = await context.new_page()
             directory = tmp_path / "server"
             configuration = ServerConfiguration(
-                listen=f"127.0.0.1:{port}", session_minutes=1
+                listen=f"127.0.0.1:{port}", session_minutes=10
             )
             async with serving_app(directory, port, configuration=configuration) as (
                 _,
@@ -130,7 +130,7 @@ async def test_expired_oidc_session_resumes_once_with_existing_sso(
                 role = Role(
                     str(uuid4()),
                     "Readers",
-                    frozenset({Permission.AGENTS_VIEW}),
+                    frozenset({Permission.AGENTS_VIEW, Permission.COMPUTERS_VIEW}),
                     now_ms(),
                     now_ms(),
                 )
@@ -147,6 +147,7 @@ async def test_expired_oidc_session_resumes_once_with_existing_sso(
                         callback,
                         now_ms(),
                         now_ms(),
+                        session_minutes=1,
                     )
                 )
                 await storage.save_login_order([provider_id, "password"])
@@ -170,16 +171,20 @@ async def test_expired_oidc_session_resumes_once_with_existing_sso(
                 _,
                 app,
             ):
+                # Replaying the expired signed cookie also expires server-side,
+                # even though the server-wide setting is ten minutes.
                 expired = await context.request.get(
-                    base + "/agents", headers={"HX-Request": "true"}
+                    base + "/settings/appearance?view=personal",
+                    headers={"Cookie": f"bcs_session={first['value']}"},
+                    max_redirects=0,
                 )
-                assert expired.headers.get("hx-redirect") == "/login/oidc/resume"
+                assert 300 <= expired.status < 400
                 async with page.expect_request(
                     lambda request: "prompt=none" in request.url
                 ):
-                    await page.goto(base + "/agents")
-                await page.wait_for_url(base + "/agents")
-                await expect(page.locator("#rail")).to_be_visible()
+                    await page.goto(base + "/settings/appearance?view=personal")
+                await page.wait_for_url(base + "/settings/appearance?view=personal")
+                await expect(page.locator("#theme")).to_be_visible()
                 second = next(
                     cookie
                     for cookie in await context.cookies()
@@ -187,6 +192,16 @@ async def test_expired_oidc_session_resumes_once_with_existing_sso(
                 )
                 assert second["value"] != first["value"]
                 await page.screenshot(path=str(tmp_path / "resumed.png"))
+
+                # The application's real background poll must restore this page,
+                # including its query and fragment, after the access cookie expires.
+                await page.goto(base + "/computers?view=personal#computer-list")
+                async with page.expect_request(
+                    lambda request: "prompt=none" in request.url
+                ):
+                    await context.clear_cookies(name="bcs_session")
+                await page.wait_for_url(base + "/computers?view=personal#computer-list")
+                await expect(page.locator("#computer-list")).to_be_visible()
 
                 # Preserve the recovery hint but remove IdP SSO and BCS access
                 # cookies: the real IdP responds login_required to prompt=none.

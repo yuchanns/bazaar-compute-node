@@ -1,6 +1,6 @@
 {% import "components.html" as c with context %}
 {% set url = c.messages_url(history.agent, history.contact) %}
-<div class="chat" id="history" x-data="history" @htmx:before:request.window="before($event)" @htmx:after:swap.window="after($event)" @htmx:finally:request.window="pending.delete($event.detail.ctx)">
+<div class="chat" id="history" x-data="history" @scroll.passive="updateBottom()" @resize.window="updateBottom()" @htmx:before:request.window="before($event)" @htmx:after:swap.window="after($event)" @htmx:finally:request.window="pending.delete($event.detail.ctx)">
   {% if history.answer == "offline" %}
   {{ c.empty(t.text("contacts.offline")) }}
   {% elif history.answer != "listed" %}
@@ -10,4 +10,5 @@
   {% if not history.turns %}{{ c.empty(t.text("history.empty"), "message-square-text") }}{% endif %}
   {% endif %}
   {% include "history_end.html" %}
+  <button class="btn icon chat-jump" type="button" x-show="!atBottom" x-cloak @click="element.scrollTop = element.scrollHeight" title="{{ t.text('history.jump_bottom') }}" aria-label="{{ t.text('history.jump_bottom') }}">{{ c.icon("chevrons-down") }}</button>
 </div>

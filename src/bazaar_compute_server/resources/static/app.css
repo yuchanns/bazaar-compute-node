@@ -83,6 +83,7 @@ a { color: inherit; text-decoration: none; }
 
 /* the chat: a run of one speaker's messages under their name, oldest at
    the top, the newest end kept in view; no bubbles, no colour per speaker */
+#chat { position: relative; }
 .chat { flex: 1; overflow-y: auto; padding: 12px 16px; }
 .turn { display: flex; gap: 10px; margin: 10px 0; }
 /* where a day starts, in the chat and the activity log alike: its date
@@ -206,7 +207,7 @@ a { color: inherit; text-decoration: none; }
 /* the card is fixed, shown while the pointer is on the agent's avatar and
    kept by the pointer (the avatar moves it); never clipped by the scrolling
    list it belongs to */
-.agent .card, .turn.own .card { display: none; position: fixed; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.12); padding: 12px 14px; z-index: 3; font-size: .92em; pointer-events: none; }
+.agent .card, .turn.own .card { display: none; position: fixed; width: 300px; background: var(--float); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; z-index: 3; font-size: .92em; pointer-events: none; }
 .agent:has(> .in > .av:hover) .card, .turn.own:has(> .av:hover) .card { display: block; }
 .card .h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .card .h .dot { margin-left: auto; }
@@ -249,6 +250,8 @@ a { color: inherit; text-decoration: none; }
 .btn.icon { width: 28px; height: 28px; padding: 0; justify-content: center; margin-left: auto; color: var(--muted); }
 .btn.icon:hover { color: var(--fg); background: var(--chip); }
 .btn.icon .i { margin: 0; }
+.btn.chat-jump { position: absolute; right: 18px; bottom: 18px; width: 36px; height: 36px; border: 0; background: transparent; color: var(--fg); z-index: 2; }
+.btn.chat-jump .i svg { width: 22px; height: 22px; }
 .btn.icon .i svg { width: 16px; height: 16px; }
 .field { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { width: 64px; color: var(--muted); }
@@ -256,7 +259,7 @@ a { color: inherit; text-decoration: none; }
 /* a text box grows with what is typed, from three lines, and has no grip */
 .field textarea { resize: none; field-sizing: content; min-height: 3lh; }
 /* forms are short: a card no wider than it needs */
-.dialog { border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--panel); max-width: 420px; box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
+.dialog { border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; margin: 12px 0; background: var(--panel); max-width: 420px; }
 .dialog h3 { margin: 0 0 8px; font-size: 1em; }
 /* a command to copy: wraps rather than scrolls, with the copy button in its corner */
 /* two commands, one per kind of machine: flat tabs, the open one in the
@@ -324,7 +327,7 @@ a { color: inherit; text-decoration: none; }
 @supports (appearance: base-select) {
   .select select, .select select::picker(select) { appearance: base-select; }
   .select select::picker-icon { display: none; }
-  .select select::picker(select) { margin-top: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--float); color: var(--fg); box-shadow: 0 8px 24px rgba(16,24,40,.12); }
+  .select select::picker(select) { margin-top: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--float); color: var(--fg); }
   .select option { padding: 6px 9px; border-radius: 4px; }
   .select option:hover, .select option:focus-visible { background: var(--hi); outline: none; }
   .select option:checked { color: var(--accent); font-weight: 500; }
@@ -374,7 +377,7 @@ a { color: inherit; text-decoration: none; }
 /* the chat's title wears the conversation's face, which opens its card */
 .hd .face { padding: 0; border: 1px solid var(--line); cursor: pointer; }
 #chat { position: relative; }
-.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; display: flex; flex-direction: column; background: var(--float); border-left: 1px solid var(--line); box-shadow: -6px 0 18px rgba(16, 24, 40, .06); z-index: 4; }
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; display: flex; flex-direction: column; background: var(--float); border-left: 1px solid var(--line); z-index: 4; }
 .drawer[hidden] { display: none; }
 .drawer .hd .btn.icon { margin-left: auto; }
 .drawer .who { display: flex; gap: 12px; align-items: center; padding: 14px; border-bottom: 1px solid var(--line); }
@@ -427,12 +430,12 @@ a { color: inherit; text-decoration: none; }
 
 /* a form in steps: a sheet over the page, the steps across its top as dots
    on a line, the one open scrolling under them, the buttons at its foot */
-.veil .sheet { width: 520px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--edge); border-radius: 10px; background: var(--canvas); box-shadow: 0 10px 30px rgba(16, 24, 40, .14); }
+.veil .sheet { width: 520px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--edge); border-radius: 10px; background: var(--canvas); }
 .sheet h3 { margin: 0; padding: 16px 18px 10px; font-size: 1em; }
 .sheet .steps { flex: 1; overflow-y: auto; padding: 14px 18px 4px; min-height: 340px; }
 .sheet .steps > [hidden] { display: none; }
 .sheet .hint { margin: 0 0 12px; color: var(--muted); font-size: .9em; }
-.sheet .dialog { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.sheet .dialog { max-width: none; margin: 0 0 12px; }
 .sheet .foot { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); }
 .sheet .foot .grow { flex: 1; }
 .sheet .foot [hidden] { display: none; }
@@ -510,7 +513,7 @@ a { color: inherit; text-decoration: none; }
 .switch.text .tab { width: auto; gap: 6px; padding: 0 12px; font: inherit; }
 .profile .body { flex: 1; }
 .profile .body > .dialog, .profile .config { max-width: 480px; }
-.profile .config .dialog, .profile .body > .dialog.part { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.profile .config .dialog, .profile .body > .dialog.part { max-width: none; margin: 0 0 12px; }
 .profile .config .section, .profile .body > .section { margin: 18px 0 8px; }
 .profile .config > .section:first-child, .profile .body > .section:first-child { margin-top: 0; }
 /* the heading names the card: the card need not say it again */
@@ -539,7 +542,7 @@ a { color: inherit; text-decoration: none; }
 .profile .file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile .file .size, .profile .file .when { color: var(--muted); font-size: .88em; font-variant-numeric: tabular-nums; }
 .profile .health { max-width: 480px; }
-.profile .health .dialog { max-width: none; margin: 0 0 12px; box-shadow: none; }
+.profile .health .dialog { max-width: none; margin: 0 0 12px; }
 .profile .health .section { margin: 18px 0 8px; }
 .profile .health .title { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 6px; }
 .profile .health .field .v { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
@@ -771,7 +774,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .role-tag .i svg { width: 14px; height: 14px; }
 .role-picker-toggle { flex: 1; justify-content: flex-end; gap: 12px; min-width: 24px; min-height: 24px; }
 .role-picker-toggle > span:first-child { margin-right: auto; }
-.role-options { position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 6px); padding: 8px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+.role-options { position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 6px); padding: 8px; border: 1px solid var(--edge); border-radius: var(--r-sm); background: var(--panel); }
 .role-options > input { width: 100%; }
 .role-options-list { max-height: 220px; overflow-y: auto; margin-top: 6px; }
 .role-options .check { width: auto; padding: 8px; border-radius: var(--r-sm); color: var(--fg); }

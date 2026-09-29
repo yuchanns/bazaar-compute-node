@@ -52,6 +52,7 @@ document.addEventListener('alpine:init', () => {
       const response = await fetch('/poll', {
         method: 'POST', credentials: 'same-origin', signal: controller.signal,
         headers: {'Content-Type': 'application/json', 'HX-Request': 'true',
+          'HX-Current-URL': location.href,
           'X-Build': document.body.dataset.build,
           'X-Timezone': Intl.DateTimeFormat().resolvedOptions().timeZone},
         body: JSON.stringify({subscriptions: items.map(({id, scope, seen}) => ({id, scope, seen}))}),

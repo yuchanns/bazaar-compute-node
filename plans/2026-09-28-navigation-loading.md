@@ -15,7 +15,7 @@ Lucide loader 使用同版本 lucide-static 1.46.0 官方 SVG，八条线按顺�
 - application/connection 记录主区域请求及 finally 清理；shell 添加带本地化名称的 status 提示和 aria-busy。
 - 统一已有 loading 图标为 loader，CSS 添加逐线透明度动画及减少动态效果支持。
 - 使用隔离真实 BCS 和浏览器，在弱网下验证桌面、手机导航即时反馈、完成/失败/取消清理及并行请求。
-- 执行 Ruff、仓库根目录 Pyright 检查，完成后等待 review。
+- 执行 Ruff、仓库根目录 Pyright 检查。
 
 提示仅展示居中的 loader 图标，不添加底框、边框或阴影。
 
@@ -25,4 +25,4 @@ Lucide loader 使用同版本 lucide-static 1.46.0 官方 SVG，八条线按顺�
 
 ## 验证结果
 
-Task 1、Task 2 已完成。真实隔离 BCS + Edge 验证手机/桌面空列表和弱网导航、完成/失败/取消清理、并行请求。全部 HTML 模板使用应用过滤器编译通过；Ruff check/format、根目录 Pyright 和 diff 检查通过。改动保留在主仓库 fix/navigation-loading-empty-states 分支工作区等待 review。
+Task 1、Task 2 已完成。真实隔离 BCS + Edge 验证手机/桌面空列表和弱网导航、完成/失败/取消清理、并行请求。全部 HTML 模板使用应用过滤器编译通过；Ruff check/format、根目录 Pyright 和 diff 检查通过。

@@ -38,6 +38,7 @@ class ProviderForm(BaseModel):
         str, StringConstraints(strip_whitespace=True, max_length=200)
     ] = ""
     default_role_id: str = ""
+    session_minutes: int = Field(default=10, ge=1)
 
     clear_logo: bool = False
     issuer: HttpUrl
@@ -127,6 +128,7 @@ class OIDCPages:
                 "name": selected.name if selected else "",
                 "description": selected.description if selected else "",
                 "default_role_id": (selected.default_role_id or "") if selected else "",
+                "session_minutes": str(selected.session_minutes if selected else 10),
                 "logo_url": selected.logo_url if selected else "",
                 "issuer": selected.issuer if selected else "",
                 "client_id": selected.client_id if selected else "",
@@ -179,6 +181,7 @@ class OIDCPages:
                 "redirect_uri",
             )
         }
+        values["session_minutes"] = str(form.get("session_minutes", "10"))
         values["logo_url"] = selected.logo_url if selected else ""
         logo = form.get("logo")
         logo_url = values["logo_url"]
@@ -241,6 +244,7 @@ class OIDCPages:
             now_ms(),
             description=parsed.description,
             default_role_id=parsed.default_role_id or None,
+            session_minutes=parsed.session_minutes,
         )
         await self._storage.save_oidc_provider(provider)
         await self.refs.load([provider.id])

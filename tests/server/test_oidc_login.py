@@ -206,6 +206,7 @@ async def test_oidc_sign_in_and_provider_management(tmp_path: Path) -> None:
                 await page.get_by_label("Client secret", exact=True).fill(
                     "isolated-browser-secret"
                 )
+                await page.get_by_label("Session duration (minutes)").fill("25")
                 await page.get_by_role("button", name="Save", exact=True).click()
                 await expect(
                     page.get_by_text("Secret is set. Leave blank to keep it.")
@@ -221,6 +222,9 @@ async def test_oidc_sign_in_and_provider_management(tmp_path: Path) -> None:
                 await expect(
                     page.get_by_label("Description (optional)", exact=True)
                 ).to_have_value("Use your workspace account")
+                await expect(
+                    page.get_by_label("Session duration (minutes)")
+                ).to_have_value("25")
                 await page.set_viewport_size({"width": 390, "height": 844})
                 await page.get_by_label("Display name", exact=True).fill("Work sign-in")
                 await page.get_by_role("button", name="Save", exact=True).click()
@@ -310,6 +314,10 @@ async def test_oidc_sign_in_and_provider_management(tmp_path: Path) -> None:
                     await login.get_by_role("link", name="Bazaar", exact=True).click()
                     await login.wait_for_url(base + "/agents")
                     cookies = await context.cookies(base)
+                    cookie = next(
+                        cookie for cookie in cookies if cookie["name"] == COOKIE
+                    )
+                    assert 24 * 60 < cookie["expires"] - now_ms() / 1000 <= 25 * 60
                     claim = sessions.read(
                         next(
                             cookie["value"]

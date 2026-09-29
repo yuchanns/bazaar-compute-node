@@ -14,6 +14,7 @@ from .v03_roles_oidc import ROLES_OIDC_MIGRATION
 from .v04_login_order import LOGIN_ORDER_MIGRATION
 from .v05_provider_description import PROVIDER_DESCRIPTION_MIGRATION
 from .v06_provider_default_role import PROVIDER_DEFAULT_ROLE_MIGRATION
+from .v07_oidc_session_settings import OIDC_SESSION_SETTINGS_MIGRATION
 
 
 class MigrationError(RuntimeError):
@@ -38,6 +39,7 @@ MIGRATIONS = _migration_ledger(
     LOGIN_ORDER_MIGRATION,
     PROVIDER_DESCRIPTION_MIGRATION,
     PROVIDER_DEFAULT_ROLE_MIGRATION,
+    OIDC_SESSION_SETTINGS_MIGRATION,
 )
 
 

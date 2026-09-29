@@ -25,7 +25,6 @@ from ...storage import (
     Enrolment,
     IStorage,
     OIDCProvider,
-    OIDCTransaction,
     Role,
     RoleShare,
     StoredEvent,
@@ -300,10 +299,10 @@ class SqliteStorage(IStorage):
     async def save_oidc_provider(self, provider: OIDCProvider) -> None:
         async def save(db: aiosqlite.Connection) -> None:
             await db.execute(
-                "INSERT INTO oidc_providers(id,name,logo_url,issuer,client_id,client_secret,redirect_uri,created_at_ms,updated_at_ms,description,default_role_id)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
+                "INSERT INTO oidc_providers(id,name,logo_url,issuer,client_id,client_secret,redirect_uri,created_at_ms,updated_at_ms,description,default_role_id,session_minutes)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
                 " name=excluded.name,logo_url=excluded.logo_url,issuer=excluded.issuer,client_id=excluded.client_id,"
-                " client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated_at_ms=excluded.updated_at_ms,description=excluded.description,default_role_id=excluded.default_role_id",
+                " client_secret=excluded.client_secret,redirect_uri=excluded.redirect_uri,updated_at_ms=excluded.updated_at_ms,description=excluded.description,default_role_id=excluded.default_role_id,session_minutes=excluded.session_minutes",
                 (
                     provider.id,
                     provider.name,
@@ -316,6 +315,7 @@ class SqliteStorage(IStorage):
                     provider.updated_at_ms,
                     provider.description,
                     provider.default_role_id,
+                    provider.session_minutes,
                 ),
             )
             await db.execute(
@@ -375,41 +375,6 @@ class SqliteStorage(IStorage):
             return _account_row(row)
 
         return await self._write(resolve)
-
-    async def save_oidc_transaction(self, transaction: OIDCTransaction) -> None:
-        async def save(db: aiosqlite.Connection) -> None:
-            await db.execute(
-                "DELETE FROM oidc_transactions WHERE expires_at_ms <= ?", (now_ms(),)
-            )
-            await db.execute(
-                "INSERT INTO oidc_transactions(state,provider_id,browser_hash,nonce,code_verifier,redirect_uri,expires_at_ms,issuer,subject) VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    transaction.state,
-                    transaction.provider_id,
-                    transaction.browser_hash,
-                    transaction.nonce,
-                    transaction.code_verifier,
-                    transaction.redirect_uri,
-                    transaction.expires_at_ms,
-                    transaction.issuer,
-                    transaction.subject,
-                ),
-            )
-
-        await self._write(save)
-
-    async def consume_oidc_transaction(
-        self, state: str, browser_hash: str, provider_id: str
-    ) -> OIDCTransaction | None:
-        async def consume(db: aiosqlite.Connection) -> OIDCTransaction | None:
-            async with db.execute(
-                "DELETE FROM oidc_transactions WHERE state=? AND browser_hash=? AND provider_id=? AND expires_at_ms>? RETURNING *",
-                (state, browser_hash, provider_id, now_ms()),
-            ) as rows:
-                row = await rows.fetchone()
-            return None if row is None else OIDCTransaction(**dict(row))
-
-        return await self._write(consume)
 
     async def list_role_shares(self, kind: str, target_id: str) -> list[RoleShare]:
         async with (
