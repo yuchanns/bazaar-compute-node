@@ -481,8 +481,8 @@ a { color: inherit; text-decoration: none; }
 .field [data-again] { margin-left: 0; }
 .field .wait[hidden], .field [data-again][hidden] { display: none; }
 /* a logo beside words sits on their middle, not their baseline */
-.part .title .ch, .part .title .rt, .blank .kinds .ch, .blank .kinds .rt { display: inline-flex; }
-.part .title .ch .i svg, .part .title .rt .i svg, .blank .kinds .ch .i svg, .blank .kinds .rt .i svg { vertical-align: 0; }
+.part .title .kind-logo, .part .title .ch, .part .title .rt, .blank .kinds .ch, .blank .kinds .rt { display: inline-flex; }
+.part .title .ch .i svg, .part .title .rt .i svg, .blank .kinds .ch .i svg, .blank .kinds .rt .i svg { display: block; }
 .field[hidden] { display: none; }
 .part > .field:first-child, .part > input[type=hidden] + .title + .field { margin-top: 0; }
 .part > .field:last-child { margin-bottom: 0; }
