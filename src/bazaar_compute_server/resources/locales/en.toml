@@ -295,6 +295,7 @@
 "event.tool.bcc.message.send.freshness_hold" = "Message sending deferred"
 "event.tool.bcc.message.check.completed" = "New messages checked"
 "event.tool.bcc.message.read.completed" = "Message history read"
+"event.tool.bcc.message.search.completed" = "Message history searched"
 "event.tool.bcc.inbox.check.completed" = "Inbox checked"
 "event.tool.bcc.thread.unfollow.completed" = "Thread unfollowed"
 "event.bcc.send.fresh_check.passed" = "Pre-send check passed"

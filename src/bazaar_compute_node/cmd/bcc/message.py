@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import date, datetime, time
 from pathlib import Path
 
 import click
 
 from ._client import BccCommandError, request, run
-from ._format import echo, serialize_check, serialize_read, serialize_send
+from ._format import (
+    echo,
+    serialize_check,
+    serialize_read,
+    serialize_search,
+    serialize_send,
+)
 
 
 @click.group(help="Message operations")
@@ -23,6 +30,95 @@ def message() -> None: ...
 @run
 async def check() -> None:
     echo(serialize_check(await request("message", "check")))
+
+
+@message.command(
+    help="Search readable message history in the current actor's conversations"
+)
+@click.option(
+    "--query",
+    default="",
+    metavar="<text>",
+    help="Literal body fragments; the first five whitespace-separated fragments must match.",
+)
+@click.option(
+    "--target",
+    metavar="<target>",
+    help="Restrict to a single readable conversation.",
+)
+@click.option(
+    "--sender",
+    metavar="<@handle-or-id|self>",
+    help="Full sender handle or id, or self for outgoing messages.",
+)
+@click.option(
+    "--after",
+    metavar="<time>",
+    help="Inclusive ISO 8601 lower bound; dates start at local midnight.",
+)
+@click.option(
+    "--before",
+    metavar="<time>",
+    help="Inclusive ISO 8601 upper bound; dates end at local day's end.",
+)
+@click.option(
+    "--sort",
+    type=click.Choice(("time", "relevance")),
+    default="time",
+    show_default=True,
+)
+@click.option(
+    "--limit", type=click.IntRange(1, 50), default=20, show_default=True, metavar="<n>"
+)
+@click.option(
+    "--offset", type=click.IntRange(min=0), default=0, show_default=True, metavar="<n>"
+)
+@run
+async def search(
+    query: str,
+    target: str | None,
+    sender: str | None,
+    after: str | None,
+    before: str | None,
+    sort: str,
+    limit: int,
+    offset: int,
+) -> None:
+    bounds: dict[str, object] = {}
+    for option, text in (("after", after), ("before", before)):
+        if text is None:
+            continue
+        try:
+            try:
+                day = date.fromisoformat(text)
+            except ValueError:
+                value = datetime.fromisoformat(text)
+            else:
+                value = datetime.combine(
+                    day, time.min if option == "after" else time.max
+                )
+            bounds[f"{option}_ms"] = int(value.astimezone().timestamp() * 1000)
+        except (ValueError, OverflowError, OSError) as error:
+            raise click.BadParameter(
+                "Use an ISO 8601 date or datetime.", param_hint=f"--{option}"
+            ) from error
+    echo(
+        serialize_search(
+            await request(
+                "message",
+                "search",
+                {
+                    "query": query,
+                    "target": target,
+                    "sender": sender,
+                    "sort": sort,
+                    "limit": limit,
+                    "offset": offset,
+                    **bounds,
+                },
+            )
+        )
+    )
 
 
 @message.command(help="Read message history for a channel, DM, or thread")

@@ -295,6 +295,7 @@
 "event.tool.bcc.message.send.freshness_hold" = "消息发送已暂缓"
 "event.tool.bcc.message.check.completed" = "新消息已查看"
 "event.tool.bcc.message.read.completed" = "消息记录已读取"
+"event.tool.bcc.message.search.completed" = "消息记录已搜索"
 "event.tool.bcc.inbox.check.completed" = "收件箱已查看"
 "event.tool.bcc.thread.unfollow.completed" = "已取消关注讨论串"
 "event.bcc.send.fresh_check.passed" = "发送前检查通过"

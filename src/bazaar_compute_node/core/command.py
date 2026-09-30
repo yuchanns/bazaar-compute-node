@@ -253,6 +253,16 @@ class ICommandService(Protocol):
         """Read new messages and advance only the delivery cursor."""
         ...
 
+    async def search_messages(
+        self,
+        actor: Actor,
+        request: MessageSearchRequest,
+        *,
+        review: Review | None = Review.APPROVED,
+    ) -> MessageSearchResult:
+        """Search the actor's readable history without observing freshness."""
+        ...
+
     async def read_messages(
         self,
         actor: Actor,

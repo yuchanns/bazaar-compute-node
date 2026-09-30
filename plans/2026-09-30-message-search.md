@@ -199,27 +199,28 @@ SQLite repository 承担条件、FTS、排序与分页；命令服务组合 targ
     "sender": {"id": "<provider-id>", "name": "<handle>", "display_name": "<name>"},
     "sender_kind": "human",
     "at_ms": 1790755200000,
-    "body": "部署计划发布到 staging 环境。",
-    "snippet": "部署计划发布到 staging 环境。"
+    "snippet": "部署计划发布到 staging 环境。",
+    "parts": [["", false], ["部署", true], ["计划发布到 ", false], ["staging", true], [" 环境。", false]]
   }]
 }
 ```
 
-搜索序列化复用 `core/serialize.py` 的 sender、target 与消息身份语义，返回完整正文 `body` 供 CLI formatter
-从原文生成预览，并保留最多 240 个 Unicode 字符的纯文本 `snippet` 供 BCS 使用。snippet 围绕最早出现的查询
-片段截取，前后截断时显示省略号；只有结构过滤时取开头。目标名称来自已有 target projection，actor 由
+搜索序列化复用 `core/serialize.py` 的 sender、target 与消息身份语义，节点统一返回最多 240 个 Unicode
+字符的纯文本 `snippet` 和普通文字／命中片段 `parts`，CLI 与 BCS 直接渲染同一份视图。
+snippet 围绕最早出现的查询片段截取，空白折叠，前后截断时显示省略号；只有结构过滤时取开头。
+命中片段在节点按查询片段大小写不敏感地划分。命令与 control 的 Pydantic 请求边界只取前 5 个空白分隔的
+查询片段，超出的忽略；BCS 页面查询采用相同规则。目标名称来自已有 target projection，actor 由
 `Actors.for_thread(thread_id)` 取得。历史读取使用 `bcc message read --target '<target>' --around '<message_id>'`。
 
 CLI 采用既有 agent 搜索展示结构，由 `cmd/bcc/_format.py` 与 `resources/bcc/search.tpl` 实现：
 
 - 有关键词时使用 `Search results for: "<query>" (<n> result/results)`；仅筛选时使用
   `Filtered message results (<n> result/results)`。每项用 `<result ref="msg:<完整消息 ID>">` 分隔。
-- 每项列出 `Source`、`Sender` 与 `Time`。Source 使用可直接读取的精确 target，Sender 是 handle 或 sender id
+- 每项列出 `Source`、`Sender` 与 `Time`。Source 使用可直接读取的精确 target，并转义原文中的结构标签；
+  outbound 的 Sender 显示 `self`，其他 Sender 是 handle 或 sender id
   加发送者类型；Time 是 CLI 本地时间并包含 `+08:00` 形式的时区偏移。两种模式采用同一格式。
-- 正文放在 `<preview>` 中，保留原文换行与 Markdown。优先匹配完整 query，找不到时按 query 片段顺序找
-  第一处匹配；匹配大小写不敏感。用 `<match>…</match>` 标记匹配，窗口取命中前 80 字符与后 120 字符，
-  无匹配或仅筛选时取前 200 字符。截断的一侧显示 `<omit />`，截断边界去除空白。
-- 命中涉及 `@handle`、`#channel`、`dm:@handle` 或 `task #123` 时扩展到整个引用，再将正文预览中的这些
+- 摘要放在 `<preview>` 中，直接按节点返回的 `parts` 用 `<match>…</match>` 标记匹配，截断使用节点的省略号。
+- 将正文预览中的 `@handle`、`#channel`、`dm:@handle` 或 `task #123` 等
   字面引用改为 `user:handle`、`channel:channel`、`dm:user:handle` 与 `task:123`。
   原文内的 result/preview/match 标签与 `<omit />` 转为转义文本，区分原文和 formatter 标记。
 - 有结果时末尾保留原有上下文读取提示；分页行显示 shown、offset、实际 sort、has_more 与可用的 next_offset。
@@ -270,7 +271,7 @@ Search: shown=1 offset=0 sort=time has_more=false
 
 ```text
 <preview>
-<omit />此前的讨论正文，最后确认 <match>deploy</match> 发布方案，后续讨论正文。<omit />
+…此前的讨论正文，最后确认 <match>deploy</match> 发布方案，后续讨论正文。…
 </preview>
 ```
 
@@ -461,15 +462,23 @@ control 在 `commands_of(agent_id)` 的 storage scope 内以 `Agent(agent_id)` �
 
 ### Task 2：bcc、历史读取与 instructions
 
-- [ ] 接入 CommandService、dispatch、CLI 输出和工具审计；session 搜索限制在绑定的当前会话，target 沿用
+- [x] 接入 CommandService、dispatch、CLI 输出和工具审计；session 搜索限制在绑定的当前会话，target 沿用
   现有解析与会话范围检查；read/send/unfollow 参数和行为保持原有约定，历史读取继续按现有规则观察 freshness。
-- [ ] 修改三处搜索及历史引用 instructions，使用公共消息格式，并补齐搜索活动的中英文 catalog。
-- [ ] 在隔离节点使用真实 `bcc` 验收参数、输出与分页：dangerous_individual 完成跨自有会话搜索，session 搜索
+- [x] 修改三处搜索及历史引用 instructions，使用公共消息格式，并补齐搜索活动的中英文 catalog。
+- [x] 在隔离节点使用真实 `bcc` 验收参数、输出与分页：dangerous_individual 完成跨自有会话搜索，session 搜索
   当前会话；两者均完成 `search → read --target … --around …`、携带 target 回复及 thread unfollow。
-- [ ] 分别在两个绑定会话的 session runtime 中搜索各自历史，核对相同 target 参数、公共消息头、instructions、
-  inbox notice 与回执；搜索展示含 result/ref、Source/Sender/Time、preview/match/omit 与上下文读取提示。
-- [ ] 用 TestChannel 向真实 provider runtime 注入自然问题，例如「上周关于 staging 的发布方案最后怎么定的？
+- [x] 分别在两个绑定会话的 session runtime 中搜索各自历史，核对相同 target 参数、公共消息头、instructions、
+  inbox notice 与回执；搜索展示含 result/ref、Source/Sender/Time、preview/match、省略号与上下文读取提示。
+- [x] 用 TestChannel 向真实 provider runtime 注入自然问题，例如「上周关于 staging 的发布方案最后怎么定的？
   当时的争议和回滚责任人是谁？」；验收 agent 自行检索、读取上下文后引用原消息，搜索后未读 cursor 与 freshness 保持。
+
+2026-10-01 验收：全仓回归 602 项通过（9 项跳过，46 项外部 e2e 单独执行）；Ruff 检查、格式检查与
+根目录 Pyright LSP 检查通过（345 个文件、0 条诊断）。真实 Codex provider 经 TestChannel 完成两个
+session 的独立历史问答和 dangerous_individual 跨会话问答，均自动搜索、读取上下文并引用原消息 ID。
+两项 provider e2e 覆盖三个 runtime 场景，在真实 binding 中执行 bcc 参数、日期边界、分页、target 搜索与
+读取/回复/unfollow、草稿、提醒与取消验收。搜索前后未读 cursor 和发送 freshness 快照保持一致。
+9 种示例与既有源码 formatter 对照通过，覆盖长文截断、Markdown、组件标签与引用字面量；plan 的完整预期输出
+与实际渲染结果一致。现有消息头、notice、回执、提醒和 read/send/unfollow 用法保持公共格式。
 
 ### Task 3：control 与 BCS 搜索入口
 

@@ -5,7 +5,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from time import time_ns
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -15,12 +15,17 @@ from pydantic import (
     StrictInt,
     StrictStr,
     ValidationError,
+    ValidationInfo,
+    model_validator,
 )
+from pydantic_core import PydanticCustomError
 
-from ..core.actor import Actor, Actors
+from ..core.actor import Actor, Actors, Thread
 from ..core.command import (
     ICommandService,
     MessageBroadcast,
+    MessageSearchRequest,
+    MessageSearchTimeoutError,
     MessageSendFreshnessHold,
     MessageSendSuccess,
     TargetProjection,
@@ -30,7 +35,7 @@ from ..core.models import (
     Message,
     OutboundDeliveryState,
 )
-from ..core.serialize import serialize_inbox_target, serialize_message
+from ..core.serialize import serialize_inbox_target, serialize_message, serialize_search
 from ..rendering import TextTemplate
 
 
@@ -76,6 +81,48 @@ class _MessageCheckRequest(_CommandRequest):
     command: Literal["check"]
 
 
+class _MessageSearchRequest(_CommandRequest):
+    resource: Literal["message"]
+    command: Literal["search"]
+    target: NonEmptyText | None = None
+    query: StrictStr = ""
+    sender: NonEmptyText | None = None
+    after_ms: StrictInt | None = None
+    before_ms: StrictInt | None = None
+    sort: Literal["time", "relevance"] = "time"
+    limit: Annotated[StrictInt, Field(ge=1, le=50)] = 20
+    offset: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def search_filters(self, info: ValidationInfo) -> Self:
+        self.query = " ".join(self.query.split()[:5])
+        if self.sender is not None:
+            self.sender = self.sender.strip()
+            if not self.sender or self.sender == "@":
+                raise PydanticCustomError(
+                    "INVALID_SENDER", "sender must be a handle, id, or self"
+                )
+        if (
+            self.after_ms is not None
+            and self.before_ms is not None
+            and self.after_ms > self.before_ms
+        ):
+            raise PydanticCustomError(
+                "INVALID_TIME_RANGE", "after must be at or before before"
+            )
+        if (
+            not isinstance((info.context or {}).get("actor"), Thread)
+            and not any((self.query, self.target, self.sender))
+            and self.after_ms is None
+            and self.before_ms is None
+        ):
+            raise PydanticCustomError(
+                "SEARCH_FILTER_REQUIRED",
+                "Search requires a query, target, sender, or time filter",
+            )
+        return self
+
+
 class _MessageReadRequest(_CommandRequest):
     resource: Literal["message"]
     command: Literal["read"]
@@ -110,6 +157,7 @@ class _ThreadUnfollowRequest(_CommandRequest):
 
 _REQUEST_MODELS: dict[tuple[str, str], type[_CommandRequest]] = {
     ("message", "check"): _MessageCheckRequest,
+    ("message", "search"): _MessageSearchRequest,
     ("message", "read"): _MessageReadRequest,
     ("message", "send"): _MessageSendRequest,
     ("inbox", "check"): _InboxCheckRequest,
@@ -152,6 +200,11 @@ _REQUEST_ERRORS: dict[str, tuple[str, str]] = {
     "limit": ("INVALID_LIMIT", "limit must be a positive integer"),
     "offset": ("INVALID_OFFSET", "offset must be a non-negative integer"),
     "target": ("TARGET_REQUIRED", "target must be a non-empty string"),
+    "query": ("INVALID_QUERY", "query must be text"),
+    "sender": ("INVALID_SENDER", "sender must be a handle, id, or self"),
+    "after_ms": ("INVALID_TIME", "after_ms must be an integer timestamp"),
+    "before_ms": ("INVALID_TIME", "before_ms must be an integer timestamp"),
+    "sort": ("INVALID_SORT", "sort must be time or relevance"),
     "around_message_id": (
         "INVALID_AROUND_MESSAGE",
         "around_message_id must be a string",
@@ -177,10 +230,18 @@ def _parse_command_request[RequestT: _CommandRequest](
     model: type[RequestT],
     *,
     errors: Mapping[str, tuple[str, str]] | None = None,
+    actor: Actor | None = None,
 ) -> RequestT:
     try:
-        return model.model_validate(request)
+        return model.model_validate(request, context={"actor": actor})
     except ValidationError as error:
+        detail = error.errors()[0]
+        if detail["type"] in {
+            "INVALID_TIME_RANGE",
+            "SEARCH_FILTER_REQUIRED",
+            "INVALID_SENDER",
+        }:
+            raise CommandDispatchError(detail["type"], detail["msg"]) from error
         field_name = next(
             (
                 part
@@ -298,6 +359,8 @@ class CommandDispatcher:
                 "code": "SESSION_NOT_FOUND",
                 "error": str(error),
             }
+        except MessageSearchTimeoutError as error:
+            return {"ok": False, "code": error.code, "error": str(error)}
         except TimeoutError as error:
             return {
                 "ok": False,
@@ -345,14 +408,26 @@ class CommandDispatcher:
                 "UNKNOWN_COMMAND", f"unsupported {resource} command: {command}"
             )
 
-        request = _parse_command_request(raw_request, _REQUEST_MODELS[route])
+        request = _parse_command_request(raw_request, _CommandRequest)
         actor = self._resolve_actor(request.actor_id)
         if self._session_binding_validator is not None:
             await self._session_binding_validator(actor, raw_request)
+        request = _parse_command_request(
+            raw_request,
+            _REQUEST_MODELS[route],
+            actor=actor,
+            errors={"limit": ("INVALID_LIMIT", "search limit must be between 1 and 50")}
+            if route == ("message", "search")
+            else None,
+        )
 
         match route:
             case ("message", "check"):
                 return await self._check_messages(actor)
+            case ("message", "search"):
+                return await self._search_messages(
+                    actor, cast(_MessageSearchRequest, request)
+                )
             case ("message", "read"):
                 return await self._read_messages(
                     actor, cast(_MessageReadRequest, request)
@@ -431,6 +506,27 @@ class CommandDispatcher:
                 "first_seq": result.first_seq,
                 "last_seq": result.last_seq,
             },
+        }
+
+    async def _search_messages(
+        self, actor: Actor, request: _MessageSearchRequest
+    ) -> Mapping[str, object]:
+        result = await self._service.search_messages(
+            actor,
+            MessageSearchRequest(
+                query=request.query,
+                raw_target=request.target,
+                sender=request.sender,
+                after_ms=request.after_ms,
+                before_ms=request.before_ms,
+                sort=request.sort,
+                limit=request.limit,
+                offset=request.offset,
+            ),
+        )
+        return {
+            "ok": True,
+            "result": serialize_search(result, self._actors),
         }
 
     async def _send_message(

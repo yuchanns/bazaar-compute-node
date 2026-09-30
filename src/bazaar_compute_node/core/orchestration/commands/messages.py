@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid7
 
-from ...actor import Actor, Agent
+from ...actor import Actor, Agent, Thread
 from ...audit import ErrorKind
 from ...channel import ChannelSendRequest, DmAddress, IChannel
 from ...command import (
@@ -21,6 +21,8 @@ from ...command import (
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
+    MessageSearchRequest,
+    MessageSearchResult,
     MessageSendFreshnessHold,
     MessageSendResult,
     MessageSendSuccess,
@@ -341,6 +343,40 @@ class MessageCommands(Commands):
                 "target": raw_target,
                 "around_message_id": around_message_id,
                 "limit": limit,
+            },
+        )
+        return result
+
+    async def search_messages(
+        self,
+        actor: Actor,
+        request: MessageSearchRequest,
+        *,
+        review: Review | None = Review.APPROVED,
+    ) -> MessageSearchResult:
+        thread_id = actor.id if isinstance(actor, Thread) else None
+        request = replace(request, query=request.query.strip())
+        result = await self._storage.search_messages(
+            request, thread_id=thread_id, review=review
+        )
+        await self._audit.append_tool(
+            operation="bcc.message.search",
+            status="completed",
+            state=RuntimeEventState.COMPLETED,
+            correlation=self._correlation(actor=actor, thread_id=thread_id),
+            arguments={
+                "actor_id": actor.id,
+                "thread_id": thread_id,
+                "query": request.query,
+                "target": request.raw_target,
+                "sender": request.sender,
+                "after_ms": request.after_ms,
+                "before_ms": request.before_ms,
+                "sort": result.sort,
+                "limit": request.limit,
+                "offset": request.offset,
+                "review": review.value if review is not None else None,
+                "shown": result.shown,
             },
         )
         return result

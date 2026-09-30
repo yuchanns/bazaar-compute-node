@@ -250,7 +250,7 @@ class CommandDispatcher(_MessageCommandDispatcher):
             )
 
         if resource == "message":
-            if command not in {"check", "read", "send"}:
+            if command not in {"check", "read", "send", "search"}:
                 raise CommandDispatchError(
                     "UNKNOWN_COMMAND",
                     f"unsupported message command: {command}",
