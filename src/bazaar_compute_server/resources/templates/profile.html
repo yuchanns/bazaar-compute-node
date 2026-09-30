@@ -6,7 +6,7 @@
   <div class="hd"><span class="heading" id="conversation-title">{{ t.text("profile.title") }}</span><button class="btn icon" type="button" title="{{ t.text("profile.close") }}" @click="open = false">{{ c.icon("x") }}</button></div>
   <div class="who">
     <div class="av">{{ contact.thread_id|identicon|safe }}</div>
-    <div><b x-data="contactName" data-name="{{ contact.name }}" data-thread="{{ ref(contact.thread_id) }}" x-text="name" @contact-name.window="update($event)">{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · id {{ contact.target.split(":", 1)[1] }}</div></div>
+    <div><b x-data="contactName" data-name="{{ contact.name }}" data-thread="{{ ref(contact.thread_id) }}" x-text="name" @contact-name.window="update($event)">{{ contact.name }}</b><div class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }}</div></div>
   </div>
   <div class="body">
     {# a group has members; a direct message is the two of them #}

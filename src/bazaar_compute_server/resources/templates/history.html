@@ -10,5 +10,5 @@
   {% if not history.turns %}{{ c.empty(t.text("history.empty"), "message-square-text") }}{% endif %}
   {% endif %}
   {% include "history_end.html" %}
-  <button class="btn icon chat-jump" type="button" x-show="!atBottom" x-cloak @click="element.scrollTop = element.scrollHeight" title="{{ t.text('history.jump_bottom') }}" aria-label="{{ t.text('history.jump_bottom') }}">{{ c.icon("chevrons-down") }}</button>
+  <button class="btn icon chat-jump" type="button" x-show="!atBottom" x-cloak @click="element.scrollTo({top: element.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'})" title="{{ t.text('history.jump_bottom') }}" aria-label="{{ t.text('history.jump_bottom') }}">{{ c.icon("chevrons-down") }}</button>
 </div>

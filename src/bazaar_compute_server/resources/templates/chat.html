@@ -3,7 +3,7 @@
    swaps this column alone, the two lists staying as they are. a conversation
    still waiting to be looked at shows the question about it instead #}
 {% set back = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) ~ ("?review=pending" if asked else "") if selected else "/agents" %}
-<div class="col wide" id="chat" data-pane="chat" data-active="{{ 'true' if contact else 'false' }}">
+<div class="col wide" id="chat" data-pane="chat" data-thread="{{ ref(contact.thread_id) if contact else '' }}" data-active="{{ 'true' if contact else 'false' }}">
   {% if contact and asked %}
   {% call c.column_header(contact.name, back=back) %}
     <span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }} · <span class="badge review">{{ t.text("review.pending") }}</span></span>

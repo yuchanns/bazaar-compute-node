@@ -287,10 +287,13 @@ def _turns(
 
     turns: list[Turn] = []
     for item in messages:
+        body = item["body"]
+        if item.get("system_message_kind") == "reminder":
+            body = body.replace(f" — {item['canonical_target']} — ", " — ", 1)
         line = Line(
             message_id=item["message_id"],
             seq=item["seq"],
-            body=item["body"],
+            body=body,
             attachments=tuple(attachment["name"] for attachment in item["attachments"]),
         )
         if turns and _same(turns[-1], item, tz):

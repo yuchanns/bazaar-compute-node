@@ -4,7 +4,9 @@
 {% set href = "/agents/" ~ ref(listing.agent.computer_id) ~ "/" ~ ref(listing.agent.id) ~ "/contacts/" ~ ref(item.thread_id) ~ "?actor=" ~ ref(item.actor_id) ~ "&target=" ~ ref(item.target) ~ "&channel=" ~ item.channel|urlencode ~ "&name=" ~ item.name|urlencode ~ ("&latest=" ~ item.latest_message_id|urlencode if item.latest_message_id else "") ~ ("&review=pending" if item.review == "pending" else "") %}
 {# the conversation opens in the right column alone; the row takes the
    highlight itself, so the list is not asked for again #}
-{% set attrs %}hx-swap="outerHTML" @click="selected = $el.id" :class="{on: selected === $el.id}" data-contact='{{ {"thread": ref(item.thread_id)|string, "name": item.name}|tojson }}'{% endset %}
+{% set attrs %}hx-swap="outerHTML" @click="selected = $el.id"
+@click.capture="if (!$event.ctrlKey &amp;&amp; !$event.metaKey &amp;&amp; !$event.shiftKey &amp;&amp; !$event.altKey &amp;&amp; $el.id === 'contact-' + document.getElementById('chat').dataset.thread) { selected = $el.id; $event.preventDefault(); $event.stopImmediatePropagation(); }"
+:class="{on: selected === $el.id}" data-contact='{{ {"thread": ref(item.thread_id)|string, "name": item.name}|tojson }}'{% endset %}
 {% call c.list_item(item.name, c.channels((item.channel,)) ~ t.text("contacts." ~ item.kind) ~ when, identity=item.thread_id, href=href, on=(selected_thread == ref(item.thread_id)|string), id="contact-" ~ ref(item.thread_id), target="#chat", attrs=attrs) %}
   {# what has come in and not been read yet, counted the way a chat list
      counts it: a red pill at the row's end, capped where it stops meaning #}
