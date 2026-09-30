@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from time import monotonic
 from types import TracebackType
@@ -23,6 +24,10 @@ class SqliteExecutorClosedError(RuntimeError):
     """The SQLite executor is not accepting new work."""
 
 
+class SqliteQueryTimeoutError(TimeoutError):
+    """SQLite interrupted a query after its connection's execution budget."""
+
+
 @dataclass(frozen=True, slots=True)
 class SqliteExecuteResult:
     rowcount: int
@@ -35,6 +40,36 @@ class SqliteSession:
 
     def __init__(self, connection: aiosqlite.Connection) -> None:
         self._connection = connection
+
+    @asynccontextmanager
+    async def query_budget(self, seconds: float) -> AsyncIterator[None]:
+        """Bound SQL execution and remove the handler before reusing the session."""
+
+        deadline = monotonic() + seconds
+        expired = False
+
+        def progress() -> int:
+            nonlocal expired
+            expired = monotonic() >= deadline
+            return int(expired)
+
+        try:
+            await self._connection.set_progress_handler(progress, 1_000)
+            yield
+        except sqlite3.OperationalError as error:
+            if expired and error.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT:
+                raise SqliteQueryTimeoutError(
+                    "SQLite query exceeded its execution budget"
+                ) from error
+            raise
+        except asyncio.CancelledError:
+            await self._connection.interrupt()
+            raise
+        finally:
+            # sqlite3 removes the handler with None; aiosqlite's annotation omits it.
+            await asyncio.shield(
+                self._connection.set_progress_handler(None, 0)  # type: ignore[arg-type]
+            )
 
     async def execute(
         self,
@@ -573,6 +608,7 @@ __all__ = [
     "SqliteExecuteResult",
     "SqliteExecutor",
     "SqliteExecutorClosedError",
+    "SqliteQueryTimeoutError",
     "SqliteReadSession",
     "SqliteSession",
 ]

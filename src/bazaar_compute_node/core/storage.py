@@ -10,6 +10,8 @@ from .command import (
     MessageCheckResult,
     MessageDraft,
     MessageReadResult,
+    MessageSearchRequest,
+    MessageSearchResult,
     MessageSendFreshnessHold,
     OutboundFreshnessPass,
     TargetProjection,
@@ -533,6 +535,20 @@ def _operations(value: object) -> Any:
 
 class _StorageOperations(Protocol):
     """Storage operations exposed without implementation-specific transactions."""
+
+    async def search_messages(
+        self,
+        request: MessageSearchRequest,
+        *,
+        thread_id: str | None = None,
+        review: Review | None = Review.APPROVED,
+    ) -> MessageSearchResult:
+        """Search visible messages in this agent's conversations in one snapshot.
+
+        A bound thread limits the query to that conversation and takes precedence
+        over the request's target. Search leaves unread cursors unchanged.
+        """
+        ...
 
     async def record_inbound(
         self,

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .actor import Actor
 from .models import (
     ChannelSession,
+    ChannelTargetKind,
     InboundAttachment,
     InboxTargetSummary,
     Message,
+    MessageDirection,
     OutboundAttachment,
     Review,
+    SenderIdentity,
+    SenderKind,
 )
 from .reminder import (
     ReminderCancelRequest,
@@ -81,6 +85,52 @@ class MessageReadResult:
             and self.last_seq < self.first_seq
         ):
             raise ValueError("history sequence bounds are invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSearchRequest:
+    query: str = ""
+    raw_target: str | None = None
+    sender: str | None = None
+    after_ms: int | None = None
+    before_ms: int | None = None
+    sort: Literal["time", "relevance"] = "time"
+    limit: int = 20
+    offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSearchHit:
+    message_id: str
+    thread_id: str
+    target: str
+    canonical_target: str
+    channel: str
+    target_kind: ChannelTargetKind
+    direction: MessageDirection
+    sender: SenderIdentity | None
+    sender_kind: SenderKind
+    at_ms: int
+    body: str
+    snippet: str
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSearchResult:
+    query: str
+    sort: Literal["time", "relevance"]
+    messages: tuple[MessageSearchHit, ...]
+    offset: int
+    has_more: bool
+    next_offset: int | None
+
+    @property
+    def shown(self) -> int:
+        return len(self.messages)
+
+
+class MessageSearchTimeoutError(TimeoutError):
+    code = "SEARCH_TIMEOUT"
 
 
 @dataclass(frozen=True, slots=True)

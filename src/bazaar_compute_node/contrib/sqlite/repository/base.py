@@ -14,6 +14,7 @@ from ....core.models import (
     OutboundDeliveryState,
     Thread,
 )
+from ....core.storage import ResolvedInboxTarget
 from ..executor import SqliteExecuteResult, SqliteSession
 
 
@@ -126,6 +127,10 @@ class RepositoryBase:
 
     async def get_thread(self, thread_id: str) -> Thread | None:
         del thread_id
+        raise NotImplementedError
+
+    async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget:
+        del raw_target
         raise NotImplementedError
 
     async def get_channel_session(

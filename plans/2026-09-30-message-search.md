@@ -115,8 +115,12 @@ bcc message read --target '<target-from-result>' --around '<message-id-from-resu
 长片段按 trigram 默认大小写规则匹配，短片段使用 SQLite `lower`，英文 ASCII 大小写不敏感。
 这提供连续字符匹配，关键词可由调用者用空白拆分；实现沿用 SQLite 内建能力。
 
-时间排序始终按上述时间字段与 seq。相关度排序在有长片段时使用 `bm25(message_search)` 升序，短片段作为必须满足的
-过滤。只有短片段或结构过滤时按时间排序，并在返回的 `sort` 中标明 `time`；结果不给调用者内部评分。
+时间排序始终按上述时间字段与 seq。相关度排序由 FTS 取得候选，再对查询长片段按 BM25 公式评分，
+使用 k1=1.2、b=0.75：词频取正文中该字面片段的非重叠出现次数，正文长度取 Unicode 字符数。
+文档数、平均长度和每个片段的文档频率只统计当前 agent 可读且符合会话、发送者和时间筛选的消息，
+在同一个 reader snapshot 中完成统计和候选评分；得分倒序后以时间、seq 倒序打破平局。
+短片段作为必须满足的过滤。只有短片段或结构过滤时按时间排序，并在返回的 `sort` 中标明 `time`；
+结果不给调用者内部评分。
 
 所有条件在排序、分页前一起执行。每次读取 `limit + 1` 条判断 `has_more`，展示 limit 条；`next_offset` 为
 `offset + shown`，没有更多时为空。每页使用一个 reader snapshot。offset 是实时结果的偏移；会话有新消息时，
@@ -445,11 +449,15 @@ control 在 `commands_of(agent_id)` 的 storage scope 内以 `Agent(agent_id)` �
 
 ### Task 1：节点查询与存储索引
 
-- [ ] 定义 search 输入、命中、分页结果与 storage 接口；完成 v32 migration、FTS 触发器、初始化与 scoped 查询。
-- [ ] 补齐长短片段混合匹配、thread/sender/time/review/状态筛选、排序分页和 reader 查询预算。
-- [ ] 在真实临时 SQLite 上验收中文长词、两字词、中英组合、代码片段、过滤查询、跨多个自有会话的结果与分页；
+- [x] 定义 search 输入、命中、分页结果与 storage 接口；完成 v32 migration、FTS 触发器、初始化与 scoped 查询。
+- [x] 补齐长短片段混合匹配、thread/sender/time/review/状态筛选、排序分页和 reader 查询预算。
+- [x] 在真实临时 SQLite 上验收中文长词、两字词、中英组合、代码片段、过滤查询、跨多个自有会话的结果与分页；
   同一数据库配置多个 agent，验证每个 scope 返回自己的会话集合。
-- [ ] 验收索引初始化、写入、正文修改、删除和事务恢复后继续检索；用实际查询计划和隔离数据记录短片段的性能。
+- [x] 验收索引初始化、写入、正文修改、删除和事务恢复后继续检索；用实际查询计划和隔离数据记录短片段的性能。
+
+2026-09-30 验收：新增真实 SQLite 搜索测试及相关回归共 64 项通过；全仓 Ruff 检查、格式检查与
+根目录 Pyright LSP 检查通过（344 个文件、0 条诊断）。隔离数据库含 100,002 条消息和两个 agent，
+两字词搜索约 49ms，限定时间后约 25ms；实际查询计划使用 agent／时间索引及时间范围约束。
 
 ### Task 2：bcc、历史读取与 instructions
 
