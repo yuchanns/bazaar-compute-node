@@ -826,3 +826,123 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .share-arrows .i { transform: rotate(90deg); }
   .share-footer { position: sticky; bottom: 0; background: var(--panel); padding: 12px 0; margin-top: 12px; }
 }
+
+/* Message search stays outside the contacts and history subscription regions. */
+.chat-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+.search-open.btn.icon { margin-left: 0; flex: none; border-color: transparent; background: transparent; }
+.search-shortcut { color: var(--muted); font-size: 10px; font-weight: 400; border: 1px solid var(--edge); border-radius: 4px; padding: 1px 4px; line-height: 1.6; }
+#agent-contacts-head .search-shortcut { display: none; }
+.search-veil { position: fixed; z-index: 25; left: var(--search-left, 0px); top: var(--search-top, 0px); width: var(--search-width, 100vw); height: var(--search-height, 100dvh); display: flex; justify-content: center; align-items: flex-start; padding: 120px max(20px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); background: light-dark(rgba(35, 27, 24, .17), rgba(0, 0, 0, .36)); }
+.search-dialog { position: relative; display: flex; flex-direction: column; width: 680px; max-width: 100%; max-height: 100%; min-height: 0; border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); box-shadow: 0 22px 60px rgba(30,20,20,.22), 0 2px 8px rgba(30,20,20,.08); }
+.search-input { background: var(--input); border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 14px; padding: 0 20px; min-height: 64px; flex: none; }
+.search-input > .i { color: var(--muted); }
+.search-input > .i svg { width: 22px; height: 22px; }
+.search-input input { background: transparent; border: 0; outline: 0; padding: 8px 0; min-width: 0; width: 100%; color: var(--fg); font: inherit; font-size: 18px; }
+.search-input input::placeholder { color: var(--muted); }
+.search-input input::-webkit-search-cancel-button { appearance: none; }
+.search-close.btn.icon { margin-left: auto; border: 0; background: transparent; color: var(--muted); }
+.search-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--line); flex: none; }
+.search-agent { display: flex; align-items: center; gap: 7px; font-size: 12px; margin-right: 4px; min-width: 0; max-width: 100%; }
+.search-agent .av { width: 20px; height: 20px; flex: none; }
+.search-agent > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-filters > .btn { min-width: 0; max-width: 100%; font-size: 11px; padding: 4px 7px; border-color: var(--line); color: var(--muted); }
+.search-filters > .btn:first-of-type { color: var(--fg); }
+.search-filters > .btn > span:not(.i) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.search-filters > .btn[aria-expanded="true"] { border-color: var(--accent); }
+.search-filters > .btn.on { color: var(--fg); background: var(--hi); border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); }
+.search-sort { margin-left: auto; min-width: 0; color: var(--muted); font-size: 11px; }
+.search-sort select { border: 0; padding-block: 0; background: transparent; color: inherit; font: inherit; }
+.search-sort .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.search-panels { position: absolute; z-index: 1; width: 260px; max-width: calc(100% - 16px); padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--float); box-shadow: 0 8px 24px rgba(30,20,20,.15); min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.search-panels.time { width: 304px; padding: 8px; }
+.search-panel-title { padding: 7px 9px; color: var(--muted); font-size: 11px; }
+.search-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; min-height: 36px; padding: 8px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+.search-option > span:not(.av):not(.search-check):not(.search-option-count) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-option .av { width: 20px; height: 20px; flex: none; }
+.search-option-count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.search-check { margin-left: auto; color: var(--accent); }
+.search-check svg { width: 14px; height: 14px; }
+.search-option.on { background: var(--hi); }
+.search-option:hover { background: var(--chip); }
+.search-presets { display: flex; gap: 4px; padding: 0 3px; }
+.search-presets .btn { flex: 1; justify-content: center; padding: 7px 8px; border: 0; background: transparent; font-size: 12px; white-space: nowrap; }
+.search-presets .btn.on { background: var(--hi); }
+.search-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 6px 10px; margin-top: 6px; border-top: 1px solid var(--line); }
+.search-dates label { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 11px; }
+.search-date.btn { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-height: 34px; padding: 6px 8px; border-color: var(--edge); background: var(--input); color: var(--fg); font-size: 12px; }
+.search-date > span:not(.i) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-date .i { color: var(--muted); }
+.search-date .i svg { width: 14px; height: 14px; }
+.search-date[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 9%, transparent); }
+.search-calendar { padding: 10px 6px 0; border-top: 1px solid var(--line); }
+.calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.calendar-heading b { font-size: 13px; }
+.calendar-heading > span { display: flex; gap: 4px; }
+.calendar-heading .btn.icon { margin-left: 0; flex: none; width: 26px; height: 26px; border: 0; background: transparent; color: var(--muted); }
+.calendar-heading .btn.icon .i svg { width: 15px; height: 15px; }
+.calendar-weekdays, .calendar-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
+.calendar-weekdays { color: var(--muted); font-size: 11px; padding: 4px 0 6px; }
+.calendar-days { row-gap: 2px; }
+.calendar-days button { position: relative; min-width: 0; height: 26px; padding: 0; border: 1px solid transparent; background: transparent; color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
+.calendar-days button:hover { background: var(--chip); border-radius: var(--r-sm); }
+.calendar-days button.outside { color: var(--muted); opacity: .5; }
+.calendar-days button.today { color: var(--accent); font-weight: 600; }
+.calendar-days button.today::after { content: ''; position: absolute; bottom: 3px; left: calc(50% - 1.5px); width: 3px; height: 3px; border-radius: 50%; background: var(--accent); }
+.calendar-days button.on { background: var(--hi); font-weight: 600; opacity: 1; border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: var(--r-sm); }
+.calendar-days button.range { background: color-mix(in srgb, var(--hi) 50%, transparent); }
+.search-dialog button:focus-visible, .search-dialog a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.search-date-actions { display: flex; align-items: center; gap: 7px; padding: 8px 6px 0; margin-top: 10px; border-top: 1px solid var(--line); }
+.search-date-actions .btn { min-height: 28px; padding: 4px 10px; font-size: 12px; }
+.search-date-actions .p { border-color: color-mix(in srgb, var(--accent) 28%, var(--edge)); background: var(--hi); color: var(--fg); }
+.search-date-actions .search-date-today { margin-right: auto; padding-inline: 0; border: 0; background: transparent; color: var(--muted); }
+.search-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding: 9px 20px; flex: none; color: var(--muted); font-size: 11px; }
+.search-count { margin-left: auto; }
+.search-toolbar .btn { padding: 0; border: 0; background: transparent; color: var(--muted); font-size: inherit; }
+.search-results { min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 0 8px 8px; flex: 0 1 385px; max-height: 48vh; }
+.search-hit { display: block; border-radius: var(--r-sm); padding: 12px; }
+.search-hit { margin-bottom: 2px; }
+.search-hit:hover { background: var(--chip); }
+.search-hit.on { background: var(--hi); }
+.search-meta { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.search-meta .av { width: 22px; height: 22px; flex: none; }
+.search-meta > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 500; font-size: 12px; }
+.search-meta time { color: var(--muted); font-size: 11px; white-space: nowrap; margin-left: auto; }
+.search-meta > .i { color: var(--muted); visibility: hidden; }
+.search-meta > .i svg { width: 13px; height: 13px; }
+.search-hit.on .search-meta > .i { visibility: visible; }
+.search-snippet { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; margin: 8px 0 6px 29px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.search-snippet strong { color: var(--fg); font-weight: 700; background: transparent; }
+.search-speaker { display: block; margin-left: 29px; color: var(--muted); font-size: 11px; }
+.search-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 20px; border-top: 1px solid var(--line); background: var(--float); color: var(--muted); font-size: 11px; flex: none; border-radius: 0 0 8px 8px; }
+.search-keys { display: flex; align-items: center; gap: 12px; }
+.search-foot kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; vertical-align: middle; border: 1px solid var(--edge); border-radius: 3px; padding: 0 4px; font: inherit; margin-right: 4px; }
+.search-foot kbd .i svg { width: 12px; height: 12px; }
+.search-feedback { color: var(--muted); padding: 12px 10px; }
+.search-more { display: flex; margin: 8px auto; }
+@media (max-width: 959px) {
+  #chat > .hd > .sub { order: 1; }
+  .search-shortcut { display: none; }
+  .search-veil { padding: min(90px, 10vh) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  .search-input { padding-inline: 16px; }
+  .search-input input { font-size: 16px; }
+  .search-dialog .btn, .search-option, .calendar-days button { min-height: 44px; }
+  .search-dialog .btn.icon { min-width: 44px; }
+  .search-filters { padding-inline: 12px; gap: 6px; }
+  .search-filters > .btn { font-size: 13px; }
+  .search-agent { font-size: 13px; }
+  .search-meta { flex-wrap: wrap; }
+  .search-meta > b { font-size: 13px; }
+  .search-meta time { margin-left: 29px; }
+  .search-meta .av + b + time { margin-left: auto; }
+  .search-sort { font-size: 12px; }
+  .search-foot { padding-inline: 12px; font-size: 11px; }
+  .search-keys { gap: 6px; }
+}
+@media (max-width: 360px) {
+  .search-dates { grid-template-columns: 1fr; }
+  .search-meta time { flex-basis: calc(100% - 48px); }
+}
+@media (max-height: 650px) {
+  .search-veil { padding-top: max(12px, env(safe-area-inset-top)); }
+  .search-input { min-height: 52px; }
+}

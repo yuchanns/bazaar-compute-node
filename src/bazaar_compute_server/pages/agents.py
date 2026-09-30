@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterable
+from string import ascii_lowercase, ascii_uppercase
 from urllib.parse import urlencode
 
+from pydantic import ValidationError
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from ..access import Access, allowed, sees
 from ..activity import recent_lines, usage_today
 from ..clock import day_text, now_ms
-from ..contacts import contacts
+from ..contacts import contact_name, contacts
 from ..control import Controls
 from ..fleet import PAGE_SIZE, AgentPage, AgentView, agent_page, agent_view
 from ..history import Contact, earlier, later, latest, news
@@ -21,10 +23,11 @@ from ..permissions import Permission
 from ..poll_rendering import activity_state, agent_info
 from ..polling import CARD_QUIET, REMINDERS
 from ..refs import Refs, expanded
-from ..rendering import Renderer
+from ..rendering import Renderer, identicon
 from ..review import Request as ReviewRequest
 from ..review import decide, reminders
 from ..review import request as request_of
+from ..search import SearchOptionsQuery, SearchQuery
 from ..storage import IStorage
 
 
@@ -500,6 +503,168 @@ class AgentPages:
             "contact_rows.html" if offset else "contacts.html",
             listing=listing,
             selected_thread=query.get("selected") or None,
+        )
+
+    @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def search(self, request: Request) -> Response:
+        """A page of results rendered from the selected agent's own node."""
+
+        try:
+            query = SearchQuery.model_validate(dict(request.query_params))
+        except ValidationError:
+            return HTMLResponse("", status_code=400)
+        params = request.path_params
+        agent = await agent_view(
+            self._storage, Access.of(request), params["computer_id"], params["agent_id"]
+        )
+        if agent is None:
+            return HTMLResponse("", status_code=404)
+        result = await self._controls.outcome(
+            agent.computer_id,
+            {
+                "read": "search",
+                "agent_id": agent.id,
+                **query.model_dump(exclude={"version"}),
+            },
+            online=agent.status != "offline",
+        )
+        await self.refs.load(named([agent]))
+        scope = f"{self.refs.ref(agent.computer_id)}/{self.refs.ref(agent.id)}"
+        descriptor = {"scope": scope, "version": query.version, "offset": query.offset}
+        if isinstance(result, str):
+            word, _, code = result.partition(":")
+            return self._render.fragment(
+                request,
+                "search_results.html",
+                rows=[],
+                descriptor=descriptor,
+                answer=word,
+                code=code or None,
+            )
+        await self.refs.load(
+            value
+            for item in result["messages"]
+            for value in (item["thread_id"], item["actor_id"], item["canonical_target"])
+        )
+        rows = []
+        for item in result["messages"]:
+            name = contact_name(item["target"])
+            sender = item["sender"] or {}
+            speaker = (
+                agent.name
+                if item["direction"] == "outbound"
+                else sender.get("display_name")
+                or sender.get("name")
+                or sender.get("id")
+                or ""
+            )
+            url = (
+                f"/agents/{scope}/contacts/{self.refs.ref(item['thread_id'])}?"
+                + urlencode(
+                    {
+                        "actor": self.refs.ref(item["actor_id"]),
+                        "target": self.refs.ref(item["canonical_target"]),
+                        "channel": item["channel"],
+                        "name": name,
+                        "latest": item["message_id"],
+                    }
+                )
+            )
+            if item["direction"] == "outbound":
+                token = "self"
+            elif sender.get("name"):
+                token = "@" + sender["name"].translate(
+                    str.maketrans(ascii_uppercase, ascii_lowercase)
+                )
+            elif sender.get("id"):
+                token = "@" + sender["id"]
+            else:
+                token = ""
+            rows.append(
+                {
+                    "message_id": item["message_id"],
+                    "thread_id": item["thread_id"],
+                    "target": item["canonical_target"],
+                    "url": url,
+                    "name": ("#" if item["target_kind"] == "group" else "") + name,
+                    "speaker": speaker,
+                    "avatar": identicon(
+                        agent.name
+                        if item["direction"] == "outbound"
+                        else sender.get("id") or "anonymous"
+                    ),
+                    "sender": token,
+                    "at_ms": item["at_ms"],
+                    "parts": item["parts"],
+                }
+            )
+        return self._render.fragment(
+            request,
+            "search_results.html",
+            rows=rows,
+            descriptor={
+                **descriptor,
+                "has_more": result["has_more"],
+                "next_offset": result["next_offset"],
+                "sort": result["sort"],
+            },
+            answer="listed",
+            code=None,
+        )
+
+    @expanded("computer_id", "agent_id")
+    @allowed(Permission.AGENTS_VIEW, "agent")
+    @sees("computer", "computer_id")
+    @sees("agent", "agent_id")
+    async def search_options(self, request: Request) -> Response:
+        """Conversation options from the existing contacts read."""
+
+        try:
+            query = SearchOptionsQuery.model_validate(dict(request.query_params))
+        except ValidationError:
+            return JSONResponse({}, status_code=400)
+        agent = await agent_view(
+            self._storage,
+            Access.of(request),
+            request.path_params["computer_id"],
+            request.path_params["agent_id"],
+        )
+        if agent is None:
+            return JSONResponse({}, status_code=404)
+        result = await self._controls.outcome(
+            agent.computer_id,
+            {
+                "read": "contacts",
+                "agent_id": agent.id,
+                "review": None,
+                "limit": query.limit,
+                "offset": query.offset,
+            },
+            online=agent.status != "offline",
+        )
+        if isinstance(result, str):
+            word, _, code = result.partition(":")
+            return JSONResponse({"answer": word, "code": code or None})
+        options = [
+            {
+                "token": item["canonical_target"],
+                "label": ("#" if item["target_kind"] == "group" else "")
+                + contact_name(item["target"]),
+                "avatar": identicon(item["thread_id"]),
+            }
+            for item in result["targets"]
+        ]
+        return JSONResponse(
+            {
+                "answer": "listed",
+                "options": options,
+                "has_more": result["has_more"],
+                "next_offset": query.offset + len(options),
+            },
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @expanded("computer_id", "agent_id", "thread_id")

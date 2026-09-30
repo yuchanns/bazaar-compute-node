@@ -1,0 +1,16 @@
+{% import "components.html" as c with context %}
+<div data-search-page='{{ descriptor|tojson }}'>
+{% if answer != "listed" %}
+<div class="empty err" role="status">{{ t.text("search.timeout" if code == "SEARCH_TIMEOUT" else "search." ~ answer) }}<button class="btn" type="button" @click="change()">{{ t.text("contacts.retry") }}</button></div>
+{% elif not rows %}
+<div class="empty" role="status">{{ t.text("search.empty") }}</div>
+{% else %}
+{% for row in rows %}
+<a class="search-hit" href="{{ row.url }}" hx-get="{{ row.url }}" hx-target="#chat" hx-swap="outerHTML" hx-push-url="true" data-message="{{ row.message_id }}" data-target="{{ row.target }}" data-sender="{{ row.sender }}" data-speaker="{{ row.speaker }}" data-avatar="{{ row.avatar }}" @click="pick($event)">
+  <span class="search-meta">{{ c.avatar(row.thread_id, small=true) }}<b>{{ row.name }}</b><time x-text="new Intl.DateTimeFormat(document.documentElement.lang, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}).format({{ row.at_ms }})">{{ row.at_ms|time }}</time>{{ c.icon('arrow-right') }}</span>
+  <span class="search-snippet">{% for text, matched in row.parts %}{% if matched %}<strong>{{ text }}</strong>{% else %}{{ text }}{% endif %}{% endfor %}</span>
+  <span class="search-speaker">{{ row.speaker }}</span>
+</a>
+{% endfor %}
+{% endif %}
+</div>

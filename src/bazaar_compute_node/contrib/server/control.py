@@ -10,22 +10,26 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from functools import partial
 from inspect import isawaitable
-from typing import Literal
+from typing import Annotated, Literal, Self
 
 import aiohttp
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     NonNegativeInt,
     PositiveInt,
+    StrictInt,
     StrictStr,
     TypeAdapter,
     ValidationError,
+    model_validator,
 )
 from yarl import URL
 
 from ...core.actor import Agent
 from ...core.audit import AuditEvent
+from ...core.command import MessageSearchRequest, MessageSearchTimeoutError
 from ...core.control import (
     AgentCommands,
     ControlContext,
@@ -40,6 +44,7 @@ from ...core.serialize import (
     serialize_inbox_target,
     serialize_message,
     serialize_reminder,
+    serialize_search,
 )
 from ...core.utils.clock import now_ms
 from ...core.utils.text import format_exception
@@ -83,6 +88,64 @@ class _ContactsRead(BaseModel):
             "has_more": result.has_more,
             "pending_review": result.pending_review,
         }
+
+
+class _SearchRead(BaseModel):
+    """Search the selected agent's conversations as their operator."""
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    read: Literal["search"]
+    agent_id: StrictStr
+    query: StrictStr = ""
+    target: StrictStr | None = None
+    sender: StrictStr | None = None
+    after_ms: StrictInt | None = None
+    before_ms: StrictInt | None = None
+    sort: Literal["time", "relevance"] = "time"
+    limit: Annotated[StrictInt, Field(ge=1, le=50)] = 20
+    offset: NonNegativeInt = 0
+    review: Literal["pending", "approved", "denied"] | None = None
+
+    @model_validator(mode="after")
+    def filters(self) -> Self:
+        self.query = " ".join(self.query.split()[:5])
+        if self.sender is not None:
+            self.sender = self.sender.strip()
+            if not self.sender or self.sender == "@":
+                raise ValueError("sender must be a handle, id, or self")
+        if self.target is not None and not self.target.strip():
+            raise ValueError("target must be non-empty")
+        if (
+            self.after_ms is not None
+            and self.before_ms is not None
+            and self.after_ms > self.before_ms
+        ):
+            raise ValueError("after must be at or before before")
+        if (
+            not any((self.query, self.target, self.sender))
+            and self.after_ms is None
+            and self.before_ms is None
+        ):
+            raise ValueError("search requires a query or filter")
+        return self
+
+    async def answer(self, commands: AgentCommands) -> dict[str, object]:
+        result = await commands.service.search_messages(
+            Agent(self.agent_id),
+            MessageSearchRequest(
+                query=self.query,
+                raw_target=self.target,
+                sender=self.sender,
+                after_ms=self.after_ms,
+                before_ms=self.before_ms,
+                sort=self.sort,
+                limit=self.limit,
+                offset=self.offset,
+            ),
+            review=None if self.review is None else Review(self.review),
+        )
+        return serialize_search(result, commands.actors)
 
 
 class _HistoryRead(BaseModel):
@@ -290,7 +353,12 @@ class _WorkspaceRead(BaseModel):
 # only an operator may do, which `bcc` has no word for. each request knows
 # how it is answered; `read` or `write` tells them apart on the wire
 type _AgentRequest = (
-    _ContactsRead | _HistoryRead | _RemindersRead | _ReviewWrite | _SettingWrite
+    _ContactsRead
+    | _SearchRead
+    | _HistoryRead
+    | _RemindersRead
+    | _ReviewWrite
+    | _SettingWrite
 )
 # and what it may ask about the node rather than of one agent: the
 # operator's own requests, which `bcc` has no word for
@@ -521,6 +589,8 @@ class ServerControl(IControl):
             }
         except Refused as error:
             return {"ok": False, "code": "REFUSED", "error": str(error)}
+        except MessageSearchTimeoutError as error:
+            return {"ok": False, "code": error.code, "error": str(error)}
         except ValueError as error:
             return {"ok": False, "code": "TARGET_NOT_FOUND", "error": str(error)}
         except Exception as error:

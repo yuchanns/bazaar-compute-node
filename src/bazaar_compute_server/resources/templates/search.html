@@ -1,0 +1,66 @@
+{% import "components.html" as c with context %}
+<div id="message-search" x-data="messageSearch" data-scope="{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}"
+     data-labels='{{ {"anytime": t.text("search.anytime"), "today": t.text("search.today"), "week": t.text("search.week"), "failed": t.text("search.failed"), "offline": t.text("search.offline"), "silent": t.text("search.silent"), "refused": t.text("search.refused")}|tojson }}'
+     @message-search.window="show($event)" @focusin="focusTarget = $event.target"
+     @keydown.window="if ($event.ctrlKey && $event.key.toLowerCase() === 'f') { $event.preventDefault(); show($event); }">
+  <div class="search-veil" x-cloak x-show="s.open" :style="bounds" @click.self="close()" @keydown.escape.stop.prevent="escape()">
+    <section class="search-dialog" x-ref="dialog" role="dialog" aria-modal="true" aria-label="{{ t.text('search.open') }}" x-trap.inert.noscroll="s.open" @keydown="key($event)" @click="if (s.panel && !$event.target.closest('.search-panels, .search-filters > button')) { s.panel = ''; s.calendar = ''; }">
+      <div class="search-input">{{ c.icon('search') }}<input id="search-query" x-ref="input" type="search" autocomplete="off" x-model="s.query" @input="input()" @compositionstart="startComposition()" @compositionend="endComposition()" placeholder="{{ t.text('search.placeholder') }}" aria-label="{{ t.text('search.placeholder') }}"><button class="btn icon search-close" type="button" @click.stop="close()" title="{{ t.text('search.close') }}" aria-label="{{ t.text('search.close') }}">{{ c.icon('x') }}</button></div>
+      <div class="search-filters">
+        <span class="search-agent">{{ c.avatar(selected.name, small=true) }}<span>{{ selected.name }}</span></span>
+        <button class="btn" type="button" @click="togglePanel('contacts')" :class="{on: s.target}" :aria-expanded="s.panel === 'contacts'" aria-controls="search-contacts"><span x-text="s.targetLabel || '{{ t.text('search.all_contacts') }}'"></span>{{ c.icon('chevron-down') }}</button>
+        <button class="btn" type="button" @click="togglePanel('senders')" :class="{on: s.sender}" :aria-expanded="s.panel === 'senders'" aria-controls="search-senders"><span x-text="s.senderLabel || '{{ t.text('search.sender_filter') }}'"></span>{{ c.icon('chevron-down') }}</button>
+        <button class="btn" type="button" @click="togglePanel('time')" :class="{on: s.time}" :aria-expanded="s.panel === 'time'" aria-controls="search-time"><span x-text="s.time ? timeLabel : '{{ t.text('search.time_filter') }}'"></span>{{ c.icon('chevron-down') }}</button>
+        <label class="search-sort"><span class="sr-only">{{ t.text('search.sort') }}</span>{{ c.select('search-sort', 'sort', [('time', t.text('search.time_sort')), ('relevance', t.text('search.relevance'))], 'time', 'x-model="s.sort" @change="change()"') }}</label>
+      </div>
+      <div class="search-panels" x-ref="panel" x-show="s.panel" :class="{time: s.panel === 'time'}" :style="panelBounds" @click.stop>
+        <div id="search-contacts" class="search-options" x-show="s.panel === 'contacts'" @scroll="if ($el.scrollHeight - $el.scrollTop - $el.clientHeight < 80) options(true)">
+          <div class="search-panel-title">{{ t.text('search.choose_contact') }}</div>
+          <button class="search-option" type="button" @click="choose('contacts', {token: '', label: ''})" :class="{on: !s.target}"><span>{{ t.text('search.all_contacts') }}</span><span class="search-option-count" x-text="s.count"></span><span class="search-check" x-show="!s.target">{{ c.icon('check') }}</span></button>
+          <template x-for="item in s.contacts.items" :key="item.token"><button class="search-option" type="button" @click="choose('contacts', item)" :class="{on: s.target === item.token}" :title="item.label"><span class="av sm" x-html="item.avatar"></span><span x-text="item.label"></span><span class="search-option-count" x-show="s.contactCounts[item.token]" x-text="s.contactCounts[item.token]"></span><span class="search-check" x-show="s.target === item.token">{{ c.icon('check') }}</span></button></template>
+          <div class="search-feedback" role="status" x-show="s.contacts.error" x-text="s.contacts.error"></div>
+          <button class="btn search-more" type="button" x-show="s.contacts.more" :disabled="s.contacts.busy" @click="options(s.contacts.loaded)">{{ t.text('search.more') }}</button>
+        </div>
+        <div id="search-senders" class="search-options" x-show="s.panel === 'senders'">
+          <div class="search-panel-title">{{ t.text('search.choose_sender') }}</div>
+          <button class="search-option" type="button" @click="choose('senders', {token: '', label: ''})" :class="{on: !s.sender}"><span>{{ t.text('search.all_senders') }}</span><span class="search-check" x-show="!s.sender">{{ c.icon('check') }}</span></button>
+          <template x-for="item in s.senders" :key="item.token"><button class="search-option" type="button" @click="choose('senders', item)" :class="{on: s.sender === item.token}" :title="item.label"><span class="av sm" x-html="item.avatar"></span><span x-text="item.label"></span><span class="search-option-count" x-text="item.count"></span><span class="search-check" x-show="s.sender === item.token">{{ c.icon('check') }}</span></button></template>
+        </div>
+        <div id="search-time" class="search-time" x-show="s.panel === 'time'">
+          <div class="search-panel-title">{{ t.text('search.date_range') }}</div>
+          <div class="search-presets">
+            {% for value, label in [('', 'anytime'), ('today', 'today'), ('week', 'week')] %}
+            <button class="btn" type="button" @click="s.draftTime = '{{ value }}'; s.calendar = ''" :class="{on: s.draftTime === '{{ value }}'}">{{ t.text('search.' ~ label) }}</button>
+            {% endfor %}
+          </div>
+          <div class="search-dates">
+            {% for field, label in [('after', 'start'), ('before', 'end')] %}
+            <label>{{ t.text('search.' ~ label) }}<button class="btn search-date" type="button" @click="openCalendar('{{ field }}')" :aria-expanded="s.calendar === '{{ field }}'"><span x-text="dateLabel(s.{{ 'draftAfter' if field == 'after' else 'draftBefore' }}) || '{{ t.text('search.choose_date') }}'"></span>{{ c.icon('calendar') }}</button></label>
+            {% endfor %}
+          </div>
+          <div class="search-calendar" x-show="s.calendar" x-ref="calendar">
+            <div class="calendar-heading"><b x-text="monthLabel" aria-live="polite"></b><span><button class="btn icon" type="button" @click="moveMonth(-1)" aria-label="{{ t.text('search.previous_month') }}">{{ c.icon('chevron-left') }}</button><button class="btn icon" type="button" @click="moveMonth(1)" aria-label="{{ t.text('search.next_month') }}">{{ c.icon('chevron-right') }}</button></span></div>
+            <div class="calendar-weekdays"><template x-for="(day, index) in weekdays" :key="index"><span x-text="day"></span></template></div>
+            <div class="calendar-days" @keydown="calendarKey($event)"><template x-for="day in days" :key="day.value"><button type="button" :data-date="day.value" :id="'search-date-' + day.value" :aria-label="day.label" :aria-pressed="day.selected" :tabindex="day.value === s.cursor ? 0 : -1" :class="{outside: day.outside, today: day.today, on: day.selected, range: day.range}" @focus="s.cursor = day.value" @click="chooseDate(day.value)" x-text="day.day"></button></template></div>
+          </div>
+          <div class="search-date-actions"><button class="btn search-date-today" type="button" @click="openCalendar(s.calendar || 'after'); chooseDate(dateKey(new Date()))">{{ t.text('search.today') }}</button><button class="btn search-date-cancel" type="button" @click="cancelDates()">{{ t.text('computers.cancel') }}</button><button class="btn p" type="button" @click="applyDates()" :disabled="s.draftTime === 'custom' && (!s.draftAfter || !s.draftBefore || s.draftAfter > s.draftBefore)">{{ t.text('search.apply') }}</button></div>
+        </div>
+      </div>
+      <div class="search-toolbar">
+        <span>{{ t.text('search.messages') }}</span><span class="search-count" aria-live="polite" x-text="'{{ t.text('search.loaded', {'n': '{n}'}) }}'.replace('{n}', s.count)"></span>
+        <button class="btn sm" type="button" x-show="s.target || s.sender || s.time" @click="clear()">{{ t.text('search.clear') }}</button>
+      </div>
+      <div class="search-results" x-ref="results" @scroll="scrolled()" :aria-busy="s.busy">
+        <div class="empty" x-show="!s.count && !s.html && !s.busy && !s.error">{{ t.text('search.prompt') }}</div>
+        <div x-html="s.html"></div>
+        <div x-ref="top" aria-hidden="true"></div>
+        <div x-ref="items"></div>
+        <div x-ref="bottom" aria-hidden="true"></div>
+        <div class="search-feedback" role="status" x-show="s.error" x-text="s.error"></div>
+        <div class="loading" x-show="s.busy" role="status" aria-label="{{ t.text('app.loading') }}">{{ c.icon('loader') }}</div>
+        <button class="btn search-more" type="button" x-show="s.more && !s.busy" @click="load(true)">{{ t.text('search.more') }}</button>
+      </div>
+      <div class="search-foot"><span class="search-keys"><span><kbd role="img" aria-label="ArrowUp">{{ c.icon('arrow-up') }}</kbd><kbd role="img" aria-label="ArrowDown">{{ c.icon('arrow-down') }}</kbd>{{ t.text('search.select') }}</span><span><kbd>Enter</kbd>{{ t.text('search.open_record') }}</span></span><span><kbd>Esc</kbd>{{ t.text('search.close_key') }}</span></div>
+    </section>
+  </div>
+</div>
