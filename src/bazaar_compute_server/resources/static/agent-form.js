@@ -19,7 +19,7 @@ document.addEventListener('alpine:init', () => {
       this.step = Number(this.form.dataset.at || 0);
       for (const family of ['channel', 'runtime']) {
         this.cards[family] = this.cards[family].map(card => ({
-          app_id: '', region: 'feishu', bot_id: '', websocket_url: '',
+          app_id: '', region: 'feishu', bot_id: '', websocket_url: '', version: '',
           model: '', effort: '', sandbox_mode: 'workspace-write', network_access: true,
           models: [{value: card.model || '', label: card.model || labels.modelDefault, efforts: []}],
           efforts: card.effort ? [card.effort] : [], modelState: 'idle', modelError: '',
@@ -69,7 +69,8 @@ document.addEventListener('alpine:init', () => {
     reveal() {
       if (!this.active) return;
       for (const family of ['channel', 'runtime']) {
-        if (this.form.querySelector(`[data-blank="${family}"]`).checkVisibility()) this.loadKinds(family);
+        const blank = this.form.querySelector(`[data-blank="${family}"]`);
+        if (blank.checkVisibility() || (family === 'runtime' && this.cards.runtime.length && (!this.wizard || this.step >= 2))) this.loadKinds(family);
       }
     },
     kindStarted(event) {
@@ -84,6 +85,10 @@ document.addEventListener('alpine:init', () => {
       if (!blank) return;
       this.kindRequests.delete(blank.dataset.blank);
       this.kinds[blank.dataset.blank] = ctx.status === 'swapped' && !blank.querySelector('.err') ? 'ready' : 'error';
+      if (blank.dataset.blank === 'runtime' && this.kinds.runtime === 'ready') {
+        const versions = new Map([...blank.querySelectorAll('[data-add]')].map(option => [option.dataset.add, option.dataset.version]));
+        for (const card of this.cards.runtime) card.version = versions.get(`runtime-${card.kind}`) || '';
+      }
     },
     async loadKinds(family, retry = false) {
       if (!this.active || this.kinds[family] === 'loading' || (!retry && this.kinds[family] !== 'idle')) return;

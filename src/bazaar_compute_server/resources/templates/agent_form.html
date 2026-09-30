@@ -63,8 +63,8 @@
 
 {% macro card_head(family) -%}
 <div class="title">
-  {% for kind in ("telegram", "lark", "wecom") if family == "channel" %}<span x-show="card.kind === '{{ kind }}'">{{ logo(family, kind) }}</span>{% endfor %}
-  {% for kind in ("codex", "claudecode") if family == "runtime" %}<span x-show="card.kind === '{{ kind }}'">{{ logo(family, kind) }}</span>{% endfor %}
+  {% for kind in ("telegram", "lark", "wecom") if family == "channel" %}<span class="kind-logo" x-show="card.kind === '{{ kind }}'">{{ logo(family, kind) }}</span>{% endfor %}
+  {% for kind in ("codex", "claudecode") if family == "runtime" %}<span class="kind-logo" x-show="card.kind === '{{ kind }}'">{{ logo(family, kind) }}</span>{% endfor %}
   <span x-text="labels.{{ family }}[card.kind] || card.kind"></span><span class="ver" x-show="card.version" x-text="card.version"></span>
   <button class="btn icon" type="button" title="{{ t.text('agents.remove_card') }}" aria-label="{{ t.text('agents.remove_card') }}" data-remove @click="removeCard('{{ family }}', card)">{{ c.icon('trash-2') }}</button>
 </div>
@@ -111,7 +111,7 @@
 {% if listed.answer != 'listed' %}
 <p class="err">{{ t.text('agents.' ~ listed.answer, {'code': listed.code}) }}</p><button class="btn sm" type="button" @click="loadKinds('{{ family }}', true)">{{ c.icon('rotate-cw') }} {{ t.text('agents.retry') }}</button>
 {% else %}
-{% for item in listed.kinds %}<button type="button" data-add="{{ family }}-{{ item.kind }}" @click='addCard({{ family|tojson }}, {{ item.kind|tojson }}, {{ (item.version if family == "runtime" else "")|tojson }})'{% if family == 'runtime' and not item.available %} disabled title="{{ t.text('agents.not_found') }}"{% endif %}>{{ logo(family, item.kind) }}{{ kind_name(family, item.kind) }}{% if family == 'runtime' %}{% if item.available %}{% if item.version %}<span class="ver">{{ item.version }}</span>{% endif %}{% else %}<span class="miss">{{ c.icon('triangle-alert') }}</span>{% endif %}{% endif %}</button>{% endfor %}
+{% for item in listed.kinds %}<button type="button" data-add="{{ family }}-{{ item.kind }}"{% if family == "runtime" %} data-version="{{ item.version or '' }}"{% endif %} @click='addCard({{ family|tojson }}, {{ item.kind|tojson }}, {{ (item.version if family == "runtime" else "")|tojson }})'{% if family == 'runtime' and not item.available %} disabled title="{{ t.text('agents.not_found') }}"{% endif %}>{{ logo(family, item.kind) }}{{ kind_name(family, item.kind) }}{% if family == 'runtime' %}{% if item.available %}{% if item.version %}<span class="ver">{{ item.version }}</span>{% endif %}{% else %}<span class="miss">{{ c.icon('triangle-alert') }}</span>{% endif %}{% endif %}</button>{% endfor %}
 {% endif %}
 {%- endmacro %}
 
