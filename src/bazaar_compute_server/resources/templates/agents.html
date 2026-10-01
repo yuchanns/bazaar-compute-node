@@ -13,9 +13,12 @@
   {% include "agent_contacts_head.html" %}
   {% set base = "/agents/" ~ ref(selected.computer_id) ~ "/" ~ ref(selected.id) %}
   {% set query = ["review=pending" if pending, "selected=" ~ ref(contact.thread_id) if contact]|select|join("&") %}
-  <div class="switch text">
-    <button class="tab{% if not pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_chats") }}" hx-get="{{ base }}" hx-target="#main" hx-push-url="true" hx-sync="#contacts:replace">{{ c.icon("message-circle") }}{{ t.text("contacts.tab_chats") }}</button>
-    <button class="tab{% if pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_requests") }}" hx-get="{{ base }}?review=pending" hx-target="#main" hx-push-url="true" hx-sync="#contacts:replace">{{ c.icon("user-plus") }}{{ t.text("contacts.tab_requests") }}<span class="n" id="pending-review" hidden></span></button>
+  <div class="contacts-toolbar">
+    <div class="switch text">
+      <button class="tab{% if not pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_chats") }}" hx-get="{{ base }}" hx-target="#main" hx-push-url="true" hx-sync="#contacts:replace">{{ c.icon("message-circle") }}{{ t.text("contacts.tab_chats") }}</button>
+      <button class="tab{% if pending %} on{% endif %}" type="button" title="{{ t.text("contacts.tab_requests") }}" hx-get="{{ base }}?review=pending" hx-target="#main" hx-push-url="true" hx-sync="#contacts:replace">{{ c.icon("user-plus") }}{{ t.text("contacts.tab_requests") }}<span class="n" id="pending-review" hidden></span></button>
+    </div>
+    <span class="chat-actions">{{ c.search_button() }}</span>
   </div>
   {# the conversations are the node's to list, so the page comes up first and
      the column asks for them once it is there #}
