@@ -903,7 +903,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding: 9px 20px; flex: none; color: var(--muted); font-size: 11px; }
 .search-count { margin-left: auto; }
 .search-toolbar .btn { padding: 0; border: 0; background: transparent; color: var(--muted); font-size: inherit; }
-.search-results { min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 0 8px 8px; flex: 0 1 385px; max-height: 48vh; }
+.search-result-body { position: relative; display: flex; min-height: 0; flex: 0 1 385px; max-height: 48vh; }
+.search-results { min-width: 0; min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 0 8px 8px; flex: 1; }
+.search-loading { position: absolute; inset: 0; min-height: 0; background: var(--panel); }
 .search-hit { display: block; border-radius: var(--r-sm); padding: 12px; }
 .search-hit { margin-bottom: 2px; }
 .search-hit:hover { background: var(--chip); }
@@ -923,6 +925,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-foot kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; vertical-align: middle; border: 1px solid var(--edge); border-radius: 3px; padding: 0 4px; font: inherit; margin-right: 4px; }
 .search-foot kbd .i svg { width: 12px; height: 12px; }
 .search-feedback { color: var(--muted); padding: 12px 10px; }
+.search-error { display: flex; align-items: center; gap: 6px; }
+.search-error .btn.icon { flex: none; margin-left: 0; border: 0; background: transparent; color: inherit; }
 .search-more { display: flex; margin: 8px auto; }
 @media (max-width: 959px) {
   .contacts-toolbar { margin-inline: 10px; }

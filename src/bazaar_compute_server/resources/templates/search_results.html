@@ -1,7 +1,7 @@
 {% import "components.html" as c with context %}
 <div data-search-page='{{ descriptor|tojson }}'>
 {% if answer != "listed" %}
-<div class="empty err" role="status">{{ t.text("search.timeout" if code == "SEARCH_TIMEOUT" else "search." ~ answer) }}<button class="btn" type="button" @click="change()">{{ t.text("contacts.retry") }}</button></div>
+<div class="empty err search-error"><span role="status">{{ t.text("search.timeout" if code == "SEARCH_TIMEOUT" else "search." ~ answer) }}</span><button class="btn icon" type="button" @click="change()" title="{{ t.text('contacts.retry') }}" aria-label="{{ t.text('contacts.retry') }}">{{ c.icon('rotate-cw') }}</button></div>
 {% elif not rows %}
 <div class="empty" role="status">{{ t.text("search.empty") }}</div>
 {% else %}

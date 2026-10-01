@@ -266,6 +266,7 @@ document.addEventListener('alpine:init', () => {
       if (!this.s.query.trim() && !this.s.target && !this.s.sender && !this.s.time) {
         this.s.html = ''; this.s.items = []; this.s.ends = []; this.s.count = 0; this.s.more = false; this.s.senders = []; this.s.contactCounts = {};
         this.s.offset = 0; this.s.scroll = 0; this.s.anchor = null; this.s.selected = -1;
+        this.s.resultsVersion = this.s.version;
         this.$nextTick(() => this.rendered());
         return;
       }
@@ -325,7 +326,14 @@ document.addEventListener('alpine:init', () => {
         this.positions();
         this.$nextTick(() => this.rendered());
       } catch (error) {
-        if (error.name !== 'AbortError' && this.active && scope === this.scope && version === state.version) state.error = this.labels.failed;
+        if (error.name !== 'AbortError' && this.active && scope === this.scope && version === state.version) {
+          state.error = this.labels.failed;
+          if (!append) {
+            state.html = ''; state.items = []; state.ends = []; state.count = 0; state.more = false; state.senders = []; state.contactCounts = {};
+            state.offset = 0; state.scroll = 0; state.anchor = null; state.selected = -1; state.resultsVersion = version;
+            this.$nextTick(() => this.rendered());
+          }
+        }
       } finally {
         if (scope === this.scope && version === state.version) { state.busy = false; this.controller = null; }
       }
@@ -420,7 +428,7 @@ document.addEventListener('alpine:init', () => {
     },
     key(event) {
       if (event.target !== this.$refs.input || this.composing || event.isComposing || this.s.panel || !['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return;
-      if (!this.s.count) return;
+      if (!this.s.count || this.s.resultsVersion !== this.s.version) return;
       event.preventDefault();
       if (event.key !== 'Enter') {
         this.s.selected = Math.max(0, Math.min(this.s.count - 1, this.s.selected + (event.key === 'ArrowDown' ? 1 : -1)));

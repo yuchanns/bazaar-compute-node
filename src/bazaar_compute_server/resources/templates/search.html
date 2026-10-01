@@ -50,15 +50,18 @@
         <span>{{ t.text('search.messages') }}</span><span class="search-count" aria-live="polite" x-text="'{{ t.text('search.loaded', {'n': '{n}'}) }}'.replace('{n}', s.count)"></span>
         <button class="btn sm" type="button" x-show="s.target || s.sender || s.time" @click="clear()">{{ t.text('search.clear') }}</button>
       </div>
-      <div class="search-results" x-ref="results" @scroll="scrolled()" :aria-busy="s.busy">
-        <div class="empty" x-show="!s.count && !s.html && !s.busy && !s.error">{{ t.text('search.prompt') }}</div>
-        <div x-html="s.html"></div>
-        <div x-ref="top" aria-hidden="true"></div>
-        <div x-ref="items"></div>
-        <div x-ref="bottom" aria-hidden="true"></div>
-        <div class="search-feedback" role="status" x-show="s.error" x-text="s.error"></div>
-        <div class="loading" x-show="s.busy" role="status" aria-label="{{ t.text('app.loading') }}">{{ c.icon('loader') }}</div>
-        <button class="btn search-more" type="button" x-show="s.more && !s.busy" @click="load(true)">{{ t.text('search.more') }}</button>
+      <div class="search-result-body">
+        <div class="search-results" x-ref="results" @scroll="scrolled()" :aria-busy="s.busy" :inert="s.resultsVersion !== s.version">
+          <div class="empty" x-show="!s.count && !s.html && !s.busy && !s.error">{{ t.text('search.prompt') }}</div>
+          <div x-html="s.html"></div>
+          <div x-ref="top" aria-hidden="true"></div>
+          <div x-ref="items"></div>
+          <div x-ref="bottom" aria-hidden="true"></div>
+          <div class="search-feedback search-error" x-show="s.error"><span role="status" x-text="s.error"></span><button class="btn icon" type="button" @click="change()" title="{{ t.text('contacts.retry') }}" aria-label="{{ t.text('contacts.retry') }}">{{ c.icon('rotate-cw') }}</button></div>
+          <div class="loading" x-show="s.busy && s.resultsVersion === s.version" role="status" aria-label="{{ t.text('app.loading') }}">{{ c.icon('loader') }}</div>
+          <button class="btn search-more" type="button" x-show="s.more && !s.busy" @click="load(true)">{{ t.text('search.more') }}</button>
+        </div>
+        <div class="loading search-loading" x-show="s.busy && s.resultsVersion !== s.version" role="status" aria-label="{{ t.text('app.loading') }}">{{ c.icon('loader') }}</div>
       </div>
       <div class="search-foot"><span class="search-keys"><span><kbd role="img" aria-label="ArrowUp">{{ c.icon('arrow-up') }}</kbd><kbd role="img" aria-label="ArrowDown">{{ c.icon('arrow-down') }}</kbd>{{ t.text('search.select') }}</span><span><kbd>Enter</kbd>{{ t.text('search.open_record') }}</span></span><span><kbd>Esc</kbd>{{ t.text('search.close_key') }}</span></div>
     </section>
