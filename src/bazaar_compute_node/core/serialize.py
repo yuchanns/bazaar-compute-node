@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from .command import TargetProjection
+import re
+
+from .actor import Actors
+from .command import MessageSearchResult, TargetProjection
 from .models import (
     InboundAttachment,
     InboxTargetSummary,
@@ -105,6 +108,67 @@ def serialize_message(
     }
 
 
+def serialize_search(
+    result: MessageSearchResult,
+    actors: Actors,
+) -> dict[str, object]:
+    fragments = sorted(
+        {
+            fragment
+            for fragment in (
+                fragment.strip('"').strip()
+                for fragment in re.findall(r'"[^"]+"|\S+', result.query)
+            )
+            if fragment
+        },
+        key=len,
+        reverse=True,
+    )
+    pattern = (
+        re.compile("(" + "|".join(map(re.escape, fragments)) + ")", re.IGNORECASE)
+        if fragments
+        else None
+    )
+    messages: list[dict[str, object]] = []
+    for hit in result.messages:
+        pieces = pattern.split(hit.snippet) if pattern else [hit.snippet]
+        message: dict[str, object] = {
+            "message_id": hit.message_id,
+            "direction": hit.direction.value,
+            "sender": (
+                {
+                    "id": hit.sender.id,
+                    "name": hit.sender.name,
+                    "display_name": hit.sender.display_name,
+                }
+                if hit.sender is not None
+                else None
+            ),
+            "sender_kind": hit.sender_kind.value,
+            "at_ms": hit.at_ms,
+            "snippet": hit.snippet,
+            "parts": [
+                (text, bool(pattern and index % 2)) for index, text in enumerate(pieces)
+            ],
+            "thread_id": hit.thread_id,
+            "actor_id": actors.for_thread(hit.thread_id).id,
+            "target": hit.target,
+            "canonical_target": hit.canonical_target,
+            "channel": hit.channel,
+            "target_kind": hit.target_kind.value,
+        }
+        messages.append(message)
+    return {
+        "query": result.query,
+        "sort": result.sort,
+        "shown": result.shown,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "next_offset": result.next_offset,
+        "messages": messages,
+    }
+
+
 def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
     sender = summary.latest_sender
     latest_time_ms = (
@@ -159,4 +223,5 @@ __all__ = [
     "serialize_inbox_target",
     "serialize_message",
     "serialize_reminder",
+    "serialize_search",
 ]

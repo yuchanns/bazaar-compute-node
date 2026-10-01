@@ -16,6 +16,7 @@ from ....core.models import (
 from ....core.storage import RecordInboundResult, StorageOperationMixin
 from .messages import MessageOperations
 from .reminders import ReminderOperations
+from .search import SearchOperations
 from .sessions import SessionOperations
 from .settings import SettingOperations
 
@@ -24,6 +25,7 @@ class SqliteRepository(
     StorageOperationMixin,
     SessionOperations,
     MessageOperations,
+    SearchOperations,
     ReminderOperations,
     SettingOperations,
 ):

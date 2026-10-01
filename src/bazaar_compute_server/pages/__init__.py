@@ -101,6 +101,8 @@ def routes(
         ),
         Route("/agents/{computer_id}/{agent_id}/activity", agents.activity_card),
         Route("/agents/{computer_id}/{agent_id}/contacts", agents.contacts),
+        Route("/agents/{computer_id}/{agent_id}/search", agents.search),
+        Route("/agents/{computer_id}/{agent_id}/search/options", agents.search_options),
         Route(
             "/agents/{computer_id}/{agent_id}/contacts/{thread_id}", agents.show_contact
         ),

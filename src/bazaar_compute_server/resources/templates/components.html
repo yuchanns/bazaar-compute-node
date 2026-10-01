@@ -36,6 +36,11 @@
 <a class="btn icon back" href="{{ back }}" hx-get="{{ back }}" hx-target="#main" hx-push-url="true" aria-label="{{ t.text('nav.back') }}" title="{{ t.text('nav.back') }}">{{ icon("chevron-left") }}</a>
 {%- endmacro %}
 
+{% macro search_button() -%}
+<kbd class="search-shortcut">Ctrl+F</kbd>
+<button class="btn icon search-open" type="button" title="{{ t.text('search.open') }} (Ctrl+F)" aria-label="{{ t.text('search.open') }}" onclick="window.dispatchEvent(new CustomEvent('message-search', {detail: this}))">{{ icon('search') }}</button>
+{%- endmacro %}
+
 {% macro column_header(title, back=none, brand=false) -%}
 <div class="hd">{% if brand %}<a class="mobile-brand" href="/agents" hx-get="/agents" hx-target="#main" hx-push-url="true" aria-label="Bazaar">{% include "sign.svg" %}</a>{% endif %}{% if back %}{{ back_link(back) }}{% endif %}<span class="heading">{{ title }}</span>{% if caller is defined %}{{ caller() }}{% endif %}</div>
 {%- endmacro %}

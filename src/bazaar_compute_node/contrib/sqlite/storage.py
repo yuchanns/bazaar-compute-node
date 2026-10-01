@@ -40,13 +40,19 @@ _READ_OPERATIONS = frozenset(
         "list_thread_ids",
         "read_inbox_catalog",
         "read_message_history",
+        "search_messages",
         "resolve_message",
         "resolve_inbox_target",
     }
 )
 
 _SNAPSHOT_READ_OPERATIONS = frozenset(
-    {"read_inbox_catalog", "read_message_history", "read_unread_summary"}
+    {
+        "read_inbox_catalog",
+        "read_message_history",
+        "read_unread_summary",
+        "search_messages",
+    }
 )
 
 _TRANSACTIONAL_WRITE_OPERATIONS = frozenset(

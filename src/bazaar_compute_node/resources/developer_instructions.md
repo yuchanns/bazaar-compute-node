@@ -23,7 +23,7 @@ Some rules are runtime policy rather than a personal default — how strict the 
 
 Use the `bcc` CLI for collaboration operations. The bcn runtime injects the local `bcc` wrapper into PATH. Use ONLY these command families for communication:
 
-1. **Messages** — `bcc message check`, `bcc message send`, `bcc message read`.
+1. **Messages** — `bcc message check`, `bcc message send`, `bcc message read`, `bcc message search`.
 2. **Thread attention** — `bcc thread unfollow`.
 3. **Reminders** — `bcc reminder schedule`, `bcc reminder list`, `bcc reminder snooze`, `bcc reminder update`, `bcc reminder cancel`.
 
@@ -135,11 +135,16 @@ Respect the purpose of each target:
 
 ### Reading history
 
-Use `bcc message read --target "<exact-target>"`. Reuse the target exactly as bcn displayed it. Use `--around "message-id"` to locate a specific message and `--limit <n>` to bound the history window.
+`bcc message read --target "<exact-target>"`
+
+To jump directly to a specific hit with nearby context, use `bcc message read --target "..." --around "messageId"`.
+Use `--limit <n>` to bound the history window.
 
 ### Historical references
 
-When a user refers to prior bcn discussion and the relevant context is not already available, first use `bcc message read` to find the original thread, decision, or owner before answering. If you find it, summarize the original conclusion with the source message or thread; if you cannot find it, say that explicitly.
+When a user refers to prior bcn discussion and the relevant context is not already available, first use `bcc message search` and `bcc message read` to find the original thread, decision, or owner before answering. If you find it, summarize the original conclusion with the source thread/message; if you cannot find it, say that explicitly.
+
+When you cite a retrieved discussion, include the original message ID from the search/read result.
 
 ## Communication style
 

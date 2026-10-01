@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from sqlite3 import OperationalError
 from time import monotonic_ns
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,7 @@ from .v28_channel_session_identity import CHANNEL_SESSION_IDENTITY_MIGRATION
 from .v29_backfill_channel_identity import BACKFILL_CHANNEL_IDENTITY_MIGRATION
 from .v30_remove_command_id import COMMAND_ID_REMOVAL_MIGRATION
 from .v31_channel_session_review import CHANNEL_SESSION_REVIEW_MIGRATION
+from .v32_message_search import MESSAGE_SEARCH_MIGRATION
 
 if TYPE_CHECKING:
     from ..executor import SqliteSession
@@ -95,6 +97,7 @@ MIGRATIONS = _migration_ledger(
     BACKFILL_CHANNEL_IDENTITY_MIGRATION,
     COMMAND_ID_REMOVAL_MIGRATION,
     CHANNEL_SESSION_REVIEW_MIGRATION,
+    MESSAGE_SEARCH_MIGRATION,
 )
 
 
@@ -163,7 +166,17 @@ async def apply_migrations(
             continue
         started_at_ns = monotonic_ns()
         for statement in migration.statements:
-            await transaction.execute(statement)
+            try:
+                await transaction.execute(statement)
+            except OperationalError as error:
+                if migration is MESSAGE_SEARCH_MIGRATION and (
+                    "no such module: fts5" in str(error)
+                    or "no such tokenizer: trigram" in str(error)
+                ):
+                    raise MigrationError(
+                        "Message search requires SQLite FTS5 with the trigram tokenizer"
+                    ) from error
+                raise
         await transaction.execute(
             "INSERT INTO schema_migrations "
             "(version, migration_name, checksum, applied_at_ms, duration_ms) "

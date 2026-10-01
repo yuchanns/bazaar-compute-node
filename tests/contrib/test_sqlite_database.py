@@ -693,7 +693,7 @@ async def test_sqlite_bootstrap_binds_agent_scope_without_node_state() -> None:
             row["name"] for row in migration_columns
         }
         assert schema_version is not None
-        assert schema_version["version"] == 31
+        assert schema_version["version"] == MIGRATIONS[-1].version
         assert {row["name"] for row in message_columns}.isdisjoint(
             {"snapshot_seq", "current_inbound_seq"}
         )
@@ -1217,7 +1217,7 @@ async def test_sqlite_v26_removes_handoff_messages_and_keeps_the_rest() -> None:
             "inbound-after-upgrade",
         )
         assert schema_version is not None
-        assert schema_version["version"] == 31
+        assert schema_version["version"] == MIGRATIONS[-1].version
     finally:
         await database.stop(timeout=2)
 
@@ -1446,7 +1446,7 @@ async def test_sqlite_v13_migration_preserves_durable_session_and_attempt_facts(
                 "SELECT agent_id FROM runtime_attempts WHERE turn_id = 'turn-1'"
             )
         assert schema_version is not None
-        assert schema_version["version"] == 31
+        assert schema_version["version"] == MIGRATIONS[-1].version
         assert node_state is None
         assert [row["agent_id"] for row in ownership_rows] == [
             "workspace-1",
@@ -1557,7 +1557,7 @@ async def test_sqlite_removes_runtime_events_and_node_state() -> None:
         assert not runtime_objects
         assert node_state is None
         assert schema_version is not None
-        assert schema_version["version"] == 31
+        assert schema_version["version"] == MIGRATIONS[-1].version
         assert marker is not None
         assert marker["compaction_completed_at_ms"] is not None
         assert freelist is not None
