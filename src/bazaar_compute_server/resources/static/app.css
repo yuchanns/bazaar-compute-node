@@ -604,7 +604,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .module[data-view="settings"] > [data-pane="settings"],
   .module[data-view="section"] > [data-pane="section"] { display: flex; }
   .mobile-logout { display: inline-flex; align-self: flex-start; gap: 8px; min-height: 44px; margin: 12px 16px; }
-  [data-pane="contacts"] > .switch .tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; }
+  [data-pane="contacts"] .switch .tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; }
 }
 
 /* Shared editing surfaces keep their controls within the available viewport. */
@@ -831,7 +831,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .chat-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .search-open.btn.icon { margin-left: 0; flex: none; border-color: transparent; background: transparent; }
 .search-shortcut { color: var(--muted); font-size: 10px; font-weight: 400; border: 1px solid var(--edge); border-radius: 4px; padding: 1px 4px; line-height: 1.6; }
-#agent-contacts-head .search-shortcut { display: none; }
+.contacts-toolbar { display: flex; align-items: center; gap: 8px; margin: 8px 14px 0; padding: 2px 2px 8px; border-bottom: 1px solid var(--line); flex: none; }
+.contacts-toolbar .switch { flex: 1; min-width: 0; margin: 0; padding: 0; border: 0; }
+.contacts-toolbar .search-shortcut { display: none; }
 .search-location { display: none; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 400; }
 .search-location::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; }
 #chat:has(.message-focus:not(.message-fade)) .search-location { display: flex; }
@@ -901,7 +903,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding: 9px 20px; flex: none; color: var(--muted); font-size: 11px; }
 .search-count { margin-left: auto; }
 .search-toolbar .btn { padding: 0; border: 0; background: transparent; color: var(--muted); font-size: inherit; }
-.search-results { min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 0 8px 8px; flex: 0 1 385px; max-height: 48vh; }
+.search-result-body { position: relative; display: flex; min-height: 0; flex: 0 1 385px; max-height: 48vh; }
+.search-results { min-width: 0; min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 0 8px 8px; flex: 1; }
+.search-loading { position: absolute; inset: 0; min-height: 0; background: var(--panel); }
 .search-hit { display: block; border-radius: var(--r-sm); padding: 12px; }
 .search-hit { margin-bottom: 2px; }
 .search-hit:hover { background: var(--chip); }
@@ -921,8 +925,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-foot kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; vertical-align: middle; border: 1px solid var(--edge); border-radius: 3px; padding: 0 4px; font: inherit; margin-right: 4px; }
 .search-foot kbd .i svg { width: 12px; height: 12px; }
 .search-feedback { color: var(--muted); padding: 12px 10px; }
+.search-error { display: flex; align-items: center; gap: 6px; }
+.search-error .btn.icon { flex: none; margin-left: 0; border: 0; background: transparent; color: inherit; }
 .search-more { display: flex; margin: 8px auto; }
 @media (max-width: 959px) {
+  .contacts-toolbar { margin-inline: 10px; }
   #chat > .hd > .sub { order: 1; }
   .search-shortcut, #chat:has(.message-focus:not(.message-fade)) .search-location { display: none; }
   .search-veil { padding: min(90px, 10vh) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }

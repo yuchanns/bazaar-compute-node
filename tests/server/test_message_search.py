@@ -454,9 +454,7 @@ async def test_search_control_browser_filters_and_subscription_state(
                         preview = await mobile.new_page()
                         preview.on("pageerror", lambda error: errors.append(str(error)))
                         await preview.goto(f"{base}/agents/{scope}")
-                        await preview.locator(
-                            "#agent-contacts-head .search-open"
-                        ).click()
+                        await preview.locator(".contacts-toolbar .search-open").click()
                         await preview.locator("#search-query").fill("部署 staging")
                         await loaded(preview, 20)
                         await settled(preview)
@@ -711,7 +709,7 @@ async def test_search_sender_pages_and_agent_navigation(
                         .filter(has_text=names[0])
                         .click()
                     )
-                    await page.locator("#agent-contacts-head .search-open").click()
+                    await page.locator(".contacts-toolbar .search-open").click()
                     await page.locator("#search-query").fill("联调")
                     await loaded(page, 20)
                     await settled(page)
@@ -761,7 +759,7 @@ async def test_search_sender_pages_and_agent_navigation(
                         .filter(has_text=names[1])
                         .click()
                     )
-                    await page.locator("#agent-contacts-head .search-open").click()
+                    await page.locator(".contacts-toolbar .search-open").click()
                     await page.locator("#search-query").fill("联调")
                     await loaded(page, 20)
                     await settled(page)
@@ -774,7 +772,7 @@ async def test_search_sender_pages_and_agent_navigation(
                         .filter(has_text=names[0])
                         .click()
                     )
-                    await page.locator("#agent-contacts-head .search-open").click()
+                    await page.locator(".contacts-toolbar .search-open").click()
                     await loaded(page, 1)
                     restored = await page.evaluate(
                         "() => {const s=Alpine.$data(document.querySelector('#message-search')).s;return {query:s.query,sender:s.sender,senders:s.senders,items:s.items.map(item => item.html),count:s.count}}"
@@ -972,7 +970,7 @@ async def test_search_focus_preserves_history_and_discards_old_responses(
                             "theme => document.documentElement.dataset.theme=theme",
                             theme,
                         )
-                        await page.locator("#agent-contacts-head .search-open").click()
+                        await page.locator(".contacts-toolbar .search-open").click()
                         await page.locator("#search-query").fill(
                             "历史定位 会话0 编号0020"
                         )

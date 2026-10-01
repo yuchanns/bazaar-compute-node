@@ -2,6 +2,5 @@
 <div id="agent-contacts-head" x-poll data-poll='{{ poll("agent-info", selected)|tojson }}' data-poll-url="/agents/{{ ref(selected.computer_id) }}/{{ ref(selected.id) }}/head">
   {% call c.column_header(selected.name, back="/agents") %}
     <span class="sub">{{ c.system(selected) }}{{ c.channels(selected.channels) }}</span>
-    {{ c.search_button() }}
   {% endcall %}
 </div>
