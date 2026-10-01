@@ -90,6 +90,39 @@ document.addEventListener('alpine:init', () => {
     '@htmx:after:swap.window'() { this.unreachable = false; },
   }));
   Alpine.data('dialog', (open = true) => ({open}));
+  Alpine.store('history', {
+    key: '', version: 0, reading: null, requests: new Map(),
+    advance(key, message = null) {
+      this.version++;
+      for (const ctx of this.requests.keys()) ctx.request.abort();
+      this.key = key;
+      this.reading = message ? {message, offset: null} : null;
+    },
+  });
+  document.addEventListener('htmx:before:request', event => {
+    const {ctx} = event.detail, state = Alpine.store('history');
+    const url = new URL(ctx.request.action, location.href);
+    const navigation = ['chat', 'main'].includes(ctx.target?.id) || ctx.target === document.body;
+    const history = ctx.sourceElement?.closest('#history');
+    if (!navigation && !history) return;
+    const key = url.pathname.replace(/\/messages$/, '');
+    if (navigation) state.advance(key, url.searchParams.get('focus'));
+    else if (ctx.target?.id === 'history' && key === state.key) {
+      if (state.reading) {
+        url.searchParams.set('latest', state.reading.message);
+        if (state.reading.offset !== null) url.searchParams.delete('focus');
+      } else if (history.matches('[x-data="history"]')) url.searchParams.delete('focus');
+      ctx.request.action = url.href;
+    }
+    state.requests.set(ctx, state.version);
+  });
+  for (const name of ['htmx:before:response', 'htmx:after:request', 'htmx:before:swap']) {
+    document.addEventListener(name, event => {
+      const {ctx} = event.detail, state = Alpine.store('history');
+      if (state.requests.has(ctx) && state.requests.get(ctx) !== state.version) event.preventDefault();
+    });
+  }
+  document.addEventListener('htmx:finally:request', event => Alpine.store('history').requests.delete(event.detail.ctx));
   Alpine.store('search', {states: {}});
   Alpine.data('messageSearch', () => ({
     s: null, scope: '', base: '', element: null, trigger: null, focusTarget: null,
@@ -166,6 +199,12 @@ document.addEventListener('alpine:init', () => {
     },
     show(event) {
       this.trigger = event?.detail instanceof Element ? event.detail : event?.target;
+      const chat = document.getElementById('chat'), target = chat?.dataset.target || '';
+      if (this.s.context !== target) {
+        this.s.context = target; this.s.target = target;
+        this.s.targetLabel = target ? chat.querySelector('.heading').textContent.trim() : '';
+        this.s.panel = ''; this.s.calendar = ''; this.change();
+      }
       this.s.open = true;
       this.listenViewport();
       this.$nextTick(() => {
@@ -199,12 +238,6 @@ document.addEventListener('alpine:init', () => {
       this.viewport?.addEventListener('scroll', this.viewportHandler);
       window.addEventListener('resize', this.viewportHandler);
       this.measure();
-      const chat = document.getElementById('chat'), target = chat?.dataset.target || '';
-      if (this.s.context !== target) {
-        this.s.context = target; this.s.target = target;
-        this.s.targetLabel = target ? chat.querySelector('.heading').textContent.trim() : '';
-        this.s.panel = ''; this.s.calendar = ''; this.change();
-      }
     },
     stopViewport() {
       this.viewport?.removeEventListener('resize', this.viewportHandler);
@@ -402,6 +435,15 @@ document.addEventListener('alpine:init', () => {
     pick(event) {
       this.s.selected = Number(event.currentTarget.dataset.index);
       this.close();
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const url = new URL(event.currentTarget.href), message = url.searchParams.get('focus');
+      const history = document.getElementById('history');
+      const row = document.getElementById(`message-${message}`);
+      if (history?.dataset.url && new URL(history.dataset.url, location.href).pathname === url.pathname + '/messages' && history.contains(row)) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        history.dispatchEvent(new CustomEvent('history-focus', {bubbles: true, detail: message}));
+        window.history.replaceState(window.history.state, '', url.href);
+      }
     },
     togglePanel(panel) {
       this.$refs.input.blur();
@@ -608,6 +650,8 @@ document.addEventListener('alpine:init', () => {
     selected: '',
     init() { this.selected = this.$el.dataset.selected; this.$nextTick(() => this.names()); },
     names() {
+      const chat = document.getElementById('chat');
+      if (chat) this.selected = chat.dataset.thread ? 'contact-' + chat.dataset.thread : '';
       for (const row of this.$el.querySelectorAll('[data-contact]')) {
         this.$dispatch('contact-name', JSON.parse(row.dataset.contact));
       }
@@ -659,21 +703,67 @@ document.addEventListener('alpine:init', () => {
     },
   }));
   Alpine.data('history', () => ({
-    element: null,
-    atBottom: true,
-    pending: new Map(),
-    active: true,
+    element: null, state: null, key: '', atBottom: true, active: true,
+    pending: new Map(), focused: null, timer: null,
     init() {
-      this.element = this.$el;
-      this.$nextTick(() => { if (this.active) this.element.scrollTop = this.element.scrollHeight; });
+      this.element = this.$el; this.state = Alpine.store('history');
+      this.key = new URL(this.element.dataset.url, location.href).pathname.replace(/\/messages$/, '');
+      if (this.state.key !== this.key) this.state.advance(this.key, this.element.dataset.focus || null);
+      if (this.element.dataset.focus && !this.state.reading) this.state.reading = {message: this.element.dataset.focus, offset: null};
+      this.$nextTick(() => {
+        if (!this.active) return;
+        if (this.state.reading?.offset === null) this.locate(this.state.reading.message, false);
+        else if (this.state.reading) this.restore();
+        else this.element.scrollTop = this.element.scrollHeight;
+        this.updateBottom();
+      });
     },
-    destroy() { this.active = false; this.pending.clear(); },
-    updateBottom() {
-      this.atBottom = this.element.scrollHeight - this.element.scrollTop - this.element.clientHeight < 2;
+    destroy() { this.active = false; this.pending.clear(); this.clearFocus(); },
+    clearFocus() {
+      clearTimeout(this.timer); this.timer = null;
+      this.focused?.classList.remove('message-focus', 'message-fade'); this.focused = null;
     },
+    locate(message, advance = true) {
+      const row = document.getElementById(`message-${message}`);
+      if (!this.active || !this.element.contains(row)) return;
+      if (advance) this.state.advance(this.key, message);
+      this.clearFocus();
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const top = Math.max(0, Math.min(this.element.scrollHeight - this.element.clientHeight, this.element.scrollTop + row.getBoundingClientRect().top - this.element.getBoundingClientRect().top - this.element.clientHeight * .32));
+      this.element.scrollTop = reduced ? top : Math.max(0, Math.min(this.element.scrollHeight - this.element.clientHeight, top + (top > this.element.scrollTop ? -40 : 40)));
+      this.state.reading = {message, offset: row.getBoundingClientRect().top - this.element.getBoundingClientRect().top};
+      this.element.scrollTo({top, behavior: reduced ? 'instant' : 'smooth'});
+      this.focused = row; row.classList.add('message-focus');
+      this.timer = setTimeout(() => {
+        if (reduced) this.clearFocus();
+        else { row.classList.add('message-fade'); this.timer = setTimeout(() => this.clearFocus(), 350); }
+      }, 1800);
+      this.updateBottom();
+    },
+    remember() {
+      if (!this.active || this.state.key !== this.key || !this.state.reading) return;
+      const top = this.element.getBoundingClientRect().top;
+      const row = [...this.element.querySelectorAll('.line[id], .note[id]')].find(row => row.getBoundingClientRect().bottom > top);
+      if (row) this.state.reading = {message: row.id.slice(8), offset: row.getBoundingClientRect().top - top};
+    },
+    restore() {
+      if (!this.active || this.state.key !== this.key || !this.state.reading) return;
+      const {message, offset} = this.state.reading;
+      const row = document.getElementById(`message-${message}`);
+      if (this.element.contains(row) && offset !== null) this.element.scrollTop += row.getBoundingClientRect().top - this.element.getBoundingClientRect().top - offset;
+      this.updateBottom();
+    },
+    scrolled() { this.remember(); this.updateBottom(); },
+    resize() { if (this.state.reading) this.restore(); else this.updateBottom(); },
+    jump() {
+      this.state.reading = null;
+      this.element.scrollTo({top: this.element.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+    },
+    updateBottom() { this.atBottom = this.element.scrollHeight - this.element.scrollTop - this.element.clientHeight < 2; },
     before(event) {
       const {ctx} = event.detail;
       if (!this.element.contains(ctx.sourceElement)) return;
+      this.remember();
       this.pending.set(ctx, {
         earlier: ctx.sourceElement.classList.contains('edge'),
         top: this.element.scrollTop,
@@ -686,7 +776,8 @@ document.addEventListener('alpine:init', () => {
       if (!position) return;
       this.$nextTick(() => {
         if (!this.active) return;
-        if (position.earlier) this.element.scrollTop = position.top + this.element.scrollHeight - position.height;
+        if (this.state.reading) this.restore();
+        else if (position.earlier) this.element.scrollTop = position.top + this.element.scrollHeight - position.height;
         else if (position.bottom) this.element.scrollTop = this.element.scrollHeight;
         this.updateBottom();
       });

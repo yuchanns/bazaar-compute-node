@@ -17,9 +17,9 @@
     {# the avatar opens the card about the conversation, over the chat #}
     <button class="av sm face" type="button" title="{{ t.text("profile.open") }}" hx-get="{{ profile_url }}" :hx-get="url" x-data="contactName" data-name="{{ contact.name }}" data-thread="{{ ref(contact.thread_id) }}" @contact-name.window="update($event)" x-bind="opener" hx-target="#profile" hx-swap="outerHTML">{{ contact.thread_id|identicon|safe }}</button>
     <span class="heading" x-data="contactName" data-name="{{ contact.name }}" data-thread="{{ ref(contact.thread_id) }}" x-text="name" @contact-name.window="update($event)">{{ contact.name }}</span><span class="sub">{{ c.channels((contact.channel,)) }}{{ t.text("contacts." ~ contact.kind) }}</span>
-    <span class="chat-actions">{{ c.search_button() }}</span>
+    <span class="chat-actions"><span class="search-location" role="status">{{ t.text('search.located') }}</span>{{ c.search_button() }}</span>
   </div>
-  <div class="chat" id="history" hx-get="{{ c.messages_url(selected, contact) }}{% if latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader") }}</div></div>
+  <div class="chat" id="history" hx-get="{{ c.messages_url(selected, contact) }}{% if focus %}&focus={{ focus|urlencode }}{% elif latest %}&latest={{ latest|urlencode }}{% endif %}" hx-trigger="load" hx-swap="outerHTML"><div class="loading">{{ c.icon("loader") }}</div></div>
   <div id="profile" hidden></div>
   {% elif selected %}
   <div class="hd"><span class="heading">{{ t.text('contacts.tab_chats') }}</span><span class="chat-actions">{{ c.search_button() }}</span></div>

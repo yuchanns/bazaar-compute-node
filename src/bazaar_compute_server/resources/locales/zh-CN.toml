@@ -478,6 +478,7 @@
 "search.time_filter" = "时间"
 "search.date_range" = "选择时间范围"
 "search.messages" = "消息"
+"search.located" = "已定位原消息"
 "search.select" = "选择"
 "search.open_record" = "打开记录"
 "search.close_key" = "关闭"

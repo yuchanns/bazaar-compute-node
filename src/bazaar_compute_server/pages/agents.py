@@ -146,6 +146,7 @@ class AgentPages:
             ),
             contact=contact,
             latest=request.query_params.get("latest"),
+            focus=request.query_params.get("focus"),
             asked=asked,
             pending=pending,
         )
@@ -163,6 +164,7 @@ class AgentPages:
                 selected=selected,
                 contact=contact,
                 latest=None,
+                focus=None,
                 asked=await request_of(self._controls, selected, contact),
             )
         return self._render.fragment(
@@ -171,6 +173,7 @@ class AgentPages:
             selected=selected,
             contact=contact,
             latest=request.query_params.get("latest"),
+            focus=request.query_params.get("focus"),
             asked=None,
         )
 
@@ -217,6 +220,7 @@ class AgentPages:
                 selected=selected,
                 contact=contact,
                 latest=None,
+                focus=None,
                 asked=ReviewRequest(
                     selected, contact, None, None, None, word, code or None
                 ),
@@ -569,7 +573,7 @@ class AgentPages:
                         "target": self.refs.ref(item["canonical_target"]),
                         "channel": item["channel"],
                         "name": name,
-                        "latest": item["message_id"],
+                        "focus": item["message_id"],
                     }
                 )
             )
@@ -750,10 +754,14 @@ class AgentPages:
             agent,
             contact,
             self._render.zone(request),
-            around=query.get("latest"),
+            around=query.get("focus") or query.get("latest"),
         )
         return self._render.fragment(
-            request, "history.html", history=history, latest=query.get("latest")
+            request,
+            "history.html",
+            history=history,
+            latest=query.get("latest"),
+            focus=query.get("focus"),
         )
 
 

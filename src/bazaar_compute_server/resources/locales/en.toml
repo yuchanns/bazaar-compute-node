@@ -478,6 +478,7 @@
 "search.time_filter" = "Time"
 "search.date_range" = "Choose a date range"
 "search.messages" = "Messages"
+"search.located" = "Message located"
 "search.select" = "Select"
 "search.open_record" = "Open record"
 "search.close_key" = "Close"

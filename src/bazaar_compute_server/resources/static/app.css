@@ -832,6 +832,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-open.btn.icon { margin-left: 0; flex: none; border-color: transparent; background: transparent; }
 .search-shortcut { color: var(--muted); font-size: 10px; font-weight: 400; border: 1px solid var(--edge); border-radius: 4px; padding: 1px 4px; line-height: 1.6; }
 #agent-contacts-head .search-shortcut { display: none; }
+.search-location { display: none; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.search-location::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; }
+#chat:has(.message-focus:not(.message-fade)) .search-location { display: flex; }
 .search-veil { position: fixed; z-index: 25; left: var(--search-left, 0px); top: var(--search-top, 0px); width: var(--search-width, 100vw); height: var(--search-height, 100dvh); display: flex; justify-content: center; align-items: flex-start; padding: 120px max(20px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); background: light-dark(rgba(35, 27, 24, .17), rgba(0, 0, 0, .36)); }
 .search-dialog { position: relative; display: flex; flex-direction: column; width: 680px; max-width: 100%; max-height: 100%; min-height: 0; border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); box-shadow: 0 22px 60px rgba(30,20,20,.22), 0 2px 8px rgba(30,20,20,.08); }
 .search-input { background: var(--input); border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 14px; padding: 0 20px; min-height: 64px; flex: none; }
@@ -921,7 +924,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
 .search-more { display: flex; margin: 8px auto; }
 @media (max-width: 959px) {
   #chat > .hd > .sub { order: 1; }
-  .search-shortcut { display: none; }
+  .search-shortcut, #chat:has(.message-focus:not(.message-fade)) .search-location { display: none; }
   .search-veil { padding: min(90px, 10vh) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
   .search-input { padding-inline: 16px; }
   .search-input input { font-size: 16px; }
@@ -946,3 +949,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outlin
   .search-veil { padding-top: max(12px, env(safe-area-inset-top)); }
   .search-input { min-height: 52px; }
 }
+
+/* locating a search hit colours the same box as its hover border, briefly */
+.message-focus { background-color: var(--hi); border-radius: var(--r-sm); transition: background-color 350ms; }
+.message-focus.message-fade { background-color: transparent; }
+@media (prefers-reduced-motion: reduce) { .message-focus { transition: none; } }

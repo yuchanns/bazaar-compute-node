@@ -807,3 +807,476 @@ async def test_search_sender_pages_and_agent_navigation(
                     await browser.close()
         finally:
             await node.stop()
+
+
+@pytest.mark.asyncio
+async def test_search_focus_preserves_history_and_discards_old_responses(
+    system_temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bazaar_compute_node.core.models import (
+        ChannelSession,
+        ChannelTargetKind,
+        Thread,
+    )
+
+    playwright = pytest.importorskip("playwright.async_api")
+    out = Path(os.environ.get("BCS_SEARCH_ARTIFACTS", str(system_temp_dir / "screens")))
+    out.mkdir(parents=True, exist_ok=True)
+    report = []
+    async with serving_app(system_temp_dir / "server") as (base, server):
+        await with_password(server.state.storage, *TESTER)
+        enrolled = await enrol(server.state.storage, "History workstation")
+        monkeypatch.setenv("BCN_SERVER_TOKEN", enrolled.token)
+        agent_id = str(uuid7())
+        channel = TestChannel()
+        configuration = NodeConfiguration(
+            version_check=False,
+            storage="sqlite",
+            audit="server",
+            control="server",
+            audit_options={"url": base, "token_env": "BCN_SERVER_TOKEN"},
+            control_options={"url": base, "token_env": "BCN_SERVER_TOKEN"},
+            agents=(
+                AgentConfiguration(
+                    id=agent_id,
+                    name="History colleague",
+                    channels=(ChannelConfiguration(kind="test"),),
+                    runtimes=(RuntimeConfiguration(kind="codex"),),
+                ),
+            ),
+        )
+        node = NodeApplication(
+            configuration=configuration,
+            shared_factories=AdapterRegistry().load_shared(
+                storage="sqlite", audit="server", control="server"
+            ),
+            registry=SearchRegistry({"test": channel}),
+            endpoint_path=system_temp_dir / "history.sock",
+        )
+        await node.start()
+        try:
+            sessions = [str(uuid7()), str(uuid7())]
+            threads = [
+                str(uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{session}"))
+                for session in sessions
+            ]
+            messages = []
+            for index, session in enumerate(sessions):
+                rows = []
+                for number in range(100):
+                    message = Message(
+                        direction=MessageDirection.INBOUND,
+                        seq=0,
+                        message_id=str(uuid7()),
+                        thread_id=session,
+                        channel_session_id=session,
+                        channel="test",
+                        provider_thread_id=session,
+                        provider_message_id=str(uuid7()),
+                        target=f"dm:{session}",
+                        sender=SenderIdentity(name=f"partner-{number % 2}"),
+                        body=f"历史定位 会话{index} 编号{number:04d}。\n\n发布确认记录：先查看附近的讨论，再核对灰度安排和回滚责任人。\n\n"
+                        + "记录中的日期和讨论内容保持原样。" * 5,
+                        received_at_ms=1790784000000 + number * 1000,
+                        notifies_runtime=False,
+                    )
+                    rows.append(message)
+                    await channel.inject(message)
+                messages.append(rows)
+            async with asyncio.timeout(20):
+                while any(
+                    [
+                        len(await node.agents[agent_id].storage.list_messages(thread))
+                        < 100
+                        for thread in threads
+                    ]
+                ):
+                    await asyncio.sleep(0.05)
+            for thread in threads:
+                await node.agents[agent_id].orchestrator.command_service.review_contact(
+                    thread, Review.APPROVED
+                )
+            empty_sessions = [str(uuid7()), str(uuid7())]
+            empty_refs = []
+            identity = channel.get_identity()
+            assert identity is not None
+            for empty_session in empty_sessions:
+                empty_channel = ChannelSession(
+                    id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"bcn:{agent_id}:channel-session:{empty_session}",
+                        )
+                    ),
+                    channel="test",
+                    channel_identity=identity.id,
+                    provider_thread_id=empty_session,
+                    target_kind=ChannelTargetKind.DM,
+                    created_at_ms=1790784000000,
+                    updated_at_ms=1790784000000,
+                    review=Review.APPROVED,
+                )
+                empty_thread = str(
+                    uuid5(NAMESPACE_URL, f"bcn:{agent_id}:bcn-session:{empty_session}")
+                )
+                await node.agents[agent_id].storage.save_channel_session(empty_channel)
+                await node.agents[agent_id].storage.save_thread(
+                    Thread(
+                        id=empty_thread,
+                        channel_session_id=empty_channel.id,
+                        workspace_id=agent_id,
+                        created_at_ms=1790784000000,
+                        updated_at_ms=1790784000000,
+                    )
+                )
+                empty_refs.append(await _short(server.state.storage, empty_thread))
+            scope = await _short(server.state.storage, enrolled.computer.id, agent_id)
+            async with playwright.async_playwright() as driver:
+                browser = await driver.chromium.launch(
+                    executable_path="/usr/bin/microsoft-edge", headless=True
+                )
+                try:
+                    for width, language, theme, reduced in [
+                        (390, "zh-CN", "dark", True),
+                        (1280, "en-US", "light", False),
+                    ]:
+                        context = await browser.new_context(
+                            viewport={
+                                "width": width,
+                                "height": 900 if width > 959 else 844,
+                            },
+                            locale=language,
+                            has_touch=width <= 959,
+                            reduced_motion="reduce" if reduced else "no-preference",
+                        )
+                        page = await context.new_page()
+                        errors = []
+                        traffic = []
+                        page.on(
+                            "pageerror",
+                            lambda error, errors=errors: errors.append(str(error)),
+                        )
+                        page.on(
+                            "request",
+                            lambda request, traffic=traffic: traffic.append(
+                                request.url.removeprefix(base)
+                            ),
+                        )
+                        await page.goto(base + "/login")
+                        await page.locator("#name").fill(TESTER[0])
+                        await page.locator("#password").fill(TESTER[1])
+                        await page.locator("#login button").click()
+                        await page.wait_for_url("**/agents")
+                        await page.goto(f"{base}/agents/{scope}")
+                        await page.evaluate(
+                            "theme => document.documentElement.dataset.theme=theme",
+                            theme,
+                        )
+                        await page.locator("#agent-contacts-head .search-open").click()
+                        await page.locator("#search-query").fill(
+                            "历史定位 会话0 编号0020"
+                        )
+                        await settled(page)
+                        await playwright.expect(
+                            page.locator(".search-hit")
+                        ).to_be_visible()
+                        source = messages[0][20].message_id
+                        if width <= 959:
+                            await page.locator(".search-hit").tap()
+                        else:
+                            await page.locator(".search-hit").click()
+                        target = page.locator(f"#message-{source}")
+                        await playwright.expect(target).to_be_visible()
+                        await page.wait_for_function(
+                            "() => document.querySelector('#contacts .li.on')?.id === 'contact-'+document.querySelector('#chat').dataset.thread"
+                        )
+                        await playwright.expect(target).to_have_class(
+                            re.compile("message-focus")
+                        )
+                        await page.screenshot(
+                            path=str(out / f"history-focused-{width}.png")
+                        )
+                        original = await target.text_content()
+                        await page.wait_for_function(
+                            "() => !document.querySelector('.message-focus')"
+                        )
+                        anchor = await page.evaluate("Alpine.store('history').reading")
+                        await playwright.expect(target).to_be_visible()
+                        assert await target.text_content() == original
+                        assert anchor
+                        # A real whole-history read rebuilds around the current reading anchor.
+                        await page.evaluate(
+                            "() => {const el=document.querySelector('#history');return htmx.ajax('GET', el.dataset.url, {source:el,target:el,swap:'outerHTML'})}"
+                        )
+                        await playwright.expect(target).to_be_visible()
+                        await page.wait_for_function(
+                            "anchor => {const h=document.querySelector('#history');const row=document.getElementById('message-'+anchor.message);return row && Math.abs(row.getBoundingClientRect().top-h.getBoundingClientRect().top-anchor.offset)<2}",
+                            arg=anchor,
+                        )
+                        # Locate a loaded hit without replacing the conversation/history.
+                        await page.evaluate(
+                            "window.historyBeforeFocus=document.querySelector('#history')"
+                        )
+                        await page.locator("#chat .search-open").click()
+                        await page.locator(".search-hit").click()
+                        await playwright.expect(target).to_have_class(
+                            re.compile("message-focus")
+                        )
+                        assert await page.evaluate(
+                            "window.historyBeforeFocus===document.querySelector('#history')"
+                        )
+                        await page.wait_for_function(
+                            "() => !document.querySelector('.message-focus')"
+                        )
+                        anchor = await page.evaluate("Alpine.store('history').reading")
+                        # Keep actual native HTTP responses, and delay consumption to overlap navigation.
+                        await page.evaluate("""() => {
+                          window.held=false;window.releaseHistory=null;
+                          const hold=event => {const ctx=event.detail.ctx;if(ctx.target?.id!=='history')return;
+                            document.removeEventListener('htmx:before:request',hold);
+                            const fetch=ctx.fetch;
+                            ctx.fetch=async(...args)=>{const response=await fetch(...args);await response.clone().text();window.held=true;await new Promise(resolve=>window.releaseHistory=resolve);return response;};
+                          };
+                          document.addEventListener('htmx:before:request',hold);
+                          const el=document.querySelector('#history');void htmx.ajax('GET',el.dataset.url,{source:el,target:el,swap:'outerHTML'});
+                        }""")
+                        await page.wait_for_function("window.held")
+                        await page.locator("#chat .search-open").click()
+                        await page.locator("#search-query").fill(
+                            "历史定位 会话0 编号0070"
+                        )
+                        await settled(page)
+                        await page.locator(".search-hit").click()
+                        current = messages[0][70].message_id
+                        await playwright.expect(
+                            page.locator(f"#message-{current}")
+                        ).to_be_visible()
+                        await page.evaluate("window.releaseHistory()")
+                        await page.wait_for_function(
+                            "() => !document.querySelector('.message-focus')"
+                        )
+                        await playwright.expect(
+                            page.locator(f"#message-{current}")
+                        ).to_be_visible()
+                        await page.locator("#history").evaluate(
+                            "el => {el.scrollTop=0;el.dispatchEvent(new Event('scroll'))}"
+                        )
+                        anchor = await page.evaluate("Alpine.store('history').reading")
+                        await playwright.expect(
+                            page.locator(f"#message-{messages[0][20].message_id}")
+                        ).to_be_attached()
+                        await page.wait_for_function(
+                            "anchor => {const h=document.querySelector('#history');const row=document.getElementById('message-'+anchor.message);return row && Math.abs(row.getBoundingClientRect().top-h.getBoundingClientRect().top-anchor.offset)<2}",
+                            arg=anchor,
+                        )
+                        # Actual messages and normal five-second subscriptions append context while reading stays put.
+                        for round_ in range(3):
+                            message = Message(
+                                direction=MessageDirection.INBOUND,
+                                seq=0,
+                                message_id=str(uuid7()),
+                                thread_id=sessions[0],
+                                channel_session_id=sessions[0],
+                                channel="test",
+                                provider_thread_id=sessions[0],
+                                provider_message_id=str(uuid7()),
+                                target=f"dm:{sessions[0]}",
+                                sender=SenderIdentity(name="partner-0"),
+                                body=f"阅读位置验收 {width} 第{round_}轮追加：原讨论仍保留。",
+                                received_at_ms=1790874000000 + width * 10 + round_,
+                                notifies_runtime=False,
+                            )
+                            await channel.inject(message)
+                            await playwright.expect(
+                                page.locator(f"#message-{message.message_id}")
+                            ).to_be_attached(timeout=20000)
+                            await page.wait_for_function(
+                                "anchor => {const h=document.querySelector('#history');const row=document.getElementById('message-'+anchor.message);return row && Math.abs(row.getBoundingClientRect().top-h.getBoundingClientRect().top-anchor.offset)<2}",
+                                arg=anchor,
+                            )
+                        await page.screenshot(
+                            path=str(out / f"history-reading-{width}.png")
+                        )
+                        (out / "history-progress.json").write_text(
+                            json.dumps({"width": width, "phase": "reading verified"})
+                        )
+                        if width > 959:
+                            assert node.control is not None
+                            await node.control.stop(timeout=5)
+                            await node.health_reporter.stop(timeout=5)
+                            (out / "history-progress.json").write_text(
+                                json.dumps(
+                                    {
+                                        "width": width,
+                                        "phase": "waiting for real offline detection",
+                                    }
+                                )
+                            )
+                            await playwright.expect(
+                                page.locator("#tail .empty")
+                            ).to_be_attached(timeout=140000)
+                            await page.evaluate(
+                                "() => {const el=document.querySelector('#history');return htmx.ajax('GET',el.dataset.url,{source:el,target:el,swap:'outerHTML'})}"
+                            )
+                            await playwright.expect(
+                                page.locator("#history .empty").first
+                            ).to_be_visible()
+                            await node.control.start(timeout=5)
+                            await node.health_reporter.start(timeout=5)
+                            await playwright.expect(
+                                page.locator(f"#message-{anchor['message']}")
+                            ).to_be_visible(timeout=20000)
+                            await page.wait_for_function(
+                                "anchor => {const h=document.querySelector('#history');const row=document.getElementById('message-'+anchor.message);return row && Math.abs(row.getBoundingClientRect().top-h.getBoundingClientRect().top-anchor.offset)<2}",
+                                arg=anchor,
+                            )
+                        (out / "history-progress.json").write_text(
+                            json.dumps({"width": width, "phase": "recovery verified"})
+                        )
+                        # A focus at the loaded window's bottom still preserves reading when the tail grows.
+                        await page.locator("#chat .search-open").click()
+                        await page.locator("#search-query").fill(
+                            f"阅读位置验收 {width} 第2轮追加"
+                        )
+                        await settled(page)
+                        await page.locator(".search-hit").click()
+                        await page.wait_for_function(
+                            "() => !document.querySelector('.message-focus') && Alpine.$data(document.querySelector('#history')).atBottom"
+                        )
+                        bottom_anchor = await page.evaluate(
+                            "Alpine.store('history').reading"
+                        )
+                        bottom_message = Message(
+                            direction=MessageDirection.INBOUND,
+                            seq=0,
+                            message_id=str(uuid7()),
+                            thread_id=sessions[0],
+                            channel_session_id=sessions[0],
+                            channel="test",
+                            provider_thread_id=sessions[0],
+                            provider_message_id=str(uuid7()),
+                            target=f"dm:{sessions[0]}",
+                            sender=SenderIdentity(name="partner-0"),
+                            body=f"底部定位后追加 {width}。\n\n"
+                            + "这段新增讨论不应移动正在查看的原消息。\n\n" * 12,
+                            received_at_ms=1790875000000 + width,
+                            notifies_runtime=False,
+                        )
+                        await channel.inject(bottom_message)
+                        await playwright.expect(
+                            page.locator(f"#message-{bottom_message.message_id}")
+                        ).to_be_attached(timeout=20000)
+                        await page.wait_for_function(
+                            "anchor => {const h=document.querySelector('#history');const row=document.getElementById('message-'+anchor.message);return row && Math.abs(row.getBoundingClientRect().top-h.getBoundingClientRect().top-anchor.offset)<2}",
+                            arg=bottom_anchor,
+                        )
+                        # The explicit bottom action resumes following, then ordinary navigation still opens latest.
+                        await page.locator(".chat-jump").click()
+                        await page.wait_for_function(
+                            "() => !Alpine.store('history').reading && Alpine.$data(document.querySelector('#history')).atBottom"
+                        )
+                        await page.locator("#chat .search-open").click()
+                        await page.locator(".search-toolbar button").click()
+                        await page.locator("#search-query").fill(
+                            "历史定位 会话1 编号0030"
+                        )
+                        await settled(page)
+                        await page.locator(".search-hit").click()
+                        await playwright.expect(
+                            page.locator(f"#message-{messages[1][30].message_id}")
+                        ).to_be_visible()
+                        await page.locator("#chat .search-open").click()
+                        saved = await page.evaluate(
+                            "Alpine.$data(document.querySelector('#message-search')).s.query"
+                        )
+                        assert saved == "历史定位 会话1 编号0030"
+                        await page.locator(".search-close").click()
+                        if width <= 959:
+                            focused_url = page.url
+                            await page.locator("#chat .back").click()
+                            await page.wait_for_url(f"{base}/agents/{scope}")
+                            await playwright.expect(
+                                page.locator(f"#contact-{empty_refs[1]}")
+                            ).to_be_visible()
+                            await page.go_back()
+                            await page.wait_for_url(focused_url)
+                            await playwright.expect(
+                                page.locator(f"#message-{messages[1][30].message_id}")
+                            ).to_be_visible()
+                            await page.locator("#chat .search-open").click()
+                            assert (
+                                await page.locator("#search-query").input_value()
+                                == saved
+                            )
+                            await page.locator(".search-close").click()
+                            await page.go_forward()
+                            await page.wait_for_url(f"{base}/agents/{scope}")
+                            await playwright.expect(
+                                page.locator(f"#contact-{empty_refs[1]}")
+                            ).to_be_visible()
+                            await page.go_back()
+                            await page.wait_for_url(focused_url)
+                            await playwright.expect(
+                                page.locator(f"#message-{messages[1][30].message_id}")
+                            ).to_be_visible()
+                        if width <= 959:
+                            await page.locator("#chat .back").click()
+                            await page.wait_for_url(f"{base}/agents/{scope}")
+                        empty_session = empty_sessions[0 if width > 959 else 1]
+                        empty_ref = empty_refs[0 if width > 959 else 1]
+                        await page.locator(f"#contact-{empty_ref}").click()
+                        await playwright.expect(
+                            page.locator("#history .empty").first
+                        ).to_be_visible()
+                        empty_message = Message(
+                            direction=MessageDirection.INBOUND,
+                            seq=0,
+                            message_id=str(uuid7()),
+                            thread_id=empty_session,
+                            channel_session_id=empty_session,
+                            channel="test",
+                            provider_thread_id=empty_session,
+                            provider_message_id=str(uuid7()),
+                            target=f"dm:{empty_session}",
+                            sender=SenderIdentity(name="partner-0"),
+                            body=f"空会话恢复 {width}：第一条讨论已经到达。",
+                            received_at_ms=1790884000000 + width,
+                            notifies_runtime=False,
+                        )
+                        await channel.inject(empty_message)
+                        await playwright.expect(
+                            page.locator(f"#message-{empty_message.message_id}")
+                        ).to_be_visible(timeout=20000)
+                        await page.wait_for_function(
+                            "() => Alpine.$data(document.querySelector('#history')).atBottom"
+                        )
+                        report.append(
+                            {
+                                "width": width,
+                                "language": language,
+                                "theme": theme,
+                                "reduced_motion": reduced,
+                                "subscription_rounds": 3,
+                                "anchor": anchor,
+                                "same_history_focus": True,
+                                "earlier_context_loaded": True,
+                                "bottom_focus_preserved": True,
+                                "whole_history_restored": True,
+                                "stale_response_discarded": True,
+                                "offline_recovery": width > 959,
+                                "empty_history_recovery": True,
+                                "touch_navigation": width <= 959,
+                                "back_forward_restored": width <= 959,
+                                "errors": errors,
+                                "traffic": traffic,
+                            }
+                        )
+                        assert not errors, errors
+                        await context.close()
+                finally:
+                    await browser.close()
+            (out / "history-verification.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2)
+            )
+        finally:
+            await node.stop()
