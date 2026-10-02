@@ -14,6 +14,8 @@
     <string>{{ data_dir | e }}</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>BCN_HOME</key>
+        <string>{{ home_dir | e }}</string>
         <key>BCN_CONFIG</key>
         <string>{{ config_path | e }}</string>
         <key>BCN_ENV_FILE</key>

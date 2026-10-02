@@ -2381,11 +2381,19 @@ async def test_sqlite_migrates_provider_reply_ids_to_internal_message_ids() -> N
         await database.stop(timeout=2)
 
 
-def test_resolve_data_dir_uses_the_configured_home_data_name(
+@pytest.mark.asyncio
+async def test_sqlite_uses_the_configured_home(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("BCN_DATA_NAME", ".bcn-custom")
-    assert resolve_data_dir() == Path.home() / ".bcn-custom"
+    data_dir = tmp_path / "node state" / ".bcn"
+    monkeypatch.setenv("BCN_HOME", str(data_dir.parent))
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        assert (data_dir / "bcn.sqlite3").is_file()
+    finally:
+        await database.stop(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -2407,21 +2415,42 @@ def test_sqlite_rejects_database_paths(value: str) -> None:
         SqliteDatabase(database_name=value)
 
 
-def test_resolve_data_dir_defaults_to_home_bcn(
+@pytest.mark.asyncio
+async def test_sqlite_defaults_to_home_bcn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("BCN_DATA_NAME")
-    assert resolve_data_dir() == Path.home() / ".bcn"
+    monkeypatch.delenv("BCN_HOME")
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        assert (Path.home() / ".bcn" / "bcn.sqlite3").is_file()
+    finally:
+        await database.stop(timeout=2)
 
 
-@pytest.mark.parametrize("data_name", ("", ".", "..", "nested/name", "nested\\name"))
-def test_resolve_data_dir_rejects_invalid_data_names(
-    monkeypatch: pytest.MonkeyPatch,
-    data_name: str,
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX home symlink")
+@pytest.mark.parametrize("configured", (False, True))
+@pytest.mark.asyncio
+async def test_sqlite_resolves_home_links(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, configured: bool
 ) -> None:
-    monkeypatch.setenv("BCN_DATA_NAME", data_name)
-    with pytest.raises(ValueError, match="single path component"):
-        resolve_data_dir()
+    home = tmp_path / "real home"
+    home.mkdir()
+    alias = tmp_path / "home link"
+    alias.symlink_to(home, target_is_directory=True)
+    if configured:
+        monkeypatch.setenv("BCN_HOME", str(alias))
+    else:
+        monkeypatch.delenv("BCN_HOME")
+        monkeypatch.setenv("HOME", str(alias))
+        monkeypatch.setenv("USERPROFILE", str(alias))
+    database = SqliteDatabase()
+    await database.start(timeout=2)
+    try:
+        assert (home / ".bcn" / "bcn.sqlite3").is_file()
+        assert resolve_data_dir().is_relative_to(home)
+    finally:
+        await database.stop(timeout=2)
 
 
 def test_default_workspace_uses_the_home_bcn_root() -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shlex
 import stat
 import subprocess
 import sys
@@ -950,15 +949,21 @@ def test_server_connect_takes_the_env_file_from_the_registered_service(
     unit_path.parent.mkdir(parents=True)
     env_file = tmp_path / "service env" / "vars.env"
     unit_path.write_text(
-        f"[Service]\nEnvironmentFile=-{shlex.quote(str(env_file))}\n",
+        f"[Service]\nEnvironmentFile=-{env_file}\n",
         encoding="utf-8",
     )
     # case: a unit at our path that is not ours is somebody else's; its file is left alone
     assert system_service_module.installed_env_file() is None
+    context = system_service_module.SystemServiceContext(
+        executable=Path(sys.executable),
+        config_path=config_path,
+        data_dir=tmp_path,
+        env_file=env_file,
+        log_path=tmp_path / "system-service.log",
+        user="test-user",
+    )
     unit_path.write_text(
-        f"# {system_service_module.MANAGED_MARKER}\n[Service]\n"
-        f"EnvironmentFile=-{shlex.quote(str(env_file))}\n",
-        encoding="utf-8",
+        system_service_module._render_systemd_unit(context), encoding="utf-8"
     )
     assert main(arguments_) == 0
     assert env_file.read_text(encoding="utf-8") == (
