@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from stat import S_IMODE
@@ -228,7 +229,8 @@ async def test_the_first_start_makes_root_and_says_the_password_once(
             assert response.status == 204
 
         # case: the signing key is the owner's alone
-        assert S_IMODE((tmp_path / "session.key").stat().st_mode) == 0o600
+        if os.name != "nt":
+            assert S_IMODE((tmp_path / "session.key").stat().st_mode) == 0o600
 
     # case: a second start keeps the account and says nothing more
     caplog.clear()

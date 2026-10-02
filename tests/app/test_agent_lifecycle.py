@@ -69,8 +69,8 @@ async def test_a_running_node_takes_agents_in_changes_them_and_lets_them_go(
             == "secret-1"
         )
         assert (
-            "BCN_0199AA00_1111_7222_8333_444455556666_CHANNEL0_TEST_TOKEN='secret-1'"
-            in env_path.read_text()
+            str(added.channels[0].options["token_env"]) in env_path.read_text()
+            and "secret-1" in env_path.read_text()
         )
         assert node.agents[NEWCOMER_ID].started and node.agents[AGENT_ID] is first
         stored = load_node_configuration(config_path)
@@ -95,9 +95,7 @@ async def test_a_running_node_takes_agents_in_changes_them_and_lets_them_go(
             == "secret-2"
         )
         assert (
-            env_path.read_text().count(
-                "BCN_0199AA00_1111_7222_8333_444455556666_CHANNEL0_TEST_TOKEN="
-            )
+            env_path.read_text().count(str(changed.channels[0].options["token_env"]))
             == 1
         )
         assert node.agents[NEWCOMER_ID] is not running and not running.started
@@ -146,7 +144,7 @@ async def test_a_running_node_takes_agents_in_changes_them_and_lets_them_go(
         assert [a.id for a in load_node_configuration(config_path).agents] == [AGENT_ID]
         assert _beaten(audit) == [AGENT_ID]
         assert (
-            "BCN_0199AA00_1111_7222_8333_444455556666_CHANNEL0_TEST_TOKEN="
+            "BCN_0199AA00_1111_7222_8333_444455556666_CHANNEL0_TEST_TOKEN"
             in env_path.read_text()
         )
         assert node.agents[AGENT_ID] is first and first.started

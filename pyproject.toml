@@ -73,9 +73,10 @@ bcn-test-support = { path = "tests/support", editable = true }
 [tool.pytest.ini_options]
 # anyio arrives with starlette and brings a pytest plugin that fights
 # pytest-asyncio over the event loop; the suite runs on pytest-asyncio alone
-addopts = "-m 'not e2e' -p no:anyio"
+addopts = "-m 'not e2e and not system' -p no:anyio"
 markers = [
     "e2e: requires a real external provider",
+    "system: runs real native system services in an isolated environment",
 ]
 
 [build-system]

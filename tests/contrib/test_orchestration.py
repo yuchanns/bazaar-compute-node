@@ -5443,6 +5443,7 @@ async def test_a_broadcast_is_stored_once_per_conversation() -> None:
             assert [message.body for message in outbound] == ["hi on both"]
     finally:
         await orchestrator.stop(timeout=1)
+        await storage.stop(timeout=2)
 
 
 @pytest.mark.asyncio

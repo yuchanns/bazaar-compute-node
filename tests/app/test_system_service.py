@@ -25,6 +25,8 @@ from bazaar_compute_node.app.transport import (
 )
 from bazaar_compute_node.cmd.bcn._runner import UsageReporter
 
+pytestmark = pytest.mark.system
+
 
 @pytest.fixture
 def registered_service() -> Iterator[system_service.SystemServiceContext]:

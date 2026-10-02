@@ -69,6 +69,9 @@ def _signal_group(pid: int, number: signal.Signals) -> None:
         os.killpg(pid, number)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if sys.platform != "darwin" or _group_has_live_members(pid):
+            raise
 
 
 def _group_alive(pid: int) -> bool:
@@ -76,7 +79,23 @@ def _group_alive(pid: int) -> bool:
         os.killpg(pid, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        if sys.platform != "darwin" or _group_has_live_members(pid):
+            raise
+        return False
     return True
+
+
+def _group_has_live_members(pid: int) -> bool:
+    # Darwin also returns EPERM for a group containing only zombies. Check
+    # the kernel's process list before treating a permission error as exit.
+    result = subprocess.run(
+        ["ps", "-axo", "pgid=,stat="], capture_output=True, text=True, check=True
+    )
+    return any(
+        int(group) == pid and not state.startswith("Z")
+        for group, state in (line.split() for line in result.stdout.splitlines())
+    )
 
 
 async def _end_tree(pid: int) -> None:

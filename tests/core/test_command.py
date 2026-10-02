@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,8 +29,18 @@ async def test_a_command_that_hangs_is_killed_not_left_behind(tmp_path: Path) ->
 
     assert said is None
     pid = int(pid_file.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    if os.name == "nt":
+        process = await asyncio.to_thread(
+            subprocess.run,
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert str(pid) not in process.stdout
+    else:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 @pytest.mark.asyncio
@@ -54,8 +65,19 @@ async def test_a_command_whose_asking_is_cancelled_is_killed(tmp_path: Path) -> 
     asking.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asking
-    with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text()), 0)
+    pid = int(pid_file.read_text())
+    if os.name == "nt":
+        process = await asyncio.to_thread(
+            subprocess.run,
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert str(pid) not in process.stdout
+    else:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 @pytest.mark.asyncio
