@@ -88,12 +88,13 @@ def _build_context(
             "bcn system-service commands only accept the node-level --config option"
         )
     executable = _resolve_executable() if require_executable else None
-    config_path = (args.config or resolve_config_path()).expanduser().resolve()
+    config_path, data_dir = resolve_service_paths(
+        args.config, registered=not require_executable
+    )
     # the service reads the same file `bcn server connect` writes to unless
     # told another; none of the platforms minds the file not existing yet
     env_file = (getattr(args, "env_file", None) or default_env_file()).expanduser()
     env_file = env_file.resolve()
-    data_dir = resolve_data_dir()
     return SystemServiceContext(
         executable=executable,
         config_path=config_path,
@@ -102,6 +103,61 @@ def _build_context(
         log_path=data_dir / "system-service.log",
         user=_resolve_current_user(),
     )
+
+
+def resolve_service_paths(
+    config: Path | None = None, *, registered: bool = True
+) -> tuple[Path, Path]:
+    """Read the node paths selected by an installed service, without account lookup."""
+
+    config_path = (config or resolve_config_path()).expanduser().resolve()
+    data_dir = resolve_data_dir()
+    if registered:
+        system = platform.system()
+        if system == "Linux":
+            unit_path = _systemd_unit_path()
+            if _is_managed(unit_path):
+                values = dict(
+                    line.split("=", 1)
+                    for line in unit_path.read_text(encoding="utf-8").splitlines()
+                    if "=" in line
+                )
+                data_dir = Path(values["WorkingDirectory"].replace("%%", "%"))
+                if config is None:
+                    command = shlex.split(values["ExecStart"])
+                    config_path = Path(
+                        command[command.index("--config") + 1].replace("%%", "%")
+                    )
+        elif system == "Darwin":
+            plist_path, _ = _launchd_paths()
+            if _is_managed(plist_path):
+                with plist_path.open("rb") as stream:
+                    values = plistlib.load(stream)
+                data_dir = Path(values["WorkingDirectory"])
+                if config is None:
+                    config_path = Path(values["EnvironmentVariables"]["BCN_CONFIG"])
+        elif system == "Windows":
+            directory = _windows_service_data_dir()
+            if directory is not None:
+                data_dir = directory
+                if config is None:
+                    _, script_path, _ = _windows_paths(data_dir)
+                    if not _is_managed(script_path):
+                        raise RuntimeError(
+                            "registered system service wrapper is missing or unmanaged"
+                        )
+                    for line in script_path.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("$configPath = '"):
+                            value = line.removeprefix("$configPath = '").removesuffix(
+                                "'"
+                            )
+                            config_path = Path(value.replace("''", "'"))
+                            break
+                    else:
+                        raise RuntimeError(
+                            "registered system service wrapper has no config path"
+                        )
+    return config_path, data_dir
 
 
 def _resolve_current_user() -> str:
@@ -123,8 +179,11 @@ def _require_executable(context: SystemServiceContext) -> Path:
     return context.executable
 
 
-def _systemd_quote(path: Path) -> str:
-    return shlex.quote(str(path))
+def _systemd_quote(path: Path | str, *, quote: bool = True) -> str:
+    value = str(path).replace("%", "%%")
+    return (
+        '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"' if quote else value
+    )
 
 
 def _powershell_literal(path: Path | str | None) -> str:
@@ -138,8 +197,9 @@ def _render_systemd_unit(context: SystemServiceContext) -> str:
             "managed_marker": MANAGED_MARKER,
             "executable": _systemd_quote(_require_executable(context)),
             "config_path": _systemd_quote(context.config_path),
-            "data_dir": _systemd_quote(context.data_dir),
-            "environment_file": _systemd_quote(context.env_file),
+            "data_dir": _systemd_quote(context.data_dir, quote=False),
+            "home_environment": _systemd_quote(f"BCN_HOME={context.data_dir.parent}"),
+            "environment_file": _systemd_quote(context.env_file, quote=False),
         }
     )
 
@@ -158,6 +218,7 @@ def _render_launchd_plist(
             "managed_marker": MANAGED_MARKER,
             "wrapper_path": str(wrapper_path),
             "data_dir": str(context.data_dir),
+            "home_dir": str(context.data_dir.parent),
             "config_path": str(context.config_path),
             "environment_file": str(context.env_file),
             "executable": str(_require_executable(context)),
@@ -172,6 +233,7 @@ def _render_windows_wrapper(context: SystemServiceContext) -> str:
             "managed_marker": MANAGED_MARKER,
             "executable": _powershell_literal(_require_executable(context)),
             "config_path": _powershell_literal(context.config_path),
+            "home_dir": _powershell_literal(context.data_dir.parent),
             "environment_script": _powershell_literal(context.env_file),
             "log_path": _powershell_literal(context.log_path),
         }
@@ -387,7 +449,31 @@ def default_env_file() -> Path:
     return Path.home() / ".config" / "bcn" / name
 
 
-def installed_env_file() -> Path | None:
+def _windows_service_data_dir() -> Path | None:
+    task_path = _powershell_literal("\\")
+    task_name = _powershell_literal(WINDOWS_TASK_NAME.lstrip("\\"))
+    query_script = "\n".join(
+        (
+            "$ErrorActionPreference = 'Stop'",
+            f"$task = Get-ScheduledTask -TaskPath {task_path} -TaskName {task_name}",
+            f"if ($task.Description -eq {_powershell_literal(MANAGED_MARKER)}) {{",
+            "    $task.Actions.WorkingDirectory",
+            "}",
+            "",
+        )
+    )
+    queried = _run_native_command(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query_script],
+        check=False,
+    )
+    return (
+        Path(queried.stdout.strip())
+        if queried.returncode == 0 and queried.stdout.strip()
+        else None
+    )
+
+
+def installed_env_file(*, registered: bool = False) -> Path | None:
     """The environment file the registered service was told to read, if any;
     a service file at our path that is not ours says nothing."""
 
@@ -399,7 +485,7 @@ def installed_env_file() -> Path | None:
         for line in unit_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("EnvironmentFile="):
                 value = line.removeprefix("EnvironmentFile=").removeprefix("-")
-                return Path(shlex.split(value)[0]) if value else None
+                return Path(value.replace("%%", "%")) if value else None
         return None
     if system == "Darwin":
         plist_path, _ = _launchd_paths()
@@ -413,7 +499,12 @@ def installed_env_file() -> Path | None:
             )
         return Path(value) if isinstance(value, str) and value else None
     if system == "Windows":
-        _, script_path, _ = _windows_paths(resolve_data_dir())
+        data_dir = (
+            _windows_service_data_dir() or resolve_data_dir()
+            if registered
+            else resolve_data_dir()
+        )
+        _, script_path, _ = _windows_paths(data_dir)
         if not _is_managed(script_path):
             return None
         for line in script_path.read_text(encoding="utf-8").splitlines():
@@ -900,5 +991,6 @@ __all__ = [
     "SystemServiceContext",
     "default_env_file",
     "installed_env_file",
+    "resolve_service_paths",
     "run_system_service_command",
 ]

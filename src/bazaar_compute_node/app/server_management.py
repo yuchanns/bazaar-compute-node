@@ -13,10 +13,9 @@ from .config import (
     NodeConfiguration,
     _replace_file,
     load_node_configuration,
-    resolve_config_path,
     write_configuration,
 )
-from .system_service import default_env_file, installed_env_file
+from .system_service import default_env_file, installed_env_file, resolve_service_paths
 from .usage import Usage
 
 TOKEN_ENV = "BCN_SERVER_TOKEN"
@@ -31,7 +30,7 @@ def run_server_command(args: argparse.Namespace, parser: Usage) -> int:
         or args.foreground
     ):
         parser.error("bcn server commands only accept the node-level --config option")
-    config_path = (args.config or resolve_config_path()).expanduser()
+    config_path, _ = resolve_service_paths(args.config)
     try:
         configuration = load_node_configuration(config_path)
     except ConfigurationError as error:
@@ -61,7 +60,7 @@ def _connect(
         parser.error("--token must not contain quotes or line breaks")
     # a registered service already said which file it reads; before any
     # registration the default is ours to set, and the install must match it
-    registered = installed_env_file()
+    registered = installed_env_file(registered=True)
     env_file = (args.env_file or registered or default_env_file()).expanduser()
     options = MappingProxyType({"url": url, "token_env": TOKEN_ENV})
     updated = replace(

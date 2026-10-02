@@ -89,6 +89,8 @@ if ($environmentScript -and (Test-Path -LiteralPath $environmentScript)) {
     }
 }
 
+$env:BCN_HOME = {{ home_dir }}
+
 try {
     $exitCode = [BcnNoWindowProcess]::Run($executable, $configPath, $logPath)
 } catch {

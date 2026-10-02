@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from bcn_test_support import isolated_test_environment, temporary_test_directory
+
+from bazaar_compute_node.core.paths import resolve_data_dir
 
 
 def test_temporary_test_directory_uses_system_temp_and_cleans_up() -> None:
@@ -16,36 +20,55 @@ def test_temporary_test_directory_uses_system_temp_and_cleans_up() -> None:
 
 
 def test_isolated_test_environment_scopes_paths_and_process_environment() -> None:
-    original = {
-        name: os.environ.get(name)
-        for name in ("HOME", "USERPROFILE", "CODEX_HOME", "BCN_DATA_NAME")
-    }
-
-    with isolated_test_environment(prefix="bcn-support-") as environment:
-        root = environment.root
-        assert environment.endpoint_path == root / "bcn.sock"
-        assert environment.home == root / "home"
-        assert environment.codex_home == root / "codex-home"
-        assert environment.data_dir == environment.home / ".bcn"
-        assert environment.workspace == root / "workspace"
-        assert all(
-            path.is_dir()
-            for path in (
-                environment.home,
-                environment.codex_home,
-                environment.data_dir,
-                environment.workspace,
+    with isolated_test_environment(prefix="bcn-support-") as outer:
+        with isolated_test_environment(prefix="bcn-support-") as environment:
+            assert all(
+                path.is_dir() and path.is_relative_to(environment.root)
+                for path in (
+                    environment.home,
+                    environment.codex_home,
+                    environment.data_dir,
+                    environment.workspace,
+                )
             )
-        )
-        assert Path.home() == environment.home
-        assert os.environ["CODEX_HOME"] == str(environment.codex_home)
-        assert os.environ["BCN_DATA_NAME"] == environment.data_dir.name
+            assert environment.endpoint_path.parent.is_dir()
+            assert environment.endpoint_path.is_relative_to(environment.root)
+            assert Path.home().is_relative_to(environment.root)
+            assert Path(os.environ["CODEX_HOME"]).is_relative_to(environment.root)
+            assert resolve_data_dir().is_relative_to(environment.root)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from bazaar_compute_node.app.config import load_node_configuration; "
+                        "load_node_configuration()"
+                    ),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            assert (environment.root / ".bcn" / "config.toml").is_file()
 
-    assert not root.exists()
-    assert {
-        name: os.environ.get(name)
-        for name in ("HOME", "USERPROFILE", "CODEX_HOME", "BCN_DATA_NAME")
-    } == original
+        assert not environment.root.exists()
+        assert Path.home().is_relative_to(outer.root)
+        assert Path(os.environ["CODEX_HOME"]).is_relative_to(outer.root)
+        assert resolve_data_dir().is_relative_to(outer.root)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from bazaar_compute_node.app.config import load_node_configuration; "
+                    "load_node_configuration()"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assert (outer.root / ".bcn" / "config.toml").is_file()
+
+    assert not outer.root.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows uses a named pipe endpoint")

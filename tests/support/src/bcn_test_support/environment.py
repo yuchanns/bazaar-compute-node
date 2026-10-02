@@ -27,7 +27,7 @@ def temporary_test_directory(*, prefix: str = "bcn-") -> Iterator[Path]:
     """Yield one system-selected temporary directory and remove it on exit."""
 
     with tempfile.TemporaryDirectory(prefix=prefix) as directory:
-        yield Path(directory)
+        yield Path(directory).resolve()
 
 
 @contextmanager
@@ -51,7 +51,7 @@ def isolated_test_environment(
     with temporary_test_directory(prefix=prefix) as root:
         home = root / "home"
         codex_home = root / "codex-home"
-        data_dir = home / ".bcn"
+        data_dir = root / ".bcn"
         workspace = root / "workspace"
         endpoint_path = root / endpoint_name
         if (
@@ -69,7 +69,7 @@ def isolated_test_environment(
             "HOME": str(home),
             "USERPROFILE": str(home),
             "CODEX_HOME": str(codex_home),
-            "BCN_DATA_NAME": data_dir.name,
+            "BCN_HOME": str(root),
         }
         previous = {name: os.environ.get(name) for name in environment}
         os.environ.update(environment)

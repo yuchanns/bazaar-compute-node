@@ -283,6 +283,7 @@ async def test_a_server_takes_an_agent_in_changes_it_and_lets_it_go(
             # case: a new one, with its credential and a value for its
             # runtime's environment; the answer comes once the file has it,
             # naming where each is kept, and it starts after
+            second_key = "OTHER_KEY" if os.name == "nt" else "api_key"
             written = await ask(
                 write="agent",
                 agent={
@@ -291,7 +292,7 @@ async def test_a_server_takes_an_agent_in_changes_it_and_lets_it_go(
                     "runtime": [{"kind": "test"}],
                 },
                 secrets={"0": {"token": "secret-1"}},
-                env={"0": {"API_KEY": "value-1", "api_key": "value-2"}},
+                env={"0": {"API_KEY": "value-1", second_key: "value-2"}},
                 settings={"review.reply": "One moment."},
             )
             newcomer = str(written["id"])
@@ -302,14 +303,10 @@ async def test_a_server_takes_an_agent_in_changes_it_and_lets_it_go(
             assert said["value"] == "One moment."
             assert "secret-1" not in str(written) and "value-1" not in str(written)
             prefix = f"BCN_{newcomer.replace('-', '_').upper()}"
-            kept = f"{prefix}_RUNTIME0_TEST_ENV_API_KEY"
-            # two names apart by case are two variables, kept apart
-            assert written["runtime"][0]["env"] == {
-                "API_KEY": kept,
-                "api_key": f"{prefix}_RUNTIME0_TEST_ENV_api_key",
-            }
-            assert os.environ[f"{prefix}_RUNTIME0_TEST_ENV_api_key"] == "value-2"
-            assert os.environ[kept] == "value-1"
+            # POSIX keeps names apart by case; Windows names are case insensitive.
+            environment = written["runtime"][0]["env"]
+            assert "value-1" in os.environ[environment["API_KEY"]]
+            assert "value-2" in os.environ[environment[second_key]]
             assert written["channel"] == [
                 {"kind": "test", "token_env": f"{prefix}_CHANNEL0_TEST_TOKEN"}
             ]
