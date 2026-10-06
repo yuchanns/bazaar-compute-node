@@ -62,12 +62,12 @@ def make_upgrade_service(
     *,
     installed_version: str = "0.1.0",
     available_version: str | None = None,
-    request_restart: Callable[[], None] = lambda: None,
+    request_stop: Callable[[], None] = lambda: None,
 ) -> UpgradeService:
     return UpgradeService(
         available_version=lambda: available_version,
         installed_version=installed_version,
-        request_restart=request_restart,
+        request_stop=request_stop,
     )
 
 
@@ -486,7 +486,7 @@ async def test_one_upgrade_transaction_runs_at_a_time() -> None:
     restarts: list[None] = []
     service = make_upgrade_service(
         available_version="9.9.9",
-        request_restart=lambda: restarts.append(None),
+        request_stop=lambda: restarts.append(None),
     )
     inside = 0
     overlapped = False

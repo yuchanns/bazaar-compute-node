@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 
 from ..core.paths import resolve_data_dir
@@ -43,6 +44,7 @@ class SystemServiceContext:
     """Resolved paths used to render one user-level system service."""
 
     executable: Path | None
+    python: Path
     config_path: Path
     data_dir: Path
     env_file: Path
@@ -97,6 +99,7 @@ def _build_context(
     env_file = env_file.resolve()
     return SystemServiceContext(
         executable=executable,
+        python=Path(vars(sys)["_base_executable"]).resolve(),
         config_path=config_path,
         data_dir=data_dir,
         env_file=env_file,
@@ -196,6 +199,8 @@ def _render_systemd_unit(context: SystemServiceContext) -> str:
         {
             "managed_marker": MANAGED_MARKER,
             "executable": _systemd_quote(_require_executable(context)),
+            "python": _systemd_quote(context.python),
+            "supervisor_path": _systemd_quote(context.data_dir / "supervisor.py"),
             "config_path": _systemd_quote(context.config_path),
             "data_dir": _systemd_quote(context.data_dir, quote=False),
             "home_environment": _systemd_quote(f"BCN_HOME={context.data_dir.parent}"),
@@ -222,6 +227,8 @@ def _render_launchd_plist(
             "config_path": str(context.config_path),
             "environment_file": str(context.env_file),
             "executable": str(_require_executable(context)),
+            "python": str(context.python),
+            "supervisor_path": str(context.data_dir / "supervisor.py"),
             "log_path": str(context.log_path),
         }
     ).encode("utf-8")
@@ -232,6 +239,8 @@ def _render_windows_wrapper(context: SystemServiceContext) -> str:
         {
             "managed_marker": MANAGED_MARKER,
             "executable": _powershell_literal(_require_executable(context)),
+            "python": _powershell_literal(context.python),
+            "supervisor_path": _powershell_literal(context.data_dir / "supervisor.py"),
             "config_path": _powershell_literal(context.config_path),
             "home_dir": _powershell_literal(context.data_dir.parent),
             "environment_script": _powershell_literal(context.env_file),
@@ -375,6 +384,7 @@ def _windows_paths(data_dir: Path) -> tuple[Path, Path, Path]:
 
 
 def _install_linux(context: SystemServiceContext) -> None:
+    _install_supervisor(context)
     unit_path = _systemd_unit_path()
     _write_managed_file(unit_path, _render_systemd_unit(context), mode=0o600)
     _run_native_command(["systemctl", "--user", "daemon-reload"])
@@ -387,6 +397,7 @@ def _install_linux(context: SystemServiceContext) -> None:
 
 
 def _install_macos(context: SystemServiceContext) -> None:
+    _install_supervisor(context)
     plist_path, wrapper_path = _launchd_paths()
     _write_managed_file(
         wrapper_path,
@@ -406,6 +417,7 @@ def _install_macos(context: SystemServiceContext) -> None:
 
 
 def _install_windows(context: SystemServiceContext) -> None:
+    _install_supervisor(context)
     xml_path, wrapper_path, launcher_path = _windows_paths(context.data_dir)
     context.data_dir.mkdir(parents=True, exist_ok=True)
     _write_managed_file(
@@ -439,6 +451,16 @@ def _install_windows(context: SystemServiceContext) -> None:
         flush=True,
     )
     print(f"Start with: schtasks /Run /TN {WINDOWS_TASK_NAME}", flush=True)
+
+
+def _install_supervisor(context: SystemServiceContext) -> None:
+    _write_managed_file(
+        context.data_dir / "supervisor.py",
+        files("bazaar_compute_node")
+        .joinpath("resources/system_service/supervisor.py")
+        .read_bytes(),
+        mode=0o600,
+    )
 
 
 def default_env_file() -> Path:
@@ -568,18 +590,21 @@ def _stop_macos() -> None:
 
 def _managed_windows_process_ids(context: SystemServiceContext) -> tuple[int, ...]:
     config_path = _powershell_literal(context.config_path)
+    supervisor_path = _powershell_literal(context.data_dir / "supervisor.py")
     script = "\n".join(
         (
             "$ErrorActionPreference = 'Stop'",
             "$queryProcessId = $PID",
             f"$configPath = [IO.Path]::GetFullPath({config_path}).ToLowerInvariant()",
+            f"$supervisorPath = [IO.Path]::GetFullPath({supervisor_path}).ToLowerInvariant()",
             "Get-CimInstance -ClassName Win32_Process |",
             "    Where-Object {",
             "        $_.ProcessId -ne $queryProcessId -and",
             "        $_.CommandLine -and",
             "        $_.CommandLine.ToLowerInvariant().Contains($configPath) -and",
-            r"        $_.CommandLine -match '(?i)(^|\s)run(\s|$)' -and",
-            r"        $_.CommandLine -match '(?i)(^|\s)--config(\s|$)'",
+            r"        $_.CommandLine -match '(?i)(^|\s)--config(\s|$)' -and",
+            "        ($_.CommandLine.ToLowerInvariant().Contains($supervisorPath) -or",
+            r"         $_.CommandLine -match '(?i)(^|\s)run(\s|$)')",
             "    } |",
             "    ForEach-Object { $_.ProcessId }",
             "",
@@ -721,6 +746,10 @@ def _uninstall(context: SystemServiceContext) -> None:
         _uninstall_windows(context)
     else:
         raise RuntimeError(f"unsupported host service platform: {system}")
+    _remove_managed_file(context.data_dir / "supervisor.py")
+    (
+        context.data_dir / ("bcn.running.exe" if os.name == "nt" else "bcn.running")
+    ).unlink(missing_ok=True)
 
 
 def _status_linux() -> NativeServiceStatus:

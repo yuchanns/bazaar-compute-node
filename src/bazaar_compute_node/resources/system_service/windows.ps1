@@ -2,6 +2,8 @@
 $ErrorActionPreference = 'Stop'
 
 $executable = {{ executable }}
+$python = {{ python }}
+$supervisorPath = {{ supervisor_path }}
 $configPath = {{ config_path }}
 $environmentScript = {{ environment_script }}
 $logPath = {{ log_path }}
@@ -15,11 +17,11 @@ using System.Threading.Tasks;
 
 public static class BcnNoWindowProcess
 {
-    public static int Run(string executable, string configPath, string logPath)
+    public static int Run(string python, string supervisorPath, string executable, string configPath, string logPath)
     {
         ProcessStartInfo startInfo = new ProcessStartInfo();
-        startInfo.FileName = executable;
-        startInfo.Arguments = "run --config \"" + configPath + "\"";
+        startInfo.FileName = python;
+        startInfo.Arguments = "\"" + supervisorPath + "\" --executable \"" + executable + "\" --config \"" + configPath + "\"";
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;
         startInfo.RedirectStandardInput = true;
@@ -92,7 +94,7 @@ if ($environmentScript -and (Test-Path -LiteralPath $environmentScript)) {
 $env:BCN_HOME = {{ home_dir }}
 
 try {
-    $exitCode = [BcnNoWindowProcess]::Run($executable, $configPath, $logPath)
+    $exitCode = [BcnNoWindowProcess]::Run($python, $supervisorPath, $executable, $configPath, $logPath)
 } catch {
     $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
     exit 1

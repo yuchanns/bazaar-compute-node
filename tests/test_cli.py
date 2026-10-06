@@ -955,6 +955,7 @@ def test_server_connect_takes_the_env_file_from_the_registered_service(
     assert system_service_module.installed_env_file() is None
     context = system_service_module.SystemServiceContext(
         executable=Path(sys.executable),
+        python=Path(vars(sys)["_base_executable"]).resolve(),
         config_path=config_path,
         data_dir=tmp_path,
         env_file=env_file,

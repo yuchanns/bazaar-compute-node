@@ -70,7 +70,8 @@ def _install(version: str) -> None:
             _uv_executable(),
             "tool",
             "install",
-            "--force",
+            # Reuse the tool environment: --force would remove its running
+            # Python interpreter on Windows, even with a copied entry point.
             # the release was announced by PyPI's own API minutes ago, while uv
             # resolves against a separately cached index that can still predate
             # it and would then report the version as one that does not exist
@@ -90,11 +91,11 @@ class UpgradeService:
         *,
         available_version: Callable[[], str | None],
         installed_version: str,
-        request_restart: Callable[[], None],
+        request_stop: Callable[[], None],
     ) -> None:
         self._available_version = available_version
         self._installed_version = installed_version
-        self._request_restart = request_restart
+        self._request_stop = request_stop
         self._lock = asyncio.Lock()
 
     @property
@@ -134,10 +135,7 @@ class UpgradeService:
                 raise UpgradeError(f"{version!r} is not a release version") from error
             await self.install(version)
             reminder_id = await wake_after(version)
-            # the node cannot restart itself from the inside: on Windows the
-            # stop it would ask for kills the process tree it is asking from.
-            # Exiting is the one thing it can do that its host watches for.
-            self._request_restart()
+            self._request_stop()
             return version, reminder_id
 
     async def install(self, version: str) -> None:

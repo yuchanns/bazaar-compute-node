@@ -174,7 +174,7 @@ async def test_upgrade_needs_uv_to_install_anything(
             request_timeout_seconds=30,
         ).available_version,
         installed_version="0.0.1",
-        request_restart=_unexpected_restart,
+        request_stop=_unexpected_restart,
     )
 
     with pytest.raises(UpgradeError) as failure:
@@ -227,7 +227,7 @@ async def test_real_upgrade_installs_then_schedules_then_asks_for_a_restart(
     upgrade = UpgradeService(
         available_version=watcher.available_version,
         installed_version="0.0.1",
-        request_restart=lambda: restarts.append(None),
+        request_stop=lambda: restarts.append(None),
     )
     node, channel, runtime = _upgrade_node(tmp_path)
     await node.start()
@@ -309,7 +309,7 @@ async def test_real_upgrade_failure_reaches_the_agent_without_a_restart(
     upgrade = UpgradeService(
         available_version=watcher.available_version,
         installed_version="0.0.1",
-        request_restart=lambda: restarts.append(None),
+        request_stop=lambda: restarts.append(None),
     )
     node, channel, runtime = _upgrade_node(tmp_path)
     await node.start()
