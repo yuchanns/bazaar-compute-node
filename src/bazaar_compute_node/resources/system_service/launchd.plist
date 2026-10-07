@@ -22,6 +22,10 @@
         <string>{{ environment_file | e }}</string>
         <key>BCN_EXECUTABLE</key>
         <string>{{ executable | e }}</string>
+        <key>BCN_PYTHON</key>
+        <string>{{ python | e }}</string>
+        <key>BCN_SUPERVISOR</key>
+        <string>{{ supervisor_path | e }}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

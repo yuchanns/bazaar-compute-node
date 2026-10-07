@@ -36,13 +36,10 @@ for group in (message, thread, reminder):
 if os.environ.get("BCN_AGENT_MODE") == Mode.DANGEROUS_INDIVIDUAL.value:
     bcc.add_command(inbox)
 
-# Windows has nothing that brings the node back after an upgrade exits it, so
-# there the node offers no upgrade and the commands would only ever be refused
-if os.name != "nt":
-    bcc.add_command(node)
-    # `bcc upgrade` reads better than `bcc node upgrade`, so the command line name
-    # and the resource it addresses differ here
-    bcc.add_command(node.commands["upgrade"], "upgrade")
+bcc.add_command(node)
+# `bcc upgrade` reads better than `bcc node upgrade`, so the command line name
+# and the resource it addresses differ here
+bcc.add_command(node.commands["upgrade"], "upgrade")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

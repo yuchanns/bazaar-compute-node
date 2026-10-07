@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 
@@ -257,9 +256,6 @@ def inbox_notice(
             "rows": [row[2] for row in rows],
             "upgrade_version": upgrade_version,
             "installed_version": installed_version,
-            # Windows has nothing that would bring the node back after an
-            # upgrade exits it, so there the user runs the commands themselves
-            "manual_upgrade": os.name == "nt",
             "closing_bracket_on_own_line": closing_bracket_on_own_line,
         }
     )

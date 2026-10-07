@@ -273,8 +273,6 @@ class CommandDispatcher(_MessageCommandDispatcher):
         if resource == "node":
             upgrade_service = self._upgrade_service
             if upgrade_service is None:
-                # nothing on this platform would bring the node back after an
-                # upgrade exits it, so the Agent is given no upgrade to run
                 raise CommandDispatchError(
                     "UNKNOWN_RESOURCE",
                     f"unsupported command resource: {resource}",

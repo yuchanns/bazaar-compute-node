@@ -4,7 +4,7 @@ Description=Bazaar Compute Node
 
 [Service]
 Type=simple
-ExecStart=:env {{ home_environment }} {{ executable }} run --config {{ config_path }}
+ExecStart=:env {{ home_environment }} {{ python }} {{ supervisor_path }} --executable {{ executable }} --config {{ config_path }}
 WorkingDirectory={{ data_dir }}
 Environment={{ home_environment }}
 {% if environment_file %}EnvironmentFile=-{{ environment_file }}

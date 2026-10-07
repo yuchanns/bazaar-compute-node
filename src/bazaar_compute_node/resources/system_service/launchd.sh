@@ -10,4 +10,4 @@ if [ -n "${BCN_ENV_FILE:-}" ] && [ -f "$BCN_ENV_FILE" ]; then
 fi
 
 export BCN_HOME="$directory"
-exec "$BCN_EXECUTABLE" run --config "$BCN_CONFIG"
+exec "$BCN_PYTHON" "$BCN_SUPERVISOR" --executable "$BCN_EXECUTABLE" --config "$BCN_CONFIG"

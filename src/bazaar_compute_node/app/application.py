@@ -20,7 +20,6 @@ from ..core.models import InboundAttachment, Message, RuntimeEventState
 from ..core.observability import AuditContext, IAudit
 from ..core.orchestration import ReminderScheduler
 from ..core.paths import resolve_data_dir, resolve_workspace_dir
-from ..core.restart import RESTART_EXIT_CODE
 from ..core.runtime import RuntimeAvailability, RuntimeDescription, RuntimeModels
 from ..core.storage import IStorage
 from ..core.timerwheel import TimerWheel
@@ -204,17 +203,11 @@ class NodeApplication:
             version=__version__,
             interval_seconds=self.timeout_budget.startup_seconds,
         )
-        self._restart_requested = False
-        # Windows has nothing that brings the node back after it exits, so
-        # there it offers no upgrade command at all
-        self.upgrade_service = (
-            None
-            if os.name == "nt"
-            else UpgradeService(
-                available_version=self.version_watcher.available_version,
-                installed_version=__version__,
-                request_restart=self.request_restart,
-            )
+        self._stopped = asyncio.Event()
+        self.upgrade_service = UpgradeService(
+            available_version=self.version_watcher.available_version,
+            installed_version=__version__,
+            request_stop=self._stopped.set,
         )
         self.command_server = LocalCommandServer(
             self._dispatch,
@@ -226,7 +219,6 @@ class NodeApplication:
         self._started = False
         self._ready = False
         self._accepting = False
-        self._stopped = asyncio.Event()
         self._logger = logging.getLogger("bazaar_compute_node.application")
 
     @property
@@ -864,16 +856,6 @@ class NodeApplication:
         self._stopped.set()
         if errors:
             self._log("bcn.stop.errors", errors=errors)
-
-    def request_restart(self) -> None:
-        """Stop, and tell whatever hosts this node to start it again."""
-
-        self._restart_requested = True
-        self._stopped.set()
-
-    @property
-    def exit_code(self) -> int:
-        return RESTART_EXIT_CODE if self._restart_requested else 0
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()

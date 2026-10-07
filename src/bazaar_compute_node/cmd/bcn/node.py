@@ -175,7 +175,7 @@ async def _run_node(args: argparse.Namespace, parser: Usage) -> int:
         except TimeoutError:
             print("bcn stop timed out; ending runtimes", file=sys.stderr, flush=True)
         await children.end_all()
-    return node.exit_code
+    return 0
 
 
 def build_node_commands(translator: Translator) -> tuple[click.Command, ...]:
