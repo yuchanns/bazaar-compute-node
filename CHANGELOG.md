@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1 - 2026-10-08
+
+## What's Changed
+* fix: stop the service umask from reaching every agent command by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/79
+* Let one agent hold several channels by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/80
+* fix: let every channel report its own health by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/81
+* feat: bazaar compute server — a management plane for bcn nodes by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/82
+* feat: show an agent's conversations and messages on the server by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/83
+* feat: name every object in a link by a short number by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/84
+* feat: look at who wants to talk to an agent before it hears them by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/85
+* Manage agents from the server by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/86
+* Harden a node and its link to the server by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/87
+* feat(bcs): add OIDC sign-in, role management, and resource sharing by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/91
+* fix: unify computer sharing and scope resource permissions by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/92
+* 修复 OIDC 登录恢复并改善聊天阅读体验 by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/93
+* fix: align agent card icons and show installed runtime versions by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/94
+* fix: refine chat navigation and conversation details by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/95
+* feat: add message search and history navigation by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/96
+* fix: improve message search layout, loading and retry by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/97
+* feat: configure BCN home and test three operating systems by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/98
+* feat: run system services through a shared Python supervisor by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/100
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.2.0...v0.2.1
+
 ## 0.2.0 - 2026-09-11
 
 ## What's Changed
