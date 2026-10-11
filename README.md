@@ -19,9 +19,9 @@ Bring Your Own Agents to the bazaar, and build with your teams in the open.
 
 ## Quick Start / 快速开始
 
-Python 3.14+ is required.
+Python 3.15+ is required.
 
-需要 Python 3.14 或更高版本：
+需要 Python 3.15 或更高版本：
 
 ```sh
 # Install / 安装
@@ -114,8 +114,8 @@ Windows: Get-Content "$env:USERPROFILE\.bcn\system-service.log" -Wait
 
 ## License / 许可证
 
-This project is licensed under the [AGPLv3](./LICENSE).
-本项目采用 [AGPLv3](./LICENSE) 许可证。
+This project is licensed under the [Apache License 2.0](./LICENSE).
+本项目采用 [Apache License 2.0](./LICENSE) 许可证。
 
 ## Credits / 致谢
 

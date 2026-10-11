@@ -106,6 +106,17 @@ BindingRef 保留 typed key 与声明位置或启用句柄，Pydantic 边界校�
 顶层 contribs 统一启用一次；同一实现可以用不同参数生成多个实例，选中的 provider 和完整已知依赖在资源启动前展开并预检。
 动态 lifespan 创建的子组合在 ctx.enable 进入前检查其完整声明，校验结论只覆盖已经声明的输入。
 
+### 公共契约类型命名
+
+公共契约按能力命名：`TaskFailureSource`、`Audit`、`Channel`、`ApprovalHandler`、
+`HarnessTurnStream`、`Harness` 和 `ThreadConcurrency`。`Timer` 表示计时服务，
+`Timer.create()` 返回 `TimerHandle`；`ContribStatusQuery` 表示状态查询服务，
+core 的 `ContribStatus` 保持表示状态快照。公共 `ServiceKey` 继续携带相应契约类型，
+提供者通过 offer 发布实现，消费者通过 accepts 与 accept 取得有类型的实例。
+
+统一更新定义、公开转导出、泛型 key、函数签名和现有消费方的引用，沿用各能力的真实资源与独立安装验收。
+检查接口包、实现包、agent／messages 消费者与根目录类型检查，并在各能力的引入提交中完成签名修订。
+
 ### Python 3.15 导入策略
 
 本分支新包与配套 Python 文件使用 Python 3.15 的显式模块级 `lazy import`／`lazy from`。
@@ -164,9 +175,9 @@ Context.update 修改由该配置加载器产生的组合，Enablement.update �
 
 ### 状态查询模块
 
-`contrib/status/` 的 `bazaar-contrib-status` 独立发行包导出 `IContribStatus`、`CONTRIB_STATUS` 和 `status` 定义，
+`contrib/status/` 的 `bazaar-contrib-status` 独立发行包导出 `ContribStatusQuery`、`CONTRIB_STATUS` 和 `status` 定义，
 只依赖兼容范围内的 `bazaar-core`，首版为 `bazaar-core~=0.3.0`。`status` 在 `bazaar_compute_node.contribs` 登记入口，声明 `offers=[CONTRIB_STATUS]` 和空配置，通过普通 lifespan 提供查询服务。
-`IContribStatus.snapshot()` 同步返回 `tuple[ContribStatus, ...]`，每次读取 `ctx.snapshots` 的状态记录；
+`ContribStatusQuery.snapshot()` 同步返回 `tuple[ContribStatus, ...]`，每次读取 `ctx.snapshots` 的状态记录；
 已返回的快照保留查询时的状态，包含仍被宿主保留的 failed、blocked 记录。
 core 持有状态记录、数据类型和变更事件；查询服务的协议、key 与插件实现由 status 包持有。
 app 默认组合和 server 的本地组合分别启用 `status`，消费者声明 `accepts=[CONTRIB_STATUS]` 并通过 accept 查询，
