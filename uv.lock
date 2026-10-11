@@ -11,6 +11,7 @@ members = [
     "bazaar-contrib-invoke",
     "bazaar-contrib-manager",
     "bazaar-contrib-sidecar",
+    "bazaar-contrib-status",
     "bazaar-core",
     "bcn-workspace",
 ]
@@ -164,6 +165,17 @@ requires-dist = [
     { name = "bazaar-contrib-config", editable = "contrib/config" },
     { name = "bazaar-core", editable = "core" },
 ]
+
+[[package]]
+name = "bazaar-contrib-status"
+version = "0.3.0"
+source = { editable = "contrib/status" }
+dependencies = [
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "bazaar-core", editable = "core" }]
 
 [[package]]
 name = "bazaar-core"
