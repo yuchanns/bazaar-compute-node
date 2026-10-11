@@ -1,0 +1,36 @@
+[project]
+name = "bazaar-contrib-config-versions"
+version = "0.3.0"
+description = "The Bazaar Compute Node Config Versions Contrib"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.15"
+dependencies = ["bazaar-contrib-config~=0.3.0"]
+
+[project.urls]
+Repository = "https://github.com/yuchanns/bazaar-compute-node"
+
+[project.entry-points."bazaar_compute_node.contribs"]
+config-v1 = "bazaar_contrib_config_versions:v1"
+config-v2 = "bazaar_contrib_config_versions:v2"
+config-v3 = "bazaar_contrib_config_versions:v3"
+config-v4 = "bazaar_contrib_config_versions:v4"
+config-v5 = "bazaar_contrib_config_versions:v5"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:anyio"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+extends = "../../pyrightconfig.json"
+include = ["src", "tests"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"

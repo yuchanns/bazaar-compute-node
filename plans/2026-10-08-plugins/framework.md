@@ -502,7 +502,7 @@ config-v5 = "bazaar_contrib_config_versions:v5"
 
 配置文档以顶层 `version="5"` 标识结构版本，与 BCN／模块的发行版本分别管理。
 顶层保存 `version`、`contrib_indexes` 和统一 `contribs`；默认 agent 的实体配置归 `entry="agent"` 条目的 `config.agents`。本地传输地址、数据库、
-审计和版本检查等能力参数保存在其所属模块的 config。
+审计等能力参数保存在其所属模块的 config。
 默认 agent 模型保留 id、name、mode、idle_timeout、channel 数组及 provider kind 和业务参数的实体含义；旧 runtime 数组映射到该模型的 harness 数组。
 运行实例由组合明确声明，内部标识由宿主生成，私有绑定由组合持有。
 
@@ -519,10 +519,10 @@ V4→V5 在内存中生成候选配置和 required packages；
 | node.audit="logging"、node.logging | logging 与对应 config | 保留日志参数；默认 audit 仍映射 logging |
 | 每个节点的本机通信 | commands、sidecar 及本机实现入口 | 承接 0.2 的 bcn.sock 通信，默认启用；与 node.control 的选择无关 |
 | node.endpoint | 所选 sidecar 实现的 config.endpoint | Unix 保留路径，Windows 按原路径身份生成原生管道地址；缺省由实现包提供本机地址 |
-| node.version_check | node-management.config.version_check | 显式 false 保持 false，缺省为 true |
 | node.lang | — | V5 文案由所属功能包持有，默认使用英语 |
 | 原 agent、channel／runtime 配置 | agent.config.agents 及其 channel／harness 数组；对应公共登记与 provider 启用条目 | id、name、顺序、mode、超时、模型、effort、sandbox、env、凭据引用及 provider 参数逐项保留 |
 
+V4→V5 为 node-management 生成无参数入口。
 执行、消息、协作、Reminder 等原有固定能力写成顶层模块条目；channel／harness 注册按原有 provider 选择生成。
 server／starlink 相关字段随第 11 阶段交付对应功能时补充 V4→V5 映射；已有 V5 读取保留原启用列表。
 默认 agent 的配置整体写入 agent 启用条目的 config；原 runtime 字段转为 harness，按 provider 模型保留数组顺序和参数。
@@ -600,8 +600,6 @@ entry = "logging"
 [[contribs]]
 [[contribs.enabled]]
 entry = "node-management"
-[contribs.enabled.config]
-version_check = false
 ```
 
 ### 0.2 BCS 配置与数据源连续升级
@@ -661,7 +659,7 @@ server 保留这些既有协议入口及请求／响应含义；0.3 两端的服
 原 0.2 节点的 control.result 按既有协议接收；0.3 client 直接通过私有协议回传调用结果。
 升级后新事件仍写入原数据库，并能通过同一 web 页面查询；重复启动保持独立 BCS 配置、数据与迁移结果稳定。
 同进程使用另一份隔离节点配置与数据库，分别修改节点和 BCS 设置并写入各自业务数据，核对两边配置文件、数据库路径与实际查询结果。
-完整验收使用隔离环境的真实 V1／V2／V3／V4 文件，覆盖多 agent／provider、远端连接、凭据引用和关闭版本检查，并验证重复加载与迁移后真实运行结果。
+完整验收使用隔离环境的真实 V1／V2／V3／V4 文件，覆盖多 agent／provider、远端连接、凭据引用，并验证重复加载与迁移后真实运行结果。
 
 ### 默认配置生成与后端切换
 
