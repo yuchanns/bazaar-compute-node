@@ -285,6 +285,8 @@ CONFIG_STORE = ServiceKey[ConfigStore]("config.store")
 revision 是载体返回的不透明修订标识，与文档的结构 version 分别管理。
 `write(expected_revision=None)` 仅在配置不存在时创建；传入修订标识时仅替换仍匹配该快照的配置。
 检查和提交由载体作为同一个条件操作完成，竞争失败抛出 ConfigConflict。
+普通启动按输入与目标结构版本判断是否需要迁移回写；版本相同时直接加载候选，旧版本经过候选检查后条件提交。
+加载、默认配置创建、迁移和组合导入遇到修订冲突时直接向调用者报错；调用者重新读取、校验后决定是否再次提交。
 提交成功返回实际提交后的快照；明确未提交的失败保持先前配置可读取。
 写入后响应丢失等结果未知的情况抛出 ConfigCommitUnknown，管理入口重新读取并核对当前内容与修订，
 显示已提交、冲突或仍无法确认的实际状态，后续操作依据该状态继续。
@@ -902,16 +904,16 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 4：发现、配置与节点启动
 
-- [ ] 统一 bazaar_compute_node.contribs 元数据发现，入口导入、API、配置与服务错误进入状态诊断，有效条目继续运行。
-- [ ] 配置契约、filesystem、版本服务与状态成员独立发行，app 持有启动 flags、defaults.toml 和 catalog 构建资源。
-- [ ] --configer 选择载体，--configer-options／--config 可重复并保留顺序；载体自己解析原始参数并提供 CONFIG_STORE。
-- [ ] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
-- [ ] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
-- [ ] AGENT／CHANNEL／RUNTIME 提供 typed 业务输入；app build 将全部已知 agent／provider 展开为完整实例图，稳定绑定从业务 id 和 provider 位置派生，保存前预检覆盖全部声明。
-- [ ] ConfigDocument 的当前 agent 模型在 Task 13 移至 agent 插件；此阶段应用负责明确展开该业务输入。
-- [ ] 独立第三方 wheel 用真实 SQLite／TCP 配置中心验证读取、编辑、冲突、未知提交响应、重建和启动取消。
-- [ ] 自定义构建后端从 uv.lock 生成内置 catalog，独立 sdist 可重建；验证默认配置、组合导入、路径转义与隔离节点。
-- [ ] 完成 Ruff、根 LSP、真实安装配置流程与独立发行验收。
+- [x] 统一 bazaar_compute_node.contribs 元数据发现，入口导入、API、配置与服务错误进入状态诊断，有效条目继续运行。
+- [x] 配置契约、filesystem、版本服务与状态成员独立发行，app 持有启动 flags、defaults.toml 和 catalog 构建资源。
+- [x] --configer 选择载体，--configer-options／--config 可重复并保留顺序；载体自己解析原始参数并提供 CONFIG_STORE。
+- [x] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
+- [x] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
+- [x] AGENT／CHANNEL／RUNTIME 提供 typed 业务输入；app build 将全部已知 agent／provider 展开为完整实例图，稳定绑定从业务 id 和 provider 位置派生，保存前预检覆盖全部声明。
+- [x] ConfigDocument 的当前 agent 模型在 Task 13 移至 agent 插件；此阶段应用负责明确展开该业务输入。
+- [x] 独立第三方 wheel 用真实 SQLite／TCP 配置中心验证读取、编辑、冲突、未知提交响应、重建和启动取消。
+- [x] 自定义构建后端从 uv.lock 生成内置 catalog，独立 sdist 可重建；验证默认配置、组合导入、路径转义与隔离节点。
+- [x] 完成 Ruff、根 LSP、真实安装配置流程与独立发行验收。
 
 ### Task 5：首个日志模块
 
@@ -1030,7 +1032,7 @@ lifespan 到达 yield 后服务与监听器就绪，回调结束后退出生命�
 官方与额外索引条目经包名和来源交给 uv，已安装发行元数据将包关联到入口，CLI 与页面保存相同的运行配置。
 首次配置生成、保存后加载、更新已有选择条目和完整组合升级均保留用户参数与后端选择。
 ConfigStore 来自启动输入选中的已安装载体入口，默认 filesystem，配置中心组合可在无本地 config.toml 的环境读写配置并在部署重建后恢复。
-新建配置使用 V5；历史版本经发行自举的五版本模块链产生候选，所需包安装及配置依赖校验后经载体保留原内容、条件提交；修订冲突后重新校验。
+新建配置使用 V5；历史版本经发行自举的五版本模块链产生候选，所需包安装及配置依赖校验后经载体保留原内容、条件提交；修订冲突直接报错，由调用者重新读取和校验。
 语言等能力的参数随各阶段映射到所属模块；最终组合从真实历史配置验证 lang、provider、凭据引用和用户选择保留。
 app 的普通 Python 入口提供启动输入和默认资源，core 的运行接口完成发现、自举装配、就绪与完整退出。
 配置加载使用配置包公共逻辑与 core 的通用候选校验接口，具体读写和转换由载体／版本模块提供。
