@@ -10,6 +10,11 @@ package = "bazaar-contrib-invoke~=0.3.0"
 entry = "commands"
 
 [[contribs]]
+package = "bazaar-contrib-status~=0.3.0"
+[[contribs.enabled]]
+entry = "status"
+
+[[contribs]]
 package = "bazaar-contrib-manager~=0.3.0"
 [[contribs.enabled]]
 entry = "contrib-manager"
