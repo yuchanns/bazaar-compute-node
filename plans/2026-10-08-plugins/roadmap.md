@@ -80,8 +80,8 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 活动记录、starlink 的事件上报及事件投影，按业务需要接入 | 11 | 所需业务的依赖 |
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
 | `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 6 | 默认、server 的依赖 |
-| `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 2 | 默认；web 的编辑器依赖 |
-| `bazaar-contrib-harness` | `IHarness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 2 | 默认 |
+| `bazaar-contrib-channel` | `Channel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 2 | 默认；web 的编辑器依赖 |
+| `bazaar-contrib-harness` | `Harness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 2 | 默认 |
 
 这六个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
@@ -96,7 +96,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | --- | --- | --- | --- | --- |
 | `bazaar-contrib-config-filesystem` | `config-filesystem`：共享，自举选择 | 依赖 bazaar-contrib-config，提供 CONFIG_STORE；TOML、修订复核、锁及原子替换 | 1 | 默认；BCN 主配置的默认载体 |
 | `bazaar-contrib-config-versions` | `config-v1`、`config-v2`、`config-v3`、`config-v4`、`config-v5`：共享，VERSIONS 组合 | 依赖 bazaar-contrib-config，逐版提供转换服务；Vn 依赖 V(n-1)，V5 生成参数映射及所需包，配置加载器消费 CONFIG_CURRENT | 1 | 默认；BCN 主配置的版本链 |
-| `bazaar-contrib-status` | `status`：共享 | IContribStatus、CONTRIB_STATUS 与 snapshot()；依赖 core，读取宿主记录的实例状态与故障来源 | 1 | 默认、server |
+| `bazaar-contrib-status` | `status`：共享 | ContribStatusQuery、CONTRIB_STATUS 与 snapshot()；依赖 core，读取宿主记录的实例状态与故障来源 | 1 | 默认、server |
 | `bazaar-contrib-logging` | `logging`：共享 | 标准 logging 输出、实例来源、异常堆栈、线程队列与文件轮转；依赖 core | 1 | 默认、server |
 | `bazaar-contrib-manager` | `contrib-manager`：共享 | 模块索引、包管理、入口与组合配置导入、依赖与来源清单、配置迁移所需包解析及整体升级；服务端页面经节点接口访问 | 1 | 默认；节点管理 |
 | `bazaar-contrib-invoke` | `commands`：共享 | Click 命令登记与命令入口扩展；功能包持有命令与文案 | 2 | 默认、server |
@@ -118,11 +118,11 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 
 | 发行包 | 模块入口与运行范围 | 拥有的能力与主要依赖 | 阶段 | 组合归属 |
 | --- | --- | --- | --- | --- |
-| `bazaar-contrib-telegram` | `telegram-builder`：共享；`telegram`：接受 channel 输入；`telegram-ui`：共享 | Telegram 收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
-| `bazaar-contrib-lark` | `lark-builder`：共享；`lark`：接受 channel 输入；`lark-ui`：共享 | Lark 连接、收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
-| `bazaar-contrib-wecom` | `wecom-builder`：共享；`wecom`：接受 channel 输入；`wecom-ui`：共享 | WeCom 连接、收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
-| `bazaar-contrib-codex` | `codex-builder`：共享；`codex`：接受 harness 输入 | Codex 进程、事件解析、模型／能力与审批；实现 IHarness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
-| `bazaar-contrib-claude-code` | `claudecode-builder`：共享；`claudecode`：接受 harness 输入 | Claude Code 进程、事件解析、模型／能力与审批；实现 IHarness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
+| `bazaar-contrib-telegram` | `telegram-builder`：共享；`telegram`：接受 channel 输入；`telegram-ui`：共享 | Telegram 收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
+| `bazaar-contrib-lark` | `lark-builder`：共享；`lark`：接受 channel 输入；`lark-ui`：共享 | Lark 连接、收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
+| `bazaar-contrib-wecom` | `wecom-builder`：共享；`wecom`：接受 channel 输入；`wecom-ui`：共享 | WeCom 连接、收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
+| `bazaar-contrib-codex` | `codex-builder`：共享；`codex`：接受 harness 输入 | Codex 进程、事件解析、模型／能力与审批；实现 Harness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
+| `bazaar-contrib-claude-code` | `claudecode-builder`：共享；`claudecode`：接受 harness 输入 | Claude Code 进程、事件解析、模型／能力与审批；实现 Harness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
 | `bazaar-contrib-http` | `http` | HTTP route／middleware／静态资源登记、监听能力与请求生命周期；提供 HTTP，导出共用 HTTP 与 API 注册契约 | 11 | server 依赖 |
 | `bazaar-contrib-server-config-filesystem` | `server-config-filesystem` | 依赖 bazaar-contrib-config，在 server 子组合的私有绑定中提供 CONFIG_STORE；直接读写 ~/.bcs/config.toml，持有自己的锁、修订和原子保存 | 11 | server 的默认配置载体，可替换为额外配置中心 |
 | `bazaar-contrib-server-sqlite` | `server-sqlite` | 依赖 bazaar-contrib-storage 与服务端 CONFIG_STORE；在服务端注册表登记 sqlite，连接原 ~/.bcs/bcs.sqlite3，持有 BCS 历史迁移资源 | 11 | server 的默认存储，可替换为额外存储实现 |
@@ -188,8 +188,8 @@ server／web 的节点启用条目与服务端独立配置分别保存，BCS 原
 Lark／WeCom 实现同一 channel 接口，Claude Code 实现同一 harness 接口。默认或自定义 agent 依赖两个公共接口包，通过所选实现收发消息和执行任务。
 接口包导出协议、模型与共享 service key；具体实现包声明正式依赖，在 lifespan 中提供相应接口对象。
 
-`bazaar-contrib-channel` 拥有 provider 无关的 `IChannel`、`CHANNEL`、`ChannelBuilder`、输入消息、发送请求、交付回执、附件、身份和渠道审批载荷。
-`bazaar-contrib-harness` 拥有 `IHarness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
+`bazaar-contrib-channel` 拥有 provider 无关的 `Channel`、`CHANNEL`、`ChannelBuilder`、输入消息、发送请求、交付回执、附件、身份和渠道审批载荷。
+`bazaar-contrib-harness` 拥有 `Harness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
 输入与结果在公共接口边界由 Pydantic 校验；双方通过公共审批标识关联请求和结果。
 审批请求／决定／结果由 harness 公共包拥有，channel 使用同一载荷展示审批并收集结果。
 agent 将 harness 输出映射为 channel 请求；公共 harness 包依赖 core，公共 channel 包依赖 core 与 harness 的共用审批契约，具体 SDK 类型在 provider 内部转换。

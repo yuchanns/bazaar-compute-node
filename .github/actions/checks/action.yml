@@ -6,20 +6,12 @@ runs:
   steps:
     - name: Install locked dependencies
       shell: bash
-      run: uv sync --locked
+      run: uv sync --locked --all-packages
 
     - name: Run tests
       shell: bash
-      run: uv run --frozen pytest -m "not e2e"
+      run: uv run --no-sync scripts/ci.py test --all-packages
 
-    - name: Check formatting
+    - name: Run static checks
       shell: bash
-      run: uv run --frozen ruff format --check .
-
-    - name: Run Ruff
-      shell: bash
-      run: uv run --frozen ruff check .
-
-    - name: Run Pyright
-      shell: bash
-      run: uv run --frozen scripts/pyright_lsp_check.py --outputjson .
+      run: uv run --no-sync scripts/ci.py check --all-packages

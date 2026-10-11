@@ -14,6 +14,20 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 节点启动接入、模块及 agent 管理、默认调用／存储／消息／协作／定时／Reminder 和可替换 agent 组合。后续能力依照
 [0.3 路线图](roadmap.md) 逐个交付新包。工程的分支与发行规则见 [总计划](README.md)。
 
+## 测试执行
+
+测试和独立安装验收直接等待场景、子进程及观察结果，校验功能结果并在取消时回收所属资源。
+完整运行由 GitHub CI 作业的超时或人工取消控制；功能契约本身的超时参数、到期处理和结果断言按原有要求验证。
+
+共享入口 `scripts/ci_pytest.py` 使用 `TemporaryDirectory` 为每次运行创建 `bcn-` 前缀的独立短目录，
+POSIX 固定在 `/tmp` 下，Windows 使用系统临时目录；作为默认 `--basetemp` 传给 pytest，退出时清理。
+本地与 CI 的 `scripts/ci.py test` 复用该入口，日志单独保存在验收产物目录。
+共享入口在调用 pytest 前强制把 `BCN_HOME` 指向本次内部创建的临时目录。测试支持包通过 pytest11 自动加载隔离插件，
+在初始 conftest 和测试模块加载前另行分配 `BCN_HOME`，覆盖外部传入值并在退出时清理；直接运行包内 pytest 同样生效，
+子进程继承该环境，各场景仍可在本次测试临时目录内选择独立配置。
+依据 [pytest 临时目录契约](https://docs.pytest.org/en/stable/how-to/tmp_path.html#temporary-directory-location-and-retention)，
+该目录只属于当前验收，避免工作区路径与测试名叠加超过 Unix socket 路径限制。
+
 ## 首阶段的发行结构
 
 首个日志发行包固定为 `bazaar-contrib-logging`，Python 模块为 `bazaar_contrib_logging`，模块入口为 `logging`。
@@ -106,6 +120,17 @@ BindingRef 保留 typed key 与声明位置或启用句柄，Pydantic 边界校�
 顶层 contribs 统一启用一次；同一实现可以用不同参数生成多个实例，选中的 provider 和完整已知依赖在资源启动前展开并预检。
 动态 lifespan 创建的子组合在 ctx.enable 进入前检查其完整声明，校验结论只覆盖已经声明的输入。
 
+### 公共契约类型命名
+
+公共契约按能力命名：`TaskFailureSource`、`Audit`、`Channel`、`ApprovalHandler`、
+`HarnessTurnStream`、`Harness` 和 `ThreadConcurrency`。`Timer` 表示计时服务，
+`Timer.create()` 返回 `TimerHandle`；`ContribStatusQuery` 表示状态查询服务，
+core 的 `ContribStatus` 保持表示状态快照。公共 `ServiceKey` 继续携带相应契约类型，
+提供者通过 offer 发布实现，消费者通过 accepts 与 accept 取得有类型的实例。
+
+统一更新定义、公开转导出、泛型 key、函数签名和现有消费方的引用，沿用各能力的真实资源与独立安装验收。
+检查接口包、实现包、agent／messages 消费者与根目录类型检查，并在各能力的引入提交中完成签名修订。
+
 ### Python 3.15 导入策略
 
 本分支新包与配套 Python 文件使用 Python 3.15 的显式模块级 `lazy import`／`lazy from`。
@@ -123,8 +148,32 @@ Pydantic 模型创建和校验继续执行原有 schema 构造；发行发现仍
 ### CI 支持平台
 
 各发行包在自己的 `pyproject.toml` 中通过 `[tool.bcn.ci].platforms` 声明测试平台，
-取值为 `linux`、`macos`、`windows`；缺省覆盖三系统。Unix sidecar 声明 Linux／macOS，Windows sidecar 声明 Windows。
-workspace 成员读取并校验该配置，CI 规划器把受影响包展开为允许的 package／runner 条目。
+取值为 `linux`、`macos`、`windows`；未配置时仅运行 Linux，显式配置时严格按声明的平台生成测试项。
+`[tool.bcn.ci].skip = true` 手动跳过该包的测试、system 测试及发行安装验证任务；
+受影响包仍列入单个 `Checks` 任务的 Ruff 和 Pyright/LSP 检查。全部受影响包都跳过时，
+Plan 输出独立的 `has_tests=false`，工作流保留静态检查并跳过测试矩阵。
+接口包 harness、messages、storage、timer、sidecar、channel 显式设置 skip，不持有借助具体实现的验收入口；
+接口中若有独立纯逻辑测试，只对该逻辑安排 Linux 验证。config、audit 当前没有独立测试，沿用 skip，
+其发布、加载和业务行为由现有配置实现、manager、Agent 及协作消费者验收。静态检查继续覆盖全部受影响包。
+sidecar 的原生传输与安装验收归 sidecar-unix、sidecar-windows；两者直接复用 tests/support 中同一份
+真实安装夹具、外部消费者和工作流，不重复复制测试实现。channel 的 TCP 发送恢复验收归入已有 Agent 独立安装环境，
+复用其真实测试 Channel 和 wheel／sdist 构建与安装流程。
+平台声明随所属包首次引入相应实现的提交维护，各层分支沿用相同的默认规则。
+只为包自身拥有的平台差异增加任务，依赖跨平台库、文件 API 或其他包本身不增加平台：
+
+| 包 | 测试平台 | 验证依据 |
+| --- | --- | --- |
+| sidecar-unix | Linux／macOS | 真实 Unix socket 地址归属、分块读写、重连、崩溃恢复及退出 |
+| sidecar-windows | Windows | 真实 named pipe 分块读写、连接清理、重连、崩溃恢复及退出 |
+| agent | Linux／Windows | 自有 POSIX bcc 脚本与 Windows bcc.cmd 的真实子进程执行 |
+| agent-command | Linux | 配置管理与会话审核按通用业务流程验收，原生传输由相应实现包验收 |
+| manager | Linux／Windows | 自有虚拟环境的 bin/python 与 Scripts/python.exe 定位及独立安装升级 |
+| config-filesystem | Linux／Windows | 自有配置替换、POSIX 目录 fsync／权限与 Windows 保存路径 |
+| config-versions | Linux／Windows | POSIX endpoint 与 Windows named pipe 的配置转换 |
+
+其余实现包沿用 Linux 默认值；node-management 的 POSIX 信号测试在 Linux 执行，
+app、logging、messages-node、sqlite 的通用组合和业务行为不再逐包重复 macOS／Windows。
+workspace 成员读取并校验该配置，CI 规划器仅把未跳过的受影响包展开为允许的 package／runner 条目。
 工作流命名为 `CI`，规划任务命名为 `Plan`。单个 `Checks` 任务读取 Plan 输出的受影响包清单，
 在同一环境中逐包执行 Ruff 和 Pyright/LSP；测试、system 测试及发行验证使用展开后的平台矩阵。
 命名参考 [OpenDAL 的按职责划分工作流](https://github.com/apache/opendal/blob/main/.github/workflows/ci_check.yml)
@@ -132,7 +181,10 @@ workspace 成员读取并校验该配置，CI 规划器把受影响包展开为�
 矩阵提供成员目录名作为组件短名，测试任务显示为 `core / ubuntu-latest`、`sidecar-windows / windows-latest`。
 GitHub Actions 通过 `fromJSON` 接收完整的 `matrix.include`，逐条创建已声明的组合，依据
 [GitHub 动态矩阵文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations#using-an-output-to-define-two-matrices)。
-真实临时 workspace 验证通用包、单平台包与 Unix 包的规划结果，保留各包的真实测试和发行安装验收。
+CI 按上述声明生成包与平台矩阵，仓库脚本作为开发工具维护。
+
+加载诊断在每次组合启用时复制独立记录并生成新 ID，parent 使用当前组合所属 contrib 的实例 ID；
+缺失与歧义插件的原始错误和位置保持随诊断记录发布，重复启用同一组合时按各自归属显示。
 
 ### ContribHub 运行与组合更新
 
@@ -144,12 +196,14 @@ Context.accept 仅取得自己的服务和已经声明、绑定并注入的依�
 首次启用、validate、保存预检和 update 使用同一个完整目标构造及 Diff。
 目标包含未修改的其他组合和实例；按已校验参数、定义、来源与绑定匹配既有注册，配置位置用于诊断。
 保留实例的绑定身份和未变资源；服务提供者变化时沿实际依赖重新绑定受影响消费者。
+保留既有实例时同时核对其生命周期状态，已停止或失败的实例在重新应用配置时重新创建；加载器保留调用方声明的 required_offers 并追加 COMPOSITION，隔离配置错误产生的状态同样记录所属父实例。
 创建者变化时撤销其动态子组合，新 lifespan 创建新的子实例；其他创建者拥有的组合继续保持。
 新增服务可恢复先前缺少依赖的消费者，实际故障仍保留 Failed／Blocked 及来源。
 
 Context.update 修改由该配置加载器产生的组合，Enablement.update 修改该启用句柄管理的组合。
 更新由 Hub 任务组串行协调，退出时取消并等待在途请求；候选应用前保护请求者自身的 lifespan，避免请求一边等待一边结束自己。
 图锁在应用变更和停止旧实例期间串行保护注册记录，等待新 lifespan 就绪时释放；子组合进入父实例的清理任务时只等待自己的后代，实例关闭状态支持重复加入。
+关闭前由当前 asyncio Task 和 CURRENT_CONTEXT 确认发起实例，禁止从组合内部关闭包含自身的组合或 Hub，直接报告应从外部发起；按启用句柄的父实例链判断归属，父实例仍可正常关闭自己创建的子组合。已停止的 Context 不再生成候选，顶层启用与子组合启用均校验候选所属父实例。
 
 ### 生命周期、故障与事件
 
@@ -164,9 +218,9 @@ Context.update 修改由该配置加载器产生的组合，Enablement.update �
 
 ### 状态查询模块
 
-`contrib/status/` 的 `bazaar-contrib-status` 独立发行包导出 `IContribStatus`、`CONTRIB_STATUS` 和 `status` 定义，
+`contrib/status/` 的 `bazaar-contrib-status` 独立发行包导出 `ContribStatusQuery`、`CONTRIB_STATUS` 和 `status` 定义，
 只依赖兼容范围内的 `bazaar-core`，首版为 `bazaar-core~=0.3.0`。`status` 在 `bazaar_compute_node.contribs` 登记入口，声明 `offers=[CONTRIB_STATUS]` 和空配置，通过普通 lifespan 提供查询服务。
-`IContribStatus.snapshot()` 同步返回 `tuple[ContribStatus, ...]`，每次读取 `ctx.snapshots` 的状态记录；
+`ContribStatusQuery.snapshot()` 同步返回 `tuple[ContribStatus, ...]`，每次读取 `ctx.snapshots` 的状态记录；
 已返回的快照保留查询时的状态，包含仍被宿主保留的 failed、blocked 记录。
 core 持有状态记录、数据类型和变更事件；查询服务的协议、key 与插件实现由 status 包持有。
 app 默认组合和 server 的本地组合分别启用 `status`，消费者声明 `accepts=[CONTRIB_STATUS]` 并通过 accept 查询，

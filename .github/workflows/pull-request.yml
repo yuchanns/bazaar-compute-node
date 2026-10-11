@@ -21,6 +21,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_packages: ${{ steps.plan.outputs.has_packages }}
+      has_tests: ${{ steps.plan.outputs.has_tests }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,7 +80,7 @@ jobs:
   tests:
     name: ${{ matrix.component }} / ${{ matrix.os }}
     needs: [plan, checks]
-    if: needs.plan.outputs.has_packages == 'true'
+    if: needs.plan.outputs.has_tests == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

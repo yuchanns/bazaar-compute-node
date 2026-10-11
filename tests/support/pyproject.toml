@@ -5,6 +5,12 @@ description = "Test-only adapters for Bazaar Compute Node"
 requires-python = ">=3.14"
 dependencies = []
 
+[project.entry-points.pytest11]
+bcn = "bcn_pytest"
+
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["bcn_test_support", "bcn_pytest"]
