@@ -3,14 +3,14 @@
 ## 版本目标
 
 BCN 的业务能力、平台 provider、存储查询、控制入口和界面扩展都通过公共模块范式装配。
-所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供 server 与节点 client 两种运行形态，`bazaar-contrib-web` 依赖 server 提供页面。
+所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供服务端组合，`bazaar-contrib-starlink` 提供节点连接，`bazaar-contrib-web` 依赖 server 提供页面。
 应用入口、核心框架及默认运行必需的 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
 具体 provider、额外语言、server／web 等可选 contrib 在各自独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
-从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)，各包携带许可证全文与 `Apache-2.0` 发行元数据。
+从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 Apache License 2.0，各包携带许可证全文与 `Apache-2.0` 发行元数据。
 BCN 源码仓库只维护根目录 `LICENSE`，官方包的 `LICENSE` 使用相对符号链接指向它，包元数据统一声明 `license-files = ["LICENSE"]`。
 独立 contrib 仓库各自携带许可证文件及发行元数据。uv_build 在 wheel 和 sdist 中保存许可证正文，sdist 内为普通文件，独立构建与安装可直接读取。
-[`license-files` 的路径规范](https://packaging.python.org/en/latest/specifications/glob-patterns/)禁止父目录 `..`，因此共享源文件通过链接实现。
-Windows 源码开发需启用符号链接权限及 [Git 的 `core.symlinks`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-coresymlinks)；Windows CI 在 checkout 前启用该设置。
+`license-files` 的路径规范禁止父目录 `..`，因此共享源文件通过链接实现。
+Windows 源码开发需启用符号链接权限及 Git 的 `core.symlinks`；Windows CI 在 checkout 前启用该设置。
 用户可以发现并选择组合；功能的新增与替换由功能包完成，第三方 contrib 使用自己的仓库与版本。
 contrib 表示可独立分发和装配的功能模块，官方默认、官方可选及第三方模块均使用这一称呼。
 
@@ -18,34 +18,28 @@ contrib 表示可独立分发和装配的功能模块，官方默认、官方可
 配置加载通过五个版本模块的依赖链将 V1／V2／V3／V4 转为 V5，把能力选择及参数映射到顶层 contribs，保留 agent、provider 和凭据引用。
 配置读写由 `bazaar-contrib-config` 的 CONFIG_STORE 契约与载体模块提供，默认 `bazaar-contrib-config-filesystem` 读写 config.toml；
 自定义配置中心模块提供相同服务，载体入口和连接参数由命令行 flags 自举，完整业务配置由所选载体读取。
-bazaar-contrib-config-versions 提供 config-v1 至 config-v5，发行指定目标入口并在读取业务文档前直接装配其依赖；
+bazaar-contrib-config-versions 提供 config-v1 至 config-v5 和 VERSIONS 装配清单，配置契约以 CONFIG_CURRENT 指定目标服务，在读取业务文档前装配其依赖；
 配置包的普通加载器调用目标版本服务，经 core 的通用候选校验后组织提交；迁移先形成候选配置与所需包清单，安装并校验完整组合后经载体保留旧内容、条件提交。
-filesystem 实现锁、备份和原子替换，远端载体实现修订检查与历史保留；后续启动直接使用 V5。
+filesystem 实现锁和原子替换，远端载体实现修订检查与条件提交；后续启动直接使用 V5。
 具体启动和读写规则见 [配置载体与启动自举](framework.md#配置载体与启动自举)，版本服务定义见 [配置版本模块](framework.md#配置版本模块)。
 开发阶段在 app／core／contrib 的独立成员中实现新组合，旧 src 与旧测试保留原样。
 全部新包齐备且整体验收通过后统一切换入口，一次清理旧 src、旧测试、旧依赖与装配。
 各功能模块依赖 `bazaar-contrib-storage` 的公共 `DB`，自己持有数据模型、schema、显式查询和业务规则；
 数据库 provider 实现公共数据操作契约并翻译后端查询。
-共享业务能力通过其拥有者的服务契约调用。core 是框架运行内核，执行自举阶段、入口发现、通用候选校验、装配、作用域与生命周期；
+共享业务能力通过其拥有者的服务契约调用。core 是框架运行内核，执行自举阶段、入口发现、通用候选校验、装配、本地绑定与生命周期；
 配置包负责文档读写、版本转换与条件提交，app 提供启动输入及发行资源。
 
-Bazaar Compute Node 的 contrib 框架实现在 `core/src/bazaar_core/bazaar.py`，由 `bazaar_core` 导出公共类型，提供模块宿主、typed 服务和事件、作用域、依赖与生命周期。
+Bazaar Compute Node 的 contrib 框架实现在 `core/src/bazaar_core/bazaar.py`，由 `bazaar_core` 导出公共类型，提供模块宿主、typed 服务和事件、本地绑定、依赖与生命周期。
 Contrib 通过 `offers / accepts` 声明服务，`accepts` 可以依据已校验配置计算依赖，
 通过 `lifespan / listen` 登记生命周期与固定事件处理函数。
-节点模块统一在 BCN 主配置的顶层 contribs 启用并填写参数，作者通过 scope 的 ScopeKind 单枚举声明运行上下文，默认 ROOT。
-宿主按声明和已有实体自动创建实例：ROOT 共享，AGENT 随各 agent，CHANNEL／HARNESS 由 builder 匹配运行实例。
-函数显式接收本实例的 Context，声明依赖由框架注入，通过 `offer / accept / announce` 使用服务与事件；
-作用域信息和实例状态通过不可变记录提供，普通加载器声明自举依赖并提供 `COMPOSITION`。
-模块的异步上下文管理器负责创建和清理资源。
-服务的接口、数据模型、查询、配置、命令、RPC 和 UI 注册协议由相应功能包拥有。
-`bazaar-contrib-server` 与 `bazaar-contrib-web` 是独立安装的可选模块包。启用 server 后，该节点提供 API 与多节点管理；
-启用 web 后提供管理页面。一个宿主可以只运行服务，也可以同时运行 agent，各模块管理任务或子进程以保证持续工作互不阻塞；
-分开部署时使用独立配置分别执行 bcn run，server 与节点 client 通过该包私有的 HTTP 协议通信。
-节点 client 通过 listen 接收业务 announce 的审计事件并上报，通过 accept 获取其他模块 offer 的服务，执行查询或下发操作并直接回传结果。
-数据投影与访问策略由普通模块消费事件和调用服务，core 宿主根据配置加载结果统一装配。
-根作用域统一为 core 导出的 ROOT，AGENT、CHANNEL、HARNESS 对应内部子作用域。
-server 的生命周期持有独立 ContribHost 与 ROOT，直接读取 ~/.bcs 的配置，使用自己的配置载体、storage 和数据库；
-web 在该服务端 ROOT 启用页面模块。节点与服务端的设置和资源分别归各自组合管理。
+节点模块统一在 BCN 主配置的顶层 contribs 启用并填写参数。组合根据已校验输入明确构造具体实例，默认服务绑定共享；`ctx.enable(..., local=(...))` 为指定服务和事件建立私有绑定并管理子资源。
+函数显式接收本实例的 Context，声明依赖由框架注入，通过 offer／accept／announce 使用服务与事件；id、name 和快照提供实际实例身份及状态。
+异步上下文管理器负责创建和清理资源，依赖图决定启动、故障传播和退出顺序，子组合随创建实例结束。
+服务接口、数据模型、查询、配置、命令、RPC 和 UI 登记协议由功能包拥有。
+`bazaar-contrib-server` 与 `bazaar-contrib-web` 是独立安装的可选包。server 在同一 Hub 的本地组合读取 ~/.bcs 配置，管理自己的 CONFIG_STORE、STORAGE、DB、API 与业务服务；公共审计可共享。
+一个宿主可以同时运行 server 和 agent，各具体实例管理自己的后台任务或子进程；分开部署使用独立配置执行 bcn run，经公开 HTTP 协议通信。
+starlink 默认停用，配置目标 server 后启用；其 getUpdate／send 循环接收请求，通过 accept 调用节点功能服务，按 listen 订阅业务审计并上报。
+数据投影与访问策略由普通模块消费事件和调用服务，完整已知配置在资源启动前生成并校验依赖图。动态子组合在启用时校验。
 用户选择模块与参数；默认 agent 的实体列表、channel／harness 选择及参数保存在 `contrib="agent"` 条目的 `contribs.config`，由 agent 插件的模型校验并展开实体。模块声明和实例状态分别管理。
 存储组合由公共后端注册表、具体后端及 DB 选择入口构成，默认配置明确选中 SQLite，
 用户可以启用 PG 等其他后端并更新数据库选择，业务继续通过公共 DB 使用显式数据操作。
@@ -54,7 +48,7 @@ web 在该服务端 ROOT 启用页面模块。节点与服务端的设置和资�
 业务包持有自己的英语消息资源，语言后端按命名空间提供翻译。旧 node.lang 转为 language 的后端选择；
 中文选择对应的额外包与启用配置随升级保留。具体规则见 [语言服务与后端](roadmap.md#语言服务与后端)
 和 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
-web 组合提供 contrib 市场页面，读取官方与用户追加的模块索引，按条目的包名和 Python 包源交给目标宿主 uv 安装。
+web 组合提供 contrib 市场页面，读取随 app 发布的官方本地索引，以及用户追加的本地或 HTTP(S) 索引，按条目的包名和 Python 包源交给目标宿主 uv 安装。
 包的发行元数据将发行包关联到模块入口，用户选择入口和参数后经该宿主的当前 CONFIG_STORE 保存。
 页面分别展示包安装、配置与实际运行状态，以及索引、包源和安装目标。
 
@@ -76,7 +70,7 @@ Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 pro
 `codex`、`telegram` 等官方短名对应索引中的 `bazaar-contrib-codex`、`bazaar-contrib-telegram` 发行包及包源。
 安装提交包依赖清单，enable 经校验后写入顶层 contribs；`add --enable` 顺序完成两项操作，并分别报告安装和配置结果。
 默认 agent 是可替换的 BCN 行为实现，负责 developer instruction、bcc 工具环境、上下文及通讯编排，依赖消息、协作、存储和定时等公共服务。
-用户可将默认 ROOT 组合入口替换为自己的 agent 插件，由该插件拥有配置模型、实体装配、指令、工具、依赖与工作方式；具体边界见 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换)。
+用户可将默认 agent 组合入口替换为自己的 agent 插件，由该插件拥有配置模型、实体装配、指令、工具、依赖与工作方式；具体边界见 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换)。
 `agent add` 填写 agent 信息及所选 channel／harness 的参数和凭据引用，保存配置后由 `bcn run` 创建连接与进程。
 `bcn agent add` 由默认 agent 插件登记，更新自身 `config.agents`；省略号表示该命令及所选 provider 模型定义的具体输入。
 
@@ -88,12 +82,9 @@ Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 pro
 
 0.3 的 app、core 与官方 contrib 统一要求 Python 3.15。Python 3.15.0 于 2026-10-09 正式发布，
 开发解释器固定 3.15.0，CI 使用 uv 0.13.0；依赖升级后验证 Linux、macOS 与 Windows 的 CPython 3.15 二进制安装。
-生命周期任务归属任务组，进入与退出保持同一任务；取消时等待所属任务清理完成，scope 按栈逆序退出。
+生命周期任务归属任务组，进入与退出保持同一任务；取消时等待所属任务清理完成，lifespan 内的资源按上下文栈逆序释放。
 新包测试验证自身的真实资源装配、事件、故障与取消行为，使用 pytest-asyncio、aiosqlite、aiofiles 和 TCP streams。
 当前 Task 1 实现独立 core、任务故障 guard 和实例故障隔离；后续阶段在新成员中实现业务能力、调用者与包内测试，最终发行阶段完成整体切换与旧代码清理。
-实现依据：[Python 3.15.0 发布](https://www.python.org/downloads/release/python-3150/)、
-[任务组与取消](https://docs.python.org/3.15/library/asyncio-task.html)、
-[aiosqlite](https://aiosqlite.omnilib.dev/en/stable/) 与 [aiofiles](https://github.com/Tinche/aiofiles)。
 
 ## 计划组织
 
@@ -108,7 +99,21 @@ Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 pro
 
 ## 后续待办
 
-- [ ] 讨论框架管理插件热重载：通过内部状态事件协调提供者替换、服务重新绑定和实际依赖者重启，插件维护自己的 lifespan。后续确定触发条件、重载范围和失败恢复规则，再形成具体实施计划。
+- [x] 完成 [Task 6](framework.md#task-6模块安装管理与升级) 的配置与管理入口接入，通过公共组合契约应用运行更新。
+- [ ] 按下方文档站点安排发布统一开发与使用文档。
+
+## 文档站点
+
+插件定义、入口登记、发现、服务与事件、本地绑定和生命周期的开发文档归 core，完整指南源文件为
+`core/docs/plugin-development.md`；app 持有节点安装、启动和命令说明，各 contrib 持有自身接口与参数说明。
+包内 README 保留简明入口与用法，站点组织这些来源的完整指南。
+
+后续使用 Markdown 与 MkDocs 构建 GitHub Pages 文档站点：构建时把选定的包内文档收集到临时文档目录，
+通过 `mkdocs.yml` 的 `docs_dir` 与导航配置组织页面，用 `mkdocs serve` 本地预览、`mkdocs build --strict`
+生成静态 `site/`，再由 GitHub Actions 发布 Pages 构建产物。文档源继续按包维护。
+
+文档站点地址采用 `https://yuchanns.github.io/bazaar-compute-node/`，对应当前
+`yuchanns/bazaar-compute-node` 仓库的 GitHub Pages 项目站点。
 
 ## 分支与 review
 
@@ -148,7 +153,6 @@ bcn/
 │   ├── pyproject.toml                     # bazaar-core
 │   └── src/bazaar_core/                   # 框架运行内核与公共 API
 ├── contrib/
-│   ├── catalog.json                      # 官方 package/source 索引
 │   ├── config/
 │   │   ├── pyproject.toml                 # bazaar-contrib-config
 │   │   └── src/bazaar_contrib_config/
@@ -167,19 +171,19 @@ bcn/
 
 ### 应用入口与依赖方向
 
-`app/` 的 `bazaar-compute-node` 提供 bcn 命令、bcc 调用入口、启动参数与进程退出信号，持有默认依赖及默认配置／自举资源。
-默认节点组合位于 `bazaar_compute_node/defaults.toml`；五版本入口与目标 config-v5 位于同包的自举资源。
+`app/` 的 `bazaar-compute-node` 提供 bcn 命令、bcc 调用入口、启动参数与进程退出信号，持有默认依赖及业务默认资源。
+默认节点组合位于 `bazaar_compute_node/defaults.toml`；版本包导出 `VERSIONS`，配置契约以 `CONFIG_CURRENT` 指定当前版本。
 命令入口与启动调用使用普通 Python 函数；默认组合直接由 app 的发行依赖和配置资源表达。
-app 直接 import bazaar_core，创建 ContribHost，将自举条目与声明 `CONFIG_STORE`、`CONFIG_V5` 依赖并绑定发行资源的配置加载器交给其统一运行接口，
+app 直接 import bazaar_core，创建 ContribHub，将自举条目与声明 `CONFIG_STORE`、`CONFIG_CURRENT` 依赖并绑定默认资源的配置加载器交给其统一运行接口，
 在宿主就绪后等待进程退出信号。
 
 `core/` 的 `bazaar-core` 是框架运行内核，通过普通 Python 公共 API 使用。
-ContribHost 执行发行元数据与 entry point 发现、自举阶段、参数与服务依赖校验、实例装配、作用域、服务与事件，以及完整启动和退出。
-运行图由 offers／accepts、scope 与已有实体建立；启动中断和退出统一按依赖回收资源。
+core 的 discover／load 读取发行元数据并导入 entry point 的定义；ContribHub 启动自举与加载器，校验参数和服务依赖，管理实例、本地绑定、事件及完整退出。
+应用或插件根据已校验业务输入构造 ContribEntry；Hub 根据 offers／accepts、绑定身份和父实例关系建立运行图，按依赖启动及回收资源。
 
 contrib 持有功能契约、实现与第三方依赖。公共配置、审计、语言、storage 与 timer 包同样位于 contrib/，
 消费者与实现者显式导入所属功能包的公共类型和 key，具体模块实现由 entry point 加载。
-配置加载器使用注入的 `CONFIG_STORE`、`CONFIG_V5` 读写文档、调用版本服务与条件提交，通过 `ctx.validate()` 校验并以 `COMPOSITION` 将模块条目及运行实体交给 core；
+配置加载器使用注入的 `CONFIG_STORE`、`CONFIG_CURRENT` 读写文档、调用版本服务与条件提交，通过 `ctx.validate()` 校验并以 `COMPOSITION` 将模块条目及运行实体交给 core；
 core 的运行接口以普通异步函数调用该加载逻辑，依赖和导入保持框架通用。
 
 ```text
@@ -223,7 +227,6 @@ package = false
 
 [tool.uv.workspace]
 members = ["app", "core", "contrib/*"]
-exclude = ["contrib/catalog.json"]
 
 [tool.uv.sources]
 bazaar-compute-node = { workspace = true }
@@ -298,7 +301,7 @@ bazaar-contrib-telegram = { path = "contrib-telegram", editable = true }
 
 外层执行 `uv lock`、`uv sync --locked`，共同环境 editable 加载各仓库源码；各仓库继续持有自己的配置和独立检查。
 多包 contrib 仓库同样通过 `workspace="<checkout>"` 引用所需成员。
-依据 [uv 跨 workspace 来源](https://docs.astral.sh/uv/concepts/projects/workspaces/#workspace-sources)，在 uv 0.12.2 与 Python 3.15.0 的隔离多仓库示例中已验证 lock、sync、实际导入、源码即时生效及内层配置／锁保留。
+在 uv 0.12.2 与 Python 3.15.0 的隔离多仓库示例中已验证 lock、sync、实际导入、源码即时生效及内层配置／锁保留。
 交付验收仍从各仓库固定提交构建正式 wheel，并在开发工作区之外安装。
 
 ### 官方统一版本与兼容规则
@@ -308,15 +311,14 @@ BCN 仓库的 app、core、公共接口及必要 contrib 使用同一个版本�
 可选官方包与第三方包由各自仓库独立维护版本、标签和产物，声明 core 的兼容范围，例如 `bazaar-core>=0.3.0,<0.4.0`，以及所需公共接口包的兼容范围。
 server／web 等独立组合声明自身所需包范围；整体集成验收保存每个包的实际版本、来源、仓库和源码提交。
 
-app 的共同发行清单只标识 BCN 必要包；官方安装索引同时收录必要包及独立可选包的 package/source。
-app 构建从 BCN workspace 自动生成必要包条目，合并随 app 源码维护的 `catalog-external.json` 可选包条目，复核包名与来源后随 wheel／sdist 发布。
+app 的共同发行清单只标识 BCN 必要包；官方安装索引从 BCN workspace 自动生成 contrib 工作区包的 package/source 条目，随 wheel／sdist 发布。
 管理服务将目标 app 和保存的全部额外包要求交给 uv 一次解析；可选包版本依其兼容范围与用户要求选择，显式固定和来源继续参与冲突检查。
 Contrib 声明的公共 API 范围供加载边界复核。
 0.3.x 维护已公开的 0.3 框架契约，破坏性契约调整进入新的兼容边界；依赖范围外的组合在安装解析与启动校验时诊断。
 
 固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)：
-app 和 core 两包、7 个公共能力 contrib、31 个实现／组合 contrib，共 40 个官方发行包、56 个唯一运行入口。
-其中 23 个必要包留在 BCN 共同发行，17 个可选包独立维护；channel 与 harness 两个公共接口包各附带 ROOT builder 注册入口。
+app 和 core 两包、7 个公共能力 contrib、33 个实现／组合 contrib，共 42 个官方发行包、56 个唯一运行入口。
+其中 24 个必要包留在 BCN 共同发行，18 个可选包独立维护；channel 与 harness 两个公共接口包各附带 共享 builder 注册入口。
 config 载体和五版服务先于完整业务文档装配；storage 与 language 各提供两个运行入口。
 server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.toml、bcs.sqlite3 与 session.key，
 保留原配置结构、账户、权限、历史数据、已发布迁移及旧节点协议。
@@ -324,9 +326,8 @@ server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.
 
 ### 发版工具与 CI
 
-PR 验证参考 [OpenDAL 的变更检测与矩阵生成](https://github.com/apache/opendal/blob/main/.github/scripts/test_behavior/plan.py)：
-规划 job 读取 PR base 与 head 的 merge-base 变更列表，再把受影响包交给下游动态矩阵。
-包集合及依赖直接来自 [uv workspace metadata](https://docs.astral.sh/uv/reference/internals/metadata/) 的 members 和 resolution，
+PR 的规划 job 读取 PR base 与 head 的 merge-base 变更列表，再把受影响包交给下游动态矩阵。
+包集合及依赖直接来自 uv workspace metadata 的 members 和 resolution，
 CI 固定 uv `0.13.0` 并启用 `workspace-metadata` preview；使用不透明 node id 遍历依赖图。
 文件归属采用最深的本地包目录，新增、删除与移动文件都参与判断；受影响包及依赖它的消费者进入矩阵，
 开发依赖和 extras 的变更同样影响对应消费者。根 workspace 配置、共享锁、许可证与 CI 工具变更验证全部成员。
@@ -336,13 +337,12 @@ Ruff 格式与代码检查、Pyright/LSP 共用受影响包清单。包内 `pyri
 根目录 Ruff 配置启用 `ASYNC` 规则，成员通过 `[tool.ruff].extend` 继承共享规则，并在自己的包目录执行检查。
 每个成员使用独立的 LSP 工作区和语言服务器会话，Ruff 检查同一成员选定的 Python 文件，并读取该包生效的 Ruff 配置。
 根目录 `uv run --quiet scripts/pyright_lsp_check.py .` 从 uv 元数据发现成员，逐包检查；`--package` 可指定单个成员。
-输出供 LLM 读取，参考 [Ruff concise 格式](https://docs.astral.sh/ruff/settings/#output-format)，每条诊断为 `文件:行:列: 级别[规则]: 原因`，多行详情缩进。仅输出有诊断的文件，失败末尾带 `FAILED` 和诊断数量；全通过时静默退出 0，任意诊断退出 1，异常或检查未完成退出 2。
+输出供 LLM 读取，每条诊断为 `文件:行:列: 级别[规则]: 原因`，多行详情缩进。仅输出有诊断的文件，失败末尾带 `FAILED` 和诊断数量；全通过时静默退出 0，任意诊断退出 1，异常或检查未完成退出 2。
 CI 使用同一个成员矩阵执行 `scripts/ci.py check --package`，新增包通过自己的标准工具配置参与检查。
-配置依据：[Pyright 项目配置](https://github.com/microsoft/pyright/blob/main/docs/configuration.md)、[Ruff 配置发现](https://docs.astral.sh/ruff/configuration/)。
 
 矩阵按发行包与 Linux／macOS／Windows 展开。各成员按自己的 pytest `testpaths` 运行新包测试和独立的 `pytest -m system`；
 缺省测试目录为 `tests/`，仓库 CI 工具的新测试位于 `scripts/tests/`，旧测试保留在原目录。
-包测试通过共享 pytest 入口启用 [Blockbuster](https://github.com/cbornet/blockbuster)，在 asyncio 事件循环中执行已知同步阻塞调用时使测试失败。
+包测试通过共享 pytest 入口启用 Blockbuster，在 asyncio 事件循环中执行已知同步阻塞调用时使测试失败。
 发布检查通过 `scripts/ci.py test --all-packages` 和 `scripts/ci.py check --all-packages` 验证全部 workspace 成员，沿用各包的测试与静态检查范围。
 native service 仅在隔离 CI runner 执行。每个受影响包及其 workspace 发行依赖分别构建 wheel／sdist，
 在 workspace 外安装相应产物，验证发行版本、许可证元数据、许可证文件与模块导入；

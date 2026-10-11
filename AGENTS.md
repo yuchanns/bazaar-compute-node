@@ -5,7 +5,7 @@
    不要写反向计划, 不做的事情不用写出来. 编写 plan 时禁止把参考推迟到执行时, 必须在 plan
    中明确参考调研后的结论和实现细节
 5. 必须按照 plan 的 tasks 串行开发，每完成一个 task 都停下来等待 review
-6. 代码修改完成后，必须在仓库根目录执行 `uv run scripts/pyright_lsp_check.py --outputjson .`，并确保检查通过
+6. 代码修改完成后，必须在仓库根目录执行 `uv run --quiet scripts/pyright_lsp_check.py .`，并确保检查通过
 7. 禁止为了方便测试而修改生产代码加入不必要的注入函数或者可覆盖的环境变量
 8. 当被要求发送 diff 时，默认只发送业务代码，排除 test 与 lock 相关改动，直接通过消息发送，不使用附件，并放在 code fence 中
 9. 发送较大的 diff 时，每条消息的 code fence 控制在 8 KB 以内；大文件按文件或连续 hunk 拆分，保持每条消息独立可读，以保留颜色渲染
