@@ -895,10 +895,10 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 3：独立应用基础与节点输入
 
-- [ ] 建立独立 app 发行包、Click 命令入口和默认依赖，普通 run 进入 core 的分阶段运行接口。
-- [ ] 应用 run 接收普通 bootstrap 和 loader，明确启用具体条目，业务输入通过 typed 服务声明。
-- [ ] bcn --version 与 run 处理启动输入、Ctrl+C／SIGTERM，完成真实文件与隔离进程的退出验证。
-- [ ] 独立 wheel／sdist 验证应用公共调用、CLI、许可证、类型标记；完成 Ruff 与根 LSP。
+- [x] 建立独立 app 发行包、Click 命令入口和默认依赖，普通 run 进入 core 的分阶段运行接口。
+- [x] 应用 run 接收普通 bootstrap 和 loader，明确启用具体条目，业务输入通过 typed 服务声明。
+- [x] bcn --version 与 run 处理启动输入、Ctrl+C／SIGTERM，完成真实文件与隔离进程的退出验证。
+- [x] 独立 wheel／sdist 验证应用公共调用、CLI、许可证、类型标记；完成 Ruff 与根 LSP。
 
 ### Task 4：发现、配置与节点启动
 
