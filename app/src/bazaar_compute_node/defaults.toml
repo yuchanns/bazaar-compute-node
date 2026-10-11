@@ -1,0 +1,8 @@
+version = "5"
+contrib_indexes = [
+    ${catalog},
+]
+agent = []
+
+[[contribs]]
+contrib = "status"

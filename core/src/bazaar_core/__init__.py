@@ -14,6 +14,7 @@ lazy from .contracts import (
     ContribChange,
     ContribEntry,
     ContribError,
+    ContribSource,
     ContribState,
     ContribStatus,
     EventHandler,
@@ -26,6 +27,7 @@ lazy from .contracts import (
     Stopped,
     Stopping,
 )
+lazy from .discovery import CONTRIB_GROUP, ContribSpec, discover, load
 lazy from .instances import Enablement
 lazy from .lifecycle import ITaskFailureSource, TaskFailureSignal
 
@@ -33,6 +35,7 @@ __all__ = [
     "API_VERSION",
     "COMPOSITION",
     "CONTRIB_CHANGED",
+    "CONTRIB_GROUP",
     "CURRENT_CONTEXT",
     "Blocked",
     "Candidate",
@@ -43,6 +46,8 @@ __all__ = [
     "ContribEntry",
     "ContribError",
     "ContribHub",
+    "ContribSource",
+    "ContribSpec",
     "ContribState",
     "ContribStatus",
     "Enablement",
@@ -57,4 +62,6 @@ __all__ = [
     "Stopped",
     "Stopping",
     "TaskFailureSignal",
+    "discover",
+    "load",
 ]

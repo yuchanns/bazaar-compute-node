@@ -7,6 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Protocol, cast
+lazy from importlib.metadata import EntryPoint
 lazy from typing import Literal
 lazy from uuid import UUID
 
@@ -238,6 +239,21 @@ class Contrib[C: BaseModel | None = None](BaseModel):
         return tuple(value)
 
 
+@dataclass(frozen=True, slots=True)
+class ContribSource:
+    """The distribution and import reference supplying an installed entry."""
+
+    package: str
+    version: str
+    name: str
+    value: str
+    entry_point: EntryPoint
+
+    @property
+    def label(self) -> str:
+        return f"{self.package} {self.version}: {self.name} = {self.value}"
+
+
 class ContribEntry(BaseModel):
     """One contrib definition, its parameters, and its configuration location."""
 
@@ -254,6 +270,7 @@ class ContribEntry(BaseModel):
     location: str = Field(default="<composition>", min_length=1)
     bindings: dict[ServiceKey[Any] | EventKey[Any], UUID] = Field(default_factory=dict)
     required_offers: Sequence[ServiceKey[Any]] = ()
+    source: ContribSource | None = None
 
 
 class Composition(BaseModel):

@@ -270,6 +270,7 @@ def target(hub: ContribHub, owner: Enablement, composition: Composition) -> Cand
                 and record.config == config
                 and record.entry.bindings == entry.bindings
                 and tuple(record.entry.required_offers) == tuple(entry.required_offers)
+                and record.entry.source == entry.source
             ),
             None,
         )
