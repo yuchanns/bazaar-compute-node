@@ -190,6 +190,8 @@ invoke 在执行目标回调前抛出明确的 RuntimeError，禁止回到 Click
 通过资源模板向 stderr 输出 uv 风格的 warning 与 Caused by 原因，包含命令名和所属发行包。
 选中失败命令时输出对应 error 并让该次调用失败，同一失败入口只报告一次。
 
+CLI 入口保留 Click 原生 Abort，由 Click 输出取消提示及退出状态。
+
 contrib add 接受没有 contrib 入口的普通发行包，是否启用入口由显式启用操作决定；
 包详情及 remove 从完整安装元数据中定位发行包，保留合法的仅安装声明管理流程。
 
@@ -905,6 +907,7 @@ app 的 defaults.toml 提供新节点的初始配置，并显式声明 manager �
 将回调返回的 awaitable 交回事件循环。回调结束或取消后退出组合；只有需要常驻的回调自行等待。
 dispatch 复制本次原生命令树，以本次 Context.invoke 将异步回调通过 asyncio.run_coroutine_threadsafe 交回原事件循环，工作线程等待回调完成后才退出各级 Click Context；异步回调使用 scope(cleanup=False) 保留当前 Click Context，资源由原工作线程的上下文退出统一关闭。同一 Commands 串行分派，避免 Click 的线程本地 Context 在异步等待期间交错。取消分派先取消回调任务并等待清理，再等待工作线程退出，之后传播取消。
 依据：[Click 资源生命周期](https://click.palletsprojects.com/en/stable/advanced/#managing-resources)、[Context.scope](https://click.palletsprojects.com/en/stable/api/#click.Context.scope) 与 [asyncio 跨线程提交](https://docs.python.org/3/library/asyncio-task.html#asyncio.run_coroutine_threadsafe)。现有文件命令与取消验收使用 Click 管理的文件、嵌套命令和 with_resource，核对 await 及取消清理期间资源仍可用、分派完成后资源已释放。
+应用入口将 KeyboardInterrupt 交回原生 Click 处理，在异步取消清理完成后按中断退出，保留非零退出码。
 根帮助从入口描述列出可选命令；单条命令帮助启动它所必需的服务。未选中的命令插件及业务分支保持未启动。
 
 管理根从已启用的 contrib-manager 及保存参数构造。首次配置创建、迁移和后续保存复用 CONFIGURATION。

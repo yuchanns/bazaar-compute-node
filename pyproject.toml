@@ -24,6 +24,7 @@ dev = [
 package = false
 
 [tool.uv.sources]
+bazaar-compute-node = { workspace = true }
 bazaar-core = { workspace = true }
 bazaar-contrib-config = { workspace = true }
 bazaar-contrib-config-filesystem = { workspace = true }
