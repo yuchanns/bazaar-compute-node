@@ -5,6 +5,7 @@ requires-python = ">=3.15"
 [manifest]
 members = [
     "bazaar-compute-node",
+    "bazaar-contrib-status",
     "bazaar-core",
 ]
 
@@ -223,6 +224,17 @@ dev = [
     { name = "ruff", specifier = ">=0.9.0" },
     { name = "types-aiofiles", specifier = ">=25.1.0" },
 ]
+
+[[package]]
+name = "bazaar-contrib-status"
+version = "0.3.0"
+source = { editable = "contrib/status" }
+dependencies = [
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "bazaar-core", editable = "core" }]
 
 [[package]]
 name = "bazaar-core"

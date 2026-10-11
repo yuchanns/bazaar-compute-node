@@ -889,9 +889,9 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 2：独立状态查询模块
 
-- [ ] 独立 bazaar-contrib-status 提供协议、typed key、入口与类型标记，只依赖同版 core。
-- [ ] 查询读取 ctx.snapshots，记录包含具体实例 id、创建者 parent 和不可变生命周期状态。
-- [ ] 真实文件和任务故障验证历史快照、传递阻塞、独立 Hub 与嵌套共享查询；完成独立安装及检查。
+- [x] 独立 bazaar-contrib-status 提供协议、typed key、入口与类型标记，只依赖同版 core。
+- [x] 查询读取 ctx.snapshots，记录包含具体实例 id、创建者 parent 和不可变生命周期状态。
+- [x] 真实文件和任务故障验证历史快照、传递阻塞、独立 Hub 与嵌套共享查询；完成独立安装及检查。
 
 ### Task 3：独立应用基础与节点输入
 

@@ -71,10 +71,12 @@ dev = [
 ]
 
 [tool.uv.sources]
+bazaar-core = { workspace = true }
+bazaar-contrib-status = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.uv.workspace]
-members = ["core"]
+members = ["core", "contrib/status"]
 
 [tool.ruff.lint]
 extend-select = ["ASYNC"]
