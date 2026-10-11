@@ -1,29 +1,35 @@
-"""Run Pyright's language server against the files selected by pyrightconfig.json."""
+"""Run independent Pyright language-server checks for uv workspace packages."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import select
 import subprocess
 import sys
 import time
+import tomllib
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from typing import Any
+
+from pydantic import ValidationError
+from workspace import load_metadata
 
 JsonObject = dict[str, Any]
 
 LSP_SETTINGS: JsonObject = {
     "pyright": {"disableTaggedHints": True},
     "python": {
+        "pythonPath": sys.executable,
         "analysis": {
             "autoSearchPaths": True,
             "useLibraryCodeForTypes": True,
             "diagnosticMode": "openFilesOnly",
-        }
+        },
     },
 }
 
@@ -48,7 +54,6 @@ class PyrightLanguageServer:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=sys.stderr,
-                bufsize=0,
             )
         except OSError as error:
             raise LspError(f"cannot start {server}: {error}") from error
@@ -60,6 +65,7 @@ class PyrightLanguageServer:
 
         self._stdin = stdin
         self._stdout = stdout
+        self._messages: Queue[JsonObject | LspError] = Queue()
         self.root = root
         self.timeout = timeout
         self._next_id = 1
@@ -70,6 +76,8 @@ class PyrightLanguageServer:
         self._progress_created = False
         self._progress_started = False
         self.analysis_finished = False
+        self._reader = Thread(target=self._read_messages, daemon=True)
+        self._reader.start()
 
     def _send(self, message: JsonObject) -> None:
         body = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode(
@@ -116,43 +124,49 @@ class PyrightLanguageServer:
                 return response.get("result")
             self._handle(response)
 
+    def _read_messages(self) -> None:
+        try:
+            while True:
+                headers: dict[str, str] = {}
+                while True:
+                    line = self._stdout.readline()
+                    if not line:
+                        raise LspError("Pyright language server closed its output")
+                    if line in (b"\r\n", b"\n"):
+                        break
+                    try:
+                        name, value = line.decode("ascii").split(":", 1)
+                    except ValueError as error:
+                        raise LspError(f"invalid LSP header: {line!r}") from error
+                    headers[name.lower()] = value.strip()
+
+                try:
+                    length = int(headers["content-length"])
+                except (KeyError, ValueError) as error:
+                    raise LspError(
+                        "LSP message has no valid Content-Length header"
+                    ) from error
+
+                body = self._stdout.read(length)
+                if len(body) != length:
+                    raise LspError("LSP message body was truncated")
+                try:
+                    message = json.loads(body)
+                except json.JSONDecodeError as error:
+                    raise LspError("LSP message body is not valid JSON") from error
+                if not isinstance(message, dict):
+                    raise LspError("LSP message is not a JSON object")
+                self._messages.put(message)
+        except (LspError, OSError) as error:
+            self._messages.put(LspError(str(error)))
+
     def receive(self, timeout: float) -> JsonObject | None:
-        if self.process.poll() is not None:
-            raise LspError(
-                f"Pyright language server exited with status {self.process.returncode}"
-            )
-
-        ready, _, _ = select.select([self._stdout], [], [], timeout)
-        if not ready:
+        try:
+            message = self._messages.get(timeout=timeout)
+        except Empty:
             return None
-
-        headers: dict[str, str] = {}
-        while True:
-            line = self._stdout.readline()
-            if not line:
-                raise LspError("Pyright language server closed its output")
-            if line in (b"\r\n", b"\n"):
-                break
-            try:
-                name, value = line.decode("ascii").split(":", 1)
-            except ValueError as error:
-                raise LspError(f"invalid LSP header: {line!r}") from error
-            headers[name.lower()] = value.strip()
-
-        try:
-            length = int(headers["content-length"])
-        except (KeyError, ValueError) as error:
-            raise LspError("LSP message has no valid Content-Length header") from error
-
-        body = self._stdout.read(length)
-        if len(body) != length:
-            raise LspError("LSP message body was truncated")
-        try:
-            message = json.loads(body)
-        except json.JSONDecodeError as error:
-            raise LspError("LSP message body is not valid JSON") from error
-        if not isinstance(message, dict):
-            raise LspError("LSP message is not a JSON object")
+        if isinstance(message, LspError):
+            raise message
         return message
 
     def _configuration_value(self, section: str | None) -> Any:
@@ -336,10 +350,19 @@ class PyrightLanguageServer:
         except subprocess.TimeoutExpired:
             self.process.terminate()
             self.process.wait(timeout=2)
+        self._reader.join(timeout=2)
 
 
 def load_config(root: Path) -> JsonObject:
     config_path = root / "pyrightconfig.json"
+    if not config_path.is_file():
+        config_path = root / "pyproject.toml"
+        try:
+            with config_path.open("rb") as handle:
+                config = tomllib.load(handle).get("tool", {}).get("pyright", {})
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise LspError(f"cannot read {config_path}: {error}") from error
+        return config
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
     except OSError as error:
@@ -356,11 +379,11 @@ def configured_files(root: Path, config: JsonObject) -> list[Path]:
     if not isinstance(include, list) or not all(
         isinstance(item, str) for item in include
     ):
-        raise LspError("pyrightconfig.json include must be a list of paths")
+        raise LspError("Pyright include must be a list of paths")
 
     files: set[Path] = set()
     for pattern in include:
-        for match in root.glob(pattern):
+        for match in [root] if pattern == "." else root.glob(pattern):
             if match.is_file() and match.suffix in {".py", ".pyi"}:
                 files.add(match.resolve())
             elif match.is_dir():
@@ -370,14 +393,17 @@ def configured_files(root: Path, config: JsonObject) -> list[Path]:
                     if path.is_file() and path.suffix in {".py", ".pyi"}
                 )
 
-    excludes = config.get("exclude", [])
+    excludes = [
+        "**/node_modules",
+        "**/__pycache__",
+        "**/.*",
+        *config.get("exclude", []),
+    ]
     excluded_roots: list[Path] = []
     if isinstance(excludes, list):
         for pattern in excludes:
             if isinstance(pattern, str):
-                excluded_roots.extend(
-                    match.resolve() for match in root.glob(pattern) if match.is_dir()
-                )
+                excluded_roots.extend(match.resolve() for match in root.glob(pattern))
     files = {
         path
         for path in files
@@ -388,7 +414,7 @@ def configured_files(root: Path, config: JsonObject) -> list[Path]:
     }
 
     if not files:
-        raise LspError("pyrightconfig.json selected no Python files")
+        raise LspError("Pyright configuration selected no Python files")
     return sorted(files)
 
 
@@ -408,12 +434,9 @@ def diagnostic_records(
     records = []
     for path in files:
         uri = path.resolve().as_uri()
-        records.append(
-            {
-                "file": relative_path(path, root),
-                "diagnostics": pull_results.get(uri, diagnostics.get(uri, [])),
-            }
-        )
+        items = pull_results.get(uri, diagnostics.get(uri, []))
+        if items:
+            records.append({"file": relative_path(path, root), "diagnostics": items})
     return records
 
 
@@ -426,56 +449,32 @@ def summary(records: Sequence[JsonObject]) -> Counter[str]:
     return counts
 
 
-def render_json(
-    files: Sequence[Path], records: Sequence[JsonObject], published: set[str]
-) -> None:
-    counts = summary(records)
-    print(
-        json.dumps(
-            {
-                "filesAnalyzed": len(files),
-                "filesPublished": len(published),
-                "diagnostics": records,
-                "summary": dict(counts),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-
-
-def render_text(records: Sequence[JsonObject], counts: Counter[str]) -> None:
+def render_text(records: Sequence[JsonObject]) -> None:
     for record in records:
         for diagnostic in record["diagnostics"]:
             start = diagnostic.get("range", {}).get("start", {})
             line = start.get("line", 0) + 1
             character = start.get("character", 0) + 1
             severity = SEVERITY_NAMES.get(diagnostic.get("severity"), "unknown")
-            print(
-                f"{record['file']}:{line}:{character} - {severity}: "
-                f"{diagnostic.get('message', '')}"
-            )
-    print(
-        "{} errors, {} warnings, {} informations, {} hints".format(
-            counts["error"],
-            counts["warning"],
-            counts["information"],
-            counts["hint"],
-        )
-    )
+            code = diagnostic.get("code")
+            if code is not None:
+                severity = f"{severity}[{code}]"
+            message = diagnostic.get("message", "").replace("\n", "\n  ")
+            print(f"{record['file']}:{line}:{character}: {severity}: {message}")
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Pyright's language server without an editor and fail on any diagnostic."
+        description="Run Pyright's language server and print only diagnostics; clean checks are silent."
     )
     parser.add_argument(
         "root",
         nargs="?",
         type=Path,
         default=Path.cwd(),
-        help="project root containing pyrightconfig.json (default: current directory)",
+        help="workspace or package root (default: current directory)",
     )
+    parser.add_argument("--package", help="check only this workspace package")
     parser.add_argument(
         "--server",
         default="pyright-langserver",
@@ -493,11 +492,6 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=0.5,
         help="seconds to collect late diagnostic updates (default: 0.5)",
     )
-    parser.add_argument(
-        "--outputjson",
-        action="store_true",
-        help="emit structured JSON instead of human-readable diagnostics",
-    )
     return parser.parse_args(argv)
 
 
@@ -506,58 +500,72 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.root.resolve()
     if not root.is_dir():
         print(
-            f"pyright-lsp-check: project root is not a directory: {root}",
+            f"pyright-lsp-check: FAILED: project root is not a directory: {root}",
             file=sys.stderr,
         )
         return 2
     if args.timeout <= 0 or args.settle_time < 0:
-        print("pyright-lsp-check: timeout values must be positive", file=sys.stderr)
+        print(
+            "pyright-lsp-check: FAILED: timeout values must be positive",
+            file=sys.stderr,
+        )
         return 2
 
     try:
-        config = load_config(root)
-        files = configured_files(root, config)
-        server = PyrightLanguageServer(args.server, root, args.timeout)
-        try:
-            server.initialize()
-            expected_uris = server.open_files(files)
-            server.collect(expected_uris, args.settle_time)
-            server.pull_diagnostics(expected_uris)
-            records = diagnostic_records(
-                files, root, server.diagnostics, server.pull_results
+        metadata = load_metadata(root)
+        members = metadata.members
+        if args.package:
+            members = [member for member in members if member.name == args.package]
+        elif root != metadata.workspace_root:
+            members = [member for member in members if member.path == root]
+        if not members:
+            raise LspError("no workspace package matched the requested root or name")
+        records: list[JsonObject] = []
+        missing: set[str] = set()
+        for member in members:
+            selected = configured_files(member.path, load_config(member.path))
+            server = PyrightLanguageServer(args.server, member.path, args.timeout)
+            try:
+                server.initialize()
+                expected_uris = server.open_files(selected)
+                server.collect(expected_uris, args.settle_time)
+                server.pull_diagnostics(expected_uris)
+                diagnostics = diagnostic_records(
+                    selected,
+                    metadata.workspace_root,
+                    server.diagnostics,
+                    server.pull_results,
+                )
+                records.extend(diagnostics)
+                missing.update(expected_uris - set(server.pull_results))
+            finally:
+                server.close()
+        counts = summary(records)
+        render_text(records)
+        if missing:
+            print(
+                f"pyright-lsp-check: FAILED: {len(missing)} files did not return diagnostics",
+                file=sys.stderr,
             )
-            counts = summary(records)
-            published = server.published_uris | set(server.pull_results)
-            missing = expected_uris - set(server.pull_results)
-            if args.outputjson:
-                render_json(files, records, published)
-            else:
-                render_text(records, counts)
-                if missing:
-                    print(
-                        f"{len(missing)} files did not publish diagnostics before timeout",
-                        file=sys.stderr,
-                    )
-            if missing:
-                return 2
-        finally:
-            server.close()
-    except (LspError, OSError, UnicodeError) as error:
-        print(f"pyright-lsp-check: {error}", file=sys.stderr)
+            return 2
+    except (
+        LspError,
+        OSError,
+        UnicodeError,
+        ValidationError,
+        subprocess.CalledProcessError,
+    ) as error:
+        print(f"pyright-lsp-check: FAILED: {error}", file=sys.stderr)
         return 2
 
-    found = {
-        level: counts[level]
-        for level in ("error", "warning", "information", "hint")
-        if counts[level]
-    }
-    if found:
-        # the verdict is the last line whatever the output mode, so a reader
-        # of the output alone cannot mistake a report full of hints for a pass
-        raise SystemExit(
-            "pyright-lsp-check: FAILED with "
-            + ", ".join(f"{count} {level}s" for level, count in found.items())
+    if counts:
+        print(
+            "pyright-lsp-check: FAILED ("
+            + ", ".join(f"{level}={count}" for level, count in counts.items())
+            + ")",
+            file=sys.stderr,
         )
+        return 1
     return 0
 
 
