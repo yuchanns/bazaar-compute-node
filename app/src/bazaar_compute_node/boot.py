@@ -14,6 +14,7 @@ lazy from string import Template
 lazy from typing import Any
 lazy from uuid import NAMESPACE_URL, uuid5, uuid7
 
+lazy from bazaar_contrib_audit import AUDIT_EVENT
 lazy from bazaar_contrib_config import (
     CONFIG_STORE,
     AgentConfig,
@@ -39,6 +40,7 @@ lazy from bazaar_core import (
 )
 
 lazy from . import AGENT, CHANNEL, RUNTIME, run
+lazy from .audit import audit
 
 
 @asynccontextmanager
@@ -116,7 +118,7 @@ def build(document: ConfigDocument) -> Composition:
         for entry in templates[AGENT]:
             keys.update(entry.definition.offers)
             keys.update(entry.definition.listen)
-        keys.difference_update((CONTRIB_CHANGED,))
+        keys.difference_update((AUDIT_EVENT, CONTRIB_CHANGED))
         bindings = {key: identity for key in keys}
         entries.append(
             ContribEntry(
@@ -162,7 +164,7 @@ def build(document: ConfigDocument) -> Composition:
                 for entry in selected:
                     keys.update(entry.definition.offers)
                     keys.update(entry.definition.listen)
-                keys.difference_update((CONTRIB_CHANGED,))
+                keys.difference_update((AUDIT_EVENT, CONTRIB_CHANGED))
                 local = bindings | {key: identity for key in keys}
                 entries.append(
                     ContribEntry(
@@ -224,7 +226,10 @@ def bootstrap(
     defaults = tomllib.loads(defaults)
     return (
         Composition(
-            entries=(*definitions.entries,),
+            entries=(
+                *definitions.entries,
+                ContribEntry(name="node-audit", definition=audit),
+            ),
         ),
         ContribEntry(
             name="node-configuration",

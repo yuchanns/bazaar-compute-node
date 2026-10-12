@@ -6,3 +6,6 @@ agent = []
 
 [[contribs]]
 contrib = "status"
+
+[[contribs]]
+contrib = "logging"

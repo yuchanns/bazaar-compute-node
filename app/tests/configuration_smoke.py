@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+lazy import json
 lazy import signal
 lazy import tomllib
 lazy from contextlib import asynccontextmanager
@@ -35,13 +36,26 @@ from bcn_example_contribs.center import ConfigCenter
 from blockbuster import blockbuster_ctx
 lazy import tomli_w
 
-from bazaar_compute_node.boot import node
+from bazaar_compute_node.boot import build, node
 
 
 async def exercise(path: Path) -> None:
     config = path / "config.toml"
     directory = path / "journals"
+    log = path / "info" / "node.jsonl"
     entries = [
+        {
+            "contrib": "logging",
+            "config": {
+                "path": str(path / "node.jsonl"),
+                "paths": {
+                    "info": str(log),
+                    "error": str(path / "errors" / "node.jsonl"),
+                },
+                "retention_days": 7,
+                "max_size": "1 KiB",
+            },
+        },
         {"contrib": "example-journal"},
         {"contrib": "status"},
         {"contrib": "example-directory", "config": {"path": str(directory)}},
@@ -83,14 +97,45 @@ async def exercise(path: Path) -> None:
             updated, expected_revision=service.snapshot.revision
         )
         assert saved.payload["contrib_indexes"]
+        document = ConfigDocument.model_validate(
+            dict(payload)
+            | {
+                "contribs": [{"contrib": "example-journal"}],
+                "agent": [{"id": str(uuid7()), "name": "Aerith"}],
+            }
+        )
+        async with hub.enable(await asyncio.to_thread(build, document)):
+            assert "started" in await asyncio.to_thread(
+                (directory / "Aerith.txt").read_text
+            )
         for name in ("Cloud", "Tifa"):
             assert "started" in await asyncio.to_thread(
                 (directory / f"{name}.txt").read_text
             )
-    for name in ("Cloud", "Tifa"):
+    for name in ("Cloud", "Tifa", "Aerith"):
         assert "released" in await asyncio.to_thread(
             (directory / f"{name}.txt").read_text
         )
+    records = []
+    for file in await asyncio.to_thread(lambda: list(log.parent.glob("node.jsonl*"))):
+        records.extend(
+            json.loads(line)
+            for line in (await asyncio.to_thread(file.read_text)).splitlines()
+        )
+    for event in ("node.started", "node.stopping"):
+        assert any(
+            record["event_name"] == event
+            and record["source"]["module"] == "bazaar_compute_node"
+            for record in records
+        )
+    assert any(
+        record["event_name"] == "contrib.running"
+        and "Aerith" in record["metadata"].get("location", "")
+        and record["metadata"].get("contrib") == "example-journal"
+        and record["source"]["contrib"] == "node-audit"
+        and record["source"]["module"] == "bazaar_compute_node.audit"
+        for record in records
+    )
     async with node(configer_options=(str(config),)) as hub:
         assert any(record.name == "Cloud" for record in hub.snapshots)
     await asyncio.to_thread(

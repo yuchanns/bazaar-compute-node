@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 lazy from collections.abc import AsyncIterator
 
 from bazaar_core import ServiceKey
+lazy from bazaar_contrib_audit import AUDIT_EVENT, AuditEvent
 lazy from bazaar_contrib_config import AgentConfig, ProviderConfig
 lazy from bazaar_core import Composition, ContribEntry, ContribHub
 
@@ -20,4 +21,10 @@ RUNTIME = ServiceKey[ProviderConfig]("node.runtime")
 async def run(bootstrap: Composition, load: ContribEntry) -> AsyncIterator[ContribHub]:
     """Run a caller's bootstrap and loader in one concrete instance graph."""
     async with ContribHub().run(bootstrap, load) as hub:
-        yield hub
+        await hub.announce(AUDIT_EVENT, AuditEvent.capture(event_name="node.started"))
+        try:
+            yield hub
+        finally:
+            await hub.announce(
+                AUDIT_EVENT, AuditEvent.capture(event_name="node.stopping")
+            )

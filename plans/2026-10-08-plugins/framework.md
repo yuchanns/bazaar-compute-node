@@ -917,13 +917,13 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 5：首个日志模块
 
-- [ ] 独立 audit 契约提供 AuditEvent、AuditSource 和 AUDIT_EVENT；发布时记录 contrib、实例 id、调用位置、发生时间和已脱敏 metadata。
-- [ ] CURRENT_CONTEXT 在实例 lifespan 与监听回调 set／reset；子任务和工作线程继承上下文，消费者绑定自身身份。
-- [ ] logging 监听共享审计事件并提供 LOG_OUTPUT；普通标准库日志和审计共用 QueueHandler／QueueListener 的线程写入队列。
-- [ ] text／json 格式保留时间、实际来源、级别和异常；实例外事件用 Python 模块标识来源，source.id 为 None。
-- [ ] 真实文件验证按日及体积轮转、level 路径、日期保留、线程输出、handler 所有权和退出排空。
-- [ ] app 用普通 node-audit 消费状态事件，metadata 记录被审计实例的 id、parent、来源和阶段；节点层发布 started／stopping。
-- [ ] 完成并发私有消息与共享审计、延迟传递、真实普通日志 wheel 和隔离节点的安装验收及检查。
+- [x] 独立 audit 契约提供 AuditEvent、AuditSource 和 AUDIT_EVENT；发布时记录 contrib、实例 id、调用位置、发生时间和已脱敏 metadata。
+- [x] CURRENT_CONTEXT 在实例 lifespan 与监听回调 set／reset；子任务和工作线程继承上下文，消费者绑定自身身份。
+- [x] logging 监听共享审计事件并提供 LOG_OUTPUT；普通标准库日志和审计共用 QueueHandler／QueueListener 的线程写入队列。
+- [x] text／json 格式保留时间、实际来源、级别和异常；实例外事件用 Python 模块标识来源，source.id 为 None。
+- [x] 真实文件验证按日及体积轮转、level 路径、日期保留、线程输出、handler 所有权和退出排空。
+- [x] app 用普通 node-audit 消费状态事件，metadata 记录被审计实例的 id、parent、来源和阶段；节点层发布 started／stopping。
+- [x] 完成并发私有消息与共享审计、延迟传递、真实普通日志 wheel 和隔离节点的安装验收及检查。
 
 ### Task 6：模块安装管理与升级
 
