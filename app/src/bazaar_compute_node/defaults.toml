@@ -19,3 +19,8 @@ package = "bazaar-contrib-manager~=0.3.0"
 [[contribs.enabled]]
 entry = "contrib-manager"
 
+[[contribs]]
+package = "bazaar-contrib-logging~=0.3.0"
+[[contribs.enabled]]
+entry = "logging"
+

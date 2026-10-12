@@ -981,7 +981,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] CURRENT_CONTEXT 在实例 lifespan 与监听回调 set／reset；子任务和工作线程继承上下文，消费者绑定自身身份。
 - [x] logging 在 lifespan 中通过 QueueHandler／QueueListener 接收标准库日志并在线程中写入。
 - [x] text／json 格式保留时间、实际来源、级别和异常；实例外日志用 Python logger 标识来源，source.id 为 None。
-- [x] 真实文件验证按日及体积轮转、level 路径、日期保留、线程输出、handler 所有权和退出排空。
+- [x] 真实文件验证按日及体积轮转产生文件并保留日志，以及 level 路径、日期保留、线程输出、handler 所有权和退出排空。
 - [x] 完成并发私有消息回调、真实普通日志 wheel 和隔离节点的安装验收及检查。
 
 ### Task 6：模块安装管理与升级
