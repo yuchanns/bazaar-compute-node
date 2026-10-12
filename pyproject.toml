@@ -30,6 +30,7 @@ bazaar-contrib-status = { workspace = true }
 bazaar-contrib-config = { workspace = true }
 bazaar-contrib-config-filesystem = { workspace = true }
 bazaar-contrib-config-versions = { workspace = true }
+bazaar-contrib-logging = { workspace = true }
 bazaar-contrib-manager = { workspace = true }
 bazaar-contrib-invoke = { workspace = true }
 bazaar-contrib-sidecar = { workspace = true }
