@@ -116,7 +116,7 @@ def build(document: ConfigDocument) -> Composition:
         for entry in templates[AGENT]:
             keys.update(entry.definition.offers)
             keys.update(entry.definition.listen)
-        keys.difference_update((CONTRIB_CHANGED,))
+        keys.discard(CONTRIB_CHANGED)
         bindings = {key: identity for key in keys}
         entries.append(
             ContribEntry(
@@ -162,7 +162,7 @@ def build(document: ConfigDocument) -> Composition:
                 for entry in selected:
                     keys.update(entry.definition.offers)
                     keys.update(entry.definition.listen)
-                keys.difference_update((CONTRIB_CHANGED,))
+                keys.discard(CONTRIB_CHANGED)
                 local = bindings | {key: identity for key in keys}
                 entries.append(
                     ContribEntry(
@@ -223,9 +223,7 @@ def bootstrap(
     )
     defaults = tomllib.loads(defaults)
     return (
-        Composition(
-            entries=(*definitions.entries,),
-        ),
+        definitions,
         ContribEntry(
             name="node-configuration",
             definition=configuration(defaults, build),

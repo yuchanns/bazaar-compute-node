@@ -16,6 +16,7 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
     def build():
         for package in (
             "bazaar-core",
+            "bazaar-contrib-logging",
             "bazaar-contrib-status",
             "bazaar-contrib-config",
             "bazaar-contrib-config-filesystem",
