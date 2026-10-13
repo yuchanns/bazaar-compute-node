@@ -867,7 +867,7 @@ bazaar-contrib-pg = { index = "selected" }
 - 整体升级保留后端的额外包依赖、`database.config.backend`、连接参数、其他启用实例及停用选择。
 
 tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释器。
-宿主安装与重启遵循 [服务监督计划](../2026-10-07-service-supervisor.md) 的生命周期要求。
+宿主安装与重启遵循 [服务监督计划](../2026-10-07-service-supervisor/plan.md) 的生命周期要求。
 
 后续节点管理命令保留 `bcn start`、`bcn stop` 作为服务管理命令的别名，帮助分别写为
 `Legacy alias for bcn service start`、`Legacy alias for bcn service stop`，沿用同样的说明方式。

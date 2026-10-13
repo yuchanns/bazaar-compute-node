@@ -411,7 +411,7 @@ Esc 依次关闭日历、筛选面板、搜索弹层；点击弹层外侧也可�
 #### 手机布局与操作
 
 沿用 `static/app.css` 的 `max-width: 959px` 单栏断点，以及
-[现有手机适配计划](2026-09-27-bcs-mobile.md) 的共享模板、`data-view/data-pane` 与联系人/聊天路由。
+[现有手机适配计划](../2026-09-27-bcs-mobile/plan.md) 的共享模板、`data-view/data-pane` 与联系人/聊天路由。
 手机从聊天标题栏的搜索图标进入同一个悬浮搜索；弹层宽度限制在当前可见区域内，四周至少保留 12px
 并考虑 `env(safe-area-inset-*)`。搜索输入框和关闭按钮保持在顶部，结果区采用
 `min-height: 0; overflow-y: auto; overscroll-behavior: contain`，弹层打开时沿用焦点限制和背景滚动锁定。
