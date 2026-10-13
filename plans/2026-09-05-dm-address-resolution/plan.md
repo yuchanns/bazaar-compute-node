@@ -73,7 +73,7 @@
 ### 飞书私聊保持现状
 
 飞书私聊的 target 继续显示为 `dm:<channel_session_id>`，说话人继续渲染为 `@<open_id>(<显示名>)`，
-本方案不改这两处展示。`plans/2026-08-25-readable-targets.md` §5.2 的结论予以保留。
+本方案不改这两处展示。`plans/2026-08-25-readable-targets/plan.md` §5.2 的结论予以保留。
 
 需要成立的只有一件事：**`dm:@<open_id>` 能解析到人**。`@` 位置上的 open_id 正是 agent 在飞书消息里
 看到并且可以照抄的那一段（`resources/command/sender.tpl` 在没有 handle 时渲染 `@<sender_id>`），

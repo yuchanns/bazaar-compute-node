@@ -499,7 +499,7 @@ git diff --check
 
 修改范围：
 
-- `plans/2026-08-26-claude-code-runtime.md`
+- `plans/2026-08-26-claude-code-runtime/plan.md`
 - `src/bazaar_compute_node/core/orchestration/session.py`
 - `src/bazaar_compute_node/contrib/claude/client.py`
 - `src/bazaar_compute_node/contrib/claude/events.py`
@@ -540,7 +540,7 @@ git diff --check
 
 修改范围：
 
-- `plans/2026-08-26-claude-code-runtime.md`
+- `plans/2026-08-26-claude-code-runtime/plan.md`
 - `src/bazaar_compute_node/core/runtime.py`
 - `src/bazaar_compute_node/core/orchestration/session.py`
 - `src/bazaar_compute_node/contrib/claude/runtime.py`

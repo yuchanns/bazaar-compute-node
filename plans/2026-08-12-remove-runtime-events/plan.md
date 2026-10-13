@@ -16,7 +16,7 @@ turn 所需的内存生命周期。
 ## 持久化边界
 
 > 后续 schema 演进：本文描述的是 migration 9 完成时的持久化边界。当前 schema 已由
-> `2026-08-24-unified-message-storage.md` 的 migration 18 将双 message table 合并为
+> `../2026-08-24-unified-message-storage/plan.md` 的 migration 18 将双 message table 合并为
 > `messages`；inbound/outbound 通过 `direction` 区分并共享全局 `seq`。
 
 以下 SQLite 数据会继续保留，因为应用会读取它们来完成业务行为或恢复：
