@@ -927,9 +927,9 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 6：模块安装管理与升级
 
-- [ ] Context.update 和 Enablement.update 串行应用完整组合；首次启用、候选校验和更新复用 target／Diff／apply，保留未变资源并重建受影响依赖。
-- [ ] 更新保留已有 local 绑定，父实例替换时清理其后代；真实 SQLite／文件验证跨组合重绑、缺失依赖恢复、并发、故障恢复和请求者生命周期。
-- [ ] 消融删除 Enablement 重复的活动／失败索引、未使用的 ready 属性和 Diff 重复候选字段；真实资源回归验证由 Hub 单一记录提供查询。
+- [x] Context.update 和 Enablement.update 串行应用完整组合；首次启用、候选校验和更新复用 target／Diff／apply，保留未变资源并重建受影响依赖。
+- [x] 更新保留已有 local 绑定，父实例替换时清理其后代；真实 SQLite／文件验证跨组合重绑、缺失依赖恢复、并发、故障恢复和请求者生命周期。
+- [x] 消融删除 Enablement 重复的活动／失败索引、未使用的 ready 属性和 Diff 重复候选字段；真实资源回归验证由 Hub 单一记录提供查询。
 - [ ] 独立 bazaar-contrib-manager 提供索引、包、进度和结果契约，复用目标宿主 uv 及环境操作锁。
 - [ ] 真实本地／HTTP 索引、缓存、私有源和多入口 wheel 验证安装、发现、导入、启停、编辑及卸载。
 - [ ] add／enable／edit 使用可重复 --option KEY=VALUE，支持点分字段、列表位置与重复值，保留未编辑参数。
