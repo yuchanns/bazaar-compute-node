@@ -141,6 +141,19 @@ class _Context:
             composition, parent=self._instance, local=local, replacing=replacing
         )
 
+    async def update(self, composition: Composition) -> None:
+        """Replace the composition this instance supplied to ContribHub.run()."""
+        if isinstance(self._instance.state, Stopping):
+            raise ContribError(
+                f"{self._instance.label}: cannot update its composition while stopping"
+            )
+        owner = self._instance._composition
+        if owner is None:
+            raise ContribError(
+                f"{self._instance.label}: no composition from this contrib has been started by ContribHub.run()"
+            )
+        await self._instance.enablement._hub._update(owner, composition)
+
 
 @dataclass(eq=False, slots=True)
 class _ContribInstance:
@@ -162,6 +175,7 @@ class _ContribInstance:
     _callbacks: set[_Invocation] = field(default_factory=set)
     _task: asyncio.Task[None] | None = None
     state: ContribState[BaseException] = field(default_factory=Starting)
+    _composition: Enablement | None = None
 
     def __post_init__(self) -> None:
         self.context = _Context(self)
@@ -365,6 +379,10 @@ class Enablement:
                 if instance.enablement is self
             ),
         )
+
+    async def update(self, composition: Composition) -> None:
+        """Replace this handle's entries while keeping its local bindings."""
+        await self._hub._update(self, composition)
 
     async def aclose(self) -> None:
         cleanup = self._state.cleanup if isinstance(self._state, _Closing) else None

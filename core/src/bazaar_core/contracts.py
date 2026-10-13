@@ -7,6 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Protocol, cast
+lazy from importlib.metadata import EntryPoint
 lazy from typing import Literal
 lazy from uuid import UUID
 
@@ -169,6 +170,8 @@ class Context(Protocol):
         replacing: Candidate | None = None,
     ) -> Candidate: ...
 
+    async def update(self, composition: Composition) -> None: ...
+
 
 CURRENT_CONTEXT = ContextVar[Context | None]("bazaar_core.context", default=None)
 
@@ -246,6 +249,21 @@ class Contrib[C: BaseModel | None = None](BaseModel):
         return tuple(value)
 
 
+@dataclass(frozen=True, slots=True)
+class ContribSource:
+    """The distribution and import reference supplying an installed entry."""
+
+    package: str
+    version: str
+    name: str
+    value: str
+    entry_point: EntryPoint
+
+    @property
+    def label(self) -> str:
+        return f"{self.package} {self.version}: {self.name} = {self.value}"
+
+
 class ContribEntry(BaseModel):
     """One contrib definition, its parameters, and its configuration location."""
 
@@ -265,6 +283,7 @@ class ContribEntry(BaseModel):
         Field(default_factory=dict)
     )
     required_offers: Sequence[ServiceKey[Any]] = ()
+    source: ContribSource | None = None
 
     def ref[T](self, key: ServiceKey[T] | EventKey[T]) -> BindingRef[T]:
         """Select this declaration's binding within its composition."""
