@@ -7,6 +7,7 @@ members = [
     "bazaar-contrib-config",
     "bazaar-contrib-config-filesystem",
     "bazaar-contrib-config-versions",
+    "bazaar-contrib-manager",
     "bazaar-core",
     "bcn-workspace",
 ]
@@ -76,6 +77,25 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "bazaar-contrib-config", editable = "contrib/config" }]
+
+[[package]]
+name = "bazaar-contrib-manager"
+version = "0.3.0"
+source = { editable = "contrib/manager" }
+dependencies = [
+    { name = "bazaar-contrib-config" },
+    { name = "filelock" },
+    { name = "packaging" },
+    { name = "tomli-w" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "filelock", specifier = ">=3.16.0" },
+    { name = "packaging", specifier = ">=25.0" },
+    { name = "tomli-w", specifier = ">=1.2.0" },
+]
 
 [[package]]
 name = "bazaar-core"
