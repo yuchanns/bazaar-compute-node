@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 lazy import asyncio
+lazy import importlib
+lazy import json
 lazy from collections.abc import Callable, Mapping
 lazy from contextlib import asynccontextmanager
 lazy from copy import deepcopy
+lazy from pathlib import Path
+lazy from tempfile import TemporaryDirectory
+lazy from typing import Any
 
 from bazaar_core import ServiceKey
+from pydantic import BaseModel, ConfigDict
 lazy from bazaar_core import (
     COMPOSITION,
     Candidate,
@@ -28,7 +34,31 @@ lazy from .contracts import (
     ConfigFormatError,
     ConfigSnapshot,
     ConfigStore,
+    EnabledContrib,
 )
+
+
+class ConfigurationEnvironment(BaseModel):
+    """Installed application factories and the selected bootstrap declarations."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    hub: str
+    entries: tuple[EnabledContrib, ...]
+
+
+class ConfigurationPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    candidate: ConfigCandidate
+    revision: str | None
+    error: str | None = None
+
+
+class ConfigurationApplication(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    saved: bool = True
+    applied: bool = False
+    pending_restart: bool = False
+    error: str | None = None
 
 
 class Configuration:
@@ -41,15 +71,30 @@ class Configuration:
         converter: ConfigConverter,
         defaults: Mapping[str, object],
         build: Callable[[ConfigDocument], Composition],
+        *,
+        environment: ConfigurationEnvironment | None = None,
+        start: Callable[[ConfigDocument], Composition] | None = None,
     ) -> None:
         self.ctx = ctx
         self.store = store
         self.converter = converter
         self.defaults = deepcopy(dict(defaults))
         self.build = build
+        self.environment = environment
+        self.start = start
         self.snapshot: ConfigSnapshot | None = None
         self.candidate: ConfigCandidate | None = None
         self._composition: Candidate | None = None
+        self._lock = asyncio.Lock()
+
+    async def read(self) -> tuple[ConfigCandidate, ConfigSnapshot | None]:
+        """Read the selected source and convert its document without opening resources."""
+        snapshot = await self.store.read()
+        candidate = await asyncio.to_thread(
+            self.converter.convert,
+            snapshot.payload if snapshot is not None else self.defaults,
+        )
+        return candidate, snapshot
 
     async def prepare(
         self, payload: Mapping[str, object]
@@ -83,16 +128,28 @@ class Configuration:
         snapshot = await self.store.read()
         payload = snapshot.payload if snapshot is not None else self.defaults
         candidate, composition = await self.prepare(payload)
+        if self.start is not None and snapshot is not None:
+            self.snapshot, self.candidate = snapshot, candidate
+            return await self._loaded(candidate, composition)
         if (
             snapshot is not None
             and payload.get("version") == candidate.payload["version"]
         ):
             self.snapshot, self.candidate = snapshot, candidate
-            self._composition = composition
-            return composition
+            return await self._loaded(candidate, composition)
         self.check(composition)
         snapshot = await self._write(candidate, snapshot.revision if snapshot else None)
         self.snapshot, self.candidate = snapshot, candidate
+        return await self._loaded(candidate, composition)
+
+    async def _loaded(
+        self, candidate: ConfigCandidate, composition: Candidate
+    ) -> Candidate:
+        if self.start is not None:
+            selected = await asyncio.to_thread(
+                self.start, ConfigDocument.model_validate(candidate.payload)
+            )
+            composition = self.ctx.validate(selected)
         self._composition = composition
         return composition
 
@@ -114,6 +171,79 @@ class Configuration:
         self.check(composition)
         snapshot = await self._write(candidate, expected_revision)
         self.snapshot, self.candidate = snapshot, candidate
+        return snapshot
+
+    async def apply(self, snapshot: ConfigSnapshot) -> ConfigurationApplication:
+        """Request the saved composition through this loader's public Context."""
+        if self.start is not None:
+            return ConfigurationApplication(pending_restart=True)
+        async with self._lock:
+            current = await self.store.read()
+            if current is None or current.revision != snapshot.revision:
+                return ConfigurationApplication(
+                    pending_restart=True,
+                    error="configuration changed after saving; read it before applying",
+                )
+            try:
+                await asyncio.to_thread(importlib.invalidate_caches)
+                document = ConfigDocument.model_validate(snapshot.payload)
+                composition = await asyncio.to_thread(self.build, document)
+                await self.ctx.update(composition)
+            except Exception as error:  # noqa: BLE001 - Saving and lifecycle application have separate outcomes.
+                return ConfigurationApplication(pending_restart=True, error=str(error))
+            return ConfigurationApplication(applied=True)
+
+    async def preview(
+        self, python: Path, *, payload: Mapping[str, object] | None = None
+    ) -> ConfigurationPreview:
+        """Convert and validate with installed target code and the original carrier."""
+        if self.environment is None:
+            raise ConfigFormatError("target-environment bootstrap is not configured")
+        snapshot = await self.store.read()
+        request: dict[str, Any] = {
+            "environment": self.environment.model_dump(mode="json"),
+            "build": f"{self.build.__module__}:{self.build.__qualname__}",
+            "defaults": self.defaults,
+            "payload": dict(payload)
+            if payload is not None
+            else dict(snapshot.payload)
+            if snapshot is not None
+            else self.defaults,
+            "revision": snapshot.revision if snapshot is not None else None,
+        }
+        temporary = await asyncio.to_thread(TemporaryDirectory)
+        try:
+            path = Path(temporary.name) / "preview.json"
+            await asyncio.to_thread(path.write_text, json.dumps(request), "utf-8")
+            process = await asyncio.create_subprocess_exec(
+                str(python),
+                "-m",
+                "bazaar_contrib_config.preview",
+                str(path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                output, errors = await process.communicate()
+            except BaseException:
+                if process.returncode is None:
+                    process.terminate()
+                await process.wait()
+                raise
+            if process.returncode:
+                raise ConfigFormatError(
+                    errors.decode("utf-8", errors="replace").strip()
+                )
+            return ConfigurationPreview.model_validate_json(output)
+        finally:
+            await asyncio.to_thread(temporary.cleanup)
+
+    async def commit_preview(self, preview: ConfigurationPreview) -> ConfigSnapshot:
+        """Save the target-validated candidate under the source's original revision."""
+        if preview.error:
+            raise ConfigFormatError(preview.error)
+        snapshot = await self._write(preview.candidate, preview.revision)
+        self.snapshot, self.candidate = snapshot, preview.candidate
         return snapshot
 
     async def import_defaults(self, payload: Mapping[str, object]) -> ConfigSnapshot:
@@ -142,14 +272,24 @@ CONFIGURATION = ServiceKey[Configuration]("config.configuration")
 
 
 def configuration(
-    defaults: Mapping[str, object], build: Callable[[ConfigDocument], Composition]
+    defaults: Mapping[str, object],
+    build: Callable[[ConfigDocument], Composition],
+    *,
+    environment: ConfigurationEnvironment | None = None,
+    start: Callable[[ConfigDocument], Composition] | None = None,
 ) -> Contrib:
-    """Create an ordinary composition loader for the application's document builder."""
+    """Create a loader offering CONFIGURATION and its validated COMPOSITION."""
 
     @asynccontextmanager
     async def lifespan(ctx: Context):
         service = Configuration(
-            ctx, ctx.accept(CONFIG_STORE), ctx.accept(CONFIG_CURRENT), defaults, build
+            ctx,
+            ctx.accept(CONFIG_STORE),
+            ctx.accept(CONFIG_CURRENT),
+            defaults,
+            build,
+            environment=environment,
+            start=start,
         )
         candidate = await service.load()
         ctx.offer(CONFIGURATION, service)

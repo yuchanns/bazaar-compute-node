@@ -1,0 +1,52 @@
+[project]
+name = "bazaar-contrib-manager"
+version = "0.3.0"
+description = "The Bazaar Compute Node Manager Contrib"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.15"
+dependencies = [
+    "bazaar-contrib-config~=0.3.0",
+    "filelock>=3.16.0",
+    "packaging>=25.0",
+    "tomli-w>=1.2.0",
+]
+
+[project.entry-points."bazaar_compute_node.contribs"]
+contrib-manager = "bazaar_contrib_manager:manager"
+
+[project.urls]
+Repository = "https://github.com/yuchanns/bazaar-compute-node"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "build"
+backend-path = ["."]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "build.py" },
+    { file = "catalog.uv.lock" },
+    { dir = "src" },
+]
+
+[tool.uv.build-backend]
+source-include = ["build.py", "catalog.uv.lock"]
+
+[tool.bcn.ci]
+platforms = ["linux", "windows"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:anyio"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+extends = "../../pyrightconfig.json"
+include = ["src", "tests", "build.py"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"

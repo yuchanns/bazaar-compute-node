@@ -906,7 +906,8 @@ uv 由宿主进程的 PATH 解析为具体执行文件；目标环境明确对�
 `package` 使用与 `pyproject.toml` 的 `project.dependencies` 相同的完整 PEP 508 字符串，保留 extras、版本范围、URL 和 marker；
 `enabled = []` 表示只安装包。同一发行包的多个入口归入同一个数组，包规格和来源只声明一次；编辑参数保留依赖规格，停用最后一个入口保留只安装声明。
 TOML 可使用内联数组，也可用 `[[contribs.enabled]]` 展开启用项，再以 `[contribs.enabled.config]` 填写各入口的参数。
-`add` 保存实际安装版本或显式版本范围及所选来源；`--enable` 将声明带到该包提供的入口。迁移只需复制配置。
+`add` 未传 `--version` 时沿用所选索引条目的版本范围，显式参数覆盖索引范围；保存实际安装版本或所选版本范围及来源。
+`--enable` 将声明带到该包提供的入口。迁移只需复制配置。
 默认来源为空时使用 manager 的 `host_source`；显式来源随配置迁移。入口只在其依赖 marker 对当前平台成立时启用。
 
 调研依据：[Python dependency specifiers](https://packaging.python.org/en/latest/specifications/dependency-specifiers/)
@@ -1033,6 +1034,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 消融删除 Enablement 重复的活动／失败索引、未使用的 ready 属性和 Diff 重复候选字段；真实资源回归验证由 Hub 单一记录提供查询。
 - [x] 独立 bazaar-contrib-manager 提供索引、包、进度和结果契约，复用目标宿主 uv 及环境操作锁。
 - [x] 真实本地／HTTP 索引、缓存、私有源和多入口 wheel 验证安装、发现、导入、启停、编辑及卸载。
+- [x] add 在既有候选环境预检时读取目标发行包的 contrib 入口；没有入口则结束操作，提示 `No solution found when resolving dependencies: Because <package> was not a bazaar compute node contributor`，正式宿主环境和配置不进入安装／保存阶段。文案参考实际运行 uv pip install／uv add 的解析失败提示，通过既有 ManagementError 返回。传递依赖继续由 uv 解析。
 - [x] add／enable／edit 使用可重复 --option KEY=VALUE，支持点分字段、列表位置与重复值；显式位置更新保留未编辑元素，重复字段值替换完整列表。
 - [x] uv tool／专用 venv 消费绑定来源的完整 pylock 候选，升级保留配置载体、额外依赖、来源与业务选择。
 - [x] 目标解释器先转换并检查完整配置，条件提交后分别记录安装、保存与运行结果；修改请求者自身生命周期时报告待重启。

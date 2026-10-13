@@ -23,7 +23,14 @@ lazy from .contracts import (
     PackageRequirement,
     ProviderConfig,
 )
-lazy from .loading import CONFIGURATION, Configuration, configuration
+lazy from .loading import (
+    CONFIGURATION,
+    Configuration,
+    ConfigurationApplication,
+    ConfigurationEnvironment,
+    ConfigurationPreview,
+    configuration,
+)
 
 __all__ = [
     "CONFIGURATION",
@@ -45,6 +52,9 @@ __all__ = [
     "ConfigStore",
     "ConfigUnavailable",
     "Configuration",
+    "ConfigurationApplication",
+    "ConfigurationEnvironment",
+    "ConfigurationPreview",
     "EnabledContrib",
     "FieldChange",
     "PackageRequirement",
