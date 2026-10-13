@@ -72,6 +72,8 @@ class ContribHub:
         self._state: _OwnerState = _Open()
         self._tasks: asyncio.TaskGroup | None = None
         self._lock = asyncio.Lock()
+        self._update_lock = asyncio.Lock()
+        self._updates: set[_Invocation] = set()
 
     async def __aenter__(self) -> Self:
         if self._tasks is not None or not isinstance(self._state, _Open):
@@ -260,6 +262,88 @@ class ContribHub:
                 self._drive(instance), name=instance.label, eager_start=True
             )
 
+    async def _update(self, owner: Enablement, composition: Composition) -> None:
+        """Run the update in the hub's task group and return errors to its caller."""
+        composition = Composition.model_validate(composition)
+        group = self._tasks
+        if group is None or not isinstance(self._state, _Open):
+            raise ContribError("hub: the hub is not running")
+        requester = next(
+            (
+                instance
+                for instance in self._all_instances()
+                if instance.context is CURRENT_CONTEXT.get()
+            ),
+            None,
+        )
+        if requester is not None and not isinstance(requester.state, Running):
+            raise ContribError(
+                f"{requester.label}: updates require this contrib to be in the Running state"
+            )
+        invocation = _Invocation()
+        self._updates.add(invocation)
+        invocation.task = group.create_task(
+            self._apply_update(owner, composition, requester, invocation),
+            name="contrib composition update",
+            eager_start=True,
+        )
+        if requester is None:
+            await asyncio.shield(invocation.done.wait())
+        else:
+            async with asyncio.TaskGroup() as waiting:
+                done = waiting.create_task(invocation.done.wait())
+                stopping = waiting.create_task(requester._stop.wait())
+                await asyncio.wait(
+                    (done, stopping), return_when=asyncio.FIRST_COMPLETED
+                )
+                if not invocation.done.is_set():
+                    invocation.cancel()
+                stopping.cancel()
+                await done
+        state = invocation._state
+        if isinstance(state, _Finished) and state.error is not None:
+            raise state.error
+
+    async def _apply_update(
+        self,
+        owner: Enablement,
+        composition: Composition,
+        requester: _ContribInstance | None,
+        invocation: _Invocation,
+    ) -> None:
+        try:
+            async with self._update_lock:
+                async with self._lock:
+                    if not isinstance(self._state, _Open) or not isinstance(
+                        owner._state, _Open
+                    ):
+                        raise ContribError("the composition is stopping or has closed")
+                    candidate = await self._apply(
+                        target(self, owner, composition), requester
+                    )
+                for instance in candidate._instances:
+                    await instance._ready.wait()
+                errors: list[BaseException] = []
+                for instance in candidate._instances:
+                    state = instance.state
+                    if (
+                        isinstance(state, Stopping)
+                        and state.error is not None
+                        and all(state.error is not error for error in errors)
+                    ):
+                        errors.append(state.error)
+                if len(errors) == 1:
+                    raise errors[0]
+                if errors:
+                    raise BaseExceptionGroup("contrib update startup failed", errors)
+        except BaseException as error:  # noqa: BLE001 - Return failures to the requesting operation.
+            invocation._state = _Finished(error)
+        else:
+            invocation._state = _Finished()
+        finally:
+            self._updates.discard(invocation)
+            invocation.done.set()
+
     async def _apply(
         self,
         candidate: Candidate,
@@ -405,7 +489,7 @@ class ContribHub:
                 candidate = cast(
                     Composition | Candidate, instance._services[COMPOSITION]
                 )
-                await stack.enter_async_context(
+                instance._composition = await stack.enter_async_context(
                     self._enable(candidate, parent=instance)
                 )
                 yield self
@@ -452,6 +536,11 @@ class ContribHub:
             )
         if isinstance(self._state, _Open):
             self._state = _Closing()
+        updates = tuple(self._updates)
+        for invocation in updates:
+            invocation.cancel()
+        for invocation in updates:
+            await asyncio.shield(invocation.done.wait())
         cleanup = self._state.cleanup if isinstance(self._state, _Closing) else None
         if cleanup is None:
             async with self._lock:

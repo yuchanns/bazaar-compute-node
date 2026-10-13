@@ -117,6 +117,24 @@ async def use(directory: Path):
     ):
         handle = handles[0]
         await hub.announce(MESSAGE, "installed standalone wheel")
+        await contexts[0].update(
+            compositions[0].model_copy(
+                update={
+                    "entries": [
+                        *compositions[0].entries,
+                        ContribEntry(
+                            name="carol",
+                            definition=Contrib(
+                                accepts=[JOURNAL], listen={MESSAGE: write}
+                            ),
+                        ),
+                    ]
+                }
+            )
+        )
+        if handle.closed:
+            raise RuntimeError("runtime update closed an unchanged journal")
+        await hub.announce(MESSAGE, "runtime updated standalone wheel")
         local = Composition(
             entries=[
                 ContribEntry(
@@ -157,6 +175,8 @@ async def use(directory: Path):
     document = await asyncio.to_thread((directory / "journal.txt").read_text)
     if "alice: installed" not in document:
         raise RuntimeError("agent event consumers did not persist their messages")
+    if "carol: runtime updated" not in document:
+        raise RuntimeError("runtime update did not activate the new consumer")
 
 
 def main():
