@@ -33,13 +33,114 @@ from bazaar_core import (
 )
 from bcn_example_contribs import RemoteConfig, RemoteStore
 from bcn_example_contribs.center import ConfigCenter
+from bcn_example_contribs.databases import RECORDS, Records
 from blockbuster import blockbuster_ctx
+lazy import aiosqlite
 lazy import tomli_w
 
 from bazaar_compute_node.boot import build, node
 
 
+async def exercise_server(path: Path) -> None:
+    config = path / "mixed.toml"
+    port_file = path / "server.port"
+    directory = path / "mixed-journals"
+    entries = [
+        {
+            "contrib": "example-server",
+            "config": {"database": str(path / "server.sqlite"), "port": str(port_file)},
+        },
+        {"contrib": "example-node-records", "config": {"name": "node"}},
+        {
+            "contrib": "example-node-database",
+            "config": {"path": str(path / "node.sqlite")},
+        },
+        {"contrib": "example-directory", "config": {"path": str(directory)}},
+        {"contrib": "example-journal"},
+    ]
+    payload = {
+        "version": "5",
+        "contribs": entries,
+        "agent": [{"id": str(uuid7()), "name": "server"}],
+    }
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
+    configurations: list[Configuration] = []
+    records: list[Records] = []
+
+    @asynccontextmanager
+    async def observe(ctx: Context):
+        configurations.append(ctx.accept(CONFIGURATION))
+        records.append(ctx.accept(RECORDS))
+        yield
+
+    async def read_server():
+        port = int(await asyncio.to_thread(port_file.read_text))
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(b"records\n")
+            await writer.drain()
+            return json.loads(await reader.readline())
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    consumer = ContribEntry(
+        name="mixed-observer",
+        definition=Contrib(accepts=[CONFIGURATION, RECORDS], lifespan=observe),
+    )
+    async with (
+        node(configer_options=(str(config),)) as hub,
+        hub.enable(Composition(entries=[consumer])),
+    ):
+        assert ["server", "started"] in await read_server()
+        assert ("node", "started") in await records[0].read()
+        assert all(name == "server" for name, _ in await read_server())
+        assert all(name == "node" for name, _ in await records[0].read())
+        service = configurations[0]
+        assert service.snapshot is not None
+        saved = await service.commit(
+            payload
+            | {
+                "contribs": [
+                    entry for entry in entries if entry["contrib"] != "example-server"
+                ]
+            },
+            expected_revision=service.snapshot.revision,
+        )
+        applied = await service.apply(saved)
+        assert applied.applied, applied.error
+        await records[0].write("node", "continues after server stops")
+        assert ("node", "continues after server stops") in await records[0].read()
+        assert "started" in await asyncio.to_thread(
+            (directory / "server.txt").read_text
+        )
+    assert "released" in await asyncio.to_thread((directory / "server.txt").read_text)
+    for name in ("node", "server"):
+        async with (
+            aiosqlite.connect(path / f"{name}.sqlite") as database,
+            database.execute("SELECT name, state FROM records") as cursor,
+        ):
+            assert any(
+                row[0] == name and row[1] == "released"
+                for row in await cursor.fetchall()
+            )
+    await asyncio.to_thread(
+        config.write_text,
+        tomli_w.dumps(
+            {
+                "version": "5",
+                "contribs": [
+                    entry for entry in entries if entry["contrib"] == "example-server"
+                ],
+            }
+        ),
+    )
+    async with node(configer_options=(str(config),)):
+        assert ["server", "started"] in await read_server()
+
+
 async def exercise(path: Path) -> None:
+    await exercise_server(path)
     config = path / "config.toml"
     directory = path / "journals"
     log = path / "info" / "node.jsonl"
@@ -53,7 +154,7 @@ async def exercise(path: Path) -> None:
                     "error": str(path / "errors" / "node.jsonl"),
                 },
                 "retention_days": 7,
-                "max_size": "1 KiB",
+                "max_size": "32 KiB",
             },
         },
         {"contrib": "example-journal"},
@@ -143,26 +244,37 @@ async def exercise(path: Path) -> None:
     )
     async with node(configer_options=(str(config),)) as hub:
         assert not any(record.name == "example-journal" for record in hub.snapshots)
-        from bcn_example_contribs import journal
+        configurations: list[Configuration] = []
 
-        from bazaar_compute_node.boot import AGENT_INPUT
+        @asynccontextmanager
+        async def observe_late(ctx: Context):
+            configurations.append(ctx.accept(CONFIGURATION))
+            yield
 
         async with hub.enable(
             Composition(
                 entries=[
                     ContribEntry(
-                        name="late",
-                        definition=AGENT_INPUT,
-                        config={"id": str(uuid7()), "name": "late"},
-                    ),
-                    ContribEntry(name="late-journal", definition=journal),
+                        name="late-configuration",
+                        definition=Contrib(
+                            accepts=[CONFIGURATION], lifespan=observe_late
+                        ),
+                    )
                 ]
             )
         ):
+            service = configurations[0]
+            assert service.snapshot is not None
+            late = await service.commit(
+                dict(payload) | {"agent": [{"id": str(uuid7()), "name": "late"}]},
+                expected_revision=service.snapshot.revision,
+            )
+            result = await service.apply(late)
+            assert result.applied, result.error
             assert "started" in await asyncio.to_thread(
                 (directory / "late.txt").read_text
             )
-        assert "released" in await asyncio.to_thread((directory / "late.txt").read_text)
+    assert "released" in await asyncio.to_thread((directory / "late.txt").read_text)
     writer = path / "independent.txt"
     broken = dict(payload) | {
         "contribs": [

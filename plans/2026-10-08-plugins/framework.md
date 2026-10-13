@@ -71,14 +71,10 @@ app 持有命令、默认发行依赖与业务组合，普通插件管理自己�
 ```python
 @asynccontextmanager
 async def server_lifespan(ctx: Context, config: ServerConfig):
-    composition = Composition(
-        entries=[
-            ContribEntry(
-                name="database", definition=sqlite, config={"path": config.database}
-            ),
-            ContribEntry(name="history", definition=history),
-        ]
-    )
+    composition = Composition(entries=[
+        ContribEntry(name="database", definition=sqlite, config={"path": config.database}),
+        ContribEntry(name="history", definition=history),
+    ])
     async with ctx.enable(composition, local=(DB,)):
         yield
 ```
@@ -330,6 +326,7 @@ async def lifespan(ctx: Context, config: FileConfig):
 
 
 filesystem = Contrib(
+
     config=FileConfig,
     offers=[CONFIG_STORE],
     lifespan=lifespan,
@@ -409,6 +406,7 @@ async def v5_lifespan(ctx: Context):
 
 
 v5 = Contrib(
+
     accepts=[CONFIG_V4],
     offers=[CONFIG_V5],
     lifespan=v5_lifespan,
@@ -930,13 +928,13 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] Context.update 和 Enablement.update 串行应用完整组合；首次启用、候选校验和更新复用 target／Diff／apply，保留未变资源并重建受影响依赖。
 - [x] 更新保留已有 local 绑定，父实例替换时清理其后代；真实 SQLite／文件验证跨组合重绑、缺失依赖恢复、并发、故障恢复和请求者生命周期。
 - [x] 消融删除 Enablement 重复的活动／失败索引、未使用的 ready 属性和 Diff 重复候选字段；真实资源回归验证由 Hub 单一记录提供查询。
-- [ ] 独立 bazaar-contrib-manager 提供索引、包、进度和结果契约，复用目标宿主 uv 及环境操作锁。
-- [ ] 真实本地／HTTP 索引、缓存、私有源和多入口 wheel 验证安装、发现、导入、启停、编辑及卸载。
-- [ ] add／enable／edit 使用可重复 --option KEY=VALUE，支持点分字段、列表位置与重复值，保留未编辑参数。
-- [ ] uv tool／专用 venv 消费绑定来源的完整 pylock 候选，升级保留配置载体、额外依赖、来源与业务选择。
-- [ ] 目标解释器先转换并检查完整配置，条件提交后分别记录安装、保存与运行结果；修改请求者自身生命周期时报告待重启。
-- [ ] 普通 server lifespan 用 ctx.enable(local=(DB, RECORDS)) 管理真实 SQLite／TCP 子组合，验证混合运行、停用后节点继续写入和纯服务端启动。
-- [ ] 完成真实安装环境、Blockbuster 回归、独立 wheel／sdist、Ruff 与根 LSP；修改 amend 回各功能的引入提交并签名推送。
+- [x] 独立 bazaar-contrib-manager 提供索引、包、进度和结果契约，复用目标宿主 uv 及环境操作锁。
+- [x] 真实本地／HTTP 索引、缓存、私有源和多入口 wheel 验证安装、发现、导入、启停、编辑及卸载。
+- [x] add／enable／edit 使用可重复 --option KEY=VALUE，支持点分字段、列表位置与重复值，保留未编辑参数。
+- [x] uv tool／专用 venv 消费绑定来源的完整 pylock 候选，升级保留配置载体、额外依赖、来源与业务选择。
+- [x] 目标解释器先转换并检查完整配置，条件提交后分别记录安装、保存与运行结果；修改请求者自身生命周期时报告待重启。
+- [x] 普通 server lifespan 用 ctx.enable(local=(DB, RECORDS)) 管理真实 SQLite／TCP 子组合，验证混合运行、停用后节点继续写入和纯服务端启动。
+- [x] 完成真实安装环境、Blockbuster 回归、独立 wheel／sdist、Ruff 与根 LSP；修改 amend 回各功能的引入提交并签名推送。
 
 语言和存储等后续包交付时，继续验证历史配置自动纳入依赖及完整 V4→V5 运行迁移。
 

@@ -8,4 +8,7 @@ agent = []
 contrib = "status"
 
 [[contribs]]
+contrib = "contrib-manager"
+
+[[contribs]]
 contrib = "logging"
