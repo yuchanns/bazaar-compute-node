@@ -157,6 +157,7 @@ requires a contrib offering `MESSAGES` with that same binding. Child resources
 close before their parent's lifespan exits.
 During shared shutdown, an owning contrib's context waits for its child tasks
 when closing a child composition, without waiting for its own cleanup batch.
+`Enablement.update(composition)` retains its local bindings while replacing entries.
 Explicit `ContribEntry.bindings` can supply stable UUIDs when assembling a complete
 instance graph before startup. Validation checks all declared instances; dynamically
 created children are checked when their composition is enabled.

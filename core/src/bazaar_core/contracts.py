@@ -162,6 +162,8 @@ class Context(Protocol):
         replacing: Candidate | None = None,
     ) -> Candidate: ...
 
+    async def update(self, composition: Composition) -> None: ...
+
 
 CURRENT_CONTEXT = ContextVar[Context | None]("bazaar_core.context", default=None)
 
