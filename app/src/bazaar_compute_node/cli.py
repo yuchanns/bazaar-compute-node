@@ -6,6 +6,7 @@ lazy import sys
 
 import click
 
+from .contrib import contrib
 lazy from .boot import node
 
 
@@ -30,6 +31,9 @@ async def _run(configer: str, configer_options: tuple[str, ...]) -> None:
 @click.version_option(package_name="bazaar-compute-node")
 def main() -> None:
     """Run Bazaar Compute Node."""
+
+
+main.add_command(contrib)
 
 
 @main.command("run", help="Run the node.")

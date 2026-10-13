@@ -21,6 +21,7 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             "bazaar-contrib-config",
             "bazaar-contrib-config-filesystem",
             "bazaar-contrib-config-versions",
+            "bazaar-contrib-manager",
             "bazaar-compute-node",
         ):
             subprocess.run(

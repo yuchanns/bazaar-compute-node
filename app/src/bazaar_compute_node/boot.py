@@ -19,6 +19,8 @@ lazy from bazaar_contrib_config import (
     AgentConfig,
     ConfigDocument,
     ConfigFormatError,
+    ConfigurationEnvironment,
+    EnabledContrib,
     ProviderConfig,
     configuration,
 )
@@ -191,6 +193,7 @@ def bootstrap(
     *,
     configer: str = "config-filesystem",
     configer_options: Sequence[str] = (),
+    management: bool = False,
 ) -> tuple[Composition, ContribEntry]:
     resource = files(__package__)
     definitions = load(
@@ -226,10 +229,30 @@ def bootstrap(
         definitions,
         ContribEntry(
             name="node-configuration",
-            definition=configuration(defaults, build),
+            definition=configuration(
+                defaults,
+                build,
+                environment=ConfigurationEnvironment(
+                    hub="bazaar_core:ContribHub",
+                    entries=tuple(
+                        EnabledContrib(contrib=entry.name, config=entry.config)
+                        for entry in definitions.entries
+                    ),
+                ),
+                start=manage if management else None,
+            ),
             location="defaults.toml",
         ),
     )
+
+
+def manage(document: ConfigDocument) -> Composition:
+    """Declare the short-lived management combination from the saved parameters."""
+    entry = next(
+        (entry for entry in document.contribs if entry.contrib == "contrib-manager"),
+        EnabledContrib(contrib="contrib-manager"),
+    )
+    return load([ContribSpec(contrib=entry.contrib, config=entry.config)])
 
 
 @asynccontextmanager
