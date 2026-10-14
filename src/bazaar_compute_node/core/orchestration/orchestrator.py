@@ -20,6 +20,7 @@ from ..lifecycle import IAsyncLifecycle, TimeoutBudget
 from ..models import (
     ChannelSession,
     Message,
+    MessageDirection,
     OutboundDeliveryState,
     Review,
     RuntimeAttempt,
@@ -1195,12 +1196,36 @@ class AgentOrchestrator(IAsyncLifecycle):
         self,
         message: Message,
     ) -> tuple[_DurableTurnContext | None, Message, bool]:
+        channel, provider_thread_id, provider_message_id = message.inbound_identity()
+        delivery_states = {
+            OutboundDeliveryState.QUEUED,
+            OutboundDeliveryState.SENT,
+        }
+        if not message.notifies_runtime:
+            existing = await self._storage.find_message(
+                channel,
+                provider_thread_id,
+                provider_message_id,
+                direction=MessageDirection.OUTBOUND,
+            )
+            if existing is not None and existing.delivery_state in delivery_states:
+                # Quiet context can refer to a message already in readable history.
+                return None, message, False
         reference = message.metadata.get("provider_reply_to_message_id")
         if message.reply_to_message_id is None and isinstance(reference, str):
-            channel, provider_thread_id, _ = message.inbound_identity()
             parent = await self._storage.find_message(
-                channel, provider_thread_id, reference
+                channel,
+                provider_thread_id,
+                reference,
+                direction=MessageDirection.OUTBOUND,
             )
+            if parent is None or parent.delivery_state not in delivery_states:
+                parent = await self._storage.find_message(
+                    channel,
+                    provider_thread_id,
+                    reference,
+                    direction=MessageDirection.INBOUND,
+                )
             if parent is not None:
                 message = replace(message, reply_to_message_id=parent.message_id)
         recorded = await self._storage.record_inbound(
