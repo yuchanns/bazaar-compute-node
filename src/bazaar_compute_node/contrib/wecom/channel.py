@@ -43,7 +43,7 @@ from ...core.timerwheel import TimerWheel
 from ...core.utils.clock import remaining
 from ...core.utils.markdown import split_markdown, utf8_bytes
 from ...i18n import ENGLISH, Translator, create_translator
-from .identity import conversation_thread_id, parse_provider_thread_id
+from .identity import TopicAddress, conversation_thread_id, parse_provider_thread_id
 from .outbound import (
     AttachmentReader,
     PreparedAttachment,
@@ -52,6 +52,7 @@ from .outbound import (
     prepare_attachments,
     visible_message_body,
 )
+from .topic import TopicConversations
 
 _STOP = object()
 _MAX_MEDIA_BYTES = 25 * 1024 * 1024
@@ -198,6 +199,13 @@ class WeComChannel(IChannel):
             self._logger.addHandler(logging.StreamHandler())
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
+        self._topics = TopicConversations(
+            context,
+            bot_id=bot_id,
+            secret=secret,
+            emit=self._inbound.put,
+            logger=self._logger,
+        )
 
     @property
     def name(self) -> str:
@@ -241,6 +249,7 @@ class WeComChannel(IChannel):
         self._startup_finished.clear()
         self._startup_error = None
         self._state = "connecting"
+        self._topics.start()
         self._runner = asyncio.create_task(self._run(), name="bcn-wecom-channel")
         try:
             await asyncio.wait_for(self._startup_finished.wait(), timeout=timeout)
@@ -249,46 +258,57 @@ class WeComChannel(IChannel):
             self._runner.cancel()
             await asyncio.gather(self._runner, return_exceptions=True)
             self._runner = None
+            await self._topics.stop(timeout=timeout)
             self._state = "stopped"
             raise
         if self._startup_error is not None:
+            await self._topics.stop(timeout=timeout)
             raise self._startup_error
 
     async def stop(self, *, timeout: float) -> None:
         self._stopping.set()
-        decided_at_ms = time_ns() // 1_000_000
-        for pending in tuple(self._pending_approvals.values()):
-            if not pending.future.done():
-                pending.future.set_result(
-                    ApprovalResult(
-                        request_id=pending.request.approval.request_id,
-                        decision=ApprovalDecision.REJECTED,
-                        decided_at_ms=decided_at_ms,
-                        reason="channel_stopped",
-                    )
-                )
-        self._pending_approvals.clear()
-        self._approval_task_ids_by_request.clear()
-        await self._cancel_approval_card_updates()
+        deadline = asyncio.get_running_loop().time() + timeout
+        shutdown = asyncio.create_task(
+            self._topics.stop(timeout=timeout), name="bcn-wecom-topics-stop"
+        )
         try:
-            await asyncio.wait_for(self._send_lock.acquire(), timeout=timeout)
-        except TimeoutError:
-            pass
-        else:
-            self._send_lock.release()
-        connection = self._connection
-        if connection is not None:
-            await connection.close()
-        runner = self._runner
-        if runner is not None:
+            decided_at_ms = time_ns() // 1_000_000
+            for pending in tuple(self._pending_approvals.values()):
+                if not pending.future.done():
+                    pending.future.set_result(
+                        ApprovalResult(
+                            request_id=pending.request.approval.request_id,
+                            decision=ApprovalDecision.REJECTED,
+                            decided_at_ms=decided_at_ms,
+                            reason="channel_stopped",
+                        )
+                    )
+            self._pending_approvals.clear()
+            self._approval_task_ids_by_request.clear()
+            await self._cancel_approval_card_updates()
             try:
-                await asyncio.wait_for(runner, timeout=timeout)
+                await asyncio.wait_for(
+                    self._send_lock.acquire(), timeout=remaining(deadline)
+                )
             except TimeoutError:
-                runner.cancel()
-                await asyncio.gather(runner, return_exceptions=True)
-        self._runner = None
-        self._state = "stopped"
-        await self._inbound.put(_STOP)
+                pass
+            else:
+                self._send_lock.release()
+            connection = self._connection
+            if connection is not None:
+                await connection.close()
+            runner = self._runner
+            if runner is not None:
+                try:
+                    await asyncio.wait_for(runner, timeout=remaining(deadline))
+                except TimeoutError:
+                    runner.cancel()
+                    await asyncio.gather(runner, return_exceptions=True)
+        finally:
+            self._runner = None
+            await shutdown
+            self._state = "stopped"
+            await self._inbound.put(_STOP)
 
     async def receive(self) -> AsyncIterator[Message]:
         while True:
@@ -510,6 +530,24 @@ class WeComChannel(IChannel):
     async def send(
         self, request: ChannelSendRequest, *, timeout: float
     ) -> ProviderCallResult[ChannelDeliveryReceipt]:
+        try:
+            address = TopicAddress.parse(request.provider_thread_id)
+            if address is not None and address.bot_id != self._bot_id:
+                raise ValueError("WeCom topic belongs to another bot")
+        except ValueError as error:
+            return ProviderCallResult(
+                status=ProviderCallStatus.FAILED,
+                error_kind="invalid_topic_target",
+                error_message=str(error),
+            )
+        if address is not None:
+            if self._stopping.is_set():
+                return ProviderCallResult(
+                    status=ProviderCallStatus.FAILED,
+                    error_kind="channel_stopped",
+                    error_message="WeCom channel is stopping",
+                )
+            return await self._topics.send(request, address, timeout=timeout)
         _, target_id = parse_provider_thread_id(request.provider_thread_id)
         try:
             batches = (
@@ -945,6 +983,13 @@ class WeComChannel(IChannel):
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
     ) -> ApprovalResult:
+        if TopicAddress.parse(request.provider_thread_id) is not None:
+            return ApprovalResult(
+                request_id=request.approval.request_id,
+                decision=ApprovalDecision.REJECTED,
+                decided_at_ms=time_ns() // 1_000_000,
+                reason="WeCom native topics do not support approval cards",
+            )
         request_id = request.approval.request_id
         if timeout <= 0:
             raise TimeoutError("WeCom approval card delivery timed out")
@@ -1375,7 +1420,7 @@ class WeComChannel(IChannel):
         return False
 
     async def _receive_event(self, frame: Mapping[str, object]) -> None:
-        """Take in a bot event frame, which is only ever an approval decision."""
+        """Route native topic events and ordinary chat approval decisions."""
 
         body = frame.get("body")
         event = body.get("event") if isinstance(body, dict) else None
@@ -1387,6 +1432,8 @@ class WeComChannel(IChannel):
             "wecom.event.received",
             event_type=self._last_event_type,
         )
+        if isinstance(body, dict) and self._topics.receive(body):
+            return
         if (
             self._last_event_type == "template_card_event"
             and isinstance(event, dict)
@@ -1407,6 +1454,10 @@ class WeComChannel(IChannel):
         self._last_message_frame_at_ms = now_ms
         if not isinstance(body, dict):
             self._filter_message("invalid_body")
+            return
+        compatibility = body.get("compat_info")
+        if isinstance(compatibility, dict) and compatibility.get("source") == "channel":
+            self._filter_message("native_topic_projection")
             return
         route = self._route(body)
         if route is None:
