@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from time import time_ns
 from urllib.parse import unquote
 from uuid import NAMESPACE_URL, uuid5
@@ -374,6 +375,12 @@ class TopicConversations:
         mention: bool = False,
         modified: bool = False,
     ) -> None:
+        if (
+            not quiet
+            and content.creator.type == 1
+            and content.creator.id == self._bot_id
+        ):
+            return
         body = content.content.replace("${inline_mention_all}", "@all")
         for item in content.inline_mention_list:
             body = body.replace(
@@ -396,22 +403,23 @@ class TopicConversations:
             body = "[Content recalled]"
         elif modified:
             body = "[Content updated]\n" + body
-        await self._emit(
-            topic_message(
-                address,
-                provider_id=provider_id,
-                body=body,
-                creator=content.creator,
-                create_time=(content.modify_time or content.create_time)
-                if modified
-                else content.create_time,
-                name=name,
-                attachments=tuple(attachments),
-                parent_id=parent_id,
-                mentions_agent=mention,
-                notifies_runtime=not quiet and not content.is_recalled,
-            )
+        message = topic_message(
+            address,
+            provider_id=provider_id,
+            body=body,
+            creator=content.creator,
+            create_time=(content.modify_time or content.create_time)
+            if modified
+            else content.create_time,
+            name=name,
+            attachments=tuple(attachments),
+            parent_id=parent_id,
+            mentions_agent=mention and not quiet,
+            notifies_runtime=not quiet and not content.is_recalled,
         )
+        if quiet and content.creator.type == 1 and content.creator.id == self._bot_id:
+            message = replace(message, sender=None)
+        await self._emit(message)
 
     async def _download(
         self, item: Download, *, name: str, kind: str

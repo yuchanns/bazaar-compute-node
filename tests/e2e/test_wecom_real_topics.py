@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import struct
 import zlib
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 import aiohttp
 import pytest
+from bcn_test_support import RecordingAudit, TestChannel, TestRuntime, recorder_for
 
 from bazaar_compute_node.app.attachments import AttachmentMaterializer
 from bazaar_compute_node.contrib.sqlite.storage import SqliteDatabase
@@ -19,17 +21,149 @@ from bazaar_compute_node.contrib.wecom.identity import (
     TopicAddress,
     conversation_thread_id,
 )
+from bazaar_compute_node.contrib.wecom.topic import TopicConversations
 from bazaar_compute_node.contrib.wecom.topic_api import Members, TopicClient
+from bazaar_compute_node.core.actor import Actors, Agent, Mode
 from bazaar_compute_node.core.channel import ChannelContext, ChannelSendRequest
-from bazaar_compute_node.core.models import ChannelTargetKind, Review
+from bazaar_compute_node.core.lifecycle import TimeoutBudget
+from bazaar_compute_node.core.models import (
+    ChannelTargetKind,
+    MessageDirection,
+    Review,
+)
 from bazaar_compute_node.core.orchestration.commands.messages import (
     OutboundAttachmentResolver,
 )
+from bazaar_compute_node.core.orchestration.orchestrator import AgentOrchestrator
 from bazaar_compute_node.core.outcomes import ProviderCallStatus
 from bazaar_compute_node.core.timerwheel import TimerWheel
 from bazaar_compute_node.core.utils.clock import now_ms
+from bazaar_compute_node.i18n import ENGLISH, create_translator
 
 pytestmark = pytest.mark.e2e
+
+
+@pytest.mark.asyncio
+async def test_real_reply_authors_remain_distinct_after_reading_sent_context(
+    tmp_path: Path,
+) -> None:
+    """Read real replies and route a reconstructed event through ordinary history."""
+
+    own_id = os.environ.get("BCN_WECOM_TEST_SELF_REPLY")
+    other_id = os.environ.get("BCN_WECOM_TEST_OTHER_REPLY")
+    if not own_id or not other_id:
+        pytest.skip("Real self and other-author reply identities are required")
+    bot_id = os.environ["BCN_WECOM_BOT_ID"]
+    topic_id = os.environ["BCN_WECOM_TOPIC_ID"]
+    database = SqliteDatabase(database_name="real-reply-context.sqlite3")
+    await database.start(timeout=5)
+    scope = database.scope("isolated-wecom-e2e", "WeCom test")
+    channel = TestChannel()
+    runtime = TestRuntime()
+    orchestrator = AgentOrchestrator(
+        actors=Actors(agent_id="isolated-wecom-e2e", mode=Mode.SESSION),
+        channel=channel,
+        runtimes=(runtime,),
+        storage=scope,
+        audit=recorder_for(RecordingAudit(), clock=now_ms),
+        timeout_budget=TimeoutBudget(
+            startup_seconds=5,
+            provider_call_seconds=5,
+            command_seconds=5,
+            shutdown_seconds=5,
+        ),
+        timer_wheel=TimerWheel(),
+        workspace=lambda: tmp_path,
+        translator=create_translator(ENGLISH),
+        error_feedback_detail=lambda _, detail: detail,
+    )
+    runtime.command_service = orchestrator.command_service
+
+    async def referenced() -> set[str]:
+        return set()
+
+    topics = TopicConversations(
+        ChannelContext(
+            agent_id="isolated-wecom-e2e",
+            workspace=lambda: tmp_path,
+            attachments=AttachmentMaterializer(lambda: tmp_path, referenced),
+            options={},
+        ),
+        bot_id=bot_id,
+        secret=os.environ["BCN_WECOM_SECRET"],
+        emit=channel.inject,
+        logger=logging.getLogger(__name__),
+    )
+    try:
+        await orchestrator.start(timeout=5)
+        topics.start()
+        _, own_post, own_reply = own_id.split(":")
+        own = await topics.client.reply(topic_id, unquote(own_post), unquote(own_reply))
+        assert own.creator.id == bot_id
+        await topics._content(
+            TopicAddress(bot_id, topic_id, unquote(own_post)),
+            own,
+            own_id,
+            name="Real sent context",
+            quiet=True,
+        )
+        _, other_post, other_reply = other_id.split(":")
+        other = await topics.client.reply(
+            topic_id, unquote(other_post), unquote(other_reply)
+        )
+        assert other.parent_reply_id
+        parent = await topics.client.reply(
+            topic_id, unquote(other_post), other.parent_reply_id
+        )
+        # The content and authors are read from WeCom; this envelope is reconstructed.
+        assert topics.receive(
+            {
+                "msgid": "e2e-" + uuid4().hex,
+                "create_time": other.create_time,
+                "aibotid": bot_id,
+                "topic_id": topic_id,
+                "from": {"aibotid": other.creator.id}
+                if other.creator.type == 1
+                else {"userid": other.creator.id},
+                "msgtype": "event",
+                "event": {
+                    "eventtype": "topic_reply_event",
+                    "topic_reply_event": {
+                        "post_id": unquote(other_post),
+                        "reply_id": unquote(other_reply),
+                        "type": 1,
+                    },
+                },
+            }
+        )
+        address = TopicAddress(bot_id, topic_id, unquote(other_post))
+        async with asyncio.timeout(5):
+            while (
+                message := await scope.find_message(
+                    "wecom",
+                    address.provider_thread_id,
+                    other_id,
+                    direction=MessageDirection.INBOUND,
+                )
+            ) is None:
+                await asyncio.sleep(0.01)
+        history = await orchestrator.command_service.read_messages(
+            Agent("isolated-wecom-e2e"),
+            raw_target=message.target,
+            around_message_id=message.message_id,
+            limit=1,
+        )
+        assert any(
+            item.sender is not None
+            and item.sender.id == other.creator.id
+            and other.content in item.body
+            for item in history.messages
+        )
+        assert any(parent.content in item.body for item in history.referenced_messages)
+    finally:
+        await topics.stop(timeout=5)
+        await orchestrator.stop(timeout=5)
+        await database.stop(timeout=5)
 
 
 @pytest.mark.asyncio
