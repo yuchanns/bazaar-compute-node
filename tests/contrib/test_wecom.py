@@ -1084,7 +1084,10 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert current.body == "Can you see the quoted text?"
     assert current.sender_kind is SenderKind.HUMAN
     assert current.message_id != current.provider_message_id
-    assert current.reply_to_message_id == referenced.message_id
+    assert (
+        current.metadata["provider_reply_to_message_id"]
+        == referenced.provider_message_id
+    )
     assert current.thread_id == referenced.thread_id
     assert current.target == referenced.target
     assert "has_quote" not in current.metadata
@@ -1101,4 +1104,7 @@ async def test_wecom_emits_quoted_text_before_the_current_message(
     assert repeated_reference.provider_message_id == referenced.provider_message_id
     assert repeated_reference.message_id == referenced.message_id
     assert another_current.message_id != current.message_id
-    assert another_current.reply_to_message_id == referenced.message_id
+    assert (
+        another_current.metadata["provider_reply_to_message_id"]
+        == referenced.provider_message_id
+    )
