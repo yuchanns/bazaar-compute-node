@@ -779,9 +779,9 @@ class TelegramChannel(IChannel):
         reply = message.get("reply_to_message")
 
         received_at_ms = time_ns() // 1_000_000
-        reply_to_message_id: str | None = None
+        reference: str | None = None
         if isinstance(reply, Mapping):
-            reply_to_message_id = await self._queue_reply_backfill(
+            reference = await self._queue_reply_backfill(
                 reply,
                 update_id=update_id,
                 identity=identity,
@@ -818,8 +818,8 @@ class TelegramChannel(IChannel):
                 notifies_runtime=activation.notifies_runtime,
                 attachments=update.content.attachments,
                 provider_time_ms=update.provider_time_s * 1_000,
-                reply_to_message_id=reply_to_message_id,
                 metadata={
+                    "provider_reply_to_message_id": reference,
                     "telegram_update_id": update_id,
                     "telegram_chat_id": update.chat_id,
                     "telegram_message_thread_id": update.topic_id,
@@ -866,20 +866,20 @@ class TelegramChannel(IChannel):
         bot_username = self._bot_username or ""
         if bot_id is None:
             raise RuntimeError("Telegram bot identity is not initialized")
-        # what the bot itself said is on record as sent; quoted back, it is
-        # not heard a second time as if someone else had said it
         quoted_sender = reply.get("from")
-        if isinstance(quoted_sender, Mapping) and quoted_sender.get("id") == bot_id:
-            return None
         content = await self._content(
             reply,
             bot_id=bot_id,
             bot_username=bot_username,
         )
         if content is None:
-            return None
+            return str(provider_message_id)
 
-        sender = self._sender(reply)
+        sender = (
+            None
+            if isinstance(quoted_sender, Mapping) and quoted_sender.get("id") == bot_id
+            else self._sender(reply)
+        )
         provider_time_s = reply.get("date")
         provider_time_ms: int | None = None
         historical: bool | None = None
@@ -892,12 +892,11 @@ class TelegramChannel(IChannel):
             historical = provider_time_s < self._started_at_s
 
         channel_session_id = identity.channel_session_id
-        message_id = identity.message_id(provider_message_id)
         await self._inbound.put(
             Message(
                 direction=MessageDirection.INBOUND,
                 seq=0,
-                message_id=message_id,
+                message_id=identity.message_id(provider_message_id),
                 thread_id=identity.session_id,
                 channel_session_id=channel_session_id,
                 channel="telegram",
@@ -935,7 +934,7 @@ class TelegramChannel(IChannel):
         )
         self._messages_queued += 1
         self._quoted_messages_queued += 1
-        return message_id
+        return str(provider_message_id)
 
     async def _content(
         self,

@@ -313,10 +313,13 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             name=TEST_USER_USERNAME,
         )
         assert current.sender_kind is SenderKind.HUMAN
-        assert current.reply_to_message_id == quoted.message_id
+        assert (
+            current.metadata["provider_reply_to_message_id"]
+            == quoted.provider_message_id
+        )
 
-        # a reply quoting what this bot itself sent brings no second copy of
-        # it: the message is on record as sent
+        # The shared receiver reuses a sent message or records the quiet
+        # context when its provider receipt is not available yet.
         await channel._handle_message(
             {
                 "message_id": 4,
@@ -338,9 +341,17 @@ async def test_telegram_lifecycle_identity_and_inbound_speaker_projection(
             },
             update_id=3,
         )
-        only = await channel._inbound.get()
-        assert isinstance(only, Message)
-        assert only.body == "Replying to you" and only.reply_to_message_id is None
+        quoted = await channel._inbound.get()
+        current = await channel._inbound.get()
+        assert isinstance(quoted, Message)
+        assert isinstance(current, Message)
+        assert not quoted.notifies_runtime
+        assert quoted.sender is None
+        assert current.body == "Replying to you"
+        assert (
+            current.metadata["provider_reply_to_message_id"]
+            == quoted.provider_message_id
+        )
         assert channel._inbound.empty()
 
         filtered_before = channel._message_updates_filtered

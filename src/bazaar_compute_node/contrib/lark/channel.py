@@ -437,6 +437,7 @@ class LarkChannel(IChannel):
 
         quoted: Message | None = None
         if parent_id is not None:
+            metadata["provider_reply_to_message_id"] = parent_id
             quoted, failure = await self._quoted_message(
                 parent_id,
                 chat_id=fields.chat_id,
@@ -462,7 +463,6 @@ class LarkChannel(IChannel):
             mentions_agent=target_kind is ChannelTargetKind.GROUP,
             notifies_runtime=True,
             received_at_ms=received_at_ms,
-            reply_to_message_id=quoted.message_id if quoted is not None else None,
             provider_payload_metadata=metadata,
         )
         await self._queue_inbound(
@@ -485,7 +485,6 @@ class LarkChannel(IChannel):
         mentions_agent: bool,
         notifies_runtime: bool,
         received_at_ms: int,
-        reply_to_message_id: str | None = None,
         provider_payload_metadata: Mapping[str, object] | None = None,
     ) -> Message:
         provider_message_id = _provider_text(message.get("message_id"))
@@ -546,7 +545,6 @@ class LarkChannel(IChannel):
             notifies_runtime=notifies_runtime,
             attachments=attachments,
             provider_time_ms=_provider_time_ms(message.get("create_time")),
-            reply_to_message_id=reply_to_message_id,
             metadata=metadata,
         )
 

@@ -1292,7 +1292,7 @@ class WeComChannel(IChannel):
             )
             return None
         quote_content = await self._content(quote, quote_type)
-        reply_to_message_id = str(
+        message_id = str(
             uuid5(
                 NAMESPACE_URL,
                 f"bcn:wecom:{self._bot_id}:quoted-message:{conversation}:"
@@ -1303,7 +1303,7 @@ class WeComChannel(IChannel):
             Message(
                 direction=MessageDirection.INBOUND,
                 seq=0,
-                message_id=reply_to_message_id,
+                message_id=message_id,
                 thread_id=session_id,
                 channel_session_id=channel_session_id,
                 channel=self.name,
@@ -1322,7 +1322,7 @@ class WeComChannel(IChannel):
                 metadata={"sender_kind": SenderKind.HUMAN.value},
             )
         )
-        return reply_to_message_id
+        return quote_content.fingerprint
 
     def _update_approval_card(
         self,
@@ -1479,7 +1479,7 @@ class WeComChannel(IChannel):
         create_time = body.get("create_time")
         if isinstance(create_time, int) and not isinstance(create_time, bool):
             metadata["provider_create_time"] = create_time
-        reply_to_message_id = await self._queue_quoted_message(
+        reference = await self._queue_quoted_message(
             body.get("quote"),
             provider_message_id=provider_message_id,
             conversation=conversation,
@@ -1489,6 +1489,8 @@ class WeComChannel(IChannel):
             target_kind=target_kind,
             received_at_ms=received_at_ms,
         )
+        if reference is not None:
+            metadata["provider_reply_to_message_id"] = reference
         await self._inbound.put(
             Message(
                 direction=MessageDirection.INBOUND,
@@ -1513,7 +1515,6 @@ class WeComChannel(IChannel):
                 target_kind=target_kind,
                 mentions_agent=mentions_agent,
                 attachments=content.attachments,
-                reply_to_message_id=reply_to_message_id,
                 metadata=metadata,
             )
         )
@@ -1527,7 +1528,7 @@ class WeComChannel(IChannel):
             session_id=session_id,
             target_kind=target_kind.value,
             message_type=message_type,
-            referenced=reply_to_message_id is not None,
+            referenced=reference is not None,
         )
 
     async def _send_approval_card_update(
