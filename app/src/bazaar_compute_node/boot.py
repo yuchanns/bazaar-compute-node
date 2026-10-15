@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import os
+lazy import sys
 lazy import tomllib
 lazy from collections.abc import AsyncIterator, Callable, Sequence
 lazy from importlib.resources import files
@@ -220,6 +221,9 @@ def bootstrap(
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_bytes(resource.joinpath("catalog.json").read_bytes())
     defaults = tomllib.loads(resource.joinpath("defaults.toml").read_text())
+    defaults["contribs"].append(
+        {"contrib": "sidecar-windows" if sys.platform == "win32" else "sidecar-unix"}
+    )
     defaults["contrib_indexes"] = [str(catalog)]
     return (
         definitions,

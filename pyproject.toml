@@ -33,6 +33,9 @@ bazaar-contrib-config-versions = { workspace = true }
 bazaar-contrib-logging = { workspace = true }
 bazaar-contrib-manager = { workspace = true }
 bazaar-contrib-invoke = { workspace = true }
+bazaar-contrib-sidecar = { workspace = true }
+bazaar-contrib-sidecar-unix = { workspace = true }
+bazaar-contrib-sidecar-windows = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.uv.workspace]

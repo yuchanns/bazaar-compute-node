@@ -23,6 +23,9 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             "bazaar-contrib-config-versions",
             "bazaar-contrib-manager",
             "bazaar-contrib-invoke",
+            "bazaar-contrib-sidecar",
+            "bazaar-contrib-sidecar-unix",
+            "bazaar-contrib-sidecar-windows",
             "bazaar-compute-node",
         ):
             subprocess.run(

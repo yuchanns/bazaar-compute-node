@@ -15,6 +15,9 @@ dependencies = [
     "bazaar-contrib-logging==0.3.0",
     "bazaar-contrib-manager==0.3.0",
     "bazaar-contrib-invoke==0.3.0",
+    "bazaar-contrib-sidecar==0.3.0",
+    "bazaar-contrib-sidecar-unix==0.3.0; sys_platform != 'win32'",
+    "bazaar-contrib-sidecar-windows==0.3.0; sys_platform == 'win32'",
     "click>=8.1.0",
 ]
 

@@ -439,16 +439,14 @@ V4→V5 在内存中生成候选配置和 required packages；
 | --- | --- | --- |
 | node.storage="sqlite"、node.database_name | storage、sqlite、database；database.config.backend="sqlite"，sqlite.config.path 为原数据库位置 | 缺省使用原 bcn.sqlite3；相对路径按原数据目录解析，保持同一数据库文件 |
 | node.audit="logging"、node.logging | logging 与对应 config | 保留日志参数；默认 audit 仍映射 logging |
-| node.audit="server"、node.server | starlink，启用事件上报及所需 storage／schema／timer 入口 | 保存原 url、token_env，通过 listen 消费审计事件；所需 bazaar-contrib-starlink 纳入额外依赖 |
-| node.control="server"、node.server | 同一 starlink，启用远端请求 | 保留原 url、token_env 和请求设置，通过 getUpdate 收取请求、调用已绑定的 offer 服务、send 返回结果 |
-| node.control="none" 或缺省 | 本地调用入口，starlink 的远端请求能力保持停用 | 本地 commands／local-rpc 按原功能建立，两种能力分别按旧选择生成 |
-| node.endpoint | local-rpc.config.endpoint | 保留 socket／pipe 地址；缺省采用原平台的默认地址 |
+| 每个节点的本机通信 | commands、sidecar 及本机实现入口 | 承接 0.2 的 bcn.sock 通信，默认启用；与 node.control 的选择无关 |
+| node.endpoint | 所选 sidecar 实现的 config.endpoint | Unix 保留路径，Windows 按原路径身份生成原生管道地址；缺省由实现包提供本机地址 |
 | node.version_check | node-management.config.version_check | 显式 false 保持 false，缺省为 true |
 | node.lang | — | V5 文案由所属功能包持有，默认使用英语 |
 | 原 agent、channel／runtime 配置 | agent.config.agents 及其 channel／harness 数组；对应公共登记与 provider 启用条目 | id、name、顺序、mode、超时、模型、effort、sandbox、env、凭据引用及 provider 参数逐项保留 |
 
 执行、消息、协作、Reminder 等原有固定能力写成顶层模块条目；channel／harness 注册按原有 provider 选择生成。
-转换以原生效能力为依据，明确的审计／控制选择覆盖相应默认组合内容；已有 V5 读取保留原启用列表。
+server／starlink 相关字段随第 11 阶段交付对应功能时补充 V4→V5 映射；已有 V5 读取保留原启用列表。
 默认 agent 的配置整体写入 agent 启用条目的 config；原 runtime 字段转为 harness，按 provider 模型保留数组顺序和参数。
 Telegram、Lark、WeCom 分别映射到同名 builder 和运行入口；Codex 映射 codex-builder／codex，
 Claude Code 的原 kind="claudecode" 映射 claudecode-builder／claudecode。
@@ -698,7 +696,7 @@ server 实例用本地绑定的子组合装配独立配置载体与 BCS 配置�
 server-api 在 server 组合接受 HTTP 并提供 API，管理与节点 starlink 通信的 HTTP 入口；业务模块通过 API 登记自己的方法，访问模块提供授权服务。
 web、GUI 与页面在该子组合中按服务绑定依赖 API、UI 和访问服务；业务页面与渠道编辑器通过通用 GUI 契约登记。
 starlink 是独立发行包和普通节点插件，持有主动连接、getUpdate 请求循环、send 响应发送、身份、请求关联及重连资源。
-新建节点默认不启用 starlink；用户配置目标 server 后启用其入口。V4 迁移按原 audit／control 选择保留事件上报和远端请求设置。
+新建节点默认不启用 starlink；用户配置目标 server 后启用其入口。第 11 阶段完成 starlink 后，再按原 audit／control 选择补充 V4 的事件上报和远端请求迁移。
 节点通过 getUpdate 主动收取远端查询或操作请求，通过 send 独立发送对应结果与错误；请求响应的推进由 starlink 自身生命周期管理。
 请求格式公开描述请求 ID、方法与参数，响应包含同一请求 ID 和结果或错误；BCS 与其他遵循协议的实现都可作为对端。
 starlink 在 accepts 中声明所需服务，通过 Context.accept 获取其他插件 offer 的对象并调用方法；通知操作可以在节点内 announce。
@@ -954,13 +952,52 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 真实文件／SQLite 与独立示例 wheel 验证根选择、绑定、命令参数、帮助、取消、信号、资源退出及管理升级。
 - [x] 完成真实 uv tool／venv、独立 wheel／sdist、Blockbuster、Ruff 与根目录 LSP，替换旧命令提交并签名推送供 review。
 
-### Task 8：调用与 channel／harness 公共登记
+### Task 8：sidecar 调用与 channel／harness 公共登记
 
-- [ ] 基于已交付 COMMANDS 补齐 bazaar-contrib-invoke 的 local-rpc、命令／RPC 登记契约、Pydantic 输入边界及本地 socket／pipe 传输，业务 handler 由功能模块登记。
+本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
+`SERVER`、`CLIENT` 两个公共服务 key，并提供接受 `SERVER`、`CONFIGURATION` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
+将自己的 Context 公开为 handler。消费插件只依赖接口包并接受 `CLIENT`，按已有 offers／accepts 装配。
+
+`bazaar-contrib-sidecar-unix`、`bazaar-contrib-sidecar-windows` 分别提供同名入口，各自 offer 两个服务。
+`SERVER` 接受会话 handler 工厂并持有监听，`CLIENT` 传递类型化请求与结果；公共服务契约与具体 I/O 无关，
+后续 HTTP 实现使用同一契约。Unix 使用 asyncio Unix streams，Windows 使用 CPython ProactorEventLoop 的
+`start_serving_pipe`／`create_pipe_connection`；app 的发行依赖用 Python 标准平台条件选择本机实现。
+app 读取默认 TOML 后，根据 `sys.platform` 加入 `sidecar-windows` 或 `sidecar-unix` 的普通启用声明，
+将完整默认配置交给配置服务保存。
+Windows 使用 [CPython 3.15 的 IOCP 与 pipe transport](https://github.com/python/cpython/blob/3.15/Lib/asyncio/windows_events.py)，
+创建句柄时以 FIRST_PIPE_INSTANCE 排他，并沿用 0.2 的 PIPE_REJECT_REMOTE_CLIENTS；按
+[CreateNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)
+的句柄归属管理后续连接，接受任务由 lifespan 持有，退出时取消并关闭未连接句柄。
+Unix 沿用 0.2 的存活探测：已有 socket 能连接则拒绝启动，连接被拒绝或普通残留文件则清理后重建；
+其他 I/O 错误直接上抛。先自行 bind，再把 socket 交给 asyncio，保留内核的地址排他，避免 asyncio 自动删除已有端点。
+Unix 监听与按文件身份清理由 [asyncio streams](https://docs.python.org/3.15/library/asyncio-stream.html) 持有。
+两端收发沿用 0.2 的分块读行：每次读取 64 KiB、查找换行并保留下一帧余量，避免 StreamReader.readline 的单行上限；
+共享实现放在 sidecar 包内，实际请求与响应均验证超过 1 MiB 的完整内容。退出先取消连接任务，再等待监听关闭。
+配置内可明确指定本机 endpoint，默认地址在插件内按平台生成，沿用 BCN_HOME 的数据目录。
+每个节点默认启用 sidecar 与本机实现，承接 0.2 的 bcn.sock 本机通信；V4→V5 无条件生成这两个入口，
+并将旧 Windows 路径按原有管道身份转换为原生地址。node.control 与本机通信的启用无关；
+已有 V5 的启用选择与参数继续保留。
+
+共享 handler 从服务端 Context 出发，提供公开属性读取、方法调用及异步上下文的进入、退出和引用释放。
+JSON 标量、序列和字典按值传输，服务、候选组合等对象以连接内引用返回；公共 key、定义和模型可用已安装的
+`module:symbol` 引用及构造参数传入，避免复制服务实例或丢失 key 身份。请求与结果由 Pydantic 校验。
+连接关闭时释放其对象引用及远端进入的子组合；服务端退出时取消并等待所属连接任务。
+
+消费方使用客户端取得远端 ctx，再通过 accept 取得已声明的服务并组合调用。
+服务端直接通过 `accepts=[SERVER, CONFIGURATION]` 声明公共接口依赖，框架负责绑定、就绪和退出顺序。
+默认启用及 V4→V5 转换只声明 sidecar 入口，公共接口依赖由插件定义持有。
+配置刷新由调用者通过远端 CONFIGURATION.read／commit／apply 编排，继续使用配置加载器原有 ctx 的更新归属；
+sidecar 的 ctx 保持自己的服务可见范围与组合归属。各传输共用这些 handler，业务编排由消费插件持有。
+
+- [x] 交付 bazaar-contrib-sidecar 的 SERVER／CLIENT 契约、接受 SERVER 的 sidecar 入口、共享 ctx／对象 handler 与会话资源管理。
+- [x] 交付独立 Unix socket 和 Windows named pipe 实现包，各自 offer SERVER／CLIENT；app 声明平台默认依赖与启用配置，V4→V5 的本地调用配置映射到 sidecar。
+- [x] 真实独立 wheel、节点进程和 CLI 消费者验证迁移地址、ctx 调用、配置热更新、远端子组合、断开清理与重启；TCP 示例实现复用相同 handler，完成 Ruff、根目录 LSP 和发行安装检查。
+- [x] 对照 0.2 补齐原生边界处理，交付真实 socket／pipe 和隔离进程的安装验收：残留端点、活动地址排他、异常退出恢复、坏连接隔离、退出清理及 3 MB 双向分块读行。
+- [ ] 三系统原生 CI 验证各平台 socket／pipe 与相同客户端流程，提交本轮 review。
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
-- [ ] 节点未运行时，CLI 使用本次管理组合直接调用登记的功能服务；运行后的本地 RPC 按同一登记表分发并绑定身份和目标。
-- [ ] app 默认组合启用本地调用和两类 builder 注册服务，功能包继续拥有命令文案。
+- [ ] 按消费插件的实际业务接入 sidecar 客户端，自行编排跨进程调用；本地管理组合继续使用其已声明的功能服务。
+- [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
 - [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
 
 ### Task 9：公共存储、SQLite 与 schema

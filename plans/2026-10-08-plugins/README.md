@@ -45,6 +45,10 @@ starlink 默认停用，配置目标 server 后启用；其 getUpdate／send 循
 用户可以启用 PG 等其他后端并更新数据库选择，业务继续通过公共 DB 使用显式数据操作。
 当前先交付 COMMANDS 与 invoke 自持的命令入口扩展：功能包声明命令归属、在 lifespan 登记 Click 命令并持有文案。
 boot／load 后按入口选插件根，core 按绑定选择依赖；app 的 run 同样是命令插件，由其回调启用完整组合并等待退出。
+跨进程调用由 sidecar 接口包提供 SERVER／CLIENT 契约与接受 SERVER 的 ctx handler 入口；
+Unix 和 Windows 实现包各自提供两个服务，消费方只依赖接口包并接受 CLIENT，自行组合远端公开调用。
+app 通过平台 marker 声明默认发行依赖与启用条目，配置服务在创建默认文档时选定当前平台实现。
+sidecar 承接 0.2 的 bcn.sock 本机通信，节点默认启用；V4→V5 无条件加入 sidecar 和本机实现，与 node.control 的选择无关。
 功能包同时持有自身的通知与页面文案，默认使用英语。
 web 组合提供 contrib 市场页面，读取随 app 发布的官方本地索引，以及用户追加的本地或 HTTP(S) 索引，按条目的包名和 Python 包源交给目标宿主 uv 安装。
 包的发行元数据将发行包关联到模块入口，用户选择入口和参数后经该宿主的当前 CONFIG_STORE 保存。
