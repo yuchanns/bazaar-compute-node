@@ -11,7 +11,7 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 新增模块无需向 Context 增加业务字段，也无需向中心分发器追加业务分支。
 
 本分支完整交付服务注册、依赖装配、本地绑定、事件和资源生命周期、独立状态查询模块、包发现、配置载体契约与默认 filesystem 模块、V5 配置及版本转换机制、
-节点启动接入、模块及 agent 管理、默认语言／调用／存储／消息／协作／定时／Reminder 和可替换 agent 组合。后续能力依照
+节点启动接入、模块及 agent 管理、默认调用／存储／消息／协作／定时／Reminder 和可替换 agent 组合。后续能力依照
 [0.3 路线图](roadmap.md) 逐个交付新包。工程的分支与发行规则见 [总计划](README.md)。
 
 ## 首阶段的发行结构
@@ -190,14 +190,6 @@ contrib_indexes = [
 ]
 
 [[contribs]]
-contrib = "languages"
-
-[[contribs]]
-contrib = "language"
-[contribs.config]
-backend = "en"
-
-[[contribs]]
 contrib = "storage"
 
 [[contribs]]
@@ -232,7 +224,7 @@ name = "B"
 ```
 
 示例为配置节选，完整 agent 字段及 channel／harness 选择和参数由 agent 插件与所选 provider 的模型定义，保存到该条目的 config.agents。
-languages、language 来自 bazaar-contrib-language，提供默认英语及共享翻译服务；storage、database 来自 bazaar-contrib-storage，
+storage、database 来自 bazaar-contrib-storage，
 SQLite、日志与 recorder 由各发行包声明入口。
 storage、sqlite、database 和 logging 各创建一个默认共享实例。agent 组合使用普通 Python 函数从 config.agents 生成具体执行与 provider 条目；每个 agent 的私有服务和消息事件使用稳定绑定，DB 和公共审计事件可以共享。
 组合的 lifespan 使用 `ctx.enable(composition, local=(...))` 管理需要动态创建的子资源；全部已知静态条目显式展开后交给候选校验，动态子组合在启用边界校验。
@@ -431,7 +423,7 @@ config-v5 = "bazaar_contrib_config_versions:v5"
 ### V5 配置与版本转换
 
 配置文档以顶层 `version="5"` 标识结构版本，与 BCN／模块的发行版本分别管理。
-顶层保存 `version`、`contrib_indexes` 和统一 `contribs`；默认 agent 的实体配置归 `contrib="agent"` 条目的 `config.agents`。本地传输地址、语言、数据库、
+顶层保存 `version`、`contrib_indexes` 和统一 `contribs`；默认 agent 的实体配置归 `contrib="agent"` 条目的 `config.agents`。本地传输地址、数据库、
 审计和版本检查等能力参数保存在其所属模块的 config。
 默认 agent 模型保留 id、name、mode、idle_timeout、channel 数组及 provider kind 和业务参数的实体含义；旧 runtime 数组映射到该模型的 harness 数组。
 运行实例由组合明确声明，内部标识由宿主生成，私有绑定由组合持有。
@@ -452,10 +444,7 @@ V4→V5 在内存中生成候选配置和 required packages；
 | node.control="none" 或缺省 | 本地调用入口，starlink 的远端请求能力保持停用 | 本地 commands／local-rpc 按原功能建立，两种能力分别按旧选择生成 |
 | node.endpoint | local-rpc.config.endpoint | 保留 socket／pipe 地址；缺省采用原平台的默认地址 |
 | node.version_check | node-management.config.version_check | 显式 false 保持 false，缺省为 true |
-| node.lang="en" | languages、language，language.config.backend="en" | 英语实现随 bazaar-contrib-language 安装 |
-| node.lang="zh-CN" | languages、language-zh-cn、language，backend="zh-CN" | required packages 加入 bazaar-contrib-language-zh-cn，记录包来源与版本要求 |
-| node.lang 缺省 | languages、language；写入原生效语言 en 或 zh-CN | 迁移在所属节点按原系统语言规则解析一次，写入确定值；新建 V5 默认 en |
-| 其他非空 node.lang | languages、language，language.config.backend="en" | 沿用原 create_translator 对非 zh-CN 配置使用英语的行为 |
+| node.lang | — | V5 文案由所属功能包持有，默认使用英语 |
 | 原 agent、channel／runtime 配置 | agent.config.agents 及其 channel／harness 数组；对应公共登记与 provider 启用条目 | id、name、顺序、mode、超时、模型、effort、sandbox、env、凭据引用及 provider 参数逐项保留 |
 
 执行、消息、协作、Reminder 等原有固定能力写成顶层模块条目；channel／harness 注册按原有 provider 选择生成。
@@ -473,7 +462,7 @@ node.server 被审计和控制共用时只生成一个 starlink 配置，原参�
 凭据引用、环境映射、数据目录、工作区、数据库文件和 agent 身份继续指向原资源。
 转换产生新配置与包需求，数据迁移由相应 schema 模块按原 ledger 执行。
 版本读取、状态推进、V4→V5 映射和候选生成归配置版本模块；配置包的普通加载器经 `ctx.validate()` 校验候选后通过 CONFIG_STORE 条件提交，各能力阶段同步其字段映射及新配置模型。
-首阶段交付 V5 模型和版本链、候选及提交机制；语言、数据库、provider、远程和管理阶段分别补齐映射和产物，
+首阶段交付 V5 模型和版本链、候选及提交机制；数据库、provider、远程和管理阶段分别补齐映射和产物，
 通过真实已交付组合验证其转换。最终发行阶段使用全部正式模块完成完整旧配置升级。
 
 升级与首次加载使用以下顺序：
@@ -482,7 +471,7 @@ node.server 被审计和控制共用时只生成一个 starlink 配置，原参�
 2. 升级使用含目标宿主、所选载体包和固定版本组合的隔离预检环境，转交同一自举参数，由目标解释器执行迁移预检，
    将所需包和保存的默认／可选／第三方依赖一起交给自身 uv，
    保持已有来源与版本固定；所需包在最终安装前加入同一个候选 pyproject 和 pylock。
-   中文包使用官方索引的明确 package/source 关联；第三方语言和 provider 使用其已有来源或用户选定来源。
+   额外 provider 使用其已有来源或用户选定来源。
 3. 安装完成后在目标解释器加载入口定义，以 Pydantic 校验配置，展开实例与 accepts 并检查完整依赖图。
    直接 bcn run 加载旧文档时使用已安装环境完成同样检查；缺少包时报告所需包和安装操作，待安装后重试。
 4. 使用读取时的 revision 调用 CONFIG_STORE.write，条件提交由载体完成。
@@ -494,9 +483,9 @@ node.server 被审计和控制共用时只生成一个 starlink 配置，原参�
 版本推进和候选校验期间保留原快照，包安装失败保留原配置及声明并报告实际环境状态。
 未知未来版本在读取边界诊断；重复读取成功迁移后的 V5 得到相同启用配置。
 V5 手写文件、CLI、页面和 defaults.toml 导入使用同一模型与保存入口。
-默认组合用于新建，组合导入按已有条目保留参数、停用及 DB／语言选择。
+默认组合用于新建，组合导入按已有条目保留参数、停用及 DB 选择。
 
-以下展示 V4 中文选择与对应的 V5 节选，其余能力按映射表同步生成：
+以下展示 V4 存储与管理配置及对应的 V5 节选，其余能力按映射表同步生成：
 
 ```toml
 # 升级前的 V4 节选。
@@ -505,24 +494,12 @@ version = "4"
 storage = "sqlite"
 database_name = "bcn.sqlite3"
 audit = "logging"
-lang = "zh-CN"
 version_check = false
 ```
 
 ```toml
-# 升级后的 V5 节选；bazaar-contrib-language-zh-cn 已纳入额外包清单并安装。
+# 升级后的 V5 节选。
 version = "5"
-
-[[contribs]]
-contrib = "languages"
-
-[[contribs]]
-contrib = "language-zh-cn"
-
-[[contribs]]
-contrib = "language"
-[contribs.config]
-backend = "zh-CN"
 
 [[contribs]]
 contrib = "storage"
@@ -583,7 +560,7 @@ web、GUI 与页面模块进入 server 组合，通过 API、UI 和访问服务�
 | session_minutes，缺省 10 | access 从 BCS 配置读取，保持本地登录有效时长 |
 | retention_days，缺省 30 | history 从 BCS 配置读取，保持原事件保留策略 |
 | ~/.bcs/session.key | access 直接读取原密钥，保持签名和 cookie 语义，既有未过期登录继续校验 |
-| accounts、roles、account_roles、auth_settings、oidc_providers、oidc_identities、relations | access 使用原账户、密码哈希、角色、权限、分享和 OIDC 设置；账户 language／theme 继续由页面读取 |
+| accounts、roles、account_roles、auth_settings、oidc_providers、oidc_identities、relations | access 使用原账户、密码哈希、角色、权限、分享和 OIDC 设置；账户 theme 继续由页面读取 |
 | computers、events、refs 等既有业务数据 | fleet／history／contacts 查询原表和标识，保持 computer 身份、secret_hash、事件顺序与关联 |
 
 包拆分完成后，业务查询直接使用上述历史数据布局。后续 schema 变更由新增迁移执行，
@@ -603,19 +580,17 @@ server 保留这些既有协议入口及请求／响应含义；0.3 两端的服
 原 0.2 节点的 control.result 按既有协议接收；0.3 client 直接通过私有协议回传调用结果。
 升级后新事件仍写入原数据库，并能通过同一 web 页面查询；重复启动保持独立 BCS 配置、数据与迁移结果稳定。
 同进程使用另一份隔离节点配置与数据库，分别修改节点和 BCS 设置并写入各自业务数据，核对两边配置文件、数据库路径与实际查询结果。
-完整验收使用隔离环境的真实 V1／V2／V3／V4 文件，覆盖中文、英语、未设置 lang、其他语言标识的英语回退、
-多 agent／provider、远端连接、凭据引用和关闭版本检查，并验证重复加载与迁移后真实运行结果。
+完整验收使用隔离环境的真实 V1／V2／V3／V4 文件，覆盖多 agent／provider、远端连接、凭据引用和关闭版本检查，并验证重复加载与迁移后真实运行结果。
 
 ### 默认配置生成与后端切换
 
 `bazaar-compute-node` 的 `bazaar_compute_node/defaults.toml` 提供初始节点组合模板。
 app 构建从 BCN uv.lock 的 contrib/ 工作区成员自动生成 package/source 条目，按包名排序形成官方索引；官方源使用 PyPI，未安装的包同样随索引发行。
 app 从发行资源提取内置官方索引到节点目录的 `contrib/catalog.json`，将实际本地路径作为 TOML 字符串渲染到多行 contrib_indexes；节点目录沿用 BCN_HOME 下的 `.bcn`，未设置时为 `~/.bcn`。
-初次创建配置时，经 CONFIG_STORE 将 V5 组合提交到所选来源，filesystem 默认写入 `config.toml`，包括 `languages`、`language` 和 `backend="en"`，
-以及 `storage`、`sqlite`、`database` 三条启用配置，
+初次创建配置时，经 CONFIG_STORE 将 V5 组合提交到所选来源，filesystem 默认写入 `config.toml`，包括 `commands`、`storage`、`sqlite`、`database` 等启用配置，
 并明确写入 `database.config.backend="sqlite"`、默认 agent 的 `config.agents=[]`。必要包通过宿主发行依赖安装，启动按保存的配置发现入口和建立服务依赖。
 可选 server／web 包分别提供 `bazaar_contrib_server/defaults.toml`、`bazaar_contrib_web/defaults.toml` 节点启用条目，
-用户选择后经节点配置管理服务校验并保存；节点已有存储／语言选择、参数及停用选择继续保留。
+用户选择后经节点配置管理服务校验并保存；节点已有存储选择、参数及停用选择继续保留。
 服务端自己的配置与业务组合由 server 的独立载体和发行资源管理，监听、登录及 storage 等 BCS 设置直接从原配置读取。
 安装操作提交包依赖清单并展示入口和组合资源；用户选择 enable 时导入所选组合并保存启用配置，`add --enable` 顺序执行这两项操作。
 后续启动读取用户保存的配置，升级通过配置版本迁移保留停用条目、参数和后端选择。
@@ -799,17 +774,48 @@ core 发现入口、装配所选载体及发行版本组合，启用提供 `COMP
 未提供组合资源的多入口包由管理入口展示发行元数据中的入口与配置模型，用户选择后提交配置。
 模块通用参数由各入口的 Pydantic 模型校验并保存到对应 contribs.config；编辑更新所选已有条目，保留未修改的参数与其他组合选择。
 agent 的连接／执行参数和凭据引用由 provider 实体模型校验，保存到 agent 条目 config.agents 中相应实体的 channel／harness 配置。
-命令定义、提示与输出沿用现有 CLI 和 i18n。
+命令定义、帮助、提示与输出由登记命令的功能包持有；功能包选择自己的文案及渲染方式。同步 Click 命令树构造在工作线程完成。
+管理 CLI 参照 uv 的实际文本输出：包列表和索引使用对齐列，详情逐行展示字段及入口选项，操作显示包变更、配置保存和待下次启动生效的结果。
+manager 自持 Jinja 依赖与随包发行的 resources/*.tpl 文本模板，沿用主分支的资源命名，以 PackageLoader 加载并启用 StrictUndefined；Python 整理展示数据、计算表格列宽，模板持有文案及排版，操作查询复用结果模板。模板加载与渲染在工作线程执行。
+查询结果写入 stdout，操作提示和错误写入 stderr；失败时保留已完成步骤、操作 ID 与恢复提示，并返回失败退出码。
+输出依据本机 uv 0.12.2 的实际安装、列表、详情、重复安装和卸载行为，以及 [uv 环境检查文档](https://docs.astral.sh/uv/pip/inspection/) 的列格式约定。
 索引读取与安装管理提供独立的 typed 服务契约，CLI 与后续 contrib 市场页面消费同一实现。
 管理请求明确目标宿主、包规格和模块入口；已有配置与实例由管理列表提供选择目标及操作句柄。
 实例句柄由宿主返回，管理界面和调用入口使用它完成操作。服务提供自动生成的操作 ID、进度与终态查询，
 结果包含安装版本、配置状态和下次启动生效状态。web 页面及远端调用入口在后续阶段接入。
 
 本地 `contrib add`、模块配置编辑和后续 `agent add` 在节点未运行时使用短生命周期管理组合。
-app 调用 core 装配所选配置载体及版本服务，并按操作进入配置、语言、模块管理、所选 agent 管理与登记服务；首次管理操作经当前载体提交 app 默认配置，默认 agent 的 config.agents 为空。
+app 调用 core 装配所选配置载体及版本服务，并按操作进入配置、命令登记、模块管理及所选 agent 管理服务；首次管理操作经当前载体提交 app 默认配置，默认 agent 的 config.agents 为空。
 配置编辑复用 CONFIGURATION 的 prepare／commit，导入包组合复用 import_defaults，以完整候选的模型及依赖校验和修订条件提交保存结果。
 管理命令退出时释放本次资源；channel 连接、harness 进程与 agent 执行实例由后续 `bcn run` 按已保存实体配置创建。
 首次使用流程见 [总计划](README.md#全新安装与默认运行组合)，本分支用真实示例包完成默认基础组合、安装及 agent 配置管理，完整 Codex／Telegram 流程随具体 provider 阶段交付。
+
+公共命令服务由 `bazaar-contrib-invoke` 的 `commands` 入口提供：`COMMANDS` 的值是本次组合拥有的 Click 命令组 `Commands`。
+功能包声明 `accepts=[COMMANDS, 所需公共服务]`，在 lifespan 中通过 `Commands.register()` 登记自己的 Click 命令；
+登记边界报告同名冲突，退出时只撤销本次登记的对象。manager 持有 `contrib` 的完整命令树和管理服务绑定。
+
+invoke 自持 `bazaar_compute_node.commands` 扩展分组，发行包按顶层命令名称导出 `CommandEntry(contrib=...)`。
+该描述只指向负责登记的 contrib；命令参数、回调和服务仍由该 contrib 在 lifespan 内登记。
+命令发现先按已启用入口所属发行包筛选，再核对命令归属；仅展示和执行已启用 contrib 的命令。
+app 显式提供自身的启动入口，普通插件按保存的入口及参数加载；安装包后仍须 enable 才能使用其命令。
+app 自身以同一扩展协议声明 `run`，第三方包不需要修改 app 或 core。入口发现与选择归 invoke，core 只接受通用插件根。
+`run` 保留原有运行节点、为全部已配置 Agent 提供服务直到停止的完整英语说明；入口列表与实际命令复用同一文案，保留完整 short_help。
+
+启动依次完成 boot、load、选择入口、启动所选依赖、执行回调、资源清理。外层由原生 Click 解析配置载体参数，
+配置参数写在命令前，例如 `bcn --config /tmp/node.toml contrib list`。invoke 用 Click 的原生命令解析定位扩展名；
+配置和定义已读取，未进入所有业务 lifespan。配置服务根据该次选择产生根插件组合。
+core 的 Composition.roots 按插件名称指定根，复用现有参数展开、服务绑定及依赖顺序，只启用根及其所需提供者。
+局部绑定按具体实例计算，已有自举实例继续复用；无关分支不获取资源。所选根缺失、服务冲突或循环保留正常诊断。
+core 不读取命令元数据，不导入 Click，也不解释 CLI 或 GUI。其他功能插件可以拥有自己的扩展协议。
+app 的 defaults.toml 是可直接读取的配置资源，本地索引路径由启动输入填入，供安装元数据与配置导入共同读取。
+
+随后所选 contrib 及其依赖进入 lifespan 并登记实际命令，Commands.dispatch 在工作线程内完成原生 Click 的参数、帮助和回调分发，
+将回调返回的 awaitable 交回事件循环。回调结束或取消后退出组合；只有需要常驻的回调自行等待。
+根帮助从入口描述列出可选命令；单条命令帮助启动它所必需的服务。未选中的命令插件及业务分支保持未启动。
+
+管理根从已启用的 contrib-manager 及保存参数构造。首次配置创建、迁移和后续保存复用 CONFIGURATION。
+`run` 在同一 Hub 内消费 CONFIGURATION.activate()，保留命令根并通过已有 Context.update 启用完整已保存组合，
+随后等待退出信号；配置载体、版本服务及未变共享实例继续复用。管理命令完成即退出，保留原来的待重启语义。
 
 依据 `src/bazaar_compute_node/app/upgrade.py` 的 uv 定位和执行行为，在 `bazaar-contrib-manager` 实现新组合共用的宿主升级及包管理能力。
 uv 由宿主进程的 PATH 解析为具体执行文件；目标环境明确对应运行该节点的 Python。
@@ -936,24 +942,25 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 普通 server lifespan 用 ctx.enable(local=(DB, RECORDS)) 管理真实 SQLite／TCP 子组合，验证混合运行、停用后节点继续写入和纯服务端启动。
 - [x] 完成真实安装环境、Blockbuster 回归、独立 wheel／sdist、Ruff 与根 LSP；修改 amend 回各功能的引入提交并签名推送。
 
-语言和存储等后续包交付时，继续验证历史配置自动纳入依赖及完整 V4→V5 运行迁移。
+存储等后续包交付时，继续验证历史配置自动纳入依赖及完整 V4→V5 运行迁移。
 
-### Task 7：公共语言服务与默认英语
+### Task 7：插件扩展入口与按根启用的命令执行
 
-- [ ] 用真实中文包验证宿主升级时迁移依赖自动纳入及 lang 选择保留。
-- [ ] 交付 bazaar-contrib-language 的 Translator、语言后端注册及选择契约，提供 languages、language 两个共享入口与随包英语实现。
-- [ ] 交付 bazaar-contrib-node-text 的节点文案 key、模板参数和英语资源，由 CLI／节点调用者导入；翻译后端依赖同一 key。
-- [ ] 按 [语言服务与后端](roadmap.md#语言服务与后端) 实现命名空间、模板参数、所选后端及逐条英语回退，资源登记随生命周期释放。
-- [ ] app 默认依赖上述包，初始组合明确 language.config.backend="en"；CLI 读取配置后使用共享 LANGUAGE，基础配置诊断使用节点英语资源。
-- [ ] 使用真实资源与独立 wheel 验证翻译、参数和资源退出，完成包内检查及根目录 LSP，提交供 review。
+- [x] 交付 invoke 的 COMMANDS、Commands.register／dispatch 与插件自持的 CommandEntry 扩展发现，保持原生 Click 和 lifespan 登记。
+- [x] core 在通用 Composition.roots 中按根及绑定选择依赖，保留既有完整建图、更新和生命周期流程。
+- [x] manager 与 app run 按相同元数据声明命令根，app 复用 boot／load 和一个 Hub，回调决定退出时间。
+- [x] 命令列表与执行按所属 contrib 的启用配置筛选，app 显式提供启动入口，保存参数用于实际插件装配。
+- [x] run 复用配置服务与 Context.update 启用完整组合，共享依赖保持实例；管理命令只启用必要分支。
+- [x] 真实文件／SQLite 与独立示例 wheel 验证根选择、绑定、命令参数、帮助、取消、信号、资源退出及管理升级。
+- [x] 完成真实 uv tool／venv、独立 wheel／sdist、Blockbuster、Ruff 与根目录 LSP，替换旧命令提交并签名推送供 review。
 
 ### Task 8：调用与 channel／harness 公共登记
 
-- [ ] 交付 bazaar-contrib-invoke 的 commands、local-rpc 入口、命令／RPC 登记契约、Pydantic 输入边界及本地 socket／pipe 传输，业务 handler 由功能模块登记。
+- [ ] 基于已交付 COMMANDS 补齐 bazaar-contrib-invoke 的 local-rpc、命令／RPC 登记契约、Pydantic 输入边界及本地 socket／pipe 传输，业务 handler 由功能模块登记。
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
 - [ ] 节点未运行时，CLI 使用本次管理组合直接调用登记的功能服务；运行后的本地 RPC 按同一登记表分发并绑定身份和目标。
-- [ ] 将已交付模块管理命令接入登记及 LANGUAGE，app 默认组合启用调用和两类 builder 注册服务。
+- [ ] app 默认组合启用本地调用和两类 builder 注册服务，功能包继续拥有命令文案。
 - [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
 
 ### Task 9：公共存储、SQLite 与 schema
@@ -986,7 +993,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 13：默认 BCN agent 与替换契约
 
-- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖语言、消息、协作、Reminder、timer、builder 与审计。
+- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer、builder 与审计。
 - [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
@@ -1031,7 +1038,7 @@ lifespan 到达 yield 后服务与监听器就绪，回调结束后退出生命�
 首次配置生成、保存后加载、更新已有选择条目和完整组合升级均保留用户参数与后端选择。
 ConfigStore 来自启动输入选中的已安装载体入口，默认 filesystem，配置中心组合可在无本地 config.toml 的环境读写配置并在部署重建后恢复。
 新建配置使用 V5；历史版本经发行自举的五版本模块链产生候选，所需包安装及配置依赖校验后经载体保留原内容、条件提交；修订冲突直接报错，由调用者重新读取和校验。
-语言等能力的参数随各阶段映射到所属模块；最终组合从真实历史配置验证 lang、provider、凭据引用和用户选择保留。
+各能力的参数随对应阶段映射到所属模块；最终组合从真实历史配置验证 provider、凭据引用和用户选择保留。
 app 的普通 Python 入口提供启动输入和默认资源，core 的运行接口完成发现、自举装配、就绪与完整退出。
 配置加载使用配置包公共逻辑与 core 的通用候选校验接口，具体读写和转换由载体／版本模块提供。
 公共宿主机制保持业务无关，新功能契约由功能包定义。

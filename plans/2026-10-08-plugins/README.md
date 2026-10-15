@@ -5,7 +5,7 @@
 BCN 的业务能力、平台 provider、存储查询、控制入口和界面扩展都通过公共模块范式装配。
 所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供服务端组合，`bazaar-contrib-starlink` 提供节点连接，`bazaar-contrib-web` 依赖 server 提供页面。
 应用入口、核心框架及默认运行必需的 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
-具体 provider、额外语言、server／web 等可选 contrib 在各自独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
+具体 provider、server／web 等可选 contrib 在各自独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
 从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 Apache License 2.0，各包携带许可证全文与 `Apache-2.0` 发行元数据。
 BCN 源码仓库只维护根目录 `LICENSE`，官方包的 `LICENSE` 使用相对符号链接指向它，包元数据统一声明 `license-files = ["LICENSE"]`。
 独立 contrib 仓库各自携带许可证文件及发行元数据。uv_build 在 wheel 和 sdist 中保存许可证正文，sdist 内为普通文件，独立构建与安装可直接读取。
@@ -43,11 +43,9 @@ starlink 默认停用，配置目标 server 后启用；其 getUpdate／send 循
 用户选择模块与参数；默认 agent 的实体列表、channel／harness 选择及参数保存在 `contrib="agent"` 条目的 `contribs.config`，由 agent 插件的模型校验并展开实体。模块声明和实例状态分别管理。
 存储组合由公共后端注册表、具体后端及 DB 选择入口构成，默认配置明确选中 SQLite，
 用户可以启用 PG 等其他后端并更新数据库选择，业务继续通过公共 DB 使用显式数据操作。
-语言由 `bazaar-contrib-language` 提供公共服务、后端登记与选择入口，随包附带默认英语实现；
-中文由独立可选包 `bazaar-contrib-language-zh-cn` 提供。CLI、agent 和页面消费同一个 LANGUAGE 契约，
-业务包持有自己的英语消息资源，语言后端按命名空间提供翻译。旧 node.lang 转为 language 的后端选择；
-中文选择对应的额外包与启用配置随升级保留。具体规则见 [语言服务与后端](roadmap.md#语言服务与后端)
-和 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
+当前先交付 COMMANDS 与 invoke 自持的命令入口扩展：功能包声明命令归属、在 lifespan 登记 Click 命令并持有文案。
+boot／load 后按入口选插件根，core 按绑定选择依赖；app 的 run 同样是命令插件，由其回调启用完整组合并等待退出。
+功能包同时持有自身的通知与页面文案，默认使用英语。
 web 组合提供 contrib 市场页面，读取随 app 发布的官方本地索引，以及用户追加的本地或 HTTP(S) 索引，按条目的包名和 Python 包源交给目标宿主 uv 安装。
 包的发行元数据将发行包关联到模块入口，用户选择入口和参数后经该宿主的当前 CONFIG_STORE 保存。
 页面分别展示包安装、配置与实际运行状态，以及索引、包源和安装目标。
@@ -64,7 +62,7 @@ bcn agent add ...
 bcn run
 ```
 
-基础安装提供并默认启用配置、状态与日志、模块管理、默认英语、调用、存储、消息、协作、定时、Reminder、agent 编排及节点管理所需的公共服务。
+基础安装提供并默认启用配置、状态与日志、模块管理、调用、存储、消息、协作、定时、Reminder、agent 编排及节点管理所需的公共服务。
 初始配置中默认 agent 插件的 `config.agents` 为空；各服务的默认入口见 [全新安装的基础服务](roadmap.md#全新安装的基础服务)。
 Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 provider；它们通过自身组合资源启用 builder 和运行定义，随后由 agent 配置选择实际实例。
 `codex`、`telegram` 等官方短名对应索引中的 `bazaar-contrib-codex`、`bazaar-contrib-telegram` 发行包及包源。
@@ -181,7 +179,7 @@ app 直接 import bazaar_core，创建 ContribHub，将自举条目与声明 `CO
 core 的 discover／load 读取发行元数据并导入 entry point 的定义；ContribHub 启动自举与加载器，校验参数和服务依赖，管理实例、本地绑定、事件及完整退出。
 应用或插件根据已校验业务输入构造 ContribEntry；Hub 根据 offers／accepts、绑定身份和父实例关系建立运行图，按依赖启动及回收资源。
 
-contrib 持有功能契约、实现与第三方依赖。公共配置、审计、语言、storage 与 timer 包同样位于 contrib/，
+contrib 持有功能契约、实现与第三方依赖。公共配置、审计、storage 与 timer 包同样位于 contrib/，
 消费者与实现者显式导入所属功能包的公共类型和 key，具体模块实现由 entry point 加载。
 配置加载器使用注入的 `CONFIG_STORE`、`CONFIG_CURRENT` 读写文档、调用版本服务与条件提交，通过 `ctx.validate()` 校验并以 `COMPOSITION` 将模块条目及运行实体交给 core；
 core 的运行接口以普通异步函数调用该加载逻辑，依赖和导入保持框架通用。
@@ -317,9 +315,9 @@ Contrib 声明的公共 API 范围供加载边界复核。
 0.3.x 维护已公开的 0.3 框架契约，破坏性契约调整进入新的兼容边界；依赖范围外的组合在安装解析与启动校验时诊断。
 
 固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)：
-app 和 core 两包、7 个公共能力 contrib、33 个实现／组合 contrib，共 42 个官方发行包、56 个唯一运行入口。
-其中 24 个必要包留在 BCN 共同发行，18 个可选包独立维护；channel 与 harness 两个公共接口包各附带 共享 builder 注册入口。
-config 载体和五版服务先于完整业务文档装配；storage 与 language 各提供两个运行入口。
+app 和 core 两包、6 个公共能力 contrib、31 个实现／组合 contrib，共 39 个官方发行包、53 个唯一运行入口。
+其中 22 个必要包留在 BCN 共同发行，17 个可选包独立维护；channel 与 harness 两个公共接口包各附带 共享 builder 注册入口。
+config 载体和五版服务先于完整业务文档装配；storage 提供 storage 与 database 两个运行入口。
 server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.toml、bcs.sqlite3 与 session.key，
 保留原配置结构、账户、权限、历史数据、已发布迁移及旧节点协议。
 完整升级规则见 [BCS 连续升级](framework.md#02-bcs-配置与数据源连续升级)。

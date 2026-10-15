@@ -1,4 +1,12 @@
 # bazaar-contrib-manager
 
-The `contrib-manager` entry provides `CONTRIB_CATALOG` and `CONTRIB_MANAGER`
-for contrib indexes and package management. It depends on `CONFIGURATION`.
+Manage contrib packages and their configuration with `bcn contrib`:
+
+```sh
+bcn contrib list
+bcn contrib add example --enable
+bcn contrib configured
+bcn contrib --help
+```
+
+Omit `--enable` to install the package without enabling its contribs.

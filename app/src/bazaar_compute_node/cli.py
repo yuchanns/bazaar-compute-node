@@ -1,42 +1,132 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import signal
 lazy import sys
+lazy from collections.abc import Sequence
 
 import click
+from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
+from bazaar_contrib_invoke import COMMANDS, CommandCatalog, CommandEntry, Commands
+from bazaar_core import Composition, Context, Contrib, ContribEntry
 
-from .contrib import contrib
-lazy from .boot import node
+lazy from . import run
+lazy from .boot import bootstrap, select
 
 
-async def _run(configer: str, configer_options: tuple[str, ...]) -> None:
+async def _run(configuration: Configuration) -> None:
     loop = asyncio.get_running_loop()
     stopped = asyncio.Event()
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGTERM, stopped.set)
     try:
-        async with node(
-            configer=configer,
-            configer_options=configer_options,
-        ):
-            click.echo("bcn ready")
-            await stopped.wait()
+        await configuration.activate()
+        await asyncio.to_thread(click.echo, "bcn ready")
+        await stopped.wait()
     finally:
         if sys.platform != "win32":
             loop.remove_signal_handler(signal.SIGTERM)
 
 
-@click.group()
+@asynccontextmanager
+async def lifespan(ctx: Context):
+    commands = ctx.accept(COMMANDS)
+    configuration = ctx.accept(CONFIGURATION)
+
+    @click.command("run", help=run_entry.help, short_help=run_entry.help)
+    def run_command():
+        return _run(configuration)
+
+    with commands.register(run_command):
+        yield
+
+
+run_commands = Contrib(accepts=[COMMANDS, CONFIGURATION], lifespan=lifespan)
+run_entry = CommandEntry(
+    contrib="node-run",
+    help="Run the node, serving until it is stopped.",
+)
+
+
+async def dispatch(
+    args: Sequence[str],
+    *,
+    prog_name: str | None,
+    configer: str,
+    configer_options: tuple[str, ...],
+) -> None:
+    failures: list[click.ClickException | click.exceptions.Exit | click.Abort] = []
+    roots: list[str] = []
+    selected: list[Commands] = []
+    startup = (ContribEntry(name=run_entry.contrib, definition=run_commands),)
+
+    def start(document: ConfigDocument) -> Composition:
+        catalog = CommandCatalog(
+            contribs=(
+                *(entry.contrib for entry in document.contribs),
+                *(entry.name for entry in startup),
+            ),
+            help=main.help,
+            params=main.params,
+        )
+        try:
+            entry = catalog.select(args, prog_name=prog_name)
+            if entry is not None:
+                roots.append(entry.contrib)
+        except (click.ClickException, click.exceptions.Exit, click.Abort) as error:
+            failures.append(error)
+        return select(document, roots=roots, startup=startup)
+
+    entries, loader = await asyncio.to_thread(
+        bootstrap,
+        start=start,
+        configer=configer,
+        configer_options=configer_options,
+    )
+
+    @asynccontextmanager
+    async def observe(ctx: Context):
+        commands = ctx.accept(COMMANDS)
+        commands.help = main.help
+        commands.params.extend(main.params)
+        selected.append(commands)
+        yield
+
+    async with run(entries, loader) as hub:
+        Configuration.check(hub.validate(Composition()))
+        if roots:
+            async with hub.enable(
+                Composition(
+                    entries=[
+                        ContribEntry(
+                            name="command-dispatch",
+                            definition=Contrib(accepts=[COMMANDS], lifespan=observe),
+                        )
+                    ]
+                )
+            ):
+                try:
+                    await selected[0].dispatch(args, prog_name=prog_name)
+                except (
+                    click.ClickException,
+                    click.exceptions.Exit,
+                    click.Abort,
+                ) as error:
+                    failures.append(error)
+    if failures:
+        raise failures[0]
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "allow_interspersed_args": False,
+    },
+)
 @click.version_option(package_name="bazaar-compute-node")
-def main() -> None:
-    """Run Bazaar Compute Node."""
-
-
-main.add_command(contrib)
-
-
-@main.command("run", help="Run the node.")
 @click.option(
     "--configer",
     default="config-filesystem",
@@ -56,9 +146,22 @@ main.add_command(contrib)
     metavar="OPTION",
     help="Legacy alias for --configer-options.",
 )
-def run_command(configer: str, configer_options: tuple[str, ...]) -> None:
+@click.pass_context
+def main(ctx: click.Context, configer: str, configer_options: tuple[str, ...]) -> None:
+    """Run Bazaar Compute Node."""
     try:
-        asyncio.run(_run(configer, configer_options))
+        asyncio.run(
+            dispatch(
+                ctx.args,
+                prog_name=ctx.info_name,
+                configer=configer,
+                configer_options=configer_options,
+            )
+        )
+    except click.exceptions.Exit as error:
+        ctx.exit(error.exit_code)
+    except click.ClickException:
+        raise
     except KeyboardInterrupt:
         pass
     except Exception as error:

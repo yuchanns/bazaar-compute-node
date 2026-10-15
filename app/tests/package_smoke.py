@@ -122,7 +122,6 @@ async def exercise(path: Path) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             process = await asyncio.create_subprocess_exec(
                 "bcn",
-                "run",
                 "--configer-options",
                 str(
                     path
@@ -137,6 +136,7 @@ async def exercise(path: Path) -> None:
                     if sig == signal.SIGTERM
                     else []
                 ),
+                "run",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

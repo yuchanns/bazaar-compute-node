@@ -37,6 +37,7 @@ def wheels(tmp_path_factory):
                 "config-filesystem",
                 "config-versions",
                 "manager",
+                "invoke",
             )
         ],
     ]

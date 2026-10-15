@@ -8,3 +8,6 @@ label = "packaged"
 
 [[contribs]]
 contrib = "example-consumer"
+
+[[contribs]]
+contrib = "example-commands"

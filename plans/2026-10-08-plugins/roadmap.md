@@ -6,7 +6,7 @@
 ## 顺序与能力归属
 
 以下按依赖排列。首个特性分支交付第 1–7 项中的默认基础能力及默认 agent 的配置管理，按 [首阶段 Tasks](framework.md#本特性分支的串行-tasks) 分项实现并 review。
-中文后端、具体渠道和 harness provider、其余平台管理及 server／web 等组合由后续特性分支交付，合入按各自验证结果推进。
+具体渠道和 harness provider、其余平台管理及 server／web 等组合由后续特性分支交付，合入按各自验证结果推进。
 每一阶段在新成员中实现所属能力、调用者和包内测试，后台协程归属任务组，通知和队列使用 Event 与 Queue，取消和时限通过任务取消与 timeout 管理，线程与子进程使用标准库接口。
 新包统一要求 Python 3.15。每一阶段都完成其新模块的包结构与安装验证，发布版本在最终发行阶段统一收齐。
 各能力阶段交付独立的新包组合，旧 src 与旧测试保持原样。第 16 阶段在全部新能力齐备、整体候选验收通过后统一切换入口，并一次清理旧代码、测试、依赖与装配。
@@ -16,7 +16,7 @@
 | 顺序 | 能力主题 | 模块化的能力 | 前置能力与验收 |
 | --- | --- | --- | --- |
 | 1 | 框架与日志 | core 运行内核、统一启动接口、本地绑定与发现，app 普通命令入口与默认资源，公共配置载体与版本服务契约、filesystem 实现、五版转换模块、自举、V5 配置、安装管理和日志 | 组合明确声明 ContribEntry 及服务绑定，ContribHub 按服务依赖和父实例关系启动、更新及释放实例，用户统一在业务文档顶层 contribs 启用，登记 lifespan / listen / offers 和静态或按配置计算的 accepts；Context 提供 offer / accept / announce；启动输入选择提供 CONFIG_STORE 的已安装入口；版本包提供 VERSIONS 组合并装配 CONFIG_CURRENT 依赖链，V1→V2→V3→V4→V5 服务生成候选和所需包，宿主校验后经载体条件提交；通过包元数据关联入口；节点升级保留模块依赖与来源 |
-| 2 | 语言、注册入口与调用 | 公共语言服务、默认英语、可选中文后端；channel / harness builder、bcc 命令与本地 RPC | 先交付语言登记和选择入口，CLI／agent／页面共用 LANGUAGE；旧 lang 映射到后端和所需包；模块拥有服务、输入模型和 handler，builder 登记实体关系，本地传输按登记表分发 |
+| 2 | 命令、注册入口与调用 | COMMANDS、插件命令；channel / harness builder、bcc 命令与本地 RPC | 先交付共享 Click 命令组与 invoke 自持的命令入口扩展，功能包在 lifespan 中登记自身命令并持有文案；core 按通用插件根与绑定选择依赖，回调决定退出时间；模块拥有服务、输入模型和 handler，builder 登记实体关系，本地传输按登记表分发 |
 | 3 | 数据库与迁移 | storage 公共数据操作契约、后端注册表、DB 选择层、SQLite 实现、schema 与迁移服务 | storage → 所选后端 → database → 消费者；按配置展开后端依赖，实际多个后端验证并存与选择；业务声明查询、provider 翻译；BCN／BCS 历史 ledger 分别识别，已发布迁移及 checksum 原样保存 |
 | 4 | 消息与会话 | agent 消息数据、会话 target、历史、未读 cursor、发送与回执、附件、草稿、搜索和 thread follow | 消息模块使用公共查询接口并持有业务模型与索引要求；同一消息服务供 CLI / RPC 使用；新调用者使用消息 / 会话 / 搜索服务，旧 repository 在最终发行阶段统一清理 |
 | 5 | 身份与协作 | sender / contact 身份、引用 refs、会话登记和审批、消息引用及关联 | 消息模块公共契约就绪；状态变化和读取遵循现有协作语义 |
@@ -28,7 +28,7 @@
 | 11 | server 两端通信 | HTTP、server／starlink、独立 BCS 配置载体与 storage、节点身份、重连、事件上报、查询及操作结果 | server-api 接受 HTTP；starlink 独立 getUpdate／send 收取请求和返回结果、accept 功能服务，按配置 listen 审计事件；真实隔离两端验证 |
 | 12 | 多节点服务与数据 | fleet、历史投影、联系人、图片与 refs 服务 | 接收两端协议提供的节点事件并持久化，通过私有 HTTP 调用目标 client；直接读取原 BCS 数据源，纯 API 及带 agent 的组合均可运行 |
 | 13 | 身份与访问 | 登录、OIDC、账户、角色、分享、权限、重新认证与会话策略 | HTTP / 数据 / sessions 服务就绪；身份和访问策略作为可组合服务登记；节点操作与业务 API 接入相同授权契约 |
-| 14 | web 页面与配置 UI | computer / agent / 联系人 / 历史 / 搜索 / 设置页面、channel editor、模板、静态资源、语言服务接入和页面订阅 | bazaar-contrib-web 依赖 server、通用 GUI 与 LANGUAGE；页面模块携带英语资源，翻译由语言后端提供；登记页面、配置 schema 和交互组件，渠道表单由渠道 UI 模块携带 |
+| 14 | web 页面与配置 UI | computer / agent / 联系人 / 历史 / 搜索 / 设置页面、channel editor、模板、静态资源和页面订阅 | bazaar-contrib-web 依赖 server 与通用 GUI；页面模块自持文案；登记页面、配置 schema 和交互组件，渠道表单由渠道 UI 模块携带 |
 | 15 | [contrib 市场页面](bazaar.md) | 官方与额外模块索引、包条目、详情与安装、入口配置、启停、升级和卸载 | 复用索引与管理服务；明确当前节点 / 远端节点安装目标；真实包源安装、多入口配置、后端选择与下次启动生效状态可验证 |
 | 16 | 分包与版本发行 | BCN 必要包的 0.3.0 发行、独立可选仓库的兼容产物、旧实现与依赖清理、索引、发版工具与文档 | 全部能力映射有对应模块；集中式业务 repository、旧业务接口与适配层全部删除；干净安装与三平台集成通过；按包依赖顺序统一发布 |
 
@@ -42,7 +42,6 @@
 | 配置与启动 | 所选配置载体、五版转换及配置加载器，默认载体为 config-filesystem |
 | 状态与日志 | status、node-audit、logging |
 | 模块与节点管理 | contrib-manager、commands、local-rpc、node-management |
-| 语言 | languages、language，默认 backend="en" |
 | 存储 | storage、sqlite、database、schema，默认 database.config.backend="sqlite" |
 | agent 公共业务 | messages、collaboration、timer-wheel、reminder |
 | provider 公共接口与 agent | channel-builders、harness-builders；agent 组合持有配置，明确构造执行及 provider 实例 |
@@ -66,7 +65,7 @@ core 作为框架运行内核，由应用直接 import，执行发现、自举�
 跨阶段的发行包按阶段增加入口与依赖：渠道连接在第 8 阶段、编辑器在第 14 阶段，
 server 两端及私有 HTTP 在第 11 阶段、多节点业务在第 12 阶段、访问保护与业务 API 在第 13 阶段、页面在第 14 阶段。每阶段的 wheel 只登记已交付入口与所需依赖；
 第 16 阶段以本表的完整入口集合和依赖组合发行。
-清单共 42 个官方发行包、56 个唯一模块入口，其中 `bazaar-contrib-storage`、`bazaar-contrib-language` 各提供两个公共运行入口。
+清单共 39 个官方发行包、53 个唯一模块入口，其中 `bazaar-contrib-storage` 提供两个公共运行入口。
 
 “默认”表示由 app 的 `bazaar-compute-node` 直接声明依赖并随整体安装和升级；“server／web 依赖”表示选装对应包时安装。
 业务模块定义与参数统一保存在顶层 contribs，配置载体使用启动输入、版本链使用发行自举组合先行装配；组合按已校验业务输入声明具体实例和服务绑定；包依赖安装代码，服务依赖决定实际装配。
@@ -79,15 +78,13 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | --- | --- | --- | --- | --- |
 | `bazaar-contrib-config` | ConfigStore、ConfigSnapshot、CONFIG_STORE、ConfigConverter、ConfigCandidate、CONFIG_CURRENT、CONFIG_V1…CONFIG_V5、修订条件提交与错误契约 | 公共配置加载器、filesystem／自定义配置中心载体、app 参数绑定、CLI 和管理入口 | 1 | 默认、应用组合的依赖 |
 | `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 日志、agent、节点管理、starlink 的事件上报及事件投影 | 1 | 默认、server 的依赖 |
-| `bazaar-contrib-language` | `Translator`、`LanguageBackend`、`LanguageRegistry`、`LANGUAGES`、`LANGUAGE`、`language_backend_key(locale)`；英语后端与 `languages`、`language` 两入口，默认共享 | CLI、agent、管理、GUI 与业务页面；中文等语言后端 | 2 | 默认、server／web 的依赖 |
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
 | `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 6 | 默认、server 的依赖 |
 | `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 2 | 默认；web 的编辑器依赖 |
 | `bazaar-contrib-harness` | `IHarness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 2 | 默认 |
 
-这七个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
+这六个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
-`bazaar-contrib-language` 声明 `languages`、`language`：前者登记随包附带的英语及扩展后端，后者按配置提供 LANGUAGE。
 channel 与 harness 的接口和登记服务分别归上述公共包；具体 provider 依赖这些包。
 其他能力的公共类型与 key 由对应功能包导出：调用注册归 invoke，
 消息与协作归各自业务包，HTTP 与 API 注册契约归 http，UI 注册契约归 gui；starlink 的 HTTP 请求格式和请求关联由通信包公开定义，server-api 按同一格式提供对端。
@@ -103,14 +100,13 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-logging` | `logging`：共享 | 日志输出与审计事件监听；依赖 `bazaar-contrib-audit` | 1 | 默认、server |
 | `bazaar-contrib-manager` | `contrib-manager`：共享 | 模块索引、包管理、入口与组合配置导入、依赖与来源清单、配置迁移所需包解析及整体升级；服务端页面经节点接口访问 | 1 | 默认；节点管理 |
 | `bazaar-contrib-invoke` | `commands`、`local-rpc`：共享 | 命令／RPC 注册契约、输入边界、本地 socket／pipe 传输；业务方法由各功能包登记 | 2 | 默认、server |
-| `bazaar-contrib-node-text` | Python import 使用 | 节点文案 key、模板参数及默认英语资源；CLI、agent 通知与节点管理导入，语言翻译包依赖相同 key | 2 | 默认；app 的发行依赖 |
 | `bazaar-contrib-sqlite` | `sqlite`：共享 | 依赖 STORAGE、登记 sqlite 后端、提供 backend_key("sqlite")；持有节点连接、公共操作翻译和已发布节点迁移资源 | 3 | 默认；节点初始存储后端 |
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
 | `bazaar-contrib-messages` | `messages`：共享 | 消息／会话、历史、未读、搜索、附件、草稿、收发回执和 thread follow；依赖 storage、schema、调用与审计契约 | 4 | 默认；server 投影的契约依赖 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | sender／contact、refs、会话登记、审批及可见范围；依赖消息、storage 和调用契约 | 5 | 默认；server 联系人的契约依赖 |
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 6 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
-| `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、LANGUAGE、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
+| `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
 | `bazaar-contrib-node-management` | `node-management`：共享 | 节点配置、workspace／文件、模型／skills、健康、系统服务与升级；依赖调用、builder、timer、审计和模块管理；agent 配置及命令由 agent 包拥有 | 10 | 默认 |
 
 ### server、web 与可选能力模块包
@@ -124,7 +120,6 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-wecom` | `wecom-builder`：共享；`wecom`：接受 channel 输入；`wecom-ui`：共享 | WeCom 连接、收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
 | `bazaar-contrib-codex` | `codex-builder`：共享；`codex`：接受 harness 输入 | Codex 进程、事件解析、模型／能力与审批；实现 IHarness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
 | `bazaar-contrib-claude-code` | `claudecode-builder`：共享；`claudecode`：接受 harness 输入 | Claude Code 进程、事件解析、模型／能力与审批；实现 IHarness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
-| `bazaar-contrib-language-zh-cn` | `language-zh-cn` | 依赖 bazaar-contrib-language 和 bazaar-contrib-node-text；按相同节点 key 提供中文资源，登记 zh-CN 翻译后端并提供 language_backend_key("zh-CN") | 2 | 可选；旧 lang="zh-CN" 迁移时纳入额外依赖 |
 | `bazaar-contrib-http` | `http` | HTTP route／middleware／静态资源登记、监听能力与请求生命周期；提供 HTTP，导出共用 HTTP 与 API 注册契约 | 11 | server 依赖 |
 | `bazaar-contrib-server-config-filesystem` | `server-config-filesystem` | 依赖 bazaar-contrib-config，在 server 子组合的私有绑定中提供 CONFIG_STORE；直接读写 ~/.bcs/config.toml，持有自己的锁、修订和原子保存 | 11 | server 的默认配置载体，可替换为额外配置中心 |
 | `bazaar-contrib-server-sqlite` | `server-sqlite` | 依赖 bazaar-contrib-storage 与服务端 CONFIG_STORE；在服务端注册表登记 sqlite，连接原 ~/.bcs/bcs.sqlite3，持有 BCS 历史迁移资源 | 11 | server 的默认存储，可替换为额外存储实现 |
@@ -134,7 +129,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-history` | `history`、`history-ui` | 聚合消息／会话投影、历史、搜索、图片、refs；依赖 storage、schema、fleet、消息、API 与访问服务，页面依赖 GUI 与访问服务 | 12、13、14 | server 的服务依赖；web 的页面依赖 |
 | `bazaar-contrib-contacts` | `contacts`、`contacts-ui` | 聚合联系人、登记／审批与消息关联；依赖 storage、schema、fleet、history、协作、API 与访问服务，页面依赖 GUI 与访问服务 | 12、13、14 | server 的服务依赖；web 的页面依赖 |
 | `bazaar-contrib-access` | `access`、`access-ui` | 账户、角色、权限、分享、登录、OIDC、重新认证和 sessions；依赖 storage、schema、HTTP／API，提供访问策略，页面依赖 GUI | 13、14 | server 的服务依赖；web 的页面依赖 |
-| `bazaar-contrib-gui` | `gui` | 页面／导航／编辑器登记、布局、模板、静态资源、语言协商、订阅和配置表单；依赖 HTTP、LANGUAGE，提供 UI | 14 | web 依赖；可供其他页面模块复用 |
+| `bazaar-contrib-gui` | `gui` | 页面／导航／编辑器登记、布局、模板、静态资源、订阅和配置表单；依赖 HTTP，提供 UI | 14 | web 依赖；可供其他页面模块复用 |
 | `bazaar-contrib-web` | `web` | 在 server 子组合中接受 API、UI 与访问服务，提供管理界面、业务页面、渠道编辑器和 contrib 市场；发行依赖包含对应页面包 | 14、15 | 独立选装页面组合 |
 | `bazaar-contrib-bazaar` | `bazaar` | /bazaar、索引、详情、目标选择、包安装与配置管理；依赖 API、UI、access、fleet、状态查询与模块管理 | 15 | web 的页面依赖 |
 
@@ -147,33 +142,33 @@ HTTP／GUI 的公共协议供功能模块导入，功能包通过这些协议引
 | 发行包 | 目录与职责 | 入口 | 阶段 |
 | --- | --- | --- | --- |
 | `bazaar-core` | core/src/bazaar_core/；框架运行内核、ContribHub.run、发现与自举装配、通用校验、服务／事件、本地绑定、依赖与完整生命周期 API | 由 Python import 使用 | 1 |
-| `bazaar-compute-node` | app/src/bazaar_compute_node/；业务输入服务与明确的实例构造、普通 Python 命令入口、启动输入与退出信号、同版默认依赖、defaults.toml，消费版本包的 VERSIONS | bcn 调用 core 运行接口、bcc 调用 | 1 |
+| `bazaar-compute-node` | app/src/bazaar_compute_node/；业务输入服务与明确的实例构造、run 命令插件、启动输入与退出信号、同版默认依赖、defaults.toml，消费版本包的 VERSIONS | bcn 调用 core 运行接口、bcc 调用 | 1 |
 
 app 直接依赖同版 bazaar-core 与默认 contrib；core 的包依赖保持通用。
 应用基础先作为独立任务交付：run(bootstrap, load) 启动自举条目及提供 COMPOSITION 的加载器，bcn run 启用已交付的 status；
 随后在相同应用入口接入配置发现、载体、版本链与默认配置资源。
-server／starlink／web 与具体 provider、中文等可选包在各自独立仓库开发，可选安装并各自持有依赖与配置资源。
+server／starlink／web 与具体 provider 等可选包在各自独立仓库开发，可选安装并各自持有依赖与配置资源。
 BCN 必要包的 project.version 和仓库内正式依赖使用共同版本，首版为 ==0.3.0；这些包同样随 BCN 发行升版。
 独立官方可选包和第三方包维护自己的版本，并声明 core 最低版本／上限和所需公共接口包的兼容范围。
 旧 bazaar_compute_server 的业务与资源按所属能力移入 contrib 后，bcn run 通过这些模块提供服务端组合。
 
 app 直接安装 config-filesystem 和 config-versions，后者以 VERSIONS 保存版本入口与服务清单，配置契约通过 CONFIG_CURRENT 指定当前目标；
 宿主按启动输入选定载体、按依赖装配版本链，再读取完整配置，根实例贯穿业务与配置操作。
-默认顶层 contribs 启用状态查询、日志、模块管理、languages、language、调用、channel／harness 注册、storage、SQLite、database、schema、消息、协作、时间轮、
+默认顶层 contribs 启用状态查询、日志、模块管理、调用、channel／harness 注册、storage、SQLite、database、schema、消息、协作、时间轮、
 Reminder、agent 及节点管理。agent 组合拥有 `config.agents`，明确构造执行及 provider 实例；
 用户选装 provider 后，启用该包组合中的 builder／运行定义，具体 channel／harness 由 agent 的 provider 选择及 builder 登记关系匹配创建。
 服务端 API 与页面包作为可选组合安装，普通节点按需安装 starlink 包，配置目标 server 并启用 starlink；默认节点组合不启用远端连接。
 `bazaar_contrib_server/defaults.toml` 提供节点主配置中的 server 启用条目；server 自己的组合资源包含独立配置载体、
-状态查询、日志、语言、调用、storage、server-sqlite、database、schema、timer、http、server-api、fleet、history、contacts、access。
+状态查询、日志、调用、storage、server-sqlite、database、schema、timer、http、server-api、fleet、history、contacts、access。
 bazaar_contrib_starlink/defaults.toml 提供 starlink 条目及连接参数；事件上报与远端请求分别选择，按启用能力声明功能服务依赖。
 `bazaar_contrib_web/defaults.toml` 提供节点主配置中的 web 启用条目；web 在 server 子组合中启用 gui、业务页面、渠道编辑器与 bazaar。
 纯 API 或 web 部署可使用空的 `agent.config.agents`；新增 agent 后，组合展开其实体，宿主为内部 AGENT 定义及选定 provider 创建所属实例。
 
 首次创建节点配置使用 app 提供的 bazaar_compute_node/defaults.toml 资源，由配置包普通加载器经 core 校验后通过所选 CONFIG_STORE 条件创建 version="5"、storage、sqlite、database，明确 database.config.backend="sqlite"，
-并写入 languages、language、language.config.backend="en"、agent 的 `config.agents=[]` 及内置官方索引提取后的本地路径。
-中文等语言后端按需安装和启用；旧配置迁移按 lang 选择所需后端，完整规则见 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
+并写入 agent 的 `config.agents=[]` 及内置官方索引提取后的本地路径。
+历史配置的转换与提交规则见 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
 可选组合资源是普通 TOML，CLI／页面导入后形成完整候选配置，经相同 Pydantic 参数校验、服务绑定和依赖图检查后保存。
-节点组合导入复用已有共用条目，保留用户参数、DB／语言选择及停用选择；同一入口已有多个条目时由用户选择更新目标。
+节点组合导入复用已有共用条目，保留用户参数、DB 选择及停用选择；同一入口已有多个条目时由用户选择更新目标。
 server／web 的节点启用条目与服务端独立配置分别保存，BCS 原字段直接由服务端读取。
 所需服务仍被停用时，导入结果列出缺失依赖，由用户调整候选配置后提交。
 安装包展示资源和入口，用户选择并保存启用配置；后续启动始终读取保存结果。
@@ -219,10 +214,10 @@ agents = []
 ```
 
 app 与公共 ConfigDocument 只处理统一 contrib 列表；默认 agent 模型和实体规则由所选 agent 插件解释。
-agent 组合用普通 Python 函数从已校验输入构造全部已知实例及稳定服务绑定，配置候选预检显式调用同一构造逻辑。lifespan 通过 `ctx.enable` 管理执行与 provider 子资源；指定私有服务和消息事件使用 local，外部 DB、语言和公共审计可共享。动态子组合在启用前单独校验，框架接口见 [本地绑定与实例声明](framework.md#本地绑定与实例声明)。
+agent 组合用普通 Python 函数从已校验输入构造全部已知实例及稳定服务绑定，配置候选预检显式调用同一构造逻辑。lifespan 通过 `ctx.enable` 管理执行与 provider 子资源；指定私有服务和消息事件使用 local，外部 DB 和公共审计可共享。动态子组合在启用前单独校验，框架接口见 [本地绑定与实例声明](framework.md#本地绑定与实例声明)。
 `bcn agent add`、列表、编辑、删除由该插件登记，修改自己条目的 `config.agents`，经 CONFIGURATION 校验完整候选并条件提交。
 
-该包拥有 developer instruction、bcc 工具环境及身份／会话绑定、模型上下文、消息与提醒处理、审批及输出交付的编排，依赖公共 channel／harness、消息、协作、语言、存储、timer 和 Reminder。
+该包拥有 developer instruction、bcc 工具环境及身份／会话绑定、模型上下文、消息与提醒处理、审批及输出交付的编排，依赖公共 channel／harness、消息、协作、存储、timer 和 Reminder。
 现有 `src/bazaar_compute_node/core/instruction.py`、`resources/developer_instructions.md` 的渲染与资源，以及旧 runtime 中构造 BCN 会话的业务逻辑，移入新 agent 实现；旧源码按统一清理阶段保留。
 功能插件提供 typed 服务、事件、配置模型和能力说明，由所选 agent 明确读取并组织成其模型输入；提示词的语义与组合由 agent 拥有。
 harness provider 接收 agent 已组织的指令、运行输入与工具环境，管理模型协议、进程和事件映射。
@@ -231,70 +226,10 @@ app 的 defaults.toml 选择默认 agent 入口；用户替换该启用条目并
 消息、存储与定时等小插件可由多个组合共享；自定义 agent 自行选择实际使用的接口、指令、工具与通讯方式。
 以真实自定义 agent 的独立 wheel 验证替换配置模型、命令、实体装配、指令、工具和通讯行为；真实外部 harness 的 e2e 使用 TestChannel 控制面。
 
-### 语言服务与后端
+### 插件文案
 
-语言能力由公共包 `bazaar-contrib-language` 拥有，消费者通过 `LANGUAGE` 使用 `Translator`。
-包中附带英语后端实现；节点 key、模板参数与默认英语文案由默认安装的 `bazaar-contrib-node-text` 提供，中文实现和资源由独立选装包 `bazaar-contrib-language-zh-cn` 提供，在所属独立仓库发行，声明公共语言及节点文案契约的兼容范围。
-每个语言后端实现同一个 `LanguageBackend` 契约，以语言标识登记，例如 `en`、`zh-CN`；
-入口名用于模块加载，语言标识用于选择后端，二者通过模块声明关联。
-
-| 入口 | 所属包 | 依赖 | 提供 | 职责 |
-| --- | --- | --- | --- | --- |
-| languages | bazaar-contrib-language | — | LANGUAGES、language_backend_key("en") | 创建 LanguageRegistry，登记随包附带的英语后端，退出清理登记 |
-| language-zh-cn | bazaar-contrib-language-zh-cn | LANGUAGES | language_backend_key("zh-CN") | 加载中文资源，在 lifespan 中登记后端，退出撤销登记 |
-| language | bazaar-contrib-language | LANGUAGES、language_backend_key(config.backend) | LANGUAGE | 以选中的后端构建共享 Translator，英语作为缺失译文的回退 |
-
-三个入口提供默认共享服务，agent 消费相同绑定的 LANGUAGE。
-`language_backend_key(locale)` 在 bazaar-contrib-language 中按语言标识缓存，诊断名称为 `language.backend.<locale>`。
-LanguageRegistry 的登记返回上下文管理器，持有语言标识与后端对象；重复标识由加载／登记边界诊断。
-language 的配置模型包含必填 `backend`，默认组合明确写入 `en`；
-`accepts=lambda config: [LANGUAGES, language_backend_key(config.backend)]` 在建图前确定所选语言的就绪依赖。
-
-`bazaar-contrib-node-text` 提供可导入的节点 key、模板参数及英语资源，例如 `cli.bcn.run`，不声明独立运行入口。节点调用者导入同一 key 和资源，翻译包依赖它，按 key 提供对应译文。
-其他功能包持有自己的消息 key、模板变量及英语资源，按模块命名空间登记到语言服务；登记上下文随功能 lifespan 退出。
-英语后端读取这些基础资源，其他后端按相同命名空间和 key 返回翻译。
-`Translator.catalog(namespace, messages)` 接收英语模板映射并返回登记上下文管理器；
-`Translator.text(namespace, key, arguments=None, *, locale=None)` 返回文本，locale 缺省使用已配置语言。
-`LanguageBackend.text(namespace, key, arguments)` 返回 `str | None`，后端用自己的资源完成模板渲染。
-翻译接口对缺失 key 返回空结果，由 Translator 先回退到该功能包的英语，英语也缺失时返回可诊断的消息 key。
-翻译资源在加载边界检查文本与模板变量，部分译文缺失仍可使用英语；格式错误给出资源、命名空间和消息 key。
-CLI、agent 通知、管理命令、页面和渠道编辑器使用公共 Translator，业务函数保留 typed 服务依赖。
-GUI 根据已登记后端进行请求语言协商，未命中时使用配置的默认语言；翻译及缺失译文回退仍由 LANGUAGE 执行。
-请求期间取得的不可变译文资源可完成当前渲染，后端撤销后新请求只使用仍登记的后端。
-
-中文配置为以下 V5 节选；language 条目更新原有选择，languages 保留默认英语：
-
-```toml
-version = "5"
-
-[[contribs]]
-contrib = "languages"
-
-[[contribs]]
-contrib = "language-zh-cn"
-
-[[contribs]]
-contrib = "language"
-[contribs.config]
-backend = "zh-CN"
-```
-
-安装新的语言包后，用户从发行元数据选择其入口、启用后端并修改已有 language 的 backend。
-消费者继续使用 LANGUAGE。所选后端未启用或加载失败时，启动诊断指出具体选择和依赖；
-缺失译文的英语回退与缺失整个后端的配置错误分别处理。
-整体升级保留额外语言包的来源、版本要求、启用配置和语言选择；导入 server／web 组合同样保留这些选择。
-
-第 2 项的默认英语、公共语言及登记能力纳入首阶段 Task 7／8，按以下顺序交付并 review：
-
-1. 完成 bazaar-contrib-language 的契约、两入口和英语后端，以及 bazaar-contrib-node-text 的节点 key、模板参数和英语资源；app 默认依赖文案包，使用真实资源验证翻译、命名空间、模板参数、回退及退出撤销。
-2. 将 CLI 与已交付通知调用者改用 LANGUAGE，验证读取目标配置后装配语言子图，CLI 帮助与管理结果使用同一语言。
-   语言选择发生在完整命令注册之前；读取配置或发现后端失败时，用默认安装的 bazaar-contrib-node-text 英语文案输出基础诊断。
-3. 完成 channel／harness builder、命令与本地 RPC 注册；后续 server client 通过 offer 服务调用，agent 与页面阶段接入同一语言契约并迁移各自资源。
-
-中文后端由可选语言扩展分支交付独立 wheel 和官方索引条目，验证安装、入口发现、lang 转换所需包解析、后端选择及真实中文输出。
-
-功能包的英语资源随功能交付，中文包同步增加对应命名空间；兼容范围由公共契约及组合验收确定。
-公共语言与节点英语随 BCN 必要包发行，中文及第三方语言在各自仓库独立发行，新功能与新语言通过各自资源及后端登记接入。
+功能包持有自己的命令帮助、提示、通知与页面文案，默认使用英语。
+文案与功能实现一同交付，命令通过 COMMANDS 登记，页面通过 UI 契约登记。
 
 ### 默认 provider 的替换规则
 
@@ -395,7 +330,6 @@ timer 的替代 provider 直接提供共享 `TIMER`；在目标组合停用原�
 
 | 提供者 | 提供 | 消费者与职责 |
 | --- | --- | --- |
-| languages／language | LANGUAGES／LANGUAGE | 登记语言后端并选择默认语言；CLI、agent、GUI 和页面共用翻译契约 |
 | http | HTTP | 提供路由与监听能力；server-api 启动 API 监听与两端私有 HTTP 入口，gui 登记页面及静态资源 |
 | server-api | API、上报事件 | 在 server 组合管理私有 HTTP、节点请求及结果，提供业务方法登记和分发；收到上报后按公共审计契约 announce，fleet／history 等消费 |
 | 节点功能模块 | 功能服务、审计事件 | offer 消息、管理等服务，由 client accept 后调用；announce 业务审计事件，由 logging 与 client 并列 listen |
@@ -410,7 +344,6 @@ UI 的类型和 key 归 `bazaar-contrib-gui`；starlink 公开两端 HTTP 请求
 节点与 server 分别按具体实例的绑定和服务依赖装配，配置条目顺序可以任意：
 
 ```text
-languages → 所选语言后端 → language → CLI／agent／GUI／页面
 storage → 所选后端 → database → schema → 业务持久化／client 上报队列
 节点功能服务 + timer → starlink
 http → server-api(API) → access／业务 API
@@ -468,7 +401,7 @@ HTTP、连接与 agent 的持续执行由所属模块管理后台任务或子进
 - 第 11 阶段交付 http、server／server-api／starlink 及独立 server-config-filesystem／server-sqlite，以隔离的真实两端验证公开请求格式、主动 getUpdate、独立 send、身份、事件上报、服务查询、请求及结果、确认、重放、去重和退出；query 直接调用真实 offer 服务，业务操作独立产生审计事件；默认节点在配置 server 后启用 starlink。
 - 第 12 阶段交付 fleet、history、contacts，直接读取 BCS 原配置并查询原数据库，验证配置中心与存储替换；同一 bcn run 验证空 agent 的 API 组合、server 与 agent 各自独立配置／DB 的同进程并行及分进程通信，同时验证 0.2 节点原地址／token／协议的上报与控制。
 - 第 13 阶段接入 access 与受保护的节点操作 API，保留 BCS 原账户、密码哈希、角色、分享、OIDC 设置及 session.key；验证旧账户与有效 cookie、请求身份、登录、分享、节点操作与数据权限；各受保护入口声明访问服务依赖。
-- 第 14 阶段交付 gui、web 与业务页面，验证原 BCS 历史、refs、账户语言／主题及升级后的新事件在同一数据源可查询，完成独立 API 运行、页面组合和功能模块新增接口／页面；注册撤销及生命周期可观察。
+- 第 14 阶段交付 gui、web 与业务页面，验证原 BCS 历史、refs、账户主题及升级后的新事件在同一数据源可查询，完成独立 API 运行、页面组合和功能模块新增接口／页面；注册撤销及生命周期可观察。
 - 第 15 阶段将 contrib 市场接入 web 组合，验证当前节点和远端节点的真实模块操作。
 - 第 16 阶段删除原 bcs CLI、独立应用、server sink 和中心 Control 装配，收齐 bazaar-contrib-server／bazaar-contrib-web 正式产物、组合配置与真实 0.2 BCS 原数据源升级证据；原目录、数据及不可变迁移资源按所属模块继续保留。
 
@@ -490,7 +423,7 @@ Context 提供 id、name、快照以及 offer／accept／announce；组合用 ct
 | 能力 | 创建与绑定 | 资源职责 |
 | --- | --- | --- |
 | 配置载体与版本转换 | 自举组合，默认共享服务 | 先提供 CONFIG_STORE 与 CONFIG_CURRENT；业务和配置操作结束后退出 |
-| 语言、存储、timer、消息、协作和 Reminder | 启用一个共享提供者 | 功能包管理注册表、连接、驱动和业务资源，消费者声明相应依赖 |
+| 存储、timer、消息、协作和 Reminder | 启用一个共享提供者 | 功能包管理注册表、连接、驱动和业务资源，消费者声明相应依赖 |
 | channel／harness builder | 共享登记服务 | agent 从业务输入选择实现，明确创建实际运行实例 |
 | agent 执行编排 | 每个 agent 一个明确实例，私有输入和消息事件 | 管理调度、会话、审批、输出与空闲状态 |
 | channel／harness 运行实例 | 所属 agent 的本地子组合 | 管理自己的连接、进程和任务，先于创建者退出 |
@@ -590,7 +523,7 @@ uv 解析出完整 pylock 后，tool 部署使用固定宿主版本及 `--with-r
 安装过程失败时保留原声明，报告实际环境变更并提供恢复原组合的操作。
 用户显式固定的额外模块版本和安装源在升级中继续生效。官方组合与额外模块一并参加真实安装和运行验证。
 模块启用配置与包依赖清单分别保存，修改配置在下一次宿主启动生效。
-V5 转换沿已有 V1→V2→V3→V4 链追加 V4→V5，旧能力参数移入所属模块，lang 生成语言选择和所需包清单。
+V5 转换沿已有 V1→V2→V3→V4 链追加 V4→V5，旧能力参数移入所属模块，生成所需包清单。
 整体升级保留载体包、来源和自举参数，预先解析迁移所需包，目标环境校验完整候选配置后经载体保留旧内容、条件提交；各能力阶段同步完成其映射。
 详见 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
 用户统一配置顶层 contribs 中的入口与参数；组合按业务输入和 builder 明确创建实例，local 决定私有服务与事件，宿主生成内部实例标识。
@@ -618,8 +551,8 @@ contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和�
 
 ## 0.3 发行清单与发布顺序
 
-完整能力集合包含 app、core、7 个公共能力 contrib 和 33 个实现／组合 contrib，共 42 包、56 入口。
-24 个必要包在 BCN 共同发行，18 个可选包在独立仓库发行；各阶段记录所属仓库、发行名、入口和集成证据：
+完整能力集合包含 app、core、6 个公共能力 contrib 和 31 个实现／组合 contrib，共 39 包、53 入口。
+22 个必要包在 BCN 共同发行，17 个可选包在独立仓库发行；各阶段记录所属仓库、发行名、入口和集成证据：
 
 | 记录字段 | 必须保存的内容 |
 | --- | --- |
@@ -634,7 +567,7 @@ contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和�
 
 第 16 阶段按串行 Tasks 交付并 review：
 
-1. 收齐 42 个正式包和完整入口，验证包依赖闭包、core 的通用边界与整体候选组合；验收通过后统一切换入口，一次清理旧 src、旧测试、依赖、repository、装配与适配层。
+1. 收齐 39 个正式包和完整入口，验证包依赖闭包、core 的通用边界与整体候选组合；验收通过后统一切换入口，一次清理旧 src、旧测试、依赖、repository、装配与适配层。
 2. 交付 scripts/release.py：从 BCN workspace 发现必要成员，单个目标 version 同步这些成员及仓库内精确依赖、资源版本引用和共享锁；生成本仓库发行清单，并固定独立可选包的版本／源码／产物及集成依赖顺序。
 3. 接入保留单 version 输入的 release workflow，形成已验证签名的共同发行提交；逐包构建和验收 wheel／sdist，按依赖顺序上传，app 在默认依赖上传后发布。
 4. 使用同一发行提交和产物验证部分发布后的核对与补缺，全部成功后发布 annotated v<版本> 标签及整体 release；独立可选包由所属仓库按兼容范围发布；从真实包源完成三平台组合安装、安装文档和官方索引更新。
@@ -644,7 +577,7 @@ contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和�
 1. 冻结 0.3 core／功能契约、配置载体与五版自举、V5 配置和历史转换，确认官方成员、包依赖与发行清单。
 2. 在 0.3 集成分支以全部官方候选 wheel 完成 workspace 外的干净安装与最终组合验收。
    从 V1／V2／V3／V4 隔离配置升级到 V5，验证存储与数据位置、agent／provider、远端连接、凭据引用、
-   version_check 和语言选择；中文包随升级安装，其他已选语言后端及额外包来源继续保留。
+   version_check 和额外包来源。
    从实际 0.2 BCS 发行环境建立隔离配置、数据库、密钥及账户／权限／事件，server 启动时直接读取原独立配置，
    核对原数据库路径、历史 ledger、业务身份和原密钥，验证登录、页面查询、旧节点原协议及升级后新数据写入；
    同时覆盖原 BCS 自定义配置位置、缺省值、既有迁移版本、重复启动，以及节点与服务端各自配置／数据的同进程隔离。

@@ -8,13 +8,18 @@ license-files = ["LICENSE"]
 requires-python = ">=3.15"
 dependencies = [
     "bazaar-contrib-config==0.3.0",
+    "bazaar-contrib-invoke==0.3.0",
     "filelock>=3.16.0",
+    "jinja2>=3.1.6",
     "packaging>=25.0",
     "tomli-w>=1.2.0",
 ]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 contrib-manager = "bazaar_contrib_manager:manager"
+
+[project.entry-points."bazaar_compute_node.commands"]
+contrib = "bazaar_contrib_manager:command_entry"
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"

@@ -365,6 +365,7 @@ async def exercise(path: Path) -> None:
             resource = tomllib.loads(resource)
             user = dict(updates[0]) | {
                 "contribs": [
+                    {"contrib": "commands"},
                     {
                         "contrib": "example-writer",
                         "config": {"path": str(path / "user-writer.txt")},
@@ -475,7 +476,6 @@ async def exercise(path: Path) -> None:
             await asyncio.to_thread(writer.unlink)
             process = await asyncio.create_subprocess_exec(
                 "bcn",
-                "run",
                 "--configer",
                 "example-config",
                 "--configer-options",
@@ -484,6 +484,7 @@ async def exercise(path: Path) -> None:
                 "key=new-shared-node",
                 "--configer-options",
                 options[1],
+                "run",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
