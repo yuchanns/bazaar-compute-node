@@ -311,6 +311,7 @@ class Composition(BaseModel):
     )
 
     entries: Sequence[ContribEntry] = ()
+    roots: tuple[Annotated[str, Field(min_length=1)], ...] | None = None
     diagnostics: Sequence[InstanceOf[ContribStatus]] = ()
     isolate_errors: bool = False
 

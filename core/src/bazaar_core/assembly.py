@@ -71,7 +71,11 @@ def validate(
             accepts = definition.dependencies(config)
             instances.append(_ContribInstance(registration, config, accepts))
         except Exception as error:
-            if not composition.isolate_errors and registration.id not in unavailable:
+            if (
+                not composition.isolate_errors
+                and composition.roots is None
+                and registration.id not in unavailable
+            ):
                 raise ContribError(
                     f"{label}: cannot validate contrib definition: {error}"
                 ) from error
@@ -154,6 +158,76 @@ def validate(
                     error=error,
                     phase="stopped",
                 )
+    if composition.roots is not None:
+        # Select concrete providers using the same keys and bindings as startup.
+        available: dict[
+            tuple[ServiceKey[Any], UUID | None], list[_ContribInstance]
+        ] = {}
+        for instance in instances:
+            for key in instance.definition.offers:
+                available.setdefault((key, instance.bindings.get(key)), []).append(
+                    instance
+                )
+        roots = set(composition.roots)
+        known = {entry.name for entry in composition.entries} | {
+            record.name for record in composition.diagnostics
+        }
+        if missing := roots - known:
+            raise ContribError(
+                f"unknown composition roots: {', '.join(sorted(missing))}"
+            )
+        selected: set[_ContribInstance] = set()
+        pending = [
+            instance
+            for instance in instances
+            if instance.enablement is owner and instance.entry.name in roots
+        ]
+        while pending:
+            instance = pending.pop()
+            if instance in selected:
+                continue
+            selected.add(instance)
+            pending.extend(instance._parents)
+            for key in instance.accepts:
+                pending.extend(available.get((key, instance.bindings.get(key)), ()))
+        instances = [
+            instance
+            for instance in instances
+            if instance.enablement is not owner or instance in selected
+        ]
+        identities = {instance.registration.id for instance in instances}
+        registrations = tuple(
+            record
+            for record in registrations
+            if record.owner is not owner or record.id in identities
+        )
+        locations = {
+            (instance.entry.name, instance.entry.location) for instance in selected
+        }
+        # Keep invalid declarations reached by explicit bindings even without instances.
+        while True:
+            referenced = {
+                source
+                for entry in composition.entries
+                if entry.name in roots or (entry.name, entry.location) in locations
+                for reference in entry.bindings.values()
+                if isinstance(source := reference._source, tuple)
+            }
+            if referenced <= locations:
+                break
+            locations.update(referenced)
+        diagnostics = [
+            record
+            for record in diagnostics
+            if record.name in roots or (record.name, record.location) in locations
+        ]
+        if not composition.isolate_errors and diagnostics:
+            raise ContribError(
+                "; ".join(
+                    f"contrib {record.name!r} at {record.location}: {record.state}"
+                    for record in diagnostics
+                )
+            )
     providers: dict[tuple[ServiceKey[Any], UUID | None], _ContribInstance] = {}
     names: dict[tuple[str, UUID | None], _ContribInstance] = {}
     for instance in instances:
@@ -325,7 +399,7 @@ def target(hub: ContribHub, owner: Enablement, composition: Composition) -> Cand
         try:
             config = entry.definition.validate_config(entry.config)
         except ValueError as error:
-            if not composition.isolate_errors:
+            if not composition.isolate_errors and composition.roots is None:
                 raise ContribError(
                     f"contrib {entry.name!r} at {entry.location}: invalid configuration: {error}"
                 ) from error
