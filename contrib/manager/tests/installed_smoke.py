@@ -6,15 +6,47 @@ import asyncio
 import json
 import sys
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 lazy from typing import Any
+lazy from uuid import uuid4
 
-from bazaar_compute_node.boot import node
-from bazaar_compute_node.contrib import invoke
+from bazaar_compute_node import run
+from bazaar_compute_node.boot import bootstrap, node, select
+from bazaar_contrib_invoke import COMMANDS
 from bazaar_core import Composition, Context, Contrib, ContribEntry
 from blockbuster import blockbuster_ctx
 
 from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation
+
+
+async def invoke(options: dict[str, Any], action) -> Any:
+    entries, loader = await asyncio.to_thread(
+        bootstrap, start=partial(select, roots=("contrib-manager",)), **options
+    )
+    selected: list[ContribManager] = []
+
+    @asynccontextmanager
+    async def lifespan(ctx: Context):
+        selected.append(ctx.accept(CONTRIB_MANAGER))
+        yield
+
+    async with (
+        run(entries, loader) as hub,
+        hub.enable(
+            Composition(
+                entries=[
+                    ContribEntry(
+                        name="management-observer",
+                        definition=Contrib(
+                            accepts=[CONTRIB_MANAGER], lifespan=lifespan
+                        ),
+                    )
+                ]
+            )
+        ),
+    ):
+        return await action(selected[0])
 
 
 async def exercise(path: Path, source: str, other_source: str) -> None:
@@ -34,16 +66,16 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
             sys.executable,
             "-m",
             "bazaar_compute_node",
-            "contrib",
             "--config",
             str(config),
+            "contrib",
             *arguments,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         output, errors = await process.communicate()
         assert process.returncode == 0, (output + errors).decode()
-        return json.loads(output)
+        return output.decode(), errors.decode()
 
     initial = await checked(lambda manager: manager.catalog.indexes())
     assert any(index.entries for index in initial)
@@ -78,8 +110,11 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
             "utf-8",
         )
         await checked(lambda manager, location=location: manager.index(str(location)))
-    added_index = await cli("index", "add", source.replace("/simple/", "/catalog.json"))
-    assert added_index["config_saved"]
+    location = source.replace("/simple/", "/catalog.json")
+    _, added_index = await cli("index", "add", location)
+    assert location in added_index
+    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    assert location in candidate.payload["contrib_indexes"]
     entries = await checked(lambda manager: manager.catalog.entries())
     assert any(
         entry.package == "bazaar-contrib-example" and len(entry.indexes) > 1
@@ -101,12 +136,23 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         package = await manager.catalog.select(
             "example", source=source, version=">=0.1,<0.2"
         )
-        return await manager.add(package, enable=True)
+        return await manager.add(package)
 
     added = await checked(install)
-    assert added.installed and added.config_saved and added.pending_restart
+    assert added.installed and added.pending_restart
     detail = await checked(lambda manager: manager.detail("example"))
     assert any(entry.config_schema for entry in detail.entries)
+    for arguments, value in (
+        (("list",), detail.package),
+        (("show", "example"), detail.version),
+        (("entries",), source),
+        (("configured",), "contrib-manager"),
+        (("operation", str(added.id)), str(added.id)),
+    ):
+        output, _ = await cli(*arguments)
+        assert value in output
+    enabled = await checked(lambda manager: manager.enable("example"))
+    assert enabled.config_saved and enabled.pending_restart
 
     async def conflict(manager: ContribManager):
         package = await manager.catalog.select("example", source=source, version=">=9")
@@ -116,7 +162,7 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     assert rejected.error and rejected.phase == "failed"
     assert (await checked(lambda manager: manager.detail("example"))).entries
     writer = path / "user.txt"
-    enabled = await cli(
+    _, output = await cli(
         "enable",
         "example",
         "--entry",
@@ -142,14 +188,14 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         "--option",
         "labels.1.value=normal",
     )
-    assert enabled["config_saved"]
+    assert "example-file" in output
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     index = next(
         i
         for i, entry in enumerate(candidate.payload["contribs"])
         if entry["contrib"] == "example-file"
     )
-    edited = await cli(
+    await cli(
         "edit",
         str(index),
         "--option",
@@ -157,8 +203,52 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         "--option",
         "labels.1.value=urgent",
     )
-    assert edited["config_saved"]
+    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    assert (
+        candidate.payload["contribs"][index]["config"]["metadata"]["project"]
+        == "studio"
+    )
     await checked(lambda manager: manager.enable("example"))
+    for arguments, command in (
+        (["--help"], "example"),
+        (["example", "--help"], "write"),
+    ):
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "bazaar_compute_node",
+            "--config",
+            str(config),
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        result, errors = await process.communicate()
+        assert process.returncode == 0, (result + errors).decode()
+        assert command in result.decode()
+    output = path / "command note.txt"
+    text, tag = uuid4().hex, uuid4().hex
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "bazaar_compute_node",
+        "--config",
+        str(config),
+        "example",
+        "write",
+        text,
+        "--output",
+        str(output),
+        "--tag",
+        tag,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    result, errors = await process.communicate()
+    assert process.returncode == 0, (result + errors).decode()
+    note = json.loads(await asyncio.to_thread(output.read_text))
+    assert text in note["text"] and tag in note["tags"]
+    assert text in json.loads(result)["text"] and tag in json.loads(result)["tags"]
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     assert any(
         entry["config"].get("path") == str(writer)
@@ -167,19 +257,40 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     assert (await checked(lambda manager: manager.operation(added.id))).installed
 
     selected: dict[str, ContribManager] = {}
+    groups = []
 
     @asynccontextmanager
     async def observer(ctx: Context):
         selected["manager"] = ctx.accept(CONTRIB_MANAGER)
+        groups.append(ctx.accept(COMMANDS))
         yield
 
     consumer = ContribEntry(
         name="management-observer",
         definition=Contrib(
-            accepts=[CONTRIB_MANAGER],
+            accepts=[CONTRIB_MANAGER, COMMANDS],
             lifespan=observer,
         ),
     )
+    entries, loader = await asyncio.to_thread(
+        bootstrap, start=partial(select, roots=("contrib-manager",)), **options
+    )
+    async with run(entries, loader) as hub, hub.enable(Composition(entries=[consumer])):
+        manager = selected["manager"]
+        group = groups[-1]
+        previous = {record.name: record.id for record in hub.snapshots}
+        await manager.configuration.activate()
+        current = {record.name: record.id for record in hub.snapshots}
+        for name in (
+            "contrib-manager",
+            "commands",
+            "node-configuration",
+            "config-filesystem",
+        ):
+            assert current[name] == previous[name]
+        assert groups[-1] is group
+        assert "started:kept" in await asyncio.to_thread(writer.read_text)
+    assert "released:kept" in await asyncio.to_thread(writer.read_text)
     async with (
         node(**options) as hub,
         hub.enable(Composition(entries=[consumer])),
@@ -263,7 +374,7 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     assert (
         await checked(lambda manager: manager.detail("example"))
     ).version.startswith("0.2")
-    for name in ("example-consumer", "example-file"):
+    for name in ("example-commands", "example-consumer", "example-file"):
         candidate, _ = await checked(lambda manager: manager.configuration.read())
         index = next(
             i
@@ -288,8 +399,9 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         for i, entry in enumerate(candidate.payload["contribs"])
         if entry["contrib"] == "contrib-manager"
     )
+    output, _ = await cli("index", "list")
+    assert location in output
     await cli("disable", str(index))
-    assert any(index["entries"] for index in await cli("index", "list"))
     async with node(**options) as hub:
         assert hub.snapshots
     await asyncio.to_thread(

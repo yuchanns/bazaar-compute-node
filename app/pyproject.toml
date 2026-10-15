@@ -14,11 +14,18 @@ dependencies = [
     "bazaar-contrib-config-versions==0.3.0",
     "bazaar-contrib-logging==0.3.0",
     "bazaar-contrib-manager==0.3.0",
+    "bazaar-contrib-invoke==0.3.0",
     "click>=8.1.0",
 ]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"
+
+[project.entry-points."bazaar_compute_node.contribs"]
+node-run = "bazaar_compute_node.cli:run_commands"
+
+[project.entry-points."bazaar_compute_node.commands"]
+run = "bazaar_compute_node.cli:run_entry"
 
 [project.scripts]
 bcn = "bazaar_compute_node.cli:main"

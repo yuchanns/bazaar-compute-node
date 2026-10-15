@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 lazy import asyncio
-lazy import json
 lazy import os
 lazy import tomllib
-lazy from collections.abc import AsyncIterator, Sequence
+lazy from collections.abc import AsyncIterator, Callable, Sequence
 lazy from importlib.resources import files
 lazy from pathlib import Path
-lazy from string import Template
 lazy from typing import Any
 lazy from uuid import NAMESPACE_URL, uuid5, uuid7
 
@@ -193,7 +191,7 @@ def bootstrap(
     *,
     configer: str = "config-filesystem",
     configer_options: Sequence[str] = (),
-    management: bool = False,
+    start: Callable[[ConfigDocument], Composition] | None = None,
 ) -> tuple[Composition, ContribEntry]:
     resource = files(__package__)
     definitions = load(
@@ -221,10 +219,8 @@ def bootstrap(
     ).resolve()
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_bytes(resource.joinpath("catalog.json").read_bytes())
-    defaults = Template(resource.joinpath("defaults.toml").read_text()).substitute(
-        catalog=json.dumps(str(catalog), ensure_ascii=False)
-    )
-    defaults = tomllib.loads(defaults)
+    defaults = tomllib.loads(resource.joinpath("defaults.toml").read_text())
+    defaults["contrib_indexes"] = [str(catalog)]
     return (
         definitions,
         ContribEntry(
@@ -239,20 +235,31 @@ def bootstrap(
                         for entry in definitions.entries
                     ),
                 ),
-                start=manage if management else None,
+                start=start,
             ),
             location="defaults.toml",
         ),
     )
 
 
-def manage(document: ConfigDocument) -> Composition:
-    """Declare the short-lived management combination from the saved parameters."""
-    entry = next(
-        (entry for entry in document.contribs if entry.contrib == "contrib-manager"),
-        EnabledContrib(contrib="contrib-manager"),
+def select(
+    document: ConfigDocument,
+    *,
+    roots: Sequence[str],
+    startup: Sequence[ContribEntry] = (),
+) -> Composition:
+    """Select enabled candidates with the application's explicit startup entries."""
+    composition = build(document)
+    names = {entry.name for entry in composition.entries}
+    return composition.model_copy(
+        update={
+            "entries": (
+                *composition.entries,
+                *(entry for entry in startup if entry.name not in names),
+            ),
+            "roots": tuple(roots),
+        }
     )
-    return load([ContribSpec(contrib=entry.contrib, config=entry.config)])
 
 
 @asynccontextmanager

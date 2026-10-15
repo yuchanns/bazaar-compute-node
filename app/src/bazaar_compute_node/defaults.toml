@@ -1,8 +1,9 @@
 version = "5"
-contrib_indexes = [
-    ${catalog},
-]
+contrib_indexes = []
 agent = []
+
+[[contribs]]
+contrib = "commands"
 
 [[contribs]]
 contrib = "status"
