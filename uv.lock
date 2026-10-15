@@ -9,6 +9,7 @@ members = [
     "bazaar-contrib-config-versions",
     "bazaar-contrib-invoke",
     "bazaar-contrib-manager",
+    "bazaar-contrib-sidecar",
     "bazaar-core",
     "bcn-workspace",
 ]
@@ -115,6 +116,21 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "packaging", specifier = ">=25.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar"
+version = "0.3.0"
+source = { editable = "contrib/sidecar" }
+dependencies = [
+    { name = "bazaar-contrib-config" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "bazaar-core", editable = "core" },
 ]
 
 [[package]]
