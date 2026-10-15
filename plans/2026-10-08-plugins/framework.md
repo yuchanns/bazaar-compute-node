@@ -183,6 +183,13 @@ GitHub Actions 通过 `fromJSON` 接收完整的 `matrix.include`，逐条创建
 [GitHub 动态矩阵文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations#using-an-output-to-define-two-matrices)。
 CI 按上述声明生成包与平台矩阵，仓库脚本作为开发工具维护。
 
+异步命令回调通过公共服务复用业务逻辑；在异步回调线程调用 Click Context.invoke／forward 时，
+invoke 在执行目标回调前抛出明确的 RuntimeError，禁止回到 Click 同步调用链阻塞事件循环。
+
+命令目录按入口记录导入、元数据校验及重复名称错误，健康命令继续可选；
+通过资源模板向 stderr 输出 uv 风格的 warning 与 Caused by 原因，包含命令名和所属发行包。
+选中失败命令时输出对应 error 并让该次调用失败，同一失败入口只报告一次。
+
 加载诊断在每次组合启用时复制独立记录并生成新 ID，parent 使用当前组合所属 contrib 的实例 ID；
 缺失与歧义插件的原始错误和位置保持随诊断记录发布，重复启用同一组合时按各自归属显示。
 
@@ -892,6 +899,8 @@ app 的 defaults.toml 提供新节点的初始配置，并显式声明 manager �
 
 随后所选 contrib 及其依赖进入 lifespan 并登记实际命令，Commands.dispatch 在工作线程内完成原生 Click 的参数、帮助和回调分发，
 将回调返回的 awaitable 交回事件循环。回调结束或取消后退出组合；只有需要常驻的回调自行等待。
+dispatch 复制本次原生命令树，以本次 Context.invoke 将异步回调通过 asyncio.run_coroutine_threadsafe 交回原事件循环，工作线程等待回调完成后才退出各级 Click Context；异步回调使用 scope(cleanup=False) 保留当前 Click Context，资源由原工作线程的上下文退出统一关闭。同一 Commands 串行分派，避免 Click 的线程本地 Context 在异步等待期间交错。取消分派先取消回调任务并等待清理，再等待工作线程退出，之后传播取消。
+依据：[Click 资源生命周期](https://click.palletsprojects.com/en/stable/advanced/#managing-resources)、[Context.scope](https://click.palletsprojects.com/en/stable/api/#click.Context.scope) 与 [asyncio 跨线程提交](https://docs.python.org/3/library/asyncio-task.html#asyncio.run_coroutine_threadsafe)。现有文件命令与取消验收使用 Click 管理的文件、嵌套命令和 with_resource，核对 await 及取消清理期间资源仍可用、分派完成后资源已释放。
 根帮助从入口描述列出可选命令；单条命令帮助启动它所必需的服务。未选中的命令插件及业务分支保持未启动。
 
 管理根从已启用的 contrib-manager 及保存参数构造。首次配置创建、迁移和后续保存复用 CONFIGURATION。

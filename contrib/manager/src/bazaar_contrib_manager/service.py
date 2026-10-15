@@ -14,10 +14,11 @@ lazy from typing import Any
 lazy from uuid import UUID
 
 from bazaar_contrib_config import CONFIGURATION, ConfigDocument, EnabledContrib
+from bazaar_contrib_invoke import COMMANDS
 from bazaar_core import CURRENT_CONTEXT, Contrib, ServiceKey
+from filelock import AsyncFileLock
 lazy from bazaar_contrib_config import ConfigConflict, Configuration
 lazy from bazaar_core import Context
-lazy from filelock import AsyncFileLock
 lazy from packaging.utils import canonicalize_name
 
 from .catalog import CONTRIB_CATALOG, ContribCatalog
@@ -30,6 +31,7 @@ from .contracts import (
     Package,
     Positions,
 )
+lazy from .cli import create_commands
 lazy from .files import write
 lazy from .packages import Packages
 
@@ -504,15 +506,17 @@ async def lifespan(ctx: Context, config: ManagerConfig):
         service = ContribManager(configuration, catalog, packages, tasks, ctx)
         ctx.offer(CONTRIB_CATALOG, catalog)
         ctx.offer(CONTRIB_MANAGER, service)
-        try:
-            yield
-        finally:
-            service.closed = True
+        command = await asyncio.to_thread(create_commands, service)
+        with ctx.accept(COMMANDS).register(command):
+            try:
+                yield
+            finally:
+                service.closed = True
 
 
 manager = Contrib(
     config=ManagerConfig,
-    accepts=[CONFIGURATION],
+    accepts=[CONFIGURATION, COMMANDS],
     offers=[CONTRIB_CATALOG, CONTRIB_MANAGER],
     lifespan=lifespan,
 )
