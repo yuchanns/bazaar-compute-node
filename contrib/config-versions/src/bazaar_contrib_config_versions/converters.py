@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
+lazy import sys
 lazy from collections.abc import Mapping
 lazy from copy import deepcopy
+lazy from hashlib import sha256
+lazy from pathlib import Path
 
 from bazaar_contrib_config import AgentConfig
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
@@ -86,42 +89,27 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     )
     if node.audit == "logging":
         add("logging", "logging", dict(node.logging))
-        changes.append(
-            FieldChange(source="node.logging", target="contribs[logging].config")
+        changes.extend(
+            [
+                FieldChange(source="node.logging", target="contribs[logging].config"),
+                FieldChange(source="node.audit", target="contribs[logging]"),
+            ]
         )
-    if node.audit == "server" or node.control == "server":
-        add(
-            "starlink",
-            "starlink",
-            dict(node.server)
-            | {"events": node.audit == "server", "requests": node.control == "server"},
-        )
-        changes.append(
-            FieldChange(source="node.server", target="contribs[starlink].config")
-        )
-    changes.extend(
-        [
-            FieldChange(
-                source="node.audit",
-                target="contribs[logging]"
-                if node.audit == "logging"
-                else "contribs[starlink].config.events",
-            ),
-            FieldChange(
-                source="node.control",
-                target="contribs[starlink].config.requests"
-                if node.control == "server"
-                else "contribs[local-rpc]",
-            ),
-        ]
-    )
     add("commands", "invoke")
-    add("local-rpc", "invoke", {"endpoint": node.endpoint} if node.endpoint else {})
+    endpoint = node.endpoint
+    if endpoint and sys.platform == "win32":
+        # V4 identified its native pipe by a configured filesystem path.
+        identity = str(Path(endpoint).expanduser().absolute()).casefold()
+        endpoint = rf"\\.\pipe\bcn-{sha256(identity.encode()).hexdigest()[:32]}"
+    endpoint = {"endpoint": endpoint} if endpoint else {}
+    add("sidecar", "sidecar")
+    transport = "sidecar-windows" if sys.platform == "win32" else "sidecar-unix"
+    add(transport, transport, endpoint)
     add("node-management", "node-management")
     changes.extend(
         [
             FieldChange(
-                source="node.endpoint", target="contribs[local-rpc].config.endpoint"
+                source="node.endpoint", target=f"contribs[{transport}].config.endpoint"
             ),
         ]
     )

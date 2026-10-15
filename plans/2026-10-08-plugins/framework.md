@@ -1067,6 +1067,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 8：sidecar 调用与 channel／harness 公共登记
 
+Sidecar README 使用 V5 的 `package` 与 `enabled[].entry` 描述启用方式，与实际配置文档一致。
+
 本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
 `SERVER`、`CLIENT` 两个公共服务 key，并提供接受 `SERVER`、`CONFIGURATION` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
 将自己的 Context 公开为 handler。消费插件只依赖接口包并接受 `CLIENT`，按已有 offers／accepts 装配。

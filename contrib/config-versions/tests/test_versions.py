@@ -166,9 +166,3 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         for channel in candidate.payload["agent"][0]["channel"]
     )
     assert candidate.payload["agent"][0]["runtime"][-1]["custom_setting"] == "retained"
-    entries = {
-        entry["contrib"]: entry.get("config", {})
-        for entry in candidate.payload["contribs"]
-    }
-    assert entries["starlink"]["token_env"] == "BCS_TOKEN"
-    assert entries["starlink"]["events"] and entries["starlink"]["requests"]

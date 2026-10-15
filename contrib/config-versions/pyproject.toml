@@ -22,6 +22,9 @@ config-v5 = "bazaar_contrib_config_versions:v5"
 requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
+[tool.bcn.ci]
+platforms = ["linux", "windows"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:anyio"
