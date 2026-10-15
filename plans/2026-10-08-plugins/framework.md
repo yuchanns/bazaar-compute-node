@@ -1089,7 +1089,7 @@ manager 自持 catalog 构建后端与锁文件快照，app 使用普通 uv_buil
 
 - [x] 迁出 run 实现，真实配置选择验证命令、信号退出及资源释放。
 - [x] manager 持有官方索引构建和资源读取，真实索引增删、离线读取和独立 sdist→wheel 验证。
-- [x] 完成隔离 app、manager venv／uv tool、sidecar 回归、Ruff、根目录 LSP 和发行检查；在同一框架分支独立签名提交供 review。
+- [x] app 的公共 run 通过真实安装与配置加载流程验收；manager 的依赖规格验收覆盖保存、传递与恢复。完成隔离 app、manager venv／uv tool、sidecar 回归、Ruff、根目录 LSP 和发行检查；在同一框架分支独立签名提交供 review。
 
 本轮 review 删除当前审计发行包、node-audit、app 的审计发布和依赖，以及按 CONTRIB_CHANGED 监听声明追加命令根的策略。
 logging 保留标准日志、格式、级别路径、轮转和资源释放，直接从标准 LogRecord 与 CURRENT_CONTEXT 捕获来源。

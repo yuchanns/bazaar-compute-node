@@ -13,6 +13,8 @@ members = [
     "bazaar-contrib-manager",
     "bazaar-contrib-node-management",
     "bazaar-contrib-sidecar",
+    "bazaar-contrib-sidecar-unix",
+    "bazaar-contrib-sidecar-windows",
     "bazaar-contrib-status",
     "bazaar-core",
     "bcn-workspace",
@@ -201,6 +203,36 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar-unix"
+version = "0.3.0"
+source = { editable = "contrib/sidecar-unix" }
+dependencies = [
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar-windows"
+version = "0.3.0"
+source = { editable = "contrib/sidecar-windows" }
+dependencies = [
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-core", editable = "core" },
 ]
 
