@@ -36,11 +36,12 @@ DIRECTORY = ServiceKey[Path]("installed.directory")
 async def exercise(path: Path) -> None:
     configuration = path / ".bcn" / "config.toml"
     async with node() as hub:
-        if not any(
-            record.name == "node-configuration" and isinstance(record.state, Running)
-            for record in hub.snapshots
-        ):
-            raise RuntimeError("installed version chain did not become ready")
+        for name in ("node-configuration", "sidecar"):
+            if not any(
+                record.name == name and isinstance(record.state, Running)
+                for record in hub.snapshots
+            ):
+                raise RuntimeError(f"installed {name} did not become ready")
     async with FileConfigStore(configuration) as store:
         snapshot = await store.read()
         assert snapshot is not None
@@ -170,7 +171,9 @@ def main() -> None:
     )
     if version not in result.stdout:
         raise RuntimeError("installed application CLI reports another version")
-    with TemporaryDirectory(prefix="bcn-app-installed-") as directory:
+    with TemporaryDirectory(
+        prefix="bcn-app-installed-", dir="/tmp" if os.name == "posix" else None
+    ) as directory:
         directory = Path(directory) / "node 本地 🌙"
         os.environ["BCN_HOME"] = str(directory)
         asyncio.run(exercise(directory))

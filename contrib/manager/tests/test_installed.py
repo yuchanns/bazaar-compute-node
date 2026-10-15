@@ -38,6 +38,9 @@ def wheels(tmp_path_factory):
                 "config-versions",
                 "manager",
                 "invoke",
+                "sidecar",
+                "sidecar-unix",
+                "sidecar-windows",
             )
         ],
     ]

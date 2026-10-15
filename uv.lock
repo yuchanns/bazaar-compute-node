@@ -12,6 +12,9 @@ members = [
     "bazaar-contrib-invoke",
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
+    "bazaar-contrib-sidecar",
+    "bazaar-contrib-sidecar-unix",
+    "bazaar-contrib-sidecar-windows",
     "bazaar-contrib-status",
     "bazaar-core",
     "bcn-workspace",
@@ -56,6 +59,9 @@ dependencies = [
     { name = "bazaar-contrib-invoke" },
     { name = "bazaar-contrib-logging" },
     { name = "bazaar-contrib-manager" },
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-contrib-sidecar-unix", marker = "sys_platform != 'win32'" },
+    { name = "bazaar-contrib-sidecar-windows", marker = "sys_platform == 'win32'" },
     { name = "bazaar-contrib-status" },
     { name = "bazaar-core" },
     { name = "click" },
@@ -70,6 +76,9 @@ requires-dist = [
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
     { name = "bazaar-contrib-logging", editable = "contrib/logging" },
     { name = "bazaar-contrib-manager", editable = "contrib/manager" },
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-contrib-sidecar-unix", marker = "sys_platform != 'win32'", editable = "contrib/sidecar-unix" },
+    { name = "bazaar-contrib-sidecar-windows", marker = "sys_platform == 'win32'", editable = "contrib/sidecar-windows" },
     { name = "bazaar-contrib-status", editable = "contrib/status" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
@@ -184,6 +193,51 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "packaging", specifier = ">=25.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar"
+version = "0.3.0"
+source = { editable = "contrib/sidecar" }
+dependencies = [
+    { name = "bazaar-contrib-config" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar-unix"
+version = "0.3.0"
+source = { editable = "contrib/sidecar-unix" }
+dependencies = [
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
+name = "bazaar-contrib-sidecar-windows"
+version = "0.3.0"
+source = { editable = "contrib/sidecar-windows" }
+dependencies = [
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-core", editable = "core" },
 ]
 
 [[package]]

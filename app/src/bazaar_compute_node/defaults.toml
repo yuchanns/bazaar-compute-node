@@ -13,3 +13,6 @@ contrib = "contrib-manager"
 
 [[contribs]]
 contrib = "logging"
+
+[[contribs]]
+contrib = "sidecar"

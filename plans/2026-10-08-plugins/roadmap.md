@@ -16,7 +16,7 @@
 | 顺序 | 能力主题 | 模块化的能力 | 前置能力与验收 |
 | --- | --- | --- | --- |
 | 1 | 框架与日志 | core 运行内核、统一启动接口、本地绑定与发现，app 普通命令入口与默认资源，公共配置载体与版本服务契约、filesystem 实现、五版转换模块、自举、V5 配置、安装管理和日志 | 组合明确声明 ContribEntry 及服务绑定，ContribHub 按服务依赖和父实例关系启动、更新及释放实例，用户统一在业务文档顶层 contribs 启用，登记 lifespan / listen / offers 和静态或按配置计算的 accepts；Context 提供 offer / accept / announce；启动输入选择提供 CONFIG_STORE 的已安装入口；版本包提供 VERSIONS 组合并装配 CONFIG_CURRENT 依赖链，V1→V2→V3→V4→V5 服务生成候选和所需包，宿主校验后经载体条件提交；通过包元数据关联入口；节点升级保留模块依赖与来源 |
-| 2 | 命令、注册入口与调用 | COMMANDS、插件命令；channel / harness builder、bcc 命令与本地 RPC | 先交付共享 Click 命令组与 invoke 自持的命令入口扩展，功能包在 lifespan 中登记自身命令并持有文案；core 按通用插件根与绑定选择依赖，回调决定退出时间；模块拥有服务、输入模型和 handler，builder 登记实体关系，本地传输按登记表分发 |
+| 2 | 命令、注册入口与调用 | COMMANDS、插件命令、sidecar；channel / harness builder、bcc 命令 | 共享 Click 命令与 invoke 的入口扩展；sidecar 定义 SERVER／CLIENT 及 ctx handler，Unix／Windows 包提供传输服务，消费者依赖接口并自行编排调用；core 按通用插件根与绑定选择依赖，回调决定退出时间；builder 登记实体关系 |
 | 3 | 数据库与迁移 | storage 公共数据操作契约、后端注册表、DB 选择层、SQLite 实现、schema 与迁移服务 | storage → 所选后端 → database → 消费者；按配置展开后端依赖，实际多个后端验证并存与选择；业务声明查询、provider 翻译；BCN／BCS 历史 ledger 分别识别，已发布迁移及 checksum 原样保存 |
 | 4 | 消息与会话 | agent 消息数据、会话 target、历史、未读 cursor、发送与回执、附件、草稿、搜索和 thread follow | 消息模块使用公共查询接口并持有业务模型与索引要求；同一消息服务供 CLI / RPC 使用；新调用者使用消息 / 会话 / 搜索服务，旧 repository 在最终发行阶段统一清理 |
 | 5 | 身份与协作 | sender / contact 身份、引用 refs、会话登记和审批、消息引用及关联 | 消息模块公共契约就绪；状态变化和读取遵循现有协作语义 |
@@ -41,7 +41,7 @@
 | --- | --- |
 | 配置与启动 | 所选配置载体、五版转换及配置加载器，默认载体为 config-filesystem |
 | 状态与日志 | status、node-audit、logging |
-| 模块与节点管理 | contrib-manager、commands、local-rpc、node-management |
+| 模块与节点管理 | contrib-manager、commands、sidecar、按平台选择的 sidecar 实现、node-management |
 | 存储 | storage、sqlite、database、schema，默认 database.config.backend="sqlite" |
 | agent 公共业务 | messages、collaboration、timer-wheel、reminder |
 | provider 公共接口与 agent | channel-builders、harness-builders；agent 组合持有配置，明确构造执行及 provider 实例 |
@@ -86,7 +86,7 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 这六个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
 channel 与 harness 的接口和登记服务分别归上述公共包；具体 provider 依赖这些包。
-其他能力的公共类型与 key 由对应功能包导出：调用注册归 invoke，
+其他能力的公共类型与 key 由对应功能包导出：命令注册归 invoke，跨进程 SERVER／CLIENT 与 ctx handler 归 sidecar，
 消息与协作归各自业务包，HTTP 与 API 注册契约归 http，UI 注册契约归 gui；starlink 的 HTTP 请求格式和请求关联由通信包公开定义，server-api 按同一格式提供对端。
 具体 provider 依赖相应公共能力包，例如 PG 与 SQLite 共同依赖 `bazaar-contrib-storage`，业务同样依赖它。
 
@@ -99,7 +99,10 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-status` | `status`：共享 | IContribStatus、CONTRIB_STATUS 与 snapshot()；依赖 core，读取宿主记录的实例状态与故障来源 | 1 | 默认、server |
 | `bazaar-contrib-logging` | `logging`：共享 | 日志输出与审计事件监听；依赖 `bazaar-contrib-audit` | 1 | 默认、server |
 | `bazaar-contrib-manager` | `contrib-manager`：共享 | 模块索引、包管理、入口与组合配置导入、依赖与来源清单、配置迁移所需包解析及整体升级；服务端页面经节点接口访问 | 1 | 默认；节点管理 |
-| `bazaar-contrib-invoke` | `commands`、`local-rpc`：共享 | 命令／RPC 注册契约、输入边界、本地 socket／pipe 传输；业务方法由各功能包登记 | 2 | 默认、server |
+| `bazaar-contrib-invoke` | `commands`：共享 | Click 命令登记与命令入口扩展；功能包持有命令与文案 | 2 | 默认、server |
+| `bazaar-contrib-sidecar` | `sidecar`：共享 | SERVER／CLIENT 公共契约；接受 SERVER 并暴露 ctx／返回对象的公开 handler，消费方自行编排 | 2 | 节点默认；消费插件的接口依赖 |
+| `bazaar-contrib-sidecar-unix` | `sidecar-unix`：共享 | offer SERVER／CLIENT，以 Unix socket 实现会话与请求；依赖 sidecar 接口 | 2 | Linux/macOS 默认 |
+| `bazaar-contrib-sidecar-windows` | `sidecar-windows`：共享 | offer SERVER／CLIENT，以 Windows named pipe 实现会话与请求；依赖 sidecar 接口 | 2 | Windows 默认 |
 | `bazaar-contrib-sqlite` | `sqlite`：共享 | 依赖 STORAGE、登记 sqlite 后端、提供 backend_key("sqlite")；持有节点连接、公共操作翻译和已发布节点迁移资源 | 3 | 默认；节点初始存储后端 |
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
 | `bazaar-contrib-messages` | `messages`：共享 | 消息／会话、历史、未读、搜索、附件、草稿、收发回执和 thread follow；依赖 storage、schema、调用与审计契约 | 4 | 默认；server 投影的契约依赖 |
@@ -398,7 +401,7 @@ HTTP、连接与 agent 的持续执行由所属模块管理后台任务或子进
 
 ### 各阶段交付与验收
 
-- 第 11 阶段交付 http、server／server-api／starlink 及独立 server-config-filesystem／server-sqlite，以隔离的真实两端验证公开请求格式、主动 getUpdate、独立 send、身份、事件上报、服务查询、请求及结果、确认、重放、去重和退出；query 直接调用真实 offer 服务，业务操作独立产生审计事件；默认节点在配置 server 后启用 starlink。
+- 第 11 阶段交付 http、server／server-api／starlink 及独立 server-config-filesystem／server-sqlite，以隔离的真实两端验证公开请求格式、主动 getUpdate、独立 send、身份、事件上报、服务查询、请求及结果、确认、重放、去重和退出；query 直接调用真实 offer 服务，业务操作独立产生审计事件；默认节点在配置 server 后启用 starlink，并补充 V4 的 audit／control／server 字段迁移。
 - 第 12 阶段交付 fleet、history、contacts，直接读取 BCS 原配置并查询原数据库，验证配置中心与存储替换；同一 bcn run 验证空 agent 的 API 组合、server 与 agent 各自独立配置／DB 的同进程并行及分进程通信，同时验证 0.2 节点原地址／token／协议的上报与控制。
 - 第 13 阶段接入 access 与受保护的节点操作 API，保留 BCS 原账户、密码哈希、角色、分享、OIDC 设置及 session.key；验证旧账户与有效 cookie、请求身份、登录、分享、节点操作与数据权限；各受保护入口声明访问服务依赖。
 - 第 14 阶段交付 gui、web 与业务页面，验证原 BCS 历史、refs、账户主题及升级后的新事件在同一数据源可查询，完成独立 API 运行、页面组合和功能模块新增接口／页面；注册撤销及生命周期可观察。
