@@ -20,6 +20,7 @@ lazy from bazaar_core import (
     Composition,
     Context,
     Contrib,
+    ContribEntry,
     Stopping,
 )
 
@@ -85,6 +86,7 @@ class Configuration:
         self.snapshot: ConfigSnapshot | None = None
         self.candidate: ConfigCandidate | None = None
         self._composition: Candidate | None = None
+        self._startup: tuple[ContribEntry, ...] = ()
         self._lock = asyncio.Lock()
 
     async def read(self) -> tuple[ConfigCandidate, ConfigSnapshot | None]:
@@ -96,13 +98,28 @@ class Configuration:
         )
         return candidate, snapshot
 
+    async def _build(self, document: ConfigDocument) -> Composition:
+        """Keep startup roots available while validating or updating the full document."""
+        composition = await asyncio.to_thread(self.build, document)
+        if self._startup:
+            names = {entry.name for entry in composition.entries}
+            composition = composition.model_copy(
+                update={
+                    "entries": (
+                        *composition.entries,
+                        *(entry for entry in self._startup if entry.name not in names),
+                    )
+                }
+            )
+        return composition
+
     async def prepare(
         self, payload: Mapping[str, object]
     ) -> tuple[ConfigCandidate, Candidate]:
         """Convert the document and validate its composition without starting it."""
         candidate = await asyncio.to_thread(self.converter.convert, payload)
         document = ConfigDocument.model_validate(candidate.payload)
-        composition = await asyncio.to_thread(self.build, document)
+        composition = await self._build(document)
         return candidate, self.ctx.validate(composition, replacing=self._composition)
 
     async def _write(
@@ -150,6 +167,12 @@ class Configuration:
                 self.start, ConfigDocument.model_validate(candidate.payload)
             )
             composition = self.ctx.validate(selected)
+            self.check(composition)
+            self._startup = tuple(
+                entry
+                for entry in selected.entries
+                if selected.roots is not None and entry.name in selected.roots
+            )
         self._composition = composition
         return composition
 
@@ -187,11 +210,23 @@ class Configuration:
             try:
                 await asyncio.to_thread(importlib.invalidate_caches)
                 document = ConfigDocument.model_validate(snapshot.payload)
-                composition = await asyncio.to_thread(self.build, document)
+                composition = await self._build(document)
                 await self.ctx.update(composition)
             except Exception as error:  # noqa: BLE001 - Saving and lifecycle application have separate outcomes.
                 return ConfigurationApplication(pending_restart=True, error=str(error))
             return ConfigurationApplication(applied=True)
+
+    async def activate(self) -> None:
+        """Start the saved full composition within this loader's existing Hub."""
+        async with self._lock:
+            assert self.candidate is not None
+            document = ConfigDocument.model_validate(self.candidate.payload)
+            composition = await self._build(document)
+            preview = self.ctx.validate(composition, replacing=self._composition)
+            self.check(preview)
+            await self.ctx.update(composition)
+            self._composition = preview
+            self.start = None
 
     async def preview(
         self, python: Path, *, payload: Mapping[str, object] | None = None

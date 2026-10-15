@@ -100,14 +100,9 @@ async def test_installed_chain_preserves_legacy_identity_and_provider_settings(
         assert any(
             change.source == "node.database_name" for change in candidate.changes
         )
-        entries = {
-            entry["contrib"]: entry.get("config", {})
-            for entry in candidate.payload["contribs"]
-        }
-        assert entries["language"]["backend"] == "en"
 
 
-async def test_v3_and_v4_keep_multiple_entities_language_data_and_disabled_checks(
+async def test_v3_and_v4_keep_multiple_entities_data_and_disabled_checks(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setenv("BCN_HOME", str(tmp_path))
@@ -144,13 +139,8 @@ async def test_v3_and_v4_keep_multiple_entities_language_data_and_disabled_check
         entry["contrib"]: entry.get("config", {})
         for entry in candidate.payload["contribs"]
     }
-    assert entries["language"]["backend"] == "zh-CN"
     assert entries["node-management"]["version_check"] is False
     assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
-    assert any(
-        package.package == "bazaar-contrib-language-zh-cn"
-        for package in candidate.required_packages
-    )
     assert (
         candidate.payload["agent"][0]["runtime"][0]["env"]["ANTHROPIC_API_KEY"]
         == "KEY_WORK"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
-lazy import locale
 lazy from collections.abc import Mapping
 lazy from copy import deepcopy
 
@@ -115,21 +114,6 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
                 else "contribs[local-rpc]",
             ),
         ]
-    )
-    lang = node.lang
-    if lang is None:
-        try:
-            system_language, _ = locale.getlocale()
-        except ValueError, locale.Error:
-            system_language = None
-        lang = "zh-CN" if system_language == "zh_CN" else "en"
-    lang = "zh-CN" if lang == "zh-CN" else "en"
-    add("languages", "language")
-    if lang == "zh-CN":
-        add("language-zh-cn", "language-zh-cn")
-    add("language", "language", {"backend": lang})
-    changes.append(
-        FieldChange(source="node.lang", target="contribs[language].config.backend")
     )
     add("commands", "invoke")
     add("local-rpc", "invoke", {"endpoint": node.endpoint} if node.endpoint else {})

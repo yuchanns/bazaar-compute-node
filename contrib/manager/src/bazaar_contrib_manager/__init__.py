@@ -1,5 +1,11 @@
 """Shared contrib catalog, package management, and operation services."""
 
+from bazaar_contrib_invoke import CommandEntry
+
+command_entry = CommandEntry(
+    contrib="contrib-manager", help="Manage contrib packages and configuration."
+)
+
 lazy from .catalog import CONTRIB_CATALOG, ContribCatalog
 lazy from .contracts import (
     CatalogEntry,
@@ -26,5 +32,6 @@ __all__ = [
     "ManagerConfig",
     "Operation",
     "Package",
+    "command_entry",
     "manager",
 ]
