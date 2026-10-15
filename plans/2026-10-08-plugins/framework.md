@@ -1080,6 +1080,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 7：插件扩展入口与按根启用的命令执行
 
+run 的用户帮助使用：`Run the node, serving until it is stopped.`
+
 - [x] 交付 invoke 的 COMMANDS、Commands.register／dispatch 与插件自持的 CommandEntry 扩展发现，保持原生 Click 和 lifespan 登记。
 - [x] core 在通用 Composition.roots 中按根及绑定选择依赖，保留既有完整建图、更新和生命周期流程。
 - [x] manager 与 app run 按相同元数据声明命令根，app 复用 boot／load 和一个 Hub，回调决定退出时间。

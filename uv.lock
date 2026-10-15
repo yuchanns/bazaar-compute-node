@@ -11,6 +11,7 @@ members = [
     "bazaar-contrib-invoke",
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
+    "bazaar-contrib-node-management",
     "bazaar-contrib-sidecar",
     "bazaar-contrib-status",
     "bazaar-core",
@@ -167,6 +168,25 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "packaging", specifier = ">=25.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-node-management"
+version = "0.3.0"
+source = { editable = "contrib/node-management" }
+dependencies = [
+    { name = "bazaar-contrib-config" },
+    { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-core" },
+    { name = "click" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "click", specifier = ">=8.1.0" },
 ]
 
 [[package]]
