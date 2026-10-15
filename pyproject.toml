@@ -35,6 +35,8 @@ bazaar-contrib-manager = { workspace = true }
 bazaar-contrib-invoke = { workspace = true }
 bazaar-contrib-node-management = { workspace = true }
 bazaar-contrib-sidecar = { workspace = true }
+bazaar-contrib-sidecar-unix = { workspace = true }
+bazaar-contrib-sidecar-windows = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.uv.workspace]

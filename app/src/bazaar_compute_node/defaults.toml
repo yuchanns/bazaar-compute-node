@@ -29,3 +29,17 @@ package = "bazaar-contrib-logging~=0.3.0"
 [[contribs.enabled]]
 entry = "logging"
 
+[[contribs]]
+package = "bazaar-contrib-sidecar~=0.3.0"
+[[contribs.enabled]]
+entry = "sidecar"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-unix~=0.3.0; sys_platform != 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-unix"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-windows~=0.3.0; sys_platform == 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-windows"
