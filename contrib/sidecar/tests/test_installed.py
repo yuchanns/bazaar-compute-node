@@ -24,6 +24,7 @@ def environment(tmp_path_factory):
         "bazaar-contrib-logging",
         "bazaar-contrib-manager",
         "bazaar-contrib-invoke",
+        "bazaar-contrib-node-management",
         "bazaar-contrib-sidecar",
         "bazaar-contrib-sidecar-unix",
         "bazaar-contrib-sidecar-windows",

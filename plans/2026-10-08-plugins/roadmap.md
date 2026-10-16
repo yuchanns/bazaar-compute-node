@@ -40,7 +40,7 @@
 | 用途 | 默认运行入口或自举能力 |
 | --- | --- |
 | 配置与启动 | 所选配置载体、五版转换及配置加载器，默认载体为 config-filesystem |
-| 状态与日志 | status、node-audit、logging |
+| 状态与日志 | status、logging |
 | 模块与节点管理 | contrib-manager、commands、sidecar、按平台选择的 sidecar 实现、node-management |
 | 存储 | storage、sqlite、database、schema，默认 database.config.backend="sqlite" |
 | agent 公共业务 | messages、collaboration、timer-wheel、reminder |
@@ -77,7 +77,7 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | 发行包 | 公共内容 | 引用者 | 阶段 | 组合归属 |
 | --- | --- | --- | --- | --- |
 | `bazaar-contrib-config` | ConfigStore、ConfigSnapshot、CONFIG_STORE、ConfigConverter、ConfigCandidate、CONFIG_CURRENT、CONFIG_V1…CONFIG_V5、修订条件提交与错误契约 | 公共配置加载器、filesystem／自定义配置中心载体、app 参数绑定、CLI 和管理入口 | 1 | 默认、应用组合的依赖 |
-| `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 日志、agent、节点管理、starlink 的事件上报及事件投影 | 1 | 默认、server 的依赖 |
+| `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 活动记录、starlink 的事件上报及事件投影，按业务需要接入 | 11 | 所需业务的依赖 |
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
 | `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 6 | 默认、server 的依赖 |
 | `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 2 | 默认；web 的编辑器依赖 |
@@ -97,7 +97,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-config-filesystem` | `config-filesystem`：共享，自举选择 | 依赖 bazaar-contrib-config，提供 CONFIG_STORE；TOML、修订复核、锁及原子替换 | 1 | 默认；BCN 主配置的默认载体 |
 | `bazaar-contrib-config-versions` | `config-v1`、`config-v2`、`config-v3`、`config-v4`、`config-v5`：共享，VERSIONS 组合 | 依赖 bazaar-contrib-config，逐版提供转换服务；Vn 依赖 V(n-1)，V5 生成参数映射及所需包，配置加载器消费 CONFIG_CURRENT | 1 | 默认；BCN 主配置的版本链 |
 | `bazaar-contrib-status` | `status`：共享 | IContribStatus、CONTRIB_STATUS 与 snapshot()；依赖 core，读取宿主记录的实例状态与故障来源 | 1 | 默认、server |
-| `bazaar-contrib-logging` | `logging`：共享 | 日志输出与审计事件监听；依赖 `bazaar-contrib-audit` | 1 | 默认、server |
+| `bazaar-contrib-logging` | `logging`：共享 | 标准 logging 输出、实例来源、异常堆栈、线程队列与文件轮转；依赖 core | 1 | 默认、server |
 | `bazaar-contrib-manager` | `contrib-manager`：共享 | 模块索引、包管理、入口与组合配置导入、依赖与来源清单、配置迁移所需包解析及整体升级；服务端页面经节点接口访问 | 1 | 默认；节点管理 |
 | `bazaar-contrib-invoke` | `commands`：共享 | Click 命令登记与命令入口扩展；功能包持有命令与文案 | 2 | 默认、server |
 | `bazaar-contrib-sidecar` | `sidecar`：共享 | SERVER／CLIENT 公共契约；接受 SERVER 并暴露 ctx／返回对象的公开 handler，消费方自行编排 | 2 | 节点默认；消费插件的接口依赖 |
@@ -110,7 +110,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 6 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
 | `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
-| `bazaar-contrib-node-management` | `node-management`：共享 | 节点配置、workspace／文件、模型／skills、健康、系统服务与升级；依赖调用、builder、timer、审计和模块管理；agent 配置及命令由 agent 包拥有 | 10 | 默认 |
+| `bazaar-contrib-node-management` | `node-management`：共享 | 首阶段接收已实现的 run 命令、配置激活与退出等待；后续节点配置、workspace／文件、模型／skills、健康、系统服务与升级按阶段交付；agent 配置及命令由 agent 包拥有 | 2、10 | 默认 |
 
 ### server、web 与可选能力模块包
 
@@ -145,7 +145,7 @@ HTTP／GUI 的公共协议供功能模块导入，功能包通过这些协议引
 | 发行包 | 目录与职责 | 入口 | 阶段 |
 | --- | --- | --- | --- |
 | `bazaar-core` | core/src/bazaar_core/；框架运行内核、ContribHub.run、发现与自举装配、通用校验、服务／事件、本地绑定、依赖与完整生命周期 API | 由 Python import 使用 | 1 |
-| `bazaar-compute-node` | app/src/bazaar_compute_node/；业务输入服务与明确的实例构造、run 命令插件、启动输入与退出信号、同版默认依赖、defaults.toml，消费版本包的 VERSIONS | bcn 调用 core 运行接口、bcc 调用 | 1 |
+| `bazaar-compute-node` | app/src/bazaar_compute_node/；业务输入服务与明确的实例构造、通用命令分派、启动输入、同版默认依赖、defaults.toml，消费版本包的 VERSIONS | bcn 调用 core 运行接口、bcc 调用 | 1 |
 
 app 直接依赖同版 bazaar-core 与默认 contrib；core 的包依赖保持通用。
 应用基础先作为独立任务交付：run(bootstrap, load) 启动自举条目及提供 COMPOSITION 的加载器，bcn run 启用已交付的 status；
@@ -430,10 +430,10 @@ Context 提供 id、name、快照以及 offer／accept／announce；组合用 ct
 | channel／harness builder | 共享登记服务 | agent 从业务输入选择实现，明确创建实际运行实例 |
 | agent 执行编排 | 每个 agent 一个明确实例，私有输入和消息事件 | 管理调度、会话、审批、输出与空闲状态 |
 | channel／harness 运行实例 | 所属 agent 的本地子组合 | 管理自己的连接、进程和任务，先于创建者退出 |
-| 节点日志与管理 | 共享提供者或公共事件消费者 | 读取实例身份、提供节点服务和处理已脱敏审计 |
+| 节点日志与管理 | 共享生命周期与服务提供者 | 读取实例身份、输出标准日志和提供节点服务 |
 | server／web | server lifespan 的本地组合 | 私有 CONFIG_STORE、STORAGE、DB、HTTP 和 API；管理 ~/.bcs 与业务数据 |
 
-日志监听公共 AUDIT_EVENT；私有消息事件由创建组合选择 local，发布者与消费者使用相同绑定。
+日志接收标准 logging 记录；私有消息事件由创建组合选择 local，发布者与消费者使用相同绑定。
 
 ### 配置载体与版本转换
 
@@ -531,7 +531,7 @@ V5 转换沿已有 V1→V2→V3→V4 链追加 V4→V5，旧能力参数移入�
 详见 [V5 配置与版本转换](framework.md#v5-配置与版本转换)。
 用户统一配置顶层 contribs 中的入口与参数；组合按业务输入和 builder 明确创建实例，local 决定私有服务与事件，宿主生成内部实例标识。
 管理列表分别展示统一配置条目和它派生的运行实例，配置编辑更新同一来源条目。
-`contrib_indexes` 保存官方及额外模块索引的本地文件路径或 HTTP(S) 地址。官方索引在 app 构建时从 uv.lock 中的全部 contrib/ 工作区包自动生成，随 app 发行，启动时提取到节点目录并渲染默认路径；默认索引读取无需联网，未安装的包同样可见。
+`contrib_indexes` 保存官方及额外模块索引的本地文件路径、HTTP(S) 或 resource:// 包内资源地址。官方索引在 manager 构建时从 uv.lock 中的全部 contrib/ 工作区包自动生成，随 manager 发行；默认配置声明 resource://bazaar_contrib_manager/catalog.json，读取无需联网，未安装的包同样可见。
 索引条目提供 package 和 source，管理服务读取并缓存登记的安装清单，远端失败显示原因及缓存，节点继续启动。
 选择的包与来源交给 uv，安装后通过发行元数据关联到入口，用户填写参数经该宿主的 CONFIG_STORE 保存配置文档。
 contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和选中的远端节点分别安装，由目标宿主运行自己的 uv。

@@ -8,14 +8,13 @@ import os
 import sys
 import tomllib
 from contextlib import asynccontextmanager
-from functools import partial
 from importlib.resources import files
 from pathlib import Path
 lazy from typing import Any
 lazy from uuid import uuid4
 
 from bazaar_compute_node import run
-from bazaar_compute_node.boot import bootstrap, node, select
+from bazaar_compute_node.boot import bootstrap, build, node
 from bazaar_contrib_config import ConfigDocument
 from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_invoke import COMMANDS
@@ -34,7 +33,12 @@ async def invoke(options: dict[str, Any], action) -> Any:
         yield
 
     async with (
-        node(start=partial(select, roots=("contrib-manager",)), **options) as hub,
+        node(
+            start=lambda document: build(document).model_copy(
+                update={"roots": ("contrib-manager",)}
+            ),
+            **options,
+        ) as hub,
         hub.enable(
             Composition(
                 entries=[
@@ -59,7 +63,6 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
             files("bazaar_compute_node").joinpath("defaults.toml").read_text
         )
     )
-    payload["contrib_indexes"] = [str(path / ".bcn" / "contrib" / "catalog.json")]
     manager = next(
         entry
         for package in payload["contribs"]
@@ -319,7 +322,11 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         ),
     )
     entries, loader = await asyncio.to_thread(
-        bootstrap, start=partial(select, roots=("contrib-manager",)), **options
+        bootstrap,
+        start=lambda document: build(document).model_copy(
+            update={"roots": ("contrib-manager",)}
+        ),
+        **options,
     )
     async with run(entries, loader) as hub, hub.enable(Composition(entries=[consumer])):
         manager = selected["manager"]

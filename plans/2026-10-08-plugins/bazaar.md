@@ -20,8 +20,8 @@ app 提供启动输入和默认资源，core 的统一运行接口执行目标�
 
 ## 模块索引与 Python 包源
 
-模块索引是包的安装清单。app 构建时从 uv.lock 的解析结果筛选全部 contrib/ 工作区包，按包名排序生成官方 package/source 索引，随 wheel 和 sdist 发行；官方包源使用 PyPI。未安装的包同样在索引中。
-app 启动时提取到节点目录的 `contrib/catalog.json`，按实际路径渲染默认配置；节点目录沿用 BCN_HOME 下的 `.bcn`，未设置时为 `~/.bcn`。
+模块索引是包的安装清单。manager 构建时从 uv.lock 的解析结果筛选全部 contrib/ 工作区包，按包名排序生成官方 package/source 索引，随 manager 的 wheel 和 sdist 发行；官方包源使用 PyPI。未安装的包同样在索引中。
+app 默认配置声明 `resource://bazaar_contrib_manager/catalog.json`，由 manager 读取包内资源。索引列表支持本地文件、HTTP(S) 和 resource:// 地址；配置决定索引的追加和删除，包内官方索引可离线读取。
 每个宿主的配置文档通过 contrib_indexes 保存订阅列表；以下是默认 filesystem 的 TOML 表示：
 
 ```toml

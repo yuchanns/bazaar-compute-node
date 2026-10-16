@@ -392,6 +392,7 @@ async def exercise(path: Path) -> None:
             user = dict(updates[0]) | {
                 "contribs": [
                     {"enabled": [{"entry": "example-command-registry"}]},
+                    {"enabled": [{"entry": "node-management"}]},
                     {
                         "enabled": [
                             {
@@ -566,7 +567,9 @@ async def exercise(path: Path) -> None:
             )
             try:
                 assert process.stdout is not None
-                assert await asyncio.wait_for(process.stdout.readline(), 15)
+                if not await asyncio.wait_for(process.stdout.readline(), 15):
+                    _, errors = await process.communicate()
+                    raise AssertionError(errors.decode())
                 process.send_signal(signal.SIGTERM)
                 _, errors = await asyncio.wait_for(process.communicate(), 15)
                 assert process.returncode == 0, errors.decode()

@@ -2,50 +2,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 lazy import asyncio
-lazy import signal
-lazy import sys
 lazy from collections.abc import Sequence
 
 import click
-from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
-from bazaar_contrib_invoke import COMMANDS, CommandCatalog, CommandEntry, Commands
+from bazaar_contrib_config import ConfigDocument, Configuration
+from bazaar_contrib_invoke import COMMANDS, CommandCatalog, Commands
 from bazaar_core import Composition, Context, Contrib, ContribEntry
 
-lazy from .boot import node, select
-
-
-async def _run(configuration: Configuration) -> None:
-    loop = asyncio.get_running_loop()
-    stopped = asyncio.Event()
-    if sys.platform != "win32":
-        loop.add_signal_handler(signal.SIGTERM, stopped.set)
-    try:
-        await configuration.activate()
-        await asyncio.to_thread(click.echo, "bcn ready")
-        await stopped.wait()
-    finally:
-        if sys.platform != "win32":
-            loop.remove_signal_handler(signal.SIGTERM)
-
-
-@asynccontextmanager
-async def lifespan(ctx: Context):
-    commands = ctx.accept(COMMANDS)
-    configuration = ctx.accept(CONFIGURATION)
-
-    @click.command("run", help=run_entry.help, short_help=run_entry.help)
-    def run_command():
-        return _run(configuration)
-
-    with commands.register(run_command):
-        yield
-
-
-run_commands = Contrib(accepts=[COMMANDS, CONFIGURATION], lifespan=lifespan)
-run_entry = CommandEntry(
-    contrib="node-run",
-    help="Run the node, serving until it is stopped.",
-)
+lazy from .boot import build, node
 
 
 async def dispatch(
@@ -58,7 +22,6 @@ async def dispatch(
     failures: list[click.ClickException | click.exceptions.Exit | click.Abort] = []
     roots: list[str] = []
     selected: list[Commands] = []
-    startup = (ContribEntry(name=run_entry.contrib, definition=run_commands),)
 
     def start(document: ConfigDocument) -> Composition:
         catalog = CommandCatalog(
@@ -69,7 +32,6 @@ async def dispatch(
                     if package.applies
                     for entry in package.enabled
                 ),
-                *(entry.name for entry in startup),
             ),
             help=main.help,
             params=main.params,
@@ -80,7 +42,7 @@ async def dispatch(
                 roots.append(entry.contrib)
         except (click.ClickException, click.exceptions.Exit, click.Abort) as error:
             failures.append(error)
-        return select(document, roots=roots, startup=startup)
+        return build(document).model_copy(update={"roots": tuple(roots)})
 
     @asynccontextmanager
     async def observe(ctx: Context):

@@ -5,7 +5,9 @@ from __future__ import annotations
 lazy import asyncio
 lazy from datetime import UTC, datetime
 lazy from hashlib import sha256
+lazy from importlib.resources import files
 lazy from pathlib import Path
+lazy from urllib.parse import urlsplit
 lazy from urllib.request import urlopen
 
 from bazaar_core import ServiceKey
@@ -42,6 +44,13 @@ class ContribCatalog:
             if location.startswith(("http://", "https://")):
                 with urlopen(location, timeout=20) as response:
                     raw = response.read()
+            elif location.startswith("resource://"):
+                resource = urlsplit(location)
+                raw = (
+                    files(resource.netloc)
+                    .joinpath(resource.path.lstrip("/"))
+                    .read_bytes()
+                )
             else:
                 raw = Path(location).expanduser().read_bytes()
             document = IndexDocument.model_validate_json(raw)
@@ -52,7 +61,7 @@ class ContribCatalog:
             )
             write(path, status.model_dump(mode="json"))
             return status
-        except (OSError, ValueError) as error:
+        except (ImportError, OSError, ValueError) as error:
             try:
                 status = IndexStatus.model_validate_json(path.read_bytes())
             except OSError, ValueError:

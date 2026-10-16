@@ -8,19 +8,16 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-lazy import json
-lazy import signal
 lazy from contextlib import asynccontextmanager
-lazy from importlib.resources import files
 lazy from uuid import uuid7
 
 from bazaar_contrib_config import (
     ConfigDocument,
     ContribPackage,
     EnabledContrib,
-    PackageRequirement,
 )
 from bazaar_contrib_config_filesystem import FileConfigStore
+from bazaar_contrib_manager import CONTRIB_CATALOG, ContribCatalog
 from bazaar_core import (
     COMPOSITION,
     Composition,
@@ -40,7 +37,7 @@ DIRECTORY = ServiceKey[Path]("installed.directory")
 async def exercise(path: Path) -> None:
     configuration = path / ".bcn" / "config.toml"
     payload = ConfigDocument(
-        contrib_indexes=(str(path / ".bcn" / "contrib" / "catalog.json"),),
+        contrib_indexes=("resource://bazaar_contrib_manager/catalog.json",),
         contribs=(
             ContribPackage(
                 enabled=(
@@ -52,28 +49,37 @@ async def exercise(path: Path) -> None:
     ).model_dump(mode="json")
     async with FileConfigStore(configuration) as store:
         await store.write(payload, expected_revision=None)
-    async with node() as hub:
+    catalogs: list[ContribCatalog] = []
+
+    @asynccontextmanager
+    async def observe(ctx: Context):
+        catalogs.append(ctx.accept(CONTRIB_CATALOG))
+        yield
+
+    async with (
+        node() as hub,
+        hub.enable(
+            Composition(
+                entries=[
+                    ContribEntry(
+                        name="catalog-observer",
+                        definition=Contrib(accepts=[CONTRIB_CATALOG], lifespan=observe),
+                    )
+                ]
+            )
+        ),
+    ):
         for name in ("node-configuration", "contrib-manager"):
             if not any(
                 record.name == name and isinstance(record.state, Running)
                 for record in hub.snapshots
             ):
                 raise RuntimeError(f"installed {name} did not become ready")
+        indexes = await catalogs[0].indexes()
+        assert any(index.entries and index.error is None for index in indexes)
     async with FileConfigStore(configuration) as store:
         snapshot = await store.read()
         assert snapshot is not None
-        document = ConfigDocument.model_validate(snapshot.payload)
-        catalog = Path(document.contrib_indexes[0])
-        content = await asyncio.to_thread(catalog.read_bytes)
-        resource = await asyncio.to_thread(files, "bazaar_compute_node")
-        assert content == await asyncio.to_thread(
-            resource.joinpath("catalog.json").read_bytes
-        )
-        entries = [
-            PackageRequirement.model_validate(entry)
-            for entry in json.loads(content)["contribs"]
-        ]
-        assert entries
         payload = dict(snapshot.payload) | {
             "agent": [{"id": str(uuid7()), "name": "configured"}]
         }
@@ -134,55 +140,6 @@ async def exercise(path: Path) -> None:
     text = await asyncio.to_thread((path / "installed.txt").read_text)
     if "agent started" not in text or "agent released" not in text:
         raise RuntimeError("installed node did not complete the agent lifecycle")
-
-    if sys.platform != "win32":
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            configured = path / (
-                "selected.toml" if sig == signal.SIGTERM else "options with spaces.toml"
-            )
-            async with FileConfigStore(configured) as store:
-                await store.write(payload, expected_revision=None)
-            process = await asyncio.create_subprocess_exec(
-                "bcn",
-                "--configer-options",
-                str(
-                    path
-                    / (
-                        "ignored.toml"
-                        if sig == signal.SIGTERM
-                        else "options with spaces.toml"
-                    )
-                ),
-                *(
-                    ["--config", str(path / "selected.toml")]
-                    if sig == signal.SIGTERM
-                    else []
-                ),
-                "run",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                assert process.stdout is not None
-                if not await asyncio.wait_for(process.stdout.readline(), timeout=10):
-                    raise RuntimeError("installed node exited before becoming ready")
-                process.send_signal(sig)
-                _, errors = await asyncio.wait_for(process.communicate(), timeout=10)
-                if process.returncode:
-                    raise RuntimeError(errors.decode())
-                configured = path / (
-                    "selected.toml"
-                    if sig == signal.SIGTERM
-                    else "options with spaces.toml"
-                )
-                if not await asyncio.to_thread(configured.is_file):
-                    raise RuntimeError(
-                        "installed CLI did not use the selected configuration path"
-                    )
-            finally:
-                if process.returncode is None:
-                    process.kill()
-                    await process.wait()
 
 
 def main() -> None:

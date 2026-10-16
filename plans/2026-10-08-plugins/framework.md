@@ -17,7 +17,7 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 ## 首阶段的发行结构
 
 首个日志发行包固定为 `bazaar-contrib-logging`，Python 模块为 `bazaar_contrib_logging`，模块入口为 `logging`。
-它依赖 `bazaar-contrib-audit` 的公共审计事件契约，并纳入节点默认组合及可选 server 组合。
+它接收标准库 logging 记录，并纳入节点默认组合及可选 server 组合。
 公共配置契约归 `bazaar-contrib-config`，默认载体归 `bazaar-contrib-config-filesystem`，入口为 `config-filesystem`。
 配置版本服务归 `bazaar-contrib-config-versions`，提供 `config-v1` 至 `config-v5` 五个入口；载体与版本组合在完整配置读取前装配。
 状态查询服务归 `bazaar-contrib-status`，入口为 `status`；模块管理服务归 `bazaar-contrib-manager`，入口为 `contrib-manager`；各包的分包与内置归属见
@@ -89,7 +89,7 @@ async def server_lifespan(ctx: Context, config: ServerConfig):
 默认服务和事件直接以公共 key 作为绑定身份。local 接受 ServiceKey 和 EventKey，给指定 key 分配新的 UUID 身份；
 创建者的其他绑定继续沿用，提供者与消费者始终使用同一公开 typed key。
 本地 key 缺少提供者时报告缺失，同一绑定重复提供时报告冲突；绑定只查询选定身份。
-事件以相同身份匹配监听器：各 agent 的消息事件可分别本地化，AUDIT_EVENT 和 CONTRIB_CHANGED 默认共享。
+事件以相同身份匹配监听器：各 agent 的消息事件可分别本地化，CONTRIB_CHANGED 默认共享。
 业务插件代码继续通过 ctx.offer／ctx.accept／ctx.announce 与框架交互。
 
 ContribEntry.bindings 为组合作者提供显式的 key→UUID 绑定声明，用于在一份静态组合中给多个实例连接各自的服务。
@@ -121,7 +121,7 @@ Pydantic 模型创建和校验继续执行原有 schema 构造；发行发现仍
 ContribHub.run(bootstrap, load) 先启用自举条目，再启用提供 COMPOSITION 的普通配置加载器，并将其提供的组合绑定到该加载器。
 Hub 的异步上下文管理器持有一个任务组；应用在就绪后等待退出信号，业务退出后再释放加载器和自举资源。
 Context.accept 仅取得自己的服务和已经声明、绑定并注入的依赖；其他实例的内部记录及其 Context 由 ContribHub 管理。
-状态快照记录具体实例 id、name、配置 location 和父实例 id，审计捕获发布实例及 Python 调用位置。
+状态快照记录具体实例 id、name、配置 location 和父实例 id；日志保留发布实例及 Python 调用位置。
 
 首次启用、validate、保存预检和 update 使用同一个完整目标构造及 Diff。
 目标包含未修改的其他组合和实例；按已校验参数、定义、来源与绑定匹配既有注册，配置位置用于诊断。
@@ -142,7 +142,7 @@ Context.update 修改由该配置加载器产生的组合，Enablement.update �
 实例内的后台任务故障通过现有 TaskFailureSignal 传播到依赖者和所属子组合，独立实例继续工作。
 停止前禁用监听器，取消或等待在途回调，再按依赖逆序退出；异常与取消等待资源清理后传给原调用者。
 事件监听按绑定身份建索引，派发在 ContribHub 的任务组中并发执行、等待所有结果；监听器异常返回发布者，由 Hub 保持其他实例运行。
-公共审计事件供日志和其他普通插件共享，私有事件由组合指定 local。
+状态变化通过 CONTRIB_CHANGED 发布，私有事件由组合指定 local。
 
 ### 状态查询模块
 
@@ -594,8 +594,8 @@ server 保留这些既有协议入口及请求／响应含义；0.3 两端的服
 ### 默认配置生成与后端切换
 
 `bazaar-compute-node` 的 `bazaar_compute_node/defaults.toml` 提供初始节点组合模板。
-app 构建从 BCN uv.lock 的 contrib/ 工作区成员自动生成 package/source 条目，按包名排序形成官方索引；官方源使用 PyPI，未安装的包同样随索引发行。
-app 从发行资源提取内置官方索引到节点目录的 `contrib/catalog.json`，将实际本地路径作为 TOML 字符串渲染到多行 contrib_indexes；节点目录沿用 BCN_HOME 下的 `.bcn`，未设置时为 `~/.bcn`。
+manager 构建从 BCN uv.lock 的 contrib/ 工作区成员自动生成 package/source 条目，按包名排序形成官方索引；官方源使用 PyPI，未安装的包同样随 manager 索引资源发行。
+默认配置通过 `resource://bazaar_contrib_manager/catalog.json` 明确选择包内索引，由 manager 读取并管理缓存；配置中的索引列表继续支持追加和删除。
 初次创建配置时，经 CONFIG_STORE 将 V5 组合提交到所选来源，filesystem 默认写入 `config.toml`，包括 `commands`、`storage`、`sqlite`、`database` 等启用配置，
 并明确写入 `database.config.backend="sqlite"`、默认 agent 的 `config.agents=[]`。必要包通过宿主发行依赖安装，启动按保存的配置发现入口和建立服务依赖。
 可选 server／web 包通过发行元数据导出节点入口，用户选择入口及参数后经节点配置管理服务校验并保存；
@@ -648,8 +648,8 @@ database 的配置模型编辑 `backend` 字段；用户修改已有选择条目
 
 ### 模块索引与安装入口的关联
 
-`contrib_indexes` 是宿主配置中的本地文件路径或 HTTP(S) 地址列表，首次配置只带入随 app 发布并提取的官方本地索引，用户可以追加私有或其他维护者的索引。
-管理服务按位置类型读取本地文件或在线 JSON，分别记录缓存与读取状态；远端读取失败显示原因及已有缓存，节点继续启动。
+`contrib_indexes` 是宿主配置中的本地文件路径、HTTP(S) 地址或 `resource://<package>/<path>` 包内资源地址列表，首次配置声明 manager 发布的官方包内索引，用户可以追加私有或其他维护者的索引。
+管理服务按位置类型读取文件、在线 JSON 或包内资源，分别记录缓存与读取状态；来源读取失败显示原因及已有缓存，节点继续启动。
 索引是已登记模块包的安装清单，每个条目包含 `package` 和 `source`，例如：
 
 ```json
@@ -759,22 +759,18 @@ API 的登记归属由同一 ContribHub 的 server 实例管理，消费者退�
 ## 启动接入与首个日志模块
 
 `bcn run --config <path>` 在 app 中收集启动输入，读取随包默认资源，装配版本包的 VERSIONS 并绑定配置加载器，
-直接创建 ContribHub，进入 core 的统一 run 异步上下文管理器，宿主就绪后等待退出信号。
+直接创建 ContribHub，进入 core 的统一 run 异步上下文管理器；node-management 的 run 命令激活配置并等待退出信号。
 core 发现入口、装配所选载体及发行版本组合，启用提供 `COMPOSITION` 的配置加载器后校验并装配业务依赖；
 组合管理 agent 实例的创建、更新和停止。启动完成后，健康状态显示实例标识、创建者与运行状态。
 外部控制入口开放前，需要的模块服务已经就绪；退出时先结束请求与 agent，再清理模块和共享资源。
 
-日志模块通过 `listen` 声明公共审计事件处理器，在 lifespan 中按自身配置创建并登记日志输出服务。
-日志定义在顶层启用一次，作为共享事件消费者接收各实例发布的公共审计事件。
-处理函数通过 `ctx.accept()` 取得该输出对象，输出现有已脱敏审计载荷。
-宿主停止事件消费并等待回调后，lifespan 释放自己创建的输出 handler。多个事件消费者可并列启用。
-
-审计事件发布及持久化语义归审计业务契约；通用框架只认识 typed event。
-节点审计记录器通过 announce 发布事件，logging 与 starlink 可并列 listen 同一事件。
-日志管理输出资源，starlink 独立管理 getUpdate／send 和事件上报资源；查询和操作直接调用功能模块 offer 的服务。
+日志模块在 lifespan 中按自身配置创建 QueueHandler／QueueListener 和输出 handler，接收标准库 logging 记录。
+记录保留发生时间、级别、Python 调用位置、CURRENT_CONTEXT 中的 contrib 与实例 id，以及异常堆栈。
+日志定义在顶层启用一次，退出时排空队列并释放自己的线程、文件和 handler；多个宿主分别持有自己的资源。
+实例启动与运行异常由 core 直接通过标准 logging 报告；当前状态通过 ctx.snapshots 查询，变化由所需功能订阅 CONTRIB_CHANGED。
 
 日志包通过公共模块入口接入，公共框架和包发现代码均不写日志专用分支。
-测试从独立包的 wheel 元数据发现入口，启动真实节点、产生审计事件、观察日志，再结束进程验证清理。
+测试从独立包的 wheel 元数据发现入口，启动真实节点、产生日志及资源异常、观察日志，再结束进程验证清理。
 
 ## 模块管理与自身 uv
 
@@ -811,8 +807,8 @@ app 调用 core 装配所选配置载体及版本服务，并按操作进入配�
 invoke 自持 `bazaar_compute_node.commands` 扩展分组，发行包按顶层命令名称导出 `CommandEntry(contrib=...)`。
 该描述只指向负责登记的 contrib；命令参数、回调和服务仍由该 contrib 在 lifespan 内登记。
 命令发现先按已启用入口所属发行包筛选，再核对命令归属；仅展示和执行已启用 contrib 的命令。
-app 显式提供自身的启动入口，普通插件按保存的入口及参数加载；安装包后仍须 enable 才能使用其命令。
-app 自身以同一扩展协议声明 `run`，第三方包不需要修改 app 或 core。入口发现与选择归 invoke，core 只接受通用插件根。
+所有命令插件按保存的入口及参数加载；安装包后仍须 enable 才能使用其命令。
+node-management 以同一扩展协议声明 `run`，app 消费通用命令发现与分发接口。入口发现与选择归 invoke，core 只接受通用插件根。
 `run` 保留原有运行节点、为全部已配置 Agent 提供服务直到停止的完整英语说明；入口列表与实际命令复用同一文案，保留完整 short_help。
 
 启动依次完成 boot、load、选择入口、启动所选依赖、执行回调、资源清理。外层由原生 Click 解析配置载体参数，
@@ -821,7 +817,7 @@ app 自身以同一扩展协议声明 `run`，第三方包不需要修改 app �
 core 的 Composition.roots 按插件名称指定根，复用现有参数展开、服务绑定及依赖顺序，只启用根及其所需提供者。
 局部绑定按具体实例计算，已有自举实例继续复用；无关分支不获取资源。所选根缺失、服务冲突或循环保留正常诊断。
 core 不读取命令元数据，不导入 Click，也不解释 CLI 或 GUI。其他功能插件可以拥有自己的扩展协议。
-app 的 defaults.toml 提供新节点的初始配置，本地索引路径由启动输入填入。
+app 的 defaults.toml 提供新节点的初始配置，并显式声明 manager 包内官方索引的 resource:// 地址。
 
 随后所选 contrib 及其依赖进入 lifespan 并登记实际命令，Commands.dispatch 在工作线程内完成原生 Click 的参数、帮助和回调分发，
 将回调返回的 awaitable 交回事件循环。回调结束或取消后退出组合；只有需要常驻的回调自行等待。
@@ -853,7 +849,7 @@ CONFIG_PREPARE 是 EventKey[None]；包管理插件自己的事件处理器复�
 默认实现检查目标解释器中的声明、extras 及传递依赖，缺失或版本不符时执行完整候选解析、安装和入口验证；
 满足时直接继续。随后配置服务在同一 Hub 中切换到调用者选择的命令根或完整节点组合，再进入业务 lifespan。
 显式 `bcn contrib sync` 复用该流程，按配置重新解析并安装；安装失败保留诊断，启动中止。
-app 保留直接使用的核心、配置、版本、命令、audit 公共契约包及首次启动所需的默认准备插件；status、logging、sidecar 及平台实现由默认配置声明。
+app 保留直接使用的核心、配置、版本、命令公共契约包及首次启动所需的默认准备插件；status、logging、sidecar 及平台实现由默认配置声明。
 默认 TOML 直接声明两种原生 sidecar 入口及标准 PEP 508 `sys_platform` 条件，通用配置读取只选择条件成立的条目。默认包规格采用当前 0.3 系列范围，由固定宿主及发行依赖共同约束版本。
 
 安装管理、同步和整体升级从配置生成候选，保留实例参数和显式来源／版本；操作日志和 pylock 是执行及恢复产物。
@@ -939,7 +935,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 ### Task 4：发现、配置与节点启动
 
 - [x] 统一 bazaar_compute_node.contribs 元数据发现，入口导入、API、配置与服务错误进入状态诊断，有效条目继续运行。
-- [x] 配置契约、filesystem、版本服务与状态成员独立发行，app 持有启动 flags、defaults.toml 和 catalog 构建资源。
+- [x] 配置契约、filesystem、版本服务与状态成员独立发行，app 持有启动 flags 和 defaults.toml；官方 catalog 构建资源随本轮迁入 manager。
 - [x] --configer 选择载体，--configer-options／--config 可重复并保留顺序；载体自己解析原始参数并提供 CONFIG_STORE。
 - [x] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
 - [x] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
@@ -951,13 +947,11 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ### Task 5：首个日志模块
 
-- [x] 独立 audit 契约提供 AuditEvent、AuditSource 和 AUDIT_EVENT；发布时记录 contrib、实例 id、调用位置、发生时间和已脱敏 metadata。
 - [x] CURRENT_CONTEXT 在实例 lifespan 与监听回调 set／reset；子任务和工作线程继承上下文，消费者绑定自身身份。
-- [x] logging 监听共享审计事件并提供 LOG_OUTPUT；普通标准库日志和审计共用 QueueHandler／QueueListener 的线程写入队列。
-- [x] text／json 格式保留时间、实际来源、级别和异常；实例外事件用 Python 模块标识来源，source.id 为 None。
+- [x] logging 在 lifespan 中通过 QueueHandler／QueueListener 接收标准库日志并在线程中写入。
+- [x] text／json 格式保留时间、实际来源、级别和异常；实例外日志用 Python logger 标识来源，source.id 为 None。
 - [x] 真实文件验证按日及体积轮转、level 路径、日期保留、线程输出、handler 所有权和退出排空。
-- [x] app 用普通 node-audit 消费状态事件，metadata 记录被审计实例的 id、parent、来源和阶段；节点层发布 started／stopping。
-- [x] 完成并发私有消息与共享审计、延迟传递、真实普通日志 wheel 和隔离节点的安装验收及检查。
+- [x] 完成并发私有消息回调、真实普通日志 wheel 和隔离节点的安装验收及检查。
 
 ### Task 6：模块安装管理与升级
 
@@ -1050,6 +1044,31 @@ core 继续按已有依赖图先停止消费者、再停止提供者；重新启
 - [x] manager 按配置选择 CLIENT 消费分支，在线通过远端 CONFIGURATION 条件提交及应用，首次明确离线时保留本地流程，失败不重放。
 - [x] 交付 disable --force 和配置层缺失依赖许可，复用 core 的停止顺序、阻塞声明和恢复能力。
 - [x] 真实独立安装环境、节点进程与 CLI 验证在线新增启用、编辑、停用、强制停用和依赖恢复，离线保存、并发修订与超时失败；完成 Ruff、根 LSP 和发行检查，独立签名提交供 review。三系统 CI 的验收结果记录于 PR。
+
+本轮继续迁出已经实现的功能，保留 app 直接使用的公共接口、自举依赖和 VERSIONS 清单。
+命令按所属 contrib 的根及服务依赖启用；准备组合只选配置准备处理器及所需服务。
+node-management 包只接收已经实现的 run 命令、配置激活和退出信号等待，通过 COMMANDS 登记并由默认配置选择；
+app 使用普通命令发现，不再插入 node-run 启动定义。后续 agent 与节点平台能力继续按各自 Task 交付。
+manager 自持 catalog 构建后端与锁文件快照，app 使用普通 uv_build；默认配置只声明资源地址。
+构建后端文件为 manager/build.py，pyproject 的 build-backend="build"、缓存键、源码包含与检查范围使用同一模块路径。
+依据 [importlib.resources](https://docs.python.org/3/library/importlib.resources.html) 的结论，使用 files(package).joinpath(path).read_bytes()
+读取包内资源，适用于 wheel 和其他资源加载器；资源模块缺失、文件或 JSON 读取失败沿用每个索引的错误和缓存结果。
+依据 [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/) 的文件包含规则，manager sdist 包含自定义后端和 catalog.uv.lock，
+从独立 sdist 重建 wheel 仍能生成完整索引；app 的 wheel／sdist 保留自己的默认配置资源。
+
+- [x] 迁出 run 实现，真实配置选择验证命令、信号退出及资源释放。
+- [x] manager 持有官方索引构建和资源读取，真实索引增删、离线读取和独立 sdist→wheel 验证。
+- [x] 完成隔离 app、manager venv／uv tool、sidecar 回归、Ruff、根目录 LSP 和发行检查；在同一框架分支独立签名提交供 review。
+
+本轮 review 删除当前审计发行包、node-audit、app 的审计发布和依赖，以及按 CONTRIB_CHANGED 监听声明追加命令根的策略。
+logging 保留标准日志、格式、级别路径、轮转和资源释放，直接从标准 LogRecord 与 CURRENT_CONTEXT 捕获来源。
+实际资源异常验证 core 的报错及堆栈仍写入日志，命令错误继续由 CLI 展示；独立安装验收同步删除审计构建和配置。
+
+- [x] 删除审计实现、默认声明及发行依赖，简化命令根选择并保留配置准备流程。
+- [x] 日志改为标准 logging，真实文件、异常、线程、轮转、配置与隔离 CLI 验证通过。
+- [x] 默认索引列表使用多行 TOML，manager 的 build.py 通过独立源码包重建验证。
+- [x] 完成 Ruff、根目录 LSP、独立 wheel／sdist 及受影响安装流程，amend 到各自引入提交并更新同一 PR。
+
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
 - [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。

@@ -27,7 +27,19 @@ Repository = "https://github.com/yuchanns/bazaar-compute-node"
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
-build-backend = "uv_build"
+build-backend = "build"
+backend-path = ["."]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "build.py" },
+    { file = "catalog.uv.lock" },
+    { dir = "src" },
+]
+
+[tool.uv.build-backend]
+source-include = ["build.py", "catalog.uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -37,7 +49,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.pyright]
 extends = "../../pyrightconfig.json"
-include = ["src", "tests"]
+include = ["src", "tests", "build.py"]
 
 [tool.ruff]
 extend = "../../pyproject.toml"

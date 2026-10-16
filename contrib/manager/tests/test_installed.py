@@ -37,6 +37,7 @@ def wheels(tmp_path_factory):
                 "config-versions",
                 "manager",
                 "invoke",
+                "node-management",
                 "sidecar",
                 "sidecar-unix",
                 "sidecar-windows",
@@ -50,8 +51,8 @@ def wheels(tmp_path_factory):
             ignore=shutil.ignore_patterns("tests", "__pycache__"),
         )
     # The extracted sdist carries this file as ordinary source, like this build fixture.
-    (source / "app" / "catalog.uv.lock").unlink()
-    shutil.copy(source / "uv.lock", source / "app" / "catalog.uv.lock")
+    (source / "contrib" / "manager" / "catalog.uv.lock").unlink()
+    shutil.copy(source / "uv.lock", source / "contrib" / "manager" / "catalog.uv.lock")
     output = path / "registry" / "one" / "files"
     for version in ("0.3.0", "0.3.1"):
         for member in members:

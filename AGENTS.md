@@ -31,11 +31,12 @@
 
 ```text
 app/                            # bazaar-compute-node：CLI、启动输入、默认依赖与组合装配
-├── src/bazaar_compute_node/     # 应用入口、自举声明、默认组合与 run 命令
-└── build_backend.py            # 应用发行资源的构建；从共享锁生成内置模块索引
+└── src/bazaar_compute_node/     # 应用入口、自举声明、默认组合与通用命令分派
 core/                           # bazaar-core：通用 contrib 运行内核
 └── src/bazaar_core/             # 入口发现、声明校验、服务与事件绑定、依赖图和生命周期
 contrib/                        # 各功能的独立发行包
+├── manager/build.py           # 从共享锁生成随 manager 发行的官方模块索引
+├── node-management/            # run 命令、配置激活与退出信号等待
 └── ...
 scripts/                        # workspace 发现、逐包检查、构建与 CI 工具
 plans/                          # 已讨论的设计、任务顺序与交付要求

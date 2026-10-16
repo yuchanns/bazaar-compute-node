@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 lazy import asyncio
-lazy import os
 lazy import tomllib
 lazy from collections.abc import AsyncIterator, Callable, Sequence
 lazy from importlib.resources import files
-lazy from pathlib import Path
 lazy from typing import Any
 lazy from uuid import NAMESPACE_URL, uuid5, uuid7
 
@@ -216,16 +214,7 @@ def bootstrap(
                 f"{record.name}: {record.state}" for record in definitions.diagnostics
             )
         )
-    catalog = (
-        Path(os.environ.get("BCN_HOME") or Path.home())
-        / ".bcn"
-        / "contrib"
-        / "catalog.json"
-    ).resolve()
-    catalog.parent.mkdir(parents=True, exist_ok=True)
-    catalog.write_bytes(resource.joinpath("catalog.json").read_bytes())
     defaults = tomllib.loads(resource.joinpath("defaults.toml").read_text())
-    defaults["contrib_indexes"] = [str(catalog)]
     return (
         definitions,
         ContribEntry(
@@ -244,26 +233,6 @@ def bootstrap(
             ),
             location="defaults.toml",
         ),
-    )
-
-
-def select(
-    document: ConfigDocument,
-    *,
-    roots: Sequence[str],
-    startup: Sequence[ContribEntry] = (),
-) -> Composition:
-    """Select enabled candidates with the application's explicit startup entries."""
-    composition = build(document)
-    names = {entry.name for entry in composition.entries}
-    return composition.model_copy(
-        update={
-            "entries": (
-                *composition.entries,
-                *(entry for entry in startup if entry.name not in names),
-            ),
-            "roots": tuple(roots),
-        }
     )
 
 

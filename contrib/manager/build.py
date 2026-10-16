@@ -36,7 +36,7 @@ def generate_catalog() -> None:
             for package in packages
         ]
     }
-    (root / "src" / "bazaar_compute_node" / "catalog.json").write_text(
+    (root / "src" / "bazaar_contrib_manager" / "catalog.json").write_text(
         json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
     )
 
