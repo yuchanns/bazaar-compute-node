@@ -157,6 +157,7 @@ def validate(
                 instance.state = Blocked(
                     error=error,
                     phase="stopped",
+                    missing=(key.name,) if isinstance(key, ServiceKey) else (),
                 )
     if composition.roots is not None:
         # Select concrete providers using the same keys and bindings as startup.
@@ -187,6 +188,8 @@ def validate(
             if instance in selected:
                 continue
             selected.add(instance)
+            if instance.enablement is not owner:
+                continue
             pending.extend(instance._parents)
             for key in instance.accepts:
                 pending.extend(available.get((key, instance.bindings.get(key)), ()))
@@ -255,7 +258,22 @@ def validate(
                     and instance.registration.id not in unavailable
                 ):
                     raise error
-                instance.state = Blocked(error=error, phase="stopped")
+                instance.state = Blocked(
+                    error=error,
+                    phase="stopped",
+                    missing=tuple(
+                        sorted(
+                            {
+                                *(
+                                    instance.state.missing
+                                    if isinstance(instance.state, Blocked)
+                                    else ()
+                                ),
+                                key.name,
+                            }
+                        )
+                    ),
+                )
             else:
                 instance._dependencies[key] = provider
     dependents: dict[_ContribInstance, list[_ContribInstance]] = {}
@@ -276,9 +294,21 @@ def validate(
                     ),
                     blocked_by=provider.id,
                     phase="stopped",
+                    missing=provider.state.missing
+                    if isinstance(provider.state, Blocked)
+                    else (),
                 )
                 failed.add(instance)
                 pending.append(instance)
+            elif isinstance(instance.state, Blocked) and isinstance(
+                provider.state, Blocked
+            ):
+                missing = tuple(
+                    sorted(set(instance.state.missing) | set(provider.state.missing))
+                )
+                if missing != instance.state.missing:
+                    instance.state = replace(instance.state, missing=missing)
+                    pending.append(instance)
     active = [instance for instance in instances if instance not in failed]
     try:
         ordered = sort(active)
