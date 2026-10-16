@@ -934,7 +934,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ## 本特性分支的串行 Tasks
 
-每个 Task 完成后停下 review，通过后继续下一个 Task。本分支在十五个 Task 全部完成后合入 `0.3`。
+每个 Task 完成后停下 review，通过后继续下一个 Task。后续在 `feature/node-contribs` 先交付独立定时器，再交付数据库，两项各用一个 commit；其后完成 agent 相关能力和整体交付。当前三条特性分支按依赖 review 并合入 `0.3`。
+新能力通过已有公共插件契约装配；服务提供者随消费者的声明依赖选入，V4→V5 同步补齐原功能所需的条目和参数。
 
 ### Task 1：核心 contrib 框架
 
@@ -971,7 +972,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
 - [x] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
 - [x] AGENT／CHANNEL／RUNTIME 提供 typed 业务输入；app build 将全部已知 agent／provider 展开为完整实例图，稳定绑定从业务 id 和 provider 位置派生，保存前预检覆盖全部声明。
-- [x] ConfigDocument 的当前 agent 模型在 Task 13 移至 agent 插件；此阶段应用负责明确展开该业务输入。
+- [x] ConfigDocument 的当前 agent 模型在 Task 15 移至 agent 插件；此阶段应用负责明确展开该业务输入。
 - [x] 独立第三方 wheel 用真实 SQLite／TCP 配置中心验证读取、编辑、冲突、未知提交响应、重建和启动取消。
 - [x] 自定义构建后端从 uv.lock 生成内置 catalog，独立 sdist 可重建；验证默认配置、组合导入、路径转义与隔离节点。
 - [x] 完成 Ruff、根 LSP、真实安装配置流程与独立发行验收。
@@ -1012,7 +1013,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 真实文件／SQLite 与独立示例 wheel 验证根选择、绑定、命令参数、帮助、取消、信号、资源退出及管理升级。
 - [x] 完成真实 uv tool／venv、独立 wheel／sdist、Blockbuster、Ruff 与根目录 LSP，替换旧命令提交并签名推送供 review。
 
-### Task 8：sidecar 调用与 channel／harness 公共登记
+### Task 8：sidecar 调用与节点基础接入
 
 本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
 `SERVER`、`CLIENT` 两个公共服务 key，并提供接受 `SERVER`、`CONFIGURATION` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
@@ -1100,42 +1101,72 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [x] 默认索引列表使用多行 TOML，manager 的 build.py 通过独立源码包重建验证。
 - [x] 完成 Ruff、根目录 LSP、独立 wheel／sdist 及受影响安装流程，amend 到各自引入提交并更新同一 PR。
 
+### Task 9：独立定时器接口与时间轮
+
+该 Task 用一个 commit 交付节点共享定时能力；下一 Task 用另一个 commit 交付数据库。
+沿用现有 `src/bazaar_compute_node/core/timerwheel.py` 的分层时间轮、代次与等待者语义，
+公共协议和错误移至 `bazaar-contrib-timer`，具体轮、驱动与条目归 `bazaar-contrib-timer-wheel`。
+
+公共包只依赖 core，导出 `TIMER`、`Timer`、`TimerHandle`、`TimerCancelledError` 和 `TimerClosedError`。
+`Timer` 提供 `create(delay_ms)`、`tick_ms`、`maximum_delay_ms` 和单调时间 `now_ms`；
+句柄提供 id、active、deadline、generation、expired_generation、reset、cancel 和异步 wait。
+每个句柄由一个消费者等待；reset 保留等待者并更新代次，取消句柄或等待任务会释放定时资源，
+待处理句柄在 provider 关闭时以公共关闭错误结束。消费者在自身生命周期结束时取消所属句柄。
+
+时间轮实现保留 10 ms tick、256 个近端槽及四层各 64 个槽。create／reset 的毫秒参数在公共调用边界
+以 Pydantic 校验范围；按单调时钟的绝对截止时间向上取整，0 ms 等待下一个 tick。
+空轮通过 Event 等待新条目，实际驱动属于插件 lifespan 的 TaskGroup；正常退出先关闭句柄再取消驱动，
+驱动异常及意外取消使 provider 失败，由 core 既有依赖图处理消费者退出，并保留原故障。
+
+时间轮以普通条目进入消费方选择的组合候选；公共包随实现或消费者依赖安装。
+任何节点插件均可声明 `accepts=[TIMER]`，由已有 `Composition.roots` 按所选根的依赖闭包启用提供者，
+共享绑定与资源归属由普通组合声明表达。第三方插件只依赖公共包并提供相同 TIMER，组合可选择该实现。
+
+- [x] 交付两个独立发行包、公共类型和 TIMER key、时间轮入口及完整资源生命周期。
+- [x] 两包 LICENSE 通过 `../../LICENSE` 相对符号链接引用仓库根文件，验证 wheel／sdist 收录完整许可证并可独立安装。
+- [x] 通过真实消费者验证 TIMER 依赖选入所选实现、多个消费者共享及子组合继承，并观察计时与退出后句柄关闭。
+- [x] V4→V5 将旧节点的全局时间轮映射为 timer-wheel 提供者条目，保留版本检查、健康等原有消费者所需的配置；已有 V5 的实现选择和参数按原流程保留。
+- [x] 真实计时验证到期、重置、跨层定时、取消、等待任务取消、共享绑定、消费者退出和 provider 关闭；真实驱动任务取消验证故障及依赖传播。
+- [x] 从 workspace 外分别安装独立 wheel／sdist，并用仅依赖公共包的真实 asyncio 定时插件验证替换，证明消费者无须依赖时间轮实现。
+- [x] 完成包内测试、Blockbuster、Ruff、根目录 LSP 与独立安装检查，签名提交一个 commit，停下 review。
+
+### Task 10：公共存储、SQLite 与 schema
+
+- [ ] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
+- [ ] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；默认配置明确 database.config.backend="sqlite"。
+- [ ] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 保留已发布迁移的原文及 checksum，新增模块迁移使用独立账本。
+- [ ] 消费组合声明 storage、sqlite、database、schema，并通过 DB 依赖选入；同步 V4→V5 所需配置，用隔离数据库验证实际查询、事务、迁移及后端选择。
+- [ ] 完成各包独立 wheel 安装、真实组合及检查，提交供 review。
+
+### Task 11：channel／harness 公共接口与登记
+
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
 - [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
 - [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
 
-### Task 9：公共存储、SQLite 与 schema
-
-- [ ] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
-- [ ] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；默认配置明确 database.config.backend="sqlite"。
-- [ ] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 保留已发布迁移的原文及 checksum，新增模块迁移使用独立账本。
-- [ ] app 默认依赖并启用 storage、sqlite、database、schema；用隔离数据库验证实际查询、事务、迁移及后端选择。
-- [ ] 完成各包独立 wheel 安装、真实组合及检查，提交供 review。
-
-### Task 10：消息与会话
+### Task 12：消息与会话
 
 - [ ] 交付 bazaar-contrib-messages 的消息、会话 target、历史、未读 cursor、收发与回执、附件、草稿、搜索和 thread follow 契约及业务服务。
 - [ ] 模块通过 DB 自持模型、schema 与显式查询，使用 schema 和调用登记入口，共享服务供 CLI／RPC 消费。
 - [ ] app 默认安装并启用 messages；通过真实隔离数据和文件验证消息、历史、搜索、草稿及附件流程和资源退出。
 - [ ] 完成独立包安装与检查，提交供 review。
 
-### Task 11：身份与协作
+### Task 13：身份与协作
 
 - [ ] 交付 bazaar-contrib-collaboration 的 sender／contact 身份、refs、会话登记、审批、消息引用和关联服务。
 - [ ] 模块依赖消息、DB 与调用契约，自持业务规则和 schema，状态变化及读取沿用原协作语义。
 - [ ] app 默认安装并启用 collaboration；通过真实隔离数据验证身份、会话、引用和审批流程，完成独立安装及检查，提交供 review。
 
-### Task 12：定时器与 Reminder
+### Task 14：Reminder
 
-- [ ] 交付 bazaar-contrib-timer 的 TIMER、句柄和到期／取消／关闭契约，以及 bazaar-contrib-timer-wheel 的驱动和资源生命周期。
 - [ ] 交付 bazaar-contrib-reminder 的持久化、到期、snooze、更新、取消及唤醒规则，依赖 DB、schema、timer 和消息。
-- [ ] app 默认安装相关包，启用 timer-wheel 和 reminder；消费者通过 TIMER 管理自身句柄，按 [定时器契约与时间轮实现](roadmap.md#定时器契约与时间轮实现) 处理退出与驱动故障。
+- [ ] app 默认安装并启用 reminder，复用节点共享 TIMER；持久化与唤醒业务归 Reminder 插件。
 - [ ] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
 
-### Task 13：默认 BCN agent 与替换契约
+### Task 15：默认 BCN agent 与替换契约
 
-- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer、builder 与审计。
+- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer 与 builder。
 - [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
@@ -1145,7 +1176,7 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
 - [ ] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
 
-### Task 14：运行节点前的 agent 配置管理
+### Task 16：运行节点前的 agent 配置管理
 
 - [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
 - [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
@@ -1154,7 +1185,7 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
 - [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
 
-### Task 15：首阶段完整验收与合入
+### Task 17：首阶段完整验收与合入
 
 - [ ] 从源码 workspace 完成未发布模块的联调、入口／依赖变更后的 lock／sync 与实际宿主重启，再从逐包构建的独立 wheel 在 workspace 外完成同一流程。
 - [ ] 从干净环境完成“安装 BCN → 安装日志模块 → 启用 → 启动 → 事件输出 → 退出 → 升级再启动”。
@@ -1163,7 +1194,7 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 运行各成员的新测试与 Ruff、根目录 `uv run --quiet scripts/pyright_lsp_check.py .` 的逐包检查及包构建。
 - [ ] Linux、macOS、Windows 独立 CI 完成安装与生命周期验收；native service 验收在隔离 CI runner 执行。
 - [ ] 登记本仓库 app、core 与首阶段 contrib 的发行清单、共同版本和正式依赖；验证入口组、contribs 配置、contrib_indexes 与 bcn contrib 命令采用统一命名。
-- [ ] 提交到首个特性分支，review 通过后合入 `0.3`，以该集成点开始路线图下一分支。
+- [ ] 在当前特性分支提交，review 通过后按依赖合入 `0.3`，以该集成点开始路线图下一分支。
 
 ## 首阶段验收结果要求
 

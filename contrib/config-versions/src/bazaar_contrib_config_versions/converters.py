@@ -80,6 +80,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     add("sqlite", "sqlite", {"path": str(resolve_data_dir() / node.database_name)})
     add("database", "storage", {"backend": "sqlite"})
     add("schema", "schema")
+    add("timer-wheel", "timer-wheel")
     add("contrib-manager", "manager")
     changes.extend(
         [
@@ -134,7 +135,6 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         for name, package in (
             ("messages", "messages"),
             ("collaboration", "collaboration"),
-            ("timer-wheel", "timer-wheel"),
             ("reminder", "reminder"),
             ("channel-builders", "channel"),
             ("runtime-builders", "runtime"),
