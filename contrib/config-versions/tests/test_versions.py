@@ -140,6 +140,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         for package in candidate.payload["contribs"]
         for entry in package["enabled"]
     }
+    assert "node-migrations" in entries
     assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
     assert (
         candidate.payload["agent"][0]["runtime"][0]["env"]["ANTHROPIC_API_KEY"]

@@ -80,6 +80,8 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     add("sqlite", "sqlite", {"path": str(resolve_data_dir() / node.database_name)})
     add("database", "storage", {"backend": "sqlite"})
     add("schema", "schema")
+    if old.agent:
+        add("node-migrations", "node-migrations")
     add("timer-wheel", "timer-wheel")
     add("contrib-manager", "manager")
     changes.extend(
