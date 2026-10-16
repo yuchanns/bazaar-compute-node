@@ -395,10 +395,15 @@ def create_commands(manager: ContribManager) -> click.Group:
 
     @contrib.command("disable", help="Disable a contrib")
     @click.argument("index", type=click.IntRange(min=0))
-    def disable(index: int):
+    @click.option(
+        "--force",
+        is_flag=True,
+        help="Disable the contrib and stop dependent contribs",
+    )
+    def disable(index: int, force: bool):
         return execute(
             manager,
-            lambda manager: manager.disable(index),
+            lambda manager: manager.disable(index, force=force),
             lambda result: outcome(result, index=index),
             err=True,
         )

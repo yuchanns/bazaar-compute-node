@@ -6,6 +6,7 @@ lazy import asyncio
 lazy import importlib
 lazy import json
 lazy import logging
+lazy from collections import Counter
 lazy from collections.abc import Callable, Mapping
 lazy from contextlib import asynccontextmanager
 lazy from copy import deepcopy
@@ -17,6 +18,7 @@ from bazaar_core import ServiceKey
 from pydantic import BaseModel, ConfigDict
 lazy from bazaar_core import (
     COMPOSITION,
+    Blocked,
     Candidate,
     Composition,
     Context,
@@ -33,6 +35,7 @@ lazy from .contracts import (
     ConfigCommitUnknown,
     ConfigConflict,
     ConfigConverter,
+    ConfigDependencyError,
     ConfigDocument,
     ConfigFormatError,
     ConfigSnapshot,
@@ -122,6 +125,7 @@ class Configuration:
         """Convert the document and validate its composition without starting it."""
         candidate = await asyncio.to_thread(self.converter.convert, payload)
         document = ConfigDocument.model_validate(candidate.payload)
+        await asyncio.to_thread(importlib.invalidate_caches)
         composition = await self._build(document)
         return candidate, self.ctx.validate(composition, replacing=self._composition)
 
@@ -223,21 +227,53 @@ class Configuration:
             )
 
     @staticmethod
-    def check(composition: Candidate | ContribHub) -> None:
-        errors = [
-            f"{record.location}: {record.name}: {record.state.error}"
-            for record in composition.snapshots
-            if isinstance(record.state, Stopping) and record.state.error
-        ]
+    def check(
+        composition: Candidate | ContribHub,
+        *,
+        force: bool = False,
+        current: Candidate | None = None,
+    ) -> None:
+        missing = Counter(
+            (record.name, record.location, record.state.missing)
+            for record in (current.snapshots if current is not None else ())
+            if isinstance(record.state, Blocked) and record.state.missing
+        )
+        errors = []
+        dependencies = True
+        for record in composition.snapshots:
+            state = record.state
+            if not isinstance(state, Stopping) or not state.error:
+                continue
+            if isinstance(state, Blocked) and state.missing:
+                key = record.name, record.location, state.missing
+                if force:
+                    continue
+                if missing[key]:
+                    missing[key] -= 1
+                    continue
+            else:
+                dependencies = False
+            errors.append(f"{record.location}: {record.name}: {state.error}")
         if errors:
-            raise ConfigFormatError("; ".join(errors))
+            error = ConfigDependencyError if dependencies else ConfigFormatError
+            raise error("; ".join(errors))
 
     async def commit(
-        self, payload: Mapping[str, object], *, expected_revision: str | None
+        self,
+        payload: Mapping[str, object],
+        *,
+        expected_revision: str | None,
+        force: bool = False,
     ) -> ConfigSnapshot:
         """Validate and save a document; apply() requests its runtime update."""
         candidate, composition = await self.prepare(payload)
-        self.check(composition)
+        current = await self.store.read()
+        baseline = (
+            (await self.prepare(current.payload))[1]
+            if current is not None and not force
+            else None
+        )
+        self.check(composition, force=force, current=baseline)
         snapshot = await self._write(candidate, expected_revision)
         self.snapshot, self.candidate = snapshot, candidate
         return snapshot

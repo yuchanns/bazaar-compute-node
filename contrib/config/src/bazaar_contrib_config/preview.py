@@ -56,7 +56,12 @@ async def preview(request: dict[str, Any]) -> ConfigurationPreview:
         service = Configuration(ctx, store, converter, request["defaults"], build)
         try:
             _, composition = await service.prepare(candidate.payload)
-            service.check(composition)
+            baseline = (
+                (await service.prepare(snapshot.payload))[1]
+                if snapshot is not None
+                else None
+            )
+            service.check(composition, current=baseline)
             error = None
         except Exception as cause:  # noqa: BLE001 - Return target plugin diagnostics without saving the candidate.
             error = str(cause)

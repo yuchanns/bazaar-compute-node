@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 lazy import asyncio
 lazy import os
 lazy import shutil
@@ -21,10 +21,19 @@ from bazaar_contrib_config import (
     EnabledContrib,
 )
 from bazaar_contrib_invoke import COMMANDS
+from bazaar_contrib_sidecar import CLIENT
 from bazaar_core import CURRENT_CONTEXT, Contrib, ServiceKey
 from filelock import AsyncFileLock
-lazy from bazaar_contrib_config import ConfigConflict, Configuration
-lazy from bazaar_core import Context
+lazy from bazaar_contrib_config import (
+    ConfigConflict,
+    ConfigDependencyError,
+    ConfigSnapshot,
+    Configuration,
+    ConfigurationApplication,
+    ConfigurationEnvironment,
+)
+lazy from bazaar_contrib_sidecar import Client, Construct, Remote, RemoteError, Symbol
+lazy from bazaar_core import Context, ContribEntry
 lazy from packaging.requirements import Requirement
 lazy from packaging.specifiers import SpecifierSet
 lazy from packaging.utils import canonicalize_name
@@ -76,6 +85,7 @@ class ContribManager:
         self.packages = packages
         self.tasks = tasks
         self.ctx = ctx
+        self.remote: Remote | None = None
         self.operations: dict[UUID, Operation] = {}
         self.closed = False
 
@@ -95,17 +105,103 @@ class ContribManager:
         )
 
     async def _execute(
-        self, operation: Operation, action: Callable[[UUID], Awaitable[None]]
+        self,
+        operation: Operation,
+        action: Callable[[UUID], Awaitable[None]],
+        *,
+        remote: bool,
     ) -> Operation:
         self.operations[operation.id] = operation
         await self._record(operation.id)
         await asyncio.to_thread(self.packages.path.mkdir, parents=True, exist_ok=True)
         token = CURRENT_CONTEXT.set(self.ctx)
         try:
-            async with AsyncFileLock(
-                str(self.packages.path / "environment.lock"), mode=0o600
+            async with (
+                AsyncFileLock(str(self.packages.path / "environment.lock"), mode=0o600),
+                AsyncExitStack() as stack,
             ):
-                await action(operation.id)
+                try:
+                    if remote and self.configuration.start is not None:
+                        clients: list[Client] = []
+
+                        @asynccontextmanager
+                        async def consumer(ctx: Context):
+                            clients.append(ctx.accept(CLIENT))
+                            yield
+
+                        candidate, _ = await self.configuration.read()
+                        composition = await asyncio.to_thread(
+                            self.configuration.build,
+                            ConfigDocument.model_validate(candidate.payload),
+                        )
+                        entry = ContribEntry(
+                            name=f"{self.ctx.id}:client",
+                            definition=Contrib(accepts=[CLIENT], lifespan=consumer),
+                        )
+                        composition = composition.model_copy(
+                            update={
+                                "entries": (*composition.entries, entry),
+                                "roots": (entry.name,),
+                            }
+                        )
+                        if any(
+                            CLIENT in entry.definition.offers
+                            for entry in composition.entries
+                        ):
+                            preview = self.ctx.validate(composition)
+                            Configuration.check(preview)
+                            await stack.enter_async_context(self.ctx.enable(preview))
+                        if clients:
+                            client = clients[0]
+                            try:
+                                configuration = await client.context.call(
+                                    "accept",
+                                    Symbol("bazaar_contrib_config:CONFIGURATION"),
+                                )
+                            except FileNotFoundError, ConnectionRefusedError:
+                                await stack.aclose()
+                            else:
+                                environment = await configuration.get("environment")
+                                environment = (
+                                    ConfigurationEnvironment.model_validate(
+                                        await environment.call(
+                                            "model_dump", mode="json"
+                                        )
+                                    )
+                                    if environment is not None
+                                    else None
+                                )
+                                if (
+                                    environment.model_dump(mode="json")
+                                    if environment is not None
+                                    else None
+                                ) != (
+                                    self.configuration.environment.model_dump(
+                                        mode="json"
+                                    )
+                                    if self.configuration.environment is not None
+                                    else None
+                                ):
+                                    raise ManagementError(
+                                        "the sidecar belongs to another configuration; "
+                                        "select its configuration or endpoint"
+                                    )
+                                _, snapshot = await configuration.call("read")
+                                current = await self.configuration.store.read()
+                                if (
+                                    await snapshot.get("revision")
+                                    if snapshot is not None
+                                    else None
+                                ) != (
+                                    current.revision if current is not None else None
+                                ):
+                                    raise ConfigConflict(
+                                        "the sidecar configuration differs from the selected source"
+                                    )
+                                self.remote = configuration
+                    await action(operation.id)
+                finally:
+                    self.remote = None
             await self._record(operation.id, phase="complete")
         except asyncio.CancelledError:
             await self._record(
@@ -113,7 +209,16 @@ class ContribManager:
             )
             raise
         except Exception as error:  # noqa: BLE001 - Preserve the committed stages of a failed management request.
-            await self._record(operation.id, phase="failed", error=str(error))
+            await self._record(
+                operation.id,
+                phase="failed",
+                error=str(error) or type(error).__name__,
+                pending_restart=self.operations[operation.id].pending_restart
+                or (
+                    self.operations[operation.id].config_saved
+                    and not self.operations[operation.id].applied
+                ),
+            )
         finally:
             CURRENT_CONTEXT.reset(token)
         return self.operations[operation.id]
@@ -124,13 +229,14 @@ class ContribManager:
         action: Callable[[UUID], Awaitable[None]],
         *,
         package: str | None = None,
+        remote: bool = True,
     ) -> Operation:
         if self.closed:
             raise ManagementError("contrib manager has closed")
         operation = Operation(
             kind=kind, target=str(self.packages.prefix), package=package
         )
-        task = self.tasks.create_task(self._execute(operation, action))
+        task = self.tasks.create_task(self._execute(operation, action, remote=remote))
         return await asyncio.shield(task)
 
     async def installed(self) -> tuple[InstalledPackage, ...]:
@@ -149,12 +255,37 @@ class ContribManager:
         return packages[0]
 
     async def _save(
-        self, id: UUID, payload: Mapping[str, object], revision: str | None
+        self,
+        id: UUID,
+        payload: Mapping[str, object],
+        revision: str | None,
+        *,
+        force: bool = False,
     ) -> None:
         await self._record(id, phase="saving")
-        snapshot = await self.configuration.commit(payload, expected_revision=revision)
-        await self._record(id, config_saved=True, phase="applying")
-        result = await self.configuration.apply(snapshot)
+        snapshot = (
+            await self.configuration.commit(
+                payload, expected_revision=revision, force=force
+            )
+            if self.remote is None
+            else await self.remote.call(
+                "commit", dict(payload), expected_revision=revision, force=force
+            )
+        )
+        await self._record(id, config_saved=True, applied=False)
+        if not self.operations[id].pending_restart:
+            await self._apply(id, snapshot)
+
+    async def _apply(self, id: UUID, snapshot: ConfigSnapshot | Remote) -> None:
+        await self._record(id, phase="applying")
+        if self.remote is None:
+            assert isinstance(snapshot, ConfigSnapshot)
+            result = await self.configuration.apply(snapshot)
+        else:
+            result = await self.remote.call("apply", snapshot)
+            result = ConfigurationApplication.model_validate(
+                await result.call("model_dump", mode="json")
+            )
         await self._record(
             id,
             applied=result.applied,
@@ -277,7 +408,7 @@ class ContribManager:
 
         return await self._submit("edit", action)
 
-    async def disable(self, index: int) -> Operation:
+    async def disable(self, index: int, *, force: bool = False) -> Operation:
         async def action(id: UUID) -> None:
             candidate, snapshot = await self.configuration.read()
             document = ConfigDocument.model_validate(candidate.payload)
@@ -291,20 +422,33 @@ class ContribManager:
                 raise ManagementError("configured entry position is out of range")
             package, position = positions[index]
             entries = list(packages[package].enabled)
-            entries.pop(position)
+            entry = entries.pop(position)
             if packages[package].package or entries:
                 packages[package] = packages[package].model_copy(
                     update={"enabled": tuple(entries)}
                 )
             else:
                 packages.pop(package)
-            await self._save(
-                id,
-                document.model_copy(update={"contribs": tuple(packages)}).model_dump(
-                    mode="json"
-                ),
-                snapshot.revision if snapshot is not None else None,
-            )
+            try:
+                await self._save(
+                    id,
+                    document.model_copy(
+                        update={"contribs": tuple(packages)}
+                    ).model_dump(mode="json"),
+                    snapshot.revision if snapshot is not None else None,
+                    force=force,
+                )
+            except (ConfigDependencyError, RemoteError) as error:
+                if force or (
+                    isinstance(error, RemoteError)
+                    and error.type != ConfigDependencyError.__name__
+                ):
+                    raise
+                raise ManagementError(
+                    f"Cannot disable {entry.entry!r}: {error}\n\n"
+                    "Add '--force' to disable it. Dependent contribs will stop and "
+                    "cannot run until their required services are restored."
+                ) from error
 
         return await self._submit("disable", action)
 
@@ -450,7 +594,18 @@ class ContribManager:
             id,
             installed=True,
             environment_changed=before != installed,
-            pending_restart=before != installed,
+            pending_restart=any(
+                package
+                != next(
+                    (
+                        item
+                        for item in installed.packages
+                        if item.package == package.package
+                    ),
+                    None,
+                )
+                for package in before.packages
+            ),
             version=versions.get(self.operations[id].package or plan.host.package),
         )
         await asyncio.to_thread(
@@ -458,8 +613,20 @@ class ContribManager:
         )
         if current is None or current.payload != preview.candidate.payload:
             await self._record(id, phase="saving")
-            await self.configuration.commit_preview(preview)
-            await self._record(id, config_saved=True)
+            snapshot = (
+                await self.configuration.commit_preview(preview)
+                if self.remote is None
+                else await self.remote.call(
+                    "commit_preview",
+                    Construct(
+                        "bazaar_contrib_config:ConfigurationPreview",
+                        preview.model_dump(mode="json"),
+                    ),
+                )
+            )
+            await self._record(id, config_saved=True, applied=False)
+            if self.remote is not None and not self.operations[id].pending_restart:
+                await self._apply(id, snapshot)
         await self._record(id, recovery=None)
 
     async def sync(self, *, only_missing: bool = False) -> Operation:
@@ -474,7 +641,7 @@ class ContribManager:
             await self.packages.initialize()
             await self._install(id, plan, plan, document)
 
-        return await self._submit("sync", action)
+        return await self._submit("sync", action, remote=not only_missing)
 
     async def add(
         self,
