@@ -120,7 +120,10 @@ def wheels(tmp_path_factory):
 
 
 @pytest.mark.parametrize("deployment", ["venv", "tool"])
-async def test_real_installed_manager(wheels: Path, tmp_path: Path, deployment: str):
+@pytest.mark.parametrize("workflow", ["installed_smoke.py", "live_smoke.py"])
+async def test_real_installed_manager(
+    wheels: Path, tmp_path: Path, deployment: str, workflow: str
+):
     def setup():
         handler = partial(SimpleHTTPRequestHandler, directory=str(wheels / "registry"))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -199,7 +202,7 @@ async def test_real_installed_manager(wheels: Path, tmp_path: Path, deployment: 
     python, environment, source, other, server, thread = await asyncio.to_thread(setup)
     process = await asyncio.create_subprocess_exec(
         str(python),
-        str(Path(__file__).with_name("installed_smoke.py")),
+        str(Path(__file__).with_name(workflow)),
         str(tmp_path),
         source,
         other,

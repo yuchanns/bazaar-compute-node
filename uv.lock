@@ -153,6 +153,7 @@ source = { editable = "contrib/manager" }
 dependencies = [
     { name = "bazaar-contrib-config" },
     { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-sidecar" },
     { name = "filelock" },
     { name = "jinja2" },
     { name = "packaging" },
@@ -163,6 +164,7 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-contrib-config", editable = "contrib/config" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "filelock", specifier = ">=3.16.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "packaging", specifier = ">=25.0" },

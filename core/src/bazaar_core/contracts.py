@@ -69,6 +69,7 @@ class Blocked[E](Stopping[E]):
 
     error: E = field()
     blocked_by: UUID | None = None
+    missing: tuple[str, ...] = ()
 
 
 type ContribState[E] = (

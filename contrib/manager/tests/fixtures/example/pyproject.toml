@@ -14,6 +14,7 @@ text = ["idna>=3.10"]
 [project.entry-points."bazaar_compute_node.contribs"]
 example-file = "bazaar_contrib_example:file"
 example-consumer = "bazaar_contrib_example:consumer"
+example-reader = "bazaar_contrib_example:reader"
 example-commands = "bazaar_contrib_example.commands:commands"
 
 [project.entry-points."bazaar_compute_node.commands"]

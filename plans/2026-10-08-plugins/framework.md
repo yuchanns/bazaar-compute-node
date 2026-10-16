@@ -788,7 +788,7 @@ core 发现入口、装配所选载体及发行版本组合，启用提供 `COMP
 agent 的连接／执行参数和凭据引用由 provider 实体模型校验，保存到 agent 条目 config.agents 中相应实体的 channel／harness 配置。
 命令定义、帮助、提示与输出由登记命令的功能包持有；功能包选择自己的文案及渲染方式。同步 Click 命令树构造在工作线程完成。
 命令名沿用常见的操作词，命令与选项帮助采用 uv／pip 的“动作＋对象”英语短语，直接说明用户操作；功能统一称为 contrib，安装包称为 package。
-管理 CLI 参照 uv 的实际文本输出：包列表和索引使用对齐列，详情逐行展示字段及入口选项，操作显示包变更、配置保存和待下次启动生效的结果。
+管理 CLI 参照 uv 的实际文本输出：包列表和索引使用对齐列，详情逐行展示字段及入口选项，操作分别显示包变更、配置保存、运行应用和需要重启的结果。
 manager 自持 Jinja 依赖与随包发行的 resources/*.tpl 文本模板，沿用主分支的资源命名，以 PackageLoader 加载并启用 StrictUndefined；Python 整理展示数据、计算表格列宽，模板持有文案及排版，操作查询复用结果模板。模板加载与渲染在工作线程执行。
 查询结果写入 stdout，操作提示和错误写入 stderr；失败时保留已完成步骤、操作 ID 与恢复提示，并返回失败退出码。
 卸载失败说明具体包名与实际阻塞条件：配置中没有该包时指向 `contrib configured`；仍有该包的 contrib 时列出名称，说明用 `contrib configured` 查看编号、`contrib disable INDEX` 停用后重试卸载。
@@ -1023,14 +1023,35 @@ JSON 标量、序列和字典按值传输，服务、候选组合等对象以连
 配置刷新由调用者通过远端 CONFIGURATION.read／commit／apply 编排，继续使用配置加载器原有 ctx 的更新归属；
 sidecar 的 ctx 保持自己的服务可见范围与组合归属。各传输共用这些 handler，业务编排由消费插件持有。
 
+本轮继续完成 manager 的实际消费。manager 的启动依赖仍为 CONFIGURATION、COMMANDS，
+所选组合未声明 CLIENT 提供者且没有加载诊断时，直接使用本地管理；已配置但无法加载或装配的客户端报告错误。
+首次依赖安装完成后，变更操作从所选配置构建以 CLIENT 消费者为根的临时子组合，复用 core 的依赖选择与资源退出。
+该子组合只创建一个 CLIENT 消费入口；启用后有客户端时直接取首项，没有客户端时继续本地管理。
+根选择仅展开本次组合内的声明，外部现存实例及其依赖继续复用，避免为父实例重复选择同名服务。
+取得环境锁后、产生安装或保存副作用前，通过 CLIENT 的远端 ctx.accept(CONFIGURATION) 建立配置会话，核对配置自举声明与当前修订。
+只有首次连接明确返回端点不存在或拒绝连接时使用离线组合；已连通后的远端异常、超时和断开直接返回失败，
+不重放操作。本机安装、目标解释器预检与操作记录仍归 manager，在线保存由远端配置服务条件提交，随后通过它的 apply 请求热更新。
+add --enable、enable、edit、disable 和索引变更复用此流程；单纯新增包不因新增发行元数据要求重启，
+已安装包的版本或来源替换、卸载及应用升级继续报告需要重启。配置服务在每次运行应用前刷新发行元数据发现缓存。
+
+disable --force 明确许可剩余消费者因缺少服务而阻塞，保留其配置声明。core 的 Blocked 状态携带缺失服务名，
+并沿依赖传播；配置服务只对这种诊断放宽提交校验，配置模型、入口导入、重复服务及循环错误仍然拒绝。
+选项补救提示参照 [dnf --allowerasing](https://dnf.readthedocs.io/en/latest/command_ref.html#options)；--force 的帮助直接说明会停用目标并停止依赖方。
+配置服务以独立的 ConfigDependencyError 报告仅由新增缺失依赖造成的校验失败；manager 在普通 disable 的本地或远端提交收到这种错误时，保留具体 contrib 和缺失服务原因，再提示追加 --force，并说明依赖方会停止，所需服务恢复前无法运行。
+普通后续提交与包预检按已保存组合的阻塞诊断计数，保留既有缺失依赖而拒绝新增阻塞；重启允许这些声明继续等待依赖恢复。
+core 继续按已有依赖图先停止消费者、再停止提供者；重新启用提供者后，由同一更新流程恢复消费者。
+管理入口、自身传输或配置服务被此次变更影响时，保留已保存结果并如实报告未应用与重启要求。
+
 - [x] 交付 bazaar-contrib-sidecar 的 SERVER／CLIENT 契约、接受 SERVER 的 sidecar 入口、共享 ctx／对象 handler 与会话资源管理。
 - [x] 交付独立 Unix socket 和 Windows named pipe 实现包，各自 offer SERVER／CLIENT；app 声明平台默认依赖与启用配置，V4→V5 的本地调用配置映射到 sidecar。
 - [x] 真实独立 wheel、节点进程和 CLI 消费者验证迁移地址、ctx 调用、配置热更新、远端子组合、断开清理与重启；TCP 示例实现复用相同 handler，完成 Ruff、根目录 LSP 和发行安装检查。
 - [x] 对照 0.2 补齐原生边界处理，交付真实 socket／pipe 和隔离进程的安装验收：残留端点、活动地址排他、异常退出恢复、坏连接隔离、退出清理及 3 MB 双向分块读行。
-- [ ] 三系统原生 CI 验证各平台 socket／pipe 与相同客户端流程，提交本轮 review。
+- [x] 三系统原生 CI 验证各平台 socket／pipe 与相同客户端流程，提交本轮 review。
+- [x] manager 按配置选择 CLIENT 消费分支，在线通过远端 CONFIGURATION 条件提交及应用，首次明确离线时保留本地流程，失败不重放。
+- [x] 交付 disable --force 和配置层缺失依赖许可，复用 core 的停止顺序、阻塞声明和恢复能力。
+- [x] 真实独立安装环境、节点进程与 CLI 验证在线新增启用、编辑、停用、强制停用和依赖恢复，离线保存、并发修订与超时失败；完成 Ruff、根 LSP 和发行检查，独立签名提交供 review。三系统 CI 的验收结果记录于 PR。
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
-- [ ] 按消费插件的实际业务接入 sidecar 客户端，自行编排跨进程调用；本地管理组合继续使用其已声明的功能服务。
 - [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
 - [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
 

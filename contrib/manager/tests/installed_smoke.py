@@ -156,7 +156,7 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         return await manager.add(package)
 
     added = await checked(install)
-    assert added.installed and added.pending_restart
+    assert added.installed and added.config_saved
     detail = await checked(lambda manager: manager.detail("example"))
     assert any(entry.config_schema for entry in detail.entries)
     candidate, _ = await checked(lambda manager: manager.configuration.read())
@@ -493,7 +493,12 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         await launch(str(python), "-m", "bazaar_contrib_manager.environment")
     )
     assert {entry["package"] for entry in before["packages"]}.isdisjoint(
-        {"bazaar-contrib-example", "bazaar-contrib-logging", "bazaar-contrib-sidecar"}
+        {
+            "bazaar-contrib-example",
+            "bazaar-contrib-logging",
+            "bazaar-contrib-sidecar-unix",
+            "bazaar-contrib-sidecar-windows",
+        }
     )
     note = migrated / "copied-command.json"
     await launch(
@@ -587,7 +592,12 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     assert (
         await checked(lambda manager: manager.detail("example"))
     ).version.startswith("0.2")
-    for name in ("example-commands", "example-consumer", "example-file"):
+    for name in (
+        "example-commands",
+        "example-reader",
+        "example-consumer",
+        "example-file",
+    ):
         candidate, _ = await checked(lambda manager: manager.configuration.read())
         index = next(
             i
