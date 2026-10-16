@@ -167,3 +167,36 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         for channel in candidate.payload["agent"][0]["channel"]
     )
     assert candidate.payload["agent"][0]["runtime"][-1]["custom_setting"] == "retained"
+
+
+def test_v4_node_timer_mapping_and_v5_provider_selection(tmp_path: Path, monkeypatch):
+    from bazaar_contrib_config import ConfigDocument
+
+    from bazaar_contrib_config_versions import Converter
+
+    monkeypatch.setenv("BCN_HOME", str(tmp_path))
+    converter = Converter("5", Converter("4"))
+    candidate = converter.convert(
+        {"version": "4", "node": {"version_check": False}, "agent": []}
+    )
+    document = ConfigDocument.model_validate(candidate.payload)
+    package = next(
+        package
+        for package in document.contribs
+        if any(entry.entry == "timer-wheel" for entry in package.enabled)
+    )
+    assert any(
+        requirement.package == package.distribution
+        for requirement in candidate.required_packages
+    )
+    payload = {
+        "version": "5",
+        "contribs": [
+            {
+                "package": "bcn-asyncio-timer>=0.1.0",
+                "enabled": [{"entry": "asyncio-timer"}],
+            }
+        ],
+        "agent": [],
+    }
+    assert converter.convert(payload).payload == payload
