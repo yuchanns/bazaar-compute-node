@@ -35,6 +35,10 @@ class ConfigFormatError(ValueError):
     """A document or candidate does not satisfy its declared format."""
 
 
+class ConfigDependencyError(ConfigFormatError):
+    """New missing-service dependencies prevent a configuration commit."""
+
+
 class ConfigCommitUnknown(OSError):
     """A write may have committed; read the source before retrying."""
 
