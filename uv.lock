@@ -12,10 +12,14 @@ members = [
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
     "bazaar-contrib-node-management",
+    "bazaar-contrib-node-migrations",
+    "bazaar-contrib-schema",
     "bazaar-contrib-sidecar",
     "bazaar-contrib-sidecar-unix",
     "bazaar-contrib-sidecar-windows",
+    "bazaar-contrib-sqlite",
     "bazaar-contrib-status",
+    "bazaar-contrib-storage",
     "bazaar-contrib-timer",
     "bazaar-contrib-timer-wheel",
     "bazaar-core",
@@ -194,6 +198,42 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bazaar-contrib-node-migrations"
+version = "0.3.0"
+source = { editable = "contrib/node-migrations" }
+dependencies = [
+    { name = "bazaar-contrib-schema" },
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-schema"
+version = "0.3.0"
+source = { editable = "contrib/schema" }
+dependencies = [
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
 name = "bazaar-contrib-sidecar"
 version = "0.3.0"
 source = { editable = "contrib/sidecar" }
@@ -239,6 +279,27 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bazaar-contrib-sqlite"
+version = "0.3.0"
+source = { editable = "contrib/sqlite" }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-core" },
+    { name = "jinja2" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
 name = "bazaar-contrib-status"
 version = "0.3.0"
 source = { editable = "contrib/status" }
@@ -248,6 +309,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "bazaar-core", editable = "core" }]
+
+[[package]]
+name = "bazaar-contrib-storage"
+version = "0.3.0"
+source = { editable = "contrib/storage" }
+dependencies = [
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
 
 [[package]]
 name = "bazaar-contrib-timer"

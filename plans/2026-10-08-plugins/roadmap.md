@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | 1 | 框架与日志 | core 运行内核、统一启动接口、本地绑定与发现，app 普通命令入口与默认资源，公共配置载体与版本服务契约、filesystem 实现、五版转换模块、自举、V5 配置、安装管理和日志 | 组合明确声明 ContribEntry 及服务绑定，ContribHub 按服务依赖和父实例关系启动、更新及释放实例，用户统一在业务文档顶层 contribs 启用，登记 lifespan / listen / offers 和静态或按配置计算的 accepts；Context 提供 offer / accept / announce；启动输入选择提供 CONFIG_STORE 的已安装入口；版本包提供 VERSIONS 组合并装配 CONFIG_CURRENT 依赖链，V1→V2→V3→V4→V5 服务生成候选和所需包，宿主校验后经载体条件提交；通过包元数据关联入口；节点升级保留模块依赖与来源 |
 | 2 | 命令、调用与共享定时器 | COMMANDS、插件命令、sidecar；独立 timer 契约和时间轮实现 | 共享 Click 命令与 invoke 的入口扩展；sidecar 定义 SERVER／CLIENT 及 ctx handler，Unix／Windows 包提供传输服务，消费者依赖接口并自行编排调用；core 按通用插件根与绑定选择依赖，回调决定退出时间；定时器独立提供共享 TIMER，任意节点插件声明依赖后由组合选入所选实现，并在数据库之前单独交付 |
-| 3 | 数据库与迁移 | storage 公共数据操作契约、后端注册表、DB 选择层、SQLite 实现、schema 与迁移服务 | storage → 所选后端 → database → 消费者；按配置展开后端依赖，实际多个后端验证并存与选择；业务声明查询、provider 翻译；BCN／BCS 历史 ledger 分别识别，已发布迁移及 checksum 原样保存 |
+| 3 | 数据库与迁移 | storage 公共数据操作契约、后端注册表、DB 选择层、SQLite 实现、schema 与迁移服务 | storage → 所选后端 → database → 消费者；按配置展开后端依赖，实际多个后端验证并存与选择；业务声明查询、provider 翻译；业务迁移插件统一登记抽象迁移，按已有版本续迁，空库建立当前基线 |
 | 4 | 消息与会话 | agent 消息数据、会话 target、历史、未读 cursor、发送与回执、附件、草稿、搜索和 thread follow | 消息模块使用公共查询接口并持有业务模型与索引要求；同一消息服务供 CLI / RPC 使用；新调用者使用消息 / 会话 / 搜索服务，旧 repository 在最终发行阶段统一清理 |
 | 5 | 身份与协作 | sender / contact 身份、引用 refs、会话登记和审批、消息引用及关联 | 消息模块公共契约就绪；状态变化和读取遵循现有协作语义 |
 | 6 | Reminder | Reminder 的登记、到期、snooze、更新、取消、持久化与唤醒 | 使用已交付的共享 timer、DB 和消息服务，自持提醒业务；新调用者直接依赖其契约，旧实现最终统一清理 |
@@ -56,7 +56,7 @@
 ## 发行包、模块入口与内置组合
 
 以下清单确定 `0.3` 的包边界、发行名、模块入口及内置归属。BCN 必要包首次正式发行版本为 `0.3.0`。
-公共接口与默认节点模块留在 BCN：app/、core/ 与 contrib/<功能>/；下方可选能力表中的包各自在独立仓库维护版本和发行。
+公共接口与默认节点模块留在 BCN：app/、core/ 与 contrib/<功能>/；下方官方可选能力表中的包在 open-bazaar 的独立仓库维护版本和发行。
 Python 模块名由发行名中的连字符改为下划线，例如 `bazaar-contrib-logging` 对应 `bazaar_contrib_logging`。
 app 通过普通 Python 入口调用 core 的统一运行接口，提供启动输入、退出信号与业务默认资源，消费版本包的 VERSIONS。
 core 作为框架运行内核，由应用直接 import，执行发现、自举装配、校验、本地绑定与完整生命周期；
@@ -66,7 +66,7 @@ core 作为框架运行内核，由应用直接 import，执行发现、自举�
 跨阶段的发行包按阶段增加入口与依赖：渠道连接在第 8 阶段、编辑器在第 14 阶段，
 server 两端及私有 HTTP 在第 11 阶段、多节点业务在第 12 阶段、访问保护与业务 API 在第 13 阶段、页面在第 14 阶段。每阶段的 wheel 只登记已交付入口与所需依赖；
 第 16 阶段以本表的完整入口集合和依赖组合发行。
-清单共 39 个官方发行包、53 个唯一模块入口，其中 `bazaar-contrib-storage` 提供两个公共运行入口。
+发行包与入口以本表为准，其中 `bazaar-contrib-storage` 提供两个公共运行入口。
 
 “默认”表示由 app 的 `bazaar-compute-node` 直接声明依赖并随整体安装和升级；“server／web 依赖”表示选装对应包时安装。
 业务模块定义与参数统一保存在顶层 contribs，配置载体使用启动输入、版本链使用发行自举组合先行装配；组合按已校验业务输入声明具体实例和服务绑定；包依赖安装代码，服务依赖决定实际装配。
@@ -104,7 +104,9 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-sidecar` | `sidecar`：共享 | SERVER／CLIENT 公共契约；接受 SERVER 并暴露 ctx／返回对象的公开 handler，消费方自行编排 | 2 | 节点默认；消费插件的接口依赖 |
 | `bazaar-contrib-sidecar-unix` | `sidecar-unix`：共享 | offer SERVER／CLIENT，以 Unix socket 实现会话与请求；依赖 sidecar 接口 | 2 | Linux/macOS 默认 |
 | `bazaar-contrib-sidecar-windows` | `sidecar-windows`：共享 | offer SERVER／CLIENT，以 Windows named pipe 实现会话与请求；依赖 sidecar 接口 | 2 | Windows 默认 |
-| `bazaar-contrib-sqlite` | `sqlite`：共享 | 依赖 STORAGE、登记 sqlite 后端、提供 backend_key("sqlite")；持有节点连接、公共操作翻译和已发布节点迁移资源 | 3 | 默认；节点初始存储后端 |
+| `bazaar-contrib-sqlite` | `sqlite`：共享 | 依赖 STORAGE、登记 sqlite 后端、提供 backend_key("sqlite")；持有连接和公共操作翻译 | 3 | 默认；节点初始存储后端 |
+| `bazaar-contrib-node-migrations` | `node-migrations`：共享 | 依赖 SCHEMA，持有 Node 迁移与当前基线，登记后提供 NODE_MIGRATIONS | 3 | Node 业务数据插件的依赖 |
+| `bazaar-contrib-node` | `node`：共享 | 接受 DB 和 NODE_MIGRATIONS，提供迁移就绪后的 Node 业务数据服务；Agent 明确依赖该服务 | 7 | Agent 的依赖 |
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
 | `bazaar-contrib-messages` | `messages`：共享 | 消息／会话、历史、未读、搜索、附件、草稿、收发回执和 thread follow；依赖 storage、schema、调用与审计契约 | 4 | 默认；server 投影的契约依赖 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | sender／contact、refs、会话登记、审批及可见范围；依赖消息、storage 和调用契约 | 5 | 默认；server 联系人的契约依赖 |
@@ -119,6 +121,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 
 | 发行包 | 模块入口与运行范围 | 拥有的能力与主要依赖 | 阶段 | 组合归属 |
 | --- | --- | --- | --- | --- |
+| `bazaar-contrib-postgres` | `postgres`：共享 | 在 open-bazaar/contrib-postgres 维护；实现公共 storage 操作，登记 PostgreSQL 后端并提供 backend_key("postgres") | 3 | 可选存储后端 |
 | `bazaar-contrib-telegram` | `telegram-builder`：共享；`telegram`：接受 channel 输入；`telegram-ui`：共享 | Telegram 收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
 | `bazaar-contrib-lark` | `lark-builder`：共享；`lark`：接受 channel 输入；`lark-ui`：共享 | Lark 连接、收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
 | `bazaar-contrib-wecom` | `wecom-builder`：共享；`wecom`：接受 channel 输入；`wecom-ui`：共享 | WeCom 连接、收发、附件、配置与编辑器；运行入口实现 IChannel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
@@ -126,8 +129,8 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-claude-code` | `claudecode-builder`：共享；`claudecode`：接受 harness 输入 | Claude Code 进程、事件解析、模型／能力与审批；实现 IHarness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
 | `bazaar-contrib-http` | `http` | HTTP route／middleware／静态资源登记、监听能力与请求生命周期；提供 HTTP，导出共用 HTTP 与 API 注册契约 | 11 | server 依赖 |
 | `bazaar-contrib-server-config-filesystem` | `server-config-filesystem` | 依赖 bazaar-contrib-config，在 server 子组合的私有绑定中提供 CONFIG_STORE；直接读写 ~/.bcs/config.toml，持有自己的锁、修订和原子保存 | 11 | server 的默认配置载体，可替换为额外配置中心 |
-| `bazaar-contrib-server-sqlite` | `server-sqlite` | 依赖 bazaar-contrib-storage 与服务端 CONFIG_STORE；在服务端注册表登记 sqlite，连接原 ~/.bcs/bcs.sqlite3，持有 BCS 历史迁移资源 | 11 | server 的默认存储，可替换为额外存储实现 |
-| `bazaar-contrib-server` | `server`、`server-api` | server 用本地绑定的子组合装配独立 BCS 配置与业务实例；server-api 接受 HTTP、提供 API 与 starlink 的协议对端；按配置依赖 DB／schema／timer 及目标功能契约；保留原 BCS 协议与数据源 | 11、12、13 | 可选服务端组合；多节点业务随阶段加入 |
+| `bazaar-contrib-server-sqlite` | `server-sqlite` | 依赖 bazaar-contrib-storage 与服务端 CONFIG_STORE；在服务端注册表登记 sqlite，连接原 ~/.bcs/bcs.sqlite3，复用通用 SQLite 插件；业务迁移由 server-migrations 提供 | 11 | server 的默认存储，可替换为额外存储实现 |
+| `bazaar-contrib-server` | `server-migrations`、`server`、`server-api` | 在 open-bazaar/contrib-server 维护一个发行包；server-migrations 接受 SCHEMA，持有 Server 迁移及当前基线并提供 SERVER_MIGRATIONS；server 用本地绑定的子组合装配独立 BCS 配置与业务实例；server-api 接受 HTTP、提供 API 与 starlink 的协议对端；按配置依赖 DB／schema／timer 及目标功能契约；保留原 BCS 协议与数据源 | 3、11、12、13 | 可选服务端插件；迁移与逻辑入口按阶段交付 |
 | `bazaar-contrib-starlink` | `starlink` | 节点主动连接目标 server，自持 getUpdate 请求循环与 send 结果发送、身份、请求关联和重连；accept 节点功能服务，按配置 listen 审计事件上报 | 11 | 可选；默认停用，配置 server 后启用 |
 | `bazaar-contrib-fleet` | `fleet`、`fleet-ui` | computer／agent 登记、模型、事件投影、状态与配置；依赖 storage、schema、审计事件及 API，通过 server 私有 HTTP 请求目标节点；API 登记依赖访问服务，页面依赖 GUI 与访问服务 | 12、13、14 | server 的服务依赖；web 的页面依赖 |
 | `bazaar-contrib-history` | `history`、`history-ui` | 聚合消息／会话投影、历史、搜索、图片、refs；依赖 storage、schema、fleet、消息、API 与访问服务，页面依赖 GUI 与访问服务 | 12、13、14 | server 的服务依赖；web 的页面依赖 |
@@ -151,7 +154,7 @@ HTTP／GUI 的公共协议供功能模块导入，功能包通过这些协议引
 app 按兼容范围直接依赖 bazaar-core 与默认 contrib；core 的包依赖保持通用。
 应用基础先作为独立任务交付：run(bootstrap, load) 启动自举条目及提供 COMPOSITION 的加载器，bcn run 启用已交付的 status；
 随后在相同应用入口接入配置发现、载体、版本链与默认配置资源。
-server／starlink／web 与具体 provider 等可选包在各自独立仓库开发，可选安装并各自持有依赖与配置资源。
+server 的迁移、配置载体、存储组合、API、业务与页面，以及 starlink／web 与具体 provider 等可选包在 open-bazaar 的独立仓库开发，可选安装并各自持有依赖与配置资源。
 BCN 必要包的 project.version 使用共同版本，首版为 0.3.0；这些包随 BCN 发行升版。
 仓库内正式依赖按实际所需的最低版本声明三段式兼容范围，首版为 ~=0.3.0；仅使用更新接口时提高对应依赖下限。
 独立官方可选包和第三方包维护自己的版本，并声明 core 最低版本／上限和所需公共接口包的兼容范围。
@@ -318,7 +321,7 @@ timer 的替代 provider 直接提供共享 `TIMER`；在目标组合停用原�
 3. 替代后端验收使用额外 PG 模块包和隔离 PG 数据库；模块依赖 bazaar-contrib-storage，实现相同操作及后端语义。
 4. 启用两后端并更新已有 database 条目的选择，重启后由相同消费者执行相同业务流程，验证模型与查询结果。
 5. 分别保存两后端并存和停用 SQLite 的配置，观察实际连接启动、消费者结束、登记撤销和连接关闭的顺序。
-6. 通过完整组合升级验证额外包来源、版本要求、连接参数及后端选择继续有效，已发布迁移和 checksum 保持原样。
+6. 通过完整组合升级验证额外包来源、版本要求、连接参数及后端选择继续有效，原版本账本保留，统一迁移按版本接续并保留业务数据。
 
 加载与配置接口提供所选后端缺失、重复后端名、重复 DB 服务、模块类型与目标运行上下文不匹配的诊断。
 普通节点、纯 API 节点及混合节点分别验证各自注册表，agent 消费与节点相同绑定的 DB。
@@ -494,12 +497,14 @@ SQLite 及其他 provider 将公共操作翻译成各自后端的查询与存储
 数据库 provider 持有通用数据操作与后端翻译实现。
 核心和数据库模块的最终依赖图仅包含通用契约，各功能通过 db 或其他功能拥有者的服务协作。
 
-SQLite 的 BCN／BCS 已发布迁移链分别保留原内容、版本及 checksum。schema 从原 schema_migrations 的
-initial_node_schema／initial_server_schema 身份识别历史链，复用原记录并执行缺少的历史步骤；BCS 保留原 1…7 及校验算法。
-后续模块迁移使用独立 contrib_schema_migrations ledger，按发行包／迁移版本记录唯一身份并校验 checksum；
-混合组合按模块注册所需 schema，新库按启用组合建立 schema，表名冲突由注册边界诊断。
-数据库迁移服务负责执行与 ledger，功能模块通过注册入口提供后续迁移和依赖顺序。新索引和 schema 改动使用新增迁移。
-数据库验收从新模块组合建立隔离环境，验证各模块的 schema、查询、事务和跨功能业务流程。
+Node 与 Server 各自拥有独立迁移插件，版本、表结构和数据变更统一通过 schema 的 Migration 和公共存储操作表达。
+业务数据库服务依赖 DB 及对应迁移插件的就绪服务；迁移插件依赖公共 schema 服务，后者使用同一个 DB。
+具体 SQLite／PG 实现由组合配置选择。业务迁移的启用由显式依赖决定。
+已有账本的版本用于跳过已执行步骤、补齐缺少的变更；统一迁移实现去掉 checksum 校验。
+原 1…32／1…7 的实际变更转为公共操作，旧账本进度接入统一的模块 ledger，运行时保留一套迁移引擎。
+空库直接应用模块声明的当前基线并记录版本，之后使用同一引擎执行新版本。
+新索引和 schema／数据变化追加迁移；历史 src 作为只读验收对照。
+数据库验收使用真实旧版本数据库及新模块组合，验证记录、关联、游标、基线、事务和跨功能业务流程。
 
 ### provider 与运行实例
 
@@ -558,8 +563,8 @@ contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和�
 
 ## 0.3 发行清单与发布顺序
 
-完整能力集合包含 app、core、6 个公共能力 contrib 和 31 个实现／组合 contrib，共 39 包、53 入口。
-22 个必要包在 BCN 共同发行，17 个可选包在独立仓库发行；各阶段记录所属仓库、发行名、入口和集成证据：
+完整能力集合以本路线图的发行包及入口表为准。
+app、core、公共接口和默认节点包在 BCN 共同发行，可选包在 open-bazaar 的独立仓库发行；各阶段记录所属仓库、发行名、入口和集成证据：
 
 | 记录字段 | 必须保存的内容 |
 | --- | --- |
@@ -574,7 +579,7 @@ contrib 市场页面与 CLI 共用索引及模块管理服务；当前节点和�
 
 第 16 阶段按串行 Tasks 交付并 review：
 
-1. 收齐 39 个正式包和完整入口，验证包依赖闭包、core 的通用边界与整体候选组合；验收通过后统一切换入口，一次清理旧 src、旧测试、依赖、repository、装配与适配层。
+1. 收齐清单中的正式包和完整入口，验证包依赖闭包、core 的通用边界与整体候选组合；验收通过后统一切换入口，一次清理旧 src、旧测试、依赖、repository、装配与适配层。
 2. 交付 scripts/release.py：从 BCN workspace 发现必要成员，单个目标 version 同步这些成员的 project.version、资源版本引用和共享锁，保留各包仍适用的依赖下限与兼容范围；生成本仓库发行清单，并固定独立可选包的版本／源码／产物及集成依赖顺序。
 3. 接入保留单 version 输入的 release workflow，形成已验证签名的共同发行提交；逐包构建和验收 wheel／sdist，按依赖顺序上传，app 在默认依赖上传后发布。
 4. 使用同一发行提交和产物验证部分发布后的核对与补缺，全部成功后发布 annotated v<版本> 标签及整体 release；独立可选包由所属仓库按兼容范围发布；从真实包源完成三平台组合安装、安装文档和官方索引更新。

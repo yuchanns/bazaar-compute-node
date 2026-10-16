@@ -570,7 +570,7 @@ server 模块的启动参数模型包含 config_provider 与 config_options，�
 旧 BCS 自定义配置位置只改变配置文件，数据目录始终为原运行用户的 ~/.bcs，启动与升级沿用该规则。
 
 `bazaar-contrib-server-sqlite` 提供 server-sqlite，消费服务端自己的 CONFIG_STORE 与 STORAGE，
-按原 BCS 的 storage 及后端参数创建连接，在服务端注册表登记 sqlite 后端；database 提供本地 DB。
+按原 BCS 的 storage 及后端参数装配通用 SQLite 插件，在服务端注册表登记 sqlite 后端；database 提供本地 DB。
 默认 SQLite 仍打开原 ~/.bcs/bcs.sqlite3，连接和退出由服务端存储模块管理；
 额外存储实现使用同一服务端注册表与 DB 契约，选择与参数保存在独立 BCS 配置中。
 同进程运行 agent 和 server 时，节点与 server 各自选择数据库后端，配置载体、连接与迁移记录分别绑定其具体实例。
@@ -590,14 +590,13 @@ web、GUI 与页面模块进入 server 组合，通过 API、UI 和访问服务�
 | accounts、roles、account_roles、auth_settings、oidc_providers、oidc_identities、relations | access 使用原账户、密码哈希、角色、权限、分享和 OIDC 设置；账户 theme 继续由页面读取 |
 | computers、events、refs 等既有业务数据 | fleet／history／contacts 查询原表和标识，保持 computer 身份、secret_hash、事件顺序与关联 |
 
-包拆分完成后，业务查询直接使用上述历史数据布局。后续 schema 变更由新增迁移执行，
-既有主键、凭据、事件关联和权限在事务内保留。节点 SQLite 与 server-sqlite 分别持有原迁移资源，
-schema 服务从各自原 schema_migrations 的历史身份识别
-BCS 的 initial_server_schema 链，保留已发布 1…7 的文件内容、名称、SQL、checksum 算法与原 ledger 记录，
-校验后只执行缺少的后续步骤；BCN 的 initial_node_schema 链独立识别。
-新增模块迁移使用独立的 contrib_schema_migrations ledger，以发行包／迁移版本标识迁移并保持 checksum 校验；
-启用混合能力时按所属模块注册缺少的 schema，历史链选择由已有 ledger 识别，新库按启用组合建立 schema。
-所有 schema 登记检查表名及迁移身份冲突，沿新增迁移形成统一组合的数据布局。
+包拆分完成后，业务查询直接使用上述数据布局，既有主键、凭据、事件关联和权限在事务内保留。
+Node 与 Server 各自的迁移插件通过统一 schema 服务登记迁移，提供当前结构的初始基线和按原版本编号表达的抽象操作／数据变更。
+已有数据库按原 schema_migrations 的版本记录确定起点；迁移插件显式声明自己的历史身份及账本字段，
+schema 引擎只为被依赖的插件接续缺少的版本，并把进度记录在统一的 contrib_schema_migrations 中。
+旧账本保留已有记录，初始化后以统一账本推进。版本进度与 checksum 无关，统一实现按版本判断执行进度。
+空库直接创建所选模块的基线结构并记下基线版本；后续依次执行新增版本。
+业务数据库服务同时依赖所选 DB 和对应迁移插件的就绪服务，确保业务读写发生在迁移完成后；Node 与 Server 可分别绑定数据源。
 
 升级验收从实际 0.2 发行环境生成隔离的 BCS 配置、数据库和密钥，再以 0.3 候选宿主与实际模块 wheel 启用 server／web，启动时直接读取这些原资源。
 覆盖默认路径、原 BCS 自定义配置位置、有效缺省值及既有迁移版本，核对原数据库路径、历史 ledger 与业务身份，
@@ -709,6 +708,7 @@ contrib 市场展示各索引中登记的包，用户按包名和来源选择安
 ```toml
 # bazaar-contrib-server 的 pyproject.toml
 [project.entry-points."bazaar_compute_node.contribs"]
+server-migrations = "bazaar_contrib_server:migrations"
 server = "bazaar_contrib_server:server"
 server-api = "bazaar_contrib_server:api"
 ```
@@ -1121,11 +1121,109 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 
 ### Task 10：公共存储、SQLite 与 schema
 
-- [ ] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
-- [ ] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；默认配置明确 database.config.backend="sqlite"。
-- [ ] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 保留已发布迁移的原文及 checksum，新增模块迁移使用独立账本。
-- [ ] 消费组合声明 storage、sqlite、database、schema，并通过 DB 依赖选入；同步 V4→V5 所需配置，用隔离数据库验证实际查询、事务、迁移及后端选择。
-- [ ] 完成各包独立 wheel 安装、真实组合及检查，提交供 review。
+公共包 `bazaar-contrib-storage` 提供 `Database`／`Session` 协议、`BackendRegistry`、
+`STORAGE`、`DB` 和按名称缓存的 `backend_key(name)`。`storage` 入口提供共享注册表；
+具体后端在自身 lifespan 的注册上下文内提供对应 backend key；`database` 的必填 backend 配置
+通过 `accepts=lambda config: [STORAGE, backend_key(config.backend)]` 声明所选依赖，并将该对象登记为 DB。
+消费组合以实际使用者为根选择依赖，配置明确 `backend="sqlite"`；各包使用相对链接共享根 LICENSE。
+
+查询输入是冻结的 Pydantic 数据模型，标识符和参数分别校验，值始终作为绑定参数交给后端。
+公共 `Select`／`Insert`／`Update`／`Delete` 描述显式读写；表达式包含列引用、值、算术、聚合与
+coalesce／lower／length，过滤包含比较、IN、空值、逻辑组合与文本子串搜索。
+Select 明确投影、inner／left join、排序、分组、limit／offset；批量写入、冲突处理与 returning 明确声明。
+结果为普通记录和写入结果；关联由批量查询或明确 join 取得。
+`Database.transaction(operation)` 把绑定 Session 传给异步操作，整体提交或回滚，绑定 Session 在操作返回后失效；Session 提供相同数据操作与
+声明式建表、加列、索引操作。后端把连接、约束与查询错误转为公共错误类型。
+
+`bazaar-contrib-sqlite` 翻译公共操作为参数化 SQLite 查询，提供配置模型、连接及 sqlite 入口。
+SQL 结构保存在后端包的 `resources/*.sql.tpl`：查询、表达式与过滤、DDL、FTS 表及各同步触发器分别用
+Jinja 模板表达，Python 负责绑定参数、标识符／DDL 字面量转义及选择待执行语句。
+依据 [Jinja API](https://jinja.palletsprojects.com/en/stable/api/) 的 PackageLoader、StrictUndefined 和缓存机制，
+后端自持 Jinja 依赖，初始化时在工作线程预加载全部资源，关闭 auto_reload；每次渲染持有独立参数列表，
+模板中的 bind 调用按 SQL 出现顺序收集参数。递归表达式与过滤复用
+[Jinja macros](https://jinja.palletsprojects.com/en/stable/templates/#macros)，完整 SQL 及条件分支在模板内可直接阅读。
+`bazaar-contrib-postgres` 在 `open-bazaar/contrib-postgres` 独立仓库作为可选后端维护，采用相同的资源组织，
+提供 `postgres` 入口，保留 PG 自己的占位符、类型及搜索语义；wheel／sdist 验证资源安装后实际执行。
+复用原 `contrib/sqlite/executor.py` 的单 writer 队列与 reader 池机制，并将长期驱动纳入 lifespan 任务组；
+实际操作的取消、回滚、在途工作排空与连接关闭保留原语义，每次 SQL 调用在取消后先 interrupt 并等待该调用结束，再归还连接；后台故障通过公共 failure source 交给 core。
+路径参数默认沿用 BCN 数据目录；独立验收总是显式使用隔离路径。
+
+`bazaar-contrib-schema` 提供 `SCHEMA` 和模块 schema 的异步登记上下文，模块声明拥有的表、
+迁移与前置模块版本，消费方通过服务依赖保证前置模块就绪。统一 `Migration` 以 version／name 和公共操作表达变更，
+数据转换通过接收公共 Session 的异步 apply 完成，允许同一版本在建表、复制和改名之间执行数据处理。
+迁移和 ledger 写入处于同一个 DB 事务；登记检查表和模块身份归属，进度按 package／version 记录名称、应用时间和耗时。
+`contrib_schema_tables` 持久记录表的 package 归属，运行期退出保留数据和版本进度。
+
+`bazaar-contrib-node-migrations` 与 `bazaar-contrib-server` 分别持有 Node／Server 迁移定义，
+接受 SCHEMA 并在登记完成后提供 NODE_MIGRATIONS／SERVER_MIGRATIONS 就绪服务。
+Node 迁移包随 BCN 共同发行；Server 插件在 `open-bazaar/contrib-server` 独立维护，
+同一个 `bazaar-contrib-server` 发行包提供 `server-migrations` 入口，并按阶段加入 `server`／`server-api` 逻辑入口。
+Server 以 `>=0.3.0,<0.4.0` 声明 core、schema、storage 的公共兼容范围。服务端配置载体、存储组合、业务及页面包同属 open-bazaar 的可选仓库。
+Node Database 业务服务接受 DB 与 NODE_MIGRATIONS；Server Database 对应接受 SERVER_MIGRATIONS。
+Agent 插件依赖 Node 业务数据插件，由服务依赖带起 Node 迁移及所选数据库；新安装默认安装并启用 Agent。
+旧配置转换按实际 Agent／Server 使用情况分别生成对应插件及依赖声明，Server 由自己的业务插件带起迁移。
+组合配置通过现有 database 入口为同一个 DB 选择 SQLite／PG。迁移插件依赖 schema／storage 公共能力，
+数据库 provider 负责通用操作。当前尚无业务消费者时仍通过明确根和服务依赖选择插件；V4→V5 在旧配置存在 Agent 时声明 node-migrations，供 Node 消费组合依赖。
+
+ModuleSchema 可声明 baseline（当前结构及版本）和 progress（已有账本的表、版本／名称字段及所属链首版本身份）。
+空库执行基线并记录该版本；匹配的已有账本把已执行版本进度接入统一 ledger，随后使用同一个 Migration 执行循环推进。
+已有版本只按账本判断完成状态，去掉 checksum 字段、计算、比较与后端 migrate_legacy 接口。
+Node 的原 1…32、Server 的原 1…7 以同一迁移类型重写，保留版本和实际数据／结构变更；
+原已发布 src 作为只读验收来源。SQLite 的 legacy/node、legacy/server SQL 资源及自动识别执行路径移除。
+两种业务类型由被依赖的迁移插件显式选择，通用 schema／数据库 provider 均不识别 Node／Server 名称。
+
+公共 storage 操作补齐删表、改表名、改列名、删列、结构化唯一／CHECK／引用约束、表达式索引、搜索索引记录键、
+通用触发器操作、表存在查询、INSERT…SELECT 批量复制和 ROW_NUMBER 排序表达式。
+依据 [SQLite ALTER TABLE](https://www.sqlite.org/lang_altertable.html) 的约束变化与建新表／复制／替换步骤，
+旧消息结构变化使用公共建表、Copy、删表、改名表达，保留记录及约束。
+依据 [PostgreSQL 触发器](https://www.postgresql.org/docs/18/sql-createtrigger.html)、
+[触发器函数](https://www.postgresql.org/docs/18/plpgsql-trigger.html)及
+[窗口函数](https://www.postgresql.org/docs/18/functions-window.html)，PG 后端实现等价操作；SQLite／PG 均使用后端自己的 Jinja 资源生成 SQL。
+迁移中的消息顺序换算通过公共批量复制及排序表达式处理；数据合并、提醒消息生成和 JSON 回填由迁移插件使用公共查询／写入完成。
+
+CreateTable／CreateIndex 可显式声明 if_not_exists，模块接管已有资源时保留数据；SQLite 已有 FTS 索引整体复用。
+
+文本搜索契约以每个词在所选列中出现的子串语义定义，SQLite 使用 FTS5 trigram 外部内容索引与同步触发器，
+短词执行直接子串条件；额外 PG 实现使用 pg_trgm GIN 与绑定的 ILIKE 条件。
+依据 [SQLite FTS5](https://www.sqlite.org/fts5.html#the_trigram_tokenizer)，trigram 支持子串搜索，
+少于三个 Unicode 字符的词需要直接条件；依据 [PostgreSQL pg_trgm](https://www.postgresql.org/docs/18/pgtrgm.html)，
+GIN 支持 LIKE／ILIKE。两端以相同普通数据工作流验证搜索、批量关联、分页和事务。
+PG 后端是独立仓库的发行包，以 `>=0.3.0,<0.4.0` 声明公共 storage 与 core 的兼容范围，
+依赖 Pydantic、Psycopg 与 Jinja；按
+[Psycopg 异步连接](https://www.psycopg.org/psycopg3/docs/advanced/async.html)及
+[事务管理](https://www.psycopg.org/psycopg3/docs/basic/transactions.html)使用真实异步连接和显式事务，
+PG 依据 [Raw query cursors](https://www.psycopg.org/psycopg3/docs/advanced/cursors.html#raw-query-cursors)
+使用 AsyncRawCursor 与 $n 参数，保留 SQL 算术及文本中的字面 %。
+在自有 rootless 容器及临时数据库运行，固定两个后端并存、选择切换、退出和独立 wheel 安装验收。
+
+注册、选择、替换与迁移调度的机制测试使用固定的小型真实场景。
+完整 PostgreSQL 实现归外部插件仓库，主仓库机制测试复用真实 SQLite；外部 PG 插件持有自己的关键集成验证。
+插件 CI 后续补齐：从包源安装已发布 BCN 和插件，使用隔离配置启用 postgres 入口并验证实际消费流程。
+schema 的小型两版本模块验证执行顺序、事务回滚与已执行版本跳过；业务迁移保留关键数据转换回归。
+历史发行桥接固定为 Node 17→32 和 Server 3→7，以只读原实现产生数据和升级对照，目标链固定在原发行版本。
+Server 迁移回归随同一 Server 插件维护；测试夹具保存原实现生成的版本 3 数据和版本 7 升级结果及固定来源，独立安装后即可运行。
+Node／Server 消费者切换验收归 Server 插件的集成测试，主仓库测试只依赖自身包。
+新增业务 migration 复用同一执行机制，回归随实际数据转换风险选择场景。
+
+- [x] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
+- [x] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；使用 SQLite 的消费组合明确 database.config.backend="sqlite"。
+- [x] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 统一抽象迁移、基线及版本账本，业务迁移插件显式注册。
+- [x] 消费组合声明 storage、sqlite、database、schema，并通过 DB 依赖选入；同步 V4→V5 所需配置，用隔离数据库验证实际查询、事务、迁移及后端选择。
+- [x] 完成各包独立 wheel／sdist 安装、真实组合及检查，提交供 review。
+
+验收覆盖 SQLite 公共入口选入后的真实查询与连接关闭、并发写入、事务取消与查询中断、驱动故障；schema 登记、依赖、归属及重启升级；
+真实 PostgreSQL 独立实现和两个后端并存／切换；初次迁移验收使用原始历史源码生成 Node 1／4／12／17／18／24／26／29／31／32 和 Server 1／3／6／7 数据库，
+对比原迁移完成后的业务记录、关联、游标和搜索数据，并核对旧账本保留及重复登记；
+V4→V5 声明直接连接原临时文件并选择 Node 迁移插件。各正式包均完成独立 wheel／sdist 安装，
+原已发布迁移源只读用于生成对照数据库；核对独立发行资源、共享 LICENSE 和 py.typed，通过 Ruff 与仓库根 Pyright LSP 检查。
+- [x] 完成统一迁移修订：Node／Server 所属包提供业务迁移入口、基线／已有版本接续、公共操作补齐及 provider 实现；验证真实不同旧版本的数据变换、空库 SQLite／PG、就绪依赖及独立安装。
+- [x] 将现有 PG 实现迁出主仓库，交付 open-bazaar 的独立可选插件；收敛主仓库测试到固定机制与关键业务场景，验证独立安装并修订原提交供 review。
+- [x] 将 Server 迁移入口及对应回归迁至 open-bazaar/contrib-server，由同一个 bazaar-contrib-server 包持有迁移与 Server 逻辑入口；移除主仓库成员、来源与测试依赖，验证独立产物并修订同一提交。
+
+Node／Server 业务迁移入口及 SQLite／PG 在独立 wheel／sdist 中验证当前基线；历史升级分别通过两种安装产物执行，
+Node／Server 消费者切换验证仅登记被依赖的迁移插件。公共操作验证批量复制、窗口排序、约束、改表／列及通用触发器。
+SQL 模板在 SQLite 与 PG 的独立 wheel／sdist 安装后完成实际查询、参数顺序、带引号及二进制默认值、
+索引移除重建和双后端切换验收；Blockbuster 检查初始化预加载及查询过程。
 
 ### Task 11：channel／harness 公共接口与登记
 
@@ -1154,6 +1252,8 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
 
 ### Task 15：默认 BCN agent 与替换契约
+
+- [ ] Agent 依赖 Node 业务数据插件；Node 接受 DB 和 NODE_MIGRATIONS，迁移就绪后提供节点数据服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
 
 - [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer 与 builder。
 - [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。

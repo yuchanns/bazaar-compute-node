@@ -1,0 +1,1 @@
+# bazaar-contrib-node-migrations
