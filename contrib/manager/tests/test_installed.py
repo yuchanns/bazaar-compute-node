@@ -90,6 +90,21 @@ def wheels(tmp_path_factory):
             check=True,
             capture_output=True,
         )
+    fixture = path / "carrier"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "carrier", fixture)
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--wheel",
+            "--directory",
+            str(fixture),
+            "--out-dir",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+    )
     for number in ("one", "two"):
         registry = path / "registry" / number
         packages: dict[str, list[str]] = {}

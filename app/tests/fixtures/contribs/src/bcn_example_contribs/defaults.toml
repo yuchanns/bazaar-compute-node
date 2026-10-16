@@ -1,14 +1,17 @@
 version = "5"
 
 [[contribs]]
-contrib = "status"
+[[contribs.enabled]]
+entry = "status"
 
 [[contribs]]
-contrib = "example-writer"
-[contribs.config]
+[[contribs.enabled]]
+entry = "example-writer"
+[contribs.enabled.config]
 path = "packaged.txt"
 
 [[contribs]]
-contrib = "example-added"
-[contribs.config]
+[[contribs.enabled]]
+entry = "example-added"
+[contribs.enabled.config]
 path = "additional.txt"

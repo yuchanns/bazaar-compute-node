@@ -23,7 +23,7 @@ async def test_two_clients_save_and_rebase_after_an_editor_change(
         assert peer is not None
         candidate = {
             "version": "release-2026.11",
-            "contribs": [{"contrib": "status"}],
+            "contribs": [{"enabled": [{"entry": "status"}]}],
         }
         results = await asyncio.gather(
             first.write(candidate, expected_revision=snapshot.revision),
@@ -62,7 +62,7 @@ async def test_competing_creators_keep_the_committed_document_after_reopening(
     async with FileConfigStore(path) as first, FileConfigStore(path) as second:
         results = await asyncio.gather(
             first.write(
-                {"version": "5", "contribs": [{"contrib": "status"}]},
+                {"version": "5", "contribs": [{"enabled": [{"entry": "status"}]}]},
                 expected_revision=None,
             ),
             second.write({"version": "5", "contribs": []}, expected_revision=None),

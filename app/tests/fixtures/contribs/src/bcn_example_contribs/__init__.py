@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Annotated
 lazy import asyncio
 lazy import json
+lazy import sys
 lazy from typing import Any
 
 from bazaar_contrib_config import (
+    CONFIG_PREPARE,
     CONFIG_STORE,
     ConfigCommitUnknown,
     ConfigConflict,
@@ -157,3 +159,35 @@ async def writer_lifespan(ctx: Context, config: DirectoryConfig):
 
 
 writer = Contrib(config=DirectoryConfig, lifespan=writer_lifespan)
+
+
+async def prepare(ctx: Context, _: None) -> None:
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "pip",
+        "check",
+        "--python",
+        sys.executable,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        output, errors = await process.communicate()
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+    report = (output + errors).decode()
+    if process.returncode:
+        raise RuntimeError(report)
+    await asyncio.to_thread(
+        (ctx.accept(DIRECTORY) / "dependencies.txt").write_text, report
+    )
+
+
+preparation = Contrib(
+    config=DirectoryConfig,
+    offers=[DIRECTORY],
+    lifespan=directory_lifespan,
+    listen={CONFIG_PREPARE: prepare},
+)

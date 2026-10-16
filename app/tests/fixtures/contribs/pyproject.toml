@@ -5,6 +5,9 @@ requires-python = ">=3.15"
 dependencies = ["bazaar-compute-node==0.3.0", "aiofiles>=25.1.0", "aiosqlite>=0.20.0"]
 
 [project.entry-points."bazaar_compute_node.contribs"]
+example-command-registry = "bazaar_contrib_invoke:commands"
+example-manager = "bazaar_contrib_manager:manager"
+example-preparation = "bcn_example_contribs:preparation"
 example-config = "bcn_example_contribs:remote"
 example-directory = "bcn_example_contribs:directory"
 example-journal = "bcn_example_contribs:journal"

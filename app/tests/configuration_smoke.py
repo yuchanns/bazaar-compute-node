@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 lazy import json
 lazy import signal
 lazy import tomllib
@@ -20,6 +21,7 @@ from bazaar_contrib_config import (
     ConfigDocument,
     Configuration,
 )
+from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager
 from bazaar_contrib_status import CONTRIB_STATUS, IContribStatus
 from bazaar_core import (
     Blocked,
@@ -47,16 +49,31 @@ async def exercise_server(path: Path) -> None:
     directory = path / "mixed-journals"
     entries = [
         {
-            "contrib": "example-server",
-            "config": {"database": str(path / "server.sqlite"), "port": str(port_file)},
+            "enabled": [
+                {
+                    "entry": "example-server",
+                    "config": {
+                        "database": str(path / "server.sqlite"),
+                        "port": str(port_file),
+                    },
+                }
+            ]
         },
-        {"contrib": "example-node-records", "config": {"name": "node"}},
+        {"enabled": [{"entry": "example-node-records", "config": {"name": "node"}}]},
         {
-            "contrib": "example-node-database",
-            "config": {"path": str(path / "node.sqlite")},
+            "enabled": [
+                {
+                    "entry": "example-node-database",
+                    "config": {"path": str(path / "node.sqlite")},
+                }
+            ]
         },
-        {"contrib": "example-directory", "config": {"path": str(directory)}},
-        {"contrib": "example-journal"},
+        {
+            "enabled": [
+                {"entry": "example-directory", "config": {"path": str(directory)}}
+            ]
+        },
+        {"enabled": [{"entry": "example-journal"}]},
     ]
     payload = {
         "version": "5",
@@ -102,7 +119,9 @@ async def exercise_server(path: Path) -> None:
             payload
             | {
                 "contribs": [
-                    entry for entry in entries if entry["contrib"] != "example-server"
+                    entry
+                    for entry in entries
+                    if entry["enabled"][0]["entry"] != "example-server"
                 ]
             },
             expected_revision=service.snapshot.revision,
@@ -130,7 +149,9 @@ async def exercise_server(path: Path) -> None:
             {
                 "version": "5",
                 "contribs": [
-                    entry for entry in entries if entry["contrib"] == "example-server"
+                    entry
+                    for entry in entries
+                    if entry["enabled"][0]["entry"] == "example-server"
                 ],
             }
         ),
@@ -146,20 +167,28 @@ async def exercise(path: Path) -> None:
     log = path / "info" / "node.jsonl"
     entries = [
         {
-            "contrib": "logging",
-            "config": {
-                "path": str(path / "node.jsonl"),
-                "paths": {
-                    "info": str(log),
-                    "error": str(path / "errors" / "node.jsonl"),
-                },
-                "retention_days": 7,
-                "max_size": "32 KiB",
-            },
+            "enabled": [
+                {
+                    "entry": "logging",
+                    "config": {
+                        "path": str(path / "node.jsonl"),
+                        "paths": {
+                            "info": str(log),
+                            "error": str(path / "errors" / "node.jsonl"),
+                        },
+                        "retention_days": 7,
+                        "max_size": "32 KiB",
+                    },
+                }
+            ]
         },
-        {"contrib": "example-journal"},
-        {"contrib": "status"},
-        {"contrib": "example-directory", "config": {"path": str(directory)}},
+        {"enabled": [{"entry": "example-journal"}]},
+        {"enabled": [{"entry": "status"}]},
+        {
+            "enabled": [
+                {"entry": "example-directory", "config": {"path": str(directory)}}
+            ]
+        },
     ]
     payload = {
         "version": "5",
@@ -201,7 +230,7 @@ async def exercise(path: Path) -> None:
         document = ConfigDocument.model_validate(
             dict(payload)
             | {
-                "contribs": [{"contrib": "example-journal"}],
+                "contribs": [{"enabled": [{"entry": "example-journal"}]}],
                 "agent": [{"id": str(uuid7()), "name": "Aerith"}],
             }
         )
@@ -278,12 +307,12 @@ async def exercise(path: Path) -> None:
     writer = path / "independent.txt"
     broken = dict(payload) | {
         "contribs": [
-            {"contrib": "example-broken"},
-            {"contrib": "example-directory", "config": {"path": []}},
-            {"contrib": "example-journal"},
-            {"contrib": "example-dependent"},
-            {"contrib": "example-writer", "config": {"path": str(writer)}},
-            {"contrib": "status"},
+            {"enabled": [{"entry": "example-broken"}]},
+            {"enabled": [{"entry": "example-directory", "config": {"path": []}}]},
+            {"enabled": [{"entry": "example-journal"}]},
+            {"enabled": [{"entry": "example-dependent"}]},
+            {"enabled": [{"entry": "example-writer", "config": {"path": str(writer)}}]},
+            {"enabled": [{"entry": "status"}]},
         ]
     }
     await asyncio.to_thread(config.write_text, tomli_w.dumps(broken))
@@ -317,14 +346,19 @@ async def exercise(path: Path) -> None:
     assert "released" in await asyncio.to_thread(writer.read_text)
     await asyncio.to_thread(config.unlink)
 
+    managers: list[ContribManager] = []
+
     @asynccontextmanager
     async def observe_configuration(ctx: Context):
         observed["configuration"] = ctx.accept(CONFIGURATION)
+        managers.append(ctx.accept(CONTRIB_MANAGER))
         yield
 
     consumer = ContribEntry(
         name="configuration-consumer",
-        definition=Contrib(accepts=[CONFIGURATION], lifespan=observe_configuration),
+        definition=Contrib(
+            accepts=[CONFIGURATION, CONTRIB_MANAGER], lifespan=observe_configuration
+        ),
     )
     center = ConfigCenter(path / "center.sqlite3")
     port = await center.start()
@@ -343,7 +377,7 @@ async def exercise(path: Path) -> None:
             updates = [
                 {
                     "version": "5",
-                    "contribs": [{"contrib": "status"}],
+                    "contribs": [{"enabled": [{"entry": "status"}]}],
                     "contrib_indexes": [f"https://example.com/{name}.json"],
                 }
                 for name in ("one", "two")
@@ -365,14 +399,30 @@ async def exercise(path: Path) -> None:
             resource = tomllib.loads(resource)
             user = dict(updates[0]) | {
                 "contribs": [
-                    {"contrib": "commands"},
+                    {"enabled": [{"entry": "example-command-registry"}]},
                     {
-                        "contrib": "example-writer",
-                        "config": {"path": str(path / "user-writer.txt")},
+                        "enabled": [
+                            {
+                                "entry": "example-manager",
+                                "config": {"path": str(path / "selected-manager")},
+                            }
+                        ]
                     },
                     {
-                        "contrib": "example-writer",
-                        "config": {"path": str(path / "second-writer.txt")},
+                        "enabled": [
+                            {
+                                "entry": "example-writer",
+                                "config": {"path": str(path / "user-writer.txt")},
+                            }
+                        ]
+                    },
+                    {
+                        "enabled": [
+                            {
+                                "entry": "example-writer",
+                                "config": {"path": str(path / "second-writer.txt")},
+                            }
+                        ]
                     },
                 ]
             }
@@ -399,15 +449,17 @@ async def exercise(path: Path) -> None:
                 imported.payload["contrib_indexes"] == saved.payload["contrib_indexes"]
             )
             selected = {
-                entry["contrib"]: entry.get("config", {})
-                for entry in ConfigDocument.model_validate(imported.payload).model_dump(
-                    mode="json"
-                )["contribs"]
+                entry["entry"]: entry.get("config", {})
+                for package in ConfigDocument.model_validate(
+                    imported.payload
+                ).model_dump(mode="json")["contribs"]
+                for entry in package["enabled"]
             }
             writers = [
                 entry.config["path"]
-                for entry in ConfigDocument.model_validate(imported.payload).contribs
-                if entry.contrib == "example-writer"
+                for package in ConfigDocument.model_validate(imported.payload).contribs
+                for entry in package.enabled
+                if entry.entry == "example-writer"
             ]
             assert str(path / "user-writer.txt") in writers
             assert str(path / "second-writer.txt") in writers
@@ -417,7 +469,7 @@ async def exercise(path: Path) -> None:
                 dict(imported.payload)
                 | {
                     "contribs": [
-                        {"contrib": "status"},
+                        {"enabled": [{"entry": "status"}]},
                         *ConfigDocument.model_validate(imported.payload).model_dump(
                             mode="json"
                         )["contribs"],
@@ -428,10 +480,42 @@ async def exercise(path: Path) -> None:
         await center.close()
         center = ConfigCenter(path / "center.sqlite3")
         options = (f"port={await center.start()}", "key=node-a")
-        async with node(configer="example-config", configer_options=options) as hub:
+        async with (
+            node(configer="example-config", configer_options=options) as hub,
+            hub.enable(Composition(entries=[consumer])),
+        ):
+            assert any(
+                operation.kind == "sync" and operation.phase == "complete"
+                for operation in managers[-1].operations.values()
+            )
             assert any(
                 record.name == "status" and isinstance(record.state, Running)
                 for record in hub.snapshots
+            )
+            service = observed["configuration"]
+            assert isinstance(service, Configuration)
+            assert service.snapshot is not None
+            payload = ConfigDocument.model_validate(
+                service.snapshot.payload
+            ).model_dump(mode="json")
+            payload["contribs"] = [
+                entry
+                for entry in payload["contribs"]
+                if entry["enabled"][0]["entry"] != "example-manager"
+            ] + [
+                {
+                    "enabled": [
+                        {
+                            "entry": "example-preparation",
+                            "config": {"path": str(path / "verification")},
+                        }
+                    ]
+                }
+            ]
+            await service.commit(payload, expected_revision=service.snapshot.revision)
+        async with node(configer="example-config", configer_options=options):
+            assert "compatible" in await asyncio.to_thread(
+                (path / "verification" / "dependencies.txt").read_text
             )
         for name in ("user-writer.txt", "second-writer.txt"):
             assert "released" in await asyncio.to_thread((path / name).read_text)
@@ -527,10 +611,11 @@ async def exercise(path: Path) -> None:
 
 def main() -> None:
     path = Path(sys.argv[1])
-    os.environ["BCN_HOME"] = str(path / "remote")
     logging.getLogger("bazaar_core").addHandler(logging.NullHandler())
-    with blockbuster_ctx():
-        asyncio.run(exercise(path))
+    with TemporaryDirectory(prefix="bcn-config-") as directory:
+        os.environ["BCN_HOME"] = directory
+        with blockbuster_ctx():
+            asyncio.run(exercise(path))
     print("Installed configuration workflow passed")
 
 

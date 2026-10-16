@@ -38,11 +38,18 @@ async def exercise(directory: Path):
             {
                 "version": "5",
                 "contribs": [
-                    {"contrib": "commands"},
-                    {"contrib": native, "config": {"endpoint": endpoint}},
-                    {"contrib": "sidecar"},
-                    {"contrib": "sidecar-controls"},
-                    {"contrib": "sidecar-journal", "config": {"path": str(journal)}},
+                    {"enabled": [{"entry": "commands"}]},
+                    {"enabled": [{"entry": native, "config": {"endpoint": endpoint}}]},
+                    {"enabled": [{"entry": "sidecar"}]},
+                    {"enabled": [{"entry": "sidecar-controls"}]},
+                    {
+                        "enabled": [
+                            {
+                                "entry": "sidecar-journal",
+                                "config": {"path": str(journal)},
+                            }
+                        ]
+                    },
                 ],
             }
         ),

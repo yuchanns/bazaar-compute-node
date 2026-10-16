@@ -46,7 +46,7 @@
 | agent 公共业务 | messages、collaboration、timer-wheel、reminder |
 | provider 公共接口与 agent | channel-builders、harness-builders；agent 组合持有配置，明确构造执行及 provider 实例 |
 
-具体 channel／harness provider 由用户通过 `bcn contrib add <name> --enable` 安装并启用，例如 codex、telegram。
+具体 channel／harness provider 由用户通过 `bcn contrib add <name> --enable ENTRY` 安装并选择入口；单独 `--enable` 启用该包导出的全部入口，例如 codex、telegram。
 启用保存该包所提供组合中的 builder 与运行定义；`bcn agent add` 选择已启用的 provider 并填写实体参数，`bcn run` 按该配置创建实际连接和进程。
 安装与启用分别记录状态，启用配置经模型与服务依赖校验后写入顶层 contribs；provider 的连接／执行参数保存在 agent 条目的 `config.agents[].channel`／`harness`，由所选 provider 模型校验。
 本地添加模块、编辑配置和添加 agent 通过短生命周期管理组合完成，沿用相同配置载体及版本服务。
@@ -60,7 +60,7 @@ Python 模块名由发行名中的连字符改为下划线，例如 `bazaar-cont
 app 通过普通 Python 入口调用 core 的统一运行接口，提供启动输入、退出信号与业务默认资源，消费版本包的 VERSIONS。
 core 作为框架运行内核，由应用直接 import，执行发现、自举装配、校验、本地绑定与完整生命周期；
 配置包以普通加载器接入文档读写与版本服务，具体功能通过 contrib 定义装配。
-运行模块统一登记在 `bazaar_compute_node.contribs`；表中的业务入口名同时是配置使用的 `contrib` 值，配置载体入口由 --configer 选择，版本入口由发行自举组合选择；全部入口在该 group 内唯一。
+运行模块统一登记在 `bazaar_compute_node.contribs`；表中的业务入口名同时是配置使用的 `entry` 值，配置载体入口由 --configer 选择，版本入口由发行自举组合选择；全部入口在该 group 内唯一。
 一个发行包可以提供多个入口，组合声明每个入口的参数及绑定，Hub 按条目启动实例。业务页面入口在第 14 阶段接入。
 跨阶段的发行包按阶段增加入口与依赖：渠道连接在第 8 阶段、编辑器在第 14 阶段，
 server 两端及私有 HTTP 在第 11 阶段、多节点业务在第 12 阶段、访问保护与业务 API 在第 13 阶段、页面在第 14 阶段。每阶段的 wheel 只登记已交付入口与所需依赖；
@@ -161,10 +161,10 @@ app 直接安装 config-filesystem 和 config-versions，后者以 VERSIONS 保�
 Reminder、agent 及节点管理。agent 组合拥有 `config.agents`，明确构造执行及 provider 实例；
 用户选装 provider 后，启用该包组合中的 builder／运行定义，具体 channel／harness 由 agent 的 provider 选择及 builder 登记关系匹配创建。
 服务端 API 与页面包作为可选组合安装，普通节点按需安装 starlink 包，配置目标 server 并启用 starlink；默认节点组合不启用远端连接。
-`bazaar_contrib_server/defaults.toml` 提供节点主配置中的 server 启用条目；server 自己的组合资源包含独立配置载体、
+用户在节点主配置中启用包导出的 server 入口；server 自己的组合资源包含独立配置载体、
 状态查询、日志、调用、storage、server-sqlite、database、schema、timer、http、server-api、fleet、history、contacts、access。
-bazaar_contrib_starlink/defaults.toml 提供 starlink 条目及连接参数；事件上报与远端请求分别选择，按启用能力声明功能服务依赖。
-`bazaar_contrib_web/defaults.toml` 提供节点主配置中的 web 启用条目；web 在 server 子组合中启用 gui、业务页面、渠道编辑器与 bazaar。
+用户选择包导出的 starlink 入口并填写连接参数；事件上报与远端请求分别选择，按启用能力声明功能服务依赖。
+用户在节点主配置中启用包导出的 web 入口；web 在 server 子组合中启用 gui、业务页面、渠道编辑器与 bazaar。
 纯 API 或 web 部署可使用空的 `agent.config.agents`；新增 agent 后，组合展开其实体，宿主为内部 AGENT 定义及选定 provider 创建所属实例。
 
 首次创建节点配置使用 app 提供的 bazaar_compute_node/defaults.toml 资源，由配置包普通加载器经 core 校验后通过所选 CONFIG_STORE 条件创建 version="5"、storage、sqlite、database，明确 database.config.backend="sqlite"，
@@ -207,12 +207,13 @@ agent 的内部执行任务通过这些服务等待所选实例就绪，再消�
 ### 默认 agent 行为与替换
 
 `bazaar-contrib-agent` 的公开 `agent` 入口拥有完整配置模型、实体装配、管理命令及默认 BCN agent 行为。
-配置统一保存在该入口的 `contribs.config`，包含 `agents` 列表及各 agent 的 channel／harness 选择、参数和凭据引用：
+配置统一保存在该入口的 `contribs[].enabled[].config`，包含 `agents` 列表及各 agent 的 channel／harness 选择、参数和凭据引用：
 
 ```toml
 [[contribs]]
-contrib = "agent"
-[contribs.config]
+[[contribs.enabled]]
+entry = "agent"
+[contribs.enabled.config]
 agents = []
 ```
 
@@ -385,7 +386,7 @@ HTTP、连接与 agent 的持续执行由所属模块管理后台任务或子进
 
 1. 普通节点安装宿主，首次生成默认配置，执行 bcn run；按配置创建 agent。
 2. 需要 API 的节点从索引安装 bazaar-contrib-server，其发行依赖安装 HTTP、独立配置及存储和多节点业务包。
-3. 用户通过 bazaar_contrib_server/defaults.toml 在节点主配置启用 server；server 启动后从自己的配置载体读取 BCS 监听、访问和存储设置。
+3. 用户在节点主配置启用包导出的 server 入口；server 启动后从自己的配置载体读取 BCS 监听、访问和存储设置。
 4. 使用相同 bcn run 启动；agent 列表为空时运行纯 API，有 agent 配置时同时提供 API 与执行能力。
 5. 需要页面时安装 bazaar-contrib-web，在节点主配置启用 web；web 在 server 子组合中装配 GUI 和页面，保存后在下一次启动生效。
 6. 其他节点按需安装 bazaar-contrib-starlink，填写目标 server 地址与 token 引用后启用 starlink，分别选择事件上报及远端请求能力。
@@ -394,8 +395,7 @@ HTTP、连接与 agent 的持续执行由所属模块管理后台任务或子进
 默认资源位置继续为 ~/.bcs/config.toml、~/.bcs/bcs.sqlite3、~/.bcs/session.key；
 原 BCS 自定义配置位置由 server 的 config_options.path 保留，数据库和密钥继续按原数据目录解析。
 
-组合导入由模块管理服务执行普通 TOML 合并和候选配置校验，包资源来自已安装发行产物。
-管理列表展示 wheel 中携带的 defaults.toml 资源，用户选择导入；宿主只依据所选资源读取配置。
+模块管理服务从已安装发行元数据展示入口及参数模型，用户选择后提交完整候选配置并校验。
 配置资源可以用于新建独立配置，也可以合并已有配置；每个宿主进程拥有独立服务实例，各组合管理自己的本地绑定和生命周期。
 包依赖图交给 uv，服务依赖图交给 ContribHub，安装状态、保存配置和实际运行分别展示。
 

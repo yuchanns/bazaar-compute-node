@@ -5,12 +5,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from bazaar_contrib_config_filesystem import filesystem as carrier
 from bazaar_core import Context, Contrib, ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 lazy import aiofiles
 
-__all__ = ["carrier", "consumer", "file"]
+__all__ = ["consumer", "file"]
 
 FILE = ServiceKey[Path]("example.file")
 

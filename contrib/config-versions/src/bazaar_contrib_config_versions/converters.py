@@ -17,6 +17,7 @@ lazy from bazaar_contrib_config import (
     ConfigConverter,
     ConfigDocument,
     ConfigFormatError,
+    ContribPackage,
     EnabledContrib,
     FieldChange,
     PackageRequirement,
@@ -62,14 +63,17 @@ class _V4(BaseModel):
 def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     old = _V4.model_validate(payload)
     node = old.node
-    entries: dict[str, EnabledContrib] = {}
+    entries: dict[str, dict[str, EnabledContrib]] = {}
     packages: dict[str, PackageRequirement] = {}
     changes: list[FieldChange] = []
 
     def add(name: str, package: str, config: dict[str, Any] | None = None) -> None:
-        entries[name] = EnabledContrib(contrib=name, config=config or {})
         package = "bazaar-contrib-" + package
-        packages[package] = PackageRequirement(package=package)
+        requirement = PackageRequirement(package=package)
+        entries.setdefault(package, {})[name] = EnabledContrib(
+            entry=name, config=config or {}
+        )
+        packages[package] = requirement
 
     add("status", "status")
     add("storage", "storage")
@@ -80,10 +84,12 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     changes.extend(
         [
             FieldChange(
-                source="node.storage", target="contribs[database].config.backend"
+                source="node.storage",
+                target="contribs[bazaar-contrib-storage].enabled[database].config.backend",
             ),
             FieldChange(
-                source="node.database_name", target="contribs[sqlite].config.path"
+                source="node.database_name",
+                target="contribs[bazaar-contrib-sqlite].enabled[sqlite].config.path",
             ),
         ]
     )
@@ -91,8 +97,14 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         add("logging", "logging", dict(node.logging))
         changes.extend(
             [
-                FieldChange(source="node.logging", target="contribs[logging].config"),
-                FieldChange(source="node.audit", target="contribs[logging]"),
+                FieldChange(
+                    source="node.logging",
+                    target="contribs[bazaar-contrib-logging].enabled[logging].config",
+                ),
+                FieldChange(
+                    source="node.audit",
+                    target="contribs[bazaar-contrib-logging].enabled[logging]",
+                ),
             ]
         )
     add("commands", "invoke")
@@ -109,11 +121,12 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     changes.extend(
         [
             FieldChange(
-                source="node.endpoint", target=f"contribs[{transport}].config.endpoint"
+                source="node.endpoint",
+                target=f"contribs[bazaar-contrib-{transport}].enabled[{transport}].config.endpoint",
             ),
             FieldChange(
                 source="node.version_check",
-                target="contribs[node-management].config.version_check",
+                target="contribs[bazaar-contrib-node-management].enabled[node-management].config.version_check",
             ),
         ]
     )
@@ -145,7 +158,16 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
                 add(provider.kind + "-builder", supported[provider.kind])
                 add(provider.kind, supported[provider.kind])
         changes.append(FieldChange(source=f"agent[{index}]", target=f"agent[{index}]"))
-    document = ConfigDocument(contribs=tuple(entries.values()), agent=old.agent)
+    document = ConfigDocument(
+        contribs=tuple(
+            ContribPackage(
+                package=package + packages[package].version,
+                enabled=tuple(values.values()),
+            )
+            for package, values in entries.items()
+        ),
+        agent=old.agent,
+    )
     return ConfigCandidate(
         payload=document.model_dump(mode="json", exclude_none=True),
         changes=tuple(changes),
