@@ -21,6 +21,7 @@ lazy from bazaar_core import (
     Context,
     Contrib,
     ContribEntry,
+    ContribHub,
     Stopping,
 )
 
@@ -141,43 +142,59 @@ class Configuration:
             ) from error
 
     async def load(self) -> Candidate:
-        """Read configuration, save defaults or a version migration, and select entries."""
+        """Read and save the document, validating the caller's initial composition."""
         snapshot = await self.store.read()
         payload = snapshot.payload if snapshot is not None else self.defaults
-        candidate, composition = await self.prepare(payload)
-        if self.start is not None and snapshot is not None:
-            self.snapshot, self.candidate = snapshot, candidate
-            return await self._loaded(candidate, composition)
-        if (
-            snapshot is not None
-            and payload.get("version") == candidate.payload["version"]
-        ):
-            self.snapshot, self.candidate = snapshot, candidate
-            return await self._loaded(candidate, composition)
-        self.check(composition)
-        snapshot = await self._write(candidate, snapshot.revision if snapshot else None)
-        self.snapshot, self.candidate = snapshot, candidate
-        return await self._loaded(candidate, composition)
-
-    async def _loaded(
-        self, candidate: ConfigCandidate, composition: Candidate
-    ) -> Candidate:
         if self.start is not None:
+            candidate = await asyncio.to_thread(self.converter.convert, payload)
             selected = await asyncio.to_thread(
                 self.start, ConfigDocument.model_validate(candidate.payload)
             )
             composition = self.ctx.validate(selected)
-            self.check(composition)
             self._startup = tuple(
                 entry
                 for entry in selected.entries
                 if selected.roots is not None and entry.name in selected.roots
             )
+        else:
+            candidate, composition = await self.prepare(payload)
+        if (
+            self.start is not None
+            or snapshot is None
+            or payload.get("version") != candidate.payload["version"]
+        ):
+            self.check(composition)
+        if snapshot is None or payload.get("version") != candidate.payload["version"]:
+            snapshot = await self._write(
+                candidate, snapshot.revision if snapshot else None
+            )
+        self.snapshot, self.candidate = snapshot, candidate
         self._composition = composition
         return composition
 
+    async def select(
+        self, start: Callable[[ConfigDocument], Composition] | None = None
+    ) -> None:
+        """Switch from preparation to the caller's selected saved composition."""
+        async with self._lock:
+            candidate, snapshot = await self.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            composition = await asyncio.to_thread(start or self.build, document)
+            preview = self.ctx.validate(composition, replacing=self._composition)
+            if start is not None:
+                self.check(preview)
+            await self.ctx.update(composition)
+            self.snapshot, self.candidate = snapshot, candidate
+            self._composition = preview
+            self.start = start
+            self._startup = tuple(
+                entry
+                for entry in composition.entries
+                if composition.roots is not None and entry.name in composition.roots
+            )
+
     @staticmethod
-    def check(composition: Candidate) -> None:
+    def check(composition: Candidate | ContribHub) -> None:
         errors = [
             f"{record.location}: {record.name}: {record.state.error}"
             for record in composition.snapshots
@@ -288,15 +305,36 @@ class Configuration:
         if snapshot is None:
             return await self.commit(payload, expected_revision=None)
         current = ConfigDocument.model_validate(snapshot.payload)
-        entries = list(current.contribs)
-        selected = {entry.contrib for entry in entries}
+        packages = list(current.contribs)
+        selected = {entry.entry for package in packages for entry in package.enabled}
         defaults = ConfigDocument.model_validate(self.defaults)
-        shared = {entry.contrib for entry in defaults.contribs}
-        for entry in document.contribs:
-            if entry.contrib not in selected and entry.contrib not in shared:
-                entries.append(entry)
-                selected.add(entry.contrib)
-        candidate = current.model_copy(update={"contribs": tuple(entries)})
+        shared = {
+            entry.entry for package in defaults.contribs for entry in package.enabled
+        }
+        for package in document.contribs:
+            entries = tuple(
+                entry
+                for entry in package.enabled
+                if entry.entry not in selected and entry.entry not in shared
+            )
+            if package.enabled and not entries:
+                continue
+            index = next(
+                (
+                    index
+                    for index, item in enumerate(packages)
+                    if package.package and item.distribution == package.distribution
+                ),
+                None,
+            )
+            if index is None:
+                packages.append(package.model_copy(update={"enabled": entries}))
+            else:
+                packages[index] = packages[index].model_copy(
+                    update={"enabled": (*packages[index].enabled, *entries)}
+                )
+            selected.update(entry.entry for entry in entries)
+        candidate = current.model_copy(update={"contribs": tuple(packages)})
         return await self.commit(
             candidate.model_dump(mode="json", exclude_none=True),
             expected_revision=snapshot.revision,

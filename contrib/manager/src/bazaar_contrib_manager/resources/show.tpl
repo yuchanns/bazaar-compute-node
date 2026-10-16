@@ -2,9 +2,6 @@ Name: {{ package.package }}
 Version: {{ package.version }}
 Summary: {{ package.summary }}
 Requires: {{ package.requirements | join(", ") }}
-{% if package.defaults %}
-Default contribs: {{ package.defaults.get("contribs", ()) | map(attribute="contrib") | join(", ") }}
-{% endif %}
 {% for entry in entries %}
 
 Contrib: {{ entry.name }}

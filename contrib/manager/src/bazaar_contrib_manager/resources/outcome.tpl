@@ -23,7 +23,11 @@ Added contrib index: {{ details.location }}
 {% elif result.kind == "index-remove" and details.get("location") %}
 Removed contrib index: {{ details.location }}
 {% elif result.kind == "add" and details.get("enable") %}
+{% if details.get("entry") %}
+Enabled contrib: {{ details.entry }}
+{% else %}
 Enabled contribs from {{ details.name }}
+{% endif %}
 {% elif result.kind == "enable" and details.get("entry") %}
 Enabled contrib: {{ details.entry }}
 {% elif result.kind == "enable" and details.get("name") %}

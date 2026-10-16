@@ -39,7 +39,7 @@ async def preview(request: dict[str, Any]) -> ConfigurationPreview:
     entries = await asyncio.to_thread(
         load,
         [
-            ContribSpec(contrib=entry.contrib, config=entry.config)
+            ContribSpec(contrib=entry.entry, config=entry.config)
             for entry in environment.entries
         ],
     )

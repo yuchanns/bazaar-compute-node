@@ -2,6 +2,7 @@
 
 lazy from .contracts import (
     CONFIG_CURRENT,
+    CONFIG_PREPARE,
     CONFIG_STORE,
     CONFIG_V1,
     CONFIG_V2,
@@ -18,6 +19,7 @@ lazy from .contracts import (
     ConfigSnapshot,
     ConfigStore,
     ConfigUnavailable,
+    ContribPackage,
     EnabledContrib,
     FieldChange,
     PackageRequirement,
@@ -35,6 +37,7 @@ lazy from .loading import (
 __all__ = [
     "CONFIGURATION",
     "CONFIG_CURRENT",
+    "CONFIG_PREPARE",
     "CONFIG_STORE",
     "CONFIG_V1",
     "CONFIG_V2",
@@ -55,6 +58,7 @@ __all__ = [
     "ConfigurationApplication",
     "ConfigurationEnvironment",
     "ConfigurationPreview",
+    "ContribPackage",
     "EnabledContrib",
     "FieldChange",
     "PackageRequirement",
