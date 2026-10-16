@@ -13,7 +13,13 @@ lazy from pathlib import Path
 lazy from typing import Any
 lazy from uuid import UUID
 
-from bazaar_contrib_config import CONFIGURATION, ConfigDocument, EnabledContrib
+from bazaar_contrib_config import (
+    CONFIG_PREPARE,
+    CONFIGURATION,
+    ConfigDocument,
+    ContribPackage,
+    EnabledContrib,
+)
 from bazaar_contrib_invoke import COMMANDS
 from bazaar_core import CURRENT_CONTEXT, Contrib, ServiceKey
 from filelock import AsyncFileLock
@@ -23,10 +29,10 @@ lazy from packaging.utils import canonicalize_name
 
 from .catalog import CONTRIB_CATALOG, ContribCatalog
 from .contracts import (
+    EnvironmentPlan,
     InstalledPackage,
     ManagementError,
     ManagerConfig,
-    Manifest,
     Operation,
     Package,
 )
@@ -171,47 +177,63 @@ class ContribManager:
         contrib: str | None,
         config: dict[str, Any] | None,
     ) -> None:
-        if contrib is None and package.defaults is not None:
-            await self._record(id, phase="saving")
-            snapshot = await self.configuration.import_defaults(package.defaults)
-            await self._record(id, config_saved=True, phase="applying")
-            result = await self.configuration.apply(snapshot)
-            await self._record(
-                id,
-                applied=result.applied,
-                pending_restart=self.operations[id].pending_restart
-                or result.pending_restart,
-            )
-            if result.error:
-                raise ManagementError(result.error)
-            return
-        if contrib is None:
-            if len(package.entries) != 1:
-                raise ManagementError(
-                    "select an entry: "
-                    + ", ".join(entry.name for entry in package.entries)
-                )
-            contrib = package.entries[0].name
-        if not any(entry.name == contrib for entry in package.entries):
-            raise ManagementError(f"{package.package} does not provide {contrib!r}")
         candidate, snapshot = await self.configuration.read()
         document = ConfigDocument.model_validate(candidate.payload)
-        entries = list(document.contribs)
-        matching = [
-            index for index, entry in enumerate(entries) if entry.contrib == contrib
-        ]
-        if len(matching) > 1:
-            raise ManagementError("select a configured entry by its list position")
-        if matching:
-            index = matching[0]
-            entries[index] = EnabledContrib(
-                contrib=contrib, config=merge(entries[index].config, config or {})
+        packages = list(document.contribs)
+        index = next(
+            (
+                index
+                for index, item in enumerate(packages)
+                if item.distribution == package.package
+            ),
+            None,
+        )
+        if index is None:
+            sources = {
+                entry.source
+                for entry in await self.catalog.entries()
+                if entry.package == package.package
+            }
+            if len(sources) > 1:
+                raise ManagementError(
+                    f"select a source with contrib add for {package.package}"
+                )
+            declaration = ContribPackage(
+                package=f"{package.package}=={package.version}",
+                source=next(iter(sources), self.packages.source),
             )
         else:
-            entries.append(EnabledContrib(contrib=contrib, config=config or {}))
+            declaration = packages[index]
+        if contrib is not None and not any(
+            entry.name == contrib for entry in package.entries
+        ):
+            raise ManagementError(f"{package.package} does not provide {contrib!r}")
+        entries = list(declaration.enabled)
+        for entry in package.entries:
+            if contrib is not None and entry.name != contrib:
+                continue
+            matching = [
+                position
+                for position, configured in enumerate(entries)
+                if configured.entry == entry.name
+            ]
+            if len(matching) > 1:
+                raise ManagementError("select a configured entry by its list position")
+            if matching:
+                position = matching[0]
+                entries[position] = entries[position].model_copy(
+                    update={"config": merge(entries[position].config, config or {})}
+                )
+            else:
+                entries.append(EnabledContrib(entry=entry.name, config=config or {}))
+        declaration = declaration.model_copy(update={"enabled": tuple(entries)})
+        if index is None:
+            packages.append(declaration)
+        else:
+            packages[index] = declaration
         await self._save(
             id,
-            document.model_copy(update={"contribs": tuple(entries)}).model_dump(
+            document.model_copy(update={"contribs": tuple(packages)}).model_dump(
                 mode="json"
             ),
             snapshot.revision if snapshot is not None else None,
@@ -233,16 +255,25 @@ class ContribManager:
         async def action(id: UUID) -> None:
             candidate, snapshot = await self.configuration.read()
             document = ConfigDocument.model_validate(candidate.payload)
-            entries = list(document.contribs)
-            if index < 0 or index >= len(entries):
+            packages = list(document.contribs)
+            positions = [
+                (package, position)
+                for package, item in enumerate(packages)
+                for position in range(len(item.enabled))
+            ]
+            if index < 0 or index >= len(positions):
                 raise ManagementError("configured entry position is out of range")
-            entries[index] = EnabledContrib(
-                contrib=entries[index].contrib,
-                config=merge(entries[index].config, config),
+            package, position = positions[index]
+            entries = list(packages[package].enabled)
+            entries[position] = entries[position].model_copy(
+                update={"config": merge(entries[position].config, config)}
+            )
+            packages[package] = packages[package].model_copy(
+                update={"enabled": tuple(entries)}
             )
             await self._save(
                 id,
-                document.model_copy(update={"contribs": tuple(entries)}).model_dump(
+                document.model_copy(update={"contribs": tuple(packages)}).model_dump(
                     mode="json"
                 ),
                 snapshot.revision if snapshot is not None else None,
@@ -254,13 +285,26 @@ class ContribManager:
         async def action(id: UUID) -> None:
             candidate, snapshot = await self.configuration.read()
             document = ConfigDocument.model_validate(candidate.payload)
-            entries = list(document.contribs)
-            if index < 0 or index >= len(entries):
+            packages = list(document.contribs)
+            positions = [
+                (package, position)
+                for package, item in enumerate(packages)
+                for position in range(len(item.enabled))
+            ]
+            if index < 0 or index >= len(positions):
                 raise ManagementError("configured entry position is out of range")
-            del entries[index]
+            package, position = positions[index]
+            entries = list(packages[package].enabled)
+            entries.pop(position)
+            if packages[package].package or entries:
+                packages[package] = packages[package].model_copy(
+                    update={"enabled": tuple(entries)}
+                )
+            else:
+                packages.pop(package)
             await self._save(
                 id,
-                document.model_copy(update={"contribs": tuple(entries)}).model_dump(
+                document.model_copy(update={"contribs": tuple(packages)}).model_dump(
                     mode="json"
                 ),
                 snapshot.revision if snapshot is not None else None,
@@ -290,19 +334,38 @@ class ContribManager:
     async def _install(
         self,
         id: UUID,
-        manifest: Manifest,
-        previous: Manifest,
+        plan: EnvironmentPlan,
+        previous: EnvironmentPlan,
+        document: ConfigDocument,
         *,
         removed: str | None = None,
+        pin: str | None = None,
     ) -> None:
         path = self.packages.path / "operations" / str(id)
         await self._record(id, phase="resolving")
-        lock = await self.packages.resolve(manifest, path)
+        lock = await self.packages.resolve(plan, path)
         await self._record(id, phase="preflight")
         python = await self.packages.stage(lock)
-        preview = await self.configuration.preview(python)
-        requirements = {package.package: package for package in manifest.packages}
         installed = await self.packages.inspect(python)
+        if pin is not None:
+            version = next(
+                package.version
+                for package in installed.packages
+                if package.package == pin
+            )
+            document = document.model_copy(
+                update={
+                    "contribs": tuple(
+                        entry.model_copy(update={"package": f"{pin}=={version}"})
+                        if entry.distribution == pin
+                        else entry
+                        for entry in document.contribs
+                    )
+                }
+            )
+        preview = await self.configuration.preview(
+            python, payload=document.model_dump(mode="json")
+        )
         names = {package.package for package in installed.packages}
         missing = [
             package
@@ -310,15 +373,25 @@ class ContribManager:
             if str(canonicalize_name(package.package)) not in names
         ]
         if missing:
-            for package in missing:
-                requirements[package.package] = Package(**package.model_dump())
-            manifest = manifest.model_copy(
-                update={"packages": tuple(requirements.values())}
+            entries = [
+                *document.contribs,
+                *(
+                    ContribPackage(
+                        package=package.package + package.version, source=package.source
+                    )
+                    for package in missing
+                ),
+            ]
+            document = document.model_copy(update={"contribs": tuple(entries)})
+            plan = plan.model_copy(
+                update={"packages": tuple(entry for entry in entries if entry.package)}
             )
             await self._record(id, phase="resolving")
-            lock = await self.packages.resolve(manifest, path / "migration")
+            lock = await self.packages.resolve(plan, path / "migration")
             python = await self.packages.stage(lock)
-            preview = await self.configuration.preview(python)
+            preview = await self.configuration.preview(
+                python, payload=document.model_dump(mode="json")
+            )
         if preview.error:
             raise ManagementError(preview.error)
         if removed is not None:
@@ -338,7 +411,7 @@ class ContribManager:
             write,
             recovery,
             {
-                "manifest": previous.model_dump(mode="json"),
+                "requirements": previous.model_dump(mode="json"),
                 "environment": before.model_dump(mode="json"),
             },
         )
@@ -356,13 +429,9 @@ class ContribManager:
             instruction = (
                 f"reinstall the previous lock at {path / 'before.pylock.toml'}"
             )
-        await self._record(
-            id,
-            phase="installing",
-            recovery=instruction,
-        )
+        await self._record(id, phase="installing", recovery=instruction)
         try:
-            await self.packages.install(manifest, lock)
+            await self.packages.install(plan, lock)
         except Exception:
             after = await self.packages.inspect()
             await self._record(
@@ -383,41 +452,35 @@ class ContribManager:
                 "installed environment differs from the candidate: "
                 + ", ".join(mismatched)
             )
-        sources = {
-            package.package: package.source
-            for package in (previous.host, *previous.packages)
-        }
-        changed = any(
-            versions.get(package.package) != package.version
-            for package in before.packages
-        ) or any(
-            package.package in sources and sources[package.package] != package.source
-            for package in (manifest.host, *manifest.packages)
-        )
         await self._record(
             id,
             installed=True,
-            environment_changed=before != installed or changed,
-            pending_restart=changed,
-            version=versions.get(self.operations[id].package or manifest.host.package),
+            environment_changed=before != installed,
+            pending_restart=before != installed,
+            version=versions.get(self.operations[id].package or plan.host.package),
         )
-        manifest = manifest.model_copy(update={"installed": versions})
         await asyncio.to_thread(
             shutil.copyfile, lock, self.packages.path / "pylock.toml"
-        )
-        await asyncio.to_thread(
-            write,
-            self.packages.path / "manifest.json",
-            manifest.model_dump(mode="json"),
-        )
-        await self._record(
-            id,
-            recovery=None,
         )
         if current is None or current.payload != preview.candidate.payload:
             await self._record(id, phase="saving")
             await self.configuration.commit_preview(preview)
-            await self._record(id, config_saved=True, pending_restart=True)
+            await self._record(id, config_saved=True)
+        await self._record(id, recovery=None)
+
+    async def sync(self, *, only_missing: bool = False) -> Operation:
+        """Install the configured environment; startup can skip an already satisfied graph."""
+
+        async def action(id: UUID) -> None:
+            candidate, _ = await self.configuration.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            plan = await self.packages.plan(document)
+            if only_missing and await self.packages.satisfied(plan):
+                return
+            await self.packages.initialize()
+            await self._install(id, plan, plan, document)
+
+        return await self._submit("sync", action)
 
     async def add(
         self,
@@ -429,15 +492,38 @@ class ContribManager:
     ) -> Operation:
         async def action(id: UUID) -> None:
             await self.packages.initialize()
-            manifest = await self.packages.manifest(await self.catalog.entries())
-            requirements = {item.package: item for item in manifest.packages}
-            if package.package == manifest.host.package:
+            candidate, _ = await self.configuration.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            plan = await self.packages.plan(document)
+            if package.package == plan.host.package:
                 raise ManagementError("use upgrade to change the node distribution")
-            requirements[package.package] = package
+            declaration = ContribPackage(
+                package=package.package + package.version, source=package.source
+            )
+            entries = [
+                entry.model_copy(
+                    update={
+                        "package": declaration.package,
+                        "source": declaration.source,
+                    }
+                )
+                if entry.distribution == package.package
+                else entry
+                for entry in document.contribs
+            ]
+            if not any(entry.distribution == package.package for entry in entries):
+                entries.append(declaration)
+            document = document.model_copy(update={"contribs": tuple(entries)})
             await self._install(
                 id,
-                manifest.model_copy(update={"packages": tuple(requirements.values())}),
-                manifest,
+                plan.model_copy(
+                    update={
+                        "packages": tuple(entry for entry in entries if entry.package)
+                    }
+                ),
+                plan,
+                document,
+                pin=package.package if not package.version else None,
             )
             if enable:
                 await self._enable(
@@ -451,18 +537,42 @@ class ContribManager:
 
         async def action(id: UUID) -> None:
             await self.packages.initialize()
-            manifest = await self.packages.manifest(await self.catalog.entries())
-            if not any(item.package == package for item in manifest.packages):
+            candidate, _ = await self.configuration.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            plan = await self.packages.plan(document)
+            declarations = [
+                entry for entry in document.contribs if entry.distribution == package
+            ]
+            if not declarations:
                 raise ManagementError(
-                    "package is part of the node or has no recorded extra requirement"
+                    f"Cannot uninstall {package!r}: it is not listed in the contrib "
+                    "configuration.\n\nRun 'bcn contrib configured' to see the packages "
+                    "that 'bcn contrib remove' can manage."
                 )
-            requirements = tuple(
-                item for item in manifest.packages if item.package != package
+            contribs = ", ".join(
+                entry.entry for package in declarations for entry in package.enabled
             )
+            if contribs:
+                raise ManagementError(
+                    f"Cannot uninstall {package!r} while these contribs remain in "
+                    f"the configuration: {contribs}.\n\n"
+                    "Run 'bcn contrib configured' to find their indexes, disable "
+                    "each with 'bcn contrib disable INDEX', then retry "
+                    f"'bcn contrib remove {package}'."
+                )
+            entries = tuple(
+                entry for entry in document.contribs if entry.distribution != package
+            )
+            document = document.model_copy(update={"contribs": entries})
             await self._install(
                 id,
-                manifest.model_copy(update={"packages": requirements}),
-                manifest,
+                plan.model_copy(
+                    update={
+                        "packages": tuple(entry for entry in entries if entry.package)
+                    }
+                ),
+                plan,
+                document,
                 removed=package,
             )
 
@@ -471,14 +581,16 @@ class ContribManager:
     async def upgrade(self, version: str) -> Operation:
         async def action(id: UUID) -> None:
             await self.packages.initialize()
-            manifest = await self.packages.manifest(await self.catalog.entries())
+            candidate, _ = await self.configuration.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            plan = await self.packages.plan(document)
             host = Package(
-                package=manifest.host.package,
-                source=manifest.host.source,
+                package=plan.host.package,
+                source=plan.host.source,
                 version=f"=={version}",
             )
             await self._install(
-                id, manifest.model_copy(update={"host": host}), manifest
+                id, plan.model_copy(update={"host": host}), plan, document
             )
             await self._record(id, pending_restart=True)
 
@@ -505,6 +617,7 @@ async def lifespan(ctx: Context, config: ManagerConfig):
         service = ContribManager(configuration, catalog, packages, tasks, ctx)
         ctx.offer(CONTRIB_CATALOG, catalog)
         ctx.offer(CONTRIB_MANAGER, service)
+
         command = await asyncio.to_thread(create_commands, service)
         with ctx.accept(COMMANDS).register(command):
             try:
@@ -513,9 +626,16 @@ async def lifespan(ctx: Context, config: ManagerConfig):
                 service.closed = True
 
 
+async def prepare(ctx: Context, _: None) -> None:
+    result = await ctx.accept(CONTRIB_MANAGER).sync(only_missing=True)
+    if result.error:
+        raise ManagementError(result.error)
+
+
 manager = Contrib(
     config=ManagerConfig,
     accepts=[CONFIGURATION, COMMANDS],
     offers=[CONTRIB_CATALOG, CONTRIB_MANAGER],
+    listen={CONFIG_PREPARE: prepare},
     lifespan=lifespan,
 )

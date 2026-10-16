@@ -3,16 +3,36 @@ contrib_indexes = []
 agent = []
 
 [[contribs]]
-contrib = "commands"
+package = "bazaar-contrib-invoke~=0.3.0"
+[[contribs.enabled]]
+entry = "commands"
 
 [[contribs]]
-contrib = "status"
+package = "bazaar-contrib-status~=0.3.0"
+[[contribs.enabled]]
+entry = "status"
 
 [[contribs]]
-contrib = "contrib-manager"
+package = "bazaar-contrib-manager~=0.3.0"
+[[contribs.enabled]]
+entry = "contrib-manager"
 
 [[contribs]]
-contrib = "logging"
+package = "bazaar-contrib-logging~=0.3.0"
+[[contribs.enabled]]
+entry = "logging"
 
 [[contribs]]
-contrib = "sidecar"
+package = "bazaar-contrib-sidecar~=0.3.0"
+[[contribs.enabled]]
+entry = "sidecar"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-unix~=0.3.0; sys_platform != 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-unix"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-windows~=0.3.0; sys_platform == 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-windows"

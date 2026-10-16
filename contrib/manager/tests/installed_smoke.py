@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import tomllib
 from contextlib import asynccontextmanager
 from functools import partial
+from importlib.resources import files
 from pathlib import Path
 lazy from typing import Any
 lazy from uuid import uuid4
 
 from bazaar_compute_node import run
 from bazaar_compute_node.boot import bootstrap, node, select
+from bazaar_contrib_config import ConfigDocument
+from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_invoke import COMMANDS
 from bazaar_core import Composition, Context, Contrib, ContribEntry
 from blockbuster import blockbuster_ctx
 
-from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation
+from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation, Package
 
 
 async def invoke(options: dict[str, Any], action) -> Any:
-    entries, loader = await asyncio.to_thread(
-        bootstrap, start=partial(select, roots=("contrib-manager",)), **options
-    )
     selected: list[ContribManager] = []
 
     @asynccontextmanager
@@ -32,7 +34,7 @@ async def invoke(options: dict[str, Any], action) -> Any:
         yield
 
     async with (
-        run(entries, loader) as hub,
+        node(start=partial(select, roots=("contrib-manager",)), **options) as hub,
         hub.enable(
             Composition(
                 entries=[
@@ -52,6 +54,21 @@ async def invoke(options: dict[str, Any], action) -> Any:
 async def exercise(path: Path, source: str, other_source: str) -> None:
     config = path / "config.toml"
     options: dict[str, Any] = {"configer_options": (str(config),)}
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
+    )
+    payload["contrib_indexes"] = [str(path / ".bcn" / "contrib" / "catalog.json")]
+    manager = next(
+        entry
+        for package in payload["contribs"]
+        for entry in package["enabled"]
+        if entry["entry"] == "contrib-manager"
+    )
+    manager["config"] = {"host_source": source}
+    async with FileConfigStore(config) as store:
+        await store.write(payload, expected_revision=None)
     results: list[Operation] = []
 
     async def checked(action) -> Any:
@@ -83,8 +100,10 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     current = candidate.payload
     index = next(
         i
-        for i, entry in enumerate(current["contribs"])
-        if entry["contrib"] == "contrib-manager"
+        for i, entry in enumerate(
+            entry for package in current["contribs"] for entry in package["enabled"]
+        )
+        if entry["entry"] == "contrib-manager"
     )
     await checked(lambda manager: manager.edit(index, {"host_source": source}))
     local = path / "private.json"
@@ -133,15 +152,18 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     await checked(lambda manager: manager.index(str(local), remove=True))
 
     async def install(manager: ContribManager):
-        package = await manager.catalog.select(
-            "example", source=source, version=">=0.1,<0.2"
-        )
+        package = await manager.catalog.select("example", source=source)
         return await manager.add(package)
 
     added = await checked(install)
     assert added.installed and added.pending_restart
     detail = await checked(lambda manager: manager.detail("example"))
     assert any(entry.config_schema for entry in detail.entries)
+    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    assert any(
+        package.get("package") == f"bazaar-contrib-example=={detail.version}"
+        for package in candidate.payload["contribs"]
+    )
     for arguments, value in (
         (("list",), detail.package),
         (("show", "example"), detail.version),
@@ -151,7 +173,13 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     ):
         output, _ = await cli(*arguments)
         assert value in output
-    enabled = await checked(lambda manager: manager.enable("example"))
+    enabled = await checked(
+        lambda manager: manager.enable(
+            "example",
+            contrib="example-file",
+            config={"path": str(path / "example.txt")},
+        )
+    )
     assert enabled.config_saved and enabled.pending_restart
 
     async def conflict(manager: ContribManager):
@@ -163,9 +191,11 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     assert (await checked(lambda manager: manager.detail("example"))).entries
     writer = path / "user.txt"
     _, output = await cli(
-        "enable",
+        "add",
         "example",
-        "--entry",
+        "--source",
+        source,
+        "--enable",
         "example-file",
         "--option",
         f"path={writer}",
@@ -192,8 +222,12 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     index = next(
         i
-        for i, entry in enumerate(candidate.payload["contribs"])
-        if entry["contrib"] == "example-file"
+        for i, entry in enumerate(
+            entry
+            for package in candidate.payload["contribs"]
+            for entry in package["enabled"]
+        )
+        if entry["entry"] == "example-file"
     )
     await cli(
         "edit",
@@ -204,11 +238,22 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         "labels.1.value=urgent",
     )
     candidate, _ = await checked(lambda manager: manager.configuration.read())
-    assert (
-        candidate.payload["contribs"][index]["config"]["metadata"]["project"]
-        == "studio"
+    entries = [
+        entry
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
+    ]
+    assert entries[index]["config"]["metadata"]["project"] == "studio"
+    await cli("add", "example", "--source", source, "--enable")
+    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    declaration = next(
+        package
+        for package in candidate.payload["contribs"]
+        if package["package"] == f"bazaar-contrib-example=={detail.version}"
     )
-    await checked(lambda manager: manager.enable("example"))
+    assert {entry.name for entry in detail.entries} <= {
+        entry["entry"] for entry in declaration["enabled"]
+    }
     for arguments, command in (
         (["--help"], "example"),
         (["example", "--help"], "write"),
@@ -252,7 +297,8 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     assert any(
         entry["config"].get("path") == str(writer)
-        for entry in candidate.payload["contribs"]
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
     )
     assert (await checked(lambda manager: manager.operation(added.id))).installed
 
@@ -313,8 +359,12 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         candidate, _ = await manager.configuration.read()
         index = next(
             i
-            for i, entry in enumerate(candidate.payload["contribs"])
-            if entry["contrib"] == "example-file"
+            for i, entry in enumerate(
+                entry
+                for package in candidate.payload["contribs"]
+                for entry in package["enabled"]
+            )
+            if entry["entry"] == "example-file"
         )
         edited = await manager.edit(index, {"label": "edited"})
         assert edited.applied and edited.config_saved, edited.model_dump_json()
@@ -323,8 +373,12 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         candidate, _ = await manager.configuration.read()
         index = next(
             i
-            for i, entry in enumerate(candidate.payload["contribs"])
-            if entry["contrib"] == "contrib-manager"
+            for i, entry in enumerate(
+                entry
+                for package in candidate.payload["contribs"]
+                for entry in package["enabled"]
+            )
+            if entry["entry"] == "contrib-manager"
         )
         own = await asyncio.wait_for(
             manager.edit(index, {"path": str(path / "changed-manager")}), 10
@@ -343,7 +397,8 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         assert any(
             entry["config"].get("label") == "edited"
             and entry["config"].get("path") == str(writer)
-            for entry in candidate.payload["contribs"]
+            for package in candidate.payload["contribs"]
+            for entry in package["enabled"]
         )
     assert "released:edited" in await asyncio.to_thread(writer.read_text)
     async with (
@@ -365,8 +420,166 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     assert any(
         entry["config"].get("label") == "edited"
-        for entry in candidate.payload["contribs"]
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
     )
+    # Edit the standard dependency syntax just as an operator edits the portable document.
+    async with FileConfigStore(config) as store:
+        snapshot = await store.read()
+        assert snapshot is not None
+        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
+            mode="json"
+        )
+        for entry in payload["contribs"]:
+            if entry.get("package", "").startswith("bazaar-contrib-example"):
+                entry["package"] = (
+                    "bazaar-contrib-example[text]>=0.2,<0.3; python_version >= '3.15'"
+                )
+        await store.write(payload, expected_revision=snapshot.revision)
+    # A second node receives only the configuration, after installing the minimal host.
+    migrated = path.parent / f"m-{uuid4().hex[:8]}"
+    await asyncio.to_thread(migrated.mkdir)
+    copied = migrated / "config.toml"
+    await asyncio.to_thread(
+        copied.write_bytes, await asyncio.to_thread(config.read_bytes)
+    )
+    environment = dict(os.environ) | {
+        "BCN_HOME": str(migrated),
+        "UV_TOOL_DIR": str(migrated / "tools"),
+        "UV_TOOL_BIN_DIR": str(migrated / "bin"),
+    }
+    tool = Path(os.environ["UV_TOOL_DIR"]) / "bazaar-compute-node" == Path(sys.prefix)
+    prefix = migrated / ("tools/bazaar-compute-node" if tool else "environment")
+    python = prefix / (
+        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+    )
+
+    async def launch(*arguments: str):
+        process = await asyncio.create_subprocess_exec(
+            *arguments,
+            env=environment,
+            cwd=migrated,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        output, errors = await process.communicate()
+        assert process.returncode == 0, (output + errors).decode()
+        return output.decode()
+
+    if tool:
+        await launch(
+            "uv",
+            "tool",
+            "install",
+            "--python",
+            "3.15",
+            "--index",
+            source,
+            "bazaar-compute-node==0.3.1",
+        )
+    else:
+        await launch("uv", "venv", "--python", "3.15", str(prefix))
+        await launch(
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--index",
+            source,
+            "bazaar-compute-node==0.3.1",
+        )
+    before = json.loads(
+        await launch(str(python), "-m", "bazaar_contrib_manager.environment")
+    )
+    assert {entry["package"] for entry in before["packages"]}.isdisjoint(
+        {"bazaar-contrib-example", "bazaar-contrib-logging", "bazaar-contrib-sidecar"}
+    )
+    note = migrated / "copied-command.json"
+    await launch(
+        str(python),
+        "-m",
+        "bazaar_compute_node",
+        "--config",
+        str(copied),
+        "example",
+        "write",
+        "migrated node",
+        "--output",
+        str(note),
+    )
+    assert (
+        "migrated node" in json.loads(await asyncio.to_thread(note.read_text))["text"]
+    )
+    await launch(
+        str(python),
+        "-m",
+        "bazaar_compute_node",
+        "--config",
+        str(copied),
+        "contrib",
+        "sync",
+    )
+    after = json.loads(
+        await launch(str(python), "-m", "bazaar_contrib_manager.environment")
+    )
+    example = next(
+        entry
+        for entry in after["packages"]
+        if entry["package"] == "bazaar-contrib-example"
+    )
+    assert example["version"].startswith("0.2") and example["entries"]
+    assert any(entry["package"] == "idna" for entry in after["packages"])
+    copied_payload = tomllib.loads(await asyncio.to_thread(copied.read_text))
+    package = next(
+        package
+        for package in copied_payload["contribs"]
+        if package["package"].startswith("bazaar-contrib-example")
+    )
+    entry = next(
+        entry for entry in package["enabled"] if entry["entry"] == "example-file"
+    )
+    assert package["source"] == other_source and ">=0.2" in package["package"]
+    assert entry["config"]["metadata"]["project"] == "studio"
+    await launch(
+        str(python), str(Path(__file__).with_name("migration_smoke.py")), str(copied)
+    )
+    assert "released:edited" in await asyncio.to_thread(writer.read_text)
+
+    async with FileConfigStore(copied) as store:
+        snapshot = await store.read()
+        assert snapshot is not None
+        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
+            mode="json"
+        )
+        url = other_source.replace(
+            "/simple/", "/files/bazaar_contrib_example-0.2.0-py3-none-any.whl"
+        )
+        for entry in payload["contribs"]:
+            if entry.get("package", "").startswith("bazaar-contrib-example"):
+                entry["package"] = f"bazaar-contrib-example[text] @ {url}"
+        await store.write(payload, expected_revision=snapshot.revision)
+    await launch(
+        str(python),
+        "-m",
+        "bazaar_compute_node",
+        "--config",
+        str(copied),
+        "contrib",
+        "sync",
+    )
+    after = json.loads(
+        await launch(str(python), "-m", "bazaar_contrib_manager.environment")
+    )
+    assert (
+        next(
+            entry
+            for entry in after["packages"]
+            if entry["package"] == "bazaar-contrib-example"
+        )["url"]
+        == url
+    )
+
     blocked = await invoke(
         options, lambda manager: manager.remove("bazaar-contrib-example")
     )
@@ -378,26 +591,40 @@ async def exercise(path: Path, source: str, other_source: str) -> None:
         candidate, _ = await checked(lambda manager: manager.configuration.read())
         index = next(
             i
-            for i, entry in enumerate(candidate.payload["contribs"])
-            if entry["contrib"] == name
+            for i, entry in enumerate(
+                entry
+                for package in candidate.payload["contribs"]
+                for entry in package["enabled"]
+            )
+            if entry["entry"] == name
         )
         await checked(lambda manager, index=index: manager.disable(index))
 
+    await checked(
+        lambda manager: manager.add(
+            Package(package="bazaar-contrib-example-carrier", source=source)
+        )
+    )
     carrier = {"configer": "example-config", **options}
     protected = await invoke(
-        carrier, lambda manager: manager.remove("bazaar-contrib-example")
+        carrier, lambda manager: manager.remove("bazaar-contrib-example-carrier")
     )
     assert protected.error and protected.phase == "failed"
-    assert (await checked(lambda manager: manager.detail("example"))).entries
+    assert (await checked(lambda manager: manager.detail("example-carrier"))).entries
     removed = await checked(lambda manager: manager.remove("bazaar-contrib-example"))
     assert removed.installed
+    await checked(lambda manager: manager.remove("bazaar-contrib-example-carrier"))
     await checked(lambda manager: manager.index(str(second), remove=True))
     await checked(lambda manager: manager.index(str(duplicate), remove=True))
     candidate, _ = await checked(lambda manager: manager.configuration.read())
     index = next(
         i
-        for i, entry in enumerate(candidate.payload["contribs"])
-        if entry["contrib"] == "contrib-manager"
+        for i, entry in enumerate(
+            entry
+            for package in candidate.payload["contribs"]
+            for entry in package["enabled"]
+        )
+        if entry["entry"] == "contrib-manager"
     )
     output, _ = await cli("index", "list")
     assert location in output

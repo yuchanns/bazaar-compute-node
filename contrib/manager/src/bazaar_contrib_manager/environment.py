@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-lazy import importlib
+lazy import json
 lazy import sys
-lazy import tomllib
 lazy from importlib.metadata import distributions
 lazy from pathlib import Path
 
@@ -18,7 +17,6 @@ def inspect() -> EnvironmentInfo:
     packages: list[InstalledPackage] = []
     for distribution in distributions():
         entries: list[EntryInfo] = []
-        defaults = None
         for point in distribution.entry_points:
             if point.group != CONTRIB_GROUP:
                 continue
@@ -42,19 +40,15 @@ def inspect() -> EnvironmentInfo:
                     EntryInfo(name=point.name, value=point.value, error=str(error))
                 )
                 continue
-            if defaults is None:
-                module = importlib.import_module(point.module.split(".", 1)[0])
-                if module.__file__ is not None:
-                    path = Path(module.__file__).with_name("defaults.toml")
-                    if path.is_file():
-                        defaults = tomllib.loads(path.read_text(encoding="utf-8"))
         packages.append(
             InstalledPackage(
                 package=str(canonicalize_name(distribution.metadata["Name"])),
                 version=distribution.version,
                 summary=distribution.metadata.get("Summary", ""),
+                url=json.loads(distribution.read_text("direct_url.json") or "{}").get(
+                    "url"
+                ),
                 entries=tuple(entries),
-                defaults=defaults,
                 requirements=tuple(distribution.requires or ()),
             )
         )

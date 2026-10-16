@@ -55,12 +55,7 @@ dependencies = [
     { name = "bazaar-contrib-config-filesystem" },
     { name = "bazaar-contrib-config-versions" },
     { name = "bazaar-contrib-invoke" },
-    { name = "bazaar-contrib-logging" },
     { name = "bazaar-contrib-manager" },
-    { name = "bazaar-contrib-sidecar" },
-    { name = "bazaar-contrib-sidecar-unix", marker = "sys_platform != 'win32'" },
-    { name = "bazaar-contrib-sidecar-windows", marker = "sys_platform == 'win32'" },
-    { name = "bazaar-contrib-status" },
     { name = "bazaar-core" },
     { name = "click" },
 ]
@@ -71,12 +66,7 @@ requires-dist = [
     { name = "bazaar-contrib-config-filesystem", editable = "contrib/config-filesystem" },
     { name = "bazaar-contrib-config-versions", editable = "contrib/config-versions" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
-    { name = "bazaar-contrib-logging", editable = "contrib/logging" },
     { name = "bazaar-contrib-manager", editable = "contrib/manager" },
-    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
-    { name = "bazaar-contrib-sidecar-unix", marker = "sys_platform != 'win32'", editable = "contrib/sidecar-unix" },
-    { name = "bazaar-contrib-sidecar-windows", marker = "sys_platform == 'win32'", editable = "contrib/sidecar-windows" },
-    { name = "bazaar-contrib-status", editable = "contrib/status" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
 ]
@@ -87,10 +77,14 @@ version = "0.3.0"
 source = { editable = "contrib/config" }
 dependencies = [
     { name = "bazaar-core" },
+    { name = "packaging" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bazaar-core", editable = "core" }]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "packaging", specifier = ">=26.0" },
+]
 
 [[package]]
 name = "bazaar-contrib-config-filesystem"

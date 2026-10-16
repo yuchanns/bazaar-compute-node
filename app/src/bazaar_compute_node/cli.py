@@ -11,8 +11,7 @@ from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
 from bazaar_contrib_invoke import COMMANDS, CommandCatalog, CommandEntry, Commands
 from bazaar_core import Composition, Context, Contrib, ContribEntry
 
-lazy from . import run
-lazy from .boot import bootstrap, select
+lazy from .boot import node, select
 
 
 async def _run(configuration: Configuration) -> None:
@@ -64,7 +63,12 @@ async def dispatch(
     def start(document: ConfigDocument) -> Composition:
         catalog = CommandCatalog(
             contribs=(
-                *(entry.contrib for entry in document.contribs),
+                *(
+                    entry.entry
+                    for package in document.contribs
+                    if package.applies
+                    for entry in package.enabled
+                ),
                 *(entry.name for entry in startup),
             ),
             help=main.help,
@@ -78,13 +82,6 @@ async def dispatch(
             failures.append(error)
         return select(document, roots=roots, startup=startup)
 
-    entries, loader = await asyncio.to_thread(
-        bootstrap,
-        start=start,
-        configer=configer,
-        configer_options=configer_options,
-    )
-
     @asynccontextmanager
     async def observe(ctx: Context):
         commands = ctx.accept(COMMANDS)
@@ -93,7 +90,9 @@ async def dispatch(
         selected.append(commands)
         yield
 
-    async with run(entries, loader) as hub:
+    async with node(
+        start=start, configer=configer, configer_options=configer_options
+    ) as hub:
         Configuration.check(hub.validate(Composition()))
         if roots:
             async with hub.enable(

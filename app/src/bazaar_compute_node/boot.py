@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import os
-lazy import sys
 lazy import tomllib
 lazy from collections.abc import AsyncIterator, Callable, Sequence
 lazy from importlib.resources import files
@@ -14,10 +13,13 @@ lazy from typing import Any
 lazy from uuid import NAMESPACE_URL, uuid5, uuid7
 
 lazy from bazaar_contrib_config import (
+    CONFIG_PREPARE,
     CONFIG_STORE,
+    CONFIGURATION,
     AgentConfig,
     ConfigDocument,
     ConfigFormatError,
+    Configuration,
     ConfigurationEnvironment,
     EnabledContrib,
     ProviderConfig,
@@ -76,11 +78,13 @@ def build(document: ConfigDocument) -> Composition:
     composition = load(
         [
             ContribSpec(
-                contrib=entry.contrib,
+                contrib=entry.entry,
                 config=entry.config,
-                location=f"contribs[{index}]",
+                location=f"contribs[{index}].enabled[{position}]",
             )
-            for index, entry in enumerate(document.contribs)
+            for index, package in enumerate(document.contribs)
+            if package.applies
+            for position, entry in enumerate(package.enabled)
         ]
     )
     entries: list[ContribEntry] = []
@@ -221,9 +225,6 @@ def bootstrap(
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_bytes(resource.joinpath("catalog.json").read_bytes())
     defaults = tomllib.loads(resource.joinpath("defaults.toml").read_text())
-    defaults["contribs"].append(
-        {"contrib": "sidecar-windows" if sys.platform == "win32" else "sidecar-unix"}
-    )
     defaults["contrib_indexes"] = [str(catalog)]
     return (
         definitions,
@@ -235,7 +236,7 @@ def bootstrap(
                 environment=ConfigurationEnvironment(
                     hub="bazaar_core:ContribHub",
                     entries=tuple(
-                        EnabledContrib(contrib=entry.name, config=entry.config)
+                        EnabledContrib(entry=entry.name, config=entry.config)
                         for entry in definitions.entries
                     ),
                 ),
@@ -271,12 +272,51 @@ async def node(
     *,
     configer: str = "config-filesystem",
     configer_options: Sequence[str] = (),
+    start: Callable[[ConfigDocument], Composition] | None = None,
 ) -> AsyncIterator[ContribHub]:
-    """Run the installed configuration source and node composition."""
+    """Prepare configured dependencies before selecting business definitions."""
+
+    configurations: list[Configuration] = []
+
+    @asynccontextmanager
+    async def dependencies(ctx: Context):
+        configurations.append(ctx.accept(CONFIGURATION))
+        yield
+
+    def initial(document: ConfigDocument) -> Composition:
+        composition = build(document)
+        entry = ContribEntry(
+            name="node-dependencies",
+            definition=Contrib(
+                accepts=[CONFIGURATION],
+                lifespan=dependencies,
+            ),
+        )
+        return composition.model_copy(
+            update={
+                "entries": (*composition.entries, entry),
+                "roots": (
+                    entry.name,
+                    *(
+                        entry.name
+                        for entry in composition.entries
+                        if CONFIG_PREPARE in entry.definition.listen
+                    ),
+                ),
+            }
+        )
+
     entries, loader = await asyncio.to_thread(
         bootstrap,
         configer=configer,
         configer_options=configer_options,
+        start=initial,
     )
-    async with run(entries, loader) as hub:
+
+    async def prepare(hub: ContribHub) -> None:
+        Configuration.check(hub)
+        await hub.announce(CONFIG_PREPARE, None)
+        await configurations[0].select(start)
+
+    async with run(entries, loader, prepare=prepare) as hub:
         yield hub

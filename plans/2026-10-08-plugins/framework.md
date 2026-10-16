@@ -159,10 +159,10 @@ app 默认组合和 server 的本地组合分别启用 `status`，消费者声�
 公共 entry point group 为 `bazaar_compute_node.contribs`，入口返回上述 `Contrib` 定义。
 模块以功能名称导出 `Contrib` 定义，例如 `storage`、`database`、`recorder`；入口声明引用模块路径与对应的导出对象名。
 `core` 的宿主通过 `importlib.metadata` 读取当前 Python 环境中的发行包及其入口，建立
-`发行包 → 入口名 → 导入对象` 的对应关系。启动时以配置中的 `contrib` 值查找入口，再调用 `EntryPoint.load()` 取得定义。
+`发行包 → 入口名 → 导入对象` 的对应关系。启动时以配置中的 `entry` 值查找入口，再调用 `EntryPoint.load()` 取得定义。
 管理服务可以在独立的目标解释器进程中加载定义，取得配置模型、API 兼容信息和服务声明。
 实例资源在宿主进入 lifespan 时创建；已安装列表通过元数据展示包和入口。
-包名、版本、入口名和导入对象来自发行元数据，安装源来自宿主管理的依赖清单。
+包名、版本、入口名和导入对象来自发行元数据，安装源来自配置中的依赖声明。
 同名入口冲突在加载边界报告具体发行包、版本和入口，模块定义使用该入口名作为管理及诊断名称。
 
 入口分组与发现协议由 core 持有。`core/README.md` 提供登记、发现、加载和启动的简明示例；
@@ -178,7 +178,7 @@ app 默认组合和 server 的本地组合分别启用 `status`，消费者声�
 logging = "bazaar_contrib_logging:logging"
 ```
 
-`contrib` 选择 entry point 的名字，发行包名用于包管理。一个包可以提供多个入口，
+`entry` 选择 entry point 的名字，发行包名用于包管理。一个包可以提供多个入口，
 这些入口统一在顶层配置；组合按已校验的业务输入明确创建各实例，框架按服务绑定建立依赖。
 
 ```toml
@@ -190,36 +190,42 @@ contrib_indexes = [
 ]
 
 [[contribs]]
-contrib = "storage"
+[[contribs.enabled]]
+entry = "storage"
 
 [[contribs]]
-contrib = "sqlite"
+[[contribs.enabled]]
+entry = "sqlite"
 
-[contribs.config]
+[contribs.enabled.config]
 path = "bcn.sqlite3"
 
 [[contribs]]
-contrib = "database"
+[[contribs.enabled]]
+entry = "database"
 
-[contribs.config]
+[contribs.enabled.config]
 backend = "sqlite"
 
 [[contribs]]
-contrib = "logging"
+[[contribs.enabled]]
+entry = "logging"
 
-[contribs.config]
+[contribs.enabled.config]
 level = "info"
 
 [[contribs]]
-contrib = "recorder"
+[[contribs.enabled]]
+entry = "recorder"
 
 [[contribs]]
-contrib = "agent"
+[[contribs.enabled]]
+entry = "agent"
 
-[[contribs.config.agents]]
+[[contribs.enabled.config.agents]]
 name = "A"
 
-[[contribs.config.agents]]
+[[contribs.enabled.config.agents]]
 name = "B"
 ```
 
@@ -423,7 +429,7 @@ config-v5 = "bazaar_contrib_config_versions:v5"
 ### V5 配置与版本转换
 
 配置文档以顶层 `version="5"` 标识结构版本，与 BCN／模块的发行版本分别管理。
-顶层保存 `version`、`contrib_indexes` 和统一 `contribs`；默认 agent 的实体配置归 `contrib="agent"` 条目的 `config.agents`。本地传输地址、数据库、
+顶层保存 `version`、`contrib_indexes` 和统一 `contribs`；默认 agent 的实体配置归 `entry="agent"` 条目的 `config.agents`。本地传输地址、数据库、
 审计和版本检查等能力参数保存在其所属模块的 config。
 默认 agent 模型保留 id、name、mode、idle_timeout、channel 数组及 provider kind 和业务参数的实体含义；旧 runtime 数组映射到该模型的 harness 数组。
 运行实例由组合明确声明，内部标识由宿主生成，私有绑定由组合持有。
@@ -480,7 +486,7 @@ node.server 被审计和控制共用时只生成一个 starlink 配置，原参�
 配置并发保护由载体的条件提交完成，依赖解析和安装使用同一环境操作锁。
 版本推进和候选校验期间保留原快照，包安装失败保留原配置及声明并报告实际环境状态。
 未知未来版本在读取边界诊断；重复读取成功迁移后的 V5 得到相同启用配置。
-V5 手写文件、CLI、页面和 defaults.toml 导入使用同一模型与保存入口。
+V5 手写文件、CLI、页面和显式配置导入使用同一模型与保存入口。
 默认组合用于新建，组合导入按已有条目保留参数、停用及 DB 选择。
 
 以下展示 V4 存储与管理配置及对应的 V5 节选，其余能力按映射表同步生成：
@@ -500,24 +506,29 @@ version_check = false
 version = "5"
 
 [[contribs]]
-contrib = "storage"
+[[contribs.enabled]]
+entry = "storage"
 
 [[contribs]]
-contrib = "sqlite"
-[contribs.config]
+[[contribs.enabled]]
+entry = "sqlite"
+[contribs.enabled.config]
 path = "bcn.sqlite3"
 
 [[contribs]]
-contrib = "database"
-[contribs.config]
+[[contribs.enabled]]
+entry = "database"
+[contribs.enabled.config]
 backend = "sqlite"
 
 [[contribs]]
-contrib = "logging"
+[[contribs.enabled]]
+entry = "logging"
 
 [[contribs]]
-contrib = "node-management"
-[contribs.config]
+[[contribs.enabled]]
+entry = "node-management"
+[contribs.enabled.config]
 version_check = false
 ```
 
@@ -587,10 +598,10 @@ app 构建从 BCN uv.lock 的 contrib/ 工作区成员自动生成 package/sourc
 app 从发行资源提取内置官方索引到节点目录的 `contrib/catalog.json`，将实际本地路径作为 TOML 字符串渲染到多行 contrib_indexes；节点目录沿用 BCN_HOME 下的 `.bcn`，未设置时为 `~/.bcn`。
 初次创建配置时，经 CONFIG_STORE 将 V5 组合提交到所选来源，filesystem 默认写入 `config.toml`，包括 `commands`、`storage`、`sqlite`、`database` 等启用配置，
 并明确写入 `database.config.backend="sqlite"`、默认 agent 的 `config.agents=[]`。必要包通过宿主发行依赖安装，启动按保存的配置发现入口和建立服务依赖。
-可选 server／web 包分别提供 `bazaar_contrib_server/defaults.toml`、`bazaar_contrib_web/defaults.toml` 节点启用条目，
-用户选择后经节点配置管理服务校验并保存；节点已有存储选择、参数及停用选择继续保留。
+可选 server／web 包通过发行元数据导出节点入口，用户选择入口及参数后经节点配置管理服务校验并保存；
+节点已有存储选择、参数及停用选择继续保留。
 服务端自己的配置与业务组合由 server 的独立载体和发行资源管理，监听、登录及 storage 等 BCS 设置直接从原配置读取。
-安装操作提交包依赖清单并展示入口和组合资源；用户选择 enable 时导入所选组合并保存启用配置，`add --enable` 顺序执行这两项操作。
+安装操作将包依赖声明写入配置并展示导出的入口；`add --enable ENTRY` 在安装后保存指定入口，`add --enable` 保存该包的全部入口。
 后续启动读取用户保存的配置，升级通过配置版本迁移保留停用条目、参数和后端选择。
 已有配置缺少 DB 选择入口或所选后端时，装配诊断列出缺失服务及消费方。
 
@@ -607,28 +618,32 @@ app 从发行资源提取内置官方索引到节点目录的 `contrib/catalog.j
 ```toml
 # config.toml 的存储组合；SQLite 与 PG 同时启用，业务选择 PG。
 [[contribs]]
-contrib = "storage"
+[[contribs.enabled]]
+entry = "storage"
 
 [[contribs]]
-contrib = "sqlite"
-[contribs.config]
+[[contribs.enabled]]
+entry = "sqlite"
+[contribs.enabled.config]
 path = "bcn.sqlite3"
 
 [[contribs]]
-contrib = "pg"
-[contribs.config]
+[[contribs.enabled]]
+entry = "pg"
+[contribs.enabled.config]
 dsn = "postgresql://localhost/bcn"
 
 [[contribs]]
-contrib = "database"
-[contribs.config]
+[[contribs.enabled]]
+entry = "database"
+[contribs.enabled.config]
 backend = "pg"
 ```
 
-`contrib="pg"` 对应发行包声明的模块入口，`backend="pg"` 对应该入口登记的存储后端名。
+`entry="pg"` 对应发行包声明的模块入口，`backend="pg"` 对应该入口登记的存储后端名。
 入口名和后端名分别由模块作者声明，package 名称、入口名、后端名之间的对应关系由元数据和服务声明建立。
 database 的配置模型编辑 `backend` 字段；用户修改已有选择条目，管理服务更新原条目。
-包安装操作提交发行依赖清单，启用和切换操作提交运行配置，管理页面分别提供这些操作。
+包安装操作提交配置中的依赖声明，启用和切换操作提交入口及其参数，管理页面分别提供这些操作。
 所选连接上的模型、schema 和业务查询继续由对应功能模块管理。
 
 ### 模块索引与安装入口的关联
@@ -663,8 +678,8 @@ contrib 市场展示各索引中登记的包，用户按包名和来源选择安
 
 同一包和包源在多个索引中出现时合并条目并保留索引来源；同名包的不同包源分别展示，安装时显式选择。
 同一宿主的一个发行包名对应一个已安装来源，改选其他来源时更新该包的候选依赖声明，再解析完整组合。
-包名和所选包源写入目标宿主的依赖清单，升级沿用该记录。索引位置被移除或暂时不可用时，
-已安装模块仍依据保存的依赖清单和运行配置管理。
+包依赖规格和所选包源写入目标宿主的配置，升级沿用该记录。索引位置被移除或暂时不可用时，
+已安装模块仍依据配置中的依赖声明及入口参数管理。
 索引发布、缓存、详情展示与 web 操作流程见 [contrib 市场计划](bazaar.md)。
 
 ## 统一宿主与可选 server／web
@@ -703,7 +718,7 @@ starlink 在 accepts 中声明所需服务，通过 Context.accept 获取其他�
 业务通过 announce 独立发布公共审计事件，starlink 的事件 listen 处理器按配置入队上报，server 收到后交给投影模块。
 审计事件处理和请求响应分别管理；send 直接发送调用结果，审计记录由业务独立发布。
 HTTP 输入模型、身份校验、传输和请求关联由 starlink 与 server-api 管理，服务接口及业务规则仍归提供 offer 的功能包。
-包的 pyproject.toml 安装组合代码，defaults.toml 提供可导入的配置；运行时按 accepts 建图。
+包的 pyproject.toml 声明代码依赖并导出入口，节点配置保存所选入口及参数；运行时按 accepts 建图。
 这两种依赖分别管理，server-api 先提供 API 注册服务，功能模块再登记接口，避免组合与业务之间形成运行循环。
 API／UI 的公共类型由 HTTP／GUI 包导出，功能包导入公共契约，server／web 依赖功能实现包。
 完整包清单、运行依赖、用户安装流程及各阶段验收见 [统一组合计划](roadmap.md#统一宿主与-serverweb-组合)。
@@ -765,17 +780,18 @@ core 发现入口、装配所选载体及发行版本组合，启用提供 `COMP
 
 `bcn contrib` 提供索引列表与增删、索引条目列表、安装、卸载、启用、停用、已安装列表和详情。
 `bcn contrib add <name>` 接受短名或完整发行包名，短名通过已配置索引中的 `bazaar-contrib-<name>` 条目确定包名与来源。
-例如 `bcn contrib add codex --enable` 安装 bazaar-contrib-codex，并在安装确认后启用其默认运行组合。
-包安装提交完整依赖清单，enable 将选定的模块入口及参数写入顶层 contribs；disable 从该启用列表移除对应条目并校验剩余依赖。
-安装状态与启用状态独立记录，`--enable` 将安装和配置提交按顺序完成，结果分别显示实际安装版本与配置保存状态。
-提供多入口的官方 provider 包携带 defaults.toml，启用组合包括该 provider 的 builder 与 channel／harness 运行定义；页面入口由对应 web 组合配置。
-未提供组合资源的多入口包由管理入口展示发行元数据中的入口与配置模型，用户选择后提交配置。
-模块通用参数由各入口的 Pydantic 模型校验并保存到对应 contribs.config；编辑更新所选已有条目，保留未修改的参数与其他组合选择。
+例如 `bcn contrib add codex --enable codex` 安装 bazaar-contrib-codex，并在安装确认后启用其 codex 入口。
+包安装将完整依赖规格保存到顶层 contribs；enable 保存所选入口及参数，disable 移除入口并保留包声明，同时校验剩余依赖。
+安装状态与启用状态独立记录；不传 `--enable` 只安装，`--enable ENTRY` 启用指定入口，单独 `--enable` 启用该包导出的全部入口。
+入口清单直接读取发行元数据，管理入口展示各入口与配置模型，所选条目经配置校验后保存；结果分别显示实际安装版本与配置保存状态。
+模块通用参数由各入口的 Pydantic 模型校验并保存到对应 contribs[].enabled[].config；编辑更新所选已有条目，保留未修改的参数与其他组合选择。
 agent 的连接／执行参数和凭据引用由 provider 实体模型校验，保存到 agent 条目 config.agents 中相应实体的 channel／harness 配置。
 命令定义、帮助、提示与输出由登记命令的功能包持有；功能包选择自己的文案及渲染方式。同步 Click 命令树构造在工作线程完成。
+命令名沿用常见的操作词，命令与选项帮助采用 uv／pip 的“动作＋对象”英语短语，直接说明用户操作；功能统一称为 contrib，安装包称为 package。
 管理 CLI 参照 uv 的实际文本输出：包列表和索引使用对齐列，详情逐行展示字段及入口选项，操作显示包变更、配置保存和待下次启动生效的结果。
 manager 自持 Jinja 依赖与随包发行的 resources/*.tpl 文本模板，沿用主分支的资源命名，以 PackageLoader 加载并启用 StrictUndefined；Python 整理展示数据、计算表格列宽，模板持有文案及排版，操作查询复用结果模板。模板加载与渲染在工作线程执行。
 查询结果写入 stdout，操作提示和错误写入 stderr；失败时保留已完成步骤、操作 ID 与恢复提示，并返回失败退出码。
+卸载失败说明具体包名与实际阻塞条件：配置中没有该包时指向 `contrib configured`；仍有该包的 contrib 时列出名称，说明用 `contrib configured` 查看编号、`contrib disable INDEX` 停用后重试卸载。
 输出依据本机 uv 0.12.2 的实际安装、列表、详情、重复安装和卸载行为，以及 [uv 环境检查文档](https://docs.astral.sh/uv/pip/inspection/) 的列格式约定。
 索引读取与安装管理提供独立的 typed 服务契约，CLI 与后续 contrib 市场页面消费同一实现。
 管理请求明确目标宿主、包规格和模块入口；已有配置与实例由管理列表提供选择目标及操作句柄。
@@ -784,7 +800,7 @@ manager 自持 Jinja 依赖与随包发行的 resources/*.tpl 文本模板，沿
 
 本地 `contrib add`、模块配置编辑和后续 `agent add` 在节点未运行时使用短生命周期管理组合。
 app 调用 core 装配所选配置载体及版本服务，并按操作进入配置、命令登记、模块管理及所选 agent 管理服务；首次管理操作经当前载体提交 app 默认配置，默认 agent 的 config.agents 为空。
-配置编辑复用 CONFIGURATION 的 prepare／commit，导入包组合复用 import_defaults，以完整候选的模型及依赖校验和修订条件提交保存结果。
+配置编辑复用 CONFIGURATION 的 prepare／commit，以完整候选的模型及依赖校验和修订条件提交保存结果。
 管理命令退出时释放本次资源；channel 连接、harness 进程与 agent 执行实例由后续 `bcn run` 按已保存实体配置创建。
 首次使用流程见 [总计划](README.md#全新安装与默认运行组合)，本分支用真实示例包完成默认基础组合、安装及 agent 配置管理，完整 Codex／Telegram 流程随具体 provider 阶段交付。
 
@@ -805,7 +821,7 @@ app 自身以同一扩展协议声明 `run`，第三方包不需要修改 app �
 core 的 Composition.roots 按插件名称指定根，复用现有参数展开、服务绑定及依赖顺序，只启用根及其所需提供者。
 局部绑定按具体实例计算，已有自举实例继续复用；无关分支不获取资源。所选根缺失、服务冲突或循环保留正常诊断。
 core 不读取命令元数据，不导入 Click，也不解释 CLI 或 GUI。其他功能插件可以拥有自己的扩展协议。
-app 的 defaults.toml 是可直接读取的配置资源，本地索引路径由启动输入填入，供安装元数据与配置导入共同读取。
+app 的 defaults.toml 提供新节点的初始配置，本地索引路径由启动输入填入。
 
 随后所选 contrib 及其依赖进入 lifespan 并登记实际命令，Commands.dispatch 在工作线程内完成原生 Click 的参数、帮助和回调分发，
 将回调返回的 awaitable 交回事件循环。回调结束或取消后退出组合；只有需要常驻的回调自行等待。
@@ -819,13 +835,29 @@ app 的 defaults.toml 是可直接读取的配置资源，本地索引路径由�
 uv 由宿主进程的 PATH 解析为具体执行文件；目标环境明确对应运行该节点的 Python。
 实际执行使用参数数组，安装结果、发行清单和启用配置之间有明确提交顺序。
 
-宿主保存系统维护的额外模块依赖清单，每项记录发行包名、所选包源和用户指定的版本范围，
-操作成功后记录实际安装版本及入口。默认官方包的组合依赖由宿主版本确定，运行配置通过当前 CONFIG_STORE 保存，filesystem 默认为 `config.toml`。
-app 的共同发行清单标识 BCN 必要包；manager 从 CONFIGURATION 读取 contrib_indexes，逐个读取配置的全部索引中的包名及来源。
-添加模块保持应用版本，独立可选包按公共接口兼容范围及用户要求解析；整体升级使用目标 app 与保存的全部额外声明，保留实际来源和显式固定版本。
-必要包随 BCN 整体发行，可选与第三方升级更新所属包的版本要求；
-卸载从候选额外依赖集合删除该包，并校验依赖它的包及配置条目，以及自举选择是否仍引用该载体入口。
-后续操作从保存的清单生成候选输入，安装源随包记录保留。
+运行配置是依赖声明的唯一来源。`contribs` 每项保存一个包的 `package`、可选 `source` 和 `enabled` 数组；每个启用项保存 `entry` 与自己的 `config`。
+`package` 使用与 `pyproject.toml` 的 `project.dependencies` 相同的完整 PEP 508 字符串，保留 extras、版本范围、URL 和 marker；
+`enabled = []` 表示只安装包。同一发行包的多个入口归入同一个数组，包规格和来源只声明一次；编辑参数保留依赖规格，停用最后一个入口保留只安装声明。
+TOML 可使用内联数组，也可用 `[[contribs.enabled]]` 展开启用项，再以 `[contribs.enabled.config]` 填写各入口的参数。
+`add` 保存实际安装版本或显式版本范围及所选来源；`--enable` 将声明带到该包提供的入口。迁移只需复制配置。
+默认来源为空时使用 manager 的 `host_source`；显式来源随配置迁移。入口只在其依赖 marker 对当前平台成立时启用。
+
+调研依据：[Python dependency specifiers](https://packaging.python.org/en/latest/specifications/dependency-specifiers/)
+定义包名、extras、版本或直接 URL 以及 marker；[uv dependencies](https://docs.astral.sh/uv/concepts/projects/dependencies/)
+使用标准依赖字符串并用 `tool.uv.sources` 选择索引；[uv compile/sync](https://docs.astral.sh/uv/pip/compile/)
+支持从 pyproject 解析依赖并用同一 pylock 同步完整环境。配置边界用 packaging/Pydantic 校验字符串；安装仍交给 uv。
+
+每次启动先通过配置服务读取和保存文档，按普通配置声明发现入口。app 先按配置启用监听 CONFIG_PREPARE 的插件及其服务依赖，
+在它们就绪后发布并等待这个公开配置准备事件，再切换所选业务组合。配置决定入口名称和参数，自写实现监听同一事件即可替换。
+CONFIG_PREPARE 是 EventKey[None]；包管理插件自己的事件处理器复用 sync(only_missing=True)，并将失败转换为启动错误。
+默认实现检查目标解释器中的声明、extras 及传递依赖，缺失或版本不符时执行完整候选解析、安装和入口验证；
+满足时直接继续。随后配置服务在同一 Hub 中切换到调用者选择的命令根或完整节点组合，再进入业务 lifespan。
+显式 `bcn contrib sync` 复用该流程，按配置重新解析并安装；安装失败保留诊断，启动中止。
+app 保留直接使用的核心、配置、版本、命令、audit 公共契约包及首次启动所需的默认准备插件；status、logging、sidecar 及平台实现由默认配置声明。
+默认 TOML 直接声明两种原生 sidecar 入口及标准 PEP 508 `sys_platform` 条件，通用配置读取只选择条件成立的条目。默认包规格采用当前 0.3 系列范围，由固定宿主及发行依赖共同约束版本。
+
+安装管理、同步和整体升级从配置生成候选，保留实例参数和显式来源／版本；操作日志和 pylock 是执行及恢复产物。
+卸载要求先停用入口，并验证其他包和当前自举载体仍能正常工作。配置文档通过 CONFIGURATION 条件提交。
 
 完整组合的版本与来源解析按以下步骤执行：
 
@@ -837,7 +869,7 @@ app 的共同发行清单标识 BCN 必要包；manager 从 CONFIGURATION 读取
 3. 由自身 uv 执行 `uv pip compile <candidate>/pyproject.toml --python <target-python> --format pylock.toml --output-file <candidate>/pylock.toml`。
    此步骤解析整个候选依赖图，产物保存选定版本、下载地址与校验信息。来源或版本冲突在改变安装环境前报告。
 4. 安装阶段消费同一份解析产物，完成后用目标解释器检查实际包、入口和 API 兼容信息。
-5. 成功后提交新的额外依赖清单与解析结果；启用请求另外校验并保存运行配置，结果显示下次启动生效。
+5. 成功后通过配置服务保存包声明与解析结果；启用请求另外校验并保存入口配置，结果显示下次启动生效。
    操作失败保留原声明，并记录实际环境变更及恢复原组合所需步骤。
 
 生成的来源声明例如：
@@ -858,9 +890,9 @@ url = "https://packages.example.com/simple/"
 bazaar-contrib-pg = { index = "selected" }
 ```
 
-- **uv tool 部署**：从同一 pylock 选择当前解释器兼容的 wheel 或锁定的 sdist，将下载地址与 SHA256 写成 requirements。
+- **uv tool 部署**：从同一 pylock 选择当前解释器兼容的 wheel、锁定的 sdist 或标准 archive 直接引用，将下载地址与 SHA256 写成 requirements。
   使用 `uv tool install '<锁定的宿主包直接引用>' --with-requirements <candidate>/requirements.txt`，
-  主包及全部附加依赖均使用已解析的产物；官方内置包由固定宿主版本绑定的组合依赖提供。
+  主包及全部附加依赖均使用已解析的产物；默认功能包与其他配置依赖一同解析。
   现有监督进程负责下一次启动；Windows 沿用当前升级保留运行解释器的安装方式。
 - **自管 venv 部署**：同一 uv 使用 `uv pip sync --python <target-python> <candidate>/pylock.toml`，
   目标是由宿主管理完整依赖集合的专用 venv，安装和卸载均按候选完整组合同步。
@@ -939,6 +971,9 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 目标解释器先转换并检查完整配置，条件提交后分别记录安装、保存与运行结果；修改请求者自身生命周期时报告待重启。
 - [x] 普通 server lifespan 用 ctx.enable(local=(DB, RECORDS)) 管理真实 SQLite／TCP 子组合，验证混合运行、停用后节点继续写入和纯服务端启动。
 - [x] 完成真实安装环境、Blockbuster 回归、独立 wheel／sdist、Ruff 与根 LSP；修改 amend 回各功能的引入提交并签名推送。
+- [x] 配置携带完整依赖规格与来源，add／enable／edit／disable／remove／upgrade 统一读写配置。
+- [x] contrib sync 与每次启动复用配置所选 manager 的检查及安装，准备阶段按公开事件监听声明及服务依赖装配，再切换所选业务组合；独立载体验收使用替代入口与独立的 uv 环境检查实现。
+- [x] 真实 uv tool 与 venv 验证仅复制配置即可恢复包、入口及参数，完成发行检查、Ruff、根 LSP，并单独签名提交。
 
 存储等后续包交付时，继续验证历史配置自动纳入依赖及完整 V4→V5 运行迁移。
 
@@ -961,9 +996,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 `bazaar-contrib-sidecar-unix`、`bazaar-contrib-sidecar-windows` 分别提供同名入口，各自 offer 两个服务。
 `SERVER` 接受会话 handler 工厂并持有监听，`CLIENT` 传递类型化请求与结果；公共服务契约与具体 I/O 无关，
 后续 HTTP 实现使用同一契约。Unix 使用 asyncio Unix streams，Windows 使用 CPython ProactorEventLoop 的
-`start_serving_pipe`／`create_pipe_connection`；app 的发行依赖用 Python 标准平台条件选择本机实现。
-app 读取默认 TOML 后，根据 `sys.platform` 加入 `sidecar-windows` 或 `sidecar-unix` 的普通启用声明，
-将完整默认配置交给配置服务保存。
+`start_serving_pipe`／`create_pipe_connection`；默认 TOML 声明两个平台实现，用依赖字符串中的标准 `sys_platform` marker 选择。
+app 原样读取并交给配置服务；配置的通用 marker 判断在入口发现前生效。删除 sidecar 及传输声明即可选择其他实现或停用，启动不补回。
 Windows 使用 [CPython 3.15 的 IOCP 与 pipe transport](https://github.com/python/cpython/blob/3.15/Lib/asyncio/windows_events.py)，
 创建句柄时以 FIRST_PIPE_INSTANCE 排他，并沿用 0.2 的 PIPE_REJECT_REMOTE_CLIENTS；按
 [CreateNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)
@@ -1044,7 +1078,7 @@ sidecar 的 ctx 保持自己的服务可见范围与组合归属。各传输共�
 
 - [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
 - [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
-- [ ] 节点未运行时通过短生命周期管理组合完成首次默认配置创建和 agent 管理，模块选择与业务参数统一保存在相应 contribs.config，默认 agent 的实体参数由其 config.agents 持有。
+- [ ] 节点未运行时通过短生命周期管理组合完成首次默认配置创建和 agent 管理，模块选择与业务参数统一保存在相应 contribs[].enabled[].config，默认 agent 的实体参数由其 config.agents 持有。
 - [ ] 管理模式启用配置、命令及所需共享登记服务，完整业务候选只执行资源启动前校验；后续 bcn run 才创建 AGENT／CHANNEL／HARNESS 实例。
 - [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
 - [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。

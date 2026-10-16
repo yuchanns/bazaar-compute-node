@@ -14,9 +14,13 @@ lazy from contextlib import asynccontextmanager
 lazy from importlib.resources import files
 lazy from uuid import uuid7
 
-from bazaar_contrib_config import ConfigDocument, PackageRequirement
+from bazaar_contrib_config import (
+    ConfigDocument,
+    ContribPackage,
+    EnabledContrib,
+    PackageRequirement,
+)
 from bazaar_contrib_config_filesystem import FileConfigStore
-from bazaar_contrib_status import status
 from bazaar_core import (
     COMPOSITION,
     Composition,
@@ -35,8 +39,21 @@ DIRECTORY = ServiceKey[Path]("installed.directory")
 
 async def exercise(path: Path) -> None:
     configuration = path / ".bcn" / "config.toml"
+    payload = ConfigDocument(
+        contrib_indexes=(str(path / ".bcn" / "contrib" / "catalog.json"),),
+        contribs=(
+            ContribPackage(
+                enabled=(
+                    EnabledContrib(entry="commands"),
+                    EnabledContrib(entry="contrib-manager"),
+                )
+            ),
+        ),
+    ).model_dump(mode="json")
+    async with FileConfigStore(configuration) as store:
+        await store.write(payload, expected_revision=None)
     async with node() as hub:
-        for name in ("node-configuration", "sidecar"):
+        for name in ("node-configuration", "contrib-manager"):
             if not any(
                 record.name == name and isinstance(record.state, Running)
                 for record in hub.snapshots
@@ -86,7 +103,6 @@ async def exercise(path: Path) -> None:
             COMPOSITION,
             Composition(
                 entries=[
-                    ContribEntry(name="status", definition=status),
                     ContribEntry(
                         name="installed",
                         definition=Contrib(accepts=[DIRECTORY], lifespan=writer),
@@ -111,16 +127,21 @@ async def exercise(path: Path) -> None:
         ),
     ) as hub:
         if not any(
-            instance.name == "status" and isinstance(instance.state, Running)
+            instance.name == "installed" and isinstance(instance.state, Running)
             for instance in hub.snapshots
         ):
-            raise RuntimeError("installed status service did not start")
+            raise RuntimeError("installed resource did not start")
     text = await asyncio.to_thread((path / "installed.txt").read_text)
     if "agent started" not in text or "agent released" not in text:
         raise RuntimeError("installed node did not complete the agent lifecycle")
 
     if sys.platform != "win32":
         for sig in (signal.SIGINT, signal.SIGTERM):
+            configured = path / (
+                "selected.toml" if sig == signal.SIGTERM else "options with spaces.toml"
+            )
+            async with FileConfigStore(configured) as store:
+                await store.write(payload, expected_revision=None)
             process = await asyncio.create_subprocess_exec(
                 "bcn",
                 "--configer-options",

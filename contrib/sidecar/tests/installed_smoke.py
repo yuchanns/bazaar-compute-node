@@ -90,18 +90,18 @@ async def exercise(directory: Path, transport: str, control: str):
         entries = [
             entry
             for entry in converted.payload["contribs"]
-            if entry["contrib"] in {"sidecar", native}
+            if entry["enabled"][0]["entry"] in {"sidecar", native}
         ]
         endpoint = next(
-            entry["config"]["endpoint"]
+            entry["enabled"][0]["config"]["endpoint"]
             for entry in entries
-            if entry["contrib"] == native
+            if entry["enabled"][0]["entry"] == native
         )
     else:
         endpoint = str(directory / "endpoint")
         entries = [
-            {"contrib": provider, "config": {"endpoint": endpoint}},
-            {"contrib": "sidecar"},
+            {"enabled": [{"entry": provider, "config": {"endpoint": endpoint}}]},
+            {"enabled": [{"entry": "sidecar"}]},
         ]
     journal = directory / "journal.txt"
     child = directory / "child.txt"
@@ -110,12 +110,16 @@ async def exercise(directory: Path, transport: str, control: str):
     payload = {
         "version": "5",
         "contribs": [
-            {"contrib": "commands"},
+            {"enabled": [{"entry": "commands"}]},
             *entries,
-            {"contrib": "sidecar-controls"},
+            {"enabled": [{"entry": "sidecar-controls"}]},
             {
-                "contrib": "sidecar-journal",
-                "config": {"path": str(journal), "tag": "before"},
+                "enabled": [
+                    {
+                        "entry": "sidecar-journal",
+                        "config": {"path": str(journal), "tag": "before"},
+                    }
+                ]
             },
         ],
     }
@@ -158,14 +162,14 @@ async def exercise(directory: Path, transport: str, control: str):
                 "accept", Symbol("bazaar_contrib_config:CONFIGURATION")
             )
             _, snapshot = await configuration.call("read")
-            payload["contribs"][-1]["config"]["tag"] = message
+            payload["contribs"][-1]["enabled"][0]["config"]["tag"] = message
             snapshot = await configuration.call(
                 "commit", payload, expected_revision=await snapshot.get("revision")
             )
             _, snapshot = await configuration.call("read")
             saved = await snapshot.get("payload")
-            assert message in saved["contribs"][-1]["config"]["tag"]
-            payload["contribs"][-1]["config"]["tag"] = "before"
+            assert message in saved["contribs"][-1]["enabled"][0]["config"]["tag"]
+            payload["contribs"][-1]["enabled"][0]["config"]["tag"] = "before"
             snapshot = await configuration.call(
                 "commit", payload, expected_revision=await snapshot.get("revision")
             )
@@ -211,7 +215,7 @@ async def exercise(directory: Path, transport: str, control: str):
                     )
                 await candidate.release()
 
-            payload["contribs"][-1]["config"]["tag"] = "after"
+            payload["contribs"][-1]["enabled"][0]["config"]["tag"] = "after"
             await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
             result = json.loads(await command(config, "remote", "refresh"))
             assert result["applied"], result
