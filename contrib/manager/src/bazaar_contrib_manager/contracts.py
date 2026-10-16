@@ -15,6 +15,7 @@ from pydantic import (
     UrlConstraints,
     field_validator,
 )
+lazy from bazaar_contrib_config import ContribPackage
 lazy from packaging.specifiers import SpecifierSet
 lazy from packaging.utils import canonicalize_name
 
@@ -78,8 +79,8 @@ class InstalledPackage(BaseModel):
     package: str
     version: str
     summary: str = ""
+    url: str | None = None
     entries: tuple[EntryInfo, ...] = ()
-    defaults: dict[str, Any] | None = None
     requirements: tuple[str, ...] = ()
 
 
@@ -91,11 +92,10 @@ class EnvironmentInfo(BaseModel):
     packages: tuple[InstalledPackage, ...]
 
 
-class Manifest(BaseModel):
+class EnvironmentPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     host: Package
-    packages: tuple[Package, ...] = ()
-    installed: dict[str, str] = Field(default_factory=dict)
+    packages: tuple[ContribPackage, ...] = ()
 
 
 class Operation(BaseModel):

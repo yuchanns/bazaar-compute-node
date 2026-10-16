@@ -2,9 +2,7 @@
 
 from bazaar_contrib_invoke import CommandEntry
 
-command_entry = CommandEntry(
-    contrib="contrib-manager", help="Manage contrib packages and configuration."
-)
+command_entry = CommandEntry(contrib="contrib-manager", help="Manage contribs")
 
 lazy from .catalog import CONTRIB_CATALOG, ContribCatalog
 lazy from .contracts import (
