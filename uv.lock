@@ -16,6 +16,8 @@ members = [
     "bazaar-contrib-sidecar-unix",
     "bazaar-contrib-sidecar-windows",
     "bazaar-contrib-status",
+    "bazaar-contrib-timer",
+    "bazaar-contrib-timer-wheel",
     "bazaar-core",
     "bcn-workspace",
 ]
@@ -246,6 +248,34 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "bazaar-core", editable = "core" }]
+
+[[package]]
+name = "bazaar-contrib-timer"
+version = "0.3.0"
+source = { editable = "contrib/timer" }
+dependencies = [
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "bazaar-core", editable = "core" }]
+
+[[package]]
+name = "bazaar-contrib-timer-wheel"
+version = "0.3.0"
+source = { editable = "contrib/timer-wheel" }
+dependencies = [
+    { name = "bazaar-contrib-timer" },
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
 
 [[package]]
 name = "bazaar-core"

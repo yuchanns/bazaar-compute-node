@@ -5,7 +5,7 @@
 
 ## 顺序与能力归属
 
-以下按依赖排列。首个特性分支交付第 1–7 项中的默认基础能力及默认 agent 的配置管理，按 [首阶段 Tasks](framework.md#本特性分支的串行-tasks) 分项实现并 review。
+以下列明能力依赖。首阶段先完成命令与调用，再单独交付节点共享 timer、数据库，随后完成 agent 相关能力；每个 Task 的顺序与 review 节点按 [首阶段 Tasks](framework.md#本特性分支的串行-tasks) 分项实现并 review。
 具体渠道和 harness provider、其余平台管理及 server／web 等组合由后续特性分支交付，合入按各自验证结果推进。
 每一阶段在新成员中实现所属能力、调用者和包内测试，后台协程归属任务组，通知和队列使用 Event 与 Queue，取消和时限通过任务取消与 timeout 管理，线程与子进程使用标准库接口。
 新包统一要求 Python 3.15。每一阶段都完成其新模块的包结构与安装验证，发布版本在最终发行阶段统一收齐。
@@ -16,12 +16,12 @@
 | 顺序 | 能力主题 | 模块化的能力 | 前置能力与验收 |
 | --- | --- | --- | --- |
 | 1 | 框架与日志 | core 运行内核、统一启动接口、本地绑定与发现，app 普通命令入口与默认资源，公共配置载体与版本服务契约、filesystem 实现、五版转换模块、自举、V5 配置、安装管理和日志 | 组合明确声明 ContribEntry 及服务绑定，ContribHub 按服务依赖和父实例关系启动、更新及释放实例，用户统一在业务文档顶层 contribs 启用，登记 lifespan / listen / offers 和静态或按配置计算的 accepts；Context 提供 offer / accept / announce；启动输入选择提供 CONFIG_STORE 的已安装入口；版本包提供 VERSIONS 组合并装配 CONFIG_CURRENT 依赖链，V1→V2→V3→V4→V5 服务生成候选和所需包，宿主校验后经载体条件提交；通过包元数据关联入口；节点升级保留模块依赖与来源 |
-| 2 | 命令、注册入口与调用 | COMMANDS、插件命令、sidecar；channel / harness builder、bcc 命令 | 共享 Click 命令与 invoke 的入口扩展；sidecar 定义 SERVER／CLIENT 及 ctx handler，Unix／Windows 包提供传输服务，消费者依赖接口并自行编排调用；core 按通用插件根与绑定选择依赖，回调决定退出时间；builder 登记实体关系 |
+| 2 | 命令、调用与共享定时器 | COMMANDS、插件命令、sidecar；独立 timer 契约和时间轮实现 | 共享 Click 命令与 invoke 的入口扩展；sidecar 定义 SERVER／CLIENT 及 ctx handler，Unix／Windows 包提供传输服务，消费者依赖接口并自行编排调用；core 按通用插件根与绑定选择依赖，回调决定退出时间；定时器独立提供共享 TIMER，任意节点插件声明依赖后由组合选入所选实现，并在数据库之前单独交付 |
 | 3 | 数据库与迁移 | storage 公共数据操作契约、后端注册表、DB 选择层、SQLite 实现、schema 与迁移服务 | storage → 所选后端 → database → 消费者；按配置展开后端依赖，实际多个后端验证并存与选择；业务声明查询、provider 翻译；BCN／BCS 历史 ledger 分别识别，已发布迁移及 checksum 原样保存 |
 | 4 | 消息与会话 | agent 消息数据、会话 target、历史、未读 cursor、发送与回执、附件、草稿、搜索和 thread follow | 消息模块使用公共查询接口并持有业务模型与索引要求；同一消息服务供 CLI / RPC 使用；新调用者使用消息 / 会话 / 搜索服务，旧 repository 在最终发行阶段统一清理 |
 | 5 | 身份与协作 | sender / contact 身份、引用 refs、会话登记和审批、消息引用及关联 | 消息模块公共契约就绪；状态变化和读取遵循现有协作语义 |
-| 6 | 定时与提醒 | timer 公共契约、时间轮实现模块、Reminder 的登记、到期、snooze、更新、取消、持久化与唤醒 | 节点启用时间轮并提供共享 timer；消费者直接依赖 timer 契约；提醒模块使用 db 自持业务，新调用者直接依赖其契约，旧实现最终统一清理 |
-| 7 | agent 配置、执行与编排 | agent 组合入口拥有配置模型、实例构造与管理命令；执行实例处理 turn、会话绑定、调度、输出、审批和任务故障 | 默认 agent 依赖 channel／harness 公共接口及消息、协作、提醒、timer、审计；组合明确创建本地实例，可整体替换 agent 实现 |
+| 6 | Reminder | Reminder 的登记、到期、snooze、更新、取消、持久化与唤醒 | 使用已交付的共享 timer、DB 和消息服务，自持提醒业务；新调用者直接依赖其契约，旧实现最终统一清理 |
+| 7 | agent 公共接口、配置、执行与编排 | channel／harness 接口和 builder 登记、bcc 命令；agent 组合入口拥有配置模型、实例构造与管理命令；执行实例处理 turn、会话绑定、调度、输出、审批和任务故障 | 公共接口在数据库后、消息前交付；默认 agent 依赖这些接口及消息、协作、提醒、timer；组合明确创建本地实例，可整体替换 agent 实现 |
 | 8 | 渠道 provider | Telegram、Lark、WeCom 的连接、收发、附件和 provider 特有配置 | 实现公共 channel 接口并通过 builder 登记；新增渠道由自己的实现包及 UI 模块接入 |
 | 9 | harness provider | Codex、Claude Code 的启动、模型、能力检查、事件解析与审批对接 | 通过 harness builder 与执行契约接入；真实 TestChannel 验证端到端行为 |
 | 10 | 节点与平台管理 | 节点配置、workspace / 文件、模型与 skills 查询、版本检查、升级、系统服务和健康；agent 配置由第 7 项的 agent 插件拥有 | RPC / 命令注册可用；各管理能力自行提供服务和入口；安装与升级共用包管理机制 |
@@ -43,7 +43,8 @@
 | 状态与日志 | status、logging |
 | 模块与节点管理 | contrib-manager、commands、sidecar、按平台选择的 sidecar 实现、node-management |
 | 存储 | storage、sqlite、database、schema，默认 database.config.backend="sqlite" |
-| agent 公共业务 | messages、collaboration、timer-wheel、reminder |
+| 节点通用定时 | timer-wheel 作为 TIMER 提供者，由消费者的依赖闭包选入 |
+| agent 公共业务 | messages、collaboration、reminder |
 | provider 公共接口与 agent | channel-builders、harness-builders；agent 组合持有配置，明确构造执行及 provider 实例 |
 
 具体 channel／harness provider 由用户通过 `bcn contrib add <name> --enable ENTRY` 安装并选择入口；单独 `--enable` 启用该包导出的全部入口，例如 codex、telegram。
@@ -79,9 +80,9 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | `bazaar-contrib-config` | ConfigStore、ConfigSnapshot、CONFIG_STORE、ConfigConverter、ConfigCandidate、CONFIG_CURRENT、CONFIG_V1…CONFIG_V5、修订条件提交与错误契约 | 公共配置加载器、filesystem／自定义配置中心载体、app 参数绑定、CLI 和管理入口 | 1 | 默认、应用组合的依赖 |
 | `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 活动记录、starlink 的事件上报及事件投影，按业务需要接入 | 11 | 所需业务的依赖 |
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
-| `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 6 | 默认、server 的依赖 |
-| `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 2 | 默认；web 的编辑器依赖 |
-| `bazaar-contrib-harness` | `IHarness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 2 | 默认 |
+| `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 2 | 默认、server 的依赖 |
+| `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 7 | 默认；web 的编辑器依赖 |
+| `bazaar-contrib-harness` | `IHarness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 7 | 默认 |
 
 这六个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
@@ -107,7 +108,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
 | `bazaar-contrib-messages` | `messages`：共享 | 消息／会话、历史、未读、搜索、附件、草稿、收发回执和 thread follow；依赖 storage、schema、调用与审计契约 | 4 | 默认；server 投影的契约依赖 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | sender／contact、refs、会话登记、审批及可见范围；依赖消息、storage 和调用契约 | 5 | 默认；server 联系人的契约依赖 |
-| `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 6 | 默认、server |
+| `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 2 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
 | `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
 | `bazaar-contrib-node-management` | `node-management`：共享 | 首阶段接收已实现的 run 命令、配置激活与退出等待；后续节点配置、workspace／文件、模型／skills、健康、系统服务与升级按阶段交付；agent 配置及命令由 agent 包拥有 | 2、10 | 默认 |
@@ -449,10 +450,12 @@ bazaar-contrib-config-versions 导出五个共享入口，Vn accepts 前一版�
 
 ### 定时器契约与时间轮实现
 
+定时能力在数据库之前单独用一个 commit 交付，完成后停下 review；数据库随后用另一个 commit 交付。
+公共 `bazaar-contrib-timer` 与实现 `bazaar-contrib-timer-wheel` 是两个独立发行包，消费者和第三方实现共同依赖公共包。
 定时能力拆成公共 timer 契约和提供该契约的实现模块。时间轮模块承接分层时间轮实现，
 在 lifespan 中创建并启动驱动任务，通过 `ctx.offer(TIMER, timer_service)` 提供服务，退出时关闭驱动与未完成定时器。
-默认 BCN 组合启用一个使用共享 TIMER 绑定的时间轮实例，agent 和 channel / harness 实例声明 TIMER 依赖并使用同一绑定；
-纯 server 组合在默认组合启用同一实现。
+BCN 组合声明使用共享 TIMER 绑定的时间轮条目，按所选消费者根的依赖闭包启用；
+agent、channel／harness、管理及纯 server 组合均可声明 TIMER 依赖并使用所选实现。
 
 timer 契约由功能契约包持有，定义定时器创建、重置、取消、等待到期、定时精度与最大延迟能力，
 以及取消和服务关闭的统一结果语义。各消费者声明 `accepts=[TIMER]`，通过 `ctx.accept(TIMER)` 使用服务。
@@ -461,7 +464,7 @@ timer 契约由功能契约包持有，定义定时器创建、重置、取消�
 
 Reminder 模块依赖 DB 与 TIMER，自行持有持久化、调度、snooze、更新、取消、到期与 agent 唤醒规则。
 agent 空闲管理、消息合并等待、渠道限流与重试、版本检查、健康上报和远程连接重连使用通用 timer 服务。
-本阶段在新包组合中实现这些调用者及定时器异常契约，业务依赖 TIMER 公共服务；旧时间轮及中心装配在最终发行阶段统一清理。
+定时器任务先交付公共服务与异常契约，各业务阶段再实现相应调用者并依赖 TIMER 公共服务；旧时间轮及中心装配在最终发行阶段统一清理。
 以真实定时器、隔离资源及业务流程验证到期、重置、取消、驱动故障、消费者退出和宿主关闭的行为。
 
 ### 新功能与调用
