@@ -47,10 +47,14 @@ version = "0.3.0"
 source = { editable = "contrib/config" }
 dependencies = [
     { name = "bazaar-core" },
+    { name = "packaging" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bazaar-core", editable = "core" }]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "packaging", specifier = ">=26.0" },
+]
 
 [[package]]
 name = "bazaar-contrib-config-filesystem"

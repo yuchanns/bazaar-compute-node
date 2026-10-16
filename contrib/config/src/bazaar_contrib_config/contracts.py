@@ -7,9 +7,20 @@ from typing import Annotated, Any, Literal, Protocol
 lazy from collections.abc import Mapping
 lazy from typing import Self
 
-from bazaar_core import ServiceKey
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from bazaar_core import EventKey, ServiceKey
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+lazy from packaging.requirements import Requirement
 lazy from packaging.specifiers import SpecifierSet
+lazy from packaging.utils import canonicalize_name
+
+CONFIG_PREPARE = EventKey[None]("config.prepare")
 
 
 class ConfigConflict(ValueError):
@@ -78,8 +89,50 @@ class ConfigConverter(Protocol):
 
 class EnabledContrib(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contrib: str = Field(min_length=1)
+    entry: str = Field(min_length=1)
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContribPackage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    package: str = ""
+    source: str = ""
+    enabled: tuple[EnabledContrib, ...] = ()
+
+    @field_validator("package")
+    @classmethod
+    def dependency(cls, value: str) -> str:
+        return str(Requirement(value)) if value else value
+
+    @field_validator("source")
+    @classmethod
+    def index(cls, value: str) -> str:
+        if value and AnyUrl(value).scheme not in ("http", "https", "file"):
+            raise ValueError("package source must be an HTTP(S) or file URL")
+        return value
+
+    @model_validator(mode="after")
+    def declaration(self) -> Self:
+        if not self.enabled and not self.package:
+            raise ValueError("a contrib entry or package dependency is required")
+        return self
+
+    @property
+    def distribution(self) -> str:
+        return (
+            str(canonicalize_name(Requirement(self.package).name))
+            if self.package
+            else ""
+        )
+
+    @property
+    def applies(self) -> bool:
+        requirement = Requirement(self.package) if self.package else None
+        return (
+            requirement is None
+            or requirement.marker is None
+            or requirement.marker.evaluate()
+        )
 
 
 class ProviderConfig(BaseModel):
@@ -103,7 +156,7 @@ class ConfigDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     version: Literal["5"] = "5"
     contrib_indexes: tuple[str, ...] = ()
-    contribs: tuple[EnabledContrib, ...] = ()
+    contribs: tuple[ContribPackage, ...] = ()
     agent: tuple[AgentConfig, ...] = ()
 
     @model_validator(mode="after")

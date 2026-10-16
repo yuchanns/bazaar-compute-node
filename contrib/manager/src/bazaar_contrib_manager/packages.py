@@ -8,16 +8,20 @@ lazy import re
 lazy import shutil
 lazy import sys
 lazy import tomllib
-lazy from collections.abc import Sequence
 lazy from pathlib import Path
 lazy from urllib.parse import unquote, urlsplit
 
 lazy import tomli_w
+lazy from bazaar_contrib_config import (
+    ConfigDocument,
+    ConfigurationEnvironment,
+    ContribPackage,
+)
 lazy from packaging.requirements import Requirement
 lazy from packaging.tags import sys_tags
 lazy from packaging.utils import canonicalize_name, parse_wheel_filename
 
-lazy from .contracts import EnvironmentInfo, ManagementError, Manifest, Package
+lazy from .contracts import EnvironmentInfo, EnvironmentPlan, ManagementError, Package
 
 
 class Packages:
@@ -72,69 +76,111 @@ class Packages:
         )
         return EnvironmentInfo.model_validate_json(output)
 
-    async def manifest(self, entries: Sequence[Package]) -> Manifest:
-        path = self.path / "manifest.json"
-        try:
-            return Manifest.model_validate_json(
-                await asyncio.to_thread(path.read_bytes)
-            )
-        except FileNotFoundError:
-            pass
+    async def plan(
+        self, document: ConfigDocument, environment: ConfigurationEnvironment | None
+    ) -> EnvironmentPlan:
         installed = await self.inspect()
-        packages = {package.package: package for package in installed.packages}
-        host = packages["bazaar-compute-node"]
-        required = {host.package}
-        pending = [host]
-        while pending:
-            current = pending.pop()
-            for raw in current.requirements:
-                requirement = Requirement(raw)
-                if requirement.marker is not None and not requirement.marker.evaluate():
-                    continue
-                name = str(canonicalize_name(requirement.name))
-                if name not in required and name in packages:
-                    required.add(name)
-                    pending.append(packages[name])
-        extra: list[Package] = []
-        for package in packages.values():
-            if not package.entries or package.package in required:
-                continue
-            sources = {
-                entry.source for entry in entries if entry.package == package.package
-            }
-            if len(sources) != 1:
-                raise ManagementError(
-                    f"select a source for already installed {package.package} before managing its environment"
-                )
-            extra.append(
-                Package(
-                    package=package.package,
-                    source=next(iter(sources)),
-                    version=f"=={package.version}",
-                )
+        host = next(
+            package
+            for package in installed.packages
+            if package.package == "bazaar-compute-node"
+        )
+        declared = {
+            entry.distribution
+            for entry in document.contribs
+            if entry.package and entry.applies
+        }
+        required = {
+            str(canonicalize_name(Requirement(requirement).name))
+            for requirement in host.requirements
+        }
+        entries = (
+            {entry.entry for entry in environment.entries}
+            if environment is not None
+            else set()
+        )
+        bootstrap = tuple(
+            ContribPackage(
+                package=(
+                    f"{package.package} @ {package.url}"
+                    if package.url is not None
+                    else f"{package.package}=={package.version}"
+                ),
+                source=self.source,
             )
-        return Manifest(
+            for package in installed.packages
+            if package.package not in declared | required | {host.package}
+            and any(entry.name in entries for entry in package.entries)
+        )
+        return EnvironmentPlan(
             host=Package(
                 package=host.package, source=self.source, version=f"=={host.version}"
             ),
-            packages=tuple(extra),
-            installed={
-                package.package: package.version for package in installed.packages
-            },
+            packages=(
+                *(entry for entry in document.contribs if entry.package),
+                *bootstrap,
+            ),
         )
 
-    async def resolve(self, manifest: Manifest, path: Path) -> Path:
+    async def satisfied(self, plan: EnvironmentPlan) -> bool:
+        """Check declarations and the requested extras against actual installed metadata."""
+        installed = await self.inspect()
+        packages = {package.package: package for package in installed.packages}
+        pending = [
+            Requirement(entry.package) for entry in plan.packages if entry.applies
+        ]
+        pending.append(Requirement(plan.host.package + plan.host.version))
+        checked: set[tuple[str, frozenset[str]]] = set()
+        while pending:
+            requirement = pending.pop()
+            name = str(canonicalize_name(requirement.name))
+            package = packages.get(name)
+            if package is None or not requirement.specifier.contains(
+                package.version, prereleases=True
+            ):
+                return False
+            if requirement.url and package.url != requirement.url.split("#", 1)[0]:
+                return False
+            key = name, frozenset(requirement.extras)
+            if key in checked:
+                continue
+            checked.add(key)
+            for raw in package.requirements:
+                dependency = Requirement(raw)
+                if dependency.marker is None or any(
+                    dependency.marker.evaluate({"extra": extra})
+                    for extra in ("", *requirement.extras)
+                ):
+                    pending.append(dependency)
+        return True
+
+    async def resolve(self, plan: EnvironmentPlan, path: Path) -> Path:
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
-        packages = (manifest.host, *manifest.packages)
-        indexes = list(dict.fromkeys(package.source for package in packages))
+        packages = (
+            ContribPackage(
+                package=plan.host.package + plan.host.version, source=plan.host.source
+            ),
+            *plan.packages,
+        )
+        indexes = list(
+            dict.fromkeys(package.source or self.source for package in packages)
+        )
+        sources: dict[str, dict[str, str]] = {}
+        for package in packages:
+            requirement = Requirement(package.package)
+            if requirement.url or not package.applies:
+                continue
+            source = {"index": f"source-{indexes.index(package.source or self.source)}"}
+            name = package.distribution
+            if name in sources and sources[name] != source:
+                raise ManagementError(f"conflicting sources for {name}")
+            sources[name] = source
         project = {
             "project": {
                 "name": "bazaar-contrib-environment",
                 "version": "0",
                 "requires-python": ">=3.15",
-                "dependencies": [
-                    package.package + package.version for package in packages
-                ],
+                "dependencies": [package.package for package in packages],
             },
             "tool": {
                 "uv": {
@@ -142,12 +188,7 @@ class Packages:
                         {"name": f"source-{index}", "url": source}
                         for index, source in enumerate(indexes)
                     ],
-                    "sources": {
-                        package.package: {
-                            "index": f"source-{indexes.index(package.source)}"
-                        }
-                        for package in packages
-                    },
+                    "sources": sources,
                 }
             },
         }
@@ -182,7 +223,7 @@ class Packages:
         )
         return python
 
-    async def install(self, manifest: Manifest, lock: Path) -> None:
+    async def install(self, plan: EnvironmentPlan, lock: Path) -> None:
         if self.tool:
             info = await self.inspect()
             document = tomllib.loads(
@@ -195,7 +236,11 @@ class Packages:
             for package in document["packages"]:
                 candidates = []
                 for wheel in package.get("wheels", ()):
-                    filename = unquote(urlsplit(wheel["url"]).path.rsplit("/", 1)[-1])
+                    filename = wheel.get("name") or (
+                        Path(wheel["path"]).name
+                        if "path" in wheel
+                        else unquote(urlsplit(wheel["url"]).path.rsplit("/", 1)[-1])
+                    )
                     wheel_tags = parse_wheel_filename(filename)[3]
                     priorities = [tags[tag] for tag in wheel_tags if tag in tags]
                     if priorities:
@@ -203,9 +248,19 @@ class Packages:
                 artifact = (
                     min(candidates, key=lambda item: item[0])[1]
                     if candidates
+                    else package["archive"]
+                    if "archive" in package
+                    else package["directory"]
+                    if "directory" in package
                     else package["sdist"]
                 )
-                url = artifact["url"]
+                if "path" in artifact:
+                    path = await asyncio.to_thread(
+                        (lock.parent / artifact["path"]).resolve
+                    )
+                    url = path.as_uri()
+                else:
+                    url = artifact["url"]
                 digest = artifact.get("hashes", {}).get("sha256")
                 if digest is not None:
                     url += f"#sha256={digest}"
@@ -218,13 +273,13 @@ class Packages:
                 str(self.uv),
                 "tool",
                 "install",
-                requirements[manifest.host.package],
+                requirements[plan.host.package],
                 "--with-requirements",
                 str(path),
                 "--python",
                 str(info.base_python),
                 "--refresh-package",
-                manifest.host.package,
+                plan.host.package,
                 cwd=lock.parent,
             )
         else:

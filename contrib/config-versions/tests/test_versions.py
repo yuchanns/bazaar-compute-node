@@ -136,8 +136,9 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
     }
     candidate = await asyncio.to_thread(converters[-1].convert, v3)
     entries = {
-        entry["contrib"]: entry.get("config", {})
-        for entry in candidate.payload["contribs"]
+        entry["entry"]: entry.get("config", {})
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
     }
     assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
     assert (

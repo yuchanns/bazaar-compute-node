@@ -129,11 +129,15 @@ def create_commands(manager: ContribManager) -> click.Group:
             result=result, details=details
         )
 
-    @click.group("contrib", help="Manage contrib packages and configuration.")
+    @click.group("contrib", help="Manage contribs")
     def contrib():
         pass
 
-    @contrib.command("list", help="List installed packages.")
+    @contrib.command("sync", help="Update the contrib environment")
+    def sync():
+        return execute(manager, lambda manager: manager.sync(), outcome, err=True)
+
+    @contrib.command("list", help="List installed packages")
     def list_command():
         return execute(
             manager,
@@ -143,7 +147,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             ),
         )
 
-    @contrib.command("show", help="Show information about an installed package.")
+    @contrib.command("show", help="Show information about an installed package")
     @click.argument("name", metavar="PACKAGE")
     def show(name: str):
         def render(package: InstalledPackage) -> str:
@@ -189,7 +193,7 @@ def create_commands(manager: ContribManager) -> click.Group:
 
         return execute(manager, lambda manager: manager.detail(name), render)
 
-    @contrib.command("entries", help="List available packages.")
+    @contrib.command("entries", help="List available packages")
     def entries():
         return execute(
             manager,
@@ -202,11 +206,11 @@ def create_commands(manager: ContribManager) -> click.Group:
             ),
         )
 
-    @contrib.group("index", help="Manage contrib indexes.")
+    @contrib.group("index", help="Manage contrib indexes")
     def index():
         pass
 
-    @index.command("list", help="List configured contrib indexes.")
+    @index.command("list", help="List configured contrib indexes")
     def index_list():
         return execute(
             manager,
@@ -227,13 +231,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             ),
         )
 
-    @index.command(
-        "add",
-        help=(
-            "Add a contrib index.\n\n"
-            "LOCATION is the URL or path of a contrib index file."
-        ),
-    )
+    @index.command("add", help="Add a contrib index")
     @click.argument("location")
     def index_add(location: str):
         return execute(
@@ -243,13 +241,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             err=True,
         )
 
-    @index.command(
-        "remove",
-        help=(
-            "Remove a contrib index.\n\n"
-            "Use a location shown by 'bcn contrib index list'."
-        ),
-    )
+    @index.command("remove", help="Remove a contrib index")
     @click.argument("location")
     def index_remove(location: str):
         return execute(
@@ -259,27 +251,22 @@ def create_commands(manager: ContribManager) -> click.Group:
             err=True,
         )
 
-    @contrib.command(
-        "add",
-        help=(
-            "Install a contrib package.\n\n"
-            "Use --enable to enable its contribs after installation. "
-            "Use --entry and --option to choose a contrib and configure it."
-        ),
-    )
+    @contrib.command("add", help="Install a contrib package")
     @click.argument("name", metavar="PACKAGE")
-    @click.option(
-        "--source", metavar="INDEX", help="Select the package index to install from."
-    )
+    @click.option("--source", metavar="INDEX", help="Use the given package index")
     @click.option(
         "--version",
         default="",
         metavar="CONSTRAINT",
-        help="Version constraint to install, such as '>=1,<2'.",
+        help="Constrain the package version",
     )
-    @click.option("--enable", is_flag=True, help="Enable contribs after installation.")
     @click.option(
-        "--entry", metavar="CONTRIB", help="Contrib to enable when using --enable."
+        "--enable",
+        is_flag=False,
+        flag_value="",
+        default=None,
+        metavar="[ENTRY]",
+        help="Enable one or all contribs",
     )
     @click.option(
         "--option",
@@ -287,17 +274,13 @@ def create_commands(manager: ContribManager) -> click.Group:
         type=PARAMETERS,
         multiple=True,
         metavar="KEY=VALUE",
-        help=(
-            "Set a contrib option when enabling. "
-            "Use dotted keys for nested options; repeat a key for list values."
-        ),
+        help="Set a contrib option",
     )
     def add(
         name: str,
         source: str | None,
         version: str,
-        enable: bool,
-        entry: str | None,
+        enable: str | None,
         options: tuple[Option, ...],
     ):
         config = parameters(options) if options else None
@@ -305,23 +288,22 @@ def create_commands(manager: ContribManager) -> click.Group:
         async def action(manager: ContribManager):
             package = await manager.catalog.select(name, source=source, version=version)
             return await manager.add(
-                package, enable=enable, contrib=entry, config=config
+                package,
+                enable=enable is not None,
+                contrib=enable or None,
+                config=config,
             )
 
         return execute(
             manager,
             action,
-            lambda result: outcome(result, name=name, enable=enable),
+            lambda result: outcome(
+                result, name=name, enable=enable is not None, entry=enable
+            ),
             err=True,
         )
 
-    @contrib.command(
-        "remove",
-        help=(
-            "Uninstall a contrib package.\n\n"
-            "Disable its contribs before uninstalling the package."
-        ),
-    )
+    @contrib.command("remove", help="Uninstall a contrib package")
     @click.argument("name", metavar="PACKAGE")
     def remove(name: str):
         async def action(manager: ContribManager):
@@ -330,21 +312,16 @@ def create_commands(manager: ContribManager) -> click.Group:
 
         return execute(manager, action, outcome, err=True)
 
-    @contrib.command("enable", help="Enable contribs from an installed package.")
+    @contrib.command("enable", help="Enable contribs from an installed package")
     @click.argument("name", metavar="PACKAGE")
-    @click.option(
-        "--entry", metavar="CONTRIB", help="Enable only this contrib from the package."
-    )
+    @click.option("--entry", metavar="CONTRIB", help="Enable the specified contrib")
     @click.option(
         "--option",
         "options",
         type=PARAMETERS,
         multiple=True,
         metavar="KEY=VALUE",
-        help=(
-            "Set a contrib option. "
-            "Use dotted keys for nested options; repeat a key for list values."
-        ),
+        help="Set a contrib option",
     )
     def enable(name: str, entry: str | None, options: tuple[Option, ...]):
         config = parameters(options) if options else None
@@ -355,28 +332,40 @@ def create_commands(manager: ContribManager) -> click.Group:
             err=True,
         )
 
-    @contrib.command("configured", help="List enabled contribs.")
+    @contrib.command("configured", help="List configured contribs")
     def configured():
         async def action(manager: ContribManager):
             candidate, _ = await manager.configuration.read()
             rows = []
-            for index, entry in enumerate(candidate.payload["contribs"]):
-                options = []
-                pending = list(entry.get("config", {}).items())
-                while pending:
-                    name, value = pending.pop(0)
-                    if isinstance(value, (dict, list)) and value:
-                        items = (
-                            value.items()
-                            if isinstance(value, dict)
-                            else enumerate(value)
+            index = 0
+            for package in candidate.payload.get("contribs", ()):
+                for entry in package.get("enabled", ()) or ({},):
+                    options = []
+                    pending = list(entry.get("config", {}).items())
+                    while pending:
+                        name, value = pending.pop(0)
+                        if isinstance(value, (dict, list)) and value:
+                            items = (
+                                value.items()
+                                if isinstance(value, dict)
+                                else enumerate(value)
+                            )
+                            pending[0:0] = [
+                                (f"{name}.{key}", value) for key, value in items
+                            ]
+                        else:
+                            options.append(f"{name}={value}")
+                    rows.append(
+                        (
+                            str(index) if entry else "-",
+                            entry.get("entry") or "(installed only)",
+                            package.get("package", ""),
+                            package.get("source", ""),
+                            ", ".join(options),
                         )
-                        pending[0:0] = [
-                            (f"{name}.{key}", value) for key, value in items
-                        ]
-                    else:
-                        options.append(f"{name}={value}")
-                rows.append((str(index), entry["contrib"], ", ".join(options)))
+                    )
+                    if entry:
+                        index += 1
             return rows
 
         return execute(
@@ -385,13 +374,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             lambda rows: templates.get_template("configured.tpl").render(rows=rows),
         )
 
-    @contrib.command(
-        "edit",
-        help=(
-            "Update options for an enabled contrib.\n\n"
-            "Use the index shown by 'bcn contrib configured'."
-        ),
-    )
+    @contrib.command("edit", help="Update contrib options")
     @click.argument("index", type=click.IntRange(min=0))
     @click.option(
         "--option",
@@ -400,10 +383,7 @@ def create_commands(manager: ContribManager) -> click.Group:
         multiple=True,
         required=True,
         metavar="KEY=VALUE",
-        help=(
-            "Set a contrib option. "
-            "Use dotted keys for nested options; repeat a key for list values."
-        ),
+        help="Set a contrib option",
     )
     def edit(index: int, options: tuple[Option, ...]):
         return execute(
@@ -413,10 +393,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             err=True,
         )
 
-    @contrib.command(
-        "disable",
-        help=("Disable a contrib.\n\nUse the index shown by 'bcn contrib configured'."),
-    )
+    @contrib.command("disable", help="Disable a contrib")
     @click.argument("index", type=click.IntRange(min=0))
     def disable(index: int):
         return execute(
@@ -426,23 +403,14 @@ def create_commands(manager: ContribManager) -> click.Group:
             err=True,
         )
 
-    @contrib.command(
-        "upgrade",
-        help=("Upgrade Bazaar Compute Node.\n\nVERSION is the release to install."),
-    )
+    @contrib.command("upgrade", help="Upgrade Bazaar Compute Node")
     @click.argument("version")
     def upgrade(version: str):
         return execute(
             manager, lambda manager: manager.upgrade(version), outcome, err=True
         )
 
-    @contrib.command(
-        "operation",
-        help=(
-            "Show an operation's status and result.\n\n"
-            "Use the operation ID returned by a management command."
-        ),
-    )
+    @contrib.command("operation", help="Show operation details")
     @click.argument("id", type=click.UUID)
     def operation(id: UUID):
         return execute(

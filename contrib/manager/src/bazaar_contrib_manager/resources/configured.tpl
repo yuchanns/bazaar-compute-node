@@ -1,1 +1,1 @@
-{{ rows | table(("Index", "Contrib", "Options")) }}
+{{ rows | table(("Index", "Contrib", "Package", "Source", "Options")) }}

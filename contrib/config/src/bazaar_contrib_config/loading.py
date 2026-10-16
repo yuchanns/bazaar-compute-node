@@ -5,6 +5,7 @@ from __future__ import annotations
 lazy import asyncio
 lazy import importlib
 lazy import json
+lazy import logging
 lazy from collections.abc import Callable, Mapping
 lazy from contextlib import asynccontextmanager
 lazy from copy import deepcopy
@@ -21,6 +22,7 @@ lazy from bazaar_core import (
     Context,
     Contrib,
     ContribEntry,
+    ContribHub,
     Stopping,
 )
 
@@ -85,6 +87,7 @@ class Configuration:
         self.start = start
         self.snapshot: ConfigSnapshot | None = None
         self.candidate: ConfigCandidate | None = None
+        self.preparation_error: str | None = None
         self._composition: Candidate | None = None
         self._startup: tuple[ContribEntry, ...] = ()
         self._lock = asyncio.Lock()
@@ -141,43 +144,86 @@ class Configuration:
             ) from error
 
     async def load(self) -> Candidate:
-        """Read configuration, save defaults or a version migration, and select entries."""
+        """Validate startup input, retaining its snapshot during preparation."""
         snapshot = await self.store.read()
         payload = snapshot.payload if snapshot is not None else self.defaults
-        candidate, composition = await self.prepare(payload)
-        if self.start is not None and snapshot is not None:
-            self.snapshot, self.candidate = snapshot, candidate
-            return await self._loaded(candidate, composition)
-        if (
-            snapshot is not None
-            and payload.get("version") == candidate.payload["version"]
-        ):
-            self.snapshot, self.candidate = snapshot, candidate
-            return await self._loaded(candidate, composition)
-        self.check(composition)
-        snapshot = await self._write(candidate, snapshot.revision if snapshot else None)
-        self.snapshot, self.candidate = snapshot, candidate
-        return await self._loaded(candidate, composition)
-
-    async def _loaded(
-        self, candidate: ConfigCandidate, composition: Candidate
-    ) -> Candidate:
         if self.start is not None:
+            candidate = await asyncio.to_thread(self.converter.convert, payload)
             selected = await asyncio.to_thread(
                 self.start, ConfigDocument.model_validate(candidate.payload)
             )
             composition = self.ctx.validate(selected)
-            self.check(composition)
             self._startup = tuple(
                 entry
                 for entry in selected.entries
                 if selected.roots is not None and entry.name in selected.roots
             )
+        else:
+            candidate, composition = await self.prepare(payload)
+        if (
+            self.start is not None
+            or snapshot is None
+            or payload.get("version") != candidate.payload["version"]
+        ):
+            self.check(composition)
+        if self.start is None and (
+            snapshot is None or payload.get("version") != candidate.payload["version"]
+        ):
+            snapshot = await self._write(
+                candidate, snapshot.revision if snapshot else None
+            )
+        self.snapshot, self.candidate = snapshot, candidate
         self._composition = composition
         return composition
 
+    async def select(
+        self, start: Callable[[ConfigDocument], Composition] | None = None
+    ) -> None:
+        """Validate the prepared composition and save its converted configuration."""
+        async with self._lock:
+            candidate, snapshot = await self.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            composition = await asyncio.to_thread(start or self.build, document)
+            preview = self.ctx.validate(composition, replacing=self._composition)
+            save = (
+                self.snapshot is None
+                or self.snapshot.payload.get("version") != candidate.payload["version"]
+            )
+            if start is not None:
+                self.check(preview)
+            if self.preparation_error:
+                logging.getLogger(__name__).warning(
+                    "Configuration preparation failed; continuing with available contribs: %s",
+                    self.preparation_error,
+                )
+            if save and self.preparation_error is None:
+                whole = self.ctx.validate(
+                    composition.model_copy(update={"roots": None}),
+                    replacing=self._composition,
+                )
+                try:
+                    self.check(whole)
+                except ConfigFormatError as error:
+                    logging.getLogger(__name__).warning(
+                        "Keeping the original configuration because some contribs are unavailable: %s",
+                        error,
+                    )
+                else:
+                    snapshot = await self._write(
+                        candidate, self.snapshot.revision if self.snapshot else None
+                    )
+            await self.ctx.update(composition)
+            self.snapshot, self.candidate = snapshot, candidate
+            self._composition = preview
+            self.start = start
+            self._startup = tuple(
+                entry
+                for entry in composition.entries
+                if composition.roots is not None and entry.name in composition.roots
+            )
+
     @staticmethod
-    def check(composition: Candidate) -> None:
+    def check(composition: Candidate | ContribHub) -> None:
         errors = [
             f"{record.location}: {record.name}: {record.state.error}"
             for record in composition.snapshots
@@ -223,7 +269,23 @@ class Configuration:
             document = ConfigDocument.model_validate(self.candidate.payload)
             composition = await self._build(document)
             preview = self.ctx.validate(composition, replacing=self._composition)
-            self.check(preview)
+            if self._startup:
+                self.check(
+                    self.ctx.validate(
+                        composition.model_copy(
+                            update={
+                                "roots": tuple(entry.name for entry in self._startup)
+                            }
+                        ),
+                        replacing=self._composition,
+                    )
+                )
+            try:
+                self.check(preview)
+            except ConfigFormatError as error:
+                logging.getLogger(__name__).warning(
+                    "Some contribs are unavailable: %s", error
+                )
             await self.ctx.update(composition)
             self._composition = preview
             self.start = None
@@ -288,15 +350,36 @@ class Configuration:
         if snapshot is None:
             return await self.commit(payload, expected_revision=None)
         current = ConfigDocument.model_validate(snapshot.payload)
-        entries = list(current.contribs)
-        selected = {entry.contrib for entry in entries}
+        packages = list(current.contribs)
+        selected = {entry.entry for package in packages for entry in package.enabled}
         defaults = ConfigDocument.model_validate(self.defaults)
-        shared = {entry.contrib for entry in defaults.contribs}
-        for entry in document.contribs:
-            if entry.contrib not in selected and entry.contrib not in shared:
-                entries.append(entry)
-                selected.add(entry.contrib)
-        candidate = current.model_copy(update={"contribs": tuple(entries)})
+        shared = {
+            entry.entry for package in defaults.contribs for entry in package.enabled
+        }
+        for package in document.contribs:
+            entries = tuple(
+                entry
+                for entry in package.enabled
+                if entry.entry not in selected and entry.entry not in shared
+            )
+            if package.enabled and not entries:
+                continue
+            index = next(
+                (
+                    index
+                    for index, item in enumerate(packages)
+                    if package.package and item.distribution == package.distribution
+                ),
+                None,
+            )
+            if index is None:
+                packages.append(package.model_copy(update={"enabled": entries}))
+            else:
+                packages[index] = packages[index].model_copy(
+                    update={"enabled": (*packages[index].enabled, *entries)}
+                )
+            selected.update(entry.entry for entry in entries)
+        candidate = current.model_copy(update={"contribs": tuple(packages)})
         return await self.commit(
             candidate.model_dump(mode="json", exclude_none=True),
             expected_revision=snapshot.revision,

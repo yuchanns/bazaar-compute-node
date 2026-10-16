@@ -190,6 +190,9 @@ invoke 在执行目标回调前抛出明确的 RuntimeError，禁止回到 Click
 通过资源模板向 stderr 输出 uv 风格的 warning 与 Caused by 原因，包含命令名和所属发行包。
 选中失败命令时输出对应 error 并让该次调用失败，同一失败入口只报告一次。
 
+contrib add 接受没有 contrib 入口的普通发行包，是否启用入口由显式启用操作决定；
+包详情及 remove 从完整安装元数据中定位发行包，保留合法的仅安装声明管理流程。
+
 加载诊断在每次组合启用时复制独立记录并生成新 ID，parent 使用当前组合所属 contrib 的实例 ID；
 缺失与歧义插件的原始错误和位置保持随诊断记录发布，重复启用同一组合时按各自归属显示。
 
@@ -359,6 +362,7 @@ revision 是载体返回的不透明修订标识，与文档的结构 version �
 `write(expected_revision=None)` 仅在配置不存在时创建；传入修订标识时仅替换仍匹配该快照的配置。
 检查和提交由载体作为同一个条件操作完成，竞争失败抛出 ConfigConflict。
 普通启动按输入与目标结构版本判断是否需要迁移回写；版本相同时直接加载候选，旧版本经过候选检查后条件提交。
+依赖准备阶段保留原配置快照，先使用内存候选同步依赖并校验目标组合，再按原修订条件提交默认或迁移后的文档。
 加载、默认配置创建、迁移和组合导入遇到修订冲突时直接向调用者报错；调用者重新读取、校验后决定是否再次提交。
 提交成功返回实际提交后的快照；明确未提交的失败保持先前配置可读取。
 写入后响应丢失等结果未知的情况抛出 ConfigCommitUnknown，管理入口重新读取并核对当前内容与修订，
@@ -912,11 +916,16 @@ uv 由宿主进程的 PATH 解析为具体执行文件；目标环境明确对�
 实际执行使用参数数组，安装结果、发行清单和启用配置之间有明确提交顺序。
 
 运行配置是依赖声明的唯一来源。`contribs` 每项保存一个包的 `package`、可选 `source` 和 `enabled` 数组；每个启用项保存 `entry` 与自己的 `config`。
+本次自举由 `--configer` 和版本入口选定的发行包同时参与环境计划；manager 从已安装入口元数据取得所属包，
+保留直接引用或当前版本，宿主已有依赖和文档中适用于当前平台的包声明沿用各自规格。这些自举依赖不另写入用户文档。
+仅将当前平台适用的声明计入已保留的自举包，其余平台声明继续保存在配置中。
 `package` 使用与 `pyproject.toml` 的 `project.dependencies` 相同的完整 PEP 508 字符串，保留 extras、版本范围、URL 和 marker；
 `enabled = []` 表示只安装包。同一发行包的多个入口归入同一个数组，包规格和来源只声明一次；编辑参数保留依赖规格，停用最后一个入口保留只安装声明。
 TOML 可使用内联数组，也可用 `[[contribs.enabled]]` 展开启用项，再以 `[contribs.enabled.config]` 填写各入口的参数。
 `add` 未传 `--version` 时沿用所选索引条目的版本范围，显式参数覆盖索引范围；保存实际安装版本或所选版本范围及来源。
 `--enable` 将声明带到该包提供的入口。迁移只需复制配置。
+启用入口时仅选择当前平台适用的同名发行包声明，适用声明多于一条时明确报告歧义。configured 将省略 enabled 的合法声明按仅安装包展示。
+configured 同样将省略 contribs 的合法空配置按模型默认空列表展示。
 默认来源为空时使用 manager 的 `host_source`；显式来源随配置迁移。入口只在其依赖 marker 对当前平台成立时启用。
 
 调研依据：[Python dependency specifiers](https://packaging.python.org/en/latest/specifications/dependency-specifiers/)
@@ -926,10 +935,13 @@ TOML 可使用内联数组，也可用 `[[contribs.enabled]]` 展开启用项，
 
 每次启动先通过配置服务读取和保存文档，按普通配置声明发现入口。app 先按配置启用监听 CONFIG_PREPARE 的插件及其服务依赖，
 在它们就绪后发布并等待这个公开配置准备事件，再切换所选业务组合。配置决定入口名称和参数，自写实现监听同一事件即可替换。
-CONFIG_PREPARE 是 EventKey[None]；包管理插件自己的事件处理器复用 sync(only_missing=True)，并将失败转换为启动错误。
+CONFIG_PREPARE 是 EventKey[None]；包管理插件自己的事件处理器复用 sync(only_missing=True)，失败时将诊断写入配置服务的 preparation_error。
 默认实现检查目标解释器中的声明、extras 及传递依赖，缺失或版本不符时执行完整候选解析、安装和入口验证；
-满足时直接继续。随后配置服务在同一 Hub 中切换到调用者选择的命令根或完整节点组合，再进入业务 lifespan。
-显式 `bcn contrib sync` 复用该流程，按配置重新解析并安装；安装失败保留诊断，启动中止。
+满足时直接继续。随后配置服务报告准备诊断，在同一 Hub 中切换到调用者选择的命令根或完整节点组合，再进入业务 lifespan。
+所选命令根及其依赖继续严格校验；完整运行组合复用 core 的 Failed／Blocked 隔离，让独立的健康分支继续。
+配置服务只在准备成功且完整候选通过校验后自动保存新建或转换后的文档；降级启动保留原配置及其全部插件声明。
+完整组合激活前再次校验本次启动根及其服务依赖，其他故障通过现有状态与日志展示。manager 只消费已有 CONFIGURATION，app 继续只发布准备事件。
+显式 `bcn contrib sync` 按配置重新解析并安装，失败保留操作诊断；add、remove 及显式配置提交继续校验完整候选。
 app 保留直接使用的核心、配置、版本、命令公共契约包及首次启动所需的默认准备插件；status、logging、sidecar 及平台实现由默认配置声明。
 默认 TOML 直接声明两种原生 sidecar 入口及标准 PEP 508 `sys_platform` 条件，通用配置读取只选择条件成立的条目。默认包规格及仓库内正式依赖采用各自所需的三段式兼容范围，首版为 ~=0.3.0；固定宿主、包依赖及用户保存的版本要求共同约束解析结果，兼容旧依赖可以保留。
 发行工具更新 project.version 时保留仍适用的依赖下限；使用更新接口时才提高对应最低版本。
@@ -971,6 +983,9 @@ bazaar-contrib-pg = { index = "selected" }
 - **uv tool 部署**：从同一 pylock 选择当前解释器兼容的 wheel、锁定的 sdist 或标准 archive 直接引用，将下载地址与 SHA256 写成 requirements。
   使用 `uv tool install '<锁定的宿主包直接引用>' --with-requirements <candidate>/requirements.txt`，
   主包及全部附加依赖均使用已解析的产物；默认功能包与其他配置依赖一同解析。
+  按 [pylock 产物规范](https://packaging.python.org/en/latest/specifications/pylock-toml/#packages-archive-path)，
+  本地 wheel、sdist、archive 的 `path` 和源码 `directory.path` 相对于锁文件解析为文件 URL；
+  wheel 按文件名选择兼容标签，文件产物保留 SHA256，源码目录直接交给 uv 构建安装。
   现有监督进程负责下一次启动；Windows 沿用当前升级保留运行解释器的安装方式。
 - **自管 venv 部署**：同一 uv 使用 `uv pip sync --python <target-python> <candidate>/pylock.toml`，
   目标是由宿主管理完整依赖集合的专用 venv，安装和卸载均按候选完整组合同步。
@@ -1043,7 +1058,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 消融删除 Enablement 重复的活动／失败索引、未使用的 ready 属性和 Diff 重复候选字段；真实资源回归验证由 Hub 单一记录提供查询。
 - [x] 独立 bazaar-contrib-manager 提供索引、包、进度和结果契约，复用目标宿主 uv 及环境操作锁。
 - [x] 真实本地／HTTP 索引、缓存、私有源和多入口 wheel 验证安装、发现、导入、启停、编辑及卸载。
-- [x] add 在既有候选环境预检时读取目标发行包的 contrib 入口；没有入口则结束操作，提示 `No solution found when resolving dependencies: Because <package> was not a bazaar compute node contributor`，正式宿主环境和配置不进入安装／保存阶段。文案参考实际运行 uv pip install／uv add 的解析失败提示，通过既有 ManagementError 返回。传递依赖继续由 uv 解析。
+- [x] add 接受普通发行包及仅安装声明；显式启用时读取实际 contrib 入口。包详情和 remove 从完整安装元数据定位发行包，依赖解析与传递依赖由 uv 处理。
 - [x] add／enable／edit 使用可重复 --option KEY=VALUE，支持点分字段、列表位置与重复值；显式位置更新保留未编辑元素，重复字段值替换完整列表。
 - [x] uv tool／专用 venv 消费绑定来源的完整 pylock 候选，升级保留配置载体、额外依赖、来源与业务选择。
 - [x] 目标解释器先转换并检查完整配置，条件提交后分别记录安装、保存与运行结果；修改请求者自身生命周期时报告待重启。
@@ -1052,6 +1067,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 配置携带完整依赖规格与来源，add 更新版本及安装后锁定版本时保留原依赖的 extras 和环境 marker；add／enable／edit／disable／remove／upgrade 统一读写配置。
 - [x] contrib sync 与每次启动复用配置所选 manager 的检查及安装，准备阶段按公开事件监听声明及服务依赖装配，再切换所选业务组合；独立载体验收使用替代入口与独立的 uv 环境检查实现。
 - [x] 真实 uv tool 与 venv 验证仅复制配置即可恢复包、入口及参数，完成发行检查、Ruff、根 LSP，并单独签名提交。
+- [x] 补齐 uv tool 的本地锁定产物支持，在现有真实安装工作流验证本地 wheel 和源码目录的同步及入口运行，完成 Ruff 与根 LSP。
+- [x] 在完整安装计划及迁移补包时保留选定的自举载体，真实安装验证文档未声明载体包时仍可预检和同步。
 
 存储等后续包交付时，继续验证历史配置自动纳入依赖及完整 V4→V5 运行迁移。
 
