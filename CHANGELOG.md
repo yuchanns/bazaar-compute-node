@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.2 - 2026-10-16
+
+## What's Changed
+* feat: support native WeCom channel and post conversations by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/101
+* fix: preserve references to sent WeCom topic replies by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/102
+* fix: preserve quoted-message references across channels by @yuchanns in https://github.com/yuchanns/bazaar-compute-node/pull/103
+
+
+**Full Changelog**: https://github.com/yuchanns/bazaar-compute-node/compare/v0.2.1...v0.2.2
+
 ## 0.2.1 - 2026-10-08
 
 ## What's Changed
