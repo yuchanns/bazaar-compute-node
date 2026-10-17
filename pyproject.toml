@@ -28,6 +28,9 @@ bazaar-compute-node = { workspace = true }
 bazaar-core = { workspace = true }
 bazaar-contrib-status = { workspace = true }
 bazaar-contrib-agent = { workspace = true }
+bazaar-contrib-audit = { workspace = true }
+bazaar-contrib-channel = { workspace = true }
+bazaar-contrib-harness = { workspace = true }
 bazaar-contrib-storage = { workspace = true }
 bazaar-contrib-sqlite = { workspace = true }
 bazaar-contrib-schema = { workspace = true }

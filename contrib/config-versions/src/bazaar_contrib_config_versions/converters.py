@@ -100,6 +100,9 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         add("node-migrations", "node-migrations")
     add("timer-wheel", "timer-wheel")
     add("contrib-manager", "manager")
+    add("channel-builders", "channel")
+    add("harness-builders", "harness")
+    add("audit", "audit")
     changes.extend(
         [
             FieldChange(
@@ -151,6 +154,11 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     )
     agents = []
     for index, agent in enumerate(old.agent):
+        for provider in agent.channel:
+            add(f"{provider.kind}-builder", provider.kind)
+        for provider in agent.runtime:
+            package = "claude-code" if provider.kind == "claudecode" else provider.kind
+            add(f"{provider.kind}-builder", package)
         item = agent.model_dump(mode="json")
         item["harness"] = item.pop("runtime")
         agents.append(item)

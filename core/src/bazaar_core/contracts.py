@@ -214,12 +214,19 @@ class Contrib[C: BaseModel | None = None](BaseModel):
     lifespan: Lifespan[C] | None = None
     listen: Mapping[EventKey[Any], EventHandler[Any]] = Field(default_factory=dict)
 
-    def validate_config(self, values: dict[str, Any]) -> C:
+    def validate_config(
+        self, values: dict[str, Any], *, context: Composition | None = None
+    ) -> C:
         """Validate entry parameters, returning None when no model is declared."""
         if self.config is None:
             _NO_CONFIG.validate_python(values)
             return cast("C", None)
-        return cast("C", cast("type[BaseModel]", self.config).model_validate(values))
+        return cast(
+            "C",
+            cast("type[BaseModel]", self.config).model_validate(
+                values, context=context
+            ),
+        )
 
     def dependencies(self, config: C) -> tuple[ServiceKey[Any], ...]:
         """Resolve declared dependencies from validated entry parameters."""

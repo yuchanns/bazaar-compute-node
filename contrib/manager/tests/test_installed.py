@@ -31,6 +31,9 @@ def wheels(tmp_path_factory):
             f"contrib/{name}"
             for name in (
                 "agent",
+                "audit",
+                "channel",
+                "harness",
                 "status",
                 "logging",
                 "config",
