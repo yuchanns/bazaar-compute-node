@@ -17,6 +17,7 @@ def environment(tmp_path_factory):
     wheels = directory / "wheels"
     for package in (
         "bazaar-core",
+        "bazaar-contrib-agent",
         "bazaar-contrib-config",
         "bazaar-contrib-config-filesystem",
         "bazaar-contrib-config-versions",

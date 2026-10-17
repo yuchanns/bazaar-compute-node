@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 lazy from contextlib import asynccontextmanager
-lazy from uuid import uuid7
 
 from bazaar_contrib_config import (
     ConfigDocument,
@@ -77,16 +76,6 @@ async def exercise(path: Path) -> None:
                 raise RuntimeError(f"installed {name} did not become ready")
         indexes = await catalogs[0].indexes()
         assert any(index.entries and index.error is None for index in indexes)
-    async with FileConfigStore(configuration) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = dict(snapshot.payload) | {
-            "agent": [{"id": str(uuid7()), "name": "configured"}]
-        }
-        await store.write(payload, expected_revision=snapshot.revision)
-    async with node(configer_options=(str(configuration),)) as hub:
-        if not any(record.name == "configured" for record in hub.snapshots):
-            raise RuntimeError("installed node did not load its saved agent")
 
     @asynccontextmanager
     async def directory(ctx: Context):

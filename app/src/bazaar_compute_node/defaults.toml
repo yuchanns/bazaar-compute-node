@@ -2,7 +2,13 @@ version = "5"
 contrib_indexes = [
     "resource://bazaar_contrib_manager/catalog.json",
 ]
-agent = []
+
+[[contribs]]
+package = "bazaar-contrib-agent~=0.3.0"
+[[contribs.enabled]]
+entry = "agent"
+[contribs.enabled.config]
+agents = []
 
 [[contribs]]
 package = "bazaar-contrib-invoke~=0.3.0"

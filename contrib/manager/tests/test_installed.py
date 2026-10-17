@@ -30,6 +30,7 @@ def wheels(tmp_path_factory):
         *[
             f"contrib/{name}"
             for name in (
+                "agent",
                 "status",
                 "logging",
                 "config",
@@ -152,6 +153,7 @@ async def test_real_installed_manager(
             "BCN_HOME": str(tmp_path),
             "UV_TOOL_DIR": str(tmp_path / "tools"),
             "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
+            "UV_CACHE_DIR": str(tmp_path / "cache"),
         }
         if deployment == "tool":
             command = [
