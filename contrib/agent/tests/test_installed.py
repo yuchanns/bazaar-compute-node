@@ -11,8 +11,12 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
     output = tmp_path / "distributions"
     for path in (
         root / "core",
+        root / "contrib/audit",
+        root / "contrib/harness",
+        root / "contrib/channel",
         root / "contrib/agent",
         Path(__file__).parent / "fixtures/journal",
+        Path(__file__).parent / "fixtures/workbench",
     ):
         process = await asyncio.create_subprocess_exec(
             "uv",

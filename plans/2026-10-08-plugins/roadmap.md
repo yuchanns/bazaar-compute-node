@@ -79,13 +79,13 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | 发行包 | 公共内容 | 引用者 | 阶段 | 组合归属 |
 | --- | --- | --- | --- | --- |
 | `bazaar-contrib-config` | ConfigStore、ConfigSnapshot、CONFIG_STORE、ConfigConverter、ConfigCandidate、CONFIG_CURRENT、CONFIG_V1…CONFIG_V5、修订条件提交与错误契约 | 公共配置加载器、filesystem／自定义配置中心载体、app 参数绑定、CLI 和管理入口 | 1 | 默认、应用组合的依赖 |
-| `bazaar-contrib-audit` | 审计记录、typed 事件 key、审计发布与脱敏规则 | 活动记录、starlink 的事件上报及事件投影，按业务需要接入 | 11 | 所需业务的依赖 |
+| `bazaar-contrib-audit` | AuditContext、AuditEvent、AUDIT、AUDIT_EVENT 与 NodeAudit 发布服务 | agent 必需的事件发布依赖；记录、starlink 上报与 BCS 网关分析分别订阅 | 7、11 | agent 的包与服务依赖；消费入口由组合按需启用 |
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
 | `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 2 | 默认、server 的依赖 |
 | `bazaar-contrib-channel` | `IChannel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 7 | 默认；web 的编辑器依赖 |
 | `bazaar-contrib-harness` | `IHarness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 7 | 默认 |
 
-这六个包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
+这些包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
 channel 与 harness 的接口和登记服务分别归上述公共包；具体 provider 依赖这些包。
 其他能力的公共类型与 key 由对应功能包导出：命令注册归 invoke，跨进程 SERVER／CLIENT 与 ctx handler 归 sidecar，
@@ -192,23 +192,57 @@ server／web 的节点启用条目与服务端独立配置分别保存，BCS 原
 `bazaar-contrib-channel` 定义 channel 接口，`bazaar-contrib-telegram` 实现它；`bazaar-contrib-harness` 定义 harness 接口，`bazaar-contrib-codex` 实现它。
 Lark／WeCom 实现同一 channel 接口，Claude Code 实现同一 harness 接口。默认或自定义 agent 依赖两个公共接口包，通过所选实现收发消息和执行任务。
 接口包导出协议、模型与共享 service key；具体实现包声明正式依赖，在 lifespan 中提供相应接口对象。
+公共契约与 agent 在 BCN 主仓库维护；具体 channel／harness 实现均归 open-bazaar 独立插件仓库，用户通过 contrib 管理命令安装，V4→V5 按历史选择声明对应插件。
 
 `bazaar-contrib-channel` 拥有 provider 无关的 `IChannel`、`CHANNEL`、`ChannelBuilder`、输入消息、发送请求、交付回执、附件、身份和渠道审批载荷。
 `bazaar-contrib-harness` 拥有 `IHarness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
 输入与结果在公共接口边界由 Pydantic 校验；双方通过公共审批标识关联请求和结果。
 审批请求／决定／结果由 harness 公共包拥有，channel 使用同一载荷展示审批并收集结果。
+agent 校验审批与当前 session／turn 及原 request_id 的关联；不匹配时记录 warning 日志，并返回关联原请求、带 reason 的 rejected 决定，审计保留实际请求与返回决定。
 agent 将 harness 输出映射为 channel 请求；公共 harness 包依赖 core，公共 channel 包依赖 core 与 harness 的共用审批契约，具体 SDK 类型在 provider 内部转换。
 
 两个公共包分别提供 共享 `channel-builders`／`harness-builders`，导出 `CHANNEL_BUILDERS`／`HARNESS_BUILDERS` 服务 key。
 builder 登记 provider 标识、配置模型、运行入口及能力查询；默认 agent 根据自己的配置选择已启用定义，通过登记契约校验实体参数并构造实例条目与 provider 服务绑定。
 公共 `ChannelBuilderConfig`／`HarnessBuilderConfig` 基类以 `ClassVar` 导出 kind、entity_model 与运行入口；具体 builder 的 Pydantic 配置类声明这些元信息，候选从已安装入口定义取得模型，在资源启动前校验实体参数。
 公共包还导出按 kind 缓存的 `channel_builder_key(kind)`／`harness_builder_key(kind)`，具体 builder 提供对应 key，agent 按配置声明所选 builder 依赖，确认其已启用后装配。
-具体 channel 实例在 lifespan 中持有连接，具体 harness 实例在 lifespan 中持有进程／会话，运行实例通过公共登记服务发布所属 agent 的绑定与状态。
+具体 channel 实例在 lifespan 中持有连接，具体 harness 实例在 lifespan 中持有进程／会话；agent 通过 local 启用各私有子组合，持有框架启用句柄，并以句柄的 typed 服务引用连接执行实例。框架维护内部绑定和生命周期，运行输入只包含业务上下文。
 agent 的内部执行任务通过这些服务等待所选实例就绪，再消费输入、执行 turn 和交付输出；自身 lifespan 的服务登记与 yield 先完成，资源在所属实例的 lifespan 退出时释放。
 
 调用与公共接口任务将运行输入服务、runtime builder／接口名称统一改为 harness。
 已交付 Task 3／4 的检查项记录当时名称；V4 `agent.runtime` 数组在 V5 转换为默认 agent 配置中的 `harness`，原有身份、顺序和参数逐项保留。
 研究依据为现有 `src/bazaar_compute_node/core/channel.py`、`core/runtime.py` 的 channel、builder、session、turn、输出流和审批契约；新公共包按上述归属拆出类型和依赖。
+
+### 完整行为事件与 NodeAudit
+
+事件发布和上报保留 agent／harness 产生的全部行为事件及内容，订阅方自行选择处理范围。
+统一事件信封携带事件标识、来源、源顺序、发生与接收时间，以及 node、agent、session、turn、provider 会话和调用关联；
+保留 provider 原始事件名、原始载荷和公共结构化字段，扩展事件继续通过同一契约发布。
+agent 发布自己构造的指令、输入、模型请求及执行生命周期；harness provider 在事件映射入口保留接收到的源事件，
+输出流携带这些明细。按公共事件 key announce，沿现有绑定表达公共或局部可见范围。
+
+`bazaar-contrib-audit` 提供 NodeAudit 和 AUDIT 服务，agent 以包依赖和 accepts 明确消费，执行时始终发布。
+NodeAudit 给每条事件附加发布运行标识、序号、接收时间与本地单调时间，通过 AUDIT_EVENT 发布；
+AuditContext 携带 agent、channel／harness、目标会话、入站消息、session／turn 与 provider 关联，payload 保留实际请求、结果及源事件内容。
+当前接入 agent 的输入、会话与 turn 请求／结果、harness 完整输出、审批和资源关闭。NodeAudit 的 lifespan 提供发布服务，消费方通过普通 listen 接入。
+记录、日志、starlink 上报和 BCS 投影分别拥有自己的处理与资源；
+starlink 保留完整事件信封和载荷，server-api 接收后按同一契约发布，活动页、历史与网关分析各自订阅或查询记录。
+
+| 分析需求 | 保留的数据及来源 |
+| --- | --- |
+| 工具与文件行为 | provider 的工具调用标识、名称、参数、输出、结果、进度、patch 和状态；文件访问携带来源调用、路径与操作证据 |
+| 技能使用 | provider 的显式技能事件或技能加载工具调用及来源；可用技能清单与实际使用记录分别表达 |
+| 提示词与用量 | agent 构造的指令／输入、provider 的模型请求信息与原始 usage；保留模型、input／output、cache read／write、reasoning、费用及计量范围 |
+| 首文字耗时 | 执行端提交请求、收到首个可见文本 delta 和终态的本地单调时间；同时保留源时间，供订阅方计算等待、首文字和总耗时 |
+| 轮次与关联 | agent turn、turn 内部模型响应／步骤、工具调用和重试的来源标识与开始／结束事件，按各自层级统计 |
+
+研究依据为 main `core/orchestration/turn.py` 的 `_consume_events`／`_audit_stream_event`、
+`contrib/server/audit.py`、BCS 的 `consumers.py`／`activity.py`：当前实现提取部分活动上报，活动页面读取保存的事件。
+新的完整发布要求在源事件映射处保留明细。main `contrib/codex/events.py` 同时处理 tokenUsage 的 last／total，
+`contrib/claude/events.py` 区分 turn usage、按模型累计用量及 cache read／write；公共事件保留原始口径和粒度，供消费方计算缓存命中与费用。
+provider 提供的可选计量项和明确来源一同保留，技能与文件分析关联实际事件证据。
+
+当前 agent 接入以真实 TestChannel 和文档子进程执行文件任务，独立安装消费者将审计事件写入真实文件并验证输入、源事件、文件结果、关联与时间。
+各具体 provider 交付时通过相同控制面验证技能、模型用量和多轮事件来源；第 11 阶段接入完整载荷的两端上报，再由 BCS 消费方验证活动／用量／耗时分析。
 
 ### 默认 agent 行为与替换
 
@@ -370,6 +404,7 @@ server 的发行依赖和配置资源选择业务模块，业务模块消费 API
 
 server 与 client 的私有 HTTP 承担节点登记、请求下发、事件上报及调用结果回传。
 节点业务 announce 审计事件 → client listen 并入队 → 私有 HTTP → server announce 已接收事件 → fleet／history 投影。
+完整载荷和时间／顺序关联按[完整行为事件与 NodeAudit](#完整行为事件与-nodeaudit)保留，活动页和网关分别选择所需事件及分析口径。
 业务 API 查询或下发 → 私有 HTTP → 目标 client accept 功能服务并调用 → 私有 HTTP 返回结果；通知可由 client 在节点内 announce。
 client 负责重连、上报缓冲和确认，server 负责接收去重；请求使用独立的关联 ID、超时及错误结果，业务另行发布审计事件。
 事件保持原节点、agent、事件标识和顺序，client 只上报自己节点的来源，server 的投影消费保持来源身份。

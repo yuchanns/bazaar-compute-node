@@ -11,6 +11,21 @@ entry = "agent"
 agents = []
 
 [[contribs]]
+package = "bazaar-contrib-audit~=0.3.0"
+[[contribs.enabled]]
+entry = "audit"
+
+[[contribs]]
+package = "bazaar-contrib-channel~=0.3.0"
+[[contribs.enabled]]
+entry = "channel-builders"
+
+[[contribs]]
+package = "bazaar-contrib-harness~=0.3.0"
+[[contribs.enabled]]
+entry = "harness-builders"
+
+[[contribs]]
 package = "bazaar-contrib-invoke~=0.3.0"
 [[contribs.enabled]]
 entry = "commands"
