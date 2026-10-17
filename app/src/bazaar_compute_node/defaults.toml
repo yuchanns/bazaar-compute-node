@@ -2,7 +2,28 @@ version = "5"
 contrib_indexes = [
     "resource://bazaar_contrib_manager/catalog.json",
 ]
-agent = []
+
+[[contribs]]
+package = "bazaar-contrib-agent~=0.3.0"
+[[contribs.enabled]]
+entry = "agent"
+[contribs.enabled.config]
+agents = []
+
+[[contribs]]
+package = "bazaar-contrib-audit~=0.3.0"
+[[contribs.enabled]]
+entry = "audit"
+
+[[contribs]]
+package = "bazaar-contrib-channel~=0.3.0"
+[[contribs.enabled]]
+entry = "channel-builders"
+
+[[contribs]]
+package = "bazaar-contrib-harness~=0.3.0"
+[[contribs.enabled]]
+entry = "harness-builders"
 
 [[contribs]]
 package = "bazaar-contrib-invoke~=0.3.0"
@@ -10,7 +31,36 @@ package = "bazaar-contrib-invoke~=0.3.0"
 entry = "commands"
 
 [[contribs]]
+package = "bazaar-contrib-node-management~=0.3.0"
+[[contribs.enabled]]
+entry = "node-management"
+
+[[contribs]]
+package = "bazaar-contrib-status~=0.3.0"
+[[contribs.enabled]]
+entry = "status"
+
+[[contribs]]
 package = "bazaar-contrib-manager~=0.3.0"
 [[contribs.enabled]]
 entry = "contrib-manager"
 
+[[contribs]]
+package = "bazaar-contrib-logging~=0.3.0"
+[[contribs.enabled]]
+entry = "logging"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar~=0.3.0"
+[[contribs.enabled]]
+entry = "sidecar"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-unix~=0.3.0; sys_platform != 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-unix"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-windows~=0.3.0; sys_platform == 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-windows"

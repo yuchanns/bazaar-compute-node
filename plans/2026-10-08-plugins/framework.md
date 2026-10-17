@@ -14,6 +14,43 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 节点启动接入、模块及 agent 管理、默认调用／存储／消息／协作／定时／Reminder 和可替换 agent 组合。后续能力依照
 [0.3 路线图](roadmap.md) 逐个交付新包。工程的分支与发行规则见 [总计划](README.md)。
 
+## 迁移实施与验收标准
+
+本计划全部 Task 以 main 主分支的原实现为迁移基线。提示词、运行行为、Actor 与文案保持一致；
+只调整已经讨论确认的包归属、依赖声明与公共接口边界。实现前先核对 main 对应源码、调用链与资源，迁入原实现。
+
+developer instruction 以 `src/bazaar_compute_node/core/instruction.py` 与 `resources/developer_instructions.md`
+的原始资源、渲染规则、mode 分支及注入时机为准。本次明确批准两处显示调整：删除 `- Agent ID: {{agent_id}}`，
+将 `- Runtime session ID: {{runtime_session_id}}` 改为 `- Session: {{runtime_session_id}}`。
+验收以 main 原模板应用这两处调整后的内容与渲染结果为基准，逐字比对。
+Actor 沿用 `src/bazaar_compute_node/core/actor.py` 的 `Agent`／`Thread`、`Actors` 与 `Mode`，
+作为内部流通的身份原语，类型保持 `Actor = Agent | Thread`。
+内部服务接口、编排调用、命令业务以及表示操作者归属的状态与容器键统一使用 Actor；
+业务内部直接传递和匹配 Actor，不传递 `session_id`／`agent_id` 等字符串代替 Actor，也不在各层重新根据 id 或 mode 推断身份。
+只有在入站、配置、进程协议及序列化等边界，才将 `session_id`／`agent_id` 与 Actor 相互转换：
+边界入口构造或解析 Actor 后传入内部，边界出口将 Actor 转为外部协议所需的 id。
+
+| mode | `Actors.for_thread(thread_id)` | 代表的业务范围与运行归属 |
+| --- | --- | --- |
+| `session` | `Thread(thread_id)` | 当前会话；不同会话具有不同 Actor，各自持有运行会话及调度状态 |
+| `dangerous_individual` | `Agent(agent_id)` | 整个 Agent；该 Agent 各会话映射到同一个 Actor，按该 Actor 持有运行会话及调度状态 |
+
+`Actors.for_thread(thread_id)` 在会话入站边界选择 Actor；`Actors.resolve(actor_id)` 在进程边界按当前 mode 恢复类型：`session` 恢复 `Thread(actor_id)`，
+`dangerous_individual` 校验 id 等于本 Agent 后恢复 `Agent(agent_id)`。
+main `core/runtime.py` 与 `core/orchestration/orchestrator.py` 以 Actor 为运行会话、runtime holder、状态、
+队列、worker 和 timer 的归属键；迁移保留两种模式下的会话复用、隔离、串行调度及释放语义。
+`core/orchestration/services.py` 与 `commands/base.py` 按该类型确定消息、未读与命令 target 范围：
+Thread 处理自己的会话，Agent 处理该 Agent 存储范围内的会话。
+跨进程传递的 actor id、当前 runtime session id 与会话 capability 沿 main `app/agent.py` 的活跃绑定进行校验，
+恢复后的业务调用继续传递有类型的 Actor，保留身份、会话及命令可见范围的关联。
+
+消息、调度、审批、提醒和命令沿各自 main 调用链迁移；bcc 与其他面向人或 agent 的文案沿用
+`src/bazaar_compute_node/cmd/bcc/`、`resources/` 的原格式化实现、模板、字段、措辞和输出行为。
+
+每个 Task 均以以上一致性要求作为验收标准，review 同时核对原源码与迁入实现；涉及模板时检查资源字节和实际渲染，
+涉及行为与 Actor 时通过已有真实场景验收身份、路由、时序、结果与生命周期。发现偏差时回到该能力的引入提交修正，
+满足标准后再完成该 Task 并交付 review。
+
 ## 首阶段的发行结构
 
 首个日志发行包固定为 `bazaar-contrib-logging`，Python 模块为 `bazaar_contrib_logging`，模块入口为 `logging`。
@@ -101,8 +138,8 @@ BindingRef 保留 typed key 与声明位置或启用句柄，Pydantic 边界校�
 配置更新保留未变注册及子组合的绑定身份，服务引用重新解析到候选中的实际提供者，消费者仍通过 accepts 与 ctx.accept 访问服务。
 共享 DB、两个不同数据库后端及每个 agent 的执行实例都通过具体提供者与消费者的绑定表达。
 
-默认应用的 agent/channel/runtime 展开由业务组合根据 AGENT／CHANNEL／RUNTIME 服务依赖与所选 provider 入口创建具体条目，
-同时生成各自输入提供者；这些服务和参数模型由应用及后续 agent 契约拥有。
+agent 插件拥有实体模型与 AGENT 服务，从 config.agents 构造每个实体的局部组合；
+所选 channel／harness 在对应接入 commit 中由 agent 组合按公共服务依赖与 provider 入口创建。
 顶层 contribs 统一启用一次；同一实现可以用不同参数生成多个实例，选中的 provider 和完整已知依赖在资源启动前展开并预检。
 动态 lifespan 创建的子组合在 ctx.enable 进入前检查其完整声明，校验结论只覆盖已经声明的输入。
 
@@ -570,7 +607,7 @@ server 模块的启动参数模型包含 config_provider 与 config_options，�
 旧 BCS 自定义配置位置只改变配置文件，数据目录始终为原运行用户的 ~/.bcs，启动与升级沿用该规则。
 
 `bazaar-contrib-server-sqlite` 提供 server-sqlite，消费服务端自己的 CONFIG_STORE 与 STORAGE，
-按原 BCS 的 storage 及后端参数创建连接，在服务端注册表登记 sqlite 后端；database 提供本地 DB。
+按原 BCS 的 storage 及后端参数装配通用 SQLite 插件，在服务端注册表登记 sqlite 后端；database 提供本地 DB。
 默认 SQLite 仍打开原 ~/.bcs/bcs.sqlite3，连接和退出由服务端存储模块管理；
 额外存储实现使用同一服务端注册表与 DB 契约，选择与参数保存在独立 BCS 配置中。
 同进程运行 agent 和 server 时，节点与 server 各自选择数据库后端，配置载体、连接与迁移记录分别绑定其具体实例。
@@ -590,14 +627,13 @@ web、GUI 与页面模块进入 server 组合，通过 API、UI 和访问服务�
 | accounts、roles、account_roles、auth_settings、oidc_providers、oidc_identities、relations | access 使用原账户、密码哈希、角色、权限、分享和 OIDC 设置；账户 theme 继续由页面读取 |
 | computers、events、refs 等既有业务数据 | fleet／history／contacts 查询原表和标识，保持 computer 身份、secret_hash、事件顺序与关联 |
 
-包拆分完成后，业务查询直接使用上述历史数据布局。后续 schema 变更由新增迁移执行，
-既有主键、凭据、事件关联和权限在事务内保留。节点 SQLite 与 server-sqlite 分别持有原迁移资源，
-schema 服务从各自原 schema_migrations 的历史身份识别
-BCS 的 initial_server_schema 链，保留已发布 1…7 的文件内容、名称、SQL、checksum 算法与原 ledger 记录，
-校验后只执行缺少的后续步骤；BCN 的 initial_node_schema 链独立识别。
-新增模块迁移使用独立的 contrib_schema_migrations ledger，以发行包／迁移版本标识迁移并保持 checksum 校验；
-启用混合能力时按所属模块注册缺少的 schema，历史链选择由已有 ledger 识别，新库按启用组合建立 schema。
-所有 schema 登记检查表名及迁移身份冲突，沿新增迁移形成统一组合的数据布局。
+包拆分完成后，业务查询直接使用上述数据布局，既有主键、凭据、事件关联和权限在事务内保留。
+Node 与 Server 各自的迁移插件通过统一 schema 服务登记迁移，提供当前结构的初始基线和按原版本编号表达的抽象操作／数据变更。
+已有数据库按原 schema_migrations 的版本记录确定起点；迁移插件显式声明自己的历史身份及账本字段，
+schema 引擎只为被依赖的插件接续缺少的版本，并把进度记录在统一的 contrib_schema_migrations 中。
+旧账本保留已有记录，初始化后以统一账本推进。版本进度与 checksum 无关，统一实现按版本判断执行进度。
+空库直接创建所选模块的基线结构并记下基线版本；后续依次执行新增版本。
+业务数据库服务同时依赖所选 DB 和对应迁移插件的就绪服务，确保业务读写发生在迁移完成后；Node 与 Server 可分别绑定数据源。
 
 升级验收从实际 0.2 发行环境生成隔离的 BCS 配置、数据库和密钥，再以 0.3 候选宿主与实际模块 wheel 启用 server／web，启动时直接读取这些原资源。
 覆盖默认路径、原 BCS 自定义配置位置、有效缺省值及既有迁移版本，核对原数据库路径、历史 ledger 与业务身份，
@@ -709,6 +745,7 @@ contrib 市场展示各索引中登记的包，用户按包名和来源选择安
 ```toml
 # bazaar-contrib-server 的 pyproject.toml
 [project.entry-points."bazaar_compute_node.contribs"]
+server-migrations = "bazaar_contrib_server:migrations"
 server = "bazaar_contrib_server:server"
 server-api = "bazaar_contrib_server:api"
 ```
@@ -734,6 +771,8 @@ starlink 是独立发行包和普通节点插件，持有主动连接、getUpdat
 请求格式公开描述请求 ID、方法与参数，响应包含同一请求 ID 和结果或错误；BCS 与其他遵循协议的实现都可作为对端。
 starlink 在 accepts 中声明所需服务，通过 Context.accept 获取其他插件 offer 的对象并调用方法；通知操作可以在节点内 announce。
 业务通过 announce 独立发布公共审计事件，starlink 的事件 listen 处理器按配置入队上报，server 收到后交给投影模块。
+agent／harness 的行为事件、原始载荷、来源顺序及时间关联按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)发布和上报，
+agent 依赖 NodeAudit 始终发布，记录方按组合选择订阅；BCS 活动页、历史和网关分析各自决定消费范围及统计口径。
 审计事件处理和请求响应分别管理；send 直接发送调用结果，审计记录由业务独立发布。
 HTTP 输入模型、身份校验、传输和请求关联由 starlink 与 server-api 管理，服务接口及业务规则仍归提供 offer 的功能包。
 包的 pyproject.toml 声明代码依赖并导出入口，节点配置保存所选入口及参数；运行时按 accepts 建图。
@@ -923,7 +962,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 
 ## 本特性分支的串行 Tasks
 
-每个 Task 完成后停下 review，通过后继续下一个 Task。本分支在十五个 Task 全部完成后合入 `0.3`。
+每个 Task 完成后停下 review，通过后继续下一个 Task。后续在 `feature/node-contribs` 先交付独立定时器，再交付数据库，两项各用一个 commit；其后完成 agent 相关能力和整体交付。当前三条特性分支按依赖 review 并合入 `0.3`。
+新能力通过已有公共插件契约装配；服务提供者随消费者的声明依赖选入，V4→V5 同步补齐原功能所需的条目和参数。
 
 ### Task 1：核心 contrib 框架
 
@@ -959,8 +999,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] --configer 选择载体，--configer-options／--config 可重复并保留顺序；载体自己解析原始参数并提供 CONFIG_STORE。
 - [x] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
 - [x] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
-- [x] AGENT／CHANNEL／RUNTIME 提供 typed 业务输入；app build 将全部已知 agent／provider 展开为完整实例图，稳定绑定从业务 id 和 provider 位置派生，保存前预检覆盖全部声明。
-- [x] ConfigDocument 的当前 agent 模型在 Task 13 移至 agent 插件；此阶段应用负责明确展开该业务输入。
+- [x] 已知条目通过 typed 服务与显式绑定表达依赖，保存前预检已声明的组合；agent 模型与实例展开由 Task 11 的业务插件接管，app build 统一加载 contrib 声明。
+- [x] ConfigDocument 提供通用文档与载体契约，agent 实体模型与展开在 Task 11 由 agent 插件持有。
 - [x] 独立第三方 wheel 用真实 SQLite／TCP 配置中心验证读取、编辑、冲突、未知提交响应、重建和启动取消。
 - [x] 自定义构建后端从 uv.lock 生成内置 catalog，独立 sdist 可重建；验证默认配置、组合导入、路径转义与隔离节点。
 - [x] 完成 Ruff、根 LSP、真实安装配置流程与独立发行验收。
@@ -970,7 +1010,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] CURRENT_CONTEXT 在实例 lifespan 与监听回调 set／reset；子任务和工作线程继承上下文，消费者绑定自身身份。
 - [x] logging 在 lifespan 中通过 QueueHandler／QueueListener 接收标准库日志并在线程中写入。
 - [x] text／json 格式保留时间、实际来源、级别和异常；实例外日志用 Python logger 标识来源，source.id 为 None。
-- [x] 真实文件验证按日及体积轮转、level 路径、日期保留、线程输出、handler 所有权和退出排空。
+- [x] 真实文件验证按日及体积轮转产生文件并保留日志，以及 level 路径、日期保留、线程输出、handler 所有权和退出排空。
 - [x] 完成并发私有消息回调、真实普通日志 wheel 和隔离节点的安装验收及检查。
 
 ### Task 6：模块安装管理与升级
@@ -1001,7 +1041,7 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] 真实文件／SQLite 与独立示例 wheel 验证根选择、绑定、命令参数、帮助、取消、信号、资源退出及管理升级。
 - [x] 完成真实 uv tool／venv、独立 wheel／sdist、Blockbuster、Ruff 与根目录 LSP，替换旧命令提交并签名推送供 review。
 
-### Task 8：sidecar 调用与 channel／harness 公共登记
+### Task 8：sidecar 调用与节点基础接入
 
 本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
 `SERVER`、`CLIENT` 两个公共服务 key，并提供接受 `SERVER`、`CONFIGURATION` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
@@ -1078,7 +1118,7 @@ manager 自持 catalog 构建后端与锁文件快照，app 使用普通 uv_buil
 
 - [x] 迁出 run 实现，真实配置选择验证命令、信号退出及资源释放。
 - [x] manager 持有官方索引构建和资源读取，真实索引增删、离线读取和独立 sdist→wheel 验证。
-- [x] 完成隔离 app、manager venv／uv tool、sidecar 回归、Ruff、根目录 LSP 和发行检查；在同一框架分支独立签名提交供 review。
+- [x] app 的公共 run 通过真实安装与配置加载流程验收；manager 的依赖规格验收覆盖保存、传递与恢复。完成隔离 app、manager venv／uv tool、sidecar 回归、Ruff、根目录 LSP 和发行检查；在同一框架分支独立签名提交供 review。
 
 本轮 review 删除当前审计发行包、node-audit、app 的审计发布和依赖，以及按 CONTRIB_CHANGED 监听声明追加命令根的策略。
 logging 保留标准日志、格式、级别路径、轮转和资源释放，直接从标准 LogRecord 与 CURRENT_CONTEXT 捕获来源。
@@ -1089,52 +1129,256 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [x] 默认索引列表使用多行 TOML，manager 的 build.py 通过独立源码包重建验证。
 - [x] 完成 Ruff、根目录 LSP、独立 wheel／sdist 及受影响安装流程，amend 到各自引入提交并更新同一 PR。
 
-- [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
-- [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
-- [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
-- [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
+### Task 9：独立定时器接口与时间轮
 
-### Task 9：公共存储、SQLite 与 schema
+该 Task 用一个 commit 交付节点共享定时能力；下一 Task 用另一个 commit 交付数据库。
+沿用现有 `src/bazaar_compute_node/core/timerwheel.py` 的分层时间轮、代次与等待者语义，
+公共协议和错误移至 `bazaar-contrib-timer`，具体轮、驱动与条目归 `bazaar-contrib-timer-wheel`。
 
-- [ ] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
-- [ ] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；默认配置明确 database.config.backend="sqlite"。
-- [ ] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 保留已发布迁移的原文及 checksum，新增模块迁移使用独立账本。
-- [ ] app 默认依赖并启用 storage、sqlite、database、schema；用隔离数据库验证实际查询、事务、迁移及后端选择。
-- [ ] 完成各包独立 wheel 安装、真实组合及检查，提交供 review。
+公共包只依赖 core，导出 `TIMER`、`ITimer`、`Timer`、`TimerCancelledError` 和 `TimerClosedError`。
+`ITimer` 提供 `create(delay_ms)`、`tick_ms`、`maximum_delay_ms` 和单调时间 `now_ms`；
+句柄提供 id、active、deadline、generation、expired_generation、reset、cancel 和异步 wait。
+每个句柄由一个消费者等待；reset 保留等待者并更新代次，取消句柄或等待任务会释放定时资源，
+待处理句柄在 provider 关闭时以公共关闭错误结束。消费者在自身生命周期结束时取消所属句柄。
 
-### Task 10：消息与会话
+时间轮实现保留 10 ms tick、256 个近端槽及四层各 64 个槽。create／reset 的毫秒参数在公共调用边界
+以 Pydantic 校验范围；按单调时钟的绝对截止时间向上取整，0 ms 等待下一个 tick。
+空轮通过 Event 等待新条目，实际驱动属于插件 lifespan 的 TaskGroup；正常退出先关闭句柄再取消驱动，
+驱动异常及意外取消使 provider 失败，由 core 既有依赖图处理消费者退出，并保留原故障。
+
+时间轮以普通条目进入消费方选择的组合候选；公共包随实现或消费者依赖安装。
+任何节点插件均可声明 `accepts=[TIMER]`，由已有 `Composition.roots` 按所选根的依赖闭包启用提供者，
+共享绑定与资源归属由普通组合声明表达。第三方插件只依赖公共包并提供相同 TIMER，组合可选择该实现。
+
+- [x] 交付两个独立发行包、公共类型和 TIMER key、时间轮入口及完整资源生命周期。
+- [x] 两包 LICENSE 通过 `../../LICENSE` 相对符号链接引用仓库根文件，验证 wheel／sdist 收录完整许可证并可独立安装。
+- [x] 通过真实消费者验证 TIMER 依赖选入所选实现、多个消费者共享及子组合继承，并观察计时与退出后句柄关闭。
+- [x] V4→V5 将旧节点的全局时间轮映射为 timer-wheel 提供者条目，保留版本检查、健康等原有消费者所需的配置；已有 V5 的实现选择和参数按原流程保留。
+- [x] 真实计时验证到期、重置、跨层定时、取消、等待任务取消、共享绑定、消费者退出和 provider 关闭；真实驱动任务取消验证故障及依赖传播。
+- [x] 从 workspace 外分别安装独立 wheel／sdist，并用仅依赖公共包的真实 asyncio 定时插件验证替换，证明消费者无须依赖时间轮实现。
+- [x] 完成包内测试、Blockbuster、Ruff、根目录 LSP 与独立安装检查，签名提交一个 commit，停下 review。
+
+### Task 10：公共存储、SQLite 与 schema
+
+公共包 `bazaar-contrib-storage` 提供 `Database`／`Session` 协议、`BackendRegistry`、
+`STORAGE`、`DB` 和按名称缓存的 `backend_key(name)`。`storage` 入口提供共享注册表；
+具体后端在自身 lifespan 的注册上下文内提供对应 backend key；`database` 的必填 backend 配置
+通过 `accepts=lambda config: [STORAGE, backend_key(config.backend)]` 声明所选依赖，并将该对象登记为 DB。
+消费组合以实际使用者为根选择依赖，配置明确 `backend="sqlite"`；各包使用相对链接共享根 LICENSE。
+
+查询输入是冻结的 Pydantic 数据模型，标识符和参数分别校验，值始终作为绑定参数交给后端。
+公共 `Select`／`Insert`／`Update`／`Delete` 描述显式读写；表达式包含列引用、值、算术、聚合与
+coalesce／lower／length，过滤包含比较、IN、空值、逻辑组合与文本子串搜索。
+Select 明确投影、inner／left join、排序、分组、limit／offset；批量写入、冲突处理与 returning 明确声明。
+结果为普通记录和写入结果；关联由批量查询或明确 join 取得。
+`Database.transaction(operation)` 把绑定 Session 传给异步操作，整体提交或回滚，绑定 Session 在操作返回后失效；Session 提供相同数据操作与
+声明式建表、加列、索引操作。后端把连接、约束与查询错误转为公共错误类型。
+
+`bazaar-contrib-sqlite` 翻译公共操作为参数化 SQLite 查询，提供配置模型、连接及 sqlite 入口。
+SQL 结构保存在后端包的 `resources/*.sql.tpl`：查询、表达式与过滤、DDL、FTS 表及各同步触发器分别用
+Jinja 模板表达，Python 负责绑定参数、标识符／DDL 字面量转义及选择待执行语句。
+依据 [Jinja API](https://jinja.palletsprojects.com/en/stable/api/) 的 PackageLoader、StrictUndefined 和缓存机制，
+后端自持 Jinja 依赖，初始化时在工作线程预加载全部资源，关闭 auto_reload；每次渲染持有独立参数列表，
+模板中的 bind 调用按 SQL 出现顺序收集参数。递归表达式与过滤复用
+[Jinja macros](https://jinja.palletsprojects.com/en/stable/templates/#macros)，完整 SQL 及条件分支在模板内可直接阅读。
+`bazaar-contrib-postgres` 在 `open-bazaar/contrib-postgres` 独立仓库作为可选后端维护，采用相同的资源组织，
+提供 `postgres` 入口，保留 PG 自己的占位符、类型及搜索语义；wheel／sdist 验证资源安装后实际执行。
+复用原 `contrib/sqlite/executor.py` 的单 writer 队列与 reader 池机制，并将长期驱动纳入 lifespan 任务组；
+实际操作的取消、回滚、在途工作排空与连接关闭保留原语义，每次 SQL 调用在取消后先 interrupt 并等待该调用结束，再归还连接；后台故障通过公共 failure source 交给 core。
+路径参数默认沿用 BCN 数据目录；独立验收总是显式使用隔离路径。
+
+`bazaar-contrib-schema` 提供 `SCHEMA` 和模块 schema 的异步登记上下文，模块声明拥有的表、
+迁移与前置模块版本，消费方通过服务依赖保证前置模块就绪。统一 `Migration` 以 version／name 和公共操作表达变更，
+数据转换通过接收公共 Session 的异步 apply 完成，允许同一版本在建表、复制和改名之间执行数据处理。
+迁移和 ledger 写入处于同一个 DB 事务；登记检查表和模块身份归属，进度按 package／version 记录名称、应用时间和耗时。
+`contrib_schema_tables` 持久记录表的 package 归属，运行期退出保留数据和版本进度。
+
+`bazaar-contrib-node-migrations` 与 `bazaar-contrib-server` 分别持有 Node／Server 迁移定义，
+接受 SCHEMA 并在登记完成后提供 NODE_MIGRATIONS／SERVER_MIGRATIONS 就绪服务。
+Node 迁移包随 BCN 共同发行；Server 插件在 `open-bazaar/contrib-server` 独立维护，
+同一个 `bazaar-contrib-server` 发行包提供 `server-migrations` 入口，并按阶段加入 `server`／`server-api` 逻辑入口。
+Server 以 `>=0.3.0,<0.4.0` 声明 core、schema、storage 的公共兼容范围。服务端配置载体、存储组合、业务及页面包同属 open-bazaar 的可选仓库。
+Node Database 业务服务接受 DB 与 NODE_MIGRATIONS；Server Database 对应接受 SERVER_MIGRATIONS。
+Agent 插件依赖 Node 业务数据插件，由服务依赖带起 Node 迁移及所选数据库；新安装默认安装并启用 Agent。
+旧配置转换按实际 Agent／Server 使用情况分别生成对应插件及依赖声明，Server 由自己的业务插件带起迁移。
+组合配置通过现有 database 入口为同一个 DB 选择 SQLite／PG。迁移插件依赖 schema／storage 公共能力，
+数据库 provider 负责通用操作。当前尚无业务消费者时仍通过明确根和服务依赖选择插件；V4→V5 在旧配置存在 Agent 时声明 node-migrations，供 Node 消费组合依赖。
+
+ModuleSchema 可声明 baseline（当前结构及版本）和 progress（已有账本的表、版本／名称字段及所属链首版本身份）。
+空库执行基线并记录该版本；匹配的已有账本把已执行版本进度接入统一 ledger，随后使用同一个 Migration 执行循环推进。
+已有版本只按账本判断完成状态，去掉 checksum 字段、计算、比较与后端 migrate_legacy 接口。
+Node 的原 1…32、Server 的原 1…7 以同一迁移类型重写，保留版本和实际数据／结构变更；
+原已发布 src 作为只读验收来源。SQLite 的 legacy/node、legacy/server SQL 资源及自动识别执行路径移除。
+两种业务类型由被依赖的迁移插件显式选择，通用 schema／数据库 provider 均不识别 Node／Server 名称。
+
+公共 storage 操作补齐删表、改表名、改列名、删列、结构化唯一／CHECK／引用约束、表达式索引、搜索索引记录键、
+通用触发器操作、表存在查询、INSERT…SELECT 批量复制和 ROW_NUMBER 排序表达式。
+依据 [SQLite ALTER TABLE](https://www.sqlite.org/lang_altertable.html) 的约束变化与建新表／复制／替换步骤，
+旧消息结构变化使用公共建表、Copy、删表、改名表达，保留记录及约束。
+依据 [PostgreSQL 触发器](https://www.postgresql.org/docs/18/sql-createtrigger.html)、
+[触发器函数](https://www.postgresql.org/docs/18/plpgsql-trigger.html)及
+[窗口函数](https://www.postgresql.org/docs/18/functions-window.html)，PG 后端实现等价操作；SQLite／PG 均使用后端自己的 Jinja 资源生成 SQL。
+迁移中的消息顺序换算通过公共批量复制及排序表达式处理；数据合并、提醒消息生成和 JSON 回填由迁移插件使用公共查询／写入完成。
+
+CreateTable／CreateIndex 可显式声明 if_not_exists，模块接管已有资源时保留数据；SQLite 已有 FTS 索引整体复用。
+
+文本搜索契约以每个词在所选列中出现的子串语义定义，SQLite 使用 FTS5 trigram 外部内容索引与同步触发器，
+短词执行直接子串条件；额外 PG 实现使用 pg_trgm GIN 与绑定的 ILIKE 条件。
+依据 [SQLite FTS5](https://www.sqlite.org/fts5.html#the_trigram_tokenizer)，trigram 支持子串搜索，
+少于三个 Unicode 字符的词需要直接条件；依据 [PostgreSQL pg_trgm](https://www.postgresql.org/docs/18/pgtrgm.html)，
+GIN 支持 LIKE／ILIKE。两端以相同普通数据工作流验证搜索、批量关联、分页和事务。
+PG 后端是独立仓库的发行包，以 `>=0.3.0,<0.4.0` 声明公共 storage 与 core 的兼容范围，
+依赖 Pydantic、Psycopg 与 Jinja；按
+[Psycopg 异步连接](https://www.psycopg.org/psycopg3/docs/advanced/async.html)及
+[事务管理](https://www.psycopg.org/psycopg3/docs/basic/transactions.html)使用真实异步连接和显式事务，
+PG 依据 [Raw query cursors](https://www.psycopg.org/psycopg3/docs/advanced/cursors.html#raw-query-cursors)
+使用 AsyncRawCursor 与 $n 参数，保留 SQL 算术及文本中的字面 %。
+在自有 rootless 容器及临时数据库运行，固定两个后端并存、选择切换、退出和独立 wheel 安装验收。
+
+注册、选择、替换与迁移调度的机制测试使用固定的小型真实场景。
+完整 PostgreSQL 实现归外部插件仓库，主仓库机制测试复用真实 SQLite；外部 PG 插件持有自己的关键集成验证。
+插件 CI 后续补齐：从包源安装已发布 BCN 和插件，使用隔离配置启用 postgres 入口并验证实际消费流程。
+schema 的小型两版本模块验证执行顺序、事务回滚与已执行版本跳过；业务迁移保留关键数据转换回归。
+历史发行桥接固定为 Node 17→32 和 Server 3→7，以只读原实现产生数据和升级对照，目标链固定在原发行版本。
+Server 迁移回归随同一 Server 插件维护；测试夹具保存原实现生成的版本 3 数据和版本 7 升级结果及固定来源，独立安装后即可运行。
+Node／Server 消费者切换验收归 Server 插件的集成测试，主仓库测试只依赖自身包。
+新增业务 migration 复用同一执行机制，回归随实际数据转换风险选择场景。
+
+- [x] 交付 bazaar-contrib-storage 的通用数据、显式查询、事务及错误契约，以及 storage 注册表和 database 选择入口；依赖按所选 backend 展开。
+- [x] 交付 bazaar-contrib-sqlite，提供 sqlite 后端及真实连接、公共操作翻译；使用 SQLite 的消费组合明确 database.config.backend="sqlite"。
+- [x] 交付 bazaar-contrib-schema 的模型／索引登记、迁移顺序和 ledger；按 [数据与查询](roadmap.md#数据与查询) 统一抽象迁移、基线及版本账本，业务迁移插件显式注册。
+- [x] 消费组合声明 storage、sqlite、database、schema，并通过 DB 依赖选入；同步 V4→V5 所需配置，用隔离数据库验证实际查询、事务、迁移及后端选择。
+- [x] 完成各包独立 wheel／sdist 安装、真实组合及检查，提交供 review。
+
+验收覆盖 SQLite 公共入口选入后的真实查询与连接关闭、并发写入、事务取消与查询中断、驱动故障；schema 登记、依赖、归属及重启升级；
+真实 PostgreSQL 独立实现和两个后端并存／切换；初次迁移验收使用原始历史源码生成 Node 1／4／12／17／18／24／26／29／31／32 和 Server 1／3／6／7 数据库，
+对比原迁移完成后的业务记录、关联、游标和搜索数据，并核对旧账本保留及重复登记；
+V4→V5 声明直接连接原临时文件并选择 Node 迁移插件。各正式包均完成独立 wheel／sdist 安装，
+原已发布迁移源只读用于生成对照数据库；核对独立发行资源、共享 LICENSE 和 py.typed，通过 Ruff 与仓库根 Pyright LSP 检查。
+- [x] 完成统一迁移修订：Node／Server 所属包提供业务迁移入口、基线／已有版本接续、公共操作补齐及 provider 实现；验证真实不同旧版本的数据变换、空库 SQLite／PG、就绪依赖及独立安装。
+- [x] 将现有 PG 实现迁出主仓库，交付 open-bazaar 的独立可选插件；收敛主仓库测试到固定机制与关键业务场景，验证独立安装并修订原提交供 review。
+- [x] 将 Server 迁移入口及对应回归迁至 open-bazaar/contrib-server，由同一个 bazaar-contrib-server 包持有迁移与 Server 逻辑入口；移除主仓库成员、来源与测试依赖，验证独立产物并修订同一提交。
+
+Node／Server 业务迁移入口及 SQLite／PG 在独立 wheel／sdist 中验证当前基线；历史升级分别通过两种安装产物执行，
+Node／Server 消费者切换验证仅登记被依赖的迁移插件。公共操作验证批量复制、窗口排序、约束、改表／列及通用触发器。
+SQL 模板在 SQLite 与 PG 的独立 wheel／sdist 安装后完成实际查询、参数顺序、带引号及二进制默认值、
+索引移除重建和双后端切换验收；Blockbuster 检查初始化预加载及查询过程。
+
+### Task 11：agent 配置、实例与局部生命周期
+
+先实现真实 agent 插件，再在后续每个 commit 为该 agent 接入一项能力及所需接口。
+公共 channel／harness 契约随实际消费代码一起收敛，每次接入均由 agent 的局部组合验收。
+
+`bazaar-contrib-agent` 拥有实体模型与 `agent` 组合入口；入口配置为 `config.agents`。
+本次迁入身份、名称、mode、idle_timeout 及已有 provider 选择参数，V4 的 runtime 参数在 V5 中命名为 harness，
+保留原顺序与每项设置。转换只声明已经交付的入口，provider 选择保留在 agent 配置，所需入口随实际接入 commit 补齐。
+V4 使用自身的历史输入模型，V1…V4 原转换保持不变。
+通用 ConfigDocument 只保存 contribs 与来源，应用 build 只加载声明；agent 的实体解释、校验与装配归插件。
+app 的 Python 代码通过通用配置和入口发现使用所选插件；agent 的发行依赖归插件消费者，默认配置负责选择，包管理服务在启动前恢复配置中的包。
+app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 agent 的流程由现有独立插件安装验收覆盖。
+
+插件公开 `AGENT` 服务和纯 Python `compose(AgentConfig)`，构造单实体组合；agent 入口逐个用
+`ctx.enable(..., local=(AGENT,))` 管理实例。实体 lifespan 创建所属工作区并提供身份与路径，
+默认沿用 BCN_HOME／home 下 `.bcn/workspaces/<id>`，显式 workspace 可选择实际项目路径。
+工作区通过工作线程创建并沿用原权限；退出后保留持久文件，消费者先于所属实体退出。
+全新配置启用 agent，`config.agents=[]` 时保持实体数为零。持久数据服务与执行服务在消费它们的后续 commit 接入。
+
+- [x] 交付独立 agent 包、实体／入口模型、AGENT 与所属 workspace，真实局部组合管理两个实例及退出。
+- [x] 将 app／config 的 agent 业务模型和展开移入插件，默认依赖、配置及 sidecar 独立安装夹具同步；V4→V5 保存 agent 参数到入口 config.agents。
+- [x] 用只依赖公共 agent／core 的真实文件消费插件验证组合、共享依赖、实体隔离、空配置与资源释放；工作区按真实目录身份验收，覆盖经符号链接访问的目录，不增加测试注入入口。
+- [x] 完成普通安装、独立 wheel／sdist、受影响测试、Ruff 与根目录 LSP，新签名 commit 交付后停下 review。
+
+### Task 12：为 agent 接入 channel／harness 与所需公共接口
+
+本次同时交付 `bazaar-contrib-audit` 的发布契约和 NodeAudit 服务，agent 通过 AUDIT 依赖无条件发布当前执行链路的输入、会话／turn、完整输出、审批及关闭事件。
+NodeAudit 使用 ctx.announce(AUDIT_EVENT, event)；公共事件包含 AuditContext、运行标识与发布序号、发生／接收／单调时间及完整 JSON payload。
+发布调用沿用 main `AuditRecorder.append` 对消费异常的日志处理。
+HarnessOutput 的 kind 接受 provider 的事件类别，保留 provider 事件名、会话／turn 关联、发生时间、原始 JSON 与现有公共字段。
+默认声明与 V4→V5 启用 audit；独立 agent 组合显式提供该服务，事件消费者沿普通 listen 订阅。实现按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)的来源和分工交付。
+
+Codex、Claude Code 及 Telegram／Lark／WeCom 等具体 channel 实现统一在 open-bazaar 独立插件仓库维护。agent 声明其实际导入的 audit／channel／harness 发行依赖，初始配置选择 agent 及对应服务入口。V4→V5 按旧 runtime 的 kind 加入所选 Codex／Claude Code 插件及 builder 声明；普通安装由用户通过 bcn contrib add codex／claudecode 选择实现。
+公共 channel／harness 包的节点安装示例使用 `bcn contrib add channel`／`bcn contrib add harness`。
+
+沿用 main 的 `core/channel.py`、`core/runtime.py` 与 `core/orchestration/turn.py` 的实际调用边界：harness 包拥有会话／turn 输入、运行指令与工具环境、输出流、审批请求／决定／结果及模型／skills 描述；channel 包拥有输入消息、附件、身份、发送与交付回执，并复用 harness 的审批载荷。两包使用 Pydantic 公共模型，provider 的连接／进程由其 Contrib lifespan 持有。执行流的时限、任务取消、终态与输出流 aclose 以 main 的对应路径为依据；main 已有的配置预算及完整会话／交付／恢复语义随所属执行编排任务迁入。
+
+builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力；共享注册入口按 kind 提供 builder key。core 的普通配置校验通过 Pydantic ValidationInfo.context 提供当前候选及现有外部声明组成的 Composition，agent 的配置模型从其中读取 builder 元信息，以实体模型预检选定参数。该上下文只含声明，沿用现有建图与生命周期流程。
+
+公开 compose 接受 agent 配置和所选 builder 声明，构造实体。实体先提供 AGENT 并 yield，再由所属 TaskGroup 启动各 provider 子组合；每个子组合通过 local=(CHANNEL_INPUT, CHANNEL) 或 local=(HARNESS_INPUT, HARNESS) 建立私有范围，运行输入只包含业务上下文。agent 持有所选 provider 的 Enablement 句柄；执行实例通过句柄的 ref(CHANNEL)／ref(HARNESS) 声明依赖，在子组合就绪后消费输入、调用所选 harness、转发事件和渠道审批，并由 core 既有依赖图先停止执行消费者。按 main 的 _consume_events／_forward 转发输出并在终态结束当前流，文本事件保留为事件，失败事件保留为 turn 终态；消息发送及完整故障状态随所属业务任务迁入。退出先结束执行流与会话，再退出 provider 子组合，最后释放实体。身份、工作区和现有配置保留在 agent 包。
+
+`loop.py` 持有持续接收消息、驱动 turn、转发输出并回到下一条输入的 agent 运行循环；内部使用 LoopConfig、run 和 loop 声明，生命周期任务及实例命名为 agent-loop。provider 子组合与循环实例的装配归 agent 入口模块。审批请求的 session／turn 与当前执行不符，或 channel 返回的 request_id 与原请求不符时，agent 路由记录 warning 日志，并返回使用原 request_id、带原因说明的 rejected 决定。日志明确包含期望值、实际值、审批 request_id、session／turn、agent、channel／harness 及目标会话，便于关联调用排查；reason 仅简短说明本次操作被拒绝的原因。harness 沿正常审批返回流程处理拒绝；approval.requested 保留原请求，approval.decided 发布实际返回的决定。
+
+真实验收由 TestChannel 注入自然用户消息、观察输出及处理审批，独立安装的小型 provider wheel／sdist 使用本地连接与隔离进程执行实际文件任务。每次验证使用自有临时配置与工作区，覆盖普通调用、审批往返、取消与资源退出，以及原有 agent 文件消费者和受影响安装流程。
+
+行为用例依据 main 的 `tests/contrib/test_orchestration.py`：`test_stream_events` 的事件转发、`test_approval_is_routed_to_the_current_channel_session` 的会话／原发送者／当前消息审批路由、`test_multiple_sessions_keep_workspace_and_correlation_isolated` 的会话隔离，以及 `test_graceful_stop_cancels_turn_and_closes_runtime_stream` 的取消与释放。现有 TestChannel／文档子进程验收扩展为同一会话连续请求、不同会话各自的目录与关联、审批关联及关闭中的实际进程退出。按 main `run_turn`／`_consume_turn_stream` 将子进程故障转为当前 turn 的失败事件，结束该流后继续处理后续输入；正常 EOF 按终态观察结果完成当前 turn。事件按 kind／thread_id 转发到所属会话，审批单独保留原发送者 id 和当前入站消息关联；普通发送沿用 main 的显式 target 与可选 reply-to 语义，随消息命令迁入。消息持久化、完整 actor／inbox／恢复与配置管理测试按原任务依赖顺序接入。
+
+- [x] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
+- [x] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
+- [x] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
+- [x] 将所选 channel／harness 接入真实 agent 的局部组合；以独立 provider wheel 和真实控制面验证消费、调用、审批与资源退出，公共接口随同消费代码交付并 review。
+- [x] 交付 audit 公共包与必需发布服务，接入 agent 当前执行链路及 provider 原始事件；使用现有真实 provider 验收记录完整事件、来源、文件内容与时序，完成独立安装、受影响检查并修订原提交供 review。
+
+### Task 12.1：为 agent 注入 developer instruction 与 bcc
+
+按 main `app/agent.py`、`app/wrapper.py`、`core/instruction.py`、`resources/developer_instructions.md`，
+以及 Codex `start_session`／Claude `_open_connection` 的实际时机，将默认 agent 的初始化上下文提前至消息能力之前交付。
+实体准备 workspace 后，在 `<workspace>/.bcn/bin` 安装自身解释器启动的 bcc wrapper；退出和启动失败沿所属生命周期清理 wrapper。
+POSIX、Windows CMD 与 PowerShell 脚本文本分别放在 agent 的 `resources/bcc.sh`、`bcc.cmd`、`bcc.ps1`，
+使用现有 Jinja2 加载并渲染 agent／mode 与自身解释器路径，保持原生成内容和各平台引号规则。
+POSIX 与 Windows 沿原 wrapper、stdin 和 UTF-8 行为；其他 workspace 文件保持持久保存。
+
+agent 在每次建立 harness session 前渲染现有 developer instruction 资源，注入 agent 身份、实际 channel 名称、
+harness、workspace、mode 与本次 session id；同一次 SessionInput 提供 instructions 和 environment。
+环境将 wrapper 目录前置 PATH，携带 agent／mode、当前 actor 和 harness session 关联；provider 使用已收到的指令和环境创建实际进程或 SDK 会话。
+指令模板保留 main 的已有行为约束及 mode 分支，按[统一验收标准](#迁移实施与验收标准)删除 Agent ID 显示行、将 runtime session 显示为 Session，随 agent 的 wheel／sdist 发行；加载与渲染通过工作线程完成。
+
+bcc 复用 invoke 的 CommandCatalog／Commands 和 Contrib 生命周期登记机制，以独立 `bazaar_compute_node.bcc_commands`
+入口组发现每个功能包的 CommandEntry。入口组选择所需 CLI contrib，由该 contrib 注册自己的 native Click 二级命令；
+命令帮助与新增实现说明统一使用 `contrib`／`contribs`。
+agent 负责 wrapper、命令启动和运行上下文。消息、thread、Reminder 的实际命令在所属后续任务消费公共服务及本次入口。
+
+使用现有独立安装的 TestChannel／文档 provider：自然用户输入建立真实 session，子进程收到实际指令与环境，
+通过注入 PATH 查找并运行 bcc，调用两个真实 contrib 命令完成 workspace 文件操作，覆盖两个 agent、会话重用／隔离与退出。
+验证 wheel／sdist 内模板、wrapper 和公开入口均可用，保留原审批、失败后继续及关闭验收。
+
+- [x] 迁入默认指令资源与渲染、各平台 wrapper 生命周期，并在 harness session 创建前注入。
+- [x] 复用公共 invoke 机制提供可由其他 contrib 贡献二级命令的 bcc 入口；将实际 agent／actor／session 上下文交给命令。
+- [x] 扩展现有真实 provider 独立安装验收，完成受影响检查、Ruff 和根目录 LSP，以新签名 commit 交付并停下 review。
+
+### Task 13：为 agent 接入消息与会话
 
 - [ ] 交付 bazaar-contrib-messages 的消息、会话 target、历史、未读 cursor、收发与回执、附件、草稿、搜索和 thread follow 契约及业务服务。
 - [ ] 模块通过 DB 自持模型、schema 与显式查询，使用 schema 和调用登记入口，共享服务供 CLI／RPC 消费。
 - [ ] app 默认安装并启用 messages；通过真实隔离数据和文件验证消息、历史、搜索、草稿及附件流程和资源退出。
 - [ ] 完成独立包安装与检查，提交供 review。
 
-### Task 11：身份与协作
+### Task 14：为 agent 接入身份与协作
 
 - [ ] 交付 bazaar-contrib-collaboration 的 sender／contact 身份、refs、会话登记、审批、消息引用和关联服务。
 - [ ] 模块依赖消息、DB 与调用契约，自持业务规则和 schema，状态变化及读取沿用原协作语义。
 - [ ] app 默认安装并启用 collaboration；通过真实隔离数据验证身份、会话、引用和审批流程，完成独立安装及检查，提交供 review。
 
-### Task 12：定时器与 Reminder
+### Task 15：为 agent 接入 Reminder
 
-- [ ] 交付 bazaar-contrib-timer 的 TIMER、句柄和到期／取消／关闭契约，以及 bazaar-contrib-timer-wheel 的驱动和资源生命周期。
 - [ ] 交付 bazaar-contrib-reminder 的持久化、到期、snooze、更新、取消及唤醒规则，依赖 DB、schema、timer 和消息。
-- [ ] app 默认安装相关包，启用 timer-wheel 和 reminder；消费者通过 TIMER 管理自身句柄，按 [定时器契约与时间轮实现](roadmap.md#定时器契约与时间轮实现) 处理退出与驱动故障。
+- [ ] app 默认安装并启用 reminder，复用节点共享 TIMER；持久化与唤醒业务归 Reminder 插件。
 - [ ] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
 
-### Task 13：默认 BCN agent 与替换契约
+### Task 16：补齐 agent 执行、恢复与替换契约
 
-- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer、builder 与审计。
-- [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
+- [ ] Agent 依赖 Node 业务数据插件；Node 接受 DB 和 NODE_MIGRATIONS，迁移就绪后提供节点数据服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
+
+- [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
+- [ ] 按[Actor 验收标准](#迁移实施与验收标准)迁入 main 的 `Actor`／`Actors`：内部身份参数、业务调用与归属键全程使用 Actor，仅在边界与 `session_id`／`agent_id` 转换；保留两种 mode 的身份解析、按 Actor 归属的运行会话／状态／队列／worker／timer、业务可见范围和活跃命令绑定，分别验收各会话隔离及同 Agent 会话共享的原行为。
+- [ ] 沿用 Task12.1 已交付的 developer instruction、bcc 工具入口与初始运行环境，补齐命令能力的活跃身份／会话绑定、上下文及通讯编排；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
+- [ ] 按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)接入 agent 构造输入及 harness 原始事件的完整发布，保留关联、顺序、时间、工具／技能／文件、原始 usage 和模型步骤来源；审计记录、两端上报及 BCS 消费随所属阶段接入。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
 - [ ] 公开 agent 入口拥有 config.agents 和 channel／harness 参数模型，明确创建执行与 provider 实例；私有服务和消息事件用 local 绑定，共享服务沿用外部绑定，依赖就绪后进入执行。
-- [ ] 将新 ConfigDocument 的顶层 agent 模型及 app build 中的实体解释移至 agent 插件，同步 V4→V5 的 agent／runtime 字段映射；app defaults.toml 选择 agent 条目并明确 config.agents=[]。
 - [ ] 用真实自定义 agent 组合替换默认入口，验证其配置模型、实体装配、指令、工具环境、通讯行为、所选依赖与资源退出。
 - [ ] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
 - [ ] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
 
-### Task 14：运行节点前的 agent 配置管理
+### Task 17：运行节点前的 agent 配置管理
 
 - [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
 - [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
@@ -1143,7 +1387,7 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
 - [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
 
-### Task 15：首阶段完整验收与合入
+### Task 18：首阶段完整验收与合入
 
 - [ ] 从源码 workspace 完成未发布模块的联调、入口／依赖变更后的 lock／sync 与实际宿主重启，再从逐包构建的独立 wheel 在 workspace 外完成同一流程。
 - [ ] 从干净环境完成“安装 BCN → 安装日志模块 → 启用 → 启动 → 事件输出 → 退出 → 升级再启动”。
@@ -1152,7 +1396,7 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [ ] 运行各成员的新测试与 Ruff、根目录 `uv run --quiet scripts/pyright_lsp_check.py .` 的逐包检查及包构建。
 - [ ] Linux、macOS、Windows 独立 CI 完成安装与生命周期验收；native service 验收在隔离 CI runner 执行。
 - [ ] 登记本仓库 app、core 与首阶段 contrib 的发行清单、共同版本和正式依赖；验证入口组、contribs 配置、contrib_indexes 与 bcn contrib 命令采用统一命名。
-- [ ] 提交到首个特性分支，review 通过后合入 `0.3`，以该集成点开始路线图下一分支。
+- [ ] 在当前特性分支提交，review 通过后按依赖合入 `0.3`，以该集成点开始路线图下一分支。
 
 ## 首阶段验收结果要求
 

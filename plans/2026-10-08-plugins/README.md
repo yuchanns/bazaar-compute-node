@@ -5,7 +5,8 @@
 BCN 的业务能力、平台 provider、存储查询、控制入口和界面扩展都通过公共模块范式装配。
 所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供服务端组合，`bazaar-contrib-starlink` 提供节点连接，`bazaar-contrib-web` 依赖 server 提供页面。
 应用入口、核心框架及默认运行必需的 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
-具体 provider、server／web 等可选 contrib 在各自独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
+具体 provider、server／web 及服务端迁移等官方可选 contrib 在 open-bazaar 的独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
+`open-bazaar/contrib-server` 中的 `bazaar-contrib-server` 是同一个插件包，持有 `server-migrations` 及按阶段交付的 `server`／`server-api` 入口。
 从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 Apache License 2.0，各包携带许可证全文与 `Apache-2.0` 发行元数据。
 BCN 源码仓库只维护根目录 `LICENSE`，官方包的 `LICENSE` 使用相对符号链接指向它，包元数据统一声明 `license-files = ["LICENSE"]`。
 独立 contrib 仓库各自携带许可证文件及发行元数据。uv_build 在 wheel 和 sdist 中保存许可证正文，sdist 内为普通文件，独立构建与安装可直接读取。
@@ -320,9 +321,8 @@ app 的共同发行清单只标识 BCN 必要包；官方安装索引从 BCN wor
 Contrib 声明的公共 API 范围供加载边界复核。
 0.3.x 维护已公开的 0.3 框架契约，破坏性契约调整进入新的兼容边界；依赖范围外的组合在安装解析与启动校验时诊断。
 
-固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)：
-app 和 core 两包、6 个公共能力 contrib、31 个实现／组合 contrib，共 39 个官方发行包、53 个唯一运行入口。
-其中 22 个必要包留在 BCN 共同发行，17 个可选包独立维护；channel 与 harness 两个公共接口包各附带 共享 builder 注册入口。
+固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)。
+app、core、公共接口和默认节点包留在 BCN 共同发行，可选包在 open-bazaar 独立维护；channel 与 harness 两个公共接口包各附带共享 builder 注册入口。
 config 载体和五版服务先于完整业务文档装配；storage 提供 storage 与 database 两个运行入口。
 server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.toml、bcs.sqlite3 与 session.key，
 保留原配置结构、账户、权限、历史数据、已发布迁移及旧节点协议。

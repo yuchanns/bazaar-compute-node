@@ -10,7 +10,6 @@ lazy from copy import deepcopy
 lazy from hashlib import sha256
 lazy from pathlib import Path
 
-from bazaar_contrib_config import AgentConfig
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 lazy from bazaar_contrib_config import (
     ConfigCandidate,
@@ -53,11 +52,28 @@ class _Node(BaseModel):
         return value
 
 
+class _ProviderV4(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+    kind: str = Field(min_length=1)
+
+
+class _AgentV4(BaseModel):
+    """The published V4 input retains its original runtime field."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    mode: Literal["session", "dangerous_individual"] = "session"
+    idle_timeout: float = Field(default=0, ge=0, allow_inf_nan=False)
+    channel: tuple[_ProviderV4, ...] = ()
+    runtime: tuple[_ProviderV4, ...] = ()
+
+
 class _V4(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["4"]
     node: _Node = Field(default_factory=_Node)
-    agent: tuple[AgentConfig, ...] = ()
+    agent: tuple[_AgentV4, ...] = ()
 
 
 def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
@@ -80,7 +96,13 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     add("sqlite", "sqlite", {"path": str(resolve_data_dir() / node.database_name)})
     add("database", "storage", {"backend": "sqlite"})
     add("schema", "schema")
+    if old.agent:
+        add("node-migrations", "node-migrations")
+    add("timer-wheel", "timer-wheel")
     add("contrib-manager", "manager")
+    add("channel-builders", "channel")
+    add("harness-builders", "harness")
+    add("audit", "audit")
     changes.extend(
         [
             FieldChange(
@@ -130,34 +152,24 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             ),
         ]
     )
-    if old.agent:
-        for name, package in (
-            ("messages", "messages"),
-            ("collaboration", "collaboration"),
-            ("timer-wheel", "timer-wheel"),
-            ("reminder", "reminder"),
-            ("channel-builders", "channel"),
-            ("runtime-builders", "runtime"),
-            ("agent", "agent"),
-        ):
-            add(name, package)
+    agents = []
     for index, agent in enumerate(old.agent):
-        for kind, providers, supported in (
-            (
-                "channel",
-                agent.channel,
-                {"telegram": "telegram", "lark": "lark", "wecom": "wecom"},
-            ),
-            ("runtime", agent.runtime, {"codex": "codex", "claudecode": "claude-code"}),
-        ):
-            for provider in providers:
-                if provider.kind not in supported:
-                    raise ConfigFormatError(
-                        f"agent[{index}].{kind}: provider {provider.kind!r} needs an explicit builder and entry mapping"
-                    )
-                add(provider.kind + "-builder", supported[provider.kind])
-                add(provider.kind, supported[provider.kind])
-        changes.append(FieldChange(source=f"agent[{index}]", target=f"agent[{index}]"))
+        for provider in agent.channel:
+            add(f"{provider.kind}-builder", provider.kind)
+        for provider in agent.runtime:
+            package = "claude-code" if provider.kind == "claudecode" else provider.kind
+            add(f"{provider.kind}-builder", package)
+        item = agent.model_dump(mode="json")
+        item["harness"] = item.pop("runtime")
+        agents.append(item)
+        changes.append(
+            FieldChange(
+                source=f"agent[{index}]",
+                target=f"contribs[bazaar-contrib-agent].enabled[agent].config.agents[{index}]",
+            )
+        )
+    if agents:
+        add("agent", "agent", {"agents": agents})
     document = ConfigDocument(
         contribs=tuple(
             ContribPackage(
@@ -166,7 +178,6 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             )
             for package, values in entries.items()
         ),
-        agent=old.agent,
     )
     return ConfigCandidate(
         payload=document.model_dump(mode="json", exclude_none=True),

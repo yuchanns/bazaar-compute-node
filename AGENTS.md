@@ -18,8 +18,9 @@
 16. 禁止使用 fake/mock 测试。真实外部 Provider 依赖归类为 e2e；所有平台的 system-service 测试归类为 system，只在隔离 CI runner 执行，三系统 CI 必须独立执行 `pytest -m system`。
 17. Provider runtime 的 e2e 测试必须使用 TestChannel 作为控制面，通过它注入 inbound、观察输出并处理审批；
     禁止绕过 orchestration 直接用测试 approval handler 模拟 Channel 行为
-18. 已发布的 migration 属于不可变历史：禁止修改其任何内容（包括注释、空白、名称和 SQL）；schema 变化只能新增 migration。
-    禁止修改或绕过 migration checksum 校验，也禁止手工篡改 migration ledger
+18. 迁移统一由所属业务迁移插件通过公共抽象接口实现，数据库 provider 只负责通用操作。
+    版本账本决定进度，不做 migration checksum 校验；升级必须保留各历史版本实际的数据和结构变更，已执行版本不重复执行。
+    原 src 中已发布迁移脚本保留为只读验收对照，禁止手工篡改现有版本账本。
 19. BCN e2e 测试必须使用测试专用配置、临时数据库和隔离进程；禁止安装开发分支覆盖正式 uv tool，禁止启动、停止、
     重启或复用正式 `bcn.service`，禁止连接 `~/.bcn` 的正式数据库、socket 或 Channel
 20. 发现额外 BCN 进程时，必须先核对其 PPID、启动来源、配置和用途；人工为故障恢复而启动的临时进程未经操作者明确确认
