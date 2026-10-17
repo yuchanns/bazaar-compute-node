@@ -425,9 +425,21 @@ def target(hub: ContribHub, owner: Enablement, composition: Composition) -> Cand
         )
         for record in composition.diagnostics
     ]
+    context = composition.model_copy(
+        update={
+            "entries": (
+                *(
+                    record.entry
+                    for record in hub._registrations.values()
+                    if record.owner is not owner
+                ),
+                *composition.entries,
+            )
+        }
+    )
     for entry in composition.entries:
         try:
-            config = entry.definition.validate_config(entry.config)
+            config = entry.definition.validate_config(entry.config, context=context)
         except ValueError as error:
             if not composition.isolate_errors and composition.roots is None:
                 raise ContribError(

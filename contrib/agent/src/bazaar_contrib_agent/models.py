@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, Self
 lazy from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from bazaar_contrib_channel import ChannelBuilder, ChannelBuilderConfig
+from bazaar_contrib_harness import HarnessBuilder, HarnessBuilderConfig
+from bazaar_core import Composition
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 
 class ProviderConfig(BaseModel):
@@ -25,6 +29,24 @@ class AgentConfig(BaseModel):
     channel: tuple[ProviderConfig, ...] = ()
     harness: tuple[ProviderConfig, ...] = ()
 
+    def validate_providers(
+        self,
+        channels: Mapping[str, ChannelBuilder],
+        harnesses: Mapping[str, HarnessBuilder],
+    ) -> None:
+        for providers, builders in (
+            (self.channel, channels),
+            (self.harness, harnesses),
+        ):
+            for provider in providers:
+                if provider.kind not in builders:
+                    raise ValueError(
+                        f"provider builder {provider.kind!r} is not enabled"
+                    )
+                builders[provider.kind].entity_model.model_validate(
+                    provider.model_dump(mode="python", exclude={"kind"})
+                )
+
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -36,6 +58,21 @@ class Config(BaseModel):
             values = [getattr(agent, field) for agent in self.agents]
             if len(values) != len(set(values)):
                 raise ValueError(f"agents.{field} values must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def providers(self, info: ValidationInfo) -> Self:
+        if isinstance(info.context, Composition):
+            channels: dict[str, ChannelBuilder] = {}
+            harnesses: dict[str, HarnessBuilder] = {}
+            for entry in info.context.entries:
+                model = entry.definition.config
+                if model is not None and issubclass(model, ChannelBuilderConfig):
+                    channels[model.kind] = model.builder()
+                elif model is not None and issubclass(model, HarnessBuilderConfig):
+                    harnesses[model.kind] = model.builder()
+            for agent in self.agents:
+                agent.validate_providers(channels, harnesses)
         return self
 
 

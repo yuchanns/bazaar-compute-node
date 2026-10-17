@@ -6,9 +6,12 @@ requires-python = ">=3.15"
 members = [
     "bazaar-compute-node",
     "bazaar-contrib-agent",
+    "bazaar-contrib-audit",
+    "bazaar-contrib-channel",
     "bazaar-contrib-config",
     "bazaar-contrib-config-filesystem",
     "bazaar-contrib-config-versions",
+    "bazaar-contrib-harness",
     "bazaar-contrib-invoke",
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
@@ -84,12 +87,50 @@ name = "bazaar-contrib-agent"
 version = "0.3.0"
 source = { editable = "contrib/agent" }
 dependencies = [
+    { name = "bazaar-contrib-audit" },
+    { name = "bazaar-contrib-channel" },
+    { name = "bazaar-contrib-harness" },
     { name = "bazaar-core" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "bazaar-contrib-audit", editable = "contrib/audit" },
+    { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-contrib-harness", editable = "contrib/harness" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-audit"
+version = "0.3.0"
+source = { editable = "contrib/audit" }
+dependencies = [
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-channel"
+version = "0.3.0"
+source = { editable = "contrib/channel" }
+dependencies = [
+    { name = "bazaar-contrib-harness" },
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-harness", editable = "contrib/harness" },
     { name = "bazaar-core", editable = "core" },
     { name = "pydantic", specifier = ">=2.12.0" },
 ]
@@ -136,6 +177,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "bazaar-contrib-config", editable = "contrib/config" }]
+
+[[package]]
+name = "bazaar-contrib-harness"
+version = "0.3.0"
+source = { editable = "contrib/harness" }
+dependencies = [
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
 
 [[package]]
 name = "bazaar-contrib-invoke"

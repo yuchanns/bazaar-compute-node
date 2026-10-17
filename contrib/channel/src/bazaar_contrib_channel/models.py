@@ -1,0 +1,123 @@
+"""Channel-owned addressing, ingress, delivery and approval presentation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import (
+    Literal,
+    Self,
+)
+
+from bazaar_contrib_harness import ApprovalRequest
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
+
+
+class ChannelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    agent_id: str
+    agent_name: str
+    workspace: Path
+
+
+class ChannelIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(min_length=1)
+    name: str | None = None
+
+
+class SenderIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str | None = Field(default=None, min_length=1)
+    name: str | None = None
+    kind: Literal["human", "agent", "system", "unknown"] = "human"
+    display_name: str | None = None
+
+    @model_validator(mode="after")
+    def identity(self) -> Self:
+        if self.id is None and self.name is None:
+            raise ValueError("sender identity requires an id or name")
+        return self
+
+
+class ChannelTargetPresentation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    display_name: str | None = None
+    handle: str | None = None
+
+
+class ChannelTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["dm", "group"]
+    thread_id: str = Field(min_length=1)
+    reply_to_message_id: str | None = None
+
+
+class InboundAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    kind: str = "file"
+    state: Literal["ready", "failed"] = "ready"
+    path: Path | None = None
+    media_type: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def source(self) -> Self:
+        if self.state == "ready" and self.path is None:
+            raise ValueError("a ready attachment requires a local source")
+        if self.state == "failed" and self.path is not None:
+            raise ValueError("a failed attachment has no local source")
+        return self
+
+
+class OutboundAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    path: Path
+    media_type: str | None = None
+
+
+class InboundMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(min_length=1)
+    provider_message_id: str | None = Field(default=None, min_length=1)
+    channel_session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    target: ChannelTarget
+    sender: SenderIdentity
+    body: str
+    message_type: str = "text"
+    target_presentation: ChannelTargetPresentation | None = None
+    reply_to_message_id: str | None = None
+    received_at_ms: int | None = None
+    provider_payload_ref: str | None = None
+    attachments: tuple[InboundAttachment, ...] = ()
+    occurred_at_ms: int | None = None
+
+
+class ChannelSendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    target: ChannelTarget
+    body: str
+    attachments: tuple[OutboundAttachment, ...] = ()
+
+
+class ChannelDeliveryReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    status: Literal["confirmed", "queued", "partial", "failed", "unknown"]
+    provider_message_id: str | None = None
+    provider_receipt_ref: str | None = None
+    provider_thread_id: str | None = None
+    error: str | None = None
+
+
+class ChannelApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    approval: ApprovalRequest
+    target: ChannelTarget
+    sender_id: str

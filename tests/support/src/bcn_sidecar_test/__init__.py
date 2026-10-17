@@ -18,6 +18,9 @@ def environment(tmp_path_factory):
     for package in (
         "bazaar-core",
         "bazaar-contrib-agent",
+        "bazaar-contrib-audit",
+        "bazaar-contrib-channel",
+        "bazaar-contrib-harness",
         "bazaar-contrib-config",
         "bazaar-contrib-config-filesystem",
         "bazaar-contrib-config-versions",

@@ -799,6 +799,8 @@ starlink 是独立发行包和普通节点插件，持有主动连接、getUpdat
 请求格式公开描述请求 ID、方法与参数，响应包含同一请求 ID 和结果或错误；BCS 与其他遵循协议的实现都可作为对端。
 starlink 在 accepts 中声明所需服务，通过 Context.accept 获取其他插件 offer 的对象并调用方法；通知操作可以在节点内 announce。
 业务通过 announce 独立发布公共审计事件，starlink 的事件 listen 处理器按配置入队上报，server 收到后交给投影模块。
+agent／harness 的行为事件、原始载荷、来源顺序及时间关联按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)发布和上报，
+agent 依赖 NodeAudit 始终发布，记录方按组合选择订阅；BCS 活动页、历史和网关分析各自决定消费范围及统计口径。
 审计事件处理和请求响应分别管理；send 直接发送调用结果，审计记录由业务独立发布。
 HTTP 输入模型、身份校验、传输和请求关联由 starlink 与 server-api 管理，服务接口及业务规则仍归提供 offer 的功能包。
 包的 pyproject.toml 声明代码依赖并导出入口，节点配置保存所选入口及参数；运行时按 accepts 建图。
@@ -1348,10 +1350,48 @@ app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 
 
 ### Task 12：为 agent 接入 channel／harness 与所需公共接口
 
-- [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
-- [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
-- [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
-- [ ] 将所选 channel／harness 接入真实 agent 的局部组合；以独立 provider wheel 和真实控制面验证消费、调用、审批与资源退出，公共接口随同消费代码交付并 review。
+Channel 入站载荷保留 provider 给出的稳定消息、channel session、Thread 身份及原始 provider 消息 ID；
+具体 provider 沿用自身原有 identity 算法，Agent 直接使用这些值进行业务装配和持久化。
+附件保留 kind、ready／failed 状态及原始失败说明；provider 未提供发生时间时继续使用接收时间展示。
+入站保留消息类型、会话展示信息、引用、原始接收时间与 payload 引用；发送者必填，可只提供名称，
+内部路由状态由接线对象持有，provider metadata 原样进入业务记录。
+
+本次同时交付 `bazaar-contrib-audit` 的发布契约和 NodeAudit 服务，agent 通过 AUDIT 依赖无条件发布当前执行链路的输入、会话／turn、完整输出、审批及关闭事件。
+NodeAudit 使用 ctx.announce(AUDIT_EVENT, event)；公共事件包含 AuditContext、运行标识与发布序号、发生／接收／单调时间及完整 JSON payload。
+发布调用沿用 main `AuditRecorder.append` 对消费异常的日志处理。
+HarnessOutput 的 kind 接受 provider 的事件类别，保留 provider 事件名、会话／turn 关联、发生时间、原始 JSON 与现有公共字段。
+默认声明与 V4→V5 启用 audit；独立 agent 组合显式提供该服务，事件消费者沿普通 listen 订阅。实现按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)的来源和分工交付。
+
+Codex、Claude Code 及 Telegram／Lark／WeCom 等具体 channel 实现统一在 open-bazaar 独立插件仓库维护。agent 声明其实际导入的 audit／channel／harness 发行依赖，初始配置选择 agent 及对应服务入口。V4→V5 按旧 runtime 的 kind 加入所选 Codex／Claude Code 插件及 builder 声明；普通安装由用户通过 bcn contrib add codex／claudecode 选择实现。
+公共 channel／harness 包的节点安装示例使用 `bcn contrib add channel`／`bcn contrib add harness`。
+V4→V5 只在 `old.agent` 非空时启用 `channel-builders` 与 `harness-builders`，与 Agent 及其所选 provider 一起迁入。
+
+沿用 main 的 `core/channel.py`、`core/runtime.py` 与 `core/orchestration/turn.py` 的实际调用边界：harness 包拥有会话／turn 输入、运行指令与工具环境、输出流、审批请求／决定／结果及模型／skills 描述；channel 包拥有输入消息、附件、身份、发送与交付回执，并复用 harness 的审批载荷。两包使用 Pydantic 公共模型，provider 的连接／进程由其 Contrib lifespan 持有。执行流的时限、任务取消、终态与输出流 aclose 以 main 的对应路径为依据；main 已有的配置预算及完整会话／交付／恢复语义随所属执行编排任务迁入。
+
+Harness 的会话 start／reconcile／stop保留 ProviderCallResult 的确认、失败和结果未知区别；
+reconcile 返回所属 session 及可选的恢复 stream。start_turn 在请求尚未写出时可抛出 HarnessSessionUnavailable，
+steer_turn 接受当前 session、turn、纯文本通知及 timeout，仅在 provider 确认后返回 True。
+has_background_job 查询所属 session 的后台工作；receive_event 接收 HarnessExpire，通知执行端在安全时机更新会话上下文。
+连接、进程和事件接收任务仍由 provider 的普通 lifespan 管理，Agent 在 Task16 消费完整契约。
+
+builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力；共享注册入口按 kind 提供 builder key。core 的普通配置校验通过 Pydantic ValidationInfo.context 提供当前候选及现有外部声明组成的 Composition，agent 的配置模型从其中读取 builder 元信息，以实体模型预检选定参数。该上下文只含声明，沿用现有建图与生命周期流程。
+
+公开 compose 接受 agent 配置和所选 builder 声明，构造实体。实体先提供 AGENT 并 yield，再由所属 TaskGroup 启动各 provider 子组合；每个子组合通过 local=(CHANNEL_INPUT, CHANNEL) 或 local=(HARNESS_INPUT, HARNESS) 建立私有范围，运行输入只包含业务上下文。agent 持有所选 provider 的 Enablement 句柄；执行实例通过句柄的 ref(CHANNEL)／ref(HARNESS) 声明依赖，在子组合就绪后消费输入、调用所选 harness、转发事件和渠道审批，并由 core 既有依赖图先停止执行消费者。按 main 的 _consume_events／_forward 转发输出并在终态结束当前流，文本事件保留为事件，失败事件保留为 turn 终态；消息发送及完整故障状态随所属业务任务迁入。退出先结束执行流与会话，再退出 provider 子组合，最后释放实体。身份、工作区和现有配置保留在 agent 包。
+
+`loop.py` 持有持续接收消息、驱动 turn、转发输出并回到下一条输入的 agent 运行循环；内部使用 LoopConfig、run 和 loop 声明，生命周期任务及实例命名为 agent-loop。provider 子组合与循环实例的装配归 agent 入口模块。审批请求的 session／turn 与当前执行不符，或 channel 返回的 request_id 与原请求不符时，agent 路由记录 warning 日志，并返回使用原 request_id、带原因说明的 rejected 决定。日志明确包含期望值、实际值、审批 request_id、session／turn、agent、channel／harness 及目标会话，便于关联调用排查；reason 仅简短说明本次操作被拒绝的原因。harness 沿正常审批返回流程处理拒绝；approval.requested 保留原请求，approval.decided 发布实际返回的决定。
+
+真实验收由 TestChannel 注入自然用户消息、观察输出及处理审批，独立安装的小型 provider wheel／sdist 使用本地连接与隔离进程执行实际文件任务。每次验证使用自有临时配置与工作区，覆盖普通调用、审批往返、取消与资源退出，以及原有 agent 文件消费者和受影响安装流程。
+
+行为用例依据 main 的 `tests/contrib/test_orchestration.py`：`test_stream_events` 的事件转发、`test_approval_is_routed_to_the_current_channel_session` 的会话／原发送者／当前消息审批路由、`test_multiple_sessions_keep_workspace_and_correlation_isolated` 的会话隔离，以及 `test_graceful_stop_cancels_turn_and_closes_runtime_stream` 的取消与释放。现有 TestChannel／文档子进程验收扩展为同一会话连续请求、不同会话各自的目录与关联、审批关联及关闭中的实际进程退出。按 main `run_turn`／`_consume_turn_stream` 将子进程故障转为当前 turn 的失败事件，结束该流后继续处理后续输入；正常 EOF 按终态观察结果完成当前 turn。事件按 kind／thread_id 转发到所属会话，审批单独保留原发送者 id 和当前入站消息关联；普通发送沿用 main 的显式 target 与可选 reply-to 语义，随消息命令迁入。消息持久化、完整 actor／inbox／恢复与配置管理测试按原任务依赖顺序接入。
+
+- [x] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
+- [x] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
+- [x] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
+- [x] 将所选 channel／harness 接入真实 agent 的局部组合；以独立 provider wheel 和真实控制面验证消费、调用、审批与资源退出，公共接口随同消费代码交付并 review。
+- [x] 交付 audit 公共包与必需发布服务，接入 agent 当前执行链路及 provider 原始事件；使用现有真实 provider 验收记录完整事件、来源、文件内容与时序，完成独立安装、受影响检查并修订原提交供 review。
+
+验收订阅器使用自身的 asyncio.Lock 串行追加审计 JSONL，锁覆盖文件打开、写入和关闭，
+防止并发事件的文件句柄互相覆盖；退出后仍逐行校验完整 AuditEvent、原始内容及关联和时序。
 
 ### Task 13：为 agent 接入消息与会话
 
@@ -1379,6 +1419,7 @@ app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 
 - [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
 - [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
+- [ ] 按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)接入 agent 构造输入及 harness 原始事件的完整发布，保留关联、顺序、时间、工具／技能／文件、原始 usage 和模型步骤来源；审计记录、两端上报及 BCS 消费随所属阶段接入。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
 - [ ] 公开 agent 入口拥有 config.agents 和 channel／harness 参数模型，明确创建执行与 provider 实例；私有服务和消息事件用 local 绑定，共享服务沿用外部绑定，依赖就绪后进入执行。
 - [ ] 用真实自定义 agent 组合替换默认入口，验证其配置模型、实体装配、指令、工具环境、通讯行为、所选依赖与资源退出。

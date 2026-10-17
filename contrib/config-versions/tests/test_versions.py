@@ -146,6 +146,12 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         for entry in package["enabled"]
     }
     assert "node-migrations" in entries
+    assert "claudecode-builder" in entries
+    assert "telegram-builder" in entries
+    assert any(
+        package.package == "bazaar-contrib-claude-code"
+        for package in candidate.required_packages
+    )
     assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
     assert (
         entries["agent"]["agents"][0]["harness"][0]["env"]["ANTHROPIC_API_KEY"]
@@ -168,6 +174,11 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         }
     )
     candidate = await asyncio.to_thread(converters[-1].convert, v4.payload)
+    assert any(
+        entry["entry"] == "codex-builder"
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
+    )
     agent = next(
         entry["config"]["agents"][0]
         for package in candidate.payload["contribs"]

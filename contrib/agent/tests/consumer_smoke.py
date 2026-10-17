@@ -23,6 +23,7 @@ from bazaar_core import (
 )
 from bcn_agent_journal import JOURNAL
 from blockbuster import blockbuster_ctx
+from provider_smoke import exercise as exercise_providers
 
 from bazaar_contrib_agent import AGENT, Agent, AgentConfig, compose
 
@@ -43,7 +44,8 @@ async def exercise(path: Path):
     # Run the installed entry itself before composing an independent consumer.
     for _ in range(2):
         composition = await asyncio.to_thread(
-            load, [ContribSpec(contrib="agent", config=config)]
+            load,
+            [ContribSpec(contrib="audit"), ContribSpec(contrib="agent", config=config)],
         )
         async with ContribHub() as hub, hub.enable(composition):
             for name in ("Cloud", "Tifa"):
@@ -56,9 +58,11 @@ async def exercise(path: Path):
             (project / "notes.txt").read_text
         )
 
-    composition = await asyncio.to_thread(load, [ContribSpec(contrib="agent")])
+    composition = await asyncio.to_thread(
+        load, [ContribSpec(contrib="audit"), ContribSpec(contrib="agent")]
+    )
     async with ContribHub() as hub, hub.enable(composition):
-        assert all(record.name == "agent" for record in hub.snapshots)
+        assert all(record.name in {"agent", "audit"} for record in hub.snapshots)
 
     journals: dict[str, AsyncTextIOWrapper] = {}
     instances: dict[str, Agent] = {}
@@ -142,6 +146,7 @@ async def exercise(path: Path):
     report = await asyncio.to_thread((path / "shared.txt").read_text)
     assert "observed Cloud" in report and "observed Tifa" in report
     assert "shared continues" in report and "shared released" in report
+    await exercise_providers(path / "providers")
 
 
 if __name__ == "__main__":
