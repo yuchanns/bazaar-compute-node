@@ -9,7 +9,6 @@ lazy from .contracts import (
     CONFIG_V3,
     CONFIG_V4,
     CONFIG_V5,
-    AgentConfig,
     ConfigCandidate,
     ConfigCommitUnknown,
     ConfigConflict,
@@ -24,7 +23,6 @@ lazy from .contracts import (
     EnabledContrib,
     FieldChange,
     PackageRequirement,
-    ProviderConfig,
 )
 lazy from .loading import (
     CONFIGURATION,
@@ -45,7 +43,6 @@ __all__ = [
     "CONFIG_V3",
     "CONFIG_V4",
     "CONFIG_V5",
-    "AgentConfig",
     "ConfigCandidate",
     "ConfigCommitUnknown",
     "ConfigConflict",
@@ -64,6 +61,5 @@ __all__ = [
     "EnabledContrib",
     "FieldChange",
     "PackageRequirement",
-    "ProviderConfig",
     "configuration",
 ]

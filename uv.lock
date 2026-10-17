@@ -5,6 +5,7 @@ requires-python = ">=3.15"
 [manifest]
 members = [
     "bazaar-compute-node",
+    "bazaar-contrib-agent",
     "bazaar-contrib-config",
     "bazaar-contrib-config-filesystem",
     "bazaar-contrib-config-versions",
@@ -76,6 +77,21 @@ requires-dist = [
     { name = "bazaar-contrib-manager", editable = "contrib/manager" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-agent"
+version = "0.3.0"
+source = { editable = "contrib/agent" }
+dependencies = [
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
 ]
 
 [[package]]

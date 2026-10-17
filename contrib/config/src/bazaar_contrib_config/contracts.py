@@ -139,37 +139,11 @@ class ContribPackage(BaseModel):
         )
 
 
-class ProviderConfig(BaseModel):
-    """Provider parameters stay with their entity until its builder reads them."""
-
-    model_config = ConfigDict(extra="allow", frozen=True)
-    kind: str = Field(min_length=1)
-
-
-class AgentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    mode: Literal["session", "dangerous_individual"] = "session"
-    idle_timeout: float = Field(default=0, ge=0, allow_inf_nan=False)
-    channel: tuple[ProviderConfig, ...] = ()
-    runtime: tuple[ProviderConfig, ...] = ()
-
-
 class ConfigDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     version: Literal["5"] = "5"
     contrib_indexes: tuple[str, ...] = ()
     contribs: tuple[ContribPackage, ...] = ()
-    agent: tuple[AgentConfig, ...] = ()
-
-    @model_validator(mode="after")
-    def identities(self) -> Self:
-        for field in ("id", "name"):
-            values = [getattr(agent, field) for agent in self.agent]
-            if len(values) != len(set(values)):
-                raise ValueError(f"agent.{field} values must be unique")
-        return self
 
 
 CONFIG_STORE = ServiceKey[ConfigStore]("config.store")

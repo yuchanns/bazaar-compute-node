@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 lazy import asyncio
@@ -10,6 +10,7 @@ lazy import json
 lazy import sys
 lazy from typing import Any
 
+from bazaar_contrib_agent import AGENT, Config, compose
 from bazaar_contrib_config import (
     CONFIG_PREPARE,
     CONFIG_STORE,
@@ -18,11 +19,9 @@ from bazaar_contrib_config import (
     ConfigSnapshot,
     ConfigUnavailable,
 )
-from bazaar_core import Context, Contrib, ServiceKey
+from bazaar_core import Context, Contrib, ContribEntry, ServiceKey
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 lazy import aiofiles
-
-from bazaar_compute_node import AGENT
 
 DIRECTORY = ServiceKey[Path]("example.directory")
 MISSING = ServiceKey[Path]("example.missing")
@@ -144,6 +143,26 @@ directory = Contrib(
 )
 journal = Contrib(accepts=[AGENT, DIRECTORY], lifespan=journal_lifespan)
 dependent = Contrib(accepts=[MISSING], lifespan=dependent_lifespan)
+
+
+@asynccontextmanager
+async def file_agent_lifespan(ctx: Context, config: Config):
+    async with AsyncExitStack() as stack:
+        for item in config.agents:
+            composition = compose(item)
+            composition = composition.model_copy(
+                update={
+                    "entries": (
+                        *composition.entries,
+                        ContribEntry(name="example-journal", definition=journal),
+                    )
+                }
+            )
+            await stack.enter_async_context(ctx.enable(composition, local=(AGENT,)))
+        yield
+
+
+file_agent = Contrib(config=Config, accepts=[DIRECTORY], lifespan=file_agent_lifespan)
 
 
 @asynccontextmanager

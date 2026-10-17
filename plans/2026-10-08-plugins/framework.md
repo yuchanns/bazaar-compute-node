@@ -101,8 +101,8 @@ BindingRef 保留 typed key 与声明位置或启用句柄，Pydantic 边界校�
 配置更新保留未变注册及子组合的绑定身份，服务引用重新解析到候选中的实际提供者，消费者仍通过 accepts 与 ctx.accept 访问服务。
 共享 DB、两个不同数据库后端及每个 agent 的执行实例都通过具体提供者与消费者的绑定表达。
 
-默认应用的 agent/channel/runtime 展开由业务组合根据 AGENT／CHANNEL／RUNTIME 服务依赖与所选 provider 入口创建具体条目，
-同时生成各自输入提供者；这些服务和参数模型由应用及后续 agent 契约拥有。
+agent 插件拥有实体模型与 AGENT 服务，从 config.agents 构造每个实体的局部组合；
+所选 channel／harness 在对应接入 commit 中由 agent 组合按公共服务依赖与 provider 入口创建。
 顶层 contribs 统一启用一次；同一实现可以用不同参数生成多个实例，选中的 provider 和完整已知依赖在资源启动前展开并预检。
 动态 lifespan 创建的子组合在 ctx.enable 进入前检查其完整声明，校验结论只覆盖已经声明的输入。
 
@@ -960,8 +960,8 @@ tool 部署使用普通 `uv tool install`，保留 Windows 正在运行的解释
 - [x] --configer 选择载体，--configer-options／--config 可重复并保留顺序；载体自己解析原始参数并提供 CONFIG_STORE。
 - [x] CONFIG_V1…CONFIG_V5 的依赖链提供转换服务，载体按修订条件提交候选，保留历史转换和数据目录规则。
 - [x] FileConfigStore 使用原始字节修订、独立文件锁与原子替换，线程执行 IO 并等待在途操作。
-- [x] AGENT／CHANNEL／RUNTIME 提供 typed 业务输入；app build 将全部已知 agent／provider 展开为完整实例图，稳定绑定从业务 id 和 provider 位置派生，保存前预检覆盖全部声明。
-- [x] ConfigDocument 的当前 agent 模型在 Task 15 移至 agent 插件；此阶段应用负责明确展开该业务输入。
+- [x] 已知条目通过 typed 服务与显式绑定表达依赖，保存前预检已声明的组合；agent 模型与实例展开由 Task 11 的业务插件接管，app build 统一加载 contrib 声明。
+- [x] ConfigDocument 提供通用文档与载体契约，agent 实体模型与展开在 Task 11 由 agent 插件持有。
 - [x] 独立第三方 wheel 用真实 SQLite／TCP 配置中心验证读取、编辑、冲突、未知提交响应、重建和启动取消。
 - [x] 自定义构建后端从 uv.lock 生成内置 catalog，独立 sdist 可重建；验证默认配置、组合导入、路径转义与隔离节点。
 - [x] 完成 Ruff、根 LSP、真实安装配置流程与独立发行验收。
@@ -1225,47 +1225,70 @@ Node／Server 消费者切换验证仅登记被依赖的迁移插件。公共操
 SQL 模板在 SQLite 与 PG 的独立 wheel／sdist 安装后完成实际查询、参数顺序、带引号及二进制默认值、
 索引移除重建和双后端切换验收；Blockbuster 检查初始化预加载及查询过程。
 
-### Task 11：channel／harness 公共接口与登记
+### Task 11：agent 配置、实例与局部生命周期
+
+先实现真实 agent 插件，再在后续每个 commit 为该 agent 接入一项能力及所需接口。
+公共 channel／harness 契约随实际消费代码一起收敛，每次接入均由 agent 的局部组合验收。
+
+`bazaar-contrib-agent` 拥有实体模型与 `agent` 组合入口；入口配置为 `config.agents`。
+本次迁入身份、名称、mode、idle_timeout 及已有 provider 选择参数，V4 的 runtime 参数在 V5 中命名为 harness，
+保留原顺序与每项设置。转换只声明已经交付的入口，provider 选择保留在 agent 配置，所需入口随实际接入 commit 补齐。
+V4 使用自身的历史输入模型，V1…V4 原转换保持不变。
+通用 ConfigDocument 只保存 contribs 与来源，应用 build 只加载声明；agent 的实体解释、校验与装配归插件。
+app 的 Python 代码通过通用配置和入口发现使用所选插件；agent 的发行依赖归插件消费者，默认配置负责选择，包管理服务在启动前恢复配置中的包。
+app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 agent 的流程由现有独立插件安装验收覆盖。
+
+插件公开 `AGENT` 服务和纯 Python `compose(AgentConfig)`，构造单实体组合；agent 入口逐个用
+`ctx.enable(..., local=(AGENT,))` 管理实例。实体 lifespan 创建所属工作区并提供身份与路径，
+默认沿用 BCN_HOME／home 下 `.bcn/workspaces/<id>`，显式 workspace 可选择实际项目路径。
+工作区通过工作线程创建并沿用原权限；退出后保留持久文件，消费者先于所属实体退出。
+全新配置启用 agent，`config.agents=[]` 时保持实体数为零。持久数据服务与执行服务在消费它们的后续 commit 接入。
+
+- [x] 交付独立 agent 包、实体／入口模型、AGENT 与所属 workspace，真实局部组合管理两个实例及退出。
+- [x] 将 app／config 的 agent 业务模型和展开移入插件，默认依赖、配置及 sidecar 独立安装夹具同步；V4→V5 保存 agent 参数到入口 config.agents。
+- [x] 用只依赖公共 agent／core 的真实文件消费插件验证组合、共享依赖、实体隔离、空配置与资源释放；工作区按真实目录身份验收，覆盖经符号链接访问的目录，不增加测试注入入口。
+- [x] 完成普通安装、独立 wheel／sdist、受影响测试、Ruff 与根目录 LSP，新签名 commit 交付后停下 review。
+
+### Task 12：为 agent 接入 channel／harness 与所需公共接口
 
 - [ ] 按 [channel 与 harness 公共接口](roadmap.md#channel-与-harness-公共接口) 交付两个独立公共接口包、Pydantic 输入／输出／审批模型及 CHANNEL_BUILDERS／HARNESS_BUILDERS；具体 provider 依赖接口包，默认 agent 通过同一接口调用。
 - [ ] 提供 channel-builders、harness-builders 两个共享注册入口，builder 登记 provider 实体模型、运行入口和能力；将运行输入及 provider 的 runtime 命名统一改为 harness。
 - [ ] app 默认组合启用两类 builder 注册服务，功能包继续拥有命令文案。
-- [ ] 用真实独立示例 wheel、配置模型和本地传输验证登记、调用与资源退出，完成独立安装及检查，提交供 review。
+- [ ] 将所选 channel／harness 接入真实 agent 的局部组合；以独立 provider wheel 和真实控制面验证消费、调用、审批与资源退出，公共接口随同消费代码交付并 review。
 
-### Task 12：消息与会话
+### Task 13：为 agent 接入消息与会话
 
 - [ ] 交付 bazaar-contrib-messages 的消息、会话 target、历史、未读 cursor、收发与回执、附件、草稿、搜索和 thread follow 契约及业务服务。
 - [ ] 模块通过 DB 自持模型、schema 与显式查询，使用 schema 和调用登记入口，共享服务供 CLI／RPC 消费。
 - [ ] app 默认安装并启用 messages；通过真实隔离数据和文件验证消息、历史、搜索、草稿及附件流程和资源退出。
 - [ ] 完成独立包安装与检查，提交供 review。
 
-### Task 13：身份与协作
+### Task 14：为 agent 接入身份与协作
 
 - [ ] 交付 bazaar-contrib-collaboration 的 sender／contact 身份、refs、会话登记、审批、消息引用和关联服务。
 - [ ] 模块依赖消息、DB 与调用契约，自持业务规则和 schema，状态变化及读取沿用原协作语义。
 - [ ] app 默认安装并启用 collaboration；通过真实隔离数据验证身份、会话、引用和审批流程，完成独立安装及检查，提交供 review。
 
-### Task 14：Reminder
+### Task 15：为 agent 接入 Reminder
 
 - [ ] 交付 bazaar-contrib-reminder 的持久化、到期、snooze、更新、取消及唤醒规则，依赖 DB、schema、timer 和消息。
 - [ ] app 默认安装并启用 reminder，复用节点共享 TIMER；持久化与唤醒业务归 Reminder 插件。
 - [ ] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
 
-### Task 15：默认 BCN agent 与替换契约
+### Task 16：补齐 agent 执行、恢复与替换契约
 
 - [ ] Agent 依赖 Node 业务数据插件；Node 接受 DB 和 NODE_MIGRATIONS，迁移就绪后提供节点数据服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
 
-- [ ] 交付 bazaar-contrib-agent 的 turn、会话绑定、inbox、调度、输出交付、审批及任务故障服务，依赖消息、协作、Reminder、timer 与 builder。
+- [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
 - [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
 - [ ] 公开 agent 入口拥有 config.agents 和 channel／harness 参数模型，明确创建执行与 provider 实例；私有服务和消息事件用 local 绑定，共享服务沿用外部绑定，依赖就绪后进入执行。
-- [ ] 将新 ConfigDocument 的顶层 agent 模型及 app build 中的实体解释移至 agent 插件，同步 V4→V5 的 agent／runtime 字段映射；app defaults.toml 选择 agent 条目并明确 config.agents=[]。
 - [ ] 用真实自定义 agent 组合替换默认入口，验证其配置模型、实体装配、指令、工具环境、通讯行为、所选依赖与资源退出。
 - [ ] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
 - [ ] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
 
-### Task 16：运行节点前的 agent 配置管理
+### Task 17：运行节点前的 agent 配置管理
 
 - [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
 - [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
@@ -1274,7 +1297,7 @@ SQL 模板在 SQLite 与 PG 的独立 wheel／sdist 安装后完成实际查询�
 - [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
 - [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
 
-### Task 17：首阶段完整验收与合入
+### Task 18：首阶段完整验收与合入
 
 - [ ] 从源码 workspace 完成未发布模块的联调、入口／依赖变更后的 lock／sync 与实际宿主重启，再从逐包构建的独立 wheel 在 workspace 外完成同一流程。
 - [ ] 从干净环境完成“安装 BCN → 安装日志模块 → 启用 → 启动 → 事件输出 → 退出 → 升级再启动”。

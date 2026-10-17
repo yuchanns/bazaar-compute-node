@@ -43,6 +43,19 @@ lazy import tomli_w
 from bazaar_compute_node.boot import build, node
 
 
+def agents(*names: str):
+    return {
+        "enabled": [
+            {
+                "entry": "example-agent",
+                "config": {
+                    "agents": [{"id": str(uuid7()), "name": name} for name in names]
+                },
+            }
+        ]
+    }
+
+
 async def exercise_server(path: Path) -> None:
     config = path / "mixed.toml"
     port_file = path / "server.port"
@@ -73,13 +86,9 @@ async def exercise_server(path: Path) -> None:
                 {"entry": "example-directory", "config": {"path": str(directory)}}
             ]
         },
-        {"enabled": [{"entry": "example-journal"}]},
+        agents("server"),
     ]
-    payload = {
-        "version": "5",
-        "contribs": entries,
-        "agent": [{"id": str(uuid7()), "name": "server"}],
-    }
+    payload = {"version": "5", "contribs": entries}
     await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     configurations: list[Configuration] = []
     records: list[Records] = []
@@ -182,7 +191,7 @@ async def exercise(path: Path) -> None:
                 }
             ]
         },
-        {"enabled": [{"entry": "example-journal"}]},
+        agents("Cloud", "Tifa"),
         {"enabled": [{"entry": "status"}]},
         {
             "enabled": [
@@ -190,11 +199,7 @@ async def exercise(path: Path) -> None:
             ]
         },
     ]
-    payload = {
-        "version": "5",
-        "contribs": entries,
-        "agent": [{"id": str(uuid7()), "name": name} for name in ("Cloud", "Tifa")],
-    }
+    payload = {"version": "5", "contribs": entries}
     await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     observed: dict[str, Configuration | IContribStatus] = {}
 
@@ -231,8 +236,7 @@ async def exercise(path: Path) -> None:
         document = ConfigDocument.model_validate(
             dict(payload)
             | {
-                "contribs": [{"enabled": [{"entry": "example-journal"}]}],
-                "agent": [{"id": str(uuid7()), "name": "Aerith"}],
+                "contribs": [agents("Aerith")],
             }
         )
         async with hub.enable(await asyncio.to_thread(build, document)):
@@ -260,8 +264,12 @@ async def exercise(path: Path) -> None:
     )
     async with node(configer_options=(str(config),)) as hub:
         assert any(record.name == "Cloud" for record in hub.snapshots)
+    entries = [
+        entry for entry in entries if entry["enabled"][0]["entry"] != "example-agent"
+    ]
     await asyncio.to_thread(
-        config.write_text, tomli_w.dumps(dict(payload) | {"agent": []})
+        config.write_text,
+        tomli_w.dumps(dict(payload) | {"contribs": [*entries, agents()]}),
     )
     async with node(configer_options=(str(config),)) as hub:
         assert not any(record.name == "example-journal" for record in hub.snapshots)
@@ -287,7 +295,7 @@ async def exercise(path: Path) -> None:
             service = configurations[0]
             assert service.snapshot is not None
             late = await service.commit(
-                dict(payload) | {"agent": [{"id": str(uuid7()), "name": "late"}]},
+                dict(payload) | {"contribs": [*entries, agents("late")]},
                 expected_revision=service.snapshot.revision,
             )
             result = await service.apply(late)

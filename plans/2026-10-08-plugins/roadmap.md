@@ -21,7 +21,7 @@
 | 4 | 消息与会话 | agent 消息数据、会话 target、历史、未读 cursor、发送与回执、附件、草稿、搜索和 thread follow | 消息模块使用公共查询接口并持有业务模型与索引要求；同一消息服务供 CLI / RPC 使用；新调用者使用消息 / 会话 / 搜索服务，旧 repository 在最终发行阶段统一清理 |
 | 5 | 身份与协作 | sender / contact 身份、引用 refs、会话登记和审批、消息引用及关联 | 消息模块公共契约就绪；状态变化和读取遵循现有协作语义 |
 | 6 | Reminder | Reminder 的登记、到期、snooze、更新、取消、持久化与唤醒 | 使用已交付的共享 timer、DB 和消息服务，自持提醒业务；新调用者直接依赖其契约，旧实现最终统一清理 |
-| 7 | agent 公共接口、配置、执行与编排 | channel／harness 接口和 builder 登记、bcc 命令；agent 组合入口拥有配置模型、实例构造与管理命令；执行实例处理 turn、会话绑定、调度、输出、审批和任务故障 | 公共接口在数据库后、消息前交付；默认 agent 依赖这些接口及消息、协作、提醒、timer；组合明确创建本地实例，可整体替换 agent 实现 |
+| 7 | agent 公共接口、配置、执行与编排 | channel／harness 接口和 builder 登记、bcc 命令；agent 组合入口拥有配置模型、实例构造与管理命令；执行实例处理 turn、会话绑定、调度、输出、审批和任务故障 | 数据库后先交付 agent 配置、实例与局部生命周期；后续逐个 commit 为真实 agent 接入 channel／harness、消息、协作、提醒及所需公共接口；组合明确创建本地实例，可整体替换 agent 实现 |
 | 8 | 渠道 provider | Telegram、Lark、WeCom 的连接、收发、附件和 provider 特有配置 | 实现公共 channel 接口并通过 builder 登记；新增渠道由自己的实现包及 UI 模块接入 |
 | 9 | harness provider | Codex、Claude Code 的启动、模型、能力检查、事件解析与审批对接 | 通过 harness builder 与执行契约接入；真实 TestChannel 验证端到端行为 |
 | 10 | 节点与平台管理 | 节点配置、workspace / 文件、模型与 skills 查询、版本检查、升级、系统服务和健康；agent 配置由第 7 项的 agent 插件拥有 | RPC / 命令注册可用；各管理能力自行提供服务和入口；安装与升级共用包管理机制 |
@@ -68,7 +68,8 @@ server 两端及私有 HTTP 在第 11 阶段、多节点业务在第 12 阶段�
 第 16 阶段以本表的完整入口集合和依赖组合发行。
 发行包与入口以本表为准，其中 `bazaar-contrib-storage` 提供两个公共运行入口。
 
-“默认”表示由 app 的 `bazaar-compute-node` 直接声明依赖并随整体安装和升级；“server／web 依赖”表示选装对应包时安装。
+“默认”表示由 app 的默认配置选择，启动前通过包管理服务恢复所选插件；“server／web 依赖”表示选装对应包时安装。
+Python 发行依赖由实际导入接口的包声明；app 直接声明自身入口、自举、配置和管理流程使用的包，agent 及其 audit／channel／harness 依赖由插件配置和所属包维护。
 业务模块定义与参数统一保存在顶层 contribs，配置载体使用启动输入、版本链使用发行自举组合先行装配；组合按已校验业务输入声明具体实例和服务绑定；包依赖安装代码，服务依赖决定实际装配。
 provider 的 builder 用于发现、配置和创建实例，连接或进程由选中的 channel / harness 实例管理。
 公共契约通过普通 Python 包依赖安装，消费者和实现者导入同一包里的类型与服务 key。
@@ -151,7 +152,7 @@ HTTP／GUI 的公共协议供功能模块导入，功能包通过这些协议引
 | `bazaar-core` | core/src/bazaar_core/；框架运行内核、ContribHub.run、发现与自举装配、通用校验、服务／事件、本地绑定、依赖与完整生命周期 API | 由 Python import 使用 | 1 |
 | `bazaar-compute-node` | app/src/bazaar_compute_node/；业务输入服务与明确的实例构造、通用命令分派、启动输入、兼容范围内的默认依赖、defaults.toml，消费版本包的 VERSIONS | bcn 调用 core 运行接口、bcc 调用 | 1 |
 
-app 按兼容范围直接依赖 bazaar-core 与默认 contrib；core 的包依赖保持通用。
+app 按兼容范围直接依赖 bazaar-core 与实际使用的自举、配置、命令和安装管理接口；业务插件按配置安装，各自声明消费的公共契约依赖。core 的包依赖保持通用。
 应用基础先作为独立任务交付：run(bootstrap, load) 启动自举条目及提供 COMPOSITION 的加载器，bcn run 启用已交付的 status；
 随后在相同应用入口接入配置发现、载体、版本链与默认配置资源。
 server 的迁移、配置载体、存储组合、API、业务与页面，以及 starlink／web 与具体 provider 等可选包在 open-bazaar 的独立仓库开发，可选安装并各自持有依赖与配置资源。

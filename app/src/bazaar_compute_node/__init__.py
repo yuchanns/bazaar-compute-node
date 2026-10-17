@@ -1,19 +1,13 @@
-"""Application composition and concrete agent/provider input contracts."""
+"""Application entry into the shared contrib composition framework."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 lazy from collections.abc import AsyncIterator, Awaitable, Callable
 
-from bazaar_core import ServiceKey
-lazy from bazaar_contrib_config import AgentConfig, ProviderConfig
 lazy from bazaar_core import Composition, ContribEntry, ContribHub
 
-__all__ = ["AGENT", "CHANNEL", "RUNTIME", "run"]
-
-AGENT = ServiceKey[AgentConfig]("node.agent")
-CHANNEL = ServiceKey[ProviderConfig]("node.channel")
-RUNTIME = ServiceKey[ProviderConfig]("node.runtime")
+__all__ = ["run"]
 
 
 @asynccontextmanager
