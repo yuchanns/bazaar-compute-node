@@ -45,6 +45,10 @@ class StorageQueryError(StorageError):
     """The data source could not execute the declared operation."""
 
 
+class StorageQueryTimeoutError(TimeoutError, StorageError):
+    """The data source interrupted a query after its execution budget."""
+
+
 class MigrationError(StorageError):
     """The stored migration history cannot be safely advanced."""
 
@@ -66,6 +70,25 @@ class Session(Protocol):
 
 
 class Database(Session, Protocol):
+    async def read[T](
+        self,
+        operation: Callable[[Session], Awaitable[T]],
+        *,
+        snapshot: bool = False,
+        query_budget: float | None = None,
+    ) -> T:
+        """Run on one reader, optionally holding its original snapshot and budget."""
+        ...
+
+    async def write[T](
+        self,
+        operation: Callable[[Session], Awaitable[T]],
+        *,
+        transactional: bool = False,
+    ) -> T:
+        """Run one writer operation with its declared transaction boundary."""
+        ...
+
     async def transaction[T](self, operation: Callable[[Session], Awaitable[T]]) -> T:
         """Commit the operation together, rolling it back on failure or cancellation."""
         ...

@@ -2,22 +2,58 @@
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 lazy import asyncio
 lazy import inspect
-lazy from typing import Any
+lazy from typing import Any, cast
 
-from bazaar_core import Context
+from bazaar_core import Composition, Context, Contrib, ContribEntry, ServiceKey
 
 from .wire import Failure, Reference, Request, Result, decode, encode
+
+
+class _Caller:
+    """Forward framework operations with connection-owned service consumers."""
+
+    def __init__(self, ctx: Context, resources: AsyncExitStack) -> None:
+        self._ctx = ctx
+        self._resources = resources
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ctx, name)
+
+    async def accept[T](self, key: ServiceKey[T]) -> T:
+        service: T | None = None
+
+        @asynccontextmanager
+        async def lifespan(ctx: Context):
+            nonlocal service
+            service = ctx.accept(key)
+            yield
+
+        await self._resources.enter_async_context(
+            self._ctx.enable(
+                Composition(
+                    entries=[
+                        ContribEntry(
+                            name="sidecar-caller",
+                            definition=Contrib(accepts=[key], lifespan=lifespan),
+                        )
+                    ]
+                )
+            )
+        )
+        return cast(T, service)
 
 
 class Session:
     """One caller owns its object table and remotely entered resources."""
 
     def __init__(self, ctx: Context) -> None:
-        self.objects: dict[int, Any] = {0: ctx}
-        self._identities = {id(ctx): 0}
+        self._resources = AsyncExitStack()
+        caller = _Caller(ctx, self._resources)
+        self.objects: dict[int, Any] = {0: caller}
+        self._identities = {id(caller): 0}
         self._next = 1
         self._entered: dict[int, AsyncExitStack] = {}
 
@@ -27,6 +63,7 @@ class Session:
     async def __aexit__(self, *_: object) -> None:
         try:
             async with AsyncExitStack() as cleanup:
+                cleanup.push_async_callback(self._resources.aclose)
                 for stack in self._entered.values():
                     cleanup.push_async_callback(stack.aclose)
         finally:

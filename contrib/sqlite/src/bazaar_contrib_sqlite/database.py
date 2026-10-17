@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from enum import Enum, auto
 from pathlib import Path
 lazy import asyncio
@@ -17,7 +17,12 @@ lazy import aiosqlite
 lazy from jinja2 import Environment
 
 from .compiler import Compiler, load_templates, schema_sql
-from .executor import SqliteExecutor, SqliteExecutorClosedError, SqliteSession
+from .executor import (
+    SqliteExecutor,
+    SqliteExecutorClosedError,
+    SqliteQueryTimeoutError,
+    SqliteSession,
+)
 
 
 class SqliteConfig(BaseModel):
@@ -42,6 +47,8 @@ def storage_errors() -> Iterator[None]:
         yield
     except SqliteExecutorClosedError as error:
         raise storage.StorageClosedError(str(error)) from error
+    except SqliteQueryTimeoutError as error:
+        raise storage.StorageQueryTimeoutError(str(error)) from error
     except sqlite3.IntegrityError as error:
         raise storage.StorageIntegrityError(str(error)) from error
     except sqlite3.OperationalError as error:
@@ -191,8 +198,30 @@ class SqliteDatabase(Session):
         super().__init__(executor, templates)
         self._writer = executor
 
-    async def transaction[T](
-        self, operation: Callable[[storage.Session], Awaitable[T]]
+    async def read[T](
+        self,
+        operation: Callable[[storage.Session], Awaitable[T]],
+        *,
+        snapshot: bool = False,
+        query_budget: float | None = None,
+    ) -> T:
+        with storage_errors():
+            async with self._writer.reader() as reader, AsyncExitStack() as stack:
+                if snapshot:
+                    await stack.enter_async_context(reader.transaction())
+                if query_budget is not None:
+                    await stack.enter_async_context(reader.query_budget(query_budget))
+                bound = Session(reader, self._templates)
+                try:
+                    return await operation(bound)
+                finally:
+                    bound._state = _State.CLOSED
+
+    async def write[T](
+        self,
+        operation: Callable[[storage.Session], Awaitable[T]],
+        *,
+        transactional: bool = False,
     ) -> T:
         async def apply(session: SqliteSession) -> T:
             bound = Session(session, self._templates)
@@ -202,7 +231,14 @@ class SqliteDatabase(Session):
                 bound._state = _State.CLOSED
 
         with storage_errors():
-            return await self._writer.transaction_write(apply)
+            if transactional:
+                return await self._writer.transaction_write(apply)
+            return await self._writer.write(apply)
+
+    async def transaction[T](
+        self, operation: Callable[[storage.Session], Awaitable[T]]
+    ) -> T:
+        return await self.write(operation, transactional=True)
 
     async def apply_schema(
         self, operations: tuple[storage.SchemaOperation, ...]

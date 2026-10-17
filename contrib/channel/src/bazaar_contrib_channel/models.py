@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     model_validator,
 )
 
@@ -80,6 +81,8 @@ class OutboundAttachment(BaseModel):
     name: str
     path: Path
     media_type: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
 
 
 class InboundMessage(BaseModel):
@@ -105,6 +108,10 @@ class ChannelSendRequest(BaseModel):
     target: ChannelTarget
     body: str
     attachments: tuple[OutboundAttachment, ...] = ()
+    actor_id: str | None = None
+    channel: str | None = None
+    channel_identity: str | None = None
+    delivery_handle: str | None = None
 
 
 class ChannelDeliveryReceipt(BaseModel):
@@ -114,6 +121,20 @@ class ChannelDeliveryReceipt(BaseModel):
     provider_receipt_ref: str | None = None
     provider_thread_id: str | None = None
     error: str | None = None
+    error_kind: str | None = None
+    receipt: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def provider_identity(self) -> Self:
+        if (
+            self.status in {"confirmed", "queued", "partial"}
+            and self.provider_message_id is None
+            and self.provider_receipt_ref is None
+        ):
+            raise ValueError(
+                "a channel delivery receipt requires a provider identifier"
+            )
+        return self
 
 
 class ChannelApprovalRequest(BaseModel):
@@ -121,3 +142,25 @@ class ChannelApprovalRequest(BaseModel):
     approval: ApprovalRequest
     target: ChannelTarget
     sender_id: str
+
+
+class DmRequest(BaseModel):
+    """A previously observed sender and the channel that observed them."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sender_id: str | None = None
+    sender_name: str | None = None
+    sender_kind: Literal["human", "agent", "system", "unknown"]
+    channel: str
+    channel_identity: str | None = None
+
+
+class DmAddress(BaseModel):
+    """A DM conversation in one channel's own terms."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    channel_session_id: str
+    thread_id: str
+    provider_thread_id: str
+    delivery_handle: str | None = None
+    channel_identity: str | None = None

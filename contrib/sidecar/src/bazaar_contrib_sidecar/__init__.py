@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from bazaar_contrib_config import CONFIGURATION
 from bazaar_core import Context, Contrib
 
 from .contracts import CLIENT, SERVER, Handler, Server, Sessions
@@ -33,4 +32,4 @@ async def lifespan(ctx: Context):
         yield
 
 
-sidecar = Contrib(accepts=[SERVER, CONFIGURATION], lifespan=lifespan)
+sidecar = Contrib(accepts=[SERVER], lifespan=lifespan)

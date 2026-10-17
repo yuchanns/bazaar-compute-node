@@ -116,7 +116,8 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-node-migrations` | `node-migrations`：共享 | 依赖 SCHEMA，持有 Node 迁移与当前基线，登记后提供 NODE_MIGRATIONS | 3 | Node 业务数据插件的依赖 |
 | `bazaar-contrib-node` | `node`：共享 | 接受 DB 和 NODE_MIGRATIONS，提供迁移就绪后的 Node 业务数据服务；Agent 明确依赖该服务 | 7 | Agent 的依赖 |
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
-| `bazaar-contrib-messages` | `messages`：共享 | 消息／会话、历史、未读、搜索、附件、草稿、收发回执和 thread follow；依赖 storage、schema、调用与审计契约 | 4 | 默认；server 投影的契约依赖 |
+| `bazaar-contrib-messages` | 公共契约 | 消息／会话、Actor、请求与结果、消息及通用会话读写 Protocol、共享 MESSAGES key 和纯回执转换；依赖 core 和 channel 公共契约 | 4 | 消息实现、协作及 server 投影的契约依赖 |
+| `bazaar-contrib-messages-node` | `messages-node`：共享；`messages-cli`：命令生命周期 | 历史、未读、搜索、附件、草稿、收发回执和 thread follow 的本机实现；持有目标解析、草稿、交付和数据作用域；依赖消息、storage、Node 迁移就绪、调用、sidecar 与审计契约 | 4 | 默认配置选择并由 manager 恢复 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | sender／contact、refs、会话登记、审批及可见范围；依赖消息、storage 和调用契约 | 5 | 默认；server 联系人的契约依赖 |
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 2 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |

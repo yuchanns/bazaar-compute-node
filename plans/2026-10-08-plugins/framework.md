@@ -1135,8 +1135,8 @@ run 的用户帮助使用：`Run the node, serving until it is stopped.`
 Sidecar README 使用 V5 的 `package` 与 `enabled[].entry` 描述启用方式，与实际配置文档一致。
 
 本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
-`SERVER`、`CLIENT` 两个公共服务 key，并提供接受 `SERVER`、`CONFIGURATION` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
-将自己的 Context 公开为 handler。消费插件只依赖接口包并接受 `CLIENT`，按已有 offers／accepts 装配。
+`SERVER`、`CLIENT` 两个公共服务 key，并提供只接受 `SERVER` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
+通过连接所属的调用上下文转发框架操作。消费插件只依赖接口包并接受 `CLIENT`，按已有 offers／accepts 装配。
 
 `bazaar-contrib-sidecar-unix`、`bazaar-contrib-sidecar-windows` 分别提供同名入口，各自 offer 两个服务。
 `SERVER` 接受会话 handler 工厂并持有监听，`CLIENT` 传递类型化请求与结果；公共服务契约与具体 I/O 无关，
@@ -1162,11 +1162,16 @@ JSON 标量、序列和字典按值传输，服务、候选组合等对象以连
 `module:symbol` 引用及构造参数传入，避免复制服务实例或丢失 key 身份。请求与结果由 Pydantic 校验。
 连接关闭时释放其对象引用及远端进入的子组合；服务端退出时取消并等待所属连接任务。
 
-消费方使用客户端取得远端 ctx，再通过 accept 取得已声明的服务并组合调用。
-服务端直接通过 `accepts=[SERVER, CONFIGURATION]` 声明公共接口依赖，框架负责绑定、就绪和退出顺序。
-默认启用及 V4→V5 转换只声明 sidecar 入口，公共接口依赖由插件定义持有。
+消费方使用客户端取得远端 ctx，再通过 accept 请求服务并组合调用。
+每次远端 accept 使用已有 Context.enable，为调用方启用只声明该服务依赖的消费入口；
+消费入口继承原绑定范围，框架负责解析、就绪和退出顺序，连接持有并在关闭时释放这些消费组合。
+其余公开属性和方法继续转发原 Context；sidecar 只声明 `accepts=[SERVER]`，不导入配置、消息或其他业务契约。
+目标符号未安装或服务不可用时，沿用 Failure／RemoteError 将调用错误返回客户端，不安装或启用业务提供者。
+默认启用及 V4→V5 转换只声明 sidecar 入口。
+接口依赖直接写入插件的 `Contrib.accepts`；配置不提供 `services` 或同义字段，也不保留将这类字段解析为服务 key 的逻辑。
 配置刷新由调用者通过远端 CONFIGURATION.read／commit／apply 编排，继续使用配置加载器原有 ctx 的更新归属；
-sidecar 的 ctx 保持自己的服务可见范围与组合归属。各传输共用这些 handler，业务编排由消费插件持有。
+sidecar 的 ctx 保持自己的服务可见范围与组合归属，调用方的服务依赖归连接内的消费入口持有。
+各传输共用这些 handler，业务编排由消费插件持有。
 
 本轮继续完成 manager 的实际消费。manager 的启动依赖仍为 CONFIGURATION、COMMANDS，
 所选组合未声明 CLIENT 提供者且没有加载诊断时，直接使用本地管理；已配置但无法加载或装配的客户端报告错误。
@@ -1464,10 +1469,87 @@ agent 负责 wrapper、命令启动和运行上下文。消息、thread、Remind
 
 ### Task 13：为 agent 接入消息与会话
 
-- [ ] 交付 bazaar-contrib-messages 的消息、会话 target、历史、未读 cursor、收发与回执、附件、草稿、搜索和 thread follow 契约及业务服务。
-- [ ] 模块通过 DB 自持模型、schema 与显式查询，使用 schema 和调用登记入口，共享服务供 CLI／RPC 消费。
-- [ ] app 默认安装并启用 messages；通过真实隔离数据和文件验证消息、历史、搜索、草稿及附件流程和资源退出。
-- [ ] 完成独立包安装与检查，提交供 review。
+命令调度器以明确状态控制接收和停止接收，in-flight 任务及排空 Event 保留实际资源与通知职责。 sidecar 客户端连接使用明确的打开／关闭状态，保留请求串行、超时与失败关闭行为。
+
+公共 MessageStorage 提供所属 Thread 的送达游标，MessageService 提供按 Actor 的非消费式未读汇总；
+底层沿用既有 read_unread_summary 的同一快照和最新端采样，供 Agent 通知与去重使用。
+
+以 main `core/orchestration/commands/messages.py` 的 MessageCommands、`core/storage.py` 的快照与持久化操作，
+以及 `contrib/sqlite/repository/{messages,sessions,search,facade}.py` 和 codec 为来源，交付独立 messages contrib。
+保留入站去重、会话 target／显示名与 handle 解析、跨 bot 同名目标发送、check 推进游标、read 读取快照，
+以及发送前两次新鲜度检查、按目标保存与恢复草稿、附件校验、可选回复关联、交付回执和 thread unfollow 的原规则。
+搜索保留前五个字面片段、时间／sender／target 过滤、原相关性公式、分页与 snippet，以及原查询取消语义；按本轮确认，执行预算由调用方可选传入，bcc 默认不设查询超时。
+按本轮 review 确认，发送者 ID 与用户名分别参与搜索过滤；同时保存两者的消息可用任一标识查到。
+
+消息记录、会话与 cursor 模型及命令结果迁入 messages；`core/actor.py` 的 Actor／Actors 作为消息公共契约迁入，
+内部服务参数、草稿归属、快照与锁的键统一使用 Actor，数据库记录及进程请求的 id 只在边界转换。
+messages-node 接受公共 DB、Node 迁移就绪服务和 AUDIT，持有自己的数据操作、按 Agent 分离的服务与生命周期；
+通过已有 Select／Insert／Update／Delete／transaction 表达原查询，沿用 Node 已发布迁移及当前基线。
+原搜索表达式需要的通用字符串运算随实际查询补入 storage 公共表达式，查询取消使用现有 backend 的中断机制。
+查询控制按 main `contrib/sqlite/storage.py` 的原边界恢复：普通读取借用 reader，目录、历史、未读摘要和搜索
+持有同一读取快照，check／freshness／落库仍在原写事务中；普通写入保留原 writer 操作边界。
+公共 Database 提供 read(snapshot, query_budget) 和 write(transactional)；SQLite 沿用已有 reader、transaction
+和 query_budget；MessageStore、MessageService 及 RPC 搜索请求透传可选 query_budget，默认 None。
+需要限制搜索的调用方显式指定秒数，公共消息层不再固定五秒；bcc 沿用默认值。
+使用当前节点数据库的只读一致性副本统计规模并测量实际搜索，正式数据库只读打开，测量在副本完成。
+独立 PostgreSQL 已有相同作用域实现。
+目录按 main 的 latest_message_ranked／latest_message／pending_message／target_catalog 集合查询表达，
+通用 Select 增加实际所需的 CTE、分区窗口及标量子查询，由 backend 的模板渲染。
+入站消息的附件按本次结果集批量读取；目标解析合并渠道与 handle 唯一性读取。
+搜索相关性所需的文档数、平均正文长度及全部关键词的文档频次恢复为 main 的单次聚合查询；
+使用现有 SUM／Case／Contains 表达，不逐个关键词重新扫描同一消息集合。
+未读调度同样恢复 main 的 unread_ranked 窗口 CTE，在数据库中只返回每个会话最新的未读消息，
+再统一补齐附件，避免读出全部未读消息后在 Python 中筛选。inbox check 的当前会话和未读条件在存储查询中生效后再计数、分页；message check 的 Agent／Thread 两种作用域均通过审批条件查询会话，只推进至实际交付的通知消息。
+按本轮查询 review，独立的目标投影与引用读取以协程并发处理，保持输出顺序、快照及 cursor 原子性。
+逐项核对完整 MessageStore 查询与原 SQLite storage/repository：在真实节点数据库的一致性副本上，
+对目录分页、review、历史与引用、未读、目标解析、附件、搜索结果及游标／新鲜度写事务作对照；
+仅允许已批准的 Actor 表达、调用方可选预算与逐段消息持久化差异。完整运行受影响 contrib 验收。
+
+从 `app/command.py`、`core/serialize.py` 及 `cmd/bcc/{message,inbox,thread,_client,_format}.py` 迁入对应请求校验、
+结果序列化和 native Click 命令，通过 invoke 的 bcc 入口及公共 sidecar CLIENT 消费服务。
+Click 的正常命令退出在 Hub 生命周期释放后交回原顶层，避免草稿拦截多出 ExceptionGroup 错误文案。
+现有 bcc 只加载 commands 与命令所属入口，无法满足 CLIENT 的实际依赖；CommandEntry 因此携带显式
+ContribSpec 依赖，由 bcc 与命令一起交给既有 load。messages 的命令入口声明本机传输，并将原 BCN_ENDPOINT
+交给其 endpoint 配置；传输仍由公共 provider lifespan 创建和关闭。
+消息服务的进程边界沿用 CommandDispatcher 的 Actor 解析和 session binding validator，绑定由调用它的 agent 提供。
+sidecar 只负责转发框架调用，消息 CLI 通过连接所属的通用消费入口请求 `MESSAGES`；
+消息依赖由该调用方声明并由框架绑定，sidecar 的定义及发行依赖均不包含消息或配置业务。
+V4→V5 保留 `if old.agent`，只在旧配置存在 agent 时加入 messages-node 和 node-migrations；
+只有 BCS 等其他 contrib 的节点继续使用通用通信入口。
+删除 `services` 配置模型、服务 key 字符串解析及全部默认／转换／测试用法。
+原 `resources/command/`、消息相关 `resources/bcc/` 与 TextTemplate 保留格式化逻辑和模板字节，随独立包发行。
+channel 公共契约按原发送链路补齐 DM 地址、目标显示及交付信息，消息服务消费实际 channel，不持有 provider 生命周期。
+`app/attachments.py` 的 AttachmentMaterializer 迁入 messages-node，保留暂存、原子落盘、文件上限及按数据库引用清理。
+消息导入通过异步资源作用域逐块消费字节流，并在成功、失败和取消时关闭；保留附件类别及原始失败说明。
+所有附件文件平铺为 `attachments/<uuid><suffix>`；`_stage` 只接收字节流和目标路径，
+在内部用标准库 `tempfile.mkstemp(dir=destination.parent, prefix=".bcn-", suffix=".part")` 创建同层临时文件，
+并持有其写入、fsync、关闭、原子发布及异常清理。调用方只负责最终附件身份和目标路径。
+清理按临时文件前后缀、最终文件身份与数据库引用执行，删除未引用的自有文件和未完成写入。
+真实入站附件走此流程后随消息保存，重启恢复仍使用原引用。
+默认配置选择 messages-node 及其数据依赖，由 manager 恢复；Python 发行依赖由实际导入接口的消费者声明。
+messages-node 的 CLI 依赖公共 sidecar 契约；所选原生传输实现由配置声明并由 manager 恢复，消息包的发行依赖只声明实际导入的接口包。
+独立安装验收在准备工作区及附件路径前解析临时根目录，沿用实际 agent 的工作区路径语义，覆盖 macOS 的 `/tmp` 符号链接。
+
+按消息接口拆分 review，`bazaar-contrib-messages` 保留 Actor、消息／会话／附件、状态及请求和结果类型，
+定义 `Messages`、`MessageService`、`MessageStorage`、写入作用域 `MessageSession` 和 `ThreadConcurrency` 公共 Protocol，
+并导出同一 `MESSAGES` key。契约包只声明直接使用的 core 和 channel 公共依赖。
+`bazaar-contrib-messages-node` 承接现有 MessageStore／repository、消息业务、发送与草稿、附件管理、
+会话锁实现、命令分派、bcc 命令、模板及绑定生命周期，通过 `messages-node` 入口提供 `MESSAGES`；
+`messages-cli` 与 message／inbox／thread 命令入口随实现发行。公共模型和模板保持原内容。
+消费者通过 `accepts` 声明服务依赖，装配方通过 `ctx.accept(MESSAGES)` 获取服务并绑定某个 Agent，
+将产生的消息服务显式传给 collaboration；内部调用直接使用接口对象。
+`MessageStorage.write` 把通用会话读取和保存交给同一次数据库 writer 回调，
+公开 `get_thread`、`get_channel_session`、`save_channel_session`，沿用原审核写入的 writer 边界及数据约束。
+查询、入站登记和交付持久化保留已有读取快照及事务作用域。
+共享回执转换移到消息契约的纯值转换，交付执行器消费相同转换；collaboration 不导入消息实现。
+独立安装验收分别安装契约及实现 wheel／sdist，通过现有真实 TCP Channel、sidecar、持久化和重启工作流验证服务绑定；
+同时核对只安装消息契约及其声明依赖时可以导入全部公共契约，默认配置、V4 转换及 manager 索引选择实现发行包。
+
+- [x] 交付 bazaar-contrib-messages 公共契约及 bazaar-contrib-messages-node 消息、历史、收发、附件和命令实现。
+- [x] 模块通过 DB 自持模型、schema 与显式查询，使用 schema 和调用登记入口，共享服务供 CLI／RPC 消费。
+- [x] 默认配置选择 messages-node，由 manager 恢复所选发行包；通过真实 TestChannel、隔离数据库和文件验证消息、历史、搜索、草稿及附件流程和资源退出。
+- [x] 完成独立包安装与检查，提交供 review。
+- [x] 验证同一条消息可分别按用户名及用户 ID 搜索，完成真实独立安装与持久化验收。
 
 ### Task 14：为 agent 接入身份与协作
 

@@ -28,6 +28,8 @@ from bazaar_contrib_channel import (
     ChannelInput,
     ChannelSendRequest,
     ChannelTarget,
+    DmAddress,
+    DmRequest,
     InboundAttachment,
     InboundMessage,
     SenderIdentity,
@@ -91,6 +93,17 @@ class TestChannel:
     def get_identity(self) -> ChannelIdentity:
         return ChannelIdentity(id=self.input.agent_id, name=self.input.agent_name)
 
+    def dm_address(self, request: DmRequest) -> DmAddress | None:
+        if request.sender_id is None:
+            return None
+        identity = f"{self.input.agent_id}:dm:{request.sender_id}"
+        return DmAddress(
+            channel_session_id=str(uuid5(NAMESPACE_URL, identity + ":channel")),
+            thread_id=str(uuid5(NAMESPACE_URL, identity + ":thread")),
+            provider_thread_id=request.sender_id,
+            channel_identity=request.channel_identity,
+        )
+
     def connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.writer = writer
         self.group.create_task(self.connection(reader, writer))
@@ -151,8 +164,12 @@ class TestChannel:
         id = str(uuid7())
         self.pending[id] = asyncio.get_running_loop().create_future()
         await self.outbound.put({"id": id, "outbound": request.model_dump(mode="json")})
-        await self.pending[id]
-        return ChannelDeliveryReceipt(status="confirmed", provider_message_id=id)
+        packet = await self.pending[id]
+        return (
+            ChannelDeliveryReceipt.model_validate(packet["receipt"])
+            if "receipt" in packet
+            else ChannelDeliveryReceipt(status="confirmed", provider_message_id=id)
+        )
 
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
