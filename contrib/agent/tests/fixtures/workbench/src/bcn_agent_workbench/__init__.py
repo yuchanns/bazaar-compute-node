@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -286,6 +287,7 @@ class DocumentHarness:
         self.sessions: dict[str, Path] = {}
         self.turns: dict[tuple[str, str], DocumentStream] = {}
         self.events: asyncio.Queue[HarnessExpire] = asyncio.Queue()
+        self.inputs: dict[str, SessionInput] = {}
 
     async def describe(self, *, timeout: float) -> HarnessDescription:  # noqa: ASYNC109
         return HarnessDescription(
@@ -304,6 +306,10 @@ class DocumentHarness:
         directory = request.workspace / "reports" / request.id
         await asyncio.to_thread(directory.mkdir, parents=True)
         self.sessions[request.id] = directory
+        self.inputs[request.id] = request
+        await asyncio.to_thread(
+            (directory / "session.json").write_text, request.model_dump_json()
+        )
         return ProviderCallResult(
             status=ProviderCallStatus.CONFIRMED, value=HarnessSession(id=request.id)
         )
@@ -321,6 +327,7 @@ class DocumentHarness:
             "-m",
             "bcn_agent_workbench.worker",
             cwd=self.input.workspace,
+            env=dict(os.environ) | self.inputs[session.id].environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -333,6 +340,7 @@ class DocumentHarness:
             "agent_id": self.input.agent_id,
             "title": self.config.title,
             "turn": turn.model_dump(mode="json"),
+            "session": self.inputs[session.id].model_dump(mode="json"),
         }
         stream.stdin.write(json.dumps(request).encode() + b"\n")
         await stream.stdin.drain()
@@ -384,6 +392,7 @@ class DocumentHarness:
     async def stop_session(
         self, session: HarnessSession, *, timeout: float
     ) -> ProviderCallResult[HarnessSession]:  # noqa: ASYNC109
+        self.inputs.pop(session.id)
         await asyncio.to_thread(
             (self.sessions.pop(session.id) / "session.closed").write_text, session.id
         )

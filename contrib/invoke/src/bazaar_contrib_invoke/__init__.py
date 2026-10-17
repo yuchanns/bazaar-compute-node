@@ -55,15 +55,24 @@ class CommandLoadError(click.ClickException):
 class CommandCatalog(click.Group):
     """Invoke's own entry-point protocol, independent of the core discovery group."""
 
-    def __init__(self, *, contribs: Collection[str], **options: Any) -> None:
+    def __init__(
+        self,
+        *,
+        contribs: Collection[str],
+        entry_point_group: str = "bazaar_compute_node.commands",
+        **options: Any,
+    ) -> None:
         super().__init__(**options)
         self.failures: dict[str, CommandLoadError] = {}
         packages = {source.package for source in discover() if source.name in contribs}
-        for point in entry_points(group="bazaar_compute_node.commands"):
+        for point in entry_points(group=entry_point_group):
             if cast(Distribution, point.dist).metadata["Name"] not in packages:
                 continue
             try:
-                entry = CommandEntry.model_validate(point.load())
+                entry = point.load()
+                if entry is None:
+                    continue
+                entry = CommandEntry.model_validate(entry)
                 if entry.contrib not in contribs:
                     continue
                 if point.name in self.commands:

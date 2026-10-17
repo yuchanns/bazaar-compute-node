@@ -90,7 +90,10 @@ dependencies = [
     { name = "bazaar-contrib-audit" },
     { name = "bazaar-contrib-channel" },
     { name = "bazaar-contrib-harness" },
+    { name = "bazaar-contrib-invoke" },
     { name = "bazaar-core" },
+    { name = "click" },
+    { name = "jinja2" },
     { name = "pydantic" },
 ]
 
@@ -99,7 +102,10 @@ requires-dist = [
     { name = "bazaar-contrib-audit", editable = "contrib/audit" },
     { name = "bazaar-contrib-channel", editable = "contrib/channel" },
     { name = "bazaar-contrib-harness", editable = "contrib/harness" },
+    { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
     { name = "bazaar-core", editable = "core" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pydantic", specifier = ">=2.12.0" },
 ]
 

@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .loop import loop
 from .models import Agent, AgentConfig, Config, ProviderConfig
+lazy from .wrapper import install, remove
 
 __all__ = [
     "AGENT",
@@ -65,21 +66,45 @@ async def operate(
     config: AgentConfig,
     channel_builders: tuple[ChannelBuilder, ...],
     harness_builders: tuple[HarnessBuilder, ...],
+    command: Path,
 ):
     async with AsyncExitStack() as stack:
         channels: list[Enablement] = []
         harnesses: list[Enablement] = []
+        bot_names: list[str] = []
+
+        @asynccontextmanager
+        async def channel_identity(ctx: Context):
+            identity = ctx.accept(CHANNEL).get_identity()
+            if identity.name:
+                bot_names.append(identity.name)
+            yield
+
         for provider, builder in zip(config.channel, channel_builders):
+            composition = builder.compose(
+                provider.model_dump(mode="python", exclude={"kind"}),
+                ChannelInput(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    workspace=agent.workspace,
+                ),
+            )
+            composition = composition.model_copy(
+                update={
+                    "entries": (
+                        *composition.entries,
+                        ContribEntry(
+                            name="channel-identity",
+                            definition=Contrib(
+                                accepts=[CHANNEL], lifespan=channel_identity
+                            ),
+                        ),
+                    )
+                }
+            )
             channel = await stack.enter_async_context(
                 ctx.enable(
-                    builder.compose(
-                        provider.model_dump(mode="python", exclude={"kind"}),
-                        ChannelInput(
-                            agent_id=agent.id,
-                            agent_name=agent.name,
-                            workspace=agent.workspace,
-                        ),
-                    ),
+                    composition,
                     local=(CHANNEL_INPUT, CHANNEL),
                 )
             )
@@ -114,6 +139,9 @@ async def operate(
                                         "agent": agent,
                                         "channel": provider.kind,
                                         "harness": config.harness[0].kind,
+                                        "mode": config.mode,
+                                        "command": command,
+                                        "bot_names": tuple(dict.fromkeys(bot_names)),
                                     },
                                     bindings={
                                         CHANNEL: channel.ref(CHANNEL),
@@ -140,22 +168,27 @@ async def instance_lifespan(ctx: Context, config: _InstanceConfig):
     if os.name != "nt":
         await asyncio.to_thread(workspace.chmod, 0o700)
     identity = Agent(id=item.id, name=item.name, workspace=workspace)
-    ctx.offer(AGENT, identity)
-    async with asyncio.TaskGroup() as group:
-        task = group.create_task(
-            operate(
-                ctx,
-                identity,
-                item,
-                config.channels,
-                config.harnesses,
-            ),
-            name=f"agent:{item.id}",
-        )
-        try:
-            yield
-        finally:
-            task.cancel()
+    command = await asyncio.to_thread(install, item, workspace)
+    try:
+        ctx.offer(AGENT, identity)
+        async with asyncio.TaskGroup() as group:
+            task = group.create_task(
+                operate(
+                    ctx,
+                    identity,
+                    item,
+                    config.channels,
+                    config.harnesses,
+                    command,
+                ),
+                name=f"agent:{item.id}",
+            )
+            try:
+                yield
+            finally:
+                task.cancel()
+    finally:
+        await asyncio.to_thread(remove, command)
 
 
 instance = Contrib(

@@ -127,11 +127,34 @@ async def session_routes(peer: Peer, draft: Path, workspace: Path) -> Path:
     )
     assert first.parent == second.parent
     assert first.parent != private.parent
+    workspace = await asyncio.to_thread(workspace.resolve)
     for saved in (first, second, private):
         content = await asyncio.to_thread(saved.read_text)
         assert workspace.name in content
         assert await asyncio.to_thread(saved.parents[2].samefile, workspace)
         assert await asyncio.to_thread(saved.with_suffix(".closed").read_text)
+        data = json.loads(content)
+        request = json.loads(
+            await asyncio.to_thread((saved.parent / "session.json").read_text)
+        )
+        assert data["context"]["session_id"] == data["session_id"] == request["id"]
+        assert data["context"]["agent_id"] == data["agent_id"]
+        assert data["words"] > 0 and data["lines"] > 0
+        instruction = "\n".join(request["instructions"])
+        for value in (
+            request["id"],
+            "document",
+            str(workspace),
+        ):
+            assert value in instruction
+        assert (
+            "Credential handling" in instruction and "bcc message send" in instruction
+        )
+        assert data["context"]["actor_id"] in {
+            "editorial-team",
+            "private-editor",
+            data["agent_id"],
+        }
     assert {"started", "text", "completed"} <= {
         packet["event"]["kind"] for packet in peer.events if "event" in packet
     }
@@ -188,6 +211,9 @@ async def exercise(path: Path):
                             "id": name,
                             "name": name,
                             "workspace": str(workspace),
+                            "mode": "session"
+                            if name == "Cloud"
+                            else "dangerous_individual",
                             "channel": [{"kind": "test-channel"}],
                             "harness": [
                                 {

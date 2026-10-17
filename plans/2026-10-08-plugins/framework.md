@@ -14,6 +14,43 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 节点启动接入、模块及 agent 管理、默认调用／存储／消息／协作／定时／Reminder 和可替换 agent 组合。后续能力依照
 [0.3 路线图](roadmap.md) 逐个交付新包。工程的分支与发行规则见 [总计划](README.md)。
 
+## 迁移实施与验收标准
+
+本计划全部 Task 以 main 主分支的原实现为迁移基线。提示词、运行行为、Actor 与文案保持一致；
+只调整已经讨论确认的包归属、依赖声明与公共接口边界。实现前先核对 main 对应源码、调用链与资源，迁入原实现。
+
+developer instruction 以 `src/bazaar_compute_node/core/instruction.py` 与 `resources/developer_instructions.md`
+的原始资源、渲染规则、mode 分支及注入时机为准。本次明确批准两处显示调整：删除 `- Agent ID: {{agent_id}}`，
+将 `- Runtime session ID: {{runtime_session_id}}` 改为 `- Session: {{runtime_session_id}}`。
+验收以 main 原模板应用这两处调整后的内容与渲染结果为基准，逐字比对。
+Actor 沿用 `src/bazaar_compute_node/core/actor.py` 的 `Agent`／`Thread`、`Actors` 与 `Mode`，
+作为内部流通的身份原语，类型保持 `Actor = Agent | Thread`。
+内部服务接口、编排调用、命令业务以及表示操作者归属的状态与容器键统一使用 Actor；
+业务内部直接传递和匹配 Actor，不传递 `session_id`／`agent_id` 等字符串代替 Actor，也不在各层重新根据 id 或 mode 推断身份。
+只有在入站、配置、进程协议及序列化等边界，才将 `session_id`／`agent_id` 与 Actor 相互转换：
+边界入口构造或解析 Actor 后传入内部，边界出口将 Actor 转为外部协议所需的 id。
+
+| mode | `Actors.for_thread(thread_id)` | 代表的业务范围与运行归属 |
+| --- | --- | --- |
+| `session` | `Thread(thread_id)` | 当前会话；不同会话具有不同 Actor，各自持有运行会话及调度状态 |
+| `dangerous_individual` | `Agent(agent_id)` | 整个 Agent；该 Agent 各会话映射到同一个 Actor，按该 Actor 持有运行会话及调度状态 |
+
+`Actors.for_thread(thread_id)` 在会话入站边界选择 Actor；`Actors.resolve(actor_id)` 在进程边界按当前 mode 恢复类型：`session` 恢复 `Thread(actor_id)`，
+`dangerous_individual` 校验 id 等于本 Agent 后恢复 `Agent(agent_id)`。
+main `core/runtime.py` 与 `core/orchestration/orchestrator.py` 以 Actor 为运行会话、runtime holder、状态、
+队列、worker 和 timer 的归属键；迁移保留两种模式下的会话复用、隔离、串行调度及释放语义。
+`core/orchestration/services.py` 与 `commands/base.py` 按该类型确定消息、未读与命令 target 范围：
+Thread 处理自己的会话，Agent 处理该 Agent 存储范围内的会话。
+跨进程传递的 actor id、当前 runtime session id 与会话 capability 沿 main `app/agent.py` 的活跃绑定进行校验，
+恢复后的业务调用继续传递有类型的 Actor，保留身份、会话及命令可见范围的关联。
+
+消息、调度、审批、提醒和命令沿各自 main 调用链迁移；bcc 与其他面向人或 agent 的文案沿用
+`src/bazaar_compute_node/cmd/bcc/`、`resources/` 的原格式化实现、模板、字段、措辞和输出行为。
+
+每个 Task 均以以上一致性要求作为验收标准，review 同时核对原源码与迁入实现；涉及模板时检查资源字节和实际渲染，
+涉及行为与 Actor 时通过已有真实场景验收身份、路由、时序、结果与生命周期。发现偏差时回到该能力的引入提交修正，
+满足标准后再完成该 Task 并交付 review。
+
 ## 测试执行
 
 测试和独立安装验收直接等待场景、子进程及观察结果，校验功能结果并在取消时回收所属资源。
@@ -1393,6 +1430,38 @@ builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力
 验收订阅器使用自身的 asyncio.Lock 串行追加审计 JSONL，锁覆盖文件打开、写入和关闭，
 防止并发事件的文件句柄互相覆盖；退出后仍逐行校验完整 AuditEvent、原始内容及关联和时序。
 
+### Task 12.1：为 agent 注入 developer instruction 与 bcc
+
+bcc 根帮助保留原说明、`-h`／`--help` 和命令使用提示；实际命令仍由所属 contrib 登记。
+命令入口可按自身运行上下文导出声明或 None，invoke 跳过 None，不接入具体业务判断。
+Messages 仅在 dangerous_individual 模式提供 inbox；消息和 Reminder 的原生 CLI 在实际请求时
+才通过 Sidecar 获取所属服务，查看各级帮助不要求节点已经运行。
+
+按 main `app/agent.py`、`app/wrapper.py`、`core/instruction.py`、`resources/developer_instructions.md`，
+以及 Codex `start_session`／Claude `_open_connection` 的实际时机，将默认 agent 的初始化上下文提前至消息能力之前交付。
+实体准备 workspace 后，在 `<workspace>/.bcn/bin` 安装自身解释器启动的 bcc wrapper；退出和启动失败沿所属生命周期清理 wrapper。
+POSIX、Windows CMD 与 PowerShell 脚本文本分别放在 agent 的 `resources/bcc.sh`、`bcc.cmd`、`bcc.ps1`，
+使用现有 Jinja2 加载并渲染 agent／mode 与自身解释器路径，保持原生成内容和各平台引号规则。
+POSIX 与 Windows 沿原 wrapper、stdin 和 UTF-8 行为；其他 workspace 文件保持持久保存。
+
+agent 在每次建立 harness session 前渲染现有 developer instruction 资源，注入 agent 身份、实际 channel 名称、
+harness、workspace、mode 与本次 session id；同一次 SessionInput 提供 instructions 和 environment。
+环境将 wrapper 目录前置 PATH，携带 agent／mode、当前 actor 和 harness session 关联；provider 使用已收到的指令和环境创建实际进程或 SDK 会话。
+指令模板保留 main 的已有行为约束及 mode 分支，按[统一验收标准](#迁移实施与验收标准)删除 Agent ID 显示行、将 runtime session 显示为 Session，随 agent 的 wheel／sdist 发行；加载与渲染通过工作线程完成。
+
+bcc 复用 invoke 的 CommandCatalog／Commands 和 Contrib 生命周期登记机制，以独立 `bazaar_compute_node.bcc_commands`
+入口组发现每个功能包的 CommandEntry。入口组选择所需 CLI contrib，由该 contrib 注册自己的 native Click 二级命令；
+命令帮助与新增实现说明统一使用 `contrib`／`contribs`。
+agent 负责 wrapper、命令启动和运行上下文。消息、thread、Reminder 的实际命令在所属后续任务消费公共服务及本次入口。
+
+使用现有独立安装的 TestChannel／文档 provider：自然用户输入建立真实 session，子进程收到实际指令与环境，
+通过注入 PATH 查找并运行 bcc，调用两个真实 contrib 命令完成 workspace 文件操作，覆盖两个 agent、会话重用／隔离与退出。
+验证 wheel／sdist 内模板、wrapper 和公开入口均可用，保留原审批、失败后继续及关闭验收。
+
+- [x] 迁入默认指令资源与渲染、各平台 wrapper 生命周期，并在 harness session 创建前注入。
+- [x] 复用公共 invoke 机制提供可由其他 contrib 贡献二级命令的 bcc 入口；将实际 agent／actor／session 上下文交给命令。
+- [x] 扩展现有真实 provider 独立安装验收，完成受影响检查、Ruff 和根目录 LSP，以新签名 commit 交付并停下 review。
+
 ### Task 13：为 agent 接入消息与会话
 
 - [ ] 交付 bazaar-contrib-messages 的消息、会话 target、历史、未读 cursor、收发与回执、附件、草稿、搜索和 thread follow 契约及业务服务。
@@ -1417,7 +1486,8 @@ builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力
 - [ ] Agent 依赖 Node 业务数据插件；Node 接受 DB 和 NODE_MIGRATIONS，迁移就绪后提供节点数据服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
 
 - [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
-- [ ] 将现有 developer instruction 资源及渲染、bcc 工具环境与身份绑定、上下文及通讯编排归入默认 agent；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
+- [ ] 按[Actor 验收标准](#迁移实施与验收标准)迁入 main 的 `Actor`／`Actors`：内部身份参数、业务调用与归属键全程使用 Actor，仅在边界与 `session_id`／`agent_id` 转换；保留两种 mode 的身份解析、按 Actor 归属的运行会话／状态／队列／worker／timer、业务可见范围和活跃命令绑定，分别验收各会话隔离及同 Agent 会话共享的原行为。
+- [ ] 沿用 Task12.1 已交付的 developer instruction、bcc 工具入口与初始运行环境，补齐命令能力的活跃身份／会话绑定、上下文及通讯编排；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
 - [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
 - [ ] 按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)接入 agent 构造输入及 harness 原始事件的完整发布，保留关联、顺序、时间、工具／技能／文件、原始 usage 和模型步骤来源；审计记录、两端上报及 BCS 消费随所属阶段接入。
 - [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。

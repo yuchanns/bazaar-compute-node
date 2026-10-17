@@ -2,10 +2,14 @@
 name = "bcn-agent-journal"
 version = "0.1.0"
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-agent~=0.3.0", "aiofiles>=25.1.0"]
+dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-agent~=0.3.0", "bazaar-contrib-invoke~=0.3.0", "aiofiles>=25.1.0", "click>=8.1.0"]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 agent-journal = "bcn_agent_journal:journal"
+journal-cli = "bcn_agent_journal.commands:commands"
+
+[project.entry-points."bazaar_compute_node.bcc_commands"]
+journal = "bcn_agent_journal.commands:command_entry"
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
