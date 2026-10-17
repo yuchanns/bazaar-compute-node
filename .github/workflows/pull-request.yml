@@ -1,4 +1,4 @@
-name: Pull Request
+name: CI
 
 on:
   pull_request:
@@ -15,31 +15,43 @@ defaults:
     shell: bash
 
 jobs:
-  typecheck:
-    name: Type check
+  plan:
+    name: Plan
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_packages: ${{ steps.plan.outputs.has_packages }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.12.2"
+          version: "0.13.0"
 
       - name: Install Python
-        run: uv python install 3.14
+        run: uv python install 3.15
 
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: uv sync --locked --all-packages
 
-      - name: Run Pyright
-        run: uv run --frozen scripts/pyright_lsp_check.py --outputjson .
+      - name: Generate package matrix
+        id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: uv run --no-sync scripts/ci.py plan --base "$BASE" --head "$HEAD" --github-output "$GITHUB_OUTPUT"
 
   checks:
     name: Checks
-    needs: typecheck
+    needs: plan
+    if: needs.plan.outputs.has_packages == 'true'
     runs-on: ubuntu-latest
+    env:
+      PACKAGES: ${{ join(fromJson(needs.plan.outputs.matrix).package, ' ') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,48 +59,57 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.12.2"
+          version: "0.13.0"
 
       - name: Install Python
-        run: uv python install 3.14
+        run: uv python install 3.15
 
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: uv sync --locked --all-packages
 
-      - name: Check formatting
-        run: uv run --frozen ruff format --check .
-
-      - name: Run Ruff
-        run: uv run --frozen ruff check .
+      - name: Run static checks
+        run: |
+          read -r -a packages <<<"$PACKAGES"
+          for package in "${packages[@]}"; do
+            echo "::group::$package"
+            uv run --no-sync scripts/ci.py check --package "$package"
+            echo "::endgroup::"
+          done
 
   tests:
-    name: Tests (${{ matrix.os }})
-    needs: typecheck
+    name: ${{ matrix.component }} / ${{ matrix.os }}
+    needs: [plan, checks]
+    if: needs.plan.outputs.has_packages == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+      matrix: ${{ fromJson(needs.plan.outputs.matrix).tests }}
+    env:
+      PACKAGE: ${{ matrix.package }}
     steps:
+      - name: Enable Git symbolic links on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.symlinks true
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.12.2"
+          version: "0.13.0"
 
       - name: Install Python
-        run: uv python install 3.14
+        run: uv python install 3.15
 
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: uv sync --locked --all-packages
 
       - name: Run tests
         env:
           TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: uv run --frozen pytest -m "not e2e and not system"
+        run: uv run --no-sync scripts/ci.py test --package "$PACKAGE"
 
       - name: Prepare the Linux user service manager
         if: runner.os == 'Linux'
@@ -101,21 +122,7 @@ jobs:
       - name: Run system service tests
         env:
           TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: uv run --frozen pytest -m system
+        run: uv run --no-sync scripts/ci.py test --package "$PACKAGE" --system
 
-      - name: Read the project version
-        id: version
-        run: echo "version=$(uv version --short)" >>"$GITHUB_OUTPUT"
-
-      - name: Build distributions
-        run: uv build --no-sources
-
-      - name: Smoke test wheel
-        env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
-        run: uv run --isolated --no-project --with dist/*.whl tests/package_smoke.py "$PACKAGE_VERSION"
-
-      - name: Smoke test source distribution
-        env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
-        run: uv run --isolated --no-project --with dist/*.tar.gz tests/package_smoke.py "$PACKAGE_VERSION"
+      - name: Build and verify distributions
+        run: uv run --no-sync scripts/ci.py package --package "$PACKAGE"
