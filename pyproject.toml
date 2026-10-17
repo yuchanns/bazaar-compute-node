@@ -24,7 +24,14 @@ dev = [
 package = false
 
 [tool.uv.sources]
+bazaar-compute-node = { workspace = true }
 bazaar-core = { workspace = true }
+bazaar-contrib-config = { workspace = true }
+bazaar-contrib-config-filesystem = { workspace = true }
+bazaar-contrib-config-versions = { workspace = true }
+bazaar-contrib-manager = { workspace = true }
+bazaar-contrib-invoke = { workspace = true }
+bazaar-contrib-sidecar = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.uv.workspace]

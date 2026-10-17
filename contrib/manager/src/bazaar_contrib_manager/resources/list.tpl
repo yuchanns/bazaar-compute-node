@@ -1,0 +1,1 @@
+{{ rows | table(("Package", "Version")) }}
