@@ -151,11 +151,17 @@ async def exercise(directory: Path, transport: str, control: str):
             remote = clients[0].context
             for _ in range(16):
                 assert "sidecar" in await remote.get("name")
+            handle = await remote.call(
+                "accept", Symbol("bazaar_sidecar_example:JOURNAL")
+            )
+            await handle.call("write", "direct cross-process service\n")
+            await handle.call("flush")
             await command(config, "remote", "append", "cross-process note 🌙")
             await remote.call(
                 "announce", Symbol("bazaar_sidecar_example:NOTE"), "x" * 300_000
             )
             text = await asyncio.to_thread(journal.read_text)
+            assert "direct cross-process service" in text
             assert "cross-process note 🌙" in text and "x" * 300_000 in text
             message = "x" * 3_000_000 + "完整的长消息 🌙"
             configuration = await remote.call(
@@ -219,6 +225,11 @@ async def exercise(directory: Path, transport: str, control: str):
             await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
             result = json.loads(await command(config, "remote", "refresh"))
             assert result["applied"], result
+            handle = await remote.call(
+                "accept", Symbol("bazaar_sidecar_example:JOURNAL")
+            )
+            await handle.call("write", "service after refresh\n")
+            await handle.call("flush")
             snapshots = await remote.get("snapshots")
             names = {await record.get("name") for record in snapshots}
             assert "sidecar-journal" in names
@@ -230,6 +241,7 @@ async def exercise(directory: Path, transport: str, control: str):
                 await asyncio.sleep(0.01)
         text = await asyncio.to_thread(journal.read_text)
         assert "before stopped" in text and "after started" in text
+        assert "service after refresh" in text
 
     # A graceful restart reuses the native address and the saved configuration.
     async with node(config):

@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import re
+
+from bazaar_contrib_messages.actor import Actors
+from bazaar_contrib_messages.models import (
+    InboundAttachment,
+    InboxTargetSummary,
+    Message,
+    OutboundAttachment,
+)
+from bazaar_contrib_messages.results import MessageSearchResult, TargetProjection
+from bazaar_contrib_messages.states import MessageDirection
+
+
+def serialize_attachment(
+    attachment: InboundAttachment | OutboundAttachment,
+) -> dict[str, object]:
+    if isinstance(attachment, InboundAttachment):
+        return {
+            "attachment_id": attachment.attachment_id,
+            "name": attachment.name,
+            "kind": attachment.kind,
+            "state": attachment.state,
+            "media_type": attachment.media_type,
+            "relative_path": attachment.relative_path,
+            "size_bytes": attachment.size_bytes,
+            "error": attachment.error,
+            "sha256": None,
+        }
+    return {
+        "attachment_id": None,
+        "name": attachment.name,
+        "kind": "file",
+        "state": "ready",
+        "media_type": attachment.media_type,
+        "relative_path": attachment.relative_path,
+        "size_bytes": attachment.size_bytes,
+        "error": None,
+        "sha256": attachment.sha256,
+    }
+
+
+def serialize_message(
+    message: Message,
+    target_projections: tuple[TargetProjection, ...] = (),
+) -> dict[str, object]:
+    targets = {
+        projection.canonical_target: projection.display_target
+        for projection in target_projections
+    }
+    return {
+        "seq": message.seq,
+        "message_id": message.message_id,
+        "direction": message.direction.value,
+        "thread_id": message.thread_id,
+        "channel_session_id": message.channel_session_id,
+        "channel": message.channel,
+        "received_at_ms": message.received_at_ms,
+        "created_at_ms": message.created_at_ms,
+        "provider_time_ms": message.provider_time_ms,
+        "sender": (
+            None
+            if message.sender is None
+            else {
+                "id": message.sender.id,
+                "name": message.sender.name,
+                "display_name": message.sender.display_name,
+            }
+        ),
+        "sender_kind": message.sender_kind.value,
+        "system_message_kind": (
+            None
+            if message.system_message_kind is None
+            else message.system_message_kind.value
+        ),
+        "system_message_source_target": (
+            targets.get(source_target, source_target)
+            if isinstance(
+                source_target := message.metadata.get("system_message_source_target"),
+                str,
+            )
+            else None
+        ),
+        "system_message_source_message_id": message.metadata.get(
+            "system_message_source_message_id"
+        ),
+        "message_type": message.message_type,
+        "target": targets.get(message.target, message.target),
+        "canonical_target": message.target,
+        "target_kind": message.target_kind.value,
+        "mentions_agent": message.mentions_agent,
+        "notifies_runtime": message.notifies_runtime,
+        "attachments": [
+            serialize_attachment(attachment) for attachment in message.attachments
+        ],
+        "body": message.body,
+        "reply_to_message_id": message.reply_to_message_id,
+        "delivery_state": (
+            message.delivery_state.value
+            if message.direction is MessageDirection.OUTBOUND
+            and message.delivery_state is not None
+            else None
+        ),
+    }
+
+
+def serialize_search(
+    result: MessageSearchResult,
+    actors: Actors,
+) -> dict[str, object]:
+    fragments = sorted(
+        {
+            fragment
+            for fragment in (
+                fragment.strip('"').strip()
+                for fragment in re.findall(r'"[^"]+"|\S+', result.query)
+            )
+            if fragment
+        },
+        key=len,
+        reverse=True,
+    )
+    pattern = (
+        re.compile("(" + "|".join(map(re.escape, fragments)) + ")", re.IGNORECASE)
+        if fragments
+        else None
+    )
+    messages: list[dict[str, object]] = []
+    for hit in result.messages:
+        pieces = pattern.split(hit.snippet) if pattern else [hit.snippet]
+        message: dict[str, object] = {
+            "message_id": hit.message_id,
+            "direction": hit.direction.value,
+            "sender": (
+                {
+                    "id": hit.sender.id,
+                    "name": hit.sender.name,
+                    "display_name": hit.sender.display_name,
+                }
+                if hit.sender is not None
+                else None
+            ),
+            "sender_kind": hit.sender_kind.value,
+            "at_ms": hit.at_ms,
+            "snippet": hit.snippet,
+            "parts": [
+                (text, bool(pattern and index % 2)) for index, text in enumerate(pieces)
+            ],
+            "thread_id": hit.thread_id,
+            "actor_id": actors.for_thread(hit.thread_id).id,
+            "target": hit.target,
+            "canonical_target": hit.canonical_target,
+            "channel": hit.channel,
+            "target_kind": hit.target_kind.value,
+        }
+        messages.append(message)
+    return {
+        "query": result.query,
+        "sort": result.sort,
+        "shown": result.shown,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "next_offset": result.next_offset,
+        "messages": messages,
+    }
+
+
+def serialize_inbox_target(summary: InboxTargetSummary) -> dict[str, object]:
+    sender = summary.latest_sender
+    latest_time_ms = (
+        summary.latest_provider_time_ms
+        if summary.latest_provider_time_ms is not None
+        else summary.latest_received_at_ms
+    )
+    return {
+        "target": summary.target,
+        "canonical_target": summary.canonical_target or summary.target,
+        "thread_id": summary.thread_id,
+        "review": summary.review.value,
+        "target_kind": summary.target_kind.value,
+        "channel": summary.channel,
+        "pending_count": summary.pending_count,
+        "last_activity_at_ms": summary.last_activity_at_ms,
+        "latest_message_id": summary.latest_message_id,
+        "latest_sender": (
+            None
+            if sender is None
+            else {
+                "id": sender.id,
+                "name": sender.name,
+                "display_name": sender.display_name,
+            }
+        ),
+        "latest_time_ms": latest_time_ms,
+    }

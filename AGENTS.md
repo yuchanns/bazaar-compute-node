@@ -25,13 +25,16 @@
     重启或复用正式 `bcn.service`，禁止连接 `~/.bcn` 的正式数据库、socket 或 Channel
 20. 发现额外 BCN 进程时，必须先核对其 PPID、启动来源、配置和用途；人工为故障恢复而启动的临时进程未经操作者明确确认
     禁止终止。运行当前 agent 的 BCN 进程不得由该 agent 自行终止
+21. 接口依赖由插件直接在 `Contrib.accepts` 中声明，禁止用 `services` 或同义配置字段列出服务 key 并解析成依赖。
+    各包的 `pyproject.toml` 只声明自身实现实际需要的依赖；具体 contrib 由配置选择、manager 恢复。
+    通用 sidecar 只连接插件框架并转发调用，不依赖具体业务；目标实现不存在时，将框架错误返回调用方。
 
 ## 目录职责
 
 项目在独立 workspace 成员中开发；各成员拥有自己的发行元数据、源码、资源与验证。
 
 ```text
-app/                            # bazaar-compute-node：CLI、启动输入、默认依赖与组合装配
+app/                            # bazaar-compute-node：CLI、启动输入、自举依赖与默认组合
 └── src/bazaar_compute_node/     # 应用入口、自举声明、默认组合与通用命令分派
 core/                           # bazaar-core：通用 contrib 运行内核
 └── src/bazaar_core/             # 入口发现、声明校验、服务与事件绑定、依赖图和生命周期
@@ -49,15 +52,14 @@ plans/                          # 已讨论的设计、任务顺序与交付要�
 ## 依赖与隔离边界
 
 ```text
-app → core
-app → 默认 contrib
+app → core + 自身 Python 入口直接使用的接口包
 contrib → core + 所需功能的公共契约包
 可选 contrib → core + 所需功能的公共契约包
 ```
 
 - core 只处理通用定义、配置模型、typed key、绑定、依赖与生命周期；业务类型、配置字段和功能分支归所属 contrib。
   后续功能先通过已有公共框架装配；需要改 core 时，核对现有接口无法表达的通用能力及已讨论设计。
-- app 提供启动输入、默认依赖和组合，调用功能服务；功能模块的业务规则、资源、命令契约和配置归其拥有者。
+- app 提供启动输入、自举依赖和默认组合，调用功能服务；功能模块的业务规则、资源、命令契约和配置归其拥有者。
 - contrib 自持实现、第三方依赖与资源，通过声明的服务和事件协作；公共契约归功能包，contrib 不导入 app 或访问 Hub 的内部实例记录。
 - 配置载体负责文档存储，版本包负责转换，配置服务负责候选校验、保存和更新请求；manager 消费 CONFIGURATION，
   分别记录包安装、配置保存与运行应用结果，通过公共服务完成操作。

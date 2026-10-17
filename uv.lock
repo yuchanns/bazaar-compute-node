@@ -15,6 +15,8 @@ members = [
     "bazaar-contrib-invoke",
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
+    "bazaar-contrib-messages",
+    "bazaar-contrib-messages-node",
     "bazaar-contrib-node-management",
     "bazaar-contrib-node-migrations",
     "bazaar-contrib-schema",
@@ -257,6 +259,54 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bazaar-contrib-messages"
+version = "0.3.0"
+source = { editable = "contrib/messages" }
+dependencies = [
+    { name = "bazaar-contrib-channel" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
+name = "bazaar-contrib-messages-node"
+version = "0.3.0"
+source = { editable = "contrib/messages-node" }
+dependencies = [
+    { name = "bazaar-contrib-audit" },
+    { name = "bazaar-contrib-channel" },
+    { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-messages" },
+    { name = "bazaar-contrib-node-migrations" },
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-core" },
+    { name = "click" },
+    { name = "jinja2" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-audit", editable = "contrib/audit" },
+    { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-messages", editable = "contrib/messages" },
+    { name = "bazaar-contrib-node-migrations", editable = "contrib/node-migrations" },
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
 name = "bazaar-contrib-node-management"
 version = "0.3.0"
 source = { editable = "contrib/node-management" }
@@ -314,15 +364,11 @@ name = "bazaar-contrib-sidecar"
 version = "0.3.0"
 source = { editable = "contrib/sidecar" }
 dependencies = [
-    { name = "bazaar-contrib-config" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-config", editable = "contrib/config" },
-    { name = "bazaar-core", editable = "core" },
-]
+requires-dist = [{ name = "bazaar-core", editable = "core" }]
 
 [[package]]
 name = "bazaar-contrib-sidecar-unix"

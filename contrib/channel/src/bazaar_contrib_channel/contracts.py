@@ -13,12 +13,16 @@ from .models import (
     ChannelIdentity,
     ChannelSendRequest,
     ChannelTarget,
+    DmAddress,
+    DmRequest,
     InboundMessage,
 )
 
 
 class Channel(Protocol):
     def get_identity(self) -> ChannelIdentity: ...
+
+    def dm_address(self, request: DmRequest) -> DmAddress | None: ...
 
     def receive(self) -> AsyncIterator[InboundMessage]: ...
 

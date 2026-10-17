@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+from datetime import date, datetime, time
+from pathlib import Path
+
+import click
+
+from ._client import BccCommandError, MessageClient, run
+from ._format import (
+    echo,
+    serialize_check,
+    serialize_read,
+    serialize_search,
+    serialize_send,
+)
+
+
+@click.group(help="Message operations")
+def message() -> None: ...
+
+
+@message.command(
+    short_help=(
+        "Drain the agent inbox (non-blocking). Acks delivered seqs before returning."
+    ),
+    help="Drain the agent inbox (non-blocking). Acks delivered seqs before returning.",
+)
+@click.pass_obj
+@run
+async def check(client: MessageClient) -> None:
+    echo(serialize_check(await client.request("message", "check")))
+
+
+@message.command(
+    help="Search readable message history in the current actor's conversations"
+)
+@click.option(
+    "--query",
+    default="",
+    metavar="<text>",
+    help="Literal body fragments; the first five whitespace-separated fragments must match.",
+)
+@click.option(
+    "--target",
+    metavar="<target>",
+    help="Restrict to a single readable conversation.",
+)
+@click.option(
+    "--sender",
+    metavar="<@handle-or-id|self>",
+    help="Full sender handle or id, or self for outgoing messages.",
+)
+@click.option(
+    "--after",
+    metavar="<time>",
+    help="Inclusive ISO 8601 lower bound; dates start at local midnight.",
+)
+@click.option(
+    "--before",
+    metavar="<time>",
+    help="Inclusive ISO 8601 upper bound; dates end at local day's end.",
+)
+@click.option(
+    "--sort",
+    type=click.Choice(("time", "relevance")),
+    default="time",
+    show_default=True,
+)
+@click.option(
+    "--limit", type=click.IntRange(1, 50), default=20, show_default=True, metavar="<n>"
+)
+@click.option(
+    "--offset", type=click.IntRange(min=0), default=0, show_default=True, metavar="<n>"
+)
+@click.pass_obj
+@run
+async def search(
+    client: MessageClient,
+    query: str,
+    target: str | None,
+    sender: str | None,
+    after: str | None,
+    before: str | None,
+    sort: str,
+    limit: int,
+    offset: int,
+) -> None:
+    bounds: dict[str, object] = {}
+    for option, text in (("after", after), ("before", before)):
+        if text is None:
+            continue
+        try:
+            try:
+                day = date.fromisoformat(text)
+            except ValueError:
+                value = datetime.fromisoformat(text)
+            else:
+                value = datetime.combine(
+                    day, time.min if option == "after" else time.max
+                )
+            bounds[f"{option}_ms"] = int(value.astimezone().timestamp() * 1000)
+        except (ValueError, OverflowError, OSError) as error:
+            raise click.BadParameter(
+                "Use an ISO 8601 date or datetime.", param_hint=f"--{option}"
+            ) from error
+    echo(
+        serialize_search(
+            await client.request(
+                "message",
+                "search",
+                {
+                    "query": query,
+                    "target": target,
+                    "sender": sender,
+                    "sort": sort,
+                    "limit": limit,
+                    "offset": offset,
+                    **bounds,
+                },
+            )
+        )
+    )
+
+
+@message.command(help="Read message history for a channel, DM, or thread")
+@click.option(
+    "--target",
+    required=True,
+    metavar="<target>",
+    help="DM/thread target to read, as shown by `bcc message check`.",
+)
+@click.option(
+    "--around",
+    metavar="<message-id>",
+    help="Center the history window around this local message id.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=100,
+    metavar="<n>",
+    help="Maximum number of history messages to return (default: 100).",
+)
+@click.pass_obj
+@run
+async def read(
+    client: MessageClient, target: str, around: str | None, limit: int
+) -> None:
+    echo(
+        serialize_read(
+            await client.request(
+                "message",
+                "read",
+                {
+                    "target": target,
+                    "around_message_id": around,
+                    "limit": limit,
+                },
+            )
+        )
+    )
+
+
+@message.command(
+    short_help="Send a message to a channel, DM, or thread",
+    help=(
+        "Send a message through the current Channel. The message body is read "
+        "from stdin. A recent `bcc message check` or `bcc message read` snapshot "
+        "is required before delivery."
+    ),
+)
+@click.option(
+    "--target", required=True, metavar="<target>", help="DM/thread target to reply to."
+)
+@click.option(
+    "--reply-to",
+    metavar="<message-id>",
+    help="Optional local message id to reply to within the target.",
+)
+@click.option(
+    "--attachment",
+    multiple=True,
+    metavar="<path>",
+    help="Workspace file to attach; repeat the option for multiple files.",
+)
+@click.option(
+    "--send-draft",
+    is_flag=True,
+    help="Send this target's active draft unchanged after rechecking freshness.",
+)
+@click.pass_obj
+@run
+async def send(
+    client: MessageClient,
+    target: str,
+    reply_to: str | None,
+    attachment: tuple[str, ...],
+    send_draft: bool,
+) -> None:
+    if send_draft and (reply_to is not None or attachment):
+        raise BccCommandError(
+            "--send-draft cannot be combined with --reply-to or --attachment",
+            code="INVALID_SEND_DRAFT",
+        )
+    body = "" if send_draft else await asyncio.to_thread(sys.stdin.read)
+    echo(
+        serialize_send(
+            await client.request(
+                "message",
+                "send",
+                {
+                    "target": target,
+                    "body": body,
+                    "reply_to_message_id": reply_to,
+                    "send_draft": send_draft,
+                    "attachment_paths": await asyncio.to_thread(
+                        lambda: [str(Path(path).absolute()) for path in attachment]
+                    ),
+                },
+            )
+        )
+    )
+
+
+__all__ = ["message"]

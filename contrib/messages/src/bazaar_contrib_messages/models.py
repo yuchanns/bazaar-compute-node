@@ -1,0 +1,381 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import PurePosixPath
+from string import hexdigits
+from typing import Self, cast
+
+from .states import (
+    ChannelTargetKind,
+    MessageDirection,
+    OutboundDeliveryState,
+    Review,
+    SenderKind,
+    SystemMessageKind,
+)
+
+Metadata = Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelTargetPresentation:
+    display_name: str | None = None
+    handle: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelSession:
+    id: str
+    channel: str
+    provider_thread_id: str
+    created_at_ms: int
+    updated_at_ms: int
+    channel_identity: str | None = None
+    target_kind: ChannelTargetKind = ChannelTargetKind.DM
+    following: bool = True
+    review: Review = Review.PENDING
+    last_inbound_at_ms: int | None = None
+    last_outbound_at_ms: int | None = None
+    target_display_name: str | None = None
+    target_handle: str | None = None
+    target_handle_key: str | None = None
+    metadata: Metadata = field(default_factory=dict)
+
+    @property
+    def canonical_target(self) -> str:
+        return f"{self.target_kind.value}:{self.id}"
+
+    def with_target_presentation(
+        self,
+        presentation: ChannelTargetPresentation,
+        *,
+        updated_at_ms: int,
+    ) -> Self:
+        if self.target_kind is ChannelTargetKind.GROUP:
+            return replace(
+                self,
+                target_display_name=presentation.display_name,
+                target_handle=None,
+                target_handle_key=None,
+                updated_at_ms=updated_at_ms,
+            )
+        handle = presentation.handle
+        return replace(
+            self,
+            target_display_name=None,
+            target_handle=handle,
+            target_handle_key=handle.casefold() if handle is not None else None,
+            updated_at_ms=updated_at_ms,
+        )
+
+    def display_target(self, *, handle_is_unique: bool) -> str:
+        if (
+            self.target_kind is ChannelTargetKind.GROUP
+            and self.target_display_name is not None
+        ):
+            return f"#{self.target_display_name}:{self.id}"
+        if (
+            self.target_kind is ChannelTargetKind.DM
+            and self.target_handle is not None
+            and handle_is_unique
+        ):
+            return f"dm:@{self.target_handle}"
+        return self.canonical_target
+
+
+@dataclass(frozen=True, slots=True)
+class Thread:
+    """One conversation as this node knows it.
+
+    A thread is the local identity of a conversation; the channel session it
+    names is that same conversation's address on the provider. The two are one
+    to one.
+    """
+
+    id: str
+    channel_session_id: str
+    workspace_id: str
+    created_at_ms: int
+    updated_at_ms: int
+    last_activity_at_ms: int | None = None
+    metadata: Metadata = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InboundAttachment:
+    attachment_id: str
+    name: str
+    kind: str
+    state: str
+    media_type: str | None = None
+    relative_path: str | None = None
+    size_bytes: int | None = None
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in {"ready", "failed"}:
+            raise ValueError("attachment state must be ready or failed")
+        if self.state == "ready" and self.relative_path is None:
+            raise ValueError("ready attachment must have a relative path")
+        if self.state == "failed" and self.relative_path is not None:
+            raise ValueError("failed attachment cannot have a relative path")
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundAttachment:
+    name: str
+    relative_path: str
+    media_type: str | None
+    size_bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        path = PurePosixPath(self.relative_path)
+        if (
+            path.is_absolute()
+            or "\\" in self.relative_path
+            or ".." in path.parts
+            or path == PurePosixPath(".")
+        ):
+            raise ValueError("relative_path must stay within the workspace")
+        if path.name != self.name:
+            raise ValueError("name must match the relative path basename")
+        if (
+            len(self.sha256) != 64
+            or self.sha256 != self.sha256.lower()
+            or any(character not in hexdigits for character in self.sha256)
+        ):
+            raise ValueError("sha256 must be a lowercase hexadecimal digest")
+
+
+@dataclass(frozen=True, slots=True)
+class SenderIdentity:
+    id: str | None = None
+    name: str | None = None
+    display_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.id is None and self.name is None:
+            raise ValueError("sender identity requires an id or name")
+
+    @property
+    def handle(self) -> str:
+        """Return what this sender is addressed by, falling back to the id."""
+
+        if self.name is not None:
+            return self.name
+        if self.id is None:
+            raise RuntimeError("sender identity has no display value")
+        return self.id
+
+    @property
+    def label(self) -> str:
+        """Return the shortest thing a reader would recognise this sender by.
+
+        A provider that offers no handle can still offer a human name, and a
+        name says more than the opaque id it would otherwise fall back to.
+        """
+
+        if self.name is not None:
+            return self.name
+        if self.display_name is not None:
+            return self.display_name
+        if self.id is None:
+            raise RuntimeError("sender identity has no display value")
+        return self.id
+
+
+@dataclass(frozen=True, slots=True)
+class InboxTargetSummary:
+    target: str
+    thread_id: str
+    target_kind: ChannelTargetKind
+    pending_count: int
+    last_activity_at_ms: int
+    channel: str = ""
+    # whether whoever is behind the conversation may talk to the agent
+    review: Review = Review.APPROVED
+    # the target as the store names it, once `target` is the form shown: a
+    # handle may be shared or change hands, a store's name does not
+    canonical_target: str | None = None
+    latest_message_id: str | None = None
+    latest_sender: SenderIdentity | None = None
+    latest_provider_time_ms: int | None = None
+    latest_received_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        latest_fields = (
+            self.latest_sender,
+            self.latest_provider_time_ms,
+            self.latest_received_at_ms,
+        )
+        if self.latest_message_id is None:
+            if any(value is not None for value in latest_fields):
+                raise ValueError("latest message fields require latest_message_id")
+            return
+
+        if self.latest_received_at_ms is None:
+            raise ValueError("latest_received_at_ms is required with latest_message_id")
+
+
+@dataclass(frozen=True, slots=True)
+class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
+    direction: MessageDirection
+    seq: int
+    message_id: str
+    thread_id: str
+    channel_session_id: str
+    target: str
+    body: str
+    sender: SenderIdentity | None = None
+    message_type: str = "text"
+    target_kind: ChannelTargetKind = ChannelTargetKind.DM
+    target_presentation: ChannelTargetPresentation | None = None
+    attachments: tuple[AttachmentT, ...] = ()
+    reply_to_message_id: str | None = None
+    channel: str | None = None
+    channel_identity: str | None = None
+    provider_thread_id: str | None = None
+    # the chat as the provider names it, the way an operator would write it
+    # down: what a channel's `allowed_chats` is matched against
+    provider_chat_id: str | None = None
+    provider_message_id: str | None = None
+    provider_time_ms: int | None = None
+    received_at_ms: int | None = None
+    mentions_agent: bool = False
+    notifies_runtime: bool = True
+    provider_payload_ref: str | None = None
+    delivery_state: OutboundDeliveryState | None = None
+    created_at_ms: int | None = None
+    provider_attempted_at_ms: int | None = None
+    provider_receipt_ref: str | None = None
+    completed_at_ms: int | None = None
+    error_kind: str | None = None
+    error_message: str | None = None
+    metadata: Metadata = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.direction is MessageDirection.INBOUND:
+            self._validate_inbound()
+        else:
+            self._validate_outbound()
+
+    def _validate_inbound(self) -> None:
+        sender_kind = self.sender_kind
+        _ = self.system_message_kind
+        if sender_kind is not SenderKind.SYSTEM and self.provider_message_id is None:
+            raise ValueError(
+                "provider_message_id is required for provider inbound messages"
+            )
+        if self.received_at_ms is None:
+            raise ValueError("received_at_ms is required for inbound messages")
+        outbound_fields = (
+            self.delivery_state,
+            self.created_at_ms,
+            self.provider_attempted_at_ms,
+            self.provider_receipt_ref,
+            self.completed_at_ms,
+            self.error_kind,
+            self.error_message,
+        )
+        if any(value is not None for value in outbound_fields):
+            raise ValueError("inbound messages cannot contain outbound delivery fields")
+
+    def _validate_outbound(self) -> None:
+        _ = self.system_message_kind
+        for value, field_name in (
+            (self.delivery_state, "delivery_state"),
+            (self.created_at_ms, "created_at_ms"),
+            (self.provider_attempted_at_ms, "provider_attempted_at_ms"),
+        ):
+            if value is None:
+                raise ValueError(f"{field_name} is required for outbound messages")
+        created_at_ms = cast(int, self.created_at_ms)
+        provider_attempted_at_ms = cast(int, self.provider_attempted_at_ms)
+        if provider_attempted_at_ms < created_at_ms:
+            raise ValueError("provider attempt cannot precede creation")
+
+    @property
+    def sender_kind(self) -> SenderKind:
+        if self.direction is MessageDirection.OUTBOUND:
+            return SenderKind.AGENT
+        value = self.metadata.get("sender_kind", SenderKind.UNKNOWN.value)
+        try:
+            return SenderKind(cast(str, value))
+        except ValueError as error:
+            raise ValueError(
+                "metadata sender_kind must be human, agent, system, or unknown"
+            ) from error
+
+    @property
+    def system_message_kind(self) -> SystemMessageKind | None:
+        value = self.metadata.get("system_message_kind")
+        if self.sender_kind is not SenderKind.SYSTEM:
+            if value is not None:
+                raise ValueError(
+                    "only system messages can have metadata system_message_kind"
+                )
+            return None
+        try:
+            return SystemMessageKind(cast(str, value))
+        except ValueError as error:
+            raise ValueError("metadata system_message_kind must be reminder") from error
+
+    def inbound_identity(self) -> tuple[str, str, str]:
+        if self.direction is not MessageDirection.INBOUND:
+            raise ValueError("only inbound messages have provider identity")
+        if self.sender_kind is SenderKind.SYSTEM:
+            raise ValueError("system messages do not have provider identity")
+        channel = self.channel
+        provider_thread_id = self.provider_thread_id
+        provider_message_id = self.provider_message_id
+        if channel is None or provider_thread_id is None or provider_message_id is None:
+            raise RuntimeError("inbound message identity is incomplete")
+        return channel, provider_thread_id, provider_message_id
+
+    def transition_to(
+        self,
+        state: OutboundDeliveryState,
+        *,
+        at_ms: int,
+        provider_message_id: str | None = None,
+        provider_receipt_ref: str | None = None,
+        error_kind: str | None = None,
+        error_message: str | None = None,
+    ) -> Self:
+        if self.direction is not MessageDirection.OUTBOUND:
+            raise ValueError("only outbound messages have delivery transitions")
+        if self.delivery_state is None:
+            raise RuntimeError("outbound message has no delivery state")
+        if state is self.delivery_state:
+            return self
+        completed_at_ms = (
+            at_ms
+            if state
+            in {
+                OutboundDeliveryState.SENT,
+                OutboundDeliveryState.PARTIAL,
+                OutboundDeliveryState.FAILED,
+                OutboundDeliveryState.UNKNOWN,
+            }
+            else self.completed_at_ms
+        )
+        return replace(
+            self,
+            delivery_state=state,
+            provider_message_id=provider_message_id or self.provider_message_id,
+            provider_receipt_ref=provider_receipt_ref or self.provider_receipt_ref,
+            completed_at_ms=completed_at_ms,
+            error_kind=error_kind or self.error_kind,
+            error_message=error_message or self.error_message,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerCursor:
+    thread_id: str
+    delivered_through_seq: int = 0
+    last_check_at_ms: int | None = None
+    last_read_at_ms: int | None = None
+    updated_at_ms: int = 0

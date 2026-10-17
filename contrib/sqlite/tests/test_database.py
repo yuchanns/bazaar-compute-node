@@ -49,6 +49,34 @@ async def counter(database: Database):
     await database.insert(Insert(table="counter", rows=({"id": 1, "value": 0},)))
 
 
+async def test_snapshot_reader_keeps_its_view_while_a_writer_commits(tmp_path: Path):
+    started = asyncio.Event()
+    committed = asyncio.Event()
+    async with (
+        asyncio.timeout(5),
+        open_database(SqliteConfig(path=tmp_path / "snapshot.sqlite3")) as database,
+    ):
+        await counter(database)
+
+        async def observe(session: Session):
+            before = await session.select(Select(table="counter"))
+            started.set()
+            await committed.wait()
+            assert await session.select(Select(table="counter")) == before
+
+        async def change():
+            await started.wait()
+            await database.write(
+                lambda session: session.update(
+                    Update(table="counter", values={"value": Value(value=7)})
+                )
+            )
+            committed.set()
+
+        await asyncio.gather(database.read(observe, snapshot=True), change())
+        assert (await database.select(Select(table="counter")))[0]["value"] == 7
+
+
 async def test_concurrent_writes_and_integrity_rollback(tmp_path: Path):
     async with open_database(
         SqliteConfig(path=tmp_path / "counter.sqlite3", max_readers=2)

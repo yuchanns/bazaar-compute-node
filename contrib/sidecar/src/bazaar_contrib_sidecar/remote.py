@@ -65,7 +65,7 @@ class Client:
         send: Callable[[Request], Awaitable[Result | Failure]],
         close: Callable[[], Awaitable[None]],
         *,
-        timeout: float = 30,
+        timeout: float | None = 30,
     ) -> None:
         self.context = Remote(self, 0)
         self.send = send

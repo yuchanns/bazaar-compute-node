@@ -10,7 +10,7 @@ lazy from importlib.metadata import Distribution, entry_points
 lazy from typing import Any, cast
 
 import click
-from bazaar_core import Context, Contrib, ServiceKey, discover
+from bazaar_core import Context, Contrib, ContribSpec, ServiceKey, discover
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["COMMANDS", "CommandCatalog", "CommandEntry", "Commands", "commands"]
@@ -22,6 +22,7 @@ class CommandEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     contrib: str = Field(min_length=1)
     help: str = ""
+    dependencies: tuple[ContribSpec, ...] = ()
 
 
 class CommandCatalog(click.Group):

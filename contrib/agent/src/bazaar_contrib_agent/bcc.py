@@ -34,7 +34,11 @@ async def dispatch(args: Sequence[str], *, prog_name: str | None) -> None:
         return
     composition = await asyncio.to_thread(
         load,
-        (ContribSpec(contrib="commands"), ContribSpec(contrib=entry.contrib)),
+        (
+            ContribSpec(contrib="commands"),
+            *entry.dependencies,
+            ContribSpec(contrib=entry.contrib),
+        ),
     )
     selected: list[Commands] = []
 
@@ -66,8 +70,14 @@ async def dispatch(args: Sequence[str], *, prog_name: str | None) -> None:
             ("session_id", "BCN_RUNTIME_SESSION_ID"),
         )
     }
+    failure: click.ClickException | click.exceptions.Exit | None = None
     async with ContribHub() as hub, hub.enable(composition):
-        await selected[0].dispatch(args, prog_name=prog_name, obj=context)
+        try:
+            await selected[0].dispatch(args, prog_name=prog_name, obj=context)
+        except (click.ClickException, click.exceptions.Exit) as error:
+            failure = error
+    if failure is not None:
+        raise failure
 
 
 @click.command(

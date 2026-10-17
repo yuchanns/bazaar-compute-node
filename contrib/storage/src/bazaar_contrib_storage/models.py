@@ -35,6 +35,13 @@ class Column(Model):
     table: Identifier | None = None
 
 
+class RowId(Model):
+    """The provider's physical row identity within the current table."""
+
+    kind: Literal["row_id"] = "row_id"
+    table: Identifier | None = None
+
+
 class Value(Model):
     kind: Literal["value"] = "value"
     value: Scalar
@@ -49,17 +56,33 @@ class Binary(Model):
 
 class Call(Model):
     kind: Literal["call"] = "call"
-    name: Literal["count", "sum", "min", "max", "avg", "coalesce", "lower", "length"]
+    name: Literal[
+        "count", "sum", "min", "max", "avg", "coalesce", "lower", "length", "replace"
+    ]
     arguments: tuple[Expression, ...] = ()
 
 
 class RowNumber(Model):
     kind: Literal["row_number"] = "row_number"
     order_by: Annotated[tuple[Sort, ...], Field(min_length=1)]
+    partition_by: tuple[Expression, ...] = ()
+
+
+class Case(Model):
+    kind: Literal["case"] = "case"
+    when: Predicate
+    then: Expression
+    otherwise: Expression
+
+
+class Subquery(Model):
+    kind: Literal["subquery"] = "subquery"
+    query: Select
 
 
 type Expression = Annotated[
-    Column | Value | Binary | Call | RowNumber, Field(discriminator="kind")
+    Column | RowId | Value | Binary | Call | RowNumber | Case | Subquery,
+    Field(discriminator="kind"),
 ]
 
 
@@ -138,6 +161,7 @@ class Join(Model):
 
 class Select(Model):
     table: Identifier
+    ctes: dict[Identifier, Select] = Field(default_factory=dict)
     alias: Identifier | None = None
     columns: dict[Identifier, Expression] = Field(default_factory=dict)
     where: Predicate | None = None
@@ -368,6 +392,8 @@ for model in (
     Binary,
     Call,
     RowNumber,
+    Case,
+    Subquery,
     Compare,
     In,
     IsNull,
