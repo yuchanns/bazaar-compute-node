@@ -25,6 +25,8 @@ async def test_installed_messages_use_real_channels_and_durable_history(tmp_path
                 "agent",
                 "audit",
                 "channel",
+                "timer",
+                "timer-wheel",
                 "harness",
                 "config",
                 "config-filesystem",

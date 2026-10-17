@@ -8,6 +8,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import NAMESPACE_URL, uuid5, uuid7
@@ -18,9 +19,14 @@ from bazaar_contrib_channel import (
     CHANNEL_INPUT,
     ChannelApprovalRequest,
     ChannelBuilderConfig,
+    ChannelConnectionError,
     ChannelDeliveryReceipt,
+    ChannelError,
+    ChannelErrorDetail,
     ChannelIdentity,
     ChannelInput,
+    ChannelSendAttempt,
+    ChannelSendPart,
     ChannelSendRequest,
     ChannelTarget,
     DmAddress,
@@ -95,8 +101,21 @@ class TestChannel:
                         InboundMessage.model_validate(packet["inbound"])
                     )
                 else:
-                    self.pending.pop(packet["id"]).set_result(packet)
+                    pending = self.pending.pop(packet["id"], None)
+                    if pending is not None and not pending.done():
+                        pending.set_result(packet)
         finally:
+            if self.writer is writer:
+                self.writer = None
+                for pending in self.pending.values():
+                    if not pending.done():
+                        pending.set_exception(
+                            ChannelConnectionError(
+                                "channel peer disconnected before acknowledgement",
+                                phase="acknowledge",
+                            )
+                        )
+                self.pending.clear()
             writer.close()
             await writer.wait_closed()
 
@@ -121,11 +140,73 @@ class TestChannel:
             }
         )
 
-    async def send(self, request: ChannelSendRequest) -> ChannelDeliveryReceipt:
+    async def prepare_send(
+        self, request: ChannelSendRequest
+    ) -> tuple[ChannelSendPart, ...]:
+        requests = [
+            request.model_copy(
+                update={"body": request.body[start : start + 4096], "attachments": ()}
+            )
+            for start in range(0, len(request.body), 4096)
+        ]
+        requests.extend(
+            request.model_copy(update={"body": "", "attachments": (attachment,)})
+            for attachment in request.attachments
+        )
+        return tuple(
+            ChannelSendPart(
+                send=partial(self.send_part, request, index, len(requests)),
+                message=request,
+            )
+            for index, request in enumerate(requests)
+        )
+
+    async def send_part(
+        self,
+        request: ChannelSendRequest,
+        index: int,
+        count: int,
+        attempt: ChannelSendAttempt,
+    ) -> ChannelDeliveryReceipt:
+        attempt.phase = "connect"
+        writer = self.writer
+        if writer is None or writer.is_closing():
+            raise ChannelConnectionError(
+                "channel peer is disconnected", phase="connect", delivery="not_sent"
+            )
         id = str(uuid7())
         self.pending[id] = asyncio.get_running_loop().create_future()
-        await self.outbound.put({"id": id, "outbound": request.model_dump(mode="json")})
-        packet = await self.pending[id]
+        try:
+            attempt.phase = "send"
+            writer.write(
+                json.dumps(
+                    {
+                        "id": id,
+                        "operation_id": attempt.id,
+                        "attempt": attempt.number,
+                        "part": {"index": index, "count": count},
+                        "outbound": request.model_dump(mode="json"),
+                    }
+                ).encode()
+                + b"\n"
+            )
+            await writer.drain()
+            attempt.phase = "acknowledge"
+            packet = await self.pending[id]
+        finally:
+            self.pending.pop(id, None)
+        if "error" in packet:
+            detail = ChannelErrorDetail.model_validate(packet["error"])
+            error = ChannelError(
+                detail.message,
+                phase=detail.phase,
+                delivery=detail.delivery,
+                retryable=detail.retryable,
+                code=detail.code,
+                retry_after=detail.retry_after,
+            )
+            error.detail = detail
+            raise error
         return (
             ChannelDeliveryReceipt.model_validate(packet["receipt"])
             if "receipt" in packet

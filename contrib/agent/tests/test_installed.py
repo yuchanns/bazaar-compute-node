@@ -14,6 +14,7 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
         root / "contrib/audit",
         root / "contrib/harness",
         root / "contrib/channel",
+        root / "contrib/timer",
         root / "contrib/invoke",
         root / "contrib/agent",
         Path(__file__).parent / "fixtures/journal",

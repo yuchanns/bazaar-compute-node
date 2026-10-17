@@ -11,6 +11,17 @@ from .builders import (
     channel_builders,
 )
 from .contracts import Channel
+from .errors import (
+    ChannelAuthenticationError,
+    ChannelConnectionError,
+    ChannelDeliveryState,
+    ChannelError,
+    ChannelErrorDetail,
+    ChannelRateLimitError,
+    ChannelRejectedError,
+    ChannelSendPhase,
+    ChannelTimeoutError,
+)
 from .models import (
     ChannelApprovalRequest,
     ChannelDeliveryReceipt,
@@ -25,6 +36,13 @@ from .models import (
     OutboundAttachment,
     SenderIdentity,
 )
+from .sending import (
+    ChannelMessageDelivery,
+    ChannelRetryPolicy,
+    ChannelSendAttempt,
+    ChannelSender,
+    ChannelSendPart,
+)
 
 __all__ = [
     "CHANNEL",
@@ -32,14 +50,28 @@ __all__ = [
     "CHANNEL_INPUT",
     "Channel",
     "ChannelApprovalRequest",
+    "ChannelAuthenticationError",
     "ChannelBuilder",
     "ChannelBuilderConfig",
     "ChannelBuilders",
+    "ChannelConnectionError",
     "ChannelDeliveryReceipt",
+    "ChannelDeliveryState",
+    "ChannelError",
+    "ChannelErrorDetail",
     "ChannelIdentity",
     "ChannelInput",
+    "ChannelMessageDelivery",
+    "ChannelRateLimitError",
+    "ChannelRejectedError",
+    "ChannelRetryPolicy",
+    "ChannelSendAttempt",
+    "ChannelSendPart",
+    "ChannelSendPhase",
     "ChannelSendRequest",
+    "ChannelSender",
     "ChannelTarget",
+    "ChannelTimeoutError",
     "DmAddress",
     "DmRequest",
     "InboundAttachment",

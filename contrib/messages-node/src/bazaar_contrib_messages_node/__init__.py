@@ -21,6 +21,7 @@ from bazaar_contrib_messages import (
 )
 from bazaar_contrib_node_migrations import NODE_MIGRATIONS
 from bazaar_contrib_storage import DB, Database
+from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib, ContribSpec
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 lazy from bazaar_contrib_channel import Channel
@@ -60,9 +61,10 @@ class _AgentRequest(BaseModel):
 class NodeMessages:
     """Keep command bindings within their owning agent's lifespan."""
 
-    def __init__(self, database: Database, audit: Audit):
+    def __init__(self, database: Database, audit: Audit, timer: Timer):
         self.database = database
         self.audit = audit
+        self.timer = timer
         self._bindings: dict[Agent, CommandDispatcher] = {}
 
     @asynccontextmanager
@@ -90,6 +92,7 @@ class NodeMessages:
             channel=channel,
             workspace=workspace,
             provider_timeout=provider_timeout,
+            timer=self.timer,
         )
         dispatcher = CommandDispatcher(
             service, actors=actors, session_binding_validator=session_binding_validator
@@ -117,7 +120,9 @@ class NodeMessages:
 
 @asynccontextmanager
 async def lifespan(ctx: Context):
-    ctx.offer(MESSAGES, NodeMessages(ctx.accept(DB), ctx.accept(AUDIT)))
+    ctx.offer(
+        MESSAGES, NodeMessages(ctx.accept(DB), ctx.accept(AUDIT), ctx.accept(TIMER))
+    )
     yield
 
 
@@ -147,7 +152,7 @@ async def cli_lifespan(ctx: Context):
 
 
 messages = Contrib(
-    accepts=[DB, NODE_MIGRATIONS, AUDIT], offers=[MESSAGES], lifespan=lifespan
+    accepts=[DB, NODE_MIGRATIONS, AUDIT, TIMER], offers=[MESSAGES], lifespan=lifespan
 )
 commands = Contrib(accepts=[CLIENT, COMMANDS], lifespan=cli_lifespan)
 _TRANSPORT = ContribSpec(

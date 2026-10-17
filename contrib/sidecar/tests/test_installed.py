@@ -20,6 +20,7 @@ def environment(tmp_path_factory):
         "bazaar-contrib-agent",
         "bazaar-contrib-audit",
         "bazaar-contrib-channel",
+        "bazaar-contrib-timer",
         "bazaar-contrib-harness",
         "bazaar-contrib-config",
         "bazaar-contrib-config-filesystem",

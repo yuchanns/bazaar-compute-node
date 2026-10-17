@@ -132,6 +132,7 @@ version = "0.3.0"
 source = { editable = "contrib/channel" }
 dependencies = [
     { name = "bazaar-contrib-harness" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
     { name = "pydantic" },
 ]
@@ -139,6 +140,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-harness", editable = "contrib/harness" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
     { name = "pydantic", specifier = ">=2.12.0" },
 ]
@@ -285,6 +287,7 @@ dependencies = [
     { name = "bazaar-contrib-node-migrations" },
     { name = "bazaar-contrib-sidecar" },
     { name = "bazaar-contrib-storage" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
     { name = "click" },
     { name = "jinja2" },
@@ -300,6 +303,7 @@ requires-dist = [
     { name = "bazaar-contrib-node-migrations", editable = "contrib/node-migrations" },
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
