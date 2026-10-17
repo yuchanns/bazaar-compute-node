@@ -3,6 +3,13 @@
 本路线图列明能力归属、替换顺序、阶段验收和正式发行要求。
 版本目标、分支及仓库组织见 [总计划](README.md)，首阶段执行细节见 [contrib 框架计划](framework.md)。
 
+所有阶段遵循[迁移实施与验收标准](framework.md#迁移实施与验收标准)：提示词、行为、Actor 和文案与 main 原实现保持一致，
+只调整已讨论确认的包归属、依赖与公共接口边界；各 Task 对照原源码、资源及真实调用结果完成 review。
+本次指令明确批准移除 Agent ID 显示行，将 Runtime session ID 显示改为 Session；按框架计划列出的两处调整比对模板及实际渲染。
+Actor 是内部流通的身份原语，内部身份参数、业务调用与归属键统一使用 Actor，仅在边界与 `session_id`／`agent_id` 转换。
+`session` 使用 `Thread(thread_id)`，`dangerous_individual` 使用 `Agent(agent_id)`；身份解析、运行会话与调度归属、
+命令可见范围和跨进程会话绑定均按 main 保留，具体模式及验收见上述标准。
+
 ## 顺序与能力归属
 
 以下列明能力依赖。首阶段先完成命令与调用，再单独交付节点共享 timer、数据库，随后完成 agent 相关能力；每个 Task 的顺序与 review 节点按 [首阶段 Tasks](framework.md#本特性分支的串行-tasks) 分项实现并 review。
@@ -262,6 +269,7 @@ agent 组合用普通 Python 函数从已校验输入构造全部已知实例及
 `bcn agent add`、列表、编辑、删除由该插件登记，修改自己条目的 `config.agents`，经 CONFIGURATION 校验完整候选并条件提交。
 
 该包拥有 developer instruction、bcc 工具环境及身份／会话绑定、模型上下文、消息与提醒处理、审批及输出交付的编排，依赖公共 channel／harness、消息、协作、存储、timer 和 Reminder。
+初始化的指令渲染、workspace bcc wrapper、PATH 与 session 环境先在框架 Task12.1 接入；bcc 使用 invoke 公共命令机制和独立 bcc_commands 入口组，其他 contrib 按各自阶段登记二级命令，命令帮助与新增实现说明统一使用 contrib／contribs。消息接入前完成这一前置任务，完整的命令能力绑定和通讯编排继续在执行任务中交付。
 现有 `src/bazaar_compute_node/core/instruction.py`、`resources/developer_instructions.md` 的渲染与资源，以及旧 runtime 中构造 BCN 会话的业务逻辑，移入新 agent 实现；旧源码按统一清理阶段保留。
 功能插件提供 typed 服务、事件、配置模型和能力说明，由所选 agent 明确读取并组织成其模型输入；提示词的语义与组合由 agent 拥有。
 harness provider 接收 agent 已组织的指令、运行输入与工具环境，管理模型协议、进程和事件映射。
