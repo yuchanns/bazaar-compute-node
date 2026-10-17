@@ -77,14 +77,19 @@ async def test_installed_chain_preserves_legacy_identity_and_provider_settings(
         }
         historical = await asyncio.to_thread(converters["v4"].convert, legacy)
         candidate = await asyncio.to_thread(converters["current"].convert, legacy)
-        agent = candidate.payload["agent"][0]
+        agent = next(
+            entry["config"]["agents"][0]
+            for package in candidate.payload["contribs"]
+            for entry in package["enabled"]
+            if entry["entry"] == "agent"
+        )
         assert agent["id"] == id
         assert agent["channel"][0]["secret_env"] == "WECOM_SECRET"
-        runtime = agent["runtime"][0]
-        assert runtime["model"] == "gpt-6.1-sol"
-        assert runtime["effort"] == "max"
-        assert runtime["env"]["CUSTOM_CA"] == "CUSTOM_CA"
-        assert runtime["network_access"] is False
+        harness = agent["harness"][0]
+        assert harness["model"] == "gpt-6.1-sol"
+        assert harness["effort"] == "max"
+        assert harness["env"]["CUSTOM_CA"] == "CUSTOM_CA"
+        assert harness["network_access"] is False
         assert agent["idle_timeout"] == 12.5
         assert historical.payload["version"] == "4"
         current = await asyncio.to_thread(
@@ -94,7 +99,7 @@ async def test_installed_chain_preserves_legacy_identity_and_provider_settings(
         assert not current.changes
         assert not current.required_packages
         assert any(
-            package.package == "bazaar-contrib-wecom"
+            package.package == "bazaar-contrib-agent"
             for package in candidate.required_packages
         )
         assert any(
@@ -144,7 +149,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_disabled_checks(
     assert entries["node-management"]["version_check"] is False
     assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
     assert (
-        candidate.payload["agent"][0]["runtime"][0]["env"]["ANTHROPIC_API_KEY"]
+        entries["agent"]["agents"][0]["harness"][0]["env"]["ANTHROPIC_API_KEY"]
         == "KEY_WORK"
     )
     v4 = await asyncio.to_thread(converters[-2].convert, v3)
@@ -164,11 +169,14 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_disabled_checks(
         }
     )
     candidate = await asyncio.to_thread(converters[-1].convert, v4.payload)
-    assert any(
-        channel["kind"] == "lark"
-        for channel in candidate.payload["agent"][0]["channel"]
+    agent = next(
+        entry["config"]["agents"][0]
+        for package in candidate.payload["contribs"]
+        for entry in package["enabled"]
+        if entry["entry"] == "agent"
     )
-    assert candidate.payload["agent"][0]["runtime"][-1]["custom_setting"] == "retained"
+    assert any(channel["kind"] == "lark" for channel in agent["channel"])
+    assert agent["harness"][-1]["custom_setting"] == "retained"
 
 
 def test_v4_node_timer_mapping_and_v5_provider_selection(tmp_path: Path, monkeypatch):
@@ -199,6 +207,5 @@ def test_v4_node_timer_mapping_and_v5_provider_selection(tmp_path: Path, monkeyp
                 "enabled": [{"entry": "asyncio-timer"}],
             }
         ],
-        "agent": [],
     }
     assert converter.convert(payload).payload == payload
