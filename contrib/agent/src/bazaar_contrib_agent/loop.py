@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 from uuid import uuid7
 lazy import asyncio
 lazy import logging
+lazy import os
 
 from bazaar_contrib_audit import AUDIT, Audit, AuditContext
 from bazaar_contrib_channel import (
@@ -29,6 +32,7 @@ from bazaar_contrib_harness import (
 from bazaar_core import Context, Contrib
 from pydantic import BaseModel, ConfigDict
 
+from .instruction import DeveloperInstructionContext
 from .models import Agent
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,9 @@ class LoopConfig(BaseModel):
     agent: Agent
     channel: str
     harness: str
+    mode: Literal["session", "dangerous_individual"]
+    command: Path
+    bot_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -168,7 +175,37 @@ async def run(config: LoopConfig, channel: Channel, harness: Harness, audit: Aud
             )
             session = sessions.get(key)
             if session is None:
-                request = SessionInput(id=str(uuid7()), workspace=agent.workspace)
+                session_id = str(uuid7())
+                instruction = await asyncio.to_thread(
+                    DeveloperInstructionContext(
+                        agent_name=agent.name,
+                        bot_names=config.bot_names,
+                        agent_id=agent.id,
+                        runtime_session_id=session_id,
+                        runtime=config.harness,
+                        workspace=str(agent.workspace),
+                        mode=config.mode,
+                    ).render
+                )
+                request = SessionInput(
+                    id=session_id,
+                    workspace=agent.workspace,
+                    instructions=(instruction,),
+                    environment={
+                        "PATH": os.pathsep.join(
+                            (
+                                str(config.command.parent),
+                                os.environ.get("PATH", os.defpath),
+                            )
+                        ),
+                        "BCN_AGENT_ID": agent.id,
+                        "BCN_AGENT_MODE": config.mode,
+                        "BCN_ACTOR_ID": target.thread_id
+                        if config.mode == "session"
+                        else agent.id,
+                        "BCN_RUNTIME_SESSION_ID": session_id,
+                    },
+                )
                 context = context.model_copy(update={"session_id": request.id})
                 await audit.publish(
                     "harness.session.requested",

@@ -2,7 +2,8 @@
 
 import json
 import os
-import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from time import time_ns
@@ -41,12 +42,22 @@ def main():
             emit("tool.completed", metadata=call | {"result": content})
             parts.append(content)
         text = "\n".join(parts) or turn["input_text"]
+        command = shutil.which("bcc")
+        if command is None:
+            raise FileNotFoundError("The harness session has no bcc command in PATH")
+        statistics = subprocess.run(
+            [command, "document", "count"],
+            input=text,
+            text=True,
+            capture_output=True,
+            check=True,
+            encoding="utf-8",
+        )
         data = {
             "title": request["title"],
             "agent_id": request["agent_id"],
             "session_id": turn["session_id"],
-            "words": len(re.findall(r"\b\w+\b", text)),
-            "lines": len(text.splitlines()),
+            **json.loads(statistics.stdout),
         }
         print(
             json.dumps(
@@ -67,7 +78,14 @@ def main():
         if json.loads(decision)["decision"] == "approved":
             call = {"id": str(uuid7()), "name": "file.write", "path": str(report)}
             emit("tool.started", metadata=call | {"arguments": data})
-            report.write_text(json.dumps(data) + "\n")
+            subprocess.run(
+                [command, "journal", "save", str(report)],
+                input=json.dumps(data),
+                text=True,
+                capture_output=True,
+                check=True,
+                encoding="utf-8",
+            )
             emit("tool.completed", metadata=call | {"result": data})
             body = (
                 f"Saved {data['words']} words across {data['lines']} lines to {report}."

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -237,6 +238,7 @@ class DocumentHarness:
         self.config = config
         self.streams: list[DocumentStream] = []
         self.sessions: dict[str, Path] = {}
+        self.inputs: dict[str, SessionInput] = {}
 
     async def describe(self) -> HarnessDescription:
         return HarnessDescription(
@@ -253,6 +255,10 @@ class DocumentHarness:
         directory = request.workspace / "reports" / request.id
         await asyncio.to_thread(directory.mkdir, parents=True)
         self.sessions[request.id] = directory
+        self.inputs[request.id] = request
+        await asyncio.to_thread(
+            (directory / "session.json").write_text, request.model_dump_json()
+        )
         return HarnessSession(id=request.id)
 
     async def start_turn(
@@ -266,6 +272,7 @@ class DocumentHarness:
             "-m",
             "bcn_agent_workbench.worker",
             cwd=self.input.workspace,
+            env=dict(os.environ) | self.inputs[session.id].environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -277,12 +284,14 @@ class DocumentHarness:
             "agent_id": self.input.agent_id,
             "title": self.config.title,
             "turn": turn.model_dump(mode="json"),
+            "session": self.inputs[session.id].model_dump(mode="json"),
         }
         stream.stdin.write(json.dumps(request).encode() + b"\n")
         await stream.stdin.drain()
         return stream
 
     async def stop_session(self, session: HarnessSession) -> SessionCloseResult:
+        self.inputs.pop(session.id)
         await asyncio.to_thread(
             (self.sessions.pop(session.id) / "session.closed").write_text, session.id
         )
