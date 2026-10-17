@@ -16,6 +16,7 @@ from uuid import uuid7
 from bazaar_contrib_audit import Audit, AuditContext
 from bazaar_contrib_channel import (
     Channel,
+    ChannelMessageDelivery,
     ChannelSendRequest,
     ChannelTarget,
     DmAddress,
@@ -25,6 +26,7 @@ from bazaar_contrib_channel import OutboundAttachment as ChannelAttachment
 from bazaar_contrib_messages import ThreadConcurrency
 from bazaar_contrib_messages.actor import Actor, Agent, Thread
 from bazaar_contrib_messages.correlation import CorrelationContext
+from bazaar_contrib_messages.delivery import from_receipt
 from bazaar_contrib_messages.models import ChannelSession, Message, OutboundAttachment
 from bazaar_contrib_messages.models import Thread as ConversationRow
 from bazaar_contrib_messages.operations import (
@@ -56,6 +58,7 @@ from bazaar_contrib_messages.states import (
     Review,
     RuntimeEventState,
 )
+from bazaar_contrib_timer import Timer
 from pydantic import JsonValue, TypeAdapter
 
 from .delivery import OutboundDeliveryService
@@ -260,6 +263,7 @@ class NodeMessageService:
         channel: Channel,
         workspace: Path,
         provider_timeout: float,
+        timer: Timer,
         clock: Callable[[], int] = lambda: time_ns() // 1_000_000,
     ):
         self._owner = storage.owner
@@ -269,7 +273,9 @@ class NodeMessageService:
         self._clock = clock
         self._channel = channel
         self._workspace = workspace
-        self._delivery = OutboundDeliveryService(channel, timeout=provider_timeout)
+        self._delivery = OutboundDeliveryService(
+            channel, timer, timeout=provider_timeout
+        )
         self._attachment_resolver = OutboundAttachmentResolver(lambda: workspace)
         # one draft per conversation as the caller names it, which may be a
         # peer reached on several bots: the key is the set of threads it spans
@@ -530,44 +536,16 @@ class NodeMessageService:
         attachments: tuple[OutboundAttachment, ...],
         created_at_ms: int,
     ) -> MessageSendSuccess:
-        """Send into a conversation that does not exist yet, then write it down.
-
-        The provider names the conversation it delivered into, and a chat opened
-        by a name it answers to is not reachable by its id until then. Writing
-        afterwards is what keeps this message and every later one in the same
-        conversation.
-        """
+        """Open a conversation when its first visible message reaches the peer."""
 
         address = opening.address
         attempted_at_ms = self._clock()
-        delivery_result = await self._delivery.deliver(
-            ChannelSendRequest(
-                actor_id=address.thread_id,
-                target=ChannelTarget(kind="dm", thread_id=address.provider_thread_id),
-                body=body,
-                attachments=tuple(
-                    ChannelAttachment(
-                        name=item.name,
-                        path=self._workspace / item.relative_path,
-                        media_type=item.media_type,
-                        size_bytes=item.size_bytes,
-                        sha256=item.sha256,
-                    )
-                    for item in attachments
-                ),
-                delivery_handle=address.delivery_handle,
-                channel=opening.channel,
-                channel_identity=address.channel_identity,
-            )
-        )
         now = self._clock()
         session = ChannelSession(
             id=address.channel_session_id,
             channel=opening.channel,
             channel_identity=address.channel_identity,
-            provider_thread_id=(
-                delivery_result.provider_thread_id or address.provider_thread_id
-            ),
+            provider_thread_id=address.provider_thread_id,
             created_at_ms=now,
             updated_at_ms=now,
             target_kind=ChannelTargetKind.DM,
@@ -591,7 +569,12 @@ class NodeMessageService:
             created_at_ms=created_at_ms,
             provider_attempted_at_ms=attempted_at_ms,
         )
-        outbound = _answered(outbound, delivery_result, at_ms=self._clock())
+        outbound, delivery_result = await self._transmit(
+            outbound,
+            session,
+            delivery_handle=address.delivery_handle,
+            opening=True,
+        )
         delivery_state = outbound.delivery_state
         if delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
@@ -612,17 +595,6 @@ class NodeMessageService:
                 canonical_target=raw_target,
             )
             return MessageSendSuccess(message=outbound, target=raw_target)
-        await self.storage.save_channel_session(session)
-        await self.storage.save_thread(
-            ConversationRow(
-                id=address.thread_id,
-                channel_session_id=session.id,
-                workspace_id=self._owner.id,
-                created_at_ms=now,
-                updated_at_ms=now,
-            )
-        )
-        outbound = await self.storage.finalize_outbound_delivery(outbound)
         await self._record_delivery(
             audit_context,
             outbound,
@@ -676,18 +648,74 @@ class NodeMessageService:
     async def _transmit(
         self,
         outbound: Message[OutboundAttachment],
-        prepared: MaterializeOutboundResult,
+        channel_session: ChannelSession,
+        *,
+        reply_to_provider_message_id: str | None = None,
+        delivery_handle: str | None = None,
+        opening: bool = False,
     ) -> tuple[Message[OutboundAttachment], OutboundDeliveryResult]:
-        """Give the message to its channel and fold the answer back into it."""
+        """Persist each visible part before the channel sends the next one."""
 
-        channel_session = prepared.channel_session
+        messages: list[Message[OutboundAttachment]] = []
+        attachments = {
+            self._workspace / item.relative_path: item for item in outbound.attachments
+        }
+
+        async def record(delivery: ChannelMessageDelivery) -> None:
+            nonlocal channel_session
+            result = from_receipt(delivery.receipt)
+            if not _reached_the_peer(result):
+                return
+            now = self._clock()
+            if opening and not messages:
+                channel_session = replace(
+                    channel_session,
+                    provider_thread_id=(
+                        result.provider_thread_id or channel_session.provider_thread_id
+                    ),
+                    created_at_ms=now,
+                    updated_at_ms=now,
+                )
+                await self.storage.save_channel_session(channel_session)
+                await self.storage.save_thread(
+                    ConversationRow(
+                        id=outbound.thread_id,
+                        channel_session_id=channel_session.id,
+                        workspace_id=self._owner.id,
+                        created_at_ms=now,
+                        updated_at_ms=now,
+                    )
+                )
+            message = replace(
+                outbound,
+                message_id=outbound.message_id if not messages else str(uuid7()),
+                body=delivery.message.body,
+                attachments=tuple(
+                    replace(
+                        attachments[item.path],
+                        name=item.name,
+                        media_type=item.media_type,
+                    )
+                    for item in delivery.message.attachments
+                ),
+                metadata={
+                    **outbound.metadata,
+                    "outbound_send_id": outbound.message_id,
+                    "outbound_part": {"index": delivery.index, "id": delivery.id},
+                },
+            )
+            message = await self.storage.finalize_outbound_delivery(
+                _answered(message, result, at_ms=now)
+            )
+            messages.append(message)
+
         delivery_result = await self._delivery.deliver(
             ChannelSendRequest(
                 actor_id=outbound.thread_id,
                 target=ChannelTarget(
                     kind=channel_session.target_kind.value,
                     thread_id=channel_session.provider_thread_id,
-                    reply_to_message_id=prepared.reply_to_provider_message_id,
+                    reply_to_message_id=reply_to_provider_message_id,
                 ),
                 body=outbound.body,
                 attachments=tuple(
@@ -700,13 +728,37 @@ class NodeMessageService:
                     )
                     for item in outbound.attachments
                 ),
+                delivery_handle=delivery_handle,
                 channel=channel_session.channel,
                 channel_identity=channel_session.channel_identity,
-            )
+            ),
+            on_message=record,
         )
-        return _answered(
-            outbound, delivery_result, at_ms=self._clock()
-        ), delivery_result
+        outbound = _answered(outbound, delivery_result, at_ms=self._clock())
+        if messages:
+            first = messages[0]
+            first = await self.storage.finalize_outbound_delivery(
+                replace(
+                    first,
+                    metadata={
+                        **first.metadata,
+                        "outbound_delivery": {
+                            "state": delivery_result.state.value,
+                            "error_kind": delivery_result.error_kind,
+                            "error_message": delivery_result.error_message,
+                            "receipt": dict(delivery_result.receipt),
+                        },
+                    },
+                )
+            )
+            outbound = replace(
+                outbound,
+                seq=first.seq,
+                provider_message_id=first.provider_message_id,
+                provider_receipt_ref=first.provider_receipt_ref,
+                provider_thread_id=first.provider_thread_id,
+            )
+        return outbound, delivery_result
 
     async def _record_delivery(
         self,
@@ -824,12 +876,14 @@ class NodeMessageService:
             state=RuntimeEventState.STARTED,
             correlation=audit_context,
         )
-        outbound, delivery_result = await self._transmit(outbound, item.materialized)
+        outbound, delivery_result = await self._transmit(
+            outbound,
+            channel_session,
+            reply_to_provider_message_id=item.materialized.reply_to_provider_message_id,
+        )
         delivery_state = outbound.delivery_state
         if delivery_state is None:
             raise RuntimeError("outbound message has no delivery state")
-        if _reached_the_peer(delivery_result):
-            outbound = await self.storage.finalize_outbound_delivery(outbound)
         await self._record_delivery(
             audit_context,
             outbound,

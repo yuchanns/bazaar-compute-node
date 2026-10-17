@@ -12,7 +12,6 @@ from bazaar_contrib_harness import ApprovalResult, HarnessOutput
 
 from .models import (
     ChannelApprovalRequest,
-    ChannelDeliveryReceipt,
     ChannelIdentity,
     ChannelSendRequest,
     ChannelTarget,
@@ -20,6 +19,7 @@ from .models import (
     DmRequest,
     InboundMessage,
 )
+from .sending import ChannelSendPart
 
 
 class Channel(Protocol):
@@ -33,7 +33,11 @@ class Channel(Protocol):
         self, event: HarnessOutput, *, target: ChannelTarget
     ) -> None: ...
 
-    async def send(self, request: ChannelSendRequest) -> ChannelDeliveryReceipt: ...
+    async def prepare_send(
+        self, request: ChannelSendRequest
+    ) -> tuple[ChannelSendPart, ...]:
+        """Build single-operation callbacks; upstream I/O belongs in the callbacks."""
+        ...
 
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float

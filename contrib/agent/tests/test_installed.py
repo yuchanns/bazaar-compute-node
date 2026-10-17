@@ -14,6 +14,7 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
         root / "contrib/audit",
         root / "contrib/harness",
         root / "contrib/channel",
+        root / "contrib/timer",
         root / "contrib/invoke",
         root / "contrib/agent",
         Path(__file__).parent / "fixtures/journal",
@@ -46,12 +47,13 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
         ]
         for artifact in await asyncio.to_thread(list, output.glob(suffix)):
             command.extend(["--with", str(artifact)])
-        command.append(str(Path(__file__).with_name("consumer_smoke.py")))
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=tmp_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await process.communicate()
-        assert process.returncode == 0, stdout.decode()
+        for script in ("consumer_smoke.py", "channel_smoke.py"):
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                str(Path(__file__).with_name(script)),
+                cwd=tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await process.communicate()
+            assert process.returncode == 0, stdout.decode()

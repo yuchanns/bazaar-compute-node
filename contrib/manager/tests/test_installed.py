@@ -33,6 +33,8 @@ def wheels(tmp_path_factory):
                 "agent",
                 "audit",
                 "channel",
+                "timer",
+                "timer-wheel",
                 "harness",
                 "status",
                 "logging",
