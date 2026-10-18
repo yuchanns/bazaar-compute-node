@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from bazaar_contrib_channel import Channel
+from bazaar_contrib_storage import Session
 from bazaar_core import ServiceKey
 
 from .actor import Actor, Actors, Agent, Thread
@@ -20,7 +21,12 @@ from .models import (
     OutboundAttachment,
 )
 from .models import Thread as Conversation
-from .operations import KnownSender, RecordInboundResult, ResolvedInboxTarget
+from .operations import (
+    KnownSender,
+    RecordInboundResult,
+    ResolvedInboxTarget,
+    UnreadMessageOwner,
+)
 from .results import (
     InboxListResult,
     MessageCheckResult,
@@ -46,6 +52,27 @@ class MessageSession(Protocol):
     ) -> ChannelSession | None: ...
 
     async def save_channel_session(self, session: ChannelSession) -> None: ...
+
+    async def list_thread_ids(self) -> tuple[Thread, ...]: ...
+
+    async def resolve_message(
+        self,
+        actor: Thread | None,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
+
+    async def get_owned_message(
+        self,
+        owner: Agent,
+        actor: Thread,
+        message_id: str,
+        *,
+        direction: MessageDirection | None = None,
+    ) -> Message[InboundAttachment | OutboundAttachment] | None: ...
+
+    async def save_message(self, message: Message) -> Message: ...
 
 
 class MessageStorage(MessageSession, Protocol):
@@ -144,6 +171,16 @@ class MessageService(Protocol):
 
 class Messages(Protocol):
     """Bind each agent's message service and dispatch its command requests."""
+
+    def storage(self, owner: Agent) -> MessageStorage:
+        """Access durable message data without acquiring a runtime binding."""
+        ...
+
+    def in_session(self, session: Session, owner: Agent) -> MessageSession:
+        """Join a caller's database scope; the returned service stays in that scope."""
+        ...
+
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]: ...
 
     def bind(
         self,

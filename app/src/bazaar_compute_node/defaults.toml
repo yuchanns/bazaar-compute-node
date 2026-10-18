@@ -98,3 +98,8 @@ entry = "messages-node"
 package = "bazaar-contrib-collaboration~=0.3.0"
 [[contribs.enabled]]
 entry = "collaboration"
+
+[[contribs]]
+package = "bazaar-contrib-reminder~=0.3.0"
+[[contribs.enabled]]
+entry = "reminder"

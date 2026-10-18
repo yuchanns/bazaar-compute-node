@@ -1646,9 +1646,41 @@ Ruff、仓库根目录 Pyright LSP 和原 12 份消息模板一致性核对通�
 
 ### Task 15：为 agent 接入 Reminder
 
-- [ ] 交付 bazaar-contrib-reminder 的持久化、到期、snooze、更新、取消及唤醒规则，依赖 DB、schema、timer 和消息。
-- [ ] app 默认安装并启用 reminder，复用节点共享 TIMER；持久化与唤醒业务归 Reminder 插件。
-- [ ] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
+scheduler 以 frozen／slots 状态联合类型直接携带驱动任务和 frontier timer，统一未启动、运行、停止中和已停止的表达；任务故障状态直接携带异常，命令入口使用明确接收状态。保留原有唤醒、到期与退出行为。
+
+以 main `53d925f` 的 `core/models/reminder.py`、`reminder_owner.py`、`core/reminder.py`、
+`reminder_schedule.py`、`core/orchestration/reminder.py` 和 `commands/reminders.py` 为业务来源，
+迁入 `bazaar-contrib-reminder`；模型状态、请求与结果、周期计算、单全局 frontier 定时器、
+60 秒时钟复核、失败重试、到期批处理、版本并发保护、不可用提醒取消及启动未读恢复保持原行为。
+`cmd/bcc/reminder.py`、`app/resource_dispatch.py` 的 Reminder 分支及 `_format.py` 的 Reminder 格式化迁入该包，
+三个 Reminder bcc 模板和错误模板逐字保留；命令经独立 `reminder-cli` 消费入口访问 REMINDER 公共服务。
+命令完成事件由 `_append_audit` 统一写入审计服务。
+Reminder 消费公共 `Timer` 契约时，参数和成员统一命名为 `timer`。
+Reminder 的绑定参数、scheduler 参数与内部唤醒转发统一命名为 `wake`。
+
+Reminder 自有定义和状态由 DB 公共查询操作读写，沿用 Node 迁移中已发布的 reminders 表和版本账本，
+通过 SCHEMA／NODE_MIGRATIONS 依赖等待其就绪。消息接口补齐已有的会话列表、消息定位、
+系统消息保存及全局未读恢复操作；消息服务提供可加入调用者 Session 的消息作用域，
+Reminder 在 DB 的一个事务内更新提醒状态并通过该作用域保存系统消息，保留原子提交／回滚。
+消息实现持有消息归属、路由校验和序号分配，不增加 Reminder 专用消息方法。
+共享 Reminder 服务提供按 Actor 的命令绑定、全局 scheduler 的 start／stop／wait_failure 和唤醒回调；
+执行组合在完成 agent 绑定后启动 scheduler，完整 agent 执行接线沿 Task 16 交付。
+
+默认配置、V4→V5 的既有 agent 转换与官方索引选择 reminder；app 发行元数据仍只声明自身直接使用的包。
+从实际 wheel 和 sdist 在独立环境运行真实 timer／SQLite／消息实现和 sidecar 消费者，
+验证登记、修改、延后、取消、周期、到期系统消息、未读与锚点、重启恢复、两个 mode 的 Actor 范围及资源退出。
+
+- [x] 交付 bazaar-contrib-reminder 的持久化、到期、snooze、更新、取消及唤醒规则，依赖 DB、schema、timer 和消息。
+- [x] app 默认安装并启用 reminder，复用节点共享 TIMER；持久化与唤醒业务归 Reminder 插件。
+- [x] 以真实定时器和隔离数据库验证到期、更新、取消、持久化及清理，完成独立安装与检查，提交供 review。
+
+验收：本项和受影响的 messages、collaboration、配置转换、app、manager、根目录脚本共 14 项 pytest 通过。
+Reminder 的 wheel／sdist 经独立节点、真实 TCP TestChannel、sidecar 和原 bcc 命令完成
+登记、修改、延后、取消、周期、到期系统消息、锚点／未读、两种 mode 的会话范围及离线后恢复。
+单独按声明依赖安装的 wheel／sdist 均成功导入 Reminder 全部模块，依赖闭包不含消息实现包。
+Reminder 模型、请求、周期计算三个源文件和四份 bcc 模板逐字一致；
+命令、scheduler 及辅助函数按 Actor／公共 timer 适配核对，dispatch／格式化方法和 CLI 文案保持原结构与内容。
+四种真实 manager venv／tool 安装升级流程、workspace Ruff／format、锁一致性和 exact 根目录 Pyright LSP 均通过。
 
 ### Task 16：补齐 agent 执行、恢复与替换契约
 
