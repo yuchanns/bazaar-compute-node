@@ -12,6 +12,7 @@ from typing import cast
 
 from bazaar_contrib_audit import AUDIT, Audit
 from bazaar_contrib_invoke import COMMANDS, CommandEntry
+from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 from bazaar_contrib_messages import (
     MESSAGES,
     Actors,
@@ -21,7 +22,7 @@ from bazaar_contrib_messages import (
     ThreadConcurrency,
 )
 from bazaar_contrib_messages.operations import UnreadMessageOwner
-from bazaar_contrib_node_migrations import NODE_MIGRATIONS
+from bazaar_contrib_schema import SCHEMA
 from bazaar_contrib_storage import DB, Database, Session
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib, ContribSpec
@@ -34,6 +35,7 @@ from .concurrency import ThreadLockRegistry
 from .dispatch import CommandDispatcher
 from .repository import Repository
 from .repository.unread import list_unread_message_owners
+from .schema import MODULE
 from .service import NodeMessageService
 from .store import MessageStore
 lazy from .cli._client import MessageClient
@@ -133,10 +135,11 @@ class NodeMessages:
 
 @asynccontextmanager
 async def lifespan(ctx: Context):
-    ctx.offer(
-        MESSAGES, NodeMessages(ctx.accept(DB), ctx.accept(AUDIT), ctx.accept(TIMER))
-    )
-    yield
+    async with ctx.accept(SCHEMA).register(MODULE):
+        ctx.offer(
+            MESSAGES, NodeMessages(ctx.accept(DB), ctx.accept(AUDIT), ctx.accept(TIMER))
+        )
+        yield
 
 
 @asynccontextmanager
@@ -165,7 +168,9 @@ async def cli_lifespan(ctx: Context):
 
 
 messages = Contrib(
-    accepts=[DB, NODE_MIGRATIONS, AUDIT, TIMER], offers=[MESSAGES], lifespan=lifespan
+    accepts=[SCHEMA, LEGACY_NODE_MIGRATIONS, DB, AUDIT, TIMER],
+    offers=[MESSAGES],
+    lifespan=lifespan,
 )
 commands = Contrib(accepts=[CLIENT, COMMANDS], lifespan=cli_lifespan)
 _TRANSPORT = ContribSpec(

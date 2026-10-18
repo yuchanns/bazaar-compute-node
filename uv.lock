@@ -14,12 +14,12 @@ members = [
     "bazaar-contrib-config-versions",
     "bazaar-contrib-harness",
     "bazaar-contrib-invoke",
+    "bazaar-contrib-legacy-node-migrations",
     "bazaar-contrib-logging",
     "bazaar-contrib-manager",
     "bazaar-contrib-messages",
     "bazaar-contrib-messages-node",
     "bazaar-contrib-node-management",
-    "bazaar-contrib-node-migrations",
     "bazaar-contrib-reminder",
     "bazaar-contrib-schema",
     "bazaar-contrib-sidecar",
@@ -95,6 +95,9 @@ dependencies = [
     { name = "bazaar-contrib-channel" },
     { name = "bazaar-contrib-harness" },
     { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations" },
+    { name = "bazaar-contrib-schema" },
+    { name = "bazaar-contrib-storage" },
     { name = "bazaar-core" },
     { name = "click" },
     { name = "jinja2" },
@@ -107,6 +110,9 @@ requires-dist = [
     { name = "bazaar-contrib-channel", editable = "contrib/channel" },
     { name = "bazaar-contrib-harness", editable = "contrib/harness" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations", editable = "contrib/legacy-node-migrations" },
+    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
@@ -154,7 +160,9 @@ source = { editable = "contrib/collaboration" }
 dependencies = [
     { name = "bazaar-contrib-audit" },
     { name = "bazaar-contrib-channel" },
+    { name = "bazaar-contrib-legacy-node-migrations" },
     { name = "bazaar-contrib-messages" },
+    { name = "bazaar-contrib-schema" },
     { name = "bazaar-contrib-storage" },
     { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
@@ -165,7 +173,9 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-contrib-audit", editable = "contrib/audit" },
     { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-contrib-legacy-node-migrations", editable = "contrib/legacy-node-migrations" },
     { name = "bazaar-contrib-messages", editable = "contrib/messages" },
+    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
@@ -246,6 +256,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bazaar-contrib-legacy-node-migrations"
+version = "0.3.0"
+source = { editable = "contrib/legacy-node-migrations" }
+dependencies = [
+    { name = "bazaar-contrib-schema" },
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-core", editable = "core" },
+]
+
+[[package]]
 name = "bazaar-contrib-logging"
 version = "0.3.0"
 source = { editable = "contrib/logging" }
@@ -312,8 +339,9 @@ dependencies = [
     { name = "bazaar-contrib-audit" },
     { name = "bazaar-contrib-channel" },
     { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations" },
     { name = "bazaar-contrib-messages" },
-    { name = "bazaar-contrib-node-migrations" },
+    { name = "bazaar-contrib-schema" },
     { name = "bazaar-contrib-sidecar" },
     { name = "bazaar-contrib-storage" },
     { name = "bazaar-contrib-timer" },
@@ -328,8 +356,9 @@ requires-dist = [
     { name = "bazaar-contrib-audit", editable = "contrib/audit" },
     { name = "bazaar-contrib-channel", editable = "contrib/channel" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations", editable = "contrib/legacy-node-migrations" },
     { name = "bazaar-contrib-messages", editable = "contrib/messages" },
-    { name = "bazaar-contrib-node-migrations", editable = "contrib/node-migrations" },
+    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-contrib-timer", editable = "contrib/timer" },
@@ -359,31 +388,14 @@ requires-dist = [
 ]
 
 [[package]]
-name = "bazaar-contrib-node-migrations"
-version = "0.3.0"
-source = { editable = "contrib/node-migrations" }
-dependencies = [
-    { name = "bazaar-contrib-schema" },
-    { name = "bazaar-contrib-storage" },
-    { name = "bazaar-core" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-schema", editable = "contrib/schema" },
-    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
-    { name = "bazaar-core", editable = "core" },
-]
-
-[[package]]
 name = "bazaar-contrib-reminder"
 version = "0.3.0"
 source = { editable = "contrib/reminder" }
 dependencies = [
     { name = "bazaar-contrib-audit" },
     { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations" },
     { name = "bazaar-contrib-messages" },
-    { name = "bazaar-contrib-node-migrations" },
     { name = "bazaar-contrib-schema" },
     { name = "bazaar-contrib-sidecar" },
     { name = "bazaar-contrib-storage" },
@@ -399,8 +411,8 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-contrib-audit", editable = "contrib/audit" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-legacy-node-migrations", editable = "contrib/legacy-node-migrations" },
     { name = "bazaar-contrib-messages", editable = "contrib/messages" },
-    { name = "bazaar-contrib-node-migrations", editable = "contrib/node-migrations" },
     { name = "bazaar-contrib-schema", editable = "contrib/schema" },
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
@@ -419,6 +431,7 @@ source = { editable = "contrib/schema" }
 dependencies = [
     { name = "bazaar-contrib-storage" },
     { name = "bazaar-core" },
+    { name = "packaging" },
     { name = "pydantic" },
 ]
 
@@ -426,6 +439,7 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-core", editable = "core" },
+    { name = "packaging", specifier = ">=25.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
 ]
 

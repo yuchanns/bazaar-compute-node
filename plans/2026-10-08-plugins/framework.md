@@ -111,10 +111,14 @@ app 持有命令、默认发行依赖与业务组合，普通插件管理自己�
 ```python
 @asynccontextmanager
 async def server_lifespan(ctx: Context, config: ServerConfig):
-    composition = Composition(entries=[
-        ContribEntry(name="database", definition=sqlite, config={"path": config.database}),
-        ContribEntry(name="history", definition=history),
-    ])
+    composition = Composition(
+        entries=[
+            ContribEntry(
+                name="database", definition=sqlite, config={"path": config.database}
+            ),
+            ContribEntry(name="history", definition=history),
+        ]
+    )
     async with ctx.enable(composition, local=(DB,)):
         yield
 ```
@@ -393,7 +397,6 @@ async def lifespan(ctx: Context, config: FileConfig):
 
 
 filesystem = Contrib(
-
     config=FileConfig,
     offers=[CONFIG_STORE],
     lifespan=lifespan,
@@ -473,7 +476,6 @@ async def v5_lifespan(ctx: Context):
 
 
 v5 = Contrib(
-
     accepts=[CONFIG_V4],
     offers=[CONFIG_V5],
     lifespan=v5_lifespan,
@@ -642,9 +644,10 @@ web、GUI 与页面模块进入 server 组合，通过 API、UI 和访问服务�
 | computers、events、refs 等既有业务数据 | fleet／history／contacts 查询原表和标识，保持 computer 身份、secret_hash、事件顺序与关联 |
 
 包拆分完成后，业务查询直接使用上述数据布局，既有主键、凭据、事件关联和权限在事务内保留。
-Node 与 Server 各自的迁移插件通过统一 schema 服务登记迁移，提供当前结构的初始基线和按原版本编号表达的抽象操作／数据变更。
-已有数据库按原 schema_migrations 的版本记录确定起点；迁移插件显式声明自己的历史身份及账本字段，
-schema 引擎只为被依赖的插件接续缺少的版本，并把进度记录在统一的 contrib_schema_migrations 中。
+Node 的 agent、messages-node、collaboration、reminder 及 Server 各自持有业务表的迁移定义，
+通过统一 schema 服务登记当前结构的初始基线和按版本表达的抽象操作／数据变更。
+已有数据库按原 schema_migrations 或统一账本的版本记录确定起点；业务包显式声明自己的历史身份及账本字段，
+schema 引擎为登记的业务 schema 接续缺少的版本，并把进度记录在统一的 contrib_schema_migrations 中。
 旧账本保留已有记录，初始化后以统一账本推进。版本进度与 checksum 无关，统一实现按版本判断执行进度。
 空库直接创建所选模块的基线结构并记下基线版本；后续依次执行新增版本。
 业务数据库服务同时依赖所选 DB 和对应迁移插件的就绪服务，确保业务读写发生在迁移完成后；Node 与 Server 可分别绑定数据源。
@@ -1211,17 +1214,20 @@ Jinja 模板表达，Python 负责绑定参数、标识符／DDL 字面量转义
 数据转换通过接收公共 Session 的异步 apply 完成，允许同一版本在建表、复制和改名之间执行数据处理。
 迁移和 ledger 写入处于同一个 DB 事务；登记检查表和模块身份归属，进度按 package／version 记录名称、应用时间和耗时。
 `contrib_schema_tables` 持久记录表的 package 归属，运行期退出保留数据和版本进度。
+ModuleSchema 只声明结构与版本；登记身份从当前 Context 的发行来源自动取得，包名按发行包规则统一。
+Context 公开已有的 ContribEntry.source；SCHEMA 使用框架设置的 CURRENT_CONTEXT，不接受调用方提供当前 package。
 
-`bazaar-contrib-node-migrations` 与 `bazaar-contrib-server` 分别持有 Node／Server 迁移定义，
-接受 SCHEMA 并在登记完成后提供 NODE_MIGRATIONS／SERVER_MIGRATIONS 就绪服务。
+Node 的 agent、messages-node、collaboration、reminder 持有各自的当前基线与后续版本，直接接受 SCHEMA 并自行登记。
+`bazaar-contrib-legacy-node-migrations` 持有完整已发布历史 1～32，接受 SCHEMA 接续旧库，完成后提供 LEGACY_NODE_MIGRATIONS。
+`bazaar-contrib-server` 持有 Server 迁移定义，接受 SCHEMA 并在登记完成后提供 SERVER_MIGRATIONS。
 Node 迁移包随 BCN 共同发行；Server 插件在 `open-bazaar/contrib-server` 独立维护，
 同一个 `bazaar-contrib-server` 发行包提供 `server-migrations` 入口，并按阶段加入 `server`／`server-api` 逻辑入口。
 Server 以 `>=0.3.0,<0.4.0` 声明 core、schema、storage 的公共兼容范围。服务端配置载体、存储组合、业务及页面包同属 open-bazaar 的可选仓库。
-Node Database 业务服务接受 DB 与 NODE_MIGRATIONS；Server Database 对应接受 SERVER_MIGRATIONS。
-Agent 插件依赖 Node 业务数据插件，由服务依赖带起 Node 迁移及所选数据库；新安装默认安装并启用 Agent。
+Node 各业务服务接受 SCHEMA 并分别登记，依赖 LEGACY_NODE_MIGRATIONS 保证旧库升级完成；Server Database 对应接受 SERVER_MIGRATIONS。
+Agent 持有自己的运行数据与 schema，由公共服务依赖带起旧库接续及所选数据库；新安装默认安装并启用 Agent。
 旧配置转换按实际 Agent／Server 使用情况分别生成对应插件及依赖声明，Server 由自己的业务插件带起迁移。
 组合配置通过现有 database 入口为同一个 DB 选择 SQLite／PG。迁移插件依赖 schema／storage 公共能力，
-数据库 provider 负责通用操作。当前尚无业务消费者时仍通过明确根和服务依赖选择插件；V4→V5 在旧配置存在 Agent 时声明 node-migrations，供 Node 消费组合依赖。
+数据库 provider 负责通用操作。当前尚无业务消费者时仍通过明确根和服务依赖选择插件；V4→V5 在旧配置存在 Agent 时声明 legacy-node-migrations，供 Node 消费组合依赖。
 
 ModuleSchema 可声明 baseline（当前结构及版本）和 progress（已有账本的表、版本／名称字段及所属链首版本身份）。
 空库执行基线并记录该版本；匹配的已有账本把已执行版本进度接入统一 ledger，随后使用同一个 Migration 执行循环推进。
@@ -1404,7 +1410,7 @@ ContribSpec 依赖，由 bcc 与命令一起交给既有 load。messages 的命�
 消息服务的进程边界沿用 CommandDispatcher 的 Actor 解析和 session binding validator，绑定由调用它的 agent 提供。
 sidecar 只负责转发框架调用，消息 CLI 通过连接所属的通用消费入口请求 `MESSAGES`；
 消息依赖由该调用方声明并由框架绑定，sidecar 的定义及发行依赖均不包含消息或配置业务。
-V4→V5 保留 `if old.agent`，只在旧配置存在 agent 时加入 messages-node 和 node-migrations；
+V4→V5 保留 `if old.agent`，只在旧配置存在 agent 时加入 messages-node 和 legacy-node-migrations；
 只有 BCS 等其他 contrib 的节点继续使用通用通信入口。
 删除 `services` 配置模型、服务 key 字符串解析及全部默认／转换／测试用法。
 原 `resources/command/`、消息相关 `resources/bcc/` 与 TextTemplate 保留格式化逻辑和模板字节，随独立包发行。
@@ -1533,7 +1539,7 @@ Ruff、仓库根目录 Pyright LSP 和原 12 份消息模板一致性核对通�
 Reminder 消费公共 `Timer` 契约时，参数和成员统一命名为 `timer`。
 
 Reminder 自有定义和状态由 DB 公共查询操作读写，沿用 Node 迁移中已发布的 reminders 表和版本账本，
-通过 SCHEMA／NODE_MIGRATIONS 依赖等待其就绪。消息接口补齐已有的会话列表、消息定位、
+通过 SCHEMA／LEGACY_NODE_MIGRATIONS 依赖等待其就绪。消息接口补齐已有的会话列表、消息定位、
 系统消息保存及全局未读恢复操作；消息服务提供可加入调用者 Session 的消息作用域，
 Reminder 在 DB 的一个事务内更新提醒状态并通过该作用域保存系统消息，保留原子提交／回滚。
 消息实现持有消息归属、路由校验和序号分配，不增加 Reminder 专用消息方法。
@@ -1556,9 +1562,72 @@ Reminder 模型、请求、周期计算三个源文件和四份 bcc 模板逐字
 命令、scheduler 及辅助函数按 Actor／公共 timer 适配核对，dispatch／格式化方法和 CLI 文案保持原结构与内容。
 四种真实 manager venv／tool 安装升级流程、workspace Ruff／format、锁一致性和 exact 根目录 Pyright LSP 均通过。
 
+### Task 15.1：业务迁移独立登记与 Legacy Node Migration 接续
+
+agent、messages-node、collaboration、reminder 各自持有当前表结构基线与从 1 开始的后续版本链，
+直接在 Contrib.accepts 声明 SCHEMA，在自己的 lifespan 中登记 ModuleSchema，完成登记后再提供服务。
+迁移按 package／version 独立记录，各包内部按版本推进。ModuleSchema 删除手填的 package；
+SCHEMA.register 在当前 contrib 的生命周期上下文读取 Context.source.package，以发行包规范名登记。
+Context.source 直接公开入口发现已保存的发行来源；没有发行来源的登记在写入前报错，不用实例名代替包身份。
+运行期 modules 按推断出的包名索引声明，调用方只维护自有表、迁移和历史来源。
+可选 Server 同步删除重复身份声明，安装验收经真实入口发现取得 Context，并使用业务自有基线验证 Node／Server 根切换。
+
+`bazaar-contrib-legacy-node-migrations` 的 `legacy-node-migrations` 入口持有已发布的完整 Node 1～32，
+历史表定义、公共操作及数据转换以 main 和 Task 15 的实现为来源，保留跨表步骤和原版本顺序。
+Progress 可声明旧统一账本的 package，作为历史进度来源；已有旧表、统一账本记录及其身份均保留。
+Legacy 从 `bazaar-contrib-node-migrations` 或旧 schema_migrations 接续，新增进度记入自动取得的真实发行包身份。
+该 contrib 调用 SCHEMA.register(..., upgrade_only=True)，只接续已有历史进度；
+空库及已完成的历史不执行建表或重新夺取归属，完成后提供 LEGACY_NODE_MIGRATIONS 就绪服务。
+Node 业务 contrib 显式依赖该就绪服务，历史完成后各自登记，不扫描发行入口或集中登记业务版本。
+
+SCHEMA 的 ModuleSchema 增加 predecessor 声明，以公共 Dependency 表达前身包及交接版本。
+业务模块声明 Legacy Node 32 为前身；引擎读取前身账本及其已登记历史来源，已完成交接点时将原表归属转给该业务模块，
+在同一事务登记其基线进度而不重放建表，再执行该模块新增版本。
+空库没有前身进度，直接执行各包基线。独立注册、重启及后启用的业务模块均按各自账本继续。
+Server 的登记与独立历史接续继续使用同一通用引擎；SQLite／PostgreSQL 只负责公共存储操作。
+
+验收从原只读迁移生成 1～32 数据库，与原升级结果比较业务数据、关联、序号、搜索和旧账本；
+从拆分前真实 0.3 实现生成已登记数据库，验证旧包身份、归属交接和已执行步骤不重放。
+验证真实 contrib 启动次序、各包独立登记、当前基线、新增业务版本、重复启动及保留业务数据。
+执行独立 wheel／sdist、SQLite／PostgreSQL、Server 及受影响消费者、Ruff、锁和根 Pyright LSP 检查。
+从 PyPI 最早可下载的 0.1.3 和仓库最早 v0.1.0 标签分别安装真实旧实现，使用其公共存储接口生成配置与业务记录；
+仅本次最早版本验收使用一次性容器，在隔离安装根直接替换为当前发行产物；其他版本继续使用已有隔离能力。
+检查配置转换、原账本、业务数据、迁移和重复启动，分别记录安装、配置和完整运行的实际结果。
+Sidecar 的独立安装验收仅构建应用、通用配置／管理和通信消费者实际使用的发行包，
+清理未使用的 Agent／audit／channel／timer／harness 测试构建项，并验证原生传输、TCP、热更新和退出恢复。
+将通用自有表／版本／lifespan 登记规范写入开发约定，在 schema README 给出简短可用示例；历史背景仅在 Legacy 包 README 简述。
+
+- [x] 收拢已发布历史为 Legacy Node Migration，业务包仅持有自己的基线和后续版本。
+- [x] 业务 contrib 自行登记，SCHEMA 按前身进度完成归属与基线交接，保留旧账本。
+- [x] 从实际 contrib 发行来源自动取得登记身份，删除重复声明并验证历史接续、独立发行和重启。
+- [x] 完成真实最早安装版直接升级当前产物的配置转换、数据及业务服务启动验收，记录完整 CLI 启动的当前阶段限制。
+- [x] 完成历史／当前库／空库／新版本及独立安装验收，修正同一签名功能提交并停下供 review。
+
+验收：本轮 91 项主仓库 pytest 通过，包含 core 43 项、schema 3 项、Legacy 历史／独立安装／真实业务 lifespan 38 项、
+四个业务独立安装及 scripts 3 项。此前的配置转换、应用配置、manager 和 Sidecar 12 项验收已通过。
+全部 32 个历史起点与原升级结果一致，已有 0.3、新增业务版本和重启保留数据与旧账本。
+新增未修改的旧引擎生成的统一账本 17 版夹具，验证自动身份下接续到 32、归属交接及重启；所有业务记录与原 32 版结果一致。
+SQLite wheel／sdist 验证逐包登记、基线和接续；真实 PostgreSQL 两种产物验证旧进度 17／32、空库、
+实际业务启动、独立新增版本及两次重启。Server 的原升级／基线和适配登记后的消费根切换通过。
+五个业务／Legacy 包的声明依赖导入及发行源码／资源／LICENSE 对照通过；README 示例独立打包并以不同入口名加载，
+wheel／sdist 均从 Example_Notes 元数据取得 example-notes 账本与归属，重启保留数据。Server 三项验收在两种产物下通过。
+32 项迁移与数据变换、21 项基线操作保持一致，保留声明均有引用；workspace Ruff／format、锁和根 Pyright LSP 通过。
+
+最早安装升级验收：PyPI 0.1.3 原 wheel 与 v0.1.0 原标签构建 wheel 分别在一次性容器内独立安装，
+使用对应旧版公共 API 写入真实配置、会话、收发消息、附件、游标及运行记录，随后直接换装当前真实发行产物。
+V1→V5 配置转换保留 Agent 身份、provider、模型、环境引用、endpoint 与数据库位置；
+原 3／8 版账本记录保持不变并接续到 32，所有现存业务表与未修改原实现的升级结果一致。
+四个业务 contrib 的真实 lifespan 启动、公共消息／线程／附件／搜索及两次独立进程重启通过，附件文件哈希保持不变。
+CLI 版本与直接安装通过；原配置的 CLI 依赖恢复仍需索引中尚未发布的 0.3 产物，本轮以真实本地包完成配置与业务服务验收。
+完整 Agent 执行及外部 provider 运行仍由后续对应任务验收。容器及所属临时运行环境在验收后移除。
+
 ### Task 16：补齐 agent 执行、恢复与替换契约
 
-- [ ] Agent 依赖 Node 业务数据插件；Node 接受 DB 和 NODE_MIGRATIONS，迁移就绪后提供节点数据服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
+- [ ] Channel 与 Harness 分别持有纯内存运行状态，随实例创建、销毁和重建，按 Running → Stopping → Stopped 管理退出。Stopping 停止接收新业务工作，保留既有请求所需的事件、审批、回执及回复通路；使用公共 TIMER 定期复核队列、在途请求／回复和相关后台工作，排空后再关闭资源。参考主线 `core/orchestration/orchestrator.py` 的 `_handle_runtime_expiry`／`_stop_expired_runtime_if_idle`：繁忙时继续等待，后台工作未结束则重新安排定时器，复核绑定实例及 timer generation，退出时取消所属定时器。
+
+- [ ] 保持 Agent 身份、Actor 会话、worker 与调度状态的生命周期稳定。为已有 Agent 新增或移除 Channel 时，仅更新相应 Channel 子组合与接线，保留其他 Channel、harness 和正在运行的 Agent；移除时先停止接收新工作，保留已接收消息、排队／执行任务及其回复所需的连接和绑定，排空后再关闭 Channel 并释放子组合。验收运行期间追加和移除 Channel，检查已受理工作完成、既有会话与其他通道继续运行。
+
+- [ ] Agent 自持运行数据，接受 DB、SCHEMA 和 LEGACY_NODE_MIGRATIONS，在自己的 lifespan 登记后提供业务服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
 
 - [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
 - [ ] 按[Actor 验收标准](#迁移实施与验收标准)迁入 main 的 `Actor`／`Actors`：内部身份参数、业务调用与归属键全程使用 Actor，仅在边界与 `session_id`／`agent_id` 转换；保留两种 mode 的身份解析、按 Actor 归属的运行会话／状态／队列／worker／timer、业务可见范围和活跃命令绑定，分别验收各会话隔离及同 Agent 会话共享的原行为。
@@ -1625,6 +1694,55 @@ bcn agent review deny <agent-id> <thread-id>
 - [ ] Linux、macOS、Windows 独立 CI 完成安装与生命周期验收；native service 验收在隔离 CI runner 执行。
 - [ ] 登记本仓库 app、core 与首阶段 contrib 的发行清单、共同版本和正式依赖；验证入口组、contribs 配置、contrib_indexes 与 bcn contrib 命令采用统一命名。
 - [ ] 在当前特性分支提交，review 通过后按依赖合入 `0.3`，以该集成点开始路线图下一分支。
+
+## 后续安全待办
+
+2026-10-18 将 contrib 存储权限与 Sidecar 授权边界记为后续待办：记录风险和设计方向，暂缓实施，后续单独设计及拆分任务。
+保留 Task 15.1 的 Legacy Node Migration 与业务各自登记方案，继续按现有串行 Tasks 推进和 review。
+迁移下放解决表结构、业务数据和版本链的维护归属；当前进程内 contrib 的运行权限是另一层边界。
+
+### 已确认的现状与风险
+
+- contrib 在同一 Python 进程、同一系统权限下执行。恶意代码即使绕过 Schema，也可以自行尝试连接和修改数据库；
+  把迁移重新集中管理不能消除这个既有风险。公共接口的表权限约束与不可信代码的执行隔离需要分别评估。
+- Schema 已持久化表归属并检查登记冲突，MigrationSession 限制迁移写入的目标表；
+  运行期 DB 仍共享后端对象，尚未按消费 contrib 的登记结果限制访问，迁移查询也没有完整的跨表权限检查。
+  登记包身份由框架提供的发行来源自动取得；predecessor 和 Progress 的历史来源仍由调用方声明，不能直接当作授权凭据。
+- 公共 DB 使用结构化请求，查询和增删改的 table 字段是表名，通常来自 TABLE.name；Table 对象用于结构定义和建表。
+  公共 Database／Session 契约没有裸 SQL 入口，因此可在通用 storage 层分析请求并统一执行表权限约束。
+- 当前 Sidecar 能为连接创建接受指定可见服务的消费实例。隔离的真实 Hub、SQLite 与 Unix socket 验证了远端可取得
+  DB、STORAGE、SCHEMA，并读取另一 contrib 登记的表；该观察证明当前服务可达和共享 DB 访问，未来的表授权机制尚未实现。
+  讨论重点还包括：Sidecar 是否能调用内部管理能力，给调用者追加可访问表。仅给未登记表的连接分配空权限，仍需核对授权管理入口。
+- Sidecar 对远程引用对象使用公开成员读取和调用；正常方法名禁止以下划线开头，但 Symbol／Construct 路径没有相同限制。
+  Symbol 按路径导入 Python 对象，Construct 导入后直接用字段参数调用目标，当前没有限制目标必须是请求数据模型。
+  需核对通过服务属性、动态导入和构造取得管理能力的路径；构造一个普通对象本身不能成为真实 DB 的授权依据。
+
+### 讨论过的方案与约束
+
+- 最初考虑为每个 contrib 分配命名空间，随后倾向沿用现有表名和归属，按成功登记的表集合分配访问范围，
+  减少表名映射和额外授权清单。未登记表的调用者取得空权限，跨 contrib 的业务操作通过数据拥有者的公开服务完成。
+- 权限控制由通用 storage contrib 内部持有和执行，业务 contrib 只提交表及迁移声明、使用受限 DB。
+  授权管理对象、修改归属、追加访问表和切换调用身份的能力需要与普通 DB 操作分离，覆盖 Sidecar 的自我授权路径。
+  Schema 负责业务迁移编排，依赖方向保持 Schema → storage；Sidecar 继续采用通用框架转发与访问规则。
+- 表声明需要在候选组合激活、执行迁移和发放权限之前检查同名冲突及已有归属。
+  同一候选中的冲突应拒绝该次激活，避免先启动者抢占；归属与授权应绑定可信的 contrib 身份。
+  当前在 lifespan 内逐个 register 的流程不足以完成整体预检，声明收集阶段和身份确认方式需要后续确定。
+- 统一校验需覆盖直接操作及 read／write／transaction 回调中的会话，并递归分析联表、CTE、子查询、复制来源、搜索及结构变更。
+  CTE 别名需要与物理表区分；删除索引、触发器等还需核对对象的实际归属，不能只相信请求填写的 table。
+  已发布历史迁移中的跨表步骤和 Legacy 归属交接也需要纳入设计，保留原数据与版本账本。
+- 讨论的候选接口是由 Schema 注册成功后返回 storage 创建的受限 DB，例如 register(MODULE) as db；
+  当前 accept(DB) 返回共享服务对象。授权发放接口、内部管理能力的装配方式和生命周期撤销规则仍待设计。
+- 原生数据库授权会引入后端差异：[PostgreSQL 使用角色管理对象权限](https://www.postgresql.org/docs/current/user-manag.html)，
+  [SQLite 没有 GRANT／REVOKE](https://www.sqlite.org/omitted.html)。倾向先评估结构化存储接口上的统一约束；
+  对抗同权限任意 Python 代码则需进一步评估执行、系统文件权限或数据库凭据的隔离边界。
+
+- [ ] 后续分别定义可信 contrib 的存储接口约束、Sidecar 调用者授权与不可信代码执行的信任边界，形成可 review 的独立设计。
+- [ ] 在独立设计中明确声明预检、可信身份、权限授予与撤销、远程管理能力及历史归属交接，再拆分实现与隔离验收任务。
+
+讨论来源：本开发线程 2026-10-18，50526714-b36b-5da8-8cf6-76eb2f7d0ba2（登记决定表权限）、
+c12f11c9-f8f1-5ce3-90d7-789f16439c17（同名冲突提前检查）、0385a1ee-cb4b-5f03-a0ba-7fdc177674b5（控制归 storage）、
+1426c7b2-67ad-5cbf-9a93-f5d9b4088b0f（Sidecar 自我授权）、ec415eb9-9fca-5c2e-a964-83435f2fb8e0（既有执行风险）、
+c90205ac-16c8-524c-99b9-7b94d9968923 与 f7caa6e3-9eae-51e3-b994-e36a506db015（暂缓并保存讨论）。
 
 ## 首阶段验收结果要求
 

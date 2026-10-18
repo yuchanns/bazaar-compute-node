@@ -97,7 +97,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     add("database", "storage", {"backend": "sqlite"})
     add("schema", "schema")
     if old.agent:
-        add("node-migrations", "node-migrations")
+        add("legacy-node-migrations", "legacy-node-migrations")
         add("messages-node", "messages-node")
         add("collaboration", "collaboration")
         add("reminder", "reminder")

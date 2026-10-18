@@ -42,7 +42,7 @@ async def test_installed_collaboration_controls_real_conversations(tmp_path: Pat
                 "storage",
                 "sqlite",
                 "schema",
-                "node-migrations",
+                "legacy-node-migrations",
                 "messages",
                 "messages-node",
                 "collaboration",

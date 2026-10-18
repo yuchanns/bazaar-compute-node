@@ -46,7 +46,7 @@ def wheels(tmp_path_factory):
                 "storage",
                 "sqlite",
                 "schema",
-                "node-migrations",
+                "legacy-node-migrations",
                 "messages",
                 "messages-node",
                 "collaboration",

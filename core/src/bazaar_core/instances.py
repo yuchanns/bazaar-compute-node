@@ -25,6 +25,7 @@ lazy from .contracts import (
     Contrib,
     ContribEntry,
     ContribError,
+    ContribSource,
     ContribState,
     ContribStatus,
     EventHandler,
@@ -70,6 +71,10 @@ class _Context:
     @property
     def name(self) -> str:
         return self._instance.entry.name
+
+    @property
+    def source(self) -> ContribSource | None:
+        return self._instance.entry.source
 
     @property
     def snapshots(self) -> tuple[ContribStatus, ...]:

@@ -26,6 +26,8 @@ from bazaar_contrib_harness import (
     HarnessInput,
     harness_builder_key,
 )
+from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
+from bazaar_contrib_schema import SCHEMA
 from bazaar_core import (
     Composition,
     Context,
@@ -38,6 +40,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .loop import loop
 from .models import Agent, AgentConfig, Config, ProviderConfig
+from .schema import MODULE
 lazy from .wrapper import install, remove
 
 __all__ = [
@@ -231,6 +234,7 @@ def compose(
 @asynccontextmanager
 async def lifespan(ctx: Context, config: Config):
     async with AsyncExitStack() as stack:
+        await stack.enter_async_context(ctx.accept(SCHEMA).register(MODULE))
         for item in config.agents:
             channels = {
                 provider.kind: ctx.accept(channel_builder_key(provider.kind))
@@ -252,7 +256,7 @@ async def lifespan(ctx: Context, config: Config):
 
 
 def dependencies(config: Config) -> list[ServiceKey[Any]]:
-    keys: list[ServiceKey[Any]] = [AUDIT]
+    keys: list[ServiceKey[Any]] = [AUDIT, SCHEMA, LEGACY_NODE_MIGRATIONS]
     channels = {provider.kind for item in config.agents for provider in item.channel}
     harnesses = {provider.kind for item in config.agents for provider in item.harness}
     if channels:

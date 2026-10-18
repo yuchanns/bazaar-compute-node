@@ -34,7 +34,7 @@ bazaar-contrib-harness = { workspace = true }
 bazaar-contrib-storage = { workspace = true }
 bazaar-contrib-sqlite = { workspace = true }
 bazaar-contrib-schema = { workspace = true }
-bazaar-contrib-node-migrations = { workspace = true }
+bazaar-contrib-legacy-node-migrations = { workspace = true }
 bazaar-contrib-messages = { workspace = true }
 bazaar-contrib-messages-node = { workspace = true }
 bazaar-contrib-collaboration = { workspace = true }
