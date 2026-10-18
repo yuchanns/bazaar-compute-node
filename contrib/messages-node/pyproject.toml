@@ -1,11 +1,11 @@
 [project]
 name = "bazaar-contrib-messages-node"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "Message history, delivery and conversation services"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-schema~=0.3.0", "bazaar-contrib-messages~=0.3.0", "bazaar-contrib-audit~=0.3.0", "bazaar-contrib-channel~=0.3.0", "bazaar-contrib-timer~=0.3.0", "bazaar-contrib-storage~=0.3.0", "bazaar-contrib-legacy-node-migrations~=0.3.0", "bazaar-contrib-invoke~=0.3.0", "bazaar-contrib-sidecar~=0.3.0", "click>=8.1.0", "jinja2>=3.1.6", "pydantic>=2.12.0"]
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-schema~=0.3.0rc1", "bazaar-contrib-messages~=0.3.0rc1", "bazaar-contrib-audit~=0.3.0rc1", "bazaar-contrib-channel~=0.3.0rc1", "bazaar-contrib-timer~=0.3.0rc1", "bazaar-contrib-storage~=0.3.0rc1", "bazaar-contrib-legacy-node-migrations~=0.3.0rc1", "bazaar-contrib-invoke~=0.3.0rc1", "bazaar-contrib-sidecar~=0.3.0rc1", "click>=8.1.0", "jinja2>=3.1.6", "pydantic>=2.12.0"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"

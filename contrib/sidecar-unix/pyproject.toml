@@ -1,12 +1,12 @@
 [project]
 name = "bazaar-contrib-sidecar-unix"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "Native Unix transport for Bazaar sidecar"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-sidecar~=0.3.0"]
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-sidecar~=0.3.0rc1"]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 sidecar-unix = "bazaar_contrib_sidecar_unix:sidecar"

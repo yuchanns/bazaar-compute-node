@@ -3,9 +3,9 @@ name = "bazaar-sidecar-example"
 version = "0.1.0"
 requires-python = ">=3.15"
 dependencies = [
-    "bazaar-core~=0.3.0",
-    "bazaar-contrib-sidecar~=0.3.0",
-    "bazaar-contrib-invoke~=0.3.0",
+    "bazaar-core~=0.3.0rc1",
+    "bazaar-contrib-sidecar~=0.3.0rc1",
+    "bazaar-contrib-invoke~=0.3.0rc1",
     "aiofiles>=25.1.0",
 ]
 

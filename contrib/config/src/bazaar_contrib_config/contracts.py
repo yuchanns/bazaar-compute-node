@@ -69,7 +69,7 @@ class PackageRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     package: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
     source: str = "https://pypi.org/simple/"
-    version: str = "==0.3.0"
+    version: str = "~=0.3.0rc1"
 
     @field_validator("version")
     @classmethod

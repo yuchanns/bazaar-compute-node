@@ -1,12 +1,12 @@
 [project]
 name = "bazaar-contrib-config-versions"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "The Bazaar Compute Node Config Versions Contrib"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-contrib-config~=0.3.0"]
+dependencies = ["bazaar-contrib-config~=0.3.0rc1"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"
