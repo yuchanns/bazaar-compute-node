@@ -93,3 +93,8 @@ entry = "node-migrations"
 package = "bazaar-contrib-messages-node~=0.3.0"
 [[contribs.enabled]]
 entry = "messages-node"
+
+[[contribs]]
+package = "bazaar-contrib-collaboration~=0.3.0"
+[[contribs.enabled]]
+entry = "collaboration"

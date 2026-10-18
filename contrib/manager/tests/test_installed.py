@@ -49,6 +49,7 @@ def wheels(tmp_path_factory):
                 "node-migrations",
                 "messages",
                 "messages-node",
+                "collaboration",
                 "node-management",
                 "sidecar",
                 "sidecar-unix",

@@ -118,7 +118,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
 | `bazaar-contrib-messages` | 公共契约 | 消息／会话、Actor、请求与结果、消息及通用会话读写 Protocol、共享 MESSAGES key 和纯回执转换；依赖 core 和 channel 公共契约 | 4 | 消息实现、协作及 server 投影的契约依赖 |
 | `bazaar-contrib-messages-node` | `messages-node`：共享；`messages-cli`：命令生命周期 | 历史、未读、搜索、附件、草稿、收发回执和 thread follow 的本机实现；持有目标解析、草稿、交付和数据作用域；依赖消息、storage、Node 迁移就绪、调用、sidecar 与审计契约 | 4 | 默认配置选择并由 manager 恢复 |
-| `bazaar-contrib-collaboration` | `collaboration`：共享 | sender／contact、refs、会话登记、审批及可见范围；依赖消息、storage 和调用契约 | 5 | 默认；server 联系人的契约依赖 |
+| `bazaar-contrib-collaboration` | `collaboration`：共享 | 复用消息的 sender／contact、Actor 和会话公共契约，迁入准入、登记、审核、消息引用关联及设置；消息数据经消息接口读写，审核决策和审计由协作持有，设置等自身数据通过 DB 管理；通过 agent 生命周期绑定并共享会话锁；页面短数字 refs 随服务端 history／contacts 迁移 | 5 | 默认配置选择并由 manager 恢复；server 联系人的契约依赖 |
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 2 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
 | `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
@@ -268,6 +268,14 @@ agents = []
 app 与公共 ConfigDocument 只处理统一 contrib 列表；默认 agent 模型和实体规则由所选 agent 插件解释。
 agent 组合用普通 Python 函数从已校验输入构造全部已知实例及稳定服务绑定，配置候选预检显式调用同一构造逻辑。lifespan 通过 `ctx.enable` 管理执行与 provider 子资源；指定私有服务和消息事件使用 local，外部 DB 和公共审计可共享。动态子组合在启用前单独校验，框架接口见 [本地绑定与实例声明](framework.md#本地绑定与实例声明)。
 `bcn agent add`、列表、编辑、删除由该插件登记，修改自己条目的 `config.agents`，经 CONFIGURATION 校验完整候选并条件提交。
+框架 Task17 同时交付 `bcn agent review` 下的 `list`、`approve` 和 `deny` 三个基础命令，
+按 agent ID 查询待审会话，并按 agent／thread ID 通过或拒绝；通过本机 sidecar 消费 collaboration 服务，
+会话准入使用 collaboration 持久化的审核状态：新会话默认待审，由调用方经 sidecar 查询、通过或拒绝。
+本机命令、BCS 和自定义 contrib 使用同一公共服务及审核状态，准入与具体控制端及上报配置解耦。
+审核通过并持久化后，按会话读取数据库中的入站消息，触发一次正常入站通知，经 inbox notice 唤醒响应。
+现有入站、落库和审核拦截沿用原流程；节点在入站后、审批前重启也能触发该通知，本机命令与 BCS 经同一公共服务执行。
+配置管理使用节点启动前的短生命周期组合，会话审核连接运行中的节点；各子命令按实际操作选择所需依赖。
+后续 TUI／GUI 界面由独立 contrib 消费同一公共协作服务。
 
 该包拥有 developer instruction、bcc 工具环境及身份／会话绑定、模型上下文、消息与提醒处理、审批及输出交付的编排，依赖公共 channel／harness、消息、协作、存储、timer 和 Reminder。
 初始化的指令渲染、workspace bcc wrapper、PATH 与 session 环境先在框架 Task12.1 接入；bcc 使用 invoke 公共命令机制和独立 bcc_commands 入口组，其他 contrib 按各自阶段登记二级命令，命令帮助与新增实现说明统一使用 contrib／contribs。消息接入前完成这一前置任务，完整的命令能力绑定和通讯编排继续在执行任务中交付。

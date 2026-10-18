@@ -18,6 +18,9 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 
 本计划全部 Task 以 main 主分支的原实现为迁移基线。提示词、运行行为、Actor 与文案保持一致；
 只调整已经讨论确认的包归属、依赖声明与公共接口边界。实现前先核对 main 对应源码、调用链与资源，迁入原实现。
+源码注释和 docstring 描述当前职责、行为及约束；迁移来源和主线对照记录在计划与验收资料中。
+本轮确认会话准入由 collaboration 持久化审核状态，调用方经 sidecar 查询、通过或拒绝；新会话默认待审。
+本轮另行确认 Task 17 在会话审核通过后触发一次正常入站通知，经 inbox notice 唤醒响应；具体接入和验收见该任务。
 
 developer instruction 以 `src/bazaar_compute_node/core/instruction.py` 与 `resources/developer_instructions.md`
 的原始资源、渲染规则、mode 分支及注入时机为准。本次明确批准两处显示调整：删除 `- Agent ID: {{agent_id}}`，
@@ -1470,9 +1473,53 @@ messages 直接消费统一执行结果，移除把所有异常一律归类 unkn
 
 ### Task 14：为 agent 接入身份与协作
 
-- [ ] 交付 bazaar-contrib-collaboration 的 sender／contact 身份、refs、会话登记、审批、消息引用和关联服务。
-- [ ] 模块依赖消息、DB 与调用契约，自持业务规则和 schema，状态变化及读取沿用原协作语义。
-- [ ] app 默认安装并启用 collaboration；通过真实隔离数据验证身份、会话、引用和审批流程，完成独立安装及检查，提交供 review。
+原节点的 `core/review.py`、`core/orchestration/commands/review.py` 以及
+`core/orchestration/orchestrator.py` 的 `_record_inbound`／`_answer_unreviewed` 是本项迁移依据。
+`messages` 已拥有 sender、channel session、thread、Actor、已知发件人查询及引用读取，
+collaboration 消费这些公共契约，保持同一会话登记、审核状态和消息数据。
+原 `bazaar_compute_server/refs.py` 的短数字映射与 `v02_refs` 属于服务端页面和数据源，
+随 history／contacts 阶段迁移；节点本项的引用关联使用现有消息 ID 和上游消息 ID。
+
+共享 `COLLABORATION` 依赖 `MESSAGES`、DB、AUDIT 和共享 TIMER，通过所属 agent 的绑定生命周期提供协作服务；
+内部 agent／thread 参数和归属键保留 `Agent`／`Thread`，与 messages 共用会话锁。
+准入以数据库中的会话审核状态为准，新会话默认待审；保留原可信入站审核标记及已保存的审核结果。
+调用方经 sidecar 获取 collaboration 公共服务后查询、通过或拒绝，状态持久化和审计由服务持有。
+原 `ReviewPolicy` 的 `listed`、`reviewed` 及配置白名单装配从本项公共 API 和验收入口移除。
+入站登记沿用原安静回显去重、已交付出站优先的引用解析、可信入站审核标记、
+原子会话登记、已拒绝会话再次入站转待审及原入站审计字段；返回原登记结果供 agent 编排消费。
+channel 公共入站载荷补齐原 provider 入站消息已有的 chat ID、通知／提及标记及 metadata，
+使实际渠道能够携带安静历史、引用 ID 和可信审核标记；默认值保持现有消费者行为。
+未审核自动答复读取 `review.reply`，通过公共 channel 发送契约及共享 TIMER 交付，
+保留答复及失败审计。审核沿用原会话归属校验、并发锁、状态持久化和 `channel.session.reviewed` 事件。
+collaboration 保持独立发行，只消费 messages 公共契约。审核决策由 collaboration 持有：
+在共享会话锁及同一次 `MessageStorage.write` 回调中读取 thread 和 channel session，
+修改审核值后通过通用 `save_channel_session` 保存，再发布审核审计；消息接口以通用会话操作表达，
+MessageStore 和 repository 的专用 `set_review` 由这一调用链替代。设置等自身业务数据仍通过 DB 管理。
+设置读取及 upsert 通过公共 DB 操作现有 Node 迁移的 agent 级 `settings` 表，
+`setting.changed` 只记录 key；不重复创建已属于 Node 历史的结构或版本。
+
+本轮确认一并恢复 9 月 20 日曾实现后撤回的重复入站修复 `e0ebfbd`：
+messages 的登记先用到达载荷中完整的渠道实例身份查找会话，随后复用已入库的消息并补回该身份。
+原历史消息行没有保存 `channel_identity`，直接用重载消息查会话会误报身份变化；
+同一上游 ID 的引用补历史或再次投递应复用原消息和会话。使用真实 TCP 入站在重启后再次投递已入库消息，
+验证原审核状态、会话身份、消息记录及后续新消息均保留。
+
+app 默认配置选择 collaboration，manager 官方索引收录其独立发行包；
+V4 配置存在 agent 时添加 collaboration。各发行包按实际公共导入声明依赖。
+真实外部 consumer 通过 accepts／offer／绑定调用服务，sidecar 沿用公共框架转发 typed 对象及调用。
+在独立安装 wheel／sdist 的隔离节点和 TCP TestChannel 上验证两个 agent 的身份及会话隔离、
+新会话默认待审、sidecar 控制的待审／通过／拒绝及再次入站、原消息可见范围、
+自动答复和审计、重复入站、安静出站回显、入站及出站引用、设置和审核重启恢复。
+
+- [x] 交付 collaboration 公共服务及持久化准入、审核、原入站关联和设置实现。
+- [x] 接入默认选择、版本转换和独立发行，通过真实隔离安装验收及受影响检查、Ruff、根目录 LSP。
+- [x] 独立签名提交，更新 PR 验证信息后停下 review。
+
+本项及受影响的 channel、agent、messages、配置转换、app、manager 和根目录脚本共 15 项本地 pytest 通过。
+collaboration 的独立 wheel／sdist 消费者通过真实 sidecar 操作审核和设置，
+在 TCP TestChannel 上完成两 agent 隔离、引用、安静回显、自动答复及失败、重启与重复入站验收。
+既有消息及 agent 的独立安装工作流和四种 manager 安装／升级工作流通过；
+Ruff、仓库根目录 Pyright LSP 和原 12 份消息模板一致性核对通过。
 
 ### Task 15：为 agent 接入 Reminder
 
@@ -1495,13 +1542,48 @@ messages 直接消费统一执行结果，移除把所有异常一律归类 unkn
 - [ ] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
 - [ ] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
 
-### Task 17：运行节点前的 agent 配置管理
+### Task 17：agent 配置管理与会话准入审核
+
+agent 插件在 `bcn agent review` 下登记三个基础命令：
+
+```bash
+bcn agent review list <agent-id>
+bcn agent review approve <agent-id> <thread-id>
+bcn agent review deny <agent-id> <thread-id>
+```
+
+`list` 查询所选 agent 的待审会话，返回会话 ID、渠道、名称和审核状态；
+`approve`／`deny` 对该 agent 所属的指定会话作出通过或拒绝的决定。
+命令通过本机 sidecar 连接运行中的节点；命令所属消费入口显式声明 collaboration 公共服务依赖，
+通过框架 accept 获取服务后调用。collaboration 持有准入规则、审核状态持久化及审计，sidecar 沿用通用转发。
+本机命令和 BCS 审核入口使用同一公共服务与同一份会话审核状态。
+后续 TUI／GUI 界面由独立 contrib 消费同一公共协作服务。
+
+本任务交付本机审核入口，消费 Task 14 已提供的 collaboration 会话准入服务：新会话默认待审，
+调用方经 sidecar 作出通过或拒绝决定，与具体控制端及上报配置解耦。保留已持久化的审核结果，
+待审会话在通过后按原执行链路参与交互，拒绝后再次入站的状态变化沿用原协作语义。
+审核操作以 `core/orchestration/commands/review.py` 和 `contrib/server/control.py` 的原调用为依据，
+沿用会话归属、并发保护与审计规则。
+
+审核由待审变为通过后，为该会话触发一次正常入站通知，沿 inbox notice 唤醒智能体，
+使原请求继续得到响应，用户无需再发送一条消息。改动接在 collaboration 公共 `review_contact`
+保存通过决定及审核审计之后，按 Thread 从数据库读取所属会话和已保存的入站消息，
+接入 Task 16 迁入的正常通知发布入口；原 `publish_inbox_wake`、`_RuntimeNotification`、
+`_notice_for`／`inbox_notice` 的调用链是通知构造与分发依据。
+前半段沿用现有入站、落库和审核拦截：被拦截的原处理已结束，
+审批触发的通知只凭持久化会话和消息构造，节点在入站后、审批前重启也能完成。
+本机命令、BCS 和其他公共服务调用者通过同一个 review_contact 获得该行为。
 
 - [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
 - [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
 - [ ] 节点未运行时通过短生命周期管理组合完成首次默认配置创建和 agent 管理，模块选择与业务参数统一保存在相应 contribs[].enabled[].config，默认 agent 的实体参数由其 config.agents 持有。
 - [ ] 管理模式启用配置、命令及所需共享登记服务，完整业务候选只执行资源启动前校验；后续 bcn run 才创建 AGENT／CHANNEL／HARNESS 实例。
+- [ ] 登记 `bcn agent review list <agent-id>`、`approve <agent-id> <thread-id>` 和 `deny <agent-id> <thread-id>`，经 sidecar 消费 collaboration 服务；状态更新持久化并发布原审核审计事件。
+- [ ] 审核通过并持久化后，从数据库读取该会话及入站消息，触发一次正常入站通知，经 inbox notice 唤醒响应；本机命令、BCS 和公共服务调用共用实现。
+- [ ] 各子命令按实际操作选择依赖和生命周期：配置管理使用原短生命周期组合，会话审核连接运行中的节点及其协作服务。
 - [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
+- [ ] 在未配置 BCS 的真实隔离节点上，通过 TestChannel 注入新会话，使用三个基础命令验证待审列表、本机通过后交互、拒绝后的状态变化和重启后审核结果；通过公共服务读回同一结果，并验证不同 agent 的会话归属。
+- [ ] 用 TestChannel 发送自然用户请求，待审拦截后重启隔离节点，再通过本机命令或公共服务批准；观察正常 inbox notice 和实际响应，全程只发送原请求。以相同控制面验证正常审批及两种 mode 的会话归属。
 - [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
 
 ### Task 18：首阶段完整验收与合入
