@@ -1,7 +1,7 @@
 [project]
-name = "bazaar-contrib-node-migrations"
+name = "bazaar-contrib-legacy-node-migrations"
 version = "0.3.0"
-description = "Node business schema and versioned migrations"
+description = "Published Node 1–32 historical database upgrades"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -12,7 +12,7 @@ dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-storage~=0.3.0", "bazaar-c
 Repository = "https://github.com/yuchanns/bazaar-compute-node"
 
 [project.entry-points."bazaar_compute_node.contribs"]
-node-migrations = "bazaar_contrib_node_migrations:migrations"
+legacy-node-migrations = "bazaar_contrib_legacy_node_migrations:migrations"
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]

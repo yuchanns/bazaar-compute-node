@@ -42,7 +42,7 @@ async def test_installed_messages_use_real_channels_and_durable_history(tmp_path
                 "storage",
                 "sqlite",
                 "schema",
-                "node-migrations",
+                "legacy-node-migrations",
                 "messages",
                 "messages-node",
                 "collaboration",

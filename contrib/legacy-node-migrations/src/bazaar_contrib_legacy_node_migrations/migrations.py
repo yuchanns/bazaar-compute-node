@@ -998,7 +998,6 @@ async def channel_session_review(session: s.Session) -> None:
 
 
 MODULE = ModuleSchema(
-    package="bazaar-contrib-node-migrations",
     tables=(
         "_consumer_cursors_v20",
         "_message_events_v18",
@@ -1027,7 +1026,11 @@ MODULE = ModuleSchema(
         "settings",
         "threads",
     ),
-    progress=Progress(table="schema_migrations", identity="initial_node_schema"),
+    progress=Progress(
+        table="schema_migrations",
+        identity="initial_node_schema",
+        package="bazaar-contrib-node-migrations",
+    ),
     migrations=(
         Migration(
             version=1,
@@ -1457,62 +1460,6 @@ MODULE = ModuleSchema(
                     index=definitions.IDX_MESSAGES_AGENT_SEARCH_TIME_V32,
                 ),
             ),
-        ),
-    ),
-    baseline=Migration(
-        version=32,
-        name="baseline",
-        operations=(
-            s.CreateTable(table=definitions.CHANNEL_SESSIONS),
-            s.CreateTable(table=definitions.THREADS),
-            s.CreateTable(table=definitions.INBOUND_ATTACHMENTS_V1),
-            s.CreateTable(table=definitions.RUNTIME_ATTEMPTS),
-            s.CreateTable(table=definitions.REMINDERS),
-            s.CreateTable(table=definitions.CONSUMER_CURSORS),
-            s.CreateTable(table=definitions.MESSAGES_V30),
-            s.CreateTable(table=definitions.SETTINGS_V31),
-            s.CreateIndex(
-                table="reminders", index=definitions.IDX_REMINDERS_STATE_NEXT_V12
-            ),
-            s.CreateIndex(
-                table="channel_sessions",
-                index=definitions.IDX_CHANNEL_SESSIONS_PROVIDER_IDENTITY_V13,
-            ),
-            s.CreateIndex(
-                table="runtime_attempts",
-                index=definitions.IDX_RUNTIME_ATTEMPTS_SESSION_STARTED_V13,
-            ),
-            s.CreateIndex(
-                table="channel_sessions",
-                index=definitions.IDX_CHANNEL_SESSIONS_TARGET_HANDLE_V22,
-            ),
-            s.CreateIndex(table="threads", index=definitions.IDX_THREADS_CHANNEL_V25),
-            s.CreateIndex(
-                table="reminders",
-                index=definitions.IDX_REMINDERS_OWNER_STATE_UPDATED_V25,
-            ),
-            s.CreateIndex(
-                table="messages", index=definitions.IDX_MESSAGES_AGENT_DIRECTION_SEQ_V18
-            ),
-            s.CreateIndex(
-                table="messages",
-                index=definitions.IDX_MESSAGES_INBOUND_PROVIDER_IDENTITY_V18,
-            ),
-            s.CreateIndex(
-                table="messages",
-                index=definitions.IDX_MESSAGES_OUTBOUND_STATE_CREATED_V18,
-            ),
-            s.CreateIndex(
-                table="messages", index=definitions.IDX_MESSAGES_REPLY_TO_MESSAGE_V18
-            ),
-            s.CreateIndex(
-                table="messages",
-                index=definitions.IDX_MESSAGES_AGENT_THREAD_TARGET_SEQ_V25,
-            ),
-            s.CreateIndex(
-                table="messages", index=definitions.IDX_MESSAGES_AGENT_SEARCH_TIME_V32
-            ),
-            s.CreateIndex(table="messages", index=definitions.MESSAGE_SEARCH_V32),
         ),
     ),
 )

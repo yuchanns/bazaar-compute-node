@@ -227,7 +227,7 @@ async def exercise(directory: Path):
                         ("sqlite", {"path": str(directory / "node.sqlite3")}),
                         ("database", {"backend": "sqlite"}),
                         ("schema", {}),
-                        ("node-migrations", {}),
+                        ("legacy-node-migrations", {}),
                         ("audit", {}),
                         (native, {"endpoint": endpoint}),
                         ("sidecar", {}),

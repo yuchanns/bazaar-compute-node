@@ -1,0 +1,9 @@
+{
+  "source_commit": "16c7e2f9ee084e0fb8affb536759ad38e588297b",
+  "producer": "Released SQLite migration fixture at version17, then pre-split0.3 Schema.register(MODULE)",
+  "source_package": "bazaar-contrib-node-migrations",
+  "version": 32,
+  "sha256": "e866a66a8a06fd62922473ceedae201d9135dad1d4980028e21cda4353a0420f",
+  "bytes": 225280,
+  "compression": "zlib"
+}

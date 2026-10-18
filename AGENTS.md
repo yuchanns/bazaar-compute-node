@@ -68,3 +68,11 @@ contrib → core + 所需功能的公共契约包
   声明服务，由框架管理依赖、启动、更新与退出；功能模块不得另建宿主、重复配置加载或自行维护依赖图。
 - 实现功能前先核对已有代码及已讨论设计的意图，复用现有契约、服务与装配流程。新增参数、状态、分支或抽象
   必须有实际需求和现有接口无法满足的依据，禁止为局部功能另写一套并行流程。
+
+## 持久化 contrib 开发
+
+业务 contrib 在自己的包内声明自有表和 ModuleSchema，版本从 1 连续追加；已发布版本保持不变。
+在 Contrib.accepts 声明 SCHEMA，在自己的 lifespan 中 register(MODULE)，登记完成后再提供业务服务。
+版本账本、事务和表归属由公共 schema 管理；新 contrib 仅按自己的版本链排序。
+登记身份自动取自当前 contrib 的发行来源，ModuleSchema 不重复声明 package。
+示例见 [schema README](contrib/schema/README.md)。

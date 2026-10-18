@@ -203,6 +203,13 @@ async def exercise(path: Path):
         load,
         [
             ContribSpec(contrib="audit"),
+            ContribSpec(contrib="storage"),
+            ContribSpec(
+                contrib="sqlite", config={"path": str(path / "providers.sqlite3")}
+            ),
+            ContribSpec(contrib="database", config={"backend": "sqlite"}),
+            ContribSpec(contrib="schema"),
+            ContribSpec(contrib="legacy-node-migrations"),
             ContribSpec(
                 contrib="agent",
                 config={

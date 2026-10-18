@@ -9,8 +9,8 @@ from copy import copy
 
 from bazaar_contrib_audit import AUDIT
 from bazaar_contrib_invoke import COMMANDS, CommandEntry
+from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 from bazaar_contrib_messages import MESSAGES
-from bazaar_contrib_node_migrations import NODE_MIGRATIONS
 from bazaar_contrib_schema import SCHEMA
 from bazaar_contrib_storage import DB
 from bazaar_contrib_timer import TIMER
@@ -32,6 +32,7 @@ from .reminder import (
     ReminderUpdateResult,
 )
 from .scheduler import ReminderScheduler, resolve_reminder_anchor
+from .schema import MODULE
 from .service import Reminders
 lazy from .cli._client import ReminderClient
 lazy from .cli.reminder import reminder as reminder_group
@@ -67,17 +68,18 @@ REMINDER = ServiceKey[Reminders]("reminder")
 
 @asynccontextmanager
 async def lifespan(ctx: Context):
-    service = Reminders(
-        database=ctx.accept(DB),
-        messages=ctx.accept(MESSAGES),
-        timer=ctx.accept(TIMER),
-        audit=ctx.accept(AUDIT),
-    )
-    ctx.offer(REMINDER, service)
-    try:
-        yield
-    finally:
-        await service.stop()
+    async with ctx.accept(SCHEMA).register(MODULE):
+        service = Reminders(
+            database=ctx.accept(DB),
+            messages=ctx.accept(MESSAGES),
+            timer=ctx.accept(TIMER),
+            audit=ctx.accept(AUDIT),
+        )
+        ctx.offer(REMINDER, service)
+        try:
+            yield
+        finally:
+            await service.stop()
 
 
 @asynccontextmanager
@@ -98,7 +100,7 @@ async def cli_lifespan(ctx: Context):
 
 
 reminder = Contrib(
-    accepts=[DB, SCHEMA, NODE_MIGRATIONS, MESSAGES, TIMER, AUDIT],
+    accepts=[SCHEMA, LEGACY_NODE_MIGRATIONS, DB, MESSAGES, TIMER, AUDIT],
     offers=[REMINDER],
     lifespan=lifespan,
 )

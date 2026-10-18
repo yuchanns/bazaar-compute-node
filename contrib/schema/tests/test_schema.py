@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+lazy import asyncio
+lazy from contextlib import asynccontextmanager
 lazy from pathlib import Path
 
-import pytest
 from bazaar_contrib_sqlite import SqliteConfig, open_database
 from bazaar_contrib_storage import (
     AddColumn,
@@ -13,16 +14,14 @@ from bazaar_contrib_storage import (
     ForeignKey,
     Index,
     Insert,
-    MigrationError,
     Select,
-    StorageIntegrityError,
     Table,
 )
+from bazaar_core import Contrib, ContribHub, ContribSpec, Failed, load
 
 from bazaar_contrib_schema import Dependency, Migration, ModuleSchema, Schema
 
 NOTES = ModuleSchema(
-    package="example-notes",
     tables=("notes",),
     migrations=(
         Migration(
@@ -44,9 +43,8 @@ NOTES = ModuleSchema(
     ),
 )
 LABELS = ModuleSchema(
-    package="example-labels",
     tables=("labels",),
-    dependencies=(Dependency(package="example-notes", version=1),),
+    dependencies=(Dependency(package="bazaar-contrib-schema", version=1),),
     migrations=(
         Migration(
             version=1,
@@ -72,6 +70,31 @@ LABELS = ModuleSchema(
 )
 
 
+@asynccontextmanager
+async def registered(schema: Schema, module: ModuleSchema, entry: str = "schema"):
+    @asynccontextmanager
+    async def lifespan(ctx):
+        async with schema.register(module):
+            yield
+
+    composition = await asyncio.to_thread(load, [ContribSpec(contrib=entry)])
+    composition = composition.model_copy(
+        update={
+            "entries": tuple(
+                item.model_copy(
+                    update={
+                        "name": f"test-{item.name}",
+                        "definition": Contrib(lifespan=lifespan),
+                    }
+                )
+                for item in composition.entries
+            )
+        }
+    )
+    async with ContribHub() as hub, hub.enable(composition):
+        yield hub
+
+
 async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
     tmp_path: Path,
 ):
@@ -79,18 +102,19 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
     async with open_database(config) as database:
         schema = Schema(database)
         await schema.start()
-        async with schema.register(NOTES), schema.register(LABELS):
+        async with registered(schema, NOTES), registered(schema, LABELS, "storage"):
             await database.insert(
                 Insert(table="notes", rows=({"id": 1, "body": "keep this note"},))
             )
             await database.insert(
                 Insert(table="labels", rows=({"note_id": 1, "label": "inbox"},))
             )
-            registered = {module.package for module in schema.modules}
-            assert registered == {NOTES.package, LABELS.package}
+            assert set(schema.modules) == {
+                "bazaar-contrib-schema",
+                "bazaar-contrib-storage",
+            }
         ledger = await database.select(Select(table="contrib_schema_migrations"))
     upgraded = ModuleSchema(
-        package=NOTES.package,
         tables=NOTES.tables,
         migrations=(
             *NOTES.migrations,
@@ -116,7 +140,10 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
         async with open_database(config) as database:
             schema = Schema(database)
             await schema.start()
-            async with schema.register(upgraded), schema.register(LABELS):
+            async with (
+                registered(schema, upgraded),
+                registered(schema, LABELS, "storage"),
+            ):
                 rows = await database.select(Select(table="notes"))
                 assert rows[0]["body"] == "keep this note"
                 assert rows[0]["priority"] == 1
@@ -138,7 +165,7 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
     ) as database:
         schema = Schema(database)
         await schema.start()
-        async with schema.register(NOTES):
+        async with registered(schema, NOTES):
             await database.insert(
                 Insert(
                     table="notes",
@@ -149,7 +176,6 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
                 )
             )
         unique = ModuleSchema(
-            package=NOTES.package,
             tables=NOTES.tables,
             migrations=(
                 *NOTES.migrations,
@@ -167,9 +193,8 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
                 ),
             ),
         )
-        with pytest.raises(StorageIntegrityError):
-            async with schema.register(unique):
-                pass
+        async with registered(schema, unique) as hub:
+            assert any(isinstance(item.state, Failed) for item in hub.snapshots)
         from bazaar_contrib_storage import Compare, Delete, Value
 
         await database.delete(
@@ -180,7 +205,7 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
                 ),
             )
         )
-        async with schema.register(unique):
+        async with registered(schema, unique):
             rows = await database.select(Select(table="notes"))
             assert rows[0]["body"] == "duplicate"
             assert (
@@ -195,17 +220,13 @@ async def test_table_ownership_survives_registration_exit(tmp_path: Path):
     ) as database:
         schema = Schema(database)
         await schema.start()
-        async with schema.register(NOTES):
+        async with registered(schema, NOTES):
             await database.insert(
                 Insert(table="notes", rows=({"id": 1, "body": "owned"},))
             )
         schema = Schema(database)
         await schema.start()
-        other = ModuleSchema(
-            package="other-notes", tables=NOTES.tables, migrations=NOTES.migrations
-        )
-        with pytest.raises(MigrationError):
-            async with schema.register(other):
-                pass
-        async with schema.register(NOTES):
+        async with registered(schema, NOTES, "sqlite") as hub:
+            assert any(isinstance(item.state, Failed) for item in hub.snapshots)
+        async with registered(schema, NOTES):
             assert (await database.select(Select(table="notes")))[0]["body"] == "owned"

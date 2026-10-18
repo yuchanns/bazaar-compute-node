@@ -145,7 +145,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         for package in candidate.payload["contribs"]
         for entry in package["enabled"]
     }
-    assert "node-migrations" in entries
+    assert "legacy-node-migrations" in entries
     assert "claudecode-builder" in entries
     assert "telegram-builder" in entries
     assert any(

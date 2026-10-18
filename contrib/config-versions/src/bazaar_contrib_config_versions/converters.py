@@ -99,7 +99,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     if old.agent:
         add("channel-builders", "channel")
         add("harness-builders", "harness")
-        add("node-migrations", "node-migrations")
+        add("legacy-node-migrations", "legacy-node-migrations")
         add("messages-node", "messages-node")
         add("collaboration", "collaboration")
         add("reminder", "reminder")

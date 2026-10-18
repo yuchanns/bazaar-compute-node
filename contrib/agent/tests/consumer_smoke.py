@@ -45,7 +45,17 @@ async def exercise(path: Path):
     for _ in range(2):
         composition = await asyncio.to_thread(
             load,
-            [ContribSpec(contrib="audit"), ContribSpec(contrib="agent", config=config)],
+            [
+                ContribSpec(contrib="audit"),
+                ContribSpec(contrib="storage"),
+                ContribSpec(
+                    contrib="sqlite", config={"path": str(path / "agent.sqlite3")}
+                ),
+                ContribSpec(contrib="database", config={"backend": "sqlite"}),
+                ContribSpec(contrib="schema"),
+                ContribSpec(contrib="legacy-node-migrations"),
+                ContribSpec(contrib="agent", config=config),
+            ],
         )
         async with ContribHub() as hub, hub.enable(composition):
             for name in ("Cloud", "Tifa"):
@@ -59,10 +69,19 @@ async def exercise(path: Path):
         )
 
     composition = await asyncio.to_thread(
-        load, [ContribSpec(contrib="audit"), ContribSpec(contrib="agent")]
+        load,
+        [
+            ContribSpec(contrib="audit"),
+            ContribSpec(contrib="storage"),
+            ContribSpec(contrib="sqlite", config={"path": str(path / "empty.sqlite3")}),
+            ContribSpec(contrib="database", config={"backend": "sqlite"}),
+            ContribSpec(contrib="schema"),
+            ContribSpec(contrib="legacy-node-migrations"),
+            ContribSpec(contrib="agent"),
+        ],
     )
     async with ContribHub() as hub, hub.enable(composition):
-        assert all(record.name in {"agent", "audit"} for record in hub.snapshots)
+        assert await asyncio.to_thread(default.is_dir)
 
     journals: dict[str, AsyncTextIOWrapper] = {}
     instances: dict[str, Agent] = {}

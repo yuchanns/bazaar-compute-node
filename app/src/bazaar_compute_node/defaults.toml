@@ -85,9 +85,9 @@ package = "bazaar-contrib-schema~=0.3.0"
 entry = "schema"
 
 [[contribs]]
-package = "bazaar-contrib-node-migrations~=0.3.0"
+package = "bazaar-contrib-legacy-node-migrations~=0.3.0"
 [[contribs.enabled]]
-entry = "node-migrations"
+entry = "legacy-node-migrations"
 
 [[contribs]]
 package = "bazaar-contrib-messages-node~=0.3.0"

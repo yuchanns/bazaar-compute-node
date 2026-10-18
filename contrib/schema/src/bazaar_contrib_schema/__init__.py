@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Annotated, Self, cast
 lazy import asyncio
-lazy from collections.abc import AsyncIterator, Awaitable, Callable
+lazy from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 lazy from time import monotonic_ns, time_ns
 
 from bazaar_contrib_storage import (
@@ -29,7 +29,8 @@ from bazaar_contrib_storage import (
     Update,
     Value,
 )
-from bazaar_core import Context, Contrib, ServiceKey
+from bazaar_core import CURRENT_CONTEXT, Context, Contrib, ServiceKey
+from packaging.utils import canonicalize_name
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 lazy from bazaar_contrib_storage import Database, Record, Session
 
@@ -68,6 +69,7 @@ class Progress(BaseModel):
     identity: str = Field(min_length=1)
     version: Identifier = "version"
     name: Identifier = "migration_name"
+    package: Package | None = None
 
 
 class Dependency(BaseModel):
@@ -86,11 +88,11 @@ def operation_tables(operation: SchemaOperation) -> tuple[str, ...]:
 
 class ModuleSchema(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    package: Package
     tables: tuple[Identifier, ...] = Field(min_length=1)
     migrations: tuple[Migration, ...] = Field(min_length=1)
     baseline: Migration | None = None
     progress: Progress | None = None
+    predecessor: Dependency | None = None
     dependencies: tuple[Dependency, ...] = ()
 
     @property
@@ -109,6 +111,8 @@ class ModuleSchema(BaseModel):
             raise ValueError("module table names must be unique")
         if self.baseline is not None and self.baseline.version > self.version:
             raise ValueError("baseline version must belong to the module's migrations")
+        if self.predecessor is not None and self.baseline is None:
+            raise ValueError("a predecessor requires a baseline for ownership handoff")
         migrations = (
             (*self.migrations, self.baseline)
             if self.baseline is not None
@@ -148,14 +152,15 @@ _OWNERS = Table(
 class MigrationSession:
     """Constrain migration writes to the module's declared tables."""
 
-    def __init__(self, session: Session, module: ModuleSchema) -> None:
+    def __init__(self, session: Session, package: str, tables: tuple[str, ...]) -> None:
         self._session = session
-        self._module = module
+        self._package = package
+        self._tables = tables
 
     def _require_table(self, table: str) -> None:
-        if table not in self._module.tables:
+        if table not in self._tables:
             raise MigrationError(
-                f"{self._module.package} migration uses unowned table {table!r}"
+                f"{self._package} migration uses unowned table {table!r}"
             )
 
     async def table_exists(self, name: str) -> bool:
@@ -194,8 +199,8 @@ class Schema:
         self._lock = asyncio.Lock()
 
     @property
-    def modules(self) -> tuple[ModuleSchema, ...]:
-        return tuple(self._modules.values())
+    def modules(self) -> Mapping[str, ModuleSchema]:
+        return dict(self._modules)
 
     async def start(self) -> None:
         await self._database.apply_schema(
@@ -205,33 +210,162 @@ class Schema:
             )
         )
 
+    async def _version(
+        self, session: Session, package: str, progress: Progress | None
+    ) -> int:
+        for identity in (
+            package,
+            *((progress.package,) if progress is not None and progress.package else ()),
+        ):
+            applied = await session.select(
+                Select(
+                    table=_LEDGER.name,
+                    where=Compare(
+                        left=Column(name="package"),
+                        operator="=",
+                        right=Value(value=identity),
+                    ),
+                    order_by=(
+                        Sort(expression=Column(name="version"), descending=True),
+                    ),
+                    limit=1,
+                )
+            )
+            if applied:
+                version = cast(int, applied[0]["version"])
+                if identity != package:
+                    await self._record(
+                        session, package, version, cast(str, applied[0]["name"])
+                    )
+                return version
+        if progress is not None and await session.table_exists(progress.table):
+            history = await session.select(
+                Select(
+                    table=progress.table,
+                    columns={
+                        "version": Column(name=progress.version),
+                        "name": Column(name=progress.name),
+                    },
+                    order_by=(Sort(expression=Column(name=progress.version)),),
+                )
+            )
+            if history and history[0]["name"] == progress.identity:
+                versions = tuple(row["version"] for row in history)
+                if versions != tuple(range(1, len(history) + 1)):
+                    raise MigrationError(
+                        f"{package} existing migration ledger has a version gap"
+                    )
+                version = cast(int, history[-1]["version"])
+                await self._record(
+                    session, package, version, cast(str, history[-1]["name"])
+                )
+                return version
+        return 0
+
+    async def _record(
+        self,
+        session: Session,
+        package: str,
+        version: int,
+        name: str,
+        duration_ms: int = 0,
+    ) -> None:
+        await session.insert(
+            Insert(
+                table=_LEDGER.name,
+                rows=(
+                    {
+                        "package": package,
+                        "version": version,
+                        "name": name,
+                        "applied_at_ms": time_ns() // 1_000_000,
+                        "duration_ms": duration_ms,
+                    },
+                ),
+            )
+        )
+
     @asynccontextmanager
-    async def register(self, module: ModuleSchema) -> AsyncIterator[None]:
+    async def register(
+        self, module: ModuleSchema, *, upgrade_only: bool = False
+    ) -> AsyncIterator[None]:
+        """Register one schema; upgrade-only registrations leave fresh databases alone."""
+        ctx = CURRENT_CONTEXT.get()
+        if ctx is None or ctx.source is None:
+            raise MigrationError(
+                "schema registration requires an installed contrib source"
+            )
+        package = canonicalize_name(ctx.source.package)
         async with self._lock:
-            if module.package in self._modules:
+            if package in self._modules:
                 raise MigrationError(
-                    f"schema package {module.package!r} is already registered"
+                    f"schema package {package!r} is already registered"
                 )
             for dependency in module.dependencies:
                 prerequisite = self._modules.get(dependency.package)
                 if prerequisite is None or prerequisite.version < dependency.version:
                     raise MigrationError(
-                        f"{module.package} requires registered schema {dependency.package} >= {dependency.version}"
+                        f"{package} requires registered schema {dependency.package} >= {dependency.version}"
                     )
 
             async def apply(session: Session) -> None:
+                version = await self._version(session, package, module.progress)
+                if version > module.version:
+                    raise MigrationError(
+                        f"{package} has unknown applied migration version {version}"
+                    )
+                if upgrade_only and version in (0, module.version):
+                    return
+                inherited = False
+                predecessor = module.predecessor
+                origins: set[str] = set()
+                if (
+                    version
+                    and module.progress is not None
+                    and module.progress.package is not None
+                ):
+                    origins.add(module.progress.package)
+                if predecessor is not None:
+                    previous = await self._version(session, predecessor.package, None)
+                    if previous and previous < predecessor.version:
+                        raise MigrationError(
+                            f"{package} requires predecessor {predecessor.package} >= {predecessor.version}"
+                        )
+                    inherited = previous >= predecessor.version
+                    if inherited:
+                        origins.add(predecessor.package)
+                        declaration = self._modules.get(predecessor.package)
+                        if (
+                            declaration is not None
+                            and declaration.progress is not None
+                            and declaration.progress.package is not None
+                        ):
+                            origins.add(declaration.progress.package)
                 owners = await session.select(
                     Select(
                         table=_OWNERS.name,
                         where=In(expression=Column(name="name"), values=module.tables),
                     )
                 )
+                owned = {row["name"] for row in owners}
                 for row in owners:
-                    if row["package"] != module.package:
+                    if row["package"] == package:
+                        continue
+                    if row["package"] not in origins:
                         raise MigrationError(
                             f"table {row['name']!r} belongs to {row['package']!r}"
                         )
-                owned = {row["name"] for row in owners}
+                    await session.update(
+                        Update(
+                            table=_OWNERS.name,
+                            values={"package": Value(value=package)},
+                            where=Compare(
+                                left=Column(name="name"),
+                                operator="=",
+                                right=Value(value=row["name"]),
+                            ),
+                        )
+                    )
                 for table in module.tables:
                     if table in {_LEDGER.name, _OWNERS.name}:
                         raise MigrationError(
@@ -241,64 +375,14 @@ class Schema:
                         await session.insert(
                             Insert(
                                 table=_OWNERS.name,
-                                rows=({"name": table, "package": module.package},),
+                                rows=({"name": table, "package": package},),
                             )
                         )
-                applied = await session.select(
-                    Select(
-                        table=_LEDGER.name,
-                        where=Compare(
-                            left=Column(name="package"),
-                            operator="=",
-                            right=Value(value=module.package),
-                        ),
-                        order_by=(
-                            Sort(expression=Column(name="version"), descending=True),
-                        ),
-                        limit=1,
-                    )
-                )
-                version = cast(int, applied[0]["version"]) if applied else 0
-                if not applied and module.progress is not None:
-                    progress = module.progress
-                    if await session.table_exists(progress.table):
-                        history = await session.select(
-                            Select(
-                                table=progress.table,
-                                columns={
-                                    "version": Column(name=progress.version),
-                                    "name": Column(name=progress.name),
-                                },
-                                order_by=(
-                                    Sort(expression=Column(name=progress.version)),
-                                ),
-                            )
-                        )
-                        if history and history[0]["name"] == progress.identity:
-                            versions = tuple(row["version"] for row in history)
-                            if versions != tuple(range(1, len(history) + 1)):
-                                raise MigrationError(
-                                    f"{module.package} existing migration ledger has a version gap"
-                                )
-                            version = cast(int, history[-1]["version"])
-                            await session.insert(
-                                Insert(
-                                    table=_LEDGER.name,
-                                    rows=(
-                                        {
-                                            "package": module.package,
-                                            "version": version,
-                                            "name": history[-1]["name"],
-                                            "applied_at_ms": time_ns() // 1_000_000,
-                                            "duration_ms": 0,
-                                        },
-                                    ),
-                                )
-                            )
-                if version > module.version:
-                    raise MigrationError(
-                        f"{module.package} has unknown applied migration version {version}"
-                    )
+                if version == 0 and inherited:
+                    baseline = module.baseline
+                    assert baseline is not None
+                    version = baseline.version
+                    await self._record(session, package, version, baseline.name)
                 pending = tuple(
                     migration
                     for migration in module.migrations
@@ -307,41 +391,29 @@ class Schema:
                 if version == 0 and module.baseline is not None:
                     pending = (
                         module.baseline,
-                        *(
-                            migration
-                            for migration in pending
-                            if migration.version > module.baseline.version
-                        ),
+                        *(m for m in pending if m.version > module.baseline.version),
                     )
-                bound = MigrationSession(session, module)
+                bound = MigrationSession(session, package, module.tables)
                 for migration in pending:
                     started = monotonic_ns()
                     await bound.apply_schema(migration.operations)
                     if migration.apply is not None:
                         await migration.apply(bound)
-                    await session.insert(
-                        Insert(
-                            table=_LEDGER.name,
-                            rows=(
-                                {
-                                    "package": module.package,
-                                    "version": migration.version,
-                                    "name": migration.name,
-                                    "applied_at_ms": time_ns() // 1_000_000,
-                                    "duration_ms": (monotonic_ns() - started)
-                                    // 1_000_000,
-                                },
-                            ),
-                        )
+                    await self._record(
+                        session,
+                        package,
+                        migration.version,
+                        migration.name,
+                        (monotonic_ns() - started) // 1_000_000,
                     )
 
             await self._database.transaction(apply)
-            self._modules[module.package] = module
+            self._modules[package] = module
         try:
             yield
         finally:
             async with self._lock:
-                del self._modules[module.package]
+                del self._modules[package]
 
 
 SCHEMA = ServiceKey[Schema]("storage.schema")

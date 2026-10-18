@@ -113,9 +113,8 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-sidecar-unix` | `sidecar-unix`：共享 | offer SERVER／CLIENT，以 Unix socket 实现会话与请求；依赖 sidecar 接口 | 2 | Linux/macOS 默认 |
 | `bazaar-contrib-sidecar-windows` | `sidecar-windows`：共享 | offer SERVER／CLIENT，以 Windows named pipe 实现会话与请求；依赖 sidecar 接口 | 2 | Windows 默认 |
 | `bazaar-contrib-sqlite` | `sqlite`：共享 | 依赖 STORAGE、登记 sqlite 后端、提供 backend_key("sqlite")；持有连接和公共操作翻译 | 3 | 默认；节点初始存储后端 |
-| `bazaar-contrib-node-migrations` | `node-migrations`：共享 | 依赖 SCHEMA，持有 Node 迁移与当前基线，登记后提供 NODE_MIGRATIONS | 3 | Node 业务数据插件的依赖 |
-| `bazaar-contrib-node` | `node`：共享 | 接受 DB 和 NODE_MIGRATIONS，提供迁移就绪后的 Node 业务数据服务；Agent 明确依赖该服务 | 7 | Agent 的依赖 |
-| `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、迁移顺序、版本和 ledger；通过 DB 执行业务 schema 变更 | 3 | 默认、server |
+| `bazaar-contrib-legacy-node-migrations` | `legacy-node-migrations`：共享 | 依赖 SCHEMA，仅接续已有 Node 1～32 历史，提供 LEGACY_NODE_MIGRATIONS；业务 contrib 自行登记自己的基线与后续版本 | 3 | Node 持久化业务插件的依赖 |
+| `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、模块版本、已有进度、表归属交接与 ledger；通过 DB 在事务内执行业务包拥有的迁移 | 3 | 默认、server |
 | `bazaar-contrib-messages` | 公共契约 | 消息／会话、Actor、请求与结果、消息及通用会话读写 Protocol、共享 MESSAGES key 和纯回执转换；依赖 core 和 channel 公共契约 | 4 | 消息实现、协作及 server 投影的契约依赖 |
 | `bazaar-contrib-messages-node` | `messages-node`：共享；`messages-cli`：命令生命周期 | 历史、未读、搜索、附件、草稿、收发回执和 thread follow 的本机实现；持有目标解析、草稿、交付和数据作用域；依赖消息、storage、Node 迁移就绪、调用、sidecar 与审计契约 | 4 | 默认配置选择并由 manager 恢复 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | 复用消息的 sender／contact、Actor 和会话公共契约，迁入准入、登记、审核、消息引用关联及设置；消息数据经消息接口读写，审核决策和审计由协作持有，设置等自身数据通过 DB 管理；通过 agent 生命周期绑定并共享会话锁；页面短数字 refs 随服务端 history／contacts 迁移 | 5 | 默认配置选择并由 manager 恢复；server 联系人的契约依赖 |
@@ -551,14 +550,25 @@ SQLite 及其他 provider 将公共操作翻译成各自后端的查询与存储
 数据库 provider 持有通用数据操作与后端翻译实现。
 核心和数据库模块的最终依赖图仅包含通用契约，各功能通过 db 或其他功能拥有者的服务协作。
 
-Node 与 Server 各自拥有独立迁移插件，版本、表结构和数据变更统一通过 schema 的 Migration 和公共存储操作表达。
-业务数据库服务依赖 DB 及对应迁移插件的就绪服务；迁移插件依赖公共 schema 服务，后者使用同一个 DB。
+Node 的 agent、messages-node、collaboration、reminder 与 Server 各自拥有业务表的迁移和当前基线，
+版本、表结构和数据变更统一通过 schema 的 Migration 和公共存储操作表达。
+Legacy Node Migration 仅登记完整的已发布 Node 1～32 并接续旧库；Node 业务 contrib 直接接受 SCHEMA 并各自登记，Server 提供自己的登记入口。
+登记包身份自动来自当前 contrib 的发行元数据，ModuleSchema 只声明表、版本及历史来源；旧账本记录保留原身份。
+历史升级已覆盖最早发行包 0.1.3 和最早标签 v0.1.0 的真实独立安装；仅本次最早版本验收使用一次性容器。
+经原公共存储生成数据后直接安装当前产物，配置转换、全业务表对照、公共消息查询及两次独立进程重启通过；
+完整 CLI 依赖恢复仍需尚未发布的 0.3 索引产物，当前以真实本地包验收已交付的业务服务。
+业务数据库服务依赖 DB 及对应迁移入口的就绪服务；登记入口依赖公共 schema 服务，后者使用同一个 DB。
 具体 SQLite／PG 实现由组合配置选择。业务迁移的启用由显式依赖决定。
 已有账本的版本用于跳过已执行步骤、补齐缺少的变更；统一迁移实现去掉 checksum 校验。
-原 1…32／1…7 的实际变更转为公共操作，旧账本进度接入统一的模块 ledger，运行时保留一套迁移引擎。
+原 1…32／1…7 的实际变更转为公共操作，旧账本与 0.3 已有统一账本的进度接入同一迁移引擎。
+Node 历史升级保持原版本顺序，完成后业务包按前身版本声明各自交接表归属与基线进度；交接与新版本处于各包登记事务，后续仅推进所属包的 ledger。
 空库直接应用模块声明的当前基线并记录版本，之后使用同一引擎执行新版本。
 新索引和 schema／数据变化追加迁移；历史 src 作为只读验收对照。
 数据库验收使用真实旧版本数据库及新模块组合，验证记录、关联、游标、基线、事务和跨功能业务流程。
+
+2026-10-18 将 contrib 存储权限及 Sidecar 自我授权风险记为后续独立设计待办，当前保留业务迁移各自登记。
+讨论涵盖登记决定表权限、激活前同名冲突预检、storage 内部控制授权、结构化请求校验与同权限 Python 的执行边界；
+现状、候选方案及暂缓结论见[后续安全待办](framework.md#后续安全待办)。
 
 ### provider 与运行实例
 

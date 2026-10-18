@@ -44,7 +44,7 @@ async def test_installed_reminders_use_durable_messages_and_shared_timer(
                 "storage",
                 "sqlite",
                 "schema",
-                "node-migrations",
+                "legacy-node-migrations",
                 "messages",
                 "messages-node",
                 "collaboration",
