@@ -8,6 +8,7 @@ members = [
     "bazaar-contrib-agent",
     "bazaar-contrib-audit",
     "bazaar-contrib-channel",
+    "bazaar-contrib-collaboration",
     "bazaar-contrib-config",
     "bazaar-contrib-config-filesystem",
     "bazaar-contrib-config-versions",
@@ -140,6 +141,31 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-harness", editable = "contrib/harness" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-collaboration"
+version = "0.3.0"
+source = { editable = "contrib/collaboration" }
+dependencies = [
+    { name = "bazaar-contrib-audit" },
+    { name = "bazaar-contrib-channel" },
+    { name = "bazaar-contrib-messages" },
+    { name = "bazaar-contrib-storage" },
+    { name = "bazaar-contrib-timer" },
+    { name = "bazaar-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-audit", editable = "contrib/audit" },
+    { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-contrib-messages", editable = "contrib/messages" },
+    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
     { name = "pydantic", specifier = ">=2.12.0" },

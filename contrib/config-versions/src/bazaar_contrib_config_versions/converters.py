@@ -101,6 +101,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         add("harness-builders", "harness")
         add("node-migrations", "node-migrations")
         add("messages-node", "messages-node")
+        add("collaboration", "collaboration")
     add("timer-wheel", "timer-wheel")
     add("contrib-manager", "manager")
     add("audit", "audit")

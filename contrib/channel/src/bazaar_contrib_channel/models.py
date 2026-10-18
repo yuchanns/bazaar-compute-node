@@ -101,6 +101,10 @@ class InboundMessage(BaseModel):
     provider_payload_ref: str | None = None
     attachments: tuple[InboundAttachment, ...] = ()
     occurred_at_ms: int | None = None
+    provider_chat_id: str | None = None
+    notifies_runtime: bool = True
+    mentions_agent: bool = False
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ChannelSendRequest(BaseModel):

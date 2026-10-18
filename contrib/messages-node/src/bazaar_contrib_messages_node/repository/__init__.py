@@ -2072,8 +2072,8 @@ class Repository(StorageOperationMixin, RepositoryBase):
             provider_message_id,
             direction=MessageDirection.INBOUND,
         )
-        if existing_message is not None:
-            message = cast(Message[InboundAttachment], existing_message)
+        # the conversation is found by what the message as it arrived says of
+        # itself; a copy read back from the log has no bot on it
         channel_session, channel_session_created = await self._inbound_channel_session(
             message,
             channel=channel,
@@ -2082,6 +2082,11 @@ class Repository(StorageOperationMixin, RepositoryBase):
             new_message=existing_message is None,
             opening=opening,
         )
+        if existing_message is not None:
+            message = replace(
+                cast(Message[InboundAttachment], existing_message),
+                channel_identity=message.channel_identity,
+            )
 
         thread = await self.find_thread(channel_session.id)
         thread_created = thread is None

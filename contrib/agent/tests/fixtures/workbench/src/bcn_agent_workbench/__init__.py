@@ -67,6 +67,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
 )
 
 
@@ -78,6 +79,10 @@ class ChannelMessage(BaseModel):
     body: str
     attachments: tuple[InboundAttachment, ...] = ()
     occurred_at_ms: int = Field(default_factory=lambda: time_ns() // 1_000_000)
+    provider_chat_id: str | None = None
+    notifies_runtime: bool = True
+    mentions_agent: bool = False
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ChannelConfig(BaseModel):
