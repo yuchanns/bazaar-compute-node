@@ -68,12 +68,12 @@ def wheels(tmp_path_factory):
     (source / "contrib" / "manager" / "catalog.uv.lock").unlink()
     shutil.copy(source / "uv.lock", source / "contrib" / "manager" / "catalog.uv.lock")
     output = path / "registry" / "one" / "files"
-    for version in ("0.3.0", "0.3.1"):
+    for version in ("0.3.0rc1", "0.3.1"):
         for member in members:
             project = source / member / "pyproject.toml"
             project.write_text(
                 project.read_text().replace(
-                    'version = "0.3.0"', f'version = "{version}"'
+                    'version = "0.3.0rc1"', f'version = "{version}"'
                 )
             )
             subprocess.run(
@@ -179,7 +179,7 @@ async def test_real_installed_manager(
                 source,
                 "--with",
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0",
+                "bazaar-compute-node==0.3.0rc1",
             ]
             prefix = tmp_path / "tools" / "bazaar-compute-node"
         else:
@@ -205,7 +205,7 @@ async def test_real_installed_manager(
                 "--index",
                 source,
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0",
+                "bazaar-compute-node==0.3.0rc1",
             ]
         try:
             subprocess.run(command, env=environment, check=True, capture_output=True)

@@ -554,6 +554,7 @@ Node 的 agent、messages-node、collaboration、reminder 与 Server 各自拥�
 版本、表结构和数据变更统一通过 schema 的 Migration 和公共存储操作表达。
 Legacy Node Migration 仅登记完整的已发布 Node 1～32 并接续旧库；Node 业务 contrib 直接接受 SCHEMA 并各自登记，Server 提供自己的登记入口。
 登记包身份自动来自当前 contrib 的发行元数据，ModuleSchema 只声明表、版本及历史来源；旧账本记录保留原身份。
+当前 0.3 发行包及独立 Server／PostgreSQL 使用 `0.3.0rc1`，内部依赖、默认组合和配置转换需求统一为 `~=0.3.0rc1`，接受后续 RC、正式版及 0.3.x；公共 API 契约版本继续为 0.3。
 历史升级已覆盖最早发行包 0.1.3 和最早标签 v0.1.0 的真实独立安装；仅本次最早版本验收使用一次性容器。
 经原公共存储生成数据后直接安装当前产物，配置转换、全业务表对照、公共消息查询及两次独立进程重启通过；
 完整 CLI 依赖恢复仍需尚未发布的 0.3 索引产物，当前以真实本地包验收已交付的业务服务。

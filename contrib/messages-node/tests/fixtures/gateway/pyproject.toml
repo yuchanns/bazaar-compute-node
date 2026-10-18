@@ -3,7 +3,7 @@ name = "bcn-messages-gateway"
 version = "0.1.0"
 description = "A consumer of installed message services and a TCP TestChannel"
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-messages~=0.3.0", "bazaar-contrib-messages-node~=0.3.0", "bazaar-contrib-channel~=0.3.0", "bcn-agent-workbench==0.1.0", "pydantic>=2.12.0"]
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-messages~=0.3.0rc1", "bazaar-contrib-messages-node~=0.3.0rc1", "bazaar-contrib-channel~=0.3.0rc1", "bcn-agent-workbench==0.1.0", "pydantic>=2.12.0"]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 messages-gateway = "bcn_messages_gateway:gateway"

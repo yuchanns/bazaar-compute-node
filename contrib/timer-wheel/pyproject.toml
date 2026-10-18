@@ -1,12 +1,12 @@
 [project]
 name = "bazaar-contrib-timer-wheel"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "Shared hierarchical timing wheel"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0", "bazaar-contrib-timer~=0.3.0", "pydantic>=2.12.0"]
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-timer~=0.3.0rc1", "pydantic>=2.12.0"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"

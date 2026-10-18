@@ -1,12 +1,12 @@
 [project]
 name = "bazaar-contrib-config-filesystem"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "The Bazaar Compute Node Config Filesystem Contrib"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-contrib-config~=0.3.0", "filelock>=3.20.0", "tomli-w>=1.2.0"]
+dependencies = ["bazaar-contrib-config~=0.3.0rc1", "filelock>=3.20.0", "tomli-w>=1.2.0"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"

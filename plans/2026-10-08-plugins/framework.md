@@ -1621,6 +1621,32 @@ V1→V5 配置转换保留 Agent 身份、provider、模型、环境引用、end
 CLI 版本与直接安装通过；原配置的 CLI 依赖恢复仍需索引中尚未发布的 0.3 产物，本轮以真实本地包完成配置与业务服务验收。
 完整 Agent 执行及外部 provider 运行仍由后续对应任务验收。容器及所属临时运行环境在验收后移除。
 
+### Task 15.2：0.3 RC 版本与依赖约束
+
+app、core、当前所有内部 contrib 及已迁入独立仓库的 Server／PostgreSQL 使用自身版本 `0.3.0rc1`；
+各自发行与开发依赖、真实安装夹具引用内部 0.3 包时统一使用 `~=0.3.0rc1`，第三方依赖保留已有要求。
+PEP 440 的 compatible release 允许该下限之后的 RC、正式版及 0.3.x；正式版下限 `~=0.3.0` 会排除 0.3.0rc1。
+默认组合中的包选择和配置转换的 PackageRequirement 默认值同步采用 `~=0.3.0rc1`；
+manager 官方索引由共享 uv.lock 生成包名和来源，不单独写版本，随工作区 lock 更新核对生成产物。
+core 的 `API_VERSION = "0.3"` 表示公共框架契约版本，继续用于现有 API 兼容判断。
+manager 的独立安装流程以真实 RC wheel 验证首次安装、依赖恢复及后续正式版本升级，保持原包安装、配置保存、运行应用流程。
+在隔离 tool／venv 和本地真实包索引完成 wheel／sdist、默认配置和历史配置转换的独立安装验收，
+核对全部内部包元数据、原第三方要求和锁中已选第三方版本，执行受影响检查、Ruff 与根 Pyright LSP。
+参考：[Python 包版本约束](https://packaging.python.org/en/latest/specifications/version-specifiers/#compatible-release)、
+[uv 预发布解析](https://docs.astral.sh/uv/concepts/resolution/#pre-release-handling)。
+
+- [x] 统一内部发行版本、依赖约束、默认配置及转换需求，并更新共享锁与官方索引。
+- [x] 使用真实 RC 发行产物验证独立安装、依赖恢复、配置转换及版本升级，通过相关检查后提交供 review。
+
+验收：27 个工作区发行包及 Server／PostgreSQL 共 29 个包、58 份 wheel／sdist 的版本和依赖元数据均与源码一致，
+原第三方要求及共享锁中 29 个第三方包的完整记录保持不变，官方索引仍正确列出 25 个内部 contrib。
+两种产物均经真实本地索引在独立 tool 中安装 RC，无额外预发布开关；默认组合自动恢复全部依赖，
+实际 CLI help、默认空 Agent 组合的 run、正常退出及再次启动通过，SQLite 完整性与外键检查通过。
+公共 V4→V5 转换产出的全部包需求为 `~=0.3.0rc1`，Server／PostgreSQL 公共入口能以 RC 契约导入。
+8 项现有 CI Blockbuster pytest 通过：配置转换 3 项、应用 1 项、manager 的 venv／tool 安装与运行中管理工作流 4 项，
+其中真实 RC 安装可升级到正式版本产物。workspace Ruff／format、共享锁及根 Pyright LSP 检查通过；
+Server／PostgreSQL Ruff／format 与独立构建通过，所属临时安装、索引服务和节点进程已回收。
+
 ### Task 16：补齐 agent 执行、恢复与替换契约
 
 - [ ] Channel 与 Harness 分别持有纯内存运行状态，随实例创建、销毁和重建，按 Running → Stopping → Stopped 管理退出。Stopping 停止接收新业务工作，保留既有请求所需的事件、审批、回执及回复通路；使用公共 TIMER 定期复核队列、在途请求／回复和相关后台工作，排空后再关闭资源。参考主线 `core/orchestration/orchestrator.py` 的 `_handle_runtime_expiry`／`_stop_expired_runtime_if_idle`：繁忙时继续等待，后台工作未结束则重新安排定时器，复核绑定实例及 timer generation，退出时取消所属定时器。

@@ -2,7 +2,7 @@
 name = "plain-logging-contrib"
 version = "0.1.0"
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0"]
+dependencies = ["bazaar-core~=0.3.0rc1"]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 plain-logger = "plain_logging_contrib:publisher"

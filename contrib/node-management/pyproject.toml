@@ -1,14 +1,14 @@
 [project]
 name = "bazaar-contrib-node-management"
-version = "0.3.0"
+version = "0.3.0rc1"
 description = "The Bazaar Compute Node Management Contrib"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
 dependencies = [
-    "bazaar-core~=0.3.0",
-    "bazaar-contrib-config~=0.3.0",
-    "bazaar-contrib-invoke~=0.3.0",
+    "bazaar-core~=0.3.0rc1",
+    "bazaar-contrib-config~=0.3.0rc1",
+    "bazaar-contrib-invoke~=0.3.0rc1",
     "click>=8.1.0",
 ]
 
