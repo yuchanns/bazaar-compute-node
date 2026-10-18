@@ -16,11 +16,13 @@ from bazaar_contrib_messages import (
     MESSAGES,
     Actors,
     Agent,
+    MessageSession,
     SessionBindingValidator,
     ThreadConcurrency,
 )
+from bazaar_contrib_messages.operations import UnreadMessageOwner
 from bazaar_contrib_node_migrations import NODE_MIGRATIONS
-from bazaar_contrib_storage import DB, Database
+from bazaar_contrib_storage import DB, Database, Session
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib, ContribSpec
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
@@ -30,6 +32,8 @@ lazy from bazaar_contrib_sidecar import CLIENT, Remote, Symbol
 from .attachments import AttachmentMaterializer
 from .concurrency import ThreadLockRegistry
 from .dispatch import CommandDispatcher
+from .repository import Repository
+from .repository.unread import list_unread_message_owners
 from .service import NodeMessageService
 from .store import MessageStore
 lazy from .cli._client import MessageClient
@@ -66,6 +70,15 @@ class NodeMessages:
         self.audit = audit
         self.timer = timer
         self._bindings: dict[Agent, CommandDispatcher] = {}
+
+    def storage(self, owner: Agent) -> MessageStore:
+        return MessageStore(self.database, owner, owner.id)
+
+    def in_session(self, session: Session, owner: Agent) -> MessageSession:
+        return Repository(session, owner, owner.id)
+
+    async def list_unread_message_owners(self) -> tuple[UnreadMessageOwner, ...]:
+        return await self.database.read(list_unread_message_owners)
 
     @asynccontextmanager
     async def bind(

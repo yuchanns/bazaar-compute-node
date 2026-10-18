@@ -38,6 +38,7 @@ bazaar-contrib-node-migrations = { workspace = true }
 bazaar-contrib-messages = { workspace = true }
 bazaar-contrib-messages-node = { workspace = true }
 bazaar-contrib-collaboration = { workspace = true }
+bazaar-contrib-reminder = { workspace = true }
 bazaar-contrib-timer = { workspace = true }
 bazaar-contrib-timer-wheel = { workspace = true }
 bazaar-contrib-config = { workspace = true }

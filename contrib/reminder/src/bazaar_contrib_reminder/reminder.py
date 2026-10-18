@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Self
+from unicodedata import category
+from uuid import UUID
+
+from .models import Reminder, ReminderState
+from .reminder_schedule import (
+    RecurrenceKind,
+    ReminderDuration,
+    ReminderRecurrence,
+    ReminderSchedule,
+    canonical_timezone,
+    format_utc_timestamp,
+    next_recurrence_ms,
+    parse_duration,
+    parse_fire_at,
+    parse_repeat_rule,
+    resolve_schedule,
+)
+
+__all__ = [
+    "RecurrenceKind",
+    "ReminderCancelRequest",
+    "ReminderCancelResult",
+    "ReminderDuration",
+    "ReminderListRequest",
+    "ReminderListResult",
+    "ReminderRecurrence",
+    "ReminderSchedule",
+    "ReminderScheduleRequest",
+    "ReminderScheduleResult",
+    "ReminderSnoozeRequest",
+    "ReminderSnoozeResult",
+    "ReminderUpdateRequest",
+    "ReminderUpdateResult",
+    "canonical_id_reference",
+    "canonical_timezone",
+    "format_utc_timestamp",
+    "next_recurrence_ms",
+    "parse_duration",
+    "parse_fire_at",
+    "parse_repeat_rule",
+    "render_reminder_fire_body",
+    "resolve_schedule",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderScheduleRequest:
+    title: str
+    message_id: str
+    next_fire_at_ms: int
+    repeat_rule: str | None
+    timezone: str
+
+    def __post_init__(self) -> None:
+        _validate_title(self.title)
+        object.__setattr__(self, "message_id", canonical_id_reference(self.message_id))
+        ReminderSchedule(
+            next_fire_at_ms=self.next_fire_at_ms,
+            repeat_rule=self.repeat_rule,
+            timezone=self.timezone,
+        )
+
+    @classmethod
+    def from_options(
+        cls,
+        *,
+        title: str,
+        message_id: str,
+        evaluated_at_ms: int,
+        delay_seconds: int | None = None,
+        fire_at: str | None = None,
+        repeat_rule: str | None = None,
+        timezone: str | None = None,
+    ) -> Self:
+        schedule = resolve_schedule(
+            evaluated_at_ms=evaluated_at_ms,
+            delay_seconds=delay_seconds,
+            fire_at=fire_at,
+            repeat_rule=repeat_rule,
+            timezone=timezone,
+        )
+        return cls(
+            title=title,
+            message_id=message_id,
+            next_fire_at_ms=schedule.next_fire_at_ms,
+            repeat_rule=schedule.repeat_rule,
+            timezone=schedule.timezone,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderListRequest:
+    statuses: frozenset[ReminderState] = frozenset(
+        {ReminderState.SCHEDULED, ReminderState.FIRED}
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderSnoozeRequest:
+    reminder_id: str
+    duration_ms: int
+    evaluated_at_ms: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "reminder_id", canonical_id_reference(self.reminder_id)
+        )
+
+    @classmethod
+    def from_options(
+        cls,
+        *,
+        reminder_id: str,
+        duration: str,
+        evaluated_at_ms: int,
+    ) -> Self:
+        return cls(
+            reminder_id=reminder_id,
+            duration_ms=parse_duration(duration).milliseconds,
+            evaluated_at_ms=evaluated_at_ms,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderUpdateRequest:
+    reminder_id: str
+    evaluated_at_ms: int
+    title: str | None = None
+    next_fire_at_ms: int | None = None
+    repeat_rule: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "reminder_id", canonical_id_reference(self.reminder_id)
+        )
+        provided = sum(
+            value is not None
+            for value in (self.title, self.next_fire_at_ms, self.repeat_rule)
+        )
+        if provided != 1:
+            raise ValueError("exactly one reminder update field must be provided")
+        if self.title is not None:
+            _validate_title(self.title)
+        if (
+            self.next_fire_at_ms is not None
+            and self.next_fire_at_ms <= self.evaluated_at_ms
+        ):
+            raise ValueError("next_fire_at_ms must be in the future")
+        if self.repeat_rule is not None:
+            recurrence = parse_repeat_rule(self.repeat_rule)
+            if recurrence.canonical != self.repeat_rule:
+                raise ValueError("repeat_rule must use its canonical form")
+
+    @classmethod
+    def from_options(
+        cls,
+        *,
+        reminder_id: str,
+        evaluated_at_ms: int,
+        fire_at: str | None = None,
+        in_duration: str | None = None,
+        cadence: str | None = None,
+        title: str | None = None,
+    ) -> Self:
+        provided = sum(
+            value is not None for value in (fire_at, in_duration, cadence, title)
+        )
+        if provided != 1:
+            raise ValueError("exactly one reminder update option must be provided")
+        next_fire_at_ms = None
+        repeat_rule = None
+        if fire_at is not None:
+            next_fire_at_ms = parse_fire_at(fire_at)
+        elif in_duration is not None:
+            next_fire_at_ms = evaluated_at_ms + parse_duration(in_duration).milliseconds
+        elif cadence is not None:
+            repeat_rule = parse_repeat_rule(cadence).canonical
+        return cls(
+            reminder_id=reminder_id,
+            evaluated_at_ms=evaluated_at_ms,
+            title=title,
+            next_fire_at_ms=next_fire_at_ms,
+            repeat_rule=repeat_rule,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderCancelRequest:
+    reminder_id: str
+    evaluated_at_ms: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "reminder_id", canonical_id_reference(self.reminder_id)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderScheduleResult:
+    reminder: Reminder
+
+    def __post_init__(self) -> None:
+        _require_reminder(self.reminder)
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderListResult:
+    reminders: tuple[Reminder, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderSnoozeResult:
+    reminder: Reminder
+
+    def __post_init__(self) -> None:
+        _require_reminder(self.reminder)
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderUpdateResult:
+    reminder: Reminder
+
+    def __post_init__(self) -> None:
+        _require_reminder(self.reminder)
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderCancelResult:
+    reminder: Reminder
+
+    def __post_init__(self) -> None:
+        _require_reminder(self.reminder)
+
+
+def render_reminder_fire_body(
+    reminder: Reminder,
+    target: str,
+    next_fire_at_ms: int | None,
+) -> str:
+    _require_reminder(reminder)
+    if not isinstance(target, str) or not target:
+        raise ValueError("target must be a non-empty string")
+    title = json.dumps(reminder.title, ensure_ascii=False)
+    prefix = f"🔔 Reminder #{reminder.reminder_id[:8]}"
+    if reminder.repeat_rule is None:
+        if next_fire_at_ms is not None:
+            raise ValueError("one-time reminder fire cannot have a next iteration")
+        return f"{prefix} (one-time) — {target} — {title}"
+    if next_fire_at_ms is None:
+        raise ValueError("recurring reminder fire requires a next iteration")
+    return (
+        f"{prefix} (recurring · {reminder.repeat_rule}) — {target} — {title}\n"
+        f"Next iteration: {format_utc_timestamp(next_fire_at_ms)}"
+    )
+
+
+def canonical_id_reference(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("id reference must be a non-empty string")
+    try:
+        parsed = UUID(value)
+    except ValueError as error:
+        raise ValueError("id reference must be a canonical full UUID") from error
+    if str(parsed) != value.lower():
+        raise ValueError("full UUID references must use canonical hyphenated form")
+    return str(parsed)
+
+
+def _require_reminder(value: object) -> None:
+    if not isinstance(value, Reminder):
+        raise TypeError("reminder must be a Reminder")
+
+
+def _validate_title(value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError("title must be a non-empty string")
+    if any(category(character) == "Cc" for character in value):
+        raise ValueError("title cannot contain control characters")

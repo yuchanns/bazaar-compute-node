@@ -50,6 +50,7 @@ def wheels(tmp_path_factory):
                 "messages",
                 "messages-node",
                 "collaboration",
+                "reminder",
                 "node-management",
                 "sidecar",
                 "sidecar-unix",

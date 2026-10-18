@@ -1,0 +1,2 @@
+{% if not reminders %}No reminders.{% else %}{% for reminder in reminders %}#{{ reminder.reminder_id }} [{{ reminder.state }}] ({% if reminder.state == "fired" or reminder.repeat_rule is none %}one-time{% else %}{{ reminder.repeat_rule }}{% endif %}) {% if reminder.state == "scheduled" %}next={{ reminder.timestamp }}{% elif reminder.state == "fired" %}fired_at={{ reminder.timestamp }}{% else %}canceled_at={{ reminder.timestamp }}{% endif %} {{ reminder.title }} anchor={{ reminder.anchor }}{% if not loop.last %}
+{% endif %}{% endfor %}{% endif %}{{ "" -}}

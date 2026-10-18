@@ -46,6 +46,7 @@ async def test_installed_collaboration_controls_real_conversations(tmp_path: Pat
                 "messages",
                 "messages-node",
                 "collaboration",
+                "reminder",
             )
         ),
         root / "contrib/agent/tests/fixtures/workbench",

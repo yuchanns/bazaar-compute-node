@@ -46,6 +46,7 @@ async def test_installed_messages_use_real_channels_and_durable_history(tmp_path
                 "messages",
                 "messages-node",
                 "collaboration",
+                "reminder",
             )
         ),
         root / "contrib/agent/tests/fixtures/workbench",
