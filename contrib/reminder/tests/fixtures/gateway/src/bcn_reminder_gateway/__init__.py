@@ -156,7 +156,12 @@ async def lifespan(ctx: Context, config: Config):
                                         or inbound.id,
                                         received_at_ms=inbound.occurred_at_ms,
                                         notifies_runtime=inbound.notifies_runtime,
-                                        metadata={"sender_kind": inbound.sender.kind},
+                                        metadata={
+                                            "sender_kind": inbound.metadata.get(
+                                                "sender_kind",
+                                                inbound.sender.kind,
+                                            )
+                                        },
                                     )
                                     await messages.storage.record_inbound(
                                         message,

@@ -114,12 +114,12 @@ class InboundAttachment:
     error: str | None = None
 
     def __post_init__(self) -> None:
-        if self.state not in {"ready", "failed"}:
-            raise ValueError("attachment state must be ready or failed")
+        if self.state not in {"downloading", "ready", "failed"}:
+            raise ValueError("attachment state must be downloading, ready or failed")
         if self.state == "ready" and self.relative_path is None:
             raise ValueError("ready attachment must have a relative path")
-        if self.state == "failed" and self.relative_path is not None:
-            raise ValueError("failed attachment cannot have a relative path")
+        if self.state != "ready" and self.relative_path is not None:
+            raise ValueError("incomplete attachment cannot have a relative path")
 
 
 @dataclass(frozen=True, slots=True)

@@ -109,6 +109,7 @@ class NodeMessages:
             provider_timeout=provider_timeout,
             timer=self.timer,
         )
+        await service._attachments.reconcile()
         dispatcher = CommandDispatcher(
             service, actors=actors, session_binding_validator=session_binding_validator
         )

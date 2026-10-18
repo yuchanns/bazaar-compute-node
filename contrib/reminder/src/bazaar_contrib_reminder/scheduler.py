@@ -330,7 +330,8 @@ class ReminderScheduler:
                 return None
             try:
                 next_fire_at_ms = (
-                    next_recurrence_ms(
+                    await asyncio.to_thread(
+                        next_recurrence_ms,
                         scheduled_for_ms=scheduled_for_ms,
                         repeat_rule=current.repeat_rule,
                         timezone=current.timezone,

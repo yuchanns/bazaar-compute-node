@@ -7,6 +7,7 @@ dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-channel~=0.3.0rc1", "ba
 
 [project.entry-points."bazaar_compute_node.contribs"]
 test-channel-builder = "bcn_agent_workbench:channel_builder"
+secondary-channel-builder = "bcn_agent_workbench:secondary_channel_builder"
 test-channel = "bcn_agent_workbench:channel"
 document-builder = "bcn_agent_workbench:harness_builder"
 document = "bcn_agent_workbench:harness"

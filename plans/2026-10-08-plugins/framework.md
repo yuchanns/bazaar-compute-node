@@ -22,6 +22,10 @@ app 以普通 Python 调用提供启动输入与默认资源；具体功能由 c
 本轮确认会话准入由 collaboration 持久化审核状态，调用方经 sidecar 查询、通过或拒绝；新会话默认待审。
 本轮另行确认 Task 17 在会话审核通过后触发一次正常入站通知，经 inbox notice 唤醒响应；具体接入和验收见该任务。
 
+WeCom 的嵌入引用由其 Channel 拆成安静入站消息；原 `_queue_quoted_message` 遗漏发送者，
+在后续独立 WeCom 插件迁移时，由该插件把当前消息发送者传入引用构造，随引用一同落库。
+通用 Channel 的 sender 必填，Agent 原样传递；此项 provider 修复按所属迁移阶段实现和验收。
+
 developer instruction 以 `src/bazaar_compute_node/core/instruction.py` 与 `resources/developer_instructions.md`
 的原始资源、渲染规则、mode 分支及注入时机为准。本次明确批准两处显示调整：删除 `- Agent ID: {{agent_id}}`，
 将 `- Runtime session ID: {{runtime_session_id}}` 改为 `- Session: {{runtime_session_id}}`。
@@ -1404,6 +1408,10 @@ app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 
 Channel 入站载荷保留 provider 给出的稳定消息、channel session、Thread 身份及原始 provider 消息 ID；
 具体 provider 沿用自身原有 identity 算法，Agent 直接使用这些值进行业务装配和持久化。
 附件保留 kind、ready／failed 状态及原始失败说明；provider 未提供发生时间时继续使用接收时间展示。
+入站附件以 `source: AbstractAsyncContextManager[AsyncIterator[bytes]]` 提供明文字节流，消息导入通过
+`async with` 进入源资源作用域、`async for` 逐块消费；正常结束、读取失败及取消都退出并释放资源。
+源资源在进入作用域或首次迭代时取得；附件元数据参与 JSON／审计，活资源 source 不参与序列化。
+ready 附件必须有 source，failed 附件仅携带失败说明；接口不要求 provider 预先下载为本地源文件。
 入站保留消息类型、会话展示信息、引用、原始接收时间与 payload 引用；发送者必填，可只提供名称，
 内部路由状态由接线对象持有，provider metadata 原样进入业务记录。
 
@@ -1417,9 +1425,18 @@ Codex、Claude Code 及 Telegram／Lark／WeCom 等具体 channel 实现统一�
 公共 channel／harness 包的节点安装示例使用 `bcn contrib add channel`／`bcn contrib add harness`。
 V4→V5 只在 `old.agent` 非空时启用 `channel-builders` 与 `harness-builders`，与 Agent 及其所选 provider 一起迁入。
 
+后续独立 Channel 插件迁移使用该异步字节流接口：
+
+- Telegram 沿 main `TelegramBotApi.download_file` 的 HTTP 分块读取及下载限额提供异步迭代器。
+- Lark 沿 main `LarkApi.open_message_resource` 与 `LarkResourceCache._download` 适配，保留响应头文件名、类型、下载限额、缓存及并发合并语义。
+- WeCom 在 HTTP 异步字节迭代上逐块执行 AES-256-CBC 解密并 yield 明文，保留原 IV、最多 32 字节填充校验及明文 SHA256；
+  读取按需执行并保留有限缓冲，完成校验后才结束迭代，不累计整份附件或创建中间密文文件。
+  引用消息身份依赖最终明文指纹，需在 Channel 的引用构造时完成该指纹，保留原身份、去重和引用关联。
+- 各插件持有 HTTP 请求、鉴权、解密及响应关闭；取消、读取失败及正常完成都释放源资源，消息层统一进行一次附件落盘。
+
 沿用 main 的 `core/channel.py`、`core/runtime.py` 与 `core/orchestration/turn.py` 的实际调用边界：harness 包拥有会话／turn 输入、运行指令与工具环境、输出流、审批请求／决定／结果及模型／skills 描述；channel 包拥有输入消息、附件、身份、发送与交付回执，并复用 harness 的审批载荷。两包使用 Pydantic 公共模型，provider 的连接／进程由其 Contrib lifespan 持有。执行流的时限、任务取消、终态与输出流 aclose 以 main 的对应路径为依据；main 已有的配置预算及完整会话／交付／恢复语义随所属执行编排任务迁入。
 
-Harness 的会话 start／reconcile／stop保留 ProviderCallResult 的确认、失败和结果未知区别；
+Harness 的会话 start／reconcile／stop 保留 ProviderCallResult 的确认、失败和结果未知区别；
 reconcile 返回所属 session 及可选的恢复 stream。start_turn 在请求尚未写出时可抛出 HarnessSessionUnavailable，
 steer_turn 接受当前 session、turn、纯文本通知及 timeout，仅在 provider 确认后返回 True。
 has_background_job 查询所属 session 的后台工作；receive_event 接收 HarnessExpire，通知执行端在安全时机更新会话上下文。
@@ -1533,8 +1550,15 @@ channel 公共契约按原发送链路补齐 DM 地址、目标显示及交付�
 所有附件文件平铺为 `attachments/<uuid><suffix>`；`_stage` 只接收字节流和目标路径，
 在内部用标准库 `tempfile.mkstemp(dir=destination.parent, prefix=".bcn-", suffix=".part")` 创建同层临时文件，
 并持有其写入、fsync、关闭、原子发布及异常清理。调用方只负责最终附件身份和目标路径。
+并发导入的每个附件独立持有源流、临时文件与最终路径，目录创建使用可重复的 mkdir，文件写入和发布独立完成。
 清理按临时文件前后缀、最终文件身份与数据库引用执行，删除未引用的自有文件和未完成写入。
-真实入站附件走此流程后随消息保存，重启恢复仍使用原引用。
+Messages 在读取附件字节前准备稳定的附件 ID、名称、类别及媒体类型，源可用时以 `downloading` 状态随入站消息登记；
+Channel 已报告失败的附件保留其 `failed` 及原始失败说明。每个附件完成后沿用登记时的 ID，
+通过所属 Agent 的公共存储接口回写 `ready`、相对路径和字节数，或 `failed` 及失败说明。
+入站附件表已有的文本状态列和可空路径、大小、错误列承载这些状态；回写以消息归属和附件 ID 定位现有记录。
+MessageService 的公开附件导入入口通过 Pydantic 校验调用方提供的 UUID，标准 UUID 字符串用于文件名；
+省略 ID 时仍生成 UUID，复用 Agent 预留身份及现有下载、落库流程。
+check／read 在下载期间显示文件名、ID 和 `state:downloading`，完成后显示既有路径或失败格式，重启读取仍使用已保存引用。
 默认配置选择 messages-node 及其数据依赖，由 manager 恢复；Python 发行依赖由实际导入接口的消费者声明。
 messages-node 的 CLI 依赖公共 sidecar 契约；所选原生传输实现由配置声明并由 manager 恢复，消息包的发行依赖只声明实际导入的接口包。
 独立安装验收在准备工作区及附件路径前解析临时根目录，沿用实际 agent 的工作区路径语义，覆盖 macOS 的 `/tmp` 符号链接。
@@ -1775,22 +1799,170 @@ Server／PostgreSQL Ruff／format 与独立构建通过，所属临时安装、�
 
 ### Task 16：补齐 agent 执行、恢复与替换契约
 
-- [ ] Channel 与 Harness 分别持有纯内存运行状态，随实例创建、销毁和重建，按 Running → Stopping → Stopped 管理退出。Stopping 停止接收新业务工作，保留既有请求所需的事件、审批、回执及回复通路；使用公共 TIMER 定期复核队列、在途请求／回复和相关后台工作，排空后再关闭资源。参考主线 `core/orchestration/orchestrator.py` 的 `_handle_runtime_expiry`／`_stop_expired_runtime_if_idle`：繁忙时继续等待，后台工作未结束则重新安排定时器，复核绑定实例及 timer generation，退出时取消所属定时器。
+- [x] 在消息服务公开入口校验附件 UUID，复核预留身份及真实附件下载、落库流程。
+- [x] 接收时间缺失时按 Unix 墙钟毫秒保存；公共 Timer 的单调时钟继续用于等待及间隔。
+- [x] 附件清理识别公开入口接受的所有合法 UUID 文件名，保留数据库引用的文件并清除孤立附件；UUIDv7 是默认生成方式。
 
-- [ ] 保持 Agent 身份、Actor 会话、worker 与调度状态的生命周期稳定。为已有 Agent 新增或移除 Channel 时，仅更新相应 Channel 子组合与接线，保留其他 Channel、harness 和正在运行的 Agent；移除时先停止接收新工作，保留已接收消息、排队／执行任务及其回复所需的连接和绑定，排空后再关闭 Channel 并释放子组合。验收运行期间追加和移除 Channel，检查已受理工作完成、既有会话与其他通道继续运行。
+Agent 的 Channel 集合、Connection、Runtime 和 turn 使用明确生命周期状态；Connection 排空阶段合并进 state。ActorLoop 的会话状态以 frozen／slots 联合类型携带会话绑定和错误，移除并列的 busy／stale／error 标志；繁忙依据实际批次任务判断，失效数据属于会话绑定，保留合批、steer、恢复、后台保护与退出次序。
 
-- [ ] Agent 自持运行数据，接受 DB、SCHEMA 和 LEGACY_NODE_MIGRATIONS，在自己的 lifespan 登记后提供业务服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
+会话建立按首次尝试加最多三次重试执行；失败后的重建通过公共 TIMER 进行带 full jitter 的指数退避，
+三次等待上限依次为 1000／2000／4000 ms，并受 Timer 最大延迟约束。UNKNOWN 先 reconcile，
+只有确认该次会话建立未成功才进入重建重试；恢复出活动 turn 时保留既有错误处理，已发出的 turn 沿原结果确认流程处理。
+取消时释放退避句柄，达到重试上限后交还现有 provider 故障与切换流程。
 
-- [ ] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
-- [ ] 按[Actor 验收标准](#迁移实施与验收标准)迁入 main 的 `Actor`／`Actors`：内部身份参数、业务调用与归属键全程使用 Actor，仅在边界与 `session_id`／`agent_id` 转换；保留两种 mode 的身份解析、按 Actor 归属的运行会话／状态／队列／worker／timer、业务可见范围和活跃命令绑定，分别验收各会话隔离及同 Agent 会话共享的原行为。
-- [ ] 沿用 Task12.1 已交付的 developer instruction、bcc 工具入口与初始运行环境，补齐命令能力的活跃身份／会话绑定、上下文及通讯编排；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
-- [ ] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
-- [ ] 按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)接入 agent 构造输入及 harness 原始事件的完整发布，保留关联、顺序、时间、工具／技能／文件、原始 usage 和模型步骤来源；审计记录、两端上报及 BCS 消费随所属阶段接入。
-- [ ] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
-- [ ] 公开 agent 入口拥有 config.agents 和 channel／harness 参数模型，明确创建执行与 provider 实例；私有服务和消息事件用 local 绑定，共享服务沿用外部绑定，依赖就绪后进入执行。
-- [ ] 用真实自定义 agent 组合替换默认入口，验证其配置模型、实体装配、指令、工具环境、通讯行为、所选依赖与资源退出。
-- [ ] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
-- [ ] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
+已迁入能力逐项与原实现核对，覆盖启动与配置、命令和文案、Actor／消息／审批、持久化、调度、故障恢复及资源退出；
+每项保留原实现位置、当前所属包与验证依据，行为差异仅采用已明确确认的调整。
+本次按原源码 194 个 Python 模块登记归属，并逐项映射原 orchestrator／turn 的 98 个函数与方法。
+具体 Channel／Harness provider、节点平台管理和配置审核命令按后续所属任务承接，公共契约不代表这些插件已经实现。
+
+| 原实现与行为 | 当前归属 | 对照和实际验收 |
+| --- | --- | --- |
+| `app/config.py`、启动、自举、配置保存和运行更新 | app、config、config-filesystem、config-versions、manager、node-management | V1→V5 文件转换、独立安装、在线／离线管理、实际 run 与退出 |
+| `app/agent.py` 的 Agent 身份、工作区与装配 | agent | 两种 mode、默认和自定义 Agent、空实体及热更新 |
+| `core/actor.py` 的会话隔离和 Agent 共享 | messages 公共 Actor／Actors；agent 调度 | 两种 mode 的原生 bcc、会话目录与关联 |
+| `app/wrapper.py`、指令和原生 bcc | agent；命令由所属 contrib 登记 | 包装资源、指令渲染、两种 mode 共 60 组帮助输出对照 |
+| `orchestrator._notice_for`、`turn.inbox_notice` | agent 调用 Messages 公共未读汇总 | 原模板和渲染结果；start／steer 只传通知，实际子进程用 bcc 读取 |
+| `_runtime_loop`、`_steer_active_turn` 和 turn 参与者 | agent AgentLoop／ActorLoop | 运行中更新、静默合批、接受后加入、拒绝后下轮处理、已读去重 |
+| `_ensure_runtime_session`、`_recover_turn` | agent；实际资源由 Harness 持有 | confirmed／failed／unknown、重建、真实会话文件丢失及恢复 |
+| provider 选择、隔离、故障切换和关闭 | agent 调度；Harness 生命周期 | 配置顺序、现有绑定、隔离与试探、失败后恢复、独立关闭任务 |
+| 失效通知和后台工作保护 | Harness 事件与查询；agent 调度 | 真实上下文文件变更、独立后台归档进程、闲置释放和热替换 |
+| turn 输出、工具、usage、provider 原始事件和关联 | Harness 公共事件；agent 转发；audit 发布 | 完整事件字段保留、会话／turn 校验、参与会话路由和终态收口 |
+| `turn._request_approval`、模式、发送者和结果关联 | agent ApprovalRoute；Channel 展示 | 会话模式人工审批、非人类锚点拒绝、dangerous_individual 自动批准 |
+| 失败与未知结果反馈 | agent 调用公共 ChannelSender | 原英文反馈和拒绝资源、失败后后续请求继续执行 |
+| `commands/messages.py`、收件箱、历史、搜索、新鲜度、草稿和 unfollow | messages 公共契约；messages-node 实现 | 113 项声明对照、原文案、真实 TCP／SQLite／原生 bcc 和重启 |
+| 目录、引用、游标、普通读取与快照写入 | messages-node；通用 DB 由 storage／sqlite 提供 | 原查询及编解码对照、只读快照和真实持久化；保留已确认的可选查询预算 |
+| `app/attachments.py` 的暂存、原子落盘、上限和清理 | messages-node；通过公共 Messages 导入 | 原方法体、分块文件、附件类别与失败状态、重启引用 |
+| `record_inbound`、引用、持久化审核和自动答复 | collaboration 调用 Messages；自身设置由自身保存 | 原方法仅适配公共接口及已确认准入规则；真实重放、引用和审核重启 |
+| 分段交付、重试、回执和逐段持久化 | ChannelSender；messages-node 保存消息 | 按已确认设计保留前段回执、后段失败、引用前段及重启读取 |
+| Reminder 命令、日历、锚点、持久化和调度 | reminder 调用 Messages 和公共 Timer | 7 个文件逐字节对照、命令及调度声明对照、实际到期唤醒和重启 |
+| `core/timerwheel.py` 的 tick、代次、等待、取消和关闭 | timer 公共契约；timer-wheel 实现 | 原截止 tick 和到期后取消语义、真实计时／跨层／资源关闭 |
+| SQLite 历史 1..32、基线和表归属 | legacy-node-migrations；各业务自持 schema | 全部历史函数与 21 个基线操作对照；38 项历史和实际业务 lifespan 验收 |
+| 通用通信、异常和所属资源退出 | sidecar／平台传输、core；命令业务留在所属 contrib | 真实分块 socket、错误返回、热更新排空及整节点取消 |
+| 标准日志、来源上下文、文件轮转和故障 | logging、core；audit 为公共事件接口 | 真实线程与文件、异常堆栈、轮转及依赖故障验收 |
+
+Actor 继续作为内部流通的身份原语。AgentLoop 管理整个 Agent 的接入、provider 和资源生命周期；
+ActorLoop 保存一个 Actor 的队列、会话与运行状态，AgentLoop.run(loop) 执行该 Actor 的常驻消费循环，
+运行中的循环按 Actor 保存在 actor_loops 中。队列条目命名为 Wakeup，携带触发消息、runtime 和回复上下文，
+支持静默合批与运行中 steer。
+
+- [x] 统一 AgentLoop／ActorLoop、actor_loops、run(loop) 与 Wakeup 的命名，完成 Ruff 和根目录 Pyright LSP 检查。
+- [x] 空闲等待按是否存在 expiry 任务直接构造 `(receive,)` 或 `(receive, expiry)`，交给 `asyncio.wait(..., return_when=FIRST_COMPLETED)`。
+  按 [asyncio.wait 的 Task／Future 契约](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait)，
+  将公共 TimerHandle.wait() 包装为 expiry 任务；退出时取消原定时器句柄并取消、回收接收与计时任务。
+  保留消息交接、剩余空闲扣减与后台任务保护，以 Ruff、根目录 Pyright LSP 和现有真实独立安装 Agent 验收确认。
+
+Harness 抽象保留既有执行能力，Agent 以现有 contrib 装配这些能力：
+
+- [x] 同一会话多条通知合并进一轮或经 steer 加入时，沿用原 `join_turn` 保留第一条参与消息的工具审批关联；
+  用不同发送者在上一轮执行期间排队的真实消息验证，后续消息继续保存在收件箱供读取。
+  普通消息的目标和引用由 Agent 通过 bcc 显式选择；按已确认调整，turn 事件只携带会话路由，
+  工具审批单独保留请求定位。真实 Channel 验证运行中 steer 后的事件路由与审批关联。
+- [x] 存活会话的 bcc 身份绑定沿用原 `_validate_actor_binding`，有效能力在 turn 结束后的闲置期间继续可用，
+  会话释放后失效；真实后台归档子进程在 turn 结束后读取会话历史，完成归档后再允许闲置释放。
+  事件按参与会话分别转发和记录异常，保持单个 Channel 展示失败时其他参与会话继续收到事件。
+- [x] 入站沿原 `dispatch_inbound`／`_ingress_loop` 按 Thread 排队处理，同会话保序、不同会话并行；
+  Channel 与所选 Harness 的已受理计数覆盖入站队列、持久化及后续 Actor 工作，整节点退出取消并清理这些队列。
+  AgentLoop 直接持有各 Channel 连接的 `receive(connection)` 接收协程，收到消息后连续完成
+  runtime 选择、计数登记与无界队列入队，交接期间不挂起；入站及 Actor 工作的计数均由 AgentLoop 释放。
+  `dispatch()` 将总队列消息按 Thread 分流，由 `ingest(queue)` 顺序处理；分流任务成员及诊断命名统一使用 dispatcher／dispatch。
+- [x] turn/start 与 steer 均发送原 `inbox_notice.tpl` 的内容无关通知，消息及附件由原生 bcc 读取；
+  Messages 公开按 Actor 查询的未读汇总和送达游标，读取汇总保持游标不变。启动取最新 100 条构造通知，已读队列项不再创建重复 turn。
+- [x] 同一 Actor 的 ActorLoop 同时等待 turn 终态和新通知；`ActorLoop.drain()` 按序取尽当前队列，
+  在开轮取批次、运行中 receive 完成和退出清理三处复用。运行中先接收该条消息，再收齐当前积压到 pending，
+  统一重置一次公共 TIMER 的 3000 ms 静默窗口，窗口结束后调用 Harness.steer_turn。
+  仅确认接受才将通知加入本轮，未接受的通知保留为下一批；
+  终态、队列交接及取消都由所属 ActorLoop 收口，通道事件覆盖本轮参与的会话。
+- [x] Harness 保留会话 start／reconcile／stop 的 confirmed、failed、unknown 结果，
+  reconcile 可返回恢复中的 turn stream；已写出的 turn 先确认实际结果，再决定下一步，明确未写出的会话丢失可重建后重试一次。
+- [x] Harness 公开后台任务查询和会话失效通知；失效标记所属 provider 的会话，
+  原会话在后台工作结束后的下一轮或闲置到期时重建。闲置释放先查询后台任务，存在工作或查询失败则重新安排公共 TIMER。
+- [x] Harness 按配置顺序及 Actor 的现有绑定选择，失败隔离一小时，成功解除隔离；
+  同一轮已尝试的 provider 不重复选择，全部隔离时试探最早隔离者，保留故障切换和最终错误反馈。
+- [x] provider 调用预算沿用 600 秒、启动恢复沿用 60 秒；普通入站的 turn attempt 使用消息身份去重。
+  会话从 Actor 解绑后，由所属 teardown 任务完成 provider 关闭并记录确认、失败或未知结果；
+  新一轮继续执行，provider 退役等待这些既有关闭工作，整节点退出按已确认要求取消所属任务。
+- [x] Harness 依赖故障导致接线实例进入 Failed／Blocked 时，每轮从公开 ctx.snapshots 读取自身故障状态，
+  直接释放已空闲且队列为空的会话，等待已受理工作及已有 teardown 完成；正常退役保留后台任务保护。
+  通过真实 provider 后台任务的文件 I/O 故障验证依赖清理到终态，并继续完成其他 Agent 的真实文档任务。
+- [x] session mode 的工具审批保持原人类消息关联，关联不符按已确认调整记录诊断日志并返回原请求 ID 的拒绝结果，
+  给 Agent 的原因使用简短文案；缺少可审批人时返回原拒绝文案；
+  dangerous_individual 保留直接批准及审计。原有通知、审批和错误反馈文案按所属 contrib 保存。
+- [x] 通过真实 TestChannel、独立 Harness 子进程及原生 bcc，验证运行中通知、静默合批、已读去重、
+  恢复／切换、后台任务保护、模式审批和退出。计划与本任务修正一同提交在原特性提交。
+
+现有 agent 的 `compose`、provider builder、`ctx.enable`、`loop.py` 的执行／审批／审计及指令资源作为接线基础。
+Agent 在 `Contrib.accepts` 声明 MESSAGES、COLLABORATION、REMINDER 和 TIMER，通过 `ctx.accept` 获取所选实现。
+每个 Agent 只建立一组 `Actors`、共享会话锁和业务绑定；Channel 的入站经 collaboration.record_inbound 持久化及准入，
+消息读取和交付走 messages，Reminder 的 `wake` 回调进入同一个按 Actor 调度的执行链。
+Reminder 的首次时区加载及持久化日历复发计算在线程中执行，原生命令和 scheduler 保持异步执行。
+Messages 的公共服务提供入站附件导入及消息格式化，沿用其现有格式化函数和文案资源，
+导入在异步资源作用域内消费 Channel 的字节流，按统一平铺路径落盘并保留原附件类别与失败状态；
+Agent 通过公共 Messages 服务导入 Channel 附件并渲染消息。
+Agent 先准备附件元数据并调用现有 collaboration.record_inbound 登记消息，以消息身份原子去重；
+登记返回后先检查 channel session 的 Approved 状态，已通过审核的会话进入附件下载。
+待审核或已拒绝的会话将待下载附件保存为 failed，说明下载需要会话通过审核，随后按现有条件回复未审核提示。
+仅首次创建消息的接收调用在 TaskGroup 中并发下载本条消息的全部待下载附件，各自完成后立即保存最终结果，
+全部结束后按原附件顺序组装消息。重复消息在打开附件源前结束。
+下载中的消息可由正在运行的 Agent 通过原生 bcc 读取，全部附件处理结束后再进入既有审核和 wake 条件。
+单个附件的正常下载失败保存其 failed 结果，其他附件继续完成；异常或取消时，TaskGroup 先取消并回收其余任务，
+已完成附件保留其结果，尚未完成的附件保存失败说明；普通异常记录后继续唤醒，使正文和失败状态可读取；取消等 BaseException 继续传播。
+现有真实 TestChannel 安装验收控制三个源：保持第一个下载挂起，释放后两个并观察其 ready／failed 回写，
+验证下载期间的 CLI 状态、原始顺序、稳定附件 ID 及实际文件内容，并重投同一消息确认单条消息及文件引用一致。
+同一验收向未审核会话发送受控附件源，验证接收无需释放源就保存审核原因及 failed 状态。
+运行尝试的 started_at_ms 保存 Unix 毫秒时间，调度和退避仍使用计时器。
+运行会话把随机命令 capability 与 Actor、session 绑定，Messages／Reminder 使用同一个 validator；
+指令、bcc 原生入口和审批／输出沿用现有公共契约。启动从 Messages 的未读 owner 恢复工作，闲置会话通过 TIMER 释放。
+默认组合分别启用无参数的 `agent-execution` 和持有 `config.agents` 的 `agent`：
+前者声明公共服务依赖、登记 Agent schema 并通过 ctx.enable 持有实体组合；后者接受其 AGENTS 服务及所选 builder，
+用同一 compose 函数构造完整条目并请求 Enablement.update。配置变更只替换变化的 provider 条目，
+稳定的 Agent 身份与执行条目继续持有 ActorLoop 和业务绑定；移除配置入口后沿公共 CONTRIB_CHANGED 清空所属实体组合。
+Channel 子组合的变更由 Agent 所属组合管理，保留未改动的 Agent、ActorLoop 和 Harness；
+退役 Channel 停止入站后保留已受理工作所需的回复、审批与命令路由，排空再释放。
+Harness 的配置顺序确定默认执行者；入站受理即计入所选实例，排队及持久化中的工作随该实例完成后退出。
+Agent 执行绑定使用零退出等待预算关闭 Messages／Reminder 命令，在途 bcc 调用与 Actor 任务一并取消后回收 Harness。
+配置入口进入 Running 后，通过现有 CONTRIB_CHANGED 回调应用实体组合；调用方可通过 AGENTS.wait_applied 核对执行结果。
+
+- [x] Channel 与 Harness 分别持有纯内存运行状态，随实例创建、销毁和重建，按 Running → Stopping → Stopped 管理退出。Stopping 停止接收新业务工作，保留既有请求所需的事件、审批、回执及回复通路；使用公共 TIMER 定期复核队列、在途请求／回复和相关后台工作，排空后再关闭资源。Agent 通过公共 TIMER 复核所属实例和会话；繁忙时重新安排，排空后退出，整节点退出取消工作及所属定时器。
+
+- [x] 保持 Agent 身份、Actor 会话、ActorLoop 与调度状态的生命周期稳定。为已有 Agent 新增或移除 Channel 时，仅更新相应 Channel 子组合与接线，保留其他 Channel、harness 和正在运行的 Agent；移除时先停止接收新工作，保留已接收消息、排队／执行任务及其回复所需的连接和绑定，排空后再关闭 Channel 并释放子组合。验收运行期间追加和移除 Channel，检查已受理工作完成、既有会话与其他通道继续运行。
+
+- [x] Agent 自持运行数据，接受 DB、SCHEMA 和 LEGACY_NODE_MIGRATIONS，在自己的 lifespan 登记后提供业务服务。run 通过配置服务激活完整的已启用组合，不限定 roots；管理命令通过插件登记选择启动根。全新安装默认启用 Agent；V4→V5 仅在旧配置存在 Agent 时启用 Agent，存在 Server 使用配置时启用 Server 及对应依赖。
+
+- [x] 在已交付的 agent 及各能力接入基础上补齐 turn、会话绑定、inbox、调度、输出交付、审批、任务故障和恢复，按实际消费依赖消息、协作、Reminder、timer 与 builder。
+- [x] 复用 messages 已公开的 `Actor`／`Actors`：内部身份参数、业务调用与归属键全程使用 Actor，仅在边界与 `session_id`／`agent_id` 转换；保留两种 mode 的身份解析、按 Actor 归属的运行会话／状态／队列／ActorLoop／timer、业务可见范围和活跃命令绑定，分别验收各会话隔离及同 Agent 会话共享的原行为。
+- [x] 沿用 Task12.1 已交付的 developer instruction、bcc 工具入口与初始运行环境，补齐命令能力的活跃身份／会话绑定、上下文及通讯编排；按 [默认 agent 行为与替换](roadmap.md#默认-agent-行为与替换) 由 agent 选择提示词、工具及所需公共服务。
+- [x] agent 消费 channel／harness 公共包的输入、请求、输出／审批和生命周期契约，harness provider 执行 agent 提供的指令和工具环境；具体 provider 自身持有 SDK 和资源。
+- [x] 按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)接入 agent 构造输入及 harness 原始事件的完整发布，保留关联、顺序、时间、工具／技能／文件、原始 usage 和模型步骤来源；审计记录、两端上报及 BCS 消费随所属阶段接入。
+- [x] agent 组合用普通 Python 函数从已校验配置构造具体条目及稳定绑定；配置候选预检显式调用同一构造逻辑，已知组合完整校验后由 lifespan 的 ctx.enable 管理。
+- [x] 公开 agent 入口拥有 config.agents 和 channel／harness 参数模型，明确创建执行与 provider 实例；私有服务和消息事件用 local 绑定，共享服务沿用外部绑定，依赖就绪后进入执行。
+- [x] 用真实自定义 agent 组合替换默认入口，验证其配置模型、实体装配、指令、工具环境、通讯行为、所选依赖与资源退出。
+- [x] 使用 TestChannel 控制面及真实隔离资源验证消息注入、调度、输出、审批、故障和退出；具体外部 provider 的 e2e 由其交付阶段使用相同控制面验证。
+- [x] config.agents 为空时保持 AGENT／CHANNEL／HARNESS 运行实例数为零，真实实体组合验证服务可见范围和所属资源回收，完成独立安装与检查，提交供 review。
+
+完整 provider 场景包含真实子进程、原生 bcc、三秒静默合批及后台归档，按完整场景执行到终态。
+各业务超时及三秒静默窗口保持原契约，三平台 CI 验证完整场景。
+
+验收结果：真实 wheel／sdist 两套独立安装均通过 TestChannel、独立文档及后台归档子进程、原生 bcc、
+两种 Actor mode、安静引用消息的字段与发送者传递、运行中 steer／静默合批／未接受时下轮处理、
+未读恢复、失败切换、会话文件丢失与上下文失效、后台保护及已确认审批语义。
+同一会话不同发送者排队合批后，审批保持第一条参与消息的发送者与请求定位；
+运行中 steer 后的 turn 事件只带会话路由，普通回复引用由 Agent 显式选择。
+后台归档进程在 turn 结束后实际调用原生 bcc 读取历史，存活闲置会话继续通过能力校验。
+归档进程通过 `shutil.which("bcc")` 定位会话命令，解析 Windows 的 `bcc.cmd` 入口；
+子进程错误输出继承验收进程，直接保留在 CI 日志。
+逐会话事件转发分别记录异常，沿用原 `TurnCoordinator._forward` 的参与者隔离。
+Channel 追加／移除、Harness 替换和已受理队列排空保持其他会话工作，整节点在人工审批及 bcc 回执等待中取消所属任务。
+独立 editorial Agent 使用自有配置、指令和工具完成文件任务；两个独立节点进程在同一隔离数据库上验证未读恢复。
+
+消息、协作、Reminder、Channel、invoke、时间轮、历史迁移及其余 workspace 已有验收通过；
+命令帮助的两种 mode、长短帮助选项共 60 组实际输出与原版一致，服务请求在实际执行命令时发起。
+103 个消息声明 AST 保持一致，另外的 Actor／公共行类型及可选查询预算边界逐项核对；
+附件按已确认的异步字节流导入及平铺路径调整；Harness 调用结果类型、时间轮句柄及核心分层算法保持原实现。
+Reminder 的 7 个模型／日历／响应资源文件、消息的 12 个文案资源、inbox／审批拒绝模板保持原字节；
+8 组指令渲染仅包含已确认的 Agent ID 与 Session 展示调整，6 组 inbox 渲染与原函数一致。
+全部 32 项历史版本和 21 项业务基线操作保持一致，原 src／tests 对照文件保持不变。
+workspace Ruff／format、共享锁和仓库根目录精确 Pyright LSP 检查通过，27 项 RC 版本及第三方锁记录保持不变。
+修正按各能力引入提交 amend，计划与对应实现一同提交供 review。
 
 ### Task 17：agent 配置管理与会话准入审核
 

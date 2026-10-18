@@ -874,6 +874,43 @@ class Repository(StorageOperationMixin, RepositoryBase):
         )
         return await self._message_from_row(row) if row is not None else None
 
+    async def update_inbound_attachments(
+        self, message_id: str, attachments: tuple[InboundAttachment, ...]
+    ) -> None:
+        for attachment in attachments:
+            await self._session.update(
+                Update(
+                    table="inbound_attachments",
+                    values={
+                        "state": Value(value=attachment.state),
+                        "relative_path": Value(value=attachment.relative_path),
+                        "size_bytes": Value(value=attachment.size_bytes),
+                        "error": Value(value=attachment.error),
+                    },
+                    where=All(
+                        conditions=(
+                            equal("attachment_id", attachment.attachment_id),
+                            Compare(
+                                left=Column(name="message_id"),
+                                operator="=",
+                                right=Subquery(
+                                    query=Select(
+                                        table="messages",
+                                        columns={
+                                            "message_id": Column(name="message_id")
+                                        },
+                                        where=self.scope(
+                                            equal("message_id", message_id),
+                                            equal("direction", "inbound"),
+                                        ),
+                                    )
+                                ),
+                            ),
+                        )
+                    ),
+                )
+            )
+
     async def list_ready_attachment_paths(self) -> tuple[str, ...]:
         rows = await self._session.select(
             Select(

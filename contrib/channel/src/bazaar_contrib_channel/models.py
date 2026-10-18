@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import (
-    Literal,
-    Self,
-)
+from typing import Literal, Self
 
 from bazaar_contrib_harness import ApprovalRequest
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class ChannelInput(BaseModel):
@@ -59,20 +52,22 @@ class ChannelTarget(BaseModel):
 
 
 class InboundAttachment(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
     name: str
     kind: str = "file"
     state: Literal["ready", "failed"] = "ready"
-    path: Path | None = None
+    source: AbstractAsyncContextManager[AsyncIterator[bytes]] | None = Field(
+        default=None, exclude=True
+    )
     media_type: str | None = None
     error: str | None = None
 
     @model_validator(mode="after")
-    def source(self) -> Self:
-        if self.state == "ready" and self.path is None:
-            raise ValueError("a ready attachment requires a local source")
-        if self.state == "failed" and self.path is not None:
-            raise ValueError("a failed attachment has no local source")
+    def validate_source(self) -> Self:
+        if self.state == "ready" and self.source is None:
+            raise ValueError("a ready attachment requires a source")
+        if self.state == "failed" and self.source is not None:
+            raise ValueError("a failed attachment has no source")
         return self
 
 

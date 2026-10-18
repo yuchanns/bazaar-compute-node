@@ -355,11 +355,14 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
 async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
     tmp_path: Path, modules
 ):
+    import time
+
+    from bazaar_contrib_agent import AGENTS
     from bazaar_contrib_collaboration import COLLABORATION
     from bazaar_contrib_messages import MESSAGES
     from bazaar_contrib_reminder import REMINDER
     from bazaar_contrib_schema import SCHEMA
-    from bazaar_contrib_storage import DB
+    from bazaar_contrib_storage import DB, Update, Value
     from bazaar_core import (
         Context,
         Contrib,
@@ -373,6 +376,22 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
     data = await asyncio.to_thread(fixture.read_bytes)
     path = tmp_path / "lifespans.sqlite3"
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
+    # Live scheduling requires a consistent fired occurrence and a future due time.
+    async with open_database(SqliteConfig(path=path)) as database:
+        await database.update(
+            Update(
+                table="reminders",
+                values={
+                    name: Value(value=value)
+                    for name, value in {
+                        "revision": 2,
+                        "last_fired_at_ms": 6000,
+                        "updated_at_ms": 6000,
+                        "next_fire_at_ms": time.time_ns() // 1_000_000 + 86_400_000,
+                    }.items()
+                },
+            )
+        )
     active = []
 
     @asynccontextmanager
@@ -395,6 +414,7 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
                     ("audit", {}),
                     ("timer-wheel", {}),
                     ("agent", {}),
+                    ("agent-execution", {}),
                     ("messages-node", {}),
                     ("collaboration", {}),
                     ("reminder", {}),
@@ -408,7 +428,14 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
                     ContribEntry(
                         name="consumer",
                         definition=Contrib(
-                            accepts=[SCHEMA, DB, MESSAGES, COLLABORATION, REMINDER],
+                            accepts=[
+                                AGENTS,
+                                SCHEMA,
+                                DB,
+                                MESSAGES,
+                                COLLABORATION,
+                                REMINDER,
+                            ],
                             lifespan=consume,
                         ),
                     ),

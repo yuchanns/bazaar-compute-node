@@ -9,6 +9,8 @@ package = "bazaar-contrib-agent~=0.3.0rc1"
 entry = "agent"
 [contribs.enabled.config]
 agents = []
+[[contribs.enabled]]
+entry = "agent-execution"
 
 [[contribs]]
 package = "bazaar-contrib-audit~=0.3.0rc1"
@@ -103,3 +105,8 @@ entry = "collaboration"
 package = "bazaar-contrib-reminder~=0.3.0rc1"
 [[contribs.enabled]]
 entry = "reminder"
+
+[[contribs]]
+package = "bazaar-contrib-timer-wheel~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "timer-wheel"

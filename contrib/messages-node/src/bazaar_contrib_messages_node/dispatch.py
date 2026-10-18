@@ -306,8 +306,8 @@ class CommandDispatcher:
             self._drained.set()
 
     async def drain(self, *, timeout: float) -> None:  # noqa: ASYNC109
-        if timeout <= 0:
-            raise ValueError("timeout must be positive")
+        if timeout < 0:
+            raise ValueError("timeout must be non-negative")
         self.stop_accepting()
         if not self._in_flight:
             return

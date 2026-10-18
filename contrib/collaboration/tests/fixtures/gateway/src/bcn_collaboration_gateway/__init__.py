@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 from bazaar_contrib_audit import AUDIT_EVENT, AuditEvent
@@ -18,12 +17,11 @@ from bazaar_contrib_messages import (
 )
 from bazaar_contrib_messages.models import (
     ChannelTargetPresentation,
-    InboundAttachment,
     Message,
     SenderIdentity,
 )
 from bazaar_contrib_messages.states import ChannelTargetKind, MessageDirection, Review
-from bazaar_contrib_messages_node import AttachmentMaterializer, ThreadLockRegistry
+from bazaar_contrib_messages_node import ThreadLockRegistry
 from bazaar_core import Composition, Context, Contrib, ContribEntry
 from bcn_agent_workbench import channel
 from pydantic import BaseModel, ConfigDict
@@ -35,16 +33,6 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     directory: Path
     agents: tuple[str, ...] = ("Cloud", "Tifa")
-
-
-async def file_chunks(path: Path) -> AsyncIterator[bytes]:
-    """Stream the peer's local file through the public attachment sink."""
-    file = await asyncio.to_thread(path.open, "rb")
-    try:
-        while chunk := await asyncio.to_thread(file.read, 64 * 1024):
-            yield chunk
-    finally:
-        await asyncio.to_thread(file.close)
 
 
 @asynccontextmanager
@@ -69,10 +57,6 @@ async def bind(ctx: Context, config: Config) -> AsyncIterator[None]:
             provider_timeout=10,
         ) as service,
     ):
-        materializer = AttachmentMaterializer(
-            lambda: input.workspace, messages.storage.list_ready_attachment_paths
-        )
-        await materializer.reconcile()
 
         async def receive():
             async for inbound in channel.receive():
@@ -81,23 +65,10 @@ async def bind(ctx: Context, config: Config) -> AsyncIterator[None]:
                 )
                 channel_session_id = str(uuid5(NAMESPACE_URL, identity + ":channel"))
                 thread_id = str(uuid5(NAMESPACE_URL, identity + ":thread"))
-                attachments: list[InboundAttachment] = []
-                for attachment in inbound.attachments:
-                    attachments.append(
-                        materializer.failed(
-                            name=attachment.name,
-                            kind=attachment.kind,
-                            media_type=attachment.media_type,
-                            error=attachment.error,
-                        )
-                        if attachment.state == "failed"
-                        else await materializer.materialize(
-                            file_chunks(cast(Path, attachment.path)),
-                            name=attachment.name,
-                            kind=attachment.kind,
-                            media_type=attachment.media_type,
-                        )
-                    )
+                attachments = [
+                    await messages.import_attachment(attachment)
+                    for attachment in inbound.attachments
+                ]
                 message = Message(
                     direction=MessageDirection.INBOUND,
                     seq=0,
@@ -133,7 +104,10 @@ async def bind(ctx: Context, config: Config) -> AsyncIterator[None]:
                     notifies_runtime=inbound.notifies_runtime,
                     metadata={
                         **inbound.metadata,
-                        "sender_kind": inbound.sender.kind,
+                        "sender_kind": inbound.metadata.get(
+                            "sender_kind",
+                            inbound.sender.kind,
+                        ),
                         "provider_reply_to_message_id": inbound.target.reply_to_message_id,
                     },
                 )

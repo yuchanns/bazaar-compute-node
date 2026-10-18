@@ -423,6 +423,16 @@ class MessageStore:
             query_budget=query_budget,
         )
 
+    async def update_inbound_attachments(
+        self, message_id: str, attachments: tuple[InboundAttachment, ...]
+    ) -> None:
+        await self._run(
+            lambda repository: repository.update_inbound_attachments(
+                message_id, attachments
+            ),
+            mode="transaction",
+        )
+
     async def record_inbound(
         self, message: Message[InboundAttachment], *, now_ms: int, opening: Review
     ) -> RecordInboundResult:

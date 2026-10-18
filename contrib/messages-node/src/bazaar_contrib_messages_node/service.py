@@ -6,28 +6,36 @@ import logging
 import mimetypes
 import os
 import stat
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath
 from time import time_ns
-from uuid import uuid7
+from typing import cast
+from uuid import UUID, uuid7
 
 from bazaar_contrib_audit import Audit, AuditContext
 from bazaar_contrib_channel import (
     Channel,
+    ChannelError,
     ChannelMessageDelivery,
     ChannelSendRequest,
     ChannelTarget,
     DmAddress,
     DmRequest,
 )
+from bazaar_contrib_channel import InboundAttachment as ChannelSource
 from bazaar_contrib_channel import OutboundAttachment as ChannelAttachment
 from bazaar_contrib_messages import ThreadConcurrency
 from bazaar_contrib_messages.actor import Actor, Agent, Thread
 from bazaar_contrib_messages.correlation import CorrelationContext
 from bazaar_contrib_messages.delivery import from_receipt
-from bazaar_contrib_messages.models import ChannelSession, Message, OutboundAttachment
+from bazaar_contrib_messages.models import (
+    ChannelSession,
+    InboundAttachment,
+    Message,
+    OutboundAttachment,
+)
 from bazaar_contrib_messages.models import Thread as ConversationRow
 from bazaar_contrib_messages.operations import (
     AmbiguousInboxTargetError,
@@ -277,6 +285,11 @@ class NodeMessageService:
             channel, timer, timeout=provider_timeout
         )
         self._attachment_resolver = OutboundAttachmentResolver(lambda: workspace)
+        from .attachments import AttachmentMaterializer
+
+        self._attachments = AttachmentMaterializer(
+            lambda: workspace, storage.list_ready_attachment_paths
+        )
         # one draft per conversation as the caller names it, which may be a
         # peer reached on several bots: the key is the set of threads it spans
         self._drafts: dict[tuple[Thread, ...], MessageDraft] = {}
@@ -356,6 +369,63 @@ class NodeMessageService:
             payload=TypeAdapter(JsonValue).validate_python(payload),
             occurred_at_ms=at_ms,
         )
+
+    def prepare_attachment(self, source: ChannelSource) -> InboundAttachment:
+        return InboundAttachment(
+            attachment_id=str(uuid7()),
+            name=Path(source.name).name or "attachment.bin",
+            kind=source.kind,
+            state="downloading" if source.state == "ready" else "failed",
+            media_type=source.media_type,
+            error=source.error,
+        )
+
+    async def import_attachment(
+        self, source: ChannelSource, *, attachment_id: str | None = None
+    ) -> InboundAttachment:
+        if attachment_id is None:
+            attachment_id = str(uuid7())
+        else:
+            attachment_id = str(TypeAdapter(UUID).validate_python(attachment_id))
+        if source.state == "failed":
+            return self._attachments.failed(
+                attachment_id=attachment_id,
+                name=source.name,
+                kind=source.kind,
+                media_type=source.media_type,
+                error=source.error,
+            )
+        try:
+            async with cast(
+                AbstractAsyncContextManager[AsyncIterator[bytes]], source.source
+            ) as chunks:
+                return await self._attachments.materialize(
+                    chunks,
+                    attachment_id=attachment_id,
+                    name=source.name,
+                    kind=source.kind,
+                    media_type=source.media_type,
+                )
+        except (ChannelError, OSError, ValueError) as error:
+            return self._attachments.failed(
+                attachment_id=attachment_id,
+                name=source.name,
+                kind=source.kind,
+                media_type=source.media_type,
+                error=str(error),
+            )
+
+    async def format_message(self, message: Message[InboundAttachment]) -> str:
+        from bazaar_contrib_messages.results import TargetProjection
+
+        from .dispatch import format_check_message
+        from .serialize import serialize_message
+
+        target = await self.storage.resolve_inbox_target(message.target)
+        serialized = serialize_message(
+            message, (TargetProjection(target.canonical_target, target.display_target),)
+        )
+        return await asyncio.to_thread(format_check_message, serialized)
 
     async def read_unread_summary(self, actor: Actor, *, limit: int) -> UnreadSummary:
         return await self.storage.read_unread_summary(

@@ -1,22 +1,21 @@
 """Independent providers using only public core, channel and harness packages."""
 
+# Provider methods implement the public Harness call budgets.
+# ruff: noqa: ASYNC109
+
 from __future__ import annotations
 
 import asyncio
 import json
 import os
 import sys
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from functools import partial
 from pathlib import Path
 from time import time_ns
-from typing import Any, ClassVar, cast
-from uuid import (
-    NAMESPACE_URL,
-    uuid5,
-    uuid7,
-)
+from typing import Any, ClassVar, Literal, cast
+from uuid import NAMESPACE_URL, uuid5, uuid7
 
 from bazaar_contrib_channel import (
     CHANNEL,
@@ -34,6 +33,7 @@ from bazaar_contrib_channel import (
     ChannelSendPart,
     ChannelSendRequest,
     ChannelTarget,
+    ChannelTargetPresentation,
     DmAddress,
     DmRequest,
     InboundAttachment,
@@ -55,6 +55,7 @@ from bazaar_contrib_harness import (
     HarnessOutput,
     HarnessSession,
     HarnessSessionReconciliation,
+    HarnessSessionUnavailable,
     HarnessSkill,
     HarnessTurn,
     ProviderCallResult,
@@ -63,43 +64,84 @@ from bazaar_contrib_harness import (
     harness_builder_key,
 )
 from bazaar_core import Context, Contrib
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-)
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+class ChannelConfig(BaseModel):
+    kind: ClassVar[str] = "test-channel"
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    endpoint_file: str = "channel.json"
+
+
+class Attachment(BaseModel):
+    """A source file supplied by the TCP control peer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    kind: str = "file"
+    state: Literal["ready", "failed"] = "ready"
+    path: Path | None = None
+    gate: str | None = None
+    media_type: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def source(self):
+        if self.state == "ready" and self.path is None:
+            raise ValueError("a ready attachment requires a local source")
+        if self.state == "failed" and self.path is not None:
+            raise ValueError("a failed attachment has no local source")
+        return self
+
+
+async def file_chunks(
+    path: Path, gate: asyncio.Event | None = None
+) -> AsyncGenerator[bytes]:
+    """Read the peer's source lazily through the public attachment contract."""
+    if gate is not None:
+        await gate.wait()
+    stream = await asyncio.to_thread(path.open, "rb")
+    try:
+        while chunk := await asyncio.to_thread(stream.read, 64 * 1024):
+            yield chunk
+    finally:
+        await asyncio.to_thread(stream.close)
 
 
 class ChannelMessage(BaseModel):
+    """The test peer's wire message before the provider assigns local identities."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
-    id: str = Field(min_length=1)
+    id: str
     target: ChannelTarget
     sender: SenderIdentity
     body: str
-    attachments: tuple[InboundAttachment, ...] = ()
-    occurred_at_ms: int = Field(default_factory=lambda: time_ns() // 1_000_000)
+    message_type: str = "text"
+    target_presentation: ChannelTargetPresentation | None = None
+    reply_to_message_id: str | None = None
+    received_at_ms: int | None = None
+    provider_payload_ref: str | None = None
+    attachments: tuple[Attachment, ...] = ()
+    occurred_at_ms: int | None = Field(default_factory=lambda: time_ns() // 1_000_000)
     provider_chat_id: str | None = None
     notifies_runtime: bool = True
     mentions_agent: bool = False
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class ChannelConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    endpoint_file: str = "channel.json"
-
-
 class TestChannel:
     """A connected TCP channel controlled by a peer that observes and approves."""
 
-    def __init__(self, input: ChannelInput, group: asyncio.TaskGroup):
+    def __init__(self, input: ChannelInput, group: asyncio.TaskGroup, kind: str):
         self.input = input
         self.group = group
+        self.kind = kind
         self.writer: asyncio.StreamWriter | None = None
+        self.connected = asyncio.Event()
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self.outbound: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.downloads: dict[str, asyncio.Event] = {}
 
     def get_identity(self) -> ChannelIdentity:
         return ChannelIdentity(id=self.input.agent_id, name=self.input.agent_name)
@@ -107,7 +149,7 @@ class TestChannel:
     def dm_address(self, request: DmRequest) -> DmAddress | None:
         if request.sender_id is None:
             return None
-        identity = f"{self.input.agent_id}:dm:{request.sender_id}"
+        identity = f"{self.kind}:{self.input.agent_id}:dm:{request.sender_id}"
         return DmAddress(
             channel_session_id=str(uuid5(NAMESPACE_URL, identity + ":channel")),
             thread_id=str(uuid5(NAMESPACE_URL, identity + ":thread")),
@@ -117,6 +159,7 @@ class TestChannel:
 
     def connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.writer = writer
+        self.connected.set()
         self.group.create_task(self.connection(reader, writer))
 
     async def connection(
@@ -127,14 +170,32 @@ class TestChannel:
                 packet = json.loads(data)
                 if "inbound" in packet:
                     message = ChannelMessage.model_validate(packet["inbound"])
-                    identity = f"{self.input.agent_id}:{message.target.kind}:{message.target.thread_id}"
+                    identity = f"{self.kind}:{self.input.agent_id}:{message.target.kind}:{message.target.thread_id}"
                     await self.inbound.put(
                         InboundMessage(
-                            **message.model_dump(exclude={"id"}),
+                            **message.model_dump(exclude={"id", "attachments"}),
+                            attachments=tuple(
+                                InboundAttachment(
+                                    **attachment.model_dump(exclude={"path", "gate"}),
+                                    source=aclosing(
+                                        file_chunks(
+                                            cast(Path, attachment.path),
+                                            self.downloads.setdefault(
+                                                attachment.gate, asyncio.Event()
+                                            )
+                                            if attachment.gate is not None
+                                            else None,
+                                        )
+                                    )
+                                    if attachment.state == "ready"
+                                    else None,
+                                )
+                                for attachment in message.attachments
+                            ),
                             id=str(
                                 uuid5(
                                     NAMESPACE_URL,
-                                    f"{self.input.agent_id}:message:{message.id}",
+                                    f"{self.kind}:{self.input.agent_id}:message:{message.id}",
                                 )
                             ),
                             provider_message_id=message.id,
@@ -144,6 +205,8 @@ class TestChannel:
                             thread_id=str(uuid5(NAMESPACE_URL, identity + ":thread")),
                         )
                     )
+                elif "release_attachment" in packet:
+                    self.downloads.pop(packet["release_attachment"]).set()
                 else:
                     pending = self.pending.pop(packet["id"], None)
                     if pending is not None and not pending.done():
@@ -151,6 +214,7 @@ class TestChannel:
         finally:
             if self.writer is writer:
                 self.writer = None
+                self.connected.clear()
                 for pending in self.pending.values():
                     if not pending.done():
                         pending.set_exception(
@@ -166,9 +230,9 @@ class TestChannel:
     async def pump(self):
         while True:
             packet = await self.outbound.get()
+            while self.writer is None:
+                await self.connected.wait()
             writer = self.writer
-            if writer is None:
-                raise RuntimeError("channel peer is disconnected")
             writer.write(json.dumps(packet).encode() + b"\n")
             await writer.drain()
 
@@ -256,19 +320,23 @@ class TestChannel:
 
     async def request_approval(
         self, request: ChannelApprovalRequest, *, timeout: float
-    ) -> ApprovalResult:  # noqa: ASYNC109
+    ) -> ApprovalResult:
         id = request.approval.request_id
         self.pending[id] = asyncio.get_running_loop().create_future()
         await self.outbound.put({"id": id, "approval": request.model_dump(mode="json")})
-        packet = await self.pending[id]
-        return ApprovalResult.model_validate(packet["decision"])
+        try:
+            async with asyncio.timeout(timeout):
+                packet = await self.pending[id]
+            return ApprovalResult.model_validate(packet["decision"])
+        finally:
+            self.pending.pop(id, None)
 
 
 @asynccontextmanager
 async def channel_lifespan(ctx: Context, config: ChannelConfig):
     input = ctx.accept(CHANNEL_INPUT)
     async with asyncio.TaskGroup() as group:
-        channel = TestChannel(input, group)
+        channel = TestChannel(input, group, config.kind)
         server = await asyncio.start_server(channel.connect, "127.0.0.1", 0)
         pump = group.create_task(channel.pump())
         endpoint = input.workspace / config.endpoint_file
@@ -331,6 +399,8 @@ channel_builder = Contrib(
 class HarnessConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     title: str = "Document report"
+    input_mode: Literal["interactive", "batch"] = "interactive"
+    publication_delay: float = Field(default=0, ge=0)
 
 
 class DocumentStream:
@@ -346,50 +416,111 @@ class DocumentStream:
         self.stdin = cast(asyncio.StreamWriter, process.stdin)
         self.stdout = cast(asyncio.StreamReader, process.stdout)
         self.stderr = cast(asyncio.StreamReader, process.stderr)
+        self.events: asyncio.Queue[HarnessOutput | Exception | None] = asyncio.Queue()
+        self.decisions: set[asyncio.Task[None]] = set()
+        self.pending: dict[str, asyncio.Future[bool]] = {}
+        self.reader = asyncio.create_task(self.read())
 
     def __aiter__(self) -> DocumentStream:
         return self
 
     async def __anext__(self) -> HarnessOutput:
-        while data := await self.stdout.readline():
-            packet = json.loads(data)
-            if "event" in packet:
-                event = packet["event"]
-                return HarnessOutput.model_validate(
-                    event
-                    | {
-                        "provider": "document",
-                        "provider_event": event["kind"],
-                        "raw": event,
-                    }
-                )
-            request = ApprovalRequest.model_validate(packet["approval"])
+        item = await self.events.get()
+        if item is None:
+            raise StopAsyncIteration
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def decide(self, request: ApprovalRequest):
+        try:
             result = await self.approval.request_approval(request, timeout=self.timeout)
             self.stdin.write(result.model_dump_json().encode() + b"\n")
             await self.stdin.drain()
-        await self.process.wait()
-        if self.process.returncode:
-            raise RuntimeError((await self.stderr.read()).decode())
-        raise StopAsyncIteration
+        except Exception as error:  # noqa: BLE001
+            self.events.put_nowait(error)
+
+    async def read(self):
+        try:
+            while data := await self.stdout.readline():
+                packet = json.loads(data)
+                if "event" in packet:
+                    event = packet["event"]
+                    self.events.put_nowait(
+                        HarnessOutput.model_validate(
+                            event
+                            | {
+                                "provider": "document",
+                                "provider_event": event["kind"],
+                                "raw": event,
+                            }
+                        )
+                    )
+                elif "steer" in packet:
+                    pending = self.pending.get(packet["steer"])
+                    if pending is not None and not pending.done():
+                        pending.set_result(packet["accepted"])
+                else:
+                    task = asyncio.create_task(
+                        self.decide(ApprovalRequest.model_validate(packet["approval"]))
+                    )
+                    self.decisions.add(task)
+                    task.add_done_callback(self.decisions.discard)
+            await self.process.wait()
+            if self.process.returncode:
+                raise RuntimeError((await self.stderr.read()).decode())
+        except Exception as error:  # noqa: BLE001
+            self.events.put_nowait(error)
+        finally:
+            for pending in self.pending.values():
+                if not pending.done():
+                    pending.set_result(False)
+            self.events.put_nowait(None)
+
+    async def steer(self, text: str, *, timeout: float) -> bool:
+        if self.process.returncode is not None or self.stdin.is_closing():
+            return False
+        id = str(uuid7())
+        self.pending[id] = asyncio.get_running_loop().create_future()
+        try:
+            self.stdin.write(
+                json.dumps({"steer": id, "input_text": text}).encode() + b"\n"
+            )
+            await self.stdin.drain()
+            async with asyncio.timeout(timeout):
+                return await self.pending[id]
+        except OSError, TimeoutError:
+            return False
+        finally:
+            self.pending.pop(id, None)
 
     async def aclose(self):
         self.stdin.close()
+        for task in self.decisions:
+            task.cancel()
+        await asyncio.gather(*tuple(self.decisions), return_exceptions=True)
         await self.process.wait()
+        await self.reader
 
 
 class DocumentHarness:
     """Execute real document statistics and approved writes in child processes."""
+
+    task: asyncio.Task[None]
 
     def __init__(self, input: HarnessInput, config: HarnessConfig):
         self.input = input
         self.config = config
         self.streams: list[DocumentStream] = []
         self.sessions: dict[str, Path] = {}
-        self.turns: dict[tuple[str, str], DocumentStream] = {}
-        self.events: asyncio.Queue[HarnessExpire] = asyncio.Queue()
         self.inputs: dict[str, SessionInput] = {}
+        self.events: asyncio.Queue[HarnessExpire] = asyncio.Queue()
+        self.turns: dict[tuple[str, str], DocumentStream] = {}
+        self.backgrounds: dict[str, dict[Path, asyncio.subprocess.Process]] = {}
+        self.context = ""
+        self.contexts: dict[str, str] = {}
 
-    async def describe(self, *, timeout: float) -> HarnessDescription:  # noqa: ASYNC109
+    async def describe(self, *, timeout: float) -> HarnessDescription:
         return HarnessDescription(
             skills=(
                 HarnessSkill(
@@ -402,16 +533,19 @@ class DocumentHarness:
 
     async def start_session(
         self, request: SessionInput, *, timeout: float
-    ) -> ProviderCallResult[HarnessSession]:  # noqa: ASYNC109
+    ) -> ProviderCallResult[HarnessSession]:
         directory = request.workspace / "reports" / request.id
         await asyncio.to_thread(directory.mkdir, parents=True)
         self.sessions[request.id] = directory
         self.inputs[request.id] = request
+        self.contexts[request.id] = self.context
+        await asyncio.to_thread((directory / "style.txt").write_text, self.context)
         await asyncio.to_thread(
             (directory / "session.json").write_text, request.model_dump_json()
         )
         return ProviderCallResult(
-            status=ProviderCallStatus.CONFIRMED, value=HarnessSession(id=request.id)
+            status=ProviderCallStatus.CONFIRMED,
+            value=HarnessSession(id=request.id, provider_thread_id=request.id),
         )
 
     async def start_turn(
@@ -420,8 +554,12 @@ class DocumentHarness:
         turn: HarnessTurn,
         approval_handler: ApprovalHandler,
         *,
-        timeout: float,  # noqa: ASYNC109
+        timeout: float,
     ) -> DocumentStream:
+        if not await asyncio.to_thread(
+            (self.sessions[session.id] / "session.json").exists
+        ):
+            raise HarnessSessionUnavailable("The document session metadata was removed")
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -439,11 +577,27 @@ class DocumentHarness:
             "directory": str(self.sessions[session.id]),
             "agent_id": self.input.agent_id,
             "title": self.config.title,
+            "input_mode": self.config.input_mode,
+            "style": self.contexts[session.id],
             "turn": turn.model_dump(mode="json"),
             "session": self.inputs[session.id].model_dump(mode="json"),
         }
         stream.stdin.write(json.dumps(request).encode() + b"\n")
         await stream.stdin.drain()
+        if self.config.publication_delay:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "bcn_agent_workbench.archive",
+                str(self.sessions[session.id] / (turn.id + ".json")),
+                str(self.config.publication_delay),
+                env=dict(os.environ) | self.inputs[session.id].environment,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+            )
+            self.backgrounds.setdefault(session.id, {})[
+                self.sessions[session.id] / (turn.id + ".json")
+            ] = process
         return stream
 
     async def receive_event(self) -> HarnessExpire:
@@ -455,7 +609,7 @@ class DocumentHarness:
         turn: HarnessTurn | None,
         approval_handler: ApprovalHandler | None,
         *,
-        timeout: float,  # noqa: ASYNC109
+        timeout: float,
     ) -> ProviderCallResult[HarnessSessionReconciliation]:
         if session.id not in self.sessions:
             return ProviderCallResult(
@@ -463,6 +617,10 @@ class DocumentHarness:
                 error_kind="provider_failed",
                 error_message="Document session no longer exists",
             )
+        await asyncio.to_thread(
+            (self.sessions[session.id] / "session.json").write_text,
+            self.inputs[session.id].model_dump_json(),
+        )
         stream = None if turn is None else self.turns.get((session.id, turn.id))
         if stream is not None and stream.process.returncode is not None:
             stream = None
@@ -477,40 +635,91 @@ class DocumentHarness:
         turn: HarnessTurn,
         input_text: str,
         *,
-        timeout: float,  # noqa: ASYNC109
+        timeout: float,
     ) -> bool:
-        return False
+        stream = self.turns.get((session.id, turn.id))
+        return (
+            False if stream is None else await stream.steer(input_text, timeout=timeout)
+        )
 
     async def has_background_job(
-        self,
-        session: HarnessSession,
-        *,
-        timeout: float,  # noqa: ASYNC109
+        self, session: HarnessSession, *, timeout: float
     ) -> bool:
+        if self.task.done():
+            self.task.result()
+        for report, process in self.backgrounds.get(session.id, {}).items():
+            if process.returncode is None and not await asyncio.to_thread(
+                report.with_suffix(".published.json").exists
+            ):
+                return True
         return False
 
     async def stop_session(
         self, session: HarnessSession, *, timeout: float
-    ) -> ProviderCallResult[HarnessSession]:  # noqa: ASYNC109
-        self.inputs.pop(session.id)
-        await asyncio.to_thread(
-            (self.sessions.pop(session.id) / "session.closed").write_text, session.id
-        )
+    ) -> ProviderCallResult[HarnessSession]:
+        directory = self.sessions.get(session.id)
+        for process in self.backgrounds.get(session.id, {}).values():
+            if process.returncode is None:
+                process.terminate()
+            await process.wait()
+        if directory is not None:
+            await asyncio.to_thread(
+                (directory / "session.closed").write_text, session.id
+            )
+        self.sessions.pop(session.id, None)
+        self.inputs.pop(session.id, None)
+        self.contexts.pop(session.id, None)
+        self.backgrounds.pop(session.id, None)
         return ProviderCallResult(status=ProviderCallStatus.CONFIRMED, value=session)
 
+    def read_context(self) -> str:
+        try:
+            return (self.input.workspace / "STYLE.md").read_text()
+        except FileNotFoundError:
+            return ""
+
+    def save_context(self):
+        temporary = self.input.workspace / ("document-context-" + str(uuid7()) + ".tmp")
+        temporary.write_text(json.dumps({"style": self.context}))
+        temporary.replace(self.input.workspace / "document-context.json")
+
+    async def watch_context(self):
+        while True:
+            await asyncio.sleep(0.1)
+            context = await asyncio.to_thread(self.read_context)
+            if context != self.context:
+                self.context = context
+                if self.sessions:
+                    self.events.put_nowait(
+                        HarnessExpire(session_id=next(iter(self.sessions)))
+                    )
+                await asyncio.to_thread(self.save_context)
+
     async def aclose(self):
+        for processes in self.backgrounds.values():
+            for process in processes.values():
+                if process.returncode is None:
+                    process.terminate()
+                await process.wait()
         for stream in self.streams:
             await stream.aclose()
+        for id in tuple(self.sessions):
+            await self.stop_session(HarnessSession(id=id), timeout=600)
 
 
 @asynccontextmanager
 async def harness_lifespan(ctx: Context, config: HarnessConfig):
     harness = DocumentHarness(ctx.accept(HARNESS_INPUT), config)
-    ctx.offer(HARNESS, harness)
-    try:
-        yield
-    finally:
-        await harness.aclose()
+    harness.context = await asyncio.to_thread(harness.read_context)
+    await asyncio.to_thread(harness.save_context)
+    async with asyncio.TaskGroup() as group:
+        harness.task = group.create_task(harness.watch_context())
+        ctx.offer(HARNESS, harness)
+        try:
+            yield
+        finally:
+            harness.task.cancel()
+            await harness.aclose()
 
 
 harness = Contrib(
@@ -540,4 +749,30 @@ harness_builder = Contrib(
     accepts=[HARNESS_BUILDERS],
     offers=[harness_builder_key("document")],
     lifespan=harness_builder_lifespan,
+)
+
+
+class SecondaryChannelConfig(ChannelConfig):
+    kind: ClassVar[str] = "test-channel-secondary"
+
+
+secondary_channel = Contrib(
+    config=SecondaryChannelConfig,
+    accepts=[CHANNEL_INPUT],
+    offers=[CHANNEL],
+    lifespan=channel_lifespan,
+)
+
+
+class SecondaryChannelParameters(ChannelBuilderParameters):
+    kind: ClassVar[str] = "test-channel-secondary"
+    entity_model: ClassVar[type[BaseModel]] = SecondaryChannelConfig
+    entry: ClassVar[Contrib[Any]] = secondary_channel
+
+
+secondary_channel_builder = Contrib(
+    config=SecondaryChannelParameters,
+    accepts=[CHANNEL_BUILDERS],
+    offers=[channel_builder_key("test-channel-secondary")],
+    lifespan=channel_builder_lifespan,
 )

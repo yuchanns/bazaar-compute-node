@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
+from uuid import UUID
 lazy from pathlib import Path
 
 from bazaar_contrib_channel import ChannelBuilder, ChannelBuilderConfig
 from bazaar_contrib_harness import HarnessBuilder, HarnessBuilderConfig
 from bazaar_core import Composition
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    model_validator,
+)
+
+if TYPE_CHECKING:
+    from .loop import AgentLoop
 
 
 class ProviderConfig(BaseModel):
@@ -71,8 +82,10 @@ class Config(BaseModel):
                     channels[model.kind] = model.builder()
                 elif model is not None and issubclass(model, HarnessBuilderConfig):
                     harnesses[model.kind] = model.builder()
+            from . import compose
+
             for agent in self.agents:
-                agent.validate_providers(channels, harnesses)
+                compose(agent, channel_builders=channels, harness_builders=harnesses)
         return self
 
 
@@ -83,3 +96,6 @@ class Agent(BaseModel):
     id: str
     name: str
     workspace: Path
+    _loop: AgentLoop | None = PrivateAttr(default=None)
+    _command: Path | None = PrivateAttr(default=None)
+    _instance_id: UUID | None = PrivateAttr(default=None)

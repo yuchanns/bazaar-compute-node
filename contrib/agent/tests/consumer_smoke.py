@@ -23,14 +23,30 @@ from bazaar_core import (
 )
 from bcn_agent_journal import JOURNAL
 from blockbuster import blockbuster_ctx
+from custom_smoke import exercise as exercise_custom
 from provider_smoke import exercise as exercise_providers
+from recovery_smoke import exercise as exercise_recovery
 
-from bazaar_contrib_agent import AGENT, Agent, AgentConfig, compose
+from bazaar_contrib_agent import (
+    AGENT,
+    AGENTS,
+    Agent,
+    AgentConfig,
+    AgentInstances,
+    compose,
+)
 
 REPORT = ServiceKey[AsyncTextIOWrapper]("example.shared-report")
 
 
 async def exercise(path: Path):
+    services: list[AgentInstances] = []
+
+    @asynccontextmanager
+    async def agents_ready(ctx: Context):
+        services.append(ctx.accept(AGENTS))
+        yield
+
     default = path / ".bcn" / "workspaces" / "Cloud"
     project = path / "project"
     await asyncio.to_thread(project.mkdir)
@@ -54,10 +70,27 @@ async def exercise(path: Path):
                 ContribSpec(contrib="database", config={"backend": "sqlite"}),
                 ContribSpec(contrib="schema"),
                 ContribSpec(contrib="legacy-node-migrations"),
+                ContribSpec(contrib="timer-wheel"),
+                ContribSpec(contrib="messages-node"),
+                ContribSpec(contrib="collaboration"),
+                ContribSpec(contrib="reminder"),
+                ContribSpec(contrib="agent-execution"),
                 ContribSpec(contrib="agent", config=config),
             ],
         )
+        composition = composition.model_copy(
+            update={
+                "entries": (
+                    *composition.entries,
+                    ContribEntry(
+                        name="agents-ready",
+                        definition=Contrib(accepts=[AGENTS], lifespan=agents_ready),
+                    ),
+                )
+            }
+        )
         async with ContribHub() as hub, hub.enable(composition):
+            await services[-1].wait_applied()
             for name in ("Cloud", "Tifa"):
                 assert any(
                     record.name == name and isinstance(record.state, Running)
@@ -77,6 +110,11 @@ async def exercise(path: Path):
             ContribSpec(contrib="database", config={"backend": "sqlite"}),
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),
+            ContribSpec(contrib="timer-wheel"),
+            ContribSpec(contrib="messages-node"),
+            ContribSpec(contrib="collaboration"),
+            ContribSpec(contrib="reminder"),
+            ContribSpec(contrib="agent-execution"),
             ContribSpec(contrib="agent"),
         ],
     )
@@ -138,6 +176,7 @@ async def exercise(path: Path):
         hub.enable(
             Composition(
                 entries=[
+                    *composition.entries,
                     ContribEntry(
                         name="shared",
                         definition=Contrib(offers=[REPORT], lifespan=shared),
@@ -166,6 +205,8 @@ async def exercise(path: Path):
     assert "observed Cloud" in report and "observed Tifa" in report
     assert "shared continues" in report and "shared released" in report
     await exercise_providers(path / "providers")
+    await exercise_custom(path / "editor")
+    await exercise_recovery(path / "recovery")
 
 
 if __name__ == "__main__":

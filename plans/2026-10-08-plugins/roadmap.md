@@ -52,7 +52,7 @@ Actor 是内部流通的身份原语，内部身份参数、业务调用与归�
 | 存储 | storage、sqlite、database、schema，默认 database.config.backend="sqlite" |
 | 节点通用定时 | timer-wheel 作为 TIMER 提供者，由消费者的依赖闭包选入 |
 | agent 公共业务 | messages、collaboration、reminder |
-| provider 公共接口与 agent | channel-builders、harness-builders；agent 组合持有配置，明确构造执行及 provider 实例 |
+| provider 公共接口与 agent | channel-builders、harness-builders；agent 持有配置，agent-execution 持有实体执行及 provider 组合 |
 
 具体 channel／harness provider 由用户通过 `bcn contrib add <name> --enable ENTRY` 安装并选择入口；单独 `--enable` 启用该包导出的全部入口，例如 codex、telegram。
 启用保存该包所提供组合中的 builder 与运行定义；`bcn agent add` 选择已启用的 provider 并填写实体参数，`bcn run` 按该配置创建实际连接和进程。
@@ -120,7 +120,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | 复用消息的 sender／contact、Actor 和会话公共契约，迁入准入、登记、审核、消息引用关联及设置；消息数据经消息接口读写，审核决策和审计由协作持有，设置等自身数据通过 DB 管理；通过 agent 生命周期绑定并共享会话锁；页面短数字 refs 随服务端 history／contacts 迁移 | 5 | 默认配置选择并由 manager 恢复；server 联系人的契约依赖 |
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 2 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
-| `bazaar-contrib-agent` | `agent`：共享 组合；内部执行定义为 AGENT | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
+| `bazaar-contrib-agent` | `agent`：配置入口；`agent-execution`：共享 AGENTS；实体提供局部 AGENT 身份与执行服务 | 拥有 agent 配置及管理命令、实体展开、默认 BCN 指令、bcc 工具环境、上下文与通讯编排；依赖 channel／harness 接口、消息、协作、Reminder、timer | 7 | 默认、可替换；配置与行为整体由所选 agent 实现拥有 |
 | `bazaar-contrib-node-management` | `node-management`：共享 | 首阶段接收已实现的 run 命令、配置激活与退出等待；后续节点配置、workspace／文件、模型／skills、健康、系统服务与升级按阶段交付；agent 配置及命令由 agent 包拥有 | 2、10 | 默认 |
 
 ### server、web 与可选能力模块包
@@ -133,6 +133,9 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-telegram` | `telegram-builder`：共享；`telegram`：接受 channel 输入；`telegram-ui`：共享 | Telegram 收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
 | `bazaar-contrib-lark` | `lark-builder`：共享；`lark`：接受 channel 输入；`lark-ui`：共享 | Lark 连接、收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
 | `bazaar-contrib-wecom` | `wecom-builder`：共享；`wecom`：接受 channel 输入；`wecom-ui`：共享 | WeCom 连接、收发、附件、配置与编辑器；运行入口实现 Channel，依赖 channel、timer，页面入口依赖 GUI 与访问契约 | 8、14 | 可选；web 的编辑器依赖 |
+
+WeCom 从消息内的 quote 补录安静入站消息时，保留当前消息发送者；
+发送者的补全由 WeCom provider 完成，通用 Channel 和 Agent 原样传递。
 | `bazaar-contrib-codex` | `codex-builder`：共享；`codex`：接受 harness 输入 | Codex 进程、事件解析、模型／能力与审批；实现 Harness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
 | `bazaar-contrib-claude-code` | `claudecode-builder`：共享；`claudecode`：接受 harness 输入 | Claude Code 进程、事件解析、模型／能力与审批；实现 Harness，依赖 harness、timer | 9 | 可选；实际实例由 agent 配置选择 |
 | `bazaar-contrib-http` | `http` | HTTP route／middleware／静态资源登记、监听能力与请求生命周期；提供 HTTP，导出共用 HTTP 与 API 注册契约 | 11 | server 依赖 |
@@ -252,6 +255,15 @@ provider 提供的可选计量项和明确来源一同保留，技能与文件�
 各具体 provider 交付时通过相同控制面验证技能、模型用量和多轮事件来源；第 11 阶段接入完整载荷的两端上报，再由 BCS 消费方验证活动／用量／耗时分析。
 
 ### 默认 agent 行为与替换
+
+Task 16 的 Agent 装配直接组合现有 messages、collaboration、Reminder、timer、Channel 和 Harness 契约；
+由 Agent 持有 Actor 调度、活跃命令绑定及各 provider 子组合，使用现有框架管理生命周期。
+Harness 抽象承载原有 turn steering、会话恢复、后台任务保护与故障切换所需的能力；
+Agent 保留 inbox 通知、三秒静默合批、送达游标去重、两种 mode 的审批语义和错误反馈。
+真实 TestChannel、独立子进程和原生 bcc 在 wheel／sdist 中验证完整调度、通知、恢复与资源退出；
+原行为、插件归属及验收依据逐项记录在 framework 的 Task 16。
+独立 Agent 验收使用单独的 editorial 发行包，公共 TestChannel／Harness workbench 供各能力包共享。
+
 
 `bazaar-contrib-agent` 的公开 `agent` 入口拥有完整配置模型、实体装配、管理命令及默认 BCN agent 行为。
 配置统一保存在该入口的 `contribs[].enabled[].config`，包含 `agents` 列表及各 agent 的 channel／harness 选择、参数和凭据引用：

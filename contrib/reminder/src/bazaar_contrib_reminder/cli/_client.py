@@ -6,10 +6,7 @@ from functools import wraps
 from typing import Any, cast
 
 import click
-from bazaar_contrib_sidecar import (
-    Remote,
-    Symbol,
-)
+from bazaar_contrib_sidecar import Remote, Symbol
 
 
 class BccCommandError(RuntimeError):

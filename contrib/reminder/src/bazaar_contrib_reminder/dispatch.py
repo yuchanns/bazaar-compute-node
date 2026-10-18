@@ -309,8 +309,8 @@ class CommandDispatcher:
             self._drained.set()
 
     async def drain(self, *, timeout: float) -> None:  # noqa: ASYNC109
-        if timeout <= 0:
-            raise ValueError("timeout must be positive")
+        if timeout < 0:
+            raise ValueError("timeout must be non-negative")
         self.stop_accepting()
         if not self._in_flight:
             return
@@ -495,7 +495,8 @@ class CommandDispatcher:
                 "A Reminder requires --delay-seconds, --fire-at, or --repeat.",
             )
         try:
-            request = ReminderScheduleRequest.from_options(
+            request = await asyncio.to_thread(
+                ReminderScheduleRequest.from_options,
                 title=request_values.title,
                 message_id=request_values.message_id,
                 evaluated_at_ms=now_ms,

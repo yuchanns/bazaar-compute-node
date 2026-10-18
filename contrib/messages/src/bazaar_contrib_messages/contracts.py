@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from bazaar_contrib_channel import Channel
+from bazaar_contrib_channel import InboundAttachment as ChannelAttachment
 from bazaar_contrib_storage import Session
 from bazaar_core import ServiceKey
 
@@ -102,6 +103,10 @@ class MessageStorage(MessageSession, Protocol):
 
     async def list_ready_attachment_paths(self) -> tuple[str, ...]: ...
 
+    async def update_inbound_attachments(
+        self, message_id: str, attachments: tuple[InboundAttachment, ...]
+    ) -> None: ...
+
     async def record_inbound(
         self,
         message: Message[InboundAttachment],
@@ -116,6 +121,20 @@ class MessageService(Protocol):
 
     @property
     def storage(self) -> MessageStorage: ...
+
+    def prepare_attachment(self, source: ChannelAttachment) -> InboundAttachment:
+        """Reserve its identity and metadata before opening the byte stream."""
+        ...
+
+    async def import_attachment(
+        self, source: ChannelAttachment, *, attachment_id: str | None = None
+    ) -> InboundAttachment:
+        """Store its scoped byte stream, optionally reusing a reserved UUID identity."""
+        ...
+
+    async def format_message(self, message: Message[InboundAttachment]) -> str:
+        """Render a message with its canonical identity, sender and attachments."""
+        ...
 
     async def read_unread_summary(self, actor: Actor, *, limit: int) -> UnreadSummary:
         """Read unread counts and the newest messages without advancing delivery."""

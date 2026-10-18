@@ -12,14 +12,14 @@ type Line = Annotated[str, Field(min_length=1, pattern=r"^[^\r\n]+$")]
 
 
 @cache
-def template() -> Template:
+def template(name: str = "developer_instructions.md") -> Template:
     return Environment(
         loader=PackageLoader("bazaar_contrib_agent", "resources"),
         undefined=StrictUndefined,
         autoescape=False,
         keep_trailing_newline=True,
         auto_reload=False,
-    ).get_template("developer_instructions.md")
+    ).get_template(name)
 
 
 class DeveloperInstructionContext(BaseModel):

@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from time import time_ns
-from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 from bazaar_contrib_channel import CHANNEL, CHANNEL_INPUT, ChannelInput
@@ -18,7 +17,6 @@ from bazaar_contrib_messages import (
 )
 from bazaar_contrib_messages.models import (
     ChannelTargetPresentation,
-    InboundAttachment,
     Message,
     SenderIdentity,
 )
@@ -27,23 +25,13 @@ from bazaar_core import Composition, Context, Contrib, ContribEntry
 from bcn_agent_workbench import channel
 from pydantic import BaseModel, ConfigDict
 
-from bazaar_contrib_messages_node import AttachmentMaterializer, ThreadLockRegistry
+from bazaar_contrib_messages_node import ThreadLockRegistry
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     directory: Path
     agents: tuple[str, ...] = ("Cloud", "Tifa")
-
-
-async def file_chunks(path: Path) -> AsyncIterator[bytes]:
-    """Stream the peer's local file through the public attachment sink."""
-    file = await asyncio.to_thread(path.open, "rb")
-    try:
-        while chunk := await asyncio.to_thread(file.read, 64 * 1024):
-            yield chunk
-    finally:
-        await asyncio.to_thread(file.close)
 
 
 @asynccontextmanager
@@ -59,10 +47,6 @@ async def bind(ctx: Context) -> AsyncIterator[None]:
         provider_timeout=10,
         shutdown_timeout=10,
     ) as service:
-        materializer = AttachmentMaterializer(
-            lambda: input.workspace, service.storage.list_ready_attachment_paths
-        )
-        await materializer.reconcile()
 
         async def receive():
             async for inbound in channel.receive():
@@ -78,23 +62,15 @@ async def bind(ctx: Context) -> AsyncIterator[None]:
                         inbound.target.thread_id,
                         inbound.target.reply_to_message_id,
                     )
-                attachments: list[InboundAttachment] = []
-                for attachment in inbound.attachments:
-                    attachments.append(
-                        materializer.failed(
-                            name=attachment.name,
-                            kind=attachment.kind,
-                            media_type=attachment.media_type,
-                            error=attachment.error,
-                        )
-                        if attachment.state == "failed"
-                        else await materializer.materialize(
-                            file_chunks(cast(Path, attachment.path)),
-                            name=attachment.name,
-                            kind=attachment.kind,
-                            media_type=attachment.media_type,
-                        )
+                attachments = [
+                    await service.import_attachment(
+                        attachment,
+                        attachment_id=service.prepare_attachment(
+                            attachment
+                        ).attachment_id,
                     )
+                    for attachment in inbound.attachments
+                ]
                 message = Message(
                     direction=MessageDirection.INBOUND,
                     seq=0,
@@ -127,7 +103,12 @@ async def bind(ctx: Context) -> AsyncIterator[None]:
                     provider_message_id=inbound.provider_message_id or inbound.id,
                     received_at_ms=inbound.occurred_at_ms,
                     mentions_agent=f"@{input.agent_name}" in inbound.body,
-                    metadata={"sender_kind": inbound.sender.kind},
+                    metadata={
+                        "sender_kind": inbound.metadata.get(
+                            "sender_kind",
+                            inbound.sender.kind,
+                        )
+                    },
                 )
                 await service.storage.record_inbound(
                     message, now_ms=time_ns() // 1_000_000, opening=Review.APPROVED

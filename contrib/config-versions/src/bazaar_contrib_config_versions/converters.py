@@ -169,6 +169,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         )
     if agents:
         add("agent", "agent", {"agents": agents})
+        add("agent-execution", "agent")
     document = ConfigDocument(
         contribs=tuple(
             ContribPackage(

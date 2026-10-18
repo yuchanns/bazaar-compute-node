@@ -7,7 +7,7 @@ import re
 import tempfile
 from collections.abc import AsyncIterable, Awaitable, Callable, Collection
 from pathlib import Path, PurePosixPath
-from uuid import UUID, uuid7
+from uuid import UUID
 
 from bazaar_contrib_messages.models import InboundAttachment
 
@@ -25,7 +25,6 @@ class AttachmentMaterializer:
         self._workspace = workspace
         self._referenced_paths = referenced_paths
         self._max_file_bytes = max_file_bytes
-        self._lock = asyncio.Lock()
 
     async def reconcile(self) -> None:
         root = self._workspace() / "attachments"
@@ -41,8 +40,7 @@ class AttachmentMaterializer:
         for path in files:
             if not (path.name.startswith(".bcn-") and path.name.endswith(".part")):
                 try:
-                    if UUID(path.stem).version != 7:
-                        continue
+                    UUID(path.stem)
                 except ValueError:
                     continue
             if str(PurePosixPath("attachments", path.name)) in referenced:
@@ -103,20 +101,19 @@ class AttachmentMaterializer:
         self,
         source: AsyncIterable[bytes],
         *,
+        attachment_id: str,
         name: str,
         kind: str,
         media_type: str | None = None,
     ) -> InboundAttachment:
         if not name or not kind:
             raise ValueError("attachment name and kind must be non-empty")
-        attachment_id = str(uuid7())
         suffix = await asyncio.to_thread(_attachment_suffix, name, media_type)
         relative = PurePosixPath("attachments", f"{attachment_id}{suffix.lower()}")
         root = self._workspace() / "attachments"
         destination = self._workspace().joinpath(*relative.parts)
-        async with self._lock:
-            await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True, mode=0o700)
-            size = await self._stage(source, destination)
+        await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True, mode=0o700)
+        size = await self._stage(source, destination)
         return InboundAttachment(
             attachment_id=attachment_id,
             name=Path(name).name,
@@ -130,13 +127,14 @@ class AttachmentMaterializer:
     def failed(
         self,
         *,
+        attachment_id: str,
         name: str,
         kind: str,
         error: str | None,
         media_type: str | None = None,
     ) -> InboundAttachment:
         return InboundAttachment(
-            attachment_id=str(uuid7()),
+            attachment_id=attachment_id,
             name=Path(name).name or "attachment.bin",
             kind=kind,
             state="failed",
