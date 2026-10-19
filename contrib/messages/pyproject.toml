@@ -15,6 +15,9 @@ Repository = "https://github.com/yuchanns/bazaar-compute-node"
 requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
+[tool.bcn.ci]
+skip = true
+
 [tool.pyright]
 extends = "../../pyrightconfig.json"
 include = ["src"]
