@@ -401,6 +401,7 @@ class HarnessConfig(BaseModel):
     title: str = "Document report"
     input_mode: Literal["interactive", "batch"] = "interactive"
     publication_delay: float = Field(default=0, ge=0)
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class DocumentStream:
@@ -534,6 +535,12 @@ class DocumentHarness:
     async def start_session(
         self, request: SessionInput, *, timeout: float
     ) -> ProviderCallResult[HarnessSession]:
+        request = request.model_copy(
+            update={
+                "environment": request.environment
+                | {name: os.environ[source] for name, source in self.config.env.items()}
+            }
+        )
         directory = request.workspace / "reports" / request.id
         await asyncio.to_thread(directory.mkdir, parents=True)
         self.sessions[request.id] = directory

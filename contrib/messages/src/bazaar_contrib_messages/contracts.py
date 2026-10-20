@@ -54,6 +54,10 @@ class MessageSession(Protocol):
 
     async def save_channel_session(self, session: ChannelSession) -> None: ...
 
+    async def activate_pending_inbound(self, actor: Thread) -> None:
+        """Restore requested notifications for unread messages in an approved contact."""
+        ...
+
     async def list_thread_ids(self) -> tuple[Thread, ...]: ...
 
     async def resolve_message(
@@ -85,7 +89,7 @@ class MessageStorage(MessageSession, Protocol):
     async def get_consumer_cursor(self, actor: Thread) -> ConsumerCursor | None: ...
 
     async def write[T](self, operation: Callable[[MessageSession], Awaitable[T]]) -> T:
-        """Run the callback in one writer scope; its session stays in the callback."""
+        """Run the callback atomically; its transaction session stays in the callback."""
         ...
 
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...

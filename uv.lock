@@ -6,6 +6,7 @@ requires-python = ">=3.15"
 members = [
     "bazaar-compute-node",
     "bazaar-contrib-agent",
+    "bazaar-contrib-agent-command",
     "bazaar-contrib-audit",
     "bazaar-contrib-channel",
     "bazaar-contrib-collaboration",
@@ -121,6 +122,41 @@ requires-dist = [
     { name = "bazaar-contrib-schema", editable = "contrib/schema" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-contrib-timer", editable = "contrib/timer" },
+    { name = "bazaar-core", editable = "core" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "bazaar-contrib-agent-command"
+version = "0.3.0rc1"
+source = { editable = "contrib/agent-command" }
+dependencies = [
+    { name = "bazaar-contrib-agent" },
+    { name = "bazaar-contrib-channel" },
+    { name = "bazaar-contrib-collaboration" },
+    { name = "bazaar-contrib-config" },
+    { name = "bazaar-contrib-harness" },
+    { name = "bazaar-contrib-invoke" },
+    { name = "bazaar-contrib-messages" },
+    { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-core" },
+    { name = "click" },
+    { name = "jinja2" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-contrib-agent", editable = "contrib/agent" },
+    { name = "bazaar-contrib-channel", editable = "contrib/channel" },
+    { name = "bazaar-contrib-collaboration", editable = "contrib/collaboration" },
+    { name = "bazaar-contrib-config", editable = "contrib/config" },
+    { name = "bazaar-contrib-harness", editable = "contrib/harness" },
+    { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
+    { name = "bazaar-contrib-messages", editable = "contrib/messages" },
+    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-core", editable = "core" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "jinja2", specifier = ">=3.1.6" },

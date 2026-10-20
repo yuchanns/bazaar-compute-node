@@ -25,8 +25,10 @@ from bazaar_contrib_messages.states import (
     Review,
     RuntimeEventState,
 )
+from bazaar_core import Context
 from pydantic import JsonValue, TypeAdapter
 
+from .events import CONTACT_REVIEWED, ContactReviewed
 from .review import REVIEW_REPLY
 from .store import CollaborationStore
 
@@ -42,12 +44,14 @@ class CollaborationService:
         audit: Audit,
         concurrency: ThreadConcurrency,
         sender: ChannelSender,
+        context: Context,
     ):
         self.messages = messages
         self.storage = storage
         self._audit = audit
         self._concurrency = concurrency
         self._sender = sender
+        self._context = context
 
     async def _publish(
         self,
@@ -95,7 +99,7 @@ class CollaborationService:
     async def review_contact(
         self, thread_id: Thread, decision: Review
     ) -> ChannelSession:
-        async def update(storage: MessageSession) -> ChannelSession:
+        async def update(storage: MessageSession) -> tuple[ChannelSession, Review]:
             thread = await storage.get_thread(thread_id)
             if thread is None:
                 raise ValueError(f"thread is not found: {thread_id.id}")
@@ -103,36 +107,44 @@ class CollaborationService:
                 ChannelSession,
                 await storage.get_channel_session(thread.channel_session_id),
             )
+            previous = session.review
             session = replace(
                 session,
                 review=decision,
                 updated_at_ms=max(session.updated_at_ms, now_ms),
             )
             await storage.save_channel_session(session)
-            return session
+            if previous is Review.PENDING and decision is Review.APPROVED:
+                await storage.activate_pending_inbound(thread_id)
+            return session, previous
 
         async with self._concurrency.for_thread(thread_id):
             now_ms = time_ns() // 1_000_000
-            session = await self.messages.storage.write(update)
-        target = await self.messages.storage.resolve_inbox_target(
-            session.canonical_target
-        )
-        await self._publish(
-            event_name="channel.session.reviewed",
-            state=RuntimeEventState.COMPLETED,
-            correlation=CorrelationContext(
-                node_id=self.storage.owner.id,
-                thread_id=thread_id.id,
-                channel=session.channel,
-                channel_session_id=session.id,
-            ),
-            metadata={
-                "thread_id": thread_id.id,
-                "review": decision.value,
-                "target": session.canonical_target,
-                "target_name": target.display_target,
-            },
-        )
+            session, previous = await self.messages.storage.write(update)
+            target = await self.messages.storage.resolve_inbox_target(
+                session.canonical_target
+            )
+            await self._publish(
+                event_name="channel.session.reviewed",
+                state=RuntimeEventState.COMPLETED,
+                correlation=CorrelationContext(
+                    node_id=self.storage.owner.id,
+                    thread_id=thread_id.id,
+                    channel=session.channel,
+                    channel_session_id=session.id,
+                ),
+                metadata={
+                    "thread_id": thread_id.id,
+                    "review": decision.value,
+                    "target": session.canonical_target,
+                    "target_name": target.display_target,
+                },
+            )
+            if session.review is not previous:
+                await self._context.announce(
+                    CONTACT_REVIEWED,
+                    ContactReviewed(self.storage.owner, thread_id, session.review),
+                )
         return session
 
     async def setting(self, key: str) -> str | None:

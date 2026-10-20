@@ -18,7 +18,11 @@ from bazaar_contrib_channel import (
     ChannelInput,
     channel_builder_key,
 )
-from bazaar_contrib_collaboration import COLLABORATION
+from bazaar_contrib_collaboration import (
+    COLLABORATION,
+    CONTACT_REVIEWED,
+    ContactReviewed,
+)
 from bazaar_contrib_harness import (
     HARNESS,
     HARNESS_BUILDERS,
@@ -28,6 +32,7 @@ from bazaar_contrib_harness import (
     harness_builder_key,
 )
 from bazaar_contrib_messages import MESSAGES
+from bazaar_contrib_messages.states import Review
 from bazaar_contrib_reminder import REMINDER
 from bazaar_contrib_storage import DB
 from bazaar_contrib_timer import TIMER
@@ -275,12 +280,18 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
         yield
 
 
+async def contact_reviewed(ctx: Context, event: ContactReviewed) -> None:
+    if event.review is Review.APPROVED and ctx.accept(AGENT).id == event.agent.id:
+        await ctx.accept(_LOOP).recover()
+
+
 instance = Contrib(config=_InstanceConfig, offers=[AGENT], lifespan=instance_lifespan)
 _loop = Contrib(
     config=_InstanceConfig,
     offers=[_LOOP],
     accepts=[*SERVICES, AGENTS, AGENT],
     lifespan=loop_lifespan,
+    listen={CONTACT_REVIEWED: contact_reviewed},
 )
 _channel = Contrib(
     config=_ChannelConfig, accepts=[AGENT, _LOOP], lifespan=channel_lifespan

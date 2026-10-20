@@ -1966,18 +1966,49 @@ workspace Ruff／format、共享锁和仓库根目录精确 Pyright LSP 检查�
 
 ### Task 17：agent 配置管理与会话准入审核
 
-agent 插件在 `bcn agent review` 下登记三个基础命令：
+独立发行包 `bazaar-contrib-agent-command` 提供普通 contrib 入口 `agent-command`，
+在 `bazaar_compute_node.commands` 中以 `agent` 登记 `CommandEntry(contrib="agent-command")`。
+用户经现有 `bcn contrib add bazaar-contrib-agent-command --enable` 安装并启用，
+已安装的包使用 `bcn contrib enable bazaar-contrib-agent-command`；入口的参数保存在自己的 enabled 条目中。
+CommandCatalog 按已启用入口发现顶层命令，app 按 entry.contrib 选根，插件通过 COMMANDS.register 登记原生 Click 命令树。
+
+管理入口直接接受 CONFIGURATION、COMMANDS 和 Sidecar CLIENT，并提供 AgentConfiguration／AgentManagement 及 AGENT_CONFIGURATION。
+Agent 实体沿用 `bazaar_contrib_agent` 公开的 Config／AgentConfig 模型。
+管理入口的配置模型从公共 Composition 校验上下文读取已启用的 ChannelBuilderConfig／HarnessBuilderConfig 声明，
+用各声明的 kind 和 entity_model 提供 provider 参数选择；完整候选通过 CONFIGURATION.commit 校验与条件保存。
+配置读写定位有效配置中 agent 条目的 config.agents，add 生成身份，list 展示已保存实体，
+edit 按 id／name 保留身份、provider 顺序和未修改字段，remove 保留工作区及持久数据。
+配置修改先使用现有载体读取完整候选；短生命周期命令经已声明的 Sidecar CLIENT 连接运行中的节点，
+核对 ConfigurationEnvironment 与保存修订属于当前选择的配置后，调用该节点的 CONFIGURATION.commit／apply，
+由原配置上下文热更新现有 Agent 实例。服务已在节点内运行时直接消费同一 CONFIGURATION；
+只有连接明确返回节点未运行时才在本地条件保存，已连接后的服务与应用错误保留为失败。
+列表使用带表头的对齐列，操作以 Added／Updated／Removed agent 和 Approved／Denied conversation
+报告完成结果，删除后保留 Workspace and data preserved，空 Agent 列表显示 No agents。查询写 stdout，操作提示写 stderr；
+增删改不输出启动或重启提示，在线变更通过现有更新链路立即生效，离线变更只保存配置。
+配置操作只使用声明与载体服务；运行实例继续由现有 agent／agent-execution 组合管理。
+命令使用 --name、可重复 --channel／--harness 及 --set agent.key=value／channel.key=value／harness.key=value；
+harness.env 保留环境变量名到来源名的引用。参数行为以原 app/agent_management.py、cmd/bcn/agent.py 为基线，
+管理输出沿用已确认的 uv 风格；实体和 provider 校验复用现有 Agent 模型及候选组合展开。
+README 仅给出安装、agent 管理及会话审核的命令示例，参数细节由命令帮助提供。
+各级命令与选项使用 uv 风格的简短帮助文案及明确的参数占位符。Click 原生 required／Choice
+处理必填项和 provider 选择；--set 使用普通字符串选项，经 Pydantic 模型的输入转换及字段约束集中校验，
+替代独立 Parameters 参数类型。仅保留 scope.key=value、TOML 值和 env 来源映射的语法展开及 provider 定位，
+实体字段类型与 provider 配置继续由公共 Agent 模型和完整候选校验负责。
+
+agent-command 插件在 `bcn agent review` 下登记三个基础命令：
 
 ```bash
 bcn agent review list <agent-id>
-bcn agent review approve <agent-id> <thread-id>
-bcn agent review deny <agent-id> <thread-id>
+bcn agent review approve <thread-id>
+bcn agent review deny <thread-id>
 ```
 
-`list` 查询所选 agent 的待审会话，返回会话 ID、渠道、名称和审核状态；
-`approve`／`deny` 对该 agent 所属的指定会话作出通过或拒绝的决定。
-命令通过本机 sidecar 连接运行中的节点；命令所属消费入口显式声明 collaboration 公共服务依赖，
-通过框架 accept 获取服务后调用。collaboration 持有准入规则、审核状态持久化及审计，sidecar 沿用通用转发。
+`list` 查询所选 agent 的待审会话，返回会话 ID、渠道和名称；
+`approve`／`deny` 仅接收节点内唯一的 thread-id，经已配置 Agent 的公共 Messages.storage／get_thread
+确认会话归属，再取得对应 collaboration 服务作出通过或拒绝的决定。
+管理入口在 Contrib.accepts 声明 CLIENT；平台 sidecar 创建客户端时只持有传输资源，
+配置修改与审核首次调用才连接运行中的节点；审核经连接所属的框架 accept 消费 collaboration 公共服务。
+collaboration 持有准入规则、审核状态持久化及审计，sidecar 沿用通用转发。
 本机命令和 BCS 审核入口使用同一公共服务与同一份会话审核状态。
 后续 TUI／GUI 界面由独立 contrib 消费同一公共协作服务。
 
@@ -1988,25 +2019,48 @@ bcn agent review deny <agent-id> <thread-id>
 沿用会话归属、并发保护与审计规则。
 
 审核由待审变为通过后，为该会话触发一次正常入站通知，沿 inbox notice 唤醒智能体，
-使原请求继续得到响应，用户无需再发送一条消息。改动接在 collaboration 公共 `review_contact`
-保存通过决定及审核审计之后，按 Thread 从数据库读取所属会话和已保存的入站消息，
-接入 Task 16 迁入的正常通知发布入口；原 `publish_inbox_wake`、`_RuntimeNotification`、
-`_notice_for`／`inbox_notice` 的调用链是通知构造与分发依据。
+使原请求继续得到响应，用户无需再发送一条消息。collaboration 公共 `review_contact`
+在同一个 Messages 写事务中保存通过决定并恢复该 Thread 未消费入站消息的通知资格；
+入站时由 Messages 保留原始通知意图，静默上下文继续保持静默，群组沿用 following／mentions 规则。
+独立恢复通知资格的 Messages 操作使用普通 writer：完整查询与单次 UPDATE 在现有串行写队列内执行；
+审核决定与通知资格的组合修改继续由外层 Messages 写事务提交。
+审核结果持久化及审计完成后，collaboration 用现有 Context.announce 发布 CONTACT_REVIEWED 业务事件，
+以 ContactReviewed 携带所属 Agent、Thread 和最终 Review；通过和拒绝等实际状态变化均发布，供插件订阅。
+agent 的 loop contrib 用 listen 订阅，仅处理自身 Agent 的通过结果，通过公开上下文取得循环服务并调用现有 recover，
+由持久化未读查询与 wake 接回 Task 16 的正常 inbox notice 链路。
+待审变为通过时恢复通知资格；recover 沿用现有通知序号与消费游标，节点重启继续恢复持久化未读。
 前半段沿用现有入站、落库和审核拦截：被拦截的原处理已结束，
 审批触发的通知只凭持久化会话和消息构造，节点在入站后、审批前重启也能完成。
 本机命令、BCS 和其他公共服务调用者通过同一个 review_contact 获得该行为。
 
-- [ ] 在 bazaar-contrib-agent 的公开入口提供自身配置管理服务并登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
-- [ ] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新自身 contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
-- [ ] 节点未运行时通过短生命周期管理组合完成首次默认配置创建和 agent 管理，模块选择与业务参数统一保存在相应 contribs[].enabled[].config，默认 agent 的实体参数由其 config.agents 持有。
-- [ ] 管理模式启用配置、命令及所需共享登记服务，完整业务候选只执行资源启动前校验；后续 bcn run 才创建 AGENT／CHANNEL／HARNESS 实例。
-- [ ] 登记 `bcn agent review list <agent-id>`、`approve <agent-id> <thread-id>` 和 `deny <agent-id> <thread-id>`，经 sidecar 消费 collaboration 服务；状态更新持久化并发布原审核审计事件。
-- [ ] 审核通过并持久化后，从数据库读取该会话及入站消息，触发一次正常入站通知，经 inbox notice 唤醒响应；本机命令、BCS 和公共服务调用共用实现。
-- [ ] 各子命令按实际操作选择依赖和生命周期：配置管理使用原短生命周期组合，会话审核连接运行中的节点及其协作服务。
-- [ ] 自定义 agent 可登记自己的模型与管理命令；通用 app 命令分发消费登记结果，配置保存复用 CONFIGURATION。node-management 持有节点与平台管理职责，按默认节点清单接入其基础入口并在后续平台阶段补齐。
-- [ ] 在未配置 BCS 的真实隔离节点上，通过 TestChannel 注入新会话，使用三个基础命令验证待审列表、本机通过后交互、拒绝后的状态变化和重启后审核结果；通过公共服务读回同一结果，并验证不同 agent 的会话归属。
-- [ ] 用 TestChannel 发送自然用户请求，待审拦截后重启隔离节点，再通过本机命令或公共服务批准；观察正常 inbox notice 和实际响应，全程只发送原请求。以相同控制面验证正常审批及两种 mode 的会话归属。
-- [ ] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
+独立安装验收复用 Agent 的真实 workbench 包及 TCP TestChannel：该包的 DocumentHarness 支持 env 来源映射，
+在 start_session 将配置中的来源名解析到 SessionInput.environment，由已有文档子进程的 editor 报告字段验证实际传递。
+配置验收同时保存两个 Channel provider，编辑时调整顺序并保留各自参数，再运行节点执行审核与响应。
+
+- [x] 独立 agent-command 包提供配置管理服务并通过现有命令入口登记 `bcn agent add`、列表、编辑、删除命令，按当前载体读写配置。
+- [x] 命令读取已启用 builder 的 provider 选择和实体模型，填写 agent 信息、channel／harness 参数与凭据引用，更新 agent contrib 条目的 config.agents；模型边界校验及组合展开后条件提交完整候选。
+- [x] 节点未运行时通过短生命周期命令入口完成 agent 管理，模块选择与业务参数统一保存在相应 contribs[].enabled[].config，默认 agent 的实体参数由其 config.agents 持有。
+- [x] 节点停止时，管理模式启用配置、命令及所需共享登记服务，完整业务候选只执行资源启动前校验；后续 bcn run 才创建 AGENT／CHANNEL／HARNESS 实例。
+- [x] 登记 `bcn agent review list <agent-id>`、`approve <thread-id>` 和 `deny <thread-id>`，经 sidecar 消费 Messages 公共查询确认归属及 collaboration 服务；状态更新持久化并发布原审核审计事件。
+- [x] 审核通过并持久化后，从数据库读取该会话及入站消息，触发一次正常入站通知，经 inbox notice 唤醒响应；本机命令、BCS 和公共服务调用共用实现。
+- [x] 各子命令按实际操作选择依赖和生命周期：配置管理使用原短生命周期组合，会话审核连接运行中的节点及其协作服务。
+- [x] 配置增删改复用运行节点的 CONFIGURATION.commit／apply 即时更新；离线仅保存，并在独立 venv／tool 中验证运行中新增、修改、删除及输出流与列表格式。
+- [x] agent-command 使用普通 contrib 的安装与启用流程、命令元数据和公开服务声明，独立安装的命令树由既有通用分发消费；配置保存复用 CONFIGURATION，node-management 保持节点管理职责。
+- [x] 在未配置 BCS 的真实隔离节点上，通过 TestChannel 注入新会话，使用三个基础命令验证待审列表、本机通过后交互、拒绝后的状态变化和重启后审核结果；通过公共服务读回同一结果，并验证不同 agent 的会话归属。
+- [x] 用 TestChannel 发送自然用户请求，待审拦截后重启隔离节点，再通过本机命令或公共服务批准；观察正常 inbox notice 和实际响应，全程只发送原请求。以相同控制面验证正常审批及两种 mode 的会话归属。
+- [x] 在隔离 tool／venv 和真实示例包中完成安装、add --enable、agent add、读取保存配置、bcn run 及退出流程，完成独立安装与检查，提交供 review。
+- [x] 统一 agent 命令帮助文案和参数占位符，使用 Click／Pydantic 原生校验并精简 --set 解析，通过真实独立安装的配置管理流程验收。
+- [x] 以统一 CONTACT_REVIEWED 事件发布通过与拒绝结果，在真实节点订阅并验证所属 Agent、会话和审核状态，同时验证通过后恢复原请求。
+
+验收完成：独立 wheel／venv 与 sdist／uv-tool 的管理、在线增删改及单会话 ID 审批流程共 2 项通过（248.94 s）；
+既有 Agent、Collaboration、Messages 的独立 wheel／sdist 验收分别通过（336.32／64.67／87.66 s）。
+新包的 wheel／sdist 导入与共享 LICENSE 完整性检查、workspace Ruff／format、锁文件一致性，
+以及仓库根目录精确 `uv run --quiet scripts/pyright_lsp_check.py .` 均通过，Task 17 提交供 review。
+
+本轮 review 修订验收：命令插件独立 venv／tool 共 2 项通过（326.55 s），
+Collaboration 和 Agent 的独立 wheel／sdist 验收分别通过（63.91／339.99 s）；
+真实独立订阅方收到通过与拒绝事件，Agent、Thread 和审核状态与持久化审计一致。
+九份真实命令帮助、workspace Ruff／format、锁文件及根目录精确 Pyright LSP 检查通过。
 
 ### Task 18：首阶段完整验收与合入
 

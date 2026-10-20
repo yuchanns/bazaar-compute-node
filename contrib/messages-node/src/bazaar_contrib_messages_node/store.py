@@ -234,7 +234,13 @@ class MessageStore:
         )
 
     async def write[T](self, operation: Callable[[MessageSession], Awaitable[T]]) -> T:
-        return await self._run(operation, mode="write")
+        return await self._run(operation, mode="transaction")
+
+    async def activate_pending_inbound(self, actor: ThreadActor) -> None:
+        await self._run(
+            lambda repository: repository.activate_pending_inbound(actor),
+            mode="write",
+        )
 
     async def save_thread(self, session: Thread) -> None:
         return await self._run(

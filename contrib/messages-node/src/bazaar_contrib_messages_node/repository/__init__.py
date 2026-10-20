@@ -1959,6 +1959,51 @@ class Repository(StorageOperationMixin, RepositoryBase):
         await self.save_thread(thread)
         return message, channel_session, thread
 
+    async def activate_pending_inbound(self, actor: ThreadActor) -> None:
+        thread = await self.get_thread(actor)
+        if thread is None:
+            raise ValueError(f"thread is not found: {actor.id}")
+        session = await self.get_channel_session(thread.channel_session_id)
+        if session is None or session.review is not Review.APPROVED:
+            return
+        cursor = await self.get_consumer_cursor(actor)
+        rows = await self._session.select(
+            Select(
+                table="messages",
+                where=self.scope(
+                    equal("thread_id", actor.id),
+                    equal("direction", MessageDirection.INBOUND.value),
+                    equal("notifies_runtime", 0),
+                    Compare(
+                        left=Column(name="seq"),
+                        operator=">",
+                        right=Value(
+                            value=0 if cursor is None else cursor.delivered_through_seq
+                        ),
+                    ),
+                ),
+            )
+        )
+        selected = []
+        for row in rows:
+            message = message_from_row(row)
+            if message.metadata.get("notification_requested") is True and (
+                session.target_kind is ChannelTargetKind.DM
+                or session.following
+                or message.mentions_agent
+            ):
+                selected.append(row["message_id"])
+        if selected:
+            await self._session.update(
+                Update(
+                    table="messages",
+                    values={"notifies_runtime": Value(value=1)},
+                    where=self.scope(
+                        In(expression=Column(name="message_id"), values=tuple(selected))
+                    ),
+                )
+            )
+
     async def record_inbound(
         self,
         message: Message[InboundAttachment],
@@ -2025,6 +2070,10 @@ class Repository(StorageOperationMixin, RepositoryBase):
                 target=channel_session.canonical_target,
                 target_presentation=None,
                 notifies_runtime=notifies_runtime,
+                metadata={
+                    **message.metadata,
+                    "notification_requested": message.notifies_runtime,
+                },
             )
 
         if (

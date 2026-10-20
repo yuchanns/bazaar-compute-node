@@ -19,6 +19,7 @@ from bazaar_contrib_storage import DB, Database
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib, ServiceKey
 
+from .events import CONTACT_REVIEWED, ContactReviewed
 from .review import REVIEW_REPLY
 from .schema import MODULE
 from .service import CollaborationService
@@ -26,10 +27,12 @@ from .store import CollaborationStore
 
 __all__ = [
     "COLLABORATION",
+    "CONTACT_REVIEWED",
     "REVIEW_REPLY",
     "Collaboration",
     "CollaborationService",
     "CollaborationStore",
+    "ContactReviewed",
     "collaboration",
 ]
 
@@ -37,10 +40,13 @@ __all__ = [
 class Collaboration:
     """Keep each agent's collaboration binding with its message service."""
 
-    def __init__(self, database: Database, audit: Audit, timer: Timer):
+    def __init__(
+        self, database: Database, audit: Audit, timer: Timer, context: Context
+    ):
         self.database = database
         self.audit = audit
         self.timer = timer
+        self.context = context
         self._bindings: dict[Agent, CollaborationService] = {}
 
     @asynccontextmanager
@@ -65,6 +71,7 @@ class Collaboration:
                 self.timer,
                 policy=ChannelRetryPolicy(timeout=provider_timeout),
             ),
+            context=self.context,
         )
         self._bindings[owner] = service
         try:
@@ -87,7 +94,7 @@ async def lifespan(ctx: Context):
     async with ctx.accept(SCHEMA).register(MODULE):
         ctx.offer(
             COLLABORATION,
-            Collaboration(ctx.accept(DB), ctx.accept(AUDIT), ctx.accept(TIMER)),
+            Collaboration(ctx.accept(DB), ctx.accept(AUDIT), ctx.accept(TIMER), ctx),
         )
         yield
 
