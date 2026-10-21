@@ -9,278 +9,319 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
   group: pypi-release
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  prepare:
+  plan:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
-      release_commit: ${{ steps.provenance.outputs.release_commit }}
-      source_date_epoch: ${{ steps.provenance.outputs.source_date_epoch }}
-      tag: ${{ steps.release.outputs.tag }}
-      tag_object: ${{ steps.provenance.outputs.tag_object }}
-      version: ${{ steps.release.outputs.version }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      source_commit: ${{ steps.source.outputs.source_commit }}
     steps:
-      - name: Validate workflow ref
-        run: |
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Release must run from main" >&2
-            exit 1
-          fi
-
-      - name: Checkout main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          ref: main
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.13.0"
-
-      - name: Install Python
-        run: uv python install 3.15
-
-      - name: Validate release state
-        id: release
+      - name: Validate release source
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          set -euo pipefail
-
-          version="$RELEASE_VERSION"
-          release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(rc[1-9][0-9]*)?$'
-          if [[ ! "$version" =~ $release_version ]]; then
-            echo "version must match X.Y.Z or X.Y.ZrcN without a v prefix" >&2
+          if [[ "$RELEASE_VERSION" != *rc* && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Stable releases must run from main" >&2
             exit 1
           fi
 
-          current_version="$(uv version --short)"
-          if [[ ! "$current_version" =~ $release_version ]]; then
-            echo "current project version is not an X.Y.Z or X.Y.ZrcN version" >&2
-            exit 1
-          fi
+      - name: Checkout selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
 
-          # a release candidate orders below the release it precedes and above
-          # the one before it, which is more than a field-by-field comparison of
-          # X.Y.Z can express, so the ordering comes from the same PEP 440
-          # implementation that resolvers and the node's version check use
-          if ! RELEASE_VERSION="$version" CURRENT_VERSION="$current_version" \
-            uv run --isolated --no-project --with packaging python -c '
-          import os
-          import sys
+      - name: Setup workspace
+        uses: ./.github/actions/setup
 
-          from packaging.version import Version
-
-          sys.exit(0 if Version(os.environ["RELEASE_VERSION"]) >= Version(os.environ["CURRENT_VERSION"]) else 1)
-          '; then
-            echo "version $version is older than current version $current_version" >&2
-            exit 1
-          fi
-
-          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-            echo "checkout is not the latest origin/main" >&2
-            exit 1
-          fi
-
-          if [[ "$version" =~ rc[1-9][0-9]*$ ]]; then
-            is_prerelease=true
-          else
-            is_prerelease=false
-          fi
-
-          tag="v$version"
-          if [[ "$version" == "$current_version" ]]; then
-            if [[ "$(git log -1 --format=%s)" != "Release $tag" ]]; then
-              echo "current version already matches, but HEAD is not its release commit" >&2
-              exit 1
-            fi
-            mode="retry"
-          else
-            previous_tag="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*rc*' HEAD)"
-            if [[ "$(git cat-file -t "refs/tags/$previous_tag")" != "tag" ]]; then
-              echo "previous release tag $previous_tag is not annotated" >&2
-              exit 1
-            fi
-            mode="new"
-          fi
-
-          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
-            tag_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
-            if [[ "$mode" != "retry" || "$tag_commit" != "$(git rev-parse HEAD)" ]]; then
-              echo "tag $tag already points to a different release state" >&2
-              exit 1
-            fi
-          fi
-
-          echo "is_prerelease=$is_prerelease" >>"$GITHUB_OUTPUT"
-          echo "mode=$mode" >>"$GITHUB_OUTPUT"
-          echo "previous_tag=${previous_tag:-}" >>"$GITHUB_OUTPUT"
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-
-      - name: Run checks
-        uses: ./.github/actions/checks
-
-      - name: Set release version
-        if: steps.release.outputs.mode == 'new'
+      - name: Validate release version and public packages
+        id: source
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        run: uv run --no-sync scripts/release.py plan "$RELEASE_VERSION" --branch "$RELEASE_BRANCH" --github-output "$GITHUB_OUTPUT"
+
+      - name: Plan all workspace checks
+        id: plan
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
         run: |
-          uv version "$RELEASE_VERSION" --no-sync
-          uv lock --check
+          git checkout --detach "$SOURCE_COMMIT"
+          uv sync --locked --all-packages
+          uv run --no-sync scripts/ci.py plan --all-packages --github-output "$GITHUB_OUTPUT"
+
+  checks:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Run static checks
+        uses: ./.github/actions/checks
+        with:
+          packages: ${{ join(fromJson(needs.plan.outputs.matrix).package, ' ') }}
+
+  tests:
+    name: ${{ matrix.component }} / ${{ matrix.os }}
+    needs: [plan, checks]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJson(needs.plan.outputs.matrix).tests }}
+    steps:
+      - name: Enable Git symbolic links on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.symlinks true
+
+      - name: Checkout selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Verify package
+        uses: ./.github/actions/test
+        with:
+          package: ${{ matrix.package }}
+
+  prepare:
+    needs: [checks, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      release_commit: ${{ steps.commit.outputs.release_commit }}
+      plan: ${{ steps.release.outputs.plan }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      is_prerelease: ${{ steps.release.outputs.is_prerelease }}
+      artifact_id: ${{ steps.artifact.outputs.artifact_id }}
+      artifact_run: ${{ steps.artifact.outputs.artifact_run }}
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Prepare common release version
+        id: release
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          uv run --no-sync scripts/release.py prepare "$RELEASE_VERSION" \
+            --branch "$RELEASE_BRANCH" --source "$SOURCE_COMMIT" --github-output "$GITHUB_OUTPUT"
 
       - name: Create verified release commit
         if: steps.release.outputs.mode == 'new'
-        id: version_commit
+        id: new_commit
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_PLAN: ${{ steps.release.outputs.plan }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
         with:
           result-encoding: string
           script: |
-            const fs = require("fs");
-            const expectedHeadOid = (await exec.getExecOutput(
-              "git",
-              ["rev-parse", "HEAD"],
-              {silent: true},
-            )).stdout.trim();
-            const version = "${{ steps.release.outputs.version }}";
-            const isPrerelease = "${{ steps.release.outputs.is_prerelease }}" === "true";
-            const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
-            const written = new RegExp(
-              `^## ${version.replaceAll(".", "\\.")} - `,
-              "m",
-            ).test(changelog);
-            if (!isPrerelease && !written) {
-              const generated = await github.rest.repos.generateReleaseNotes({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag_name: "${{ steps.release.outputs.tag }}",
-                target_commitish: expectedHeadOid,
-                previous_tag_name: "${{ steps.release.outputs.previous_tag }}",
-              });
-              const insertionPoint = changelog.indexOf("\n## ");
-              if (insertionPoint === -1) {
-                throw new Error("CHANGELOG.md does not contain a release section");
+            const fs = require('fs');
+            const source = JSON.parse(fs.readFileSync(process.env.RELEASE_PLAN, 'utf8'));
+            if (!process.env.RELEASE_VERSION.includes('rc')) {
+              const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+              if (!changelog.includes('## ' + process.env.RELEASE_VERSION + ' - ')) {
+                const generated = await github.rest.repos.generateReleaseNotes({
+                  ...context.repo,
+                  tag_name: process.env.RELEASE_TAG,
+                  target_commitish: source.source_commit,
+                  ...(process.env.PREVIOUS_TAG ? {previous_tag_name: process.env.PREVIOUS_TAG} : {}),
+                });
+                const index = changelog.indexOf('\n## ');
+                if (index < 0) throw new Error('CHANGELOG.md does not contain a release section');
+                const section = '## ' + process.env.RELEASE_VERSION + ' - ' + new Date().toISOString().slice(0, 10);
+                fs.writeFileSync('CHANGELOG.md', changelog.slice(0, index + 1) + section + '\n\n' + generated.data.body.trim() + '\n\n' + changelog.slice(index + 1));
               }
-              const releaseDate = new Date().toISOString().slice(0, 10);
-              const releaseSection = [
-                `## ${version} - ${releaseDate}`,
-                generated.data.body.trim(),
-              ].join("\n\n");
-              fs.writeFileSync(
-                "CHANGELOG.md",
-                `${changelog.slice(0, insertionPoint + 1)}${releaseSection}\n\n${changelog.slice(insertionPoint + 1)}`,
-              );
             }
-            const encode = (path) => fs.readFileSync(path).toString("base64");
+            const changed = (await exec.getExecOutput('git', ['diff', '--name-only', '-z'], {silent: true})).stdout.split('\0').filter(Boolean);
+            changed.push(process.env.RELEASE_PLAN);
             const input = {
               branch: {
-                repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`,
-                branchName: "main",
+                repositoryNameWithOwner: context.repo.owner + '/' + context.repo.repo,
+                branchName: process.env.RELEASE_BRANCH,
               },
-              expectedHeadOid,
-              message: {headline: `Release ${{ steps.release.outputs.tag }}`},
-              fileChanges: {
-                additions: [
-                  ...(isPrerelease
-                    ? []
-                    : [{path: "CHANGELOG.md", contents: encode("CHANGELOG.md")}]),
-                  {path: "pyproject.toml", contents: encode("pyproject.toml")},
-                  {path: "uv.lock", contents: encode("uv.lock")},
-                ],
-              },
+              expectedHeadOid: source.source_commit,
+              message: {headline: 'Release ' + process.env.RELEASE_TAG},
+              fileChanges: {additions: [...new Set(changed)].map(path => ({
+                path, contents: fs.readFileSync(path).toString('base64'),
+              }))},
             };
-            const mutation = `
-              mutation($input: CreateCommitOnBranchInput!) {
-                createCommitOnBranch(input: $input) {
-                  commit {
-                    oid
-                    signature {
-                      isValid
-                      wasSignedByGitHub
-                    }
-                  }
-                }
-              }
-            `;
-            const result = await github.graphql(mutation, {input});
-            const {oid, signature} = result.createCommitOnBranch.commit;
-            if (!signature?.isValid || !signature.wasSignedByGitHub) {
-              throw new Error("Release commit was not signed and verified by GitHub");
+            const result = await github.graphql('mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid signature { isValid wasSignedByGitHub } } } }', {input});
+            const commit = result.createCommitOnBranch.commit;
+            if (!commit.signature?.isValid || !commit.signature.wasSignedByGitHub) {
+              throw new Error('Release commit was not signed and verified by GitHub');
             }
-            return oid;
+            return commit.oid;
 
-      - name: Checkout release commit
-        if: steps.release.outputs.mode == 'new'
+      - name: Resolve fixed release commit
+        id: commit
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          RELEASE_COMMIT: ${{ steps.version_commit.outputs.result }}
-        run: |
-          git restore CHANGELOG.md pyproject.toml uv.lock
-          git fetch origin main
-          git checkout --detach "$RELEASE_COMMIT"
-          if [[ "$(git rev-parse origin/main)" != "$RELEASE_COMMIT" ]]; then
-            echo "origin/main does not point to the release commit" >&2
-            exit 1
-          fi
-
-      - name: Set reproducible build timestamp
-        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >>"$GITHUB_ENV"
-
-      - name: Create local release tag
-        id: provenance
-        env:
+          NEW_COMMIT: ${{ steps.new_commit.outputs.result }}
+          EXISTING_COMMIT: ${{ steps.release.outputs.release_commit }}
+          SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        with:
+          script: |
+            const ref = process.env.NEW_COMMIT || process.env.EXISTING_COMMIT;
+            const {data} = await github.rest.repos.getCommit({...context.repo, ref});
+            if (!data.commit.verification.verified || data.parents.length !== 1 ||
+                data.parents[0].sha !== process.env.SOURCE_COMMIT ||
+                data.commit.message.split('\n')[0] !== 'Release ' + process.env.RELEASE_TAG) {
+              throw new Error('The saved release commit does not match its source and verified signature');
+            }
+            core.setOutput('release_commit', data.sha);
+
+      - name: Find existing fixed distributions
+        id: artifact
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        with:
+          script: |
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              ...context.repo, name: 'python-dist-' + process.env.RELEASE_VERSION, per_page: 100,
+            });
+            for (const artifact of artifacts.sort((a, b) => b.id - a.id)) {
+              if (artifact.expired || artifact.workflow_run?.head_branch !== process.env.RELEASE_BRANCH) continue;
+              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: artifact.workflow_run.id});
+              if (run.event !== 'workflow_dispatch' || run.path !== '.github/workflows/release.yml') continue;
+              core.setOutput('artifact_id', artifact.id);
+              core.setOutput('artifact_run', run.id);
+              break;
+            }
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      tag_object: ${{ steps.tag.outputs.tag_object }}
+      source_date_epoch: ${{ steps.tag.outputs.source_date_epoch }}
+    steps:
+      - name: Checkout fixed release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_commit }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Download saved distributions
+        if: needs.prepare.outputs.artifact_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          run-id: ${{ needs.prepare.outputs.artifact_run }}
+          github-token: ${{ github.token }}
+          path: dist/
+
+      - name: Build public workspace distributions
+        if: needs.prepare.outputs.artifact_id == ''
+        env:
+          RELEASE_PLAN: ${{ needs.prepare.outputs.plan }}
+        run: uv run --no-sync scripts/release.py build --plan "$RELEASE_PLAN"
+
+      - name: Verify fixed artifact checksums
+        run: uv run --no-sync scripts/release.py inspect
+
+      - name: Prepare reproducible annotated tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG" >/dev/null; then
-            if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
-              echo "tag $RELEASE_TAG is not annotated" >&2
-              exit 1
-            fi
-            if [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" != "$(git rev-parse HEAD)" ]]; then
-              echo "tag $RELEASE_TAG does not point to the release commit" >&2
-              exit 1
-            fi
+            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           else
-            GIT_COMMITTER_DATE="@$SOURCE_DATE_EPOCH +0000" \
-              git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+            GIT_COMMITTER_DATE="@$source_date_epoch +0000" git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           fi
-
-          echo "release_commit=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
-          echo "source_date_epoch=$SOURCE_DATE_EPOCH" >>"$GITHUB_OUTPUT"
           echo "tag_object=$(git rev-parse "refs/tags/$RELEASE_TAG")" >>"$GITHUB_OUTPUT"
+          echo "source_date_epoch=$source_date_epoch" >>"$GITHUB_OUTPUT"
 
-      - name: Build distributions
-        run: uv build --no-sources
-
-      - name: Smoke test wheel
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: uv run --isolated --no-project --with dist/*.whl tests/package_smoke.py "$RELEASE_VERSION"
-
-      - name: Smoke test source distribution
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: uv run --isolated --no-project --with dist/*.tar.gz tests/package_smoke.py "$RELEASE_VERSION"
-
-      - name: Upload distributions
+      - name: Save fixed distributions and manifest
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-dist-${{ steps.release.outputs.version }}
+          name: python-dist-${{ needs.prepare.outputs.version }}
           path: dist/
+          overwrite: true
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
+
+  verify:
+    name: Installed distributions / ${{ matrix.os }}
+    needs: [prepare, build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Enable Git symbolic links on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.symlinks true
+
+      - name: Checkout fixed release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_commit }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Download fixed distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: dist/
+
+      - name: Verify wheel and sdist installations
+        run: uv run --no-sync scripts/release.py verify
 
   publish:
-    needs: prepare
+    needs: [prepare, build, verify]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -289,58 +330,106 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download distributions
+      - name: Checkout fixed release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_commit }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Download fixed distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: python-dist-${{ needs.prepare.outputs.version }}
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: dist/
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - name: Publish in dependency order
+        run: uv run --no-sync scripts/release.py publish
+
+      - name: Verify clean installation from PyPI
+        run: uv run --no-sync scripts/release.py verify --pypi
+
+      - name: Save per-package publishing results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          packages-dir: dist/
-          skip-existing: true
+          name: published-${{ needs.prepare.outputs.version }}
+          path: dist/published.json
+          overwrite: true
+          if-no-files-found: ignore
+          retention-days: 90
 
   finalize:
-    needs:
-      - prepare
-      - publish
+    needs: [prepare, build, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout release commit
+      - name: Checkout fixed release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_commit }}
 
-      - name: Push release tag
+      - name: Download fixed manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: dist/
+
+      - name: Push verified annotated tag
         env:
-          EXPECTED_TAG_OBJECT: ${{ needs.prepare.outputs.tag_object }}
+          EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag_object }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_date_epoch }}
         run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG" >/dev/null; then
-            if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
-              echo "tag $RELEASE_TAG is not annotated" >&2
-              exit 1
-            fi
+            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            GIT_COMMITTER_DATE="@$SOURCE_DATE_EPOCH +0000" \
-              git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+            GIT_COMMITTER_DATE="@$SOURCE_DATE_EPOCH +0000" git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           fi
-
-          if [[ "$(git rev-parse "refs/tags/$RELEASE_TAG")" != "$EXPECTED_TAG_OBJECT" ]]; then
-            echo "tag $RELEASE_TAG does not match the locally validated tag object" >&2
-            exit 1
-          fi
-
-          if [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" != "$(git rev-parse HEAD)" ]]; then
-            echo "tag $RELEASE_TAG does not point to the release commit" >&2
-            exit 1
-          fi
-
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG")" = "$EXPECTED_TAG_OBJECT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish GitHub release and checksummed manifest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.is_prerelease }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const content = fs.readFileSync('dist/manifest.json');
+            const manifest = JSON.parse(content);
+            if (manifest.release_commit !== process.env.RELEASE_COMMIT) throw new Error('Release manifest commit differs');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({...context.repo, tag: process.env.RELEASE_TAG})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                ...context.repo, tag_name: process.env.RELEASE_TAG,
+                target_commitish: manifest.release_commit,
+                name: process.env.RELEASE_TAG,
+                prerelease: process.env.IS_PRERELEASE === 'true',
+                body: 'Source: ' + manifest.release_commit + '\n\n' + manifest.packages.map(item => '- ' + item.name + ' ' + manifest.version).join('\n'),
+              })).data;
+            }
+            if (release.draft || release.prerelease !== (process.env.IS_PRERELEASE === 'true')) {
+              throw new Error('Existing GitHub release has different publication state');
+            }
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {...context.repo, release_id: release.id, per_page: 100});
+            const existing = assets.find(asset => asset.name === 'manifest.json');
+            if (existing) {
+              if (existing.digest !== 'sha256:' + crypto.createHash('sha256').update(content).digest('hex')) {
+                throw new Error('Existing GitHub release manifest differs');
+              }
+            } else {
+              await github.rest.repos.uploadReleaseAsset({...context.repo, release_id: release.id, name: 'manifest.json', data: content});
+            }

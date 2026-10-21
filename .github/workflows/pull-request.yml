@@ -28,16 +28,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.13.0"
-
-      - name: Install Python
-        run: uv python install 3.15
-
-      - name: Install locked dependencies
-        run: uv sync --locked --all-packages
+      - name: Setup workspace
+        uses: ./.github/actions/setup
 
       - name: Generate package matrix
         id: plan
@@ -51,31 +43,17 @@ jobs:
     needs: plan
     if: needs.plan.outputs.has_packages == 'true'
     runs-on: ubuntu-latest
-    env:
-      PACKAGES: ${{ join(fromJson(needs.plan.outputs.matrix).package, ' ') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.13.0"
-
-      - name: Install Python
-        run: uv python install 3.15
-
-      - name: Install locked dependencies
-        run: uv sync --locked --all-packages
+      - name: Setup workspace
+        uses: ./.github/actions/setup
 
       - name: Run static checks
-        run: |
-          read -r -a packages <<<"$PACKAGES"
-          for package in "${packages[@]}"; do
-            echo "::group::$package"
-            uv run --no-sync scripts/ci.py check --package "$package"
-            echo "::endgroup::"
-          done
+        uses: ./.github/actions/checks
+        with:
+          packages: ${{ join(fromJson(needs.plan.outputs.matrix).package, ' ') }}
 
   tests:
     name: ${{ matrix.component }} / ${{ matrix.os }}
@@ -86,8 +64,6 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix: ${{ fromJson(needs.plan.outputs.matrix).tests }}
-    env:
-      PACKAGE: ${{ matrix.package }}
     steps:
       - name: Enable Git symbolic links on Windows
         if: runner.os == 'Windows'
@@ -96,34 +72,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Verify package
+        uses: ./.github/actions/test
         with:
-          version: "0.13.0"
-
-      - name: Install Python
-        run: uv python install 3.15
-
-      - name: Install locked dependencies
-        run: uv sync --locked --all-packages
-
-      - name: Run tests
-        env:
-          TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: uv run --no-sync scripts/ci.py test --package "$PACKAGE"
-
-      - name: Prepare the Linux user service manager
-        if: runner.os == 'Linux'
-        run: |
-          sudo loginctl enable-linger "$(id -un)"
-          sudo systemctl start "user@$(id -u).service"
-          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >>"$GITHUB_ENV"
-          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >>"$GITHUB_ENV"
-
-      - name: Run system service tests
-        env:
-          TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: uv run --no-sync scripts/ci.py test --package "$PACKAGE" --system
-
-      - name: Build and verify distributions
-        run: uv run --no-sync scripts/ci.py package --package "$PACKAGE"
+          package: ${{ matrix.package }}

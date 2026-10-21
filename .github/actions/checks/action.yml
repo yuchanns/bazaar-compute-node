@@ -1,17 +1,22 @@
 name: Checks
-description: Run the required project checks
+description: Run static checks for the selected workspace packages
+
+inputs:
+  packages:
+    description: Space-separated workspace package names
+    required: true
 
 runs:
   using: composite
   steps:
-    - name: Install locked dependencies
-      shell: bash
-      run: uv sync --locked --all-packages
-
-    - name: Run tests
-      shell: bash
-      run: uv run --no-sync scripts/ci.py test --all-packages
-
     - name: Run static checks
       shell: bash
-      run: uv run --no-sync scripts/ci.py check --all-packages
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -r -a packages <<<"$PACKAGES"
+        for package in "${packages[@]}"; do
+          echo "::group::$package"
+          uv run --no-sync scripts/ci.py check --package "$package"
+          echo "::endgroup::"
+        done
