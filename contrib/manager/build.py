@@ -4,6 +4,7 @@ from __future__ import annotations
 
 lazy import json
 lazy import tomllib
+lazy import urllib.request
 lazy from collections.abc import Mapping
 lazy from pathlib import Path
 lazy from typing import Any
@@ -39,6 +40,13 @@ def generate_catalog() -> None:
     (root / "src" / "bazaar_contrib_manager" / "catalog.json").write_text(
         json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
     )
+    with urllib.request.urlopen(
+        "https://raw.githubusercontent.com/open-bazaar/contrib-index/main/index.json",
+        timeout=60,
+    ) as response:
+        (
+            root / "src" / "bazaar_contrib_manager" / "open_bazaar_index.json"
+        ).write_bytes(response.read())
 
 
 def build_wheel(

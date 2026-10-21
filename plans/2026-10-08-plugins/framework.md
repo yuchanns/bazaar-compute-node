@@ -1233,6 +1233,17 @@ logging 保留标准日志、格式、级别路径、轮转和资源释放，直
 - [x] 删除审计实现、默认声明及发行依赖，简化命令根选择并保留配置准备流程。
 - [x] 日志改为标准 logging，真实文件、异常、线程、轮转、配置与隔离 CLI 验证通过。
 - [x] 默认索引列表使用多行 TOML，manager 的 build.py 通过独立源码包重建验证。
+
+The Open Bazaar index joins this 0.3 task through manager/build.py. Every build
+downloads the latest main/index.json from open-bazaar/contrib-index and writes
+open_bazaar_index.json beside the generated official catalog. Both generated
+JSON files are ignored in Git and included as package resources. The default
+index list names both local resources. Independent wheel and sdist installation
+checks validate the downloaded document and the default manager catalog flow.
+The index download uses a 60-second network timeout. Configured index order sets
+priority: overlapping package/source entries retain the first entry's metadata
+and collect every index origin.
+
 - [x] 完成 Ruff、根目录 LSP、独立 wheel／sdist 及受影响安装流程，amend 到各自引入提交并更新同一 PR。
 
 ### Task 9：独立定时器接口与时间轮

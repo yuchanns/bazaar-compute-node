@@ -6,6 +6,8 @@ import asyncio
 import os
 import subprocess
 import sys
+import tomllib
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 lazy from contextlib import asynccontextmanager
@@ -35,8 +37,13 @@ DIRECTORY = ServiceKey[Path]("installed.directory")
 
 async def exercise(path: Path) -> None:
     configuration = path / ".bcn" / "config.toml"
+    defaults = ConfigDocument.model_validate(
+        tomllib.loads(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text()
+        )
+    )
     payload = ConfigDocument(
-        contrib_indexes=("resource://bazaar_contrib_manager/catalog.json",),
+        contrib_indexes=defaults.contrib_indexes,
         contribs=(
             ContribPackage(
                 enabled=(
@@ -75,6 +82,7 @@ async def exercise(path: Path) -> None:
             ):
                 raise RuntimeError(f"installed {name} did not become ready")
         indexes = await catalogs[0].indexes()
+        assert indexes and all(index.error is None for index in indexes)
         assert any(index.entries and index.error is None for index in indexes)
 
     @asynccontextmanager

@@ -29,6 +29,7 @@ from bazaar_core import (
     Running,
 )
 from blockbuster import blockbuster_ctx
+from packaging.requirements import Requirement
 
 from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation, Package
 
@@ -134,6 +135,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
                         {
                             "package": "bazaar-contrib-example",
                             "source": package_source,
+                            "version": ">=0.1.0",
                         }
                     ]
                 }
@@ -148,7 +150,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert location in candidate.payload["contrib_indexes"]
     entries = await checked(lambda manager: manager.catalog.entries())
     assert any(
-        entry.package == "bazaar-contrib-example" and len(entry.indexes) > 1
+        entry.package == "bazaar-contrib-example"
+        and entry.version
+        and len(entry.indexes) > 1
         for entry in entries
     )
     assert any(
@@ -184,14 +188,15 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     detail = await checked(lambda manager: manager.detail("example"))
     assert any(entry.config_schema for entry in detail.entries)
     candidate, _ = await checked(lambda manager: manager.configuration.read())
+    document = ConfigDocument.model_validate(candidate.payload)
     assert any(
-        package.get("package") == f"bazaar-contrib-example=={detail.version}"
-        for package in candidate.payload["contribs"]
+        package.distribution == detail.package
+        and Requirement(package.package).specifier.contains(detail.version)
+        for package in document.contribs
     )
     # An operator can run healthy resources and repair an unavailable optional package.
     recovery = path / "recovery.toml"
     journal = path / "recovery.txt"
-    document = ConfigDocument.model_validate(candidate.payload)
     packages = [
         package.model_copy(
             update={

@@ -13,7 +13,13 @@ def main() -> None:
         package.package == "bazaar-contrib-node-management"
         for package in document.contribs
     )
-    print("Installed manager catalog includes the node-management contrib")
+    community = IndexDocument.model_validate_json(
+        files("bazaar_contrib_manager").joinpath("open_bazaar_index.json").read_bytes()
+    )
+    print(
+        "Installed manager catalogs include node-management and "
+        f"{len(community.contribs)} Open Bazaar entries"
+    )
 
 
 if __name__ == "__main__":

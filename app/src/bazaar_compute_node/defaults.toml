@@ -1,6 +1,7 @@
 version = "5"
 contrib_indexes = [
     "resource://bazaar_contrib_manager/catalog.json",
+    "resource://bazaar_contrib_manager/open_bazaar_index.json",
 ]
 
 [[contribs]]
